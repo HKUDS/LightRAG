@@ -846,6 +846,37 @@ class _PipelineMixin:
 
         return to_process_docs
 
+    async def _atomic_release_busy_or_consume_pending(
+        self,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> bool:
+        """Atomically decide whether to release ``busy`` or consume a
+        pending request.
+
+        Closes the loop-exit handoff race: a concurrent enqueue that
+        sets ``request_pending`` while the processing loop is on its
+        way out will be observed in the same critical section that
+        releases ``busy``, so the loop sees it and refetches instead
+        of stranding the new doc in PENDING.
+
+        Returns:
+            True when ``busy`` has been cleared under the same lock
+            that observed ``request_pending=False`` — caller must
+            break out of the loop and skip clearing ``busy`` in its
+            finally block.
+
+            False when ``request_pending`` was set: the flag is
+            cleared and the caller must refetch ``doc_status`` and
+            continue the loop.
+        """
+        async with pipeline_status_lock:
+            if pipeline_status.get("request_pending", False):
+                pipeline_status["request_pending"] = False
+                return False
+            pipeline_status["busy"] = False
+            return True
+
     async def apipeline_process_enqueue_documents(
         self,
         split_by_character: str | None = None,
@@ -872,20 +903,23 @@ class _PipelineMixin:
         )
 
         # Check if another process is already processing the queue
+        # Statuses the pipeline considers "in-flight or pending"; used by
+        # both the initial snapshot and every refetch after a
+        # request_pending continuation.
+        _processing_statuses = [
+            DocStatus.PROCESSING,
+            DocStatus.FAILED,
+            DocStatus.PENDING,
+            DocStatus.PARSING,
+            DocStatus.ANALYZING,
+        ]
+
         async with pipeline_status_lock:
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
                 to_process_docs: dict[
                     str, DocProcessingStatus
-                ] = await self.doc_status.get_docs_by_statuses(
-                    [
-                        DocStatus.PROCESSING,
-                        DocStatus.FAILED,
-                        DocStatus.PENDING,
-                        DocStatus.PARSING,
-                        DocStatus.ANALYZING,
-                    ]
-                )
+                ] = await self.doc_status.get_docs_by_statuses(_processing_statuses)
 
                 if not to_process_docs:
                     logger.info("No documents to process")
@@ -914,6 +948,30 @@ class _PipelineMixin:
                 )
                 return
 
+        # Tracks whether the loop has already released ``busy`` under
+        # the same critical section that observed request_pending=False.
+        # This makes the exit handoff atomic: a concurrent enqueue can
+        # either set request_pending BEFORE we release (in which case
+        # the loop continues with a fresh snapshot) or AFTER (in which
+        # case it sees busy=False and starts a new loop via its own
+        # process_enqueue call).  Without this, a small window between
+        # "loop reads request_pending=False" and "finally clears busy"
+        # could strand newly-enqueued PENDING docs.
+        busy_released_in_loop = False
+
+        async def _try_atomic_release() -> bool:
+            """Thin wrapper that updates the local
+            ``busy_released_in_loop`` flag based on the result of
+            ``_atomic_release_busy_or_consume_pending``.
+            """
+            nonlocal busy_released_in_loop
+            released = await self._atomic_release_busy_or_consume_pending(
+                pipeline_status, pipeline_status_lock
+            )
+            if released:
+                busy_released_in_loop = True
+            return released
+
         try:
             # Process documents until no more documents or requests
             while True:
@@ -938,7 +996,12 @@ class _PipelineMixin:
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    break
+                    if await _try_atomic_release():
+                        break
+                    to_process_docs = await self.doc_status.get_docs_by_statuses(
+                        _processing_statuses
+                    )
+                    continue
 
                 # Validate document data consistency and fix any issues as part of the pipeline
                 to_process_docs = await self._validate_and_fix_document_consistency(
@@ -952,7 +1015,12 @@ class _PipelineMixin:
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    break
+                    if await _try_atomic_release():
+                        break
+                    to_process_docs = await self.doc_status.get_docs_by_statuses(
+                        _processing_statuses
+                    )
+                    continue
 
                 log_message = f"Processing {len(to_process_docs)} document(s)"
                 logger.info(log_message)
@@ -1847,15 +1915,12 @@ class _PipelineMixin:
                     w.cancel()
                 await asyncio.gather(*workers, return_exceptions=True)
 
-                # Check if there's a pending request to process more documents (with lock)
-                has_pending_request = False
-                async with pipeline_status_lock:
-                    has_pending_request = pipeline_status.get("request_pending", False)
-                    if has_pending_request:
-                        # Clear the request flag before checking for more documents
-                        pipeline_status["request_pending"] = False
-
-                if not has_pending_request:
+                # Atomic exit handoff: if request_pending was set during
+                # this batch (e.g. a concurrent enqueue while busy=True),
+                # clear it and refetch.  Otherwise release ``busy`` under
+                # the SAME lock so a concurrent enqueue cannot squeeze a
+                # request_pending=True past us into a now-stranded state.
+                if await _try_atomic_release():
                     break
 
                 log_message = "Processing additional documents due to pending request"
@@ -1865,21 +1930,20 @@ class _PipelineMixin:
 
                 # Check for pending documents again
                 to_process_docs = await self.doc_status.get_docs_by_statuses(
-                    [
-                        DocStatus.PROCESSING,
-                        DocStatus.FAILED,
-                        DocStatus.PENDING,
-                        DocStatus.PARSING,
-                        DocStatus.ANALYZING,
-                    ]
+                    _processing_statuses
                 )
 
         finally:
             log_message = "Enqueued document processing pipeline stopped"
             logger.info(log_message)
-            # Always reset busy status and cancellation flag when done or if an exception occurs (with lock)
+            # If the loop already released ``busy`` under the atomic exit
+            # check, don't clobber it here — a concurrent enqueue may have
+            # observed busy=False and started a new processing pass that
+            # has set busy=True for itself.  Cancellation flag and log
+            # bookkeeping are always safe to update.
             async with pipeline_status_lock:
-                pipeline_status["busy"] = False
+                if not busy_released_in_loop:
+                    pipeline_status["busy"] = False
                 pipeline_status["cancellation_requested"] = (
                     False  # Always reset cancellation flag
                 )

@@ -459,6 +459,78 @@ def test_enqueue_during_busy_sets_request_pending(tmp_path):
 
 
 @pytest.mark.offline
+def test_atomic_release_busy_or_consume_pending(tmp_path):
+    """The loop-exit handoff is atomic via
+    ``_atomic_release_busy_or_consume_pending``: the same critical
+    section that reads ``request_pending`` also writes ``busy=False``.
+
+    This closes the race where a concurrent enqueue could set
+    ``request_pending=True`` between the loop's read of the flag and
+    the finally block's ``busy=False`` write — leaving newly-enqueued
+    docs stranded in PENDING with no running loop to consume them.
+
+    The helper has two outcomes:
+      * ``request_pending=True`` at entry → flag cleared, return False
+        (caller must continue the loop, refetching doc_status).
+      * ``request_pending=False`` at entry → ``busy`` cleared, return
+        True (caller must break out without re-clearing busy).
+
+    Tested directly because the closure pattern inside
+    ``apipeline_process_enqueue_documents`` is otherwise hard to
+    exercise from a unit test without orchestrating real concurrency.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            # Case 1: simulate the race — request_pending was set by a
+            # concurrent enqueue while busy=True.  Helper must consume
+            # the flag and return False (continue loop) rather than
+            # silently exit.
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = True
+            released = await rag._atomic_release_busy_or_consume_pending(
+                pipeline_status, pipeline_status_lock
+            )
+            assert released is False
+            assert pipeline_status["busy"] is True  # NOT released
+            assert pipeline_status["request_pending"] is False  # consumed
+
+            # Case 2: clean exit path — no concurrent enqueue.  Helper
+            # releases busy under the SAME lock so any post-call
+            # enqueue can either see busy=False (and trigger its own
+            # process pass) or had to set request_pending BEFORE this
+            # call (handled by Case 1).  No stranded flag possible.
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = False
+            released = await rag._atomic_release_busy_or_consume_pending(
+                pipeline_status, pipeline_status_lock
+            )
+            assert released is True
+            assert pipeline_status["busy"] is False  # released
+            assert pipeline_status["request_pending"] is False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_apipeline_enqueue_rejects_when_destructive_busy(tmp_path):
     """``destructive_busy`` (set by /documents/clear and per-doc delete)
     must reject enqueue at the last-line guard.  These jobs DROP
