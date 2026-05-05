@@ -42,12 +42,12 @@ pytestmark = pytest.mark.offline
 def _ensure_shared_storage_initialized():
     """Initialize the shared_storage module-level dicts before each test.
 
-    The scan endpoint and pipeline-busy guards introduced for the
-    reentrancy / resume work read ``pipeline_status`` via
-    ``get_namespace_data``, which raises if shared dicts have never been
-    initialized.  Tests using mocked ``LightRAG`` instances don't run
-    ``initialize_storages``, so we set up the shared store here and reset
-    pipeline_status state per-test to avoid leakage.
+    The scan endpoint and the enqueue/scanning guards read
+    ``pipeline_status`` via ``get_namespace_data``, which raises if
+    shared dicts have never been initialized.  Tests using mocked
+    ``LightRAG`` instances don't run ``initialize_storages``, so we set
+    up the shared store here and reset pipeline_status state per-test
+    to avoid leakage.
     """
     import importlib
 
@@ -563,7 +563,8 @@ async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypat
     assert len(calls) == 1
     assert calls[0]["file_paths"] == [hinted_file]
     # The scan-owned background task forwards from_scan=True so per-file
-    # enqueues bypass the scanning busy guard the scan itself holds.
+    # enqueues bypass the scanning guard whose ``scanning`` flag the
+    # scan task itself holds.
     assert calls[0]["kwargs"] == {"from_scan": True}
     archived_names = {
         path.name for path in (tmp_path / PARSED_DIR_NAME).iterdir() if path.is_file()
@@ -871,10 +872,12 @@ async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monke
     assert not (tmp_path / "existing.[native].docx").exists()
 
 
-async def test_upload_returns_409_when_pipeline_busy(tmp_path, monkeypatch):
-    """Upload must refuse with 409 while ``pipeline_status["busy"]`` is set,
-    independent of any name dedup.  The strict name pre-check happens AFTER
-    the busy guard, so the 409 detail is about the pipeline, not the file.
+async def test_upload_succeeds_concurrent_with_pipeline_busy(tmp_path, monkeypatch):
+    """Under the new contract, ``busy=True`` no longer blocks uploads.
+    The upload reserves a pending-enqueue slot, schedules its bg task,
+    and returns success; the bg task's enqueue is permitted while the
+    pipeline is busy and the running loop's request_pending mechanism
+    will pick up the new doc after its current batch.
     """
     import importlib
 
@@ -889,6 +892,8 @@ async def test_upload_returns_409_when_pipeline_busy(tmp_path, monkeypatch):
     pipeline_status = await shared_storage.get_namespace_data(
         "pipeline_status", workspace=rag.workspace
     )
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
     pipeline_status["busy"] = True
 
     router = create_document_routes(rag, doc_manager)
@@ -902,11 +907,17 @@ async def test_upload_returns_409_when_pipeline_busy(tmp_path, monkeypatch):
         file=BytesIO(b"docx bytes"),
     )
 
-    with pytest.raises(_document_routes.HTTPException) as excinfo:
-        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
-    assert excinfo.value.status_code == 409
-    assert "busy" in excinfo.value.detail.lower()
-    assert not (tmp_path / "while_busy.docx").exists()
+    bg = _document_routes.BackgroundTasks()
+    response = await upload_endpoint(bg, upload_file)
+
+    # Endpoint accepted the upload despite busy=True.
+    assert response.status == "success"
+    assert (tmp_path / "while_busy.docx").exists()
+    # The slot has been transferred to the bg task; it will release on
+    # completion.  Until then pending_enqueues stays at 1 so a
+    # concurrent /scan would refuse.
+    assert pipeline_status["pending_enqueues"] == 1
+    assert len(bg.tasks) == 1
 
 
 async def test_upload_returns_409_when_scanning(tmp_path, monkeypatch):
@@ -1047,10 +1058,10 @@ async def test_scan_endpoint_acquires_and_releases_scanning_flag(tmp_path, monke
 async def test_scan_endpoint_returns_skipped_when_enqueue_pending(tmp_path):
     """The preflight-to-background race: an upload/insert endpoint may
     have passed the idle check, reserved a pending-enqueue slot, and
-    returned success — but its bg task has not yet called
-    apipeline_enqueue_documents.  A scan that arrives in this window must
-    refuse, otherwise it would set scanning=True and the bg enqueue would
-    fail the busy guard after the client already saw success.
+    returned success — but its bg task has not yet written to
+    doc_status.  A scan that arrives in this window must refuse;
+    starting it would race scan's doc_status reads against the bg
+    task's still-pending writes.
     """
     import importlib
 
@@ -1135,12 +1146,12 @@ async def test_reserve_enqueue_slot_blocks_concurrent_scan_until_release(tmp_pat
     assert pipeline_status["scanning"] is True
 
 
-async def test_release_enqueue_slot_returns_was_last_only_for_final(tmp_path):
-    """Two-reservation cohort: the first release returns False (sibling
-    still pending), the second returns True (last out → drain owner).
-    Closes the dual-bg-task race where both bg tasks could otherwise
-    independently trigger process_enqueue and the second's enqueue
-    would hit the busy guard set by the first's processing.
+async def test_release_enqueue_slot_decrements_per_call(tmp_path):
+    """Two-reservation cohort: each release is a pure decrement.  Drain
+    coordination is no longer needed because the busy guard on enqueue
+    has been removed — concurrent enqueues are permitted while the
+    pipeline is busy and the running loop's request_pending mechanism
+    drains them.
     """
     import importlib
 
@@ -1155,99 +1166,103 @@ async def test_release_enqueue_slot_returns_was_last_only_for_final(tmp_path):
     pipeline_status["pending_enqueues"] = 0
 
     # Two concurrent reservations from /upload + /text — both pass the
-    # idle preflight because busy=F, scanning=F at reservation time.
+    # idle preflight because scanning=F at reservation time (busy is no
+    # longer a gate; concurrent enqueue with the processing loop is
+    # explicitly allowed).
     assert await _document_routes._reserve_enqueue_slot(rag) is True
     assert await _document_routes._reserve_enqueue_slot(rag) is True
     assert pipeline_status["pending_enqueues"] == 2
 
-    # First release: a sibling reservation is still in flight → no drain.
-    assert await _document_routes._release_enqueue_slot(rag) is False
+    # Each release is a pure decrement; no drain coordination required
+    # because each bg task triggers process_enqueue independently and
+    # the running loop's request_pending mechanism collapses duplicate
+    # triggers safely.
+    await _document_routes._release_enqueue_slot(rag)
     assert pipeline_status["pending_enqueues"] == 1
 
-    # Second (final) release: caller owns the drain.
-    assert await _document_routes._release_enqueue_slot(rag) is True
+    await _document_routes._release_enqueue_slot(rag)
     assert pipeline_status["pending_enqueues"] == 0
 
 
-async def test_release_and_drain_only_runs_process_on_last_release(tmp_path):
-    """End-to-end on the drain wrapper: two siblings each release once;
-    only the last release calls apipeline_process_enqueue_documents,
-    so the busy phase never starts while a sibling's enqueue is still
-    pending.
+async def test_two_concurrent_uploads_both_succeed_when_pipeline_busy(
+    tmp_path, monkeypatch
+):
+    """The scenario the original race report described, end-to-end:
+    two upload requests arrive while the pipeline is busy.  Under the
+    new contract neither is rejected; both reserve slots, both schedule
+    bg tasks, and pending_enqueues stays at 2 until each bg task
+    releases.  No reservation can be killed by the busy guard because
+    that guard has been removed from apipeline_enqueue_documents.
     """
     import importlib
 
-    rag = _ScanRag({})
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+
     shared_storage = importlib.import_module("lightrag.kg.shared_storage")
     await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
     pipeline_status = await shared_storage.get_namespace_data(
         "pipeline_status", workspace=rag.workspace
     )
-    pipeline_status["busy"] = False
     pipeline_status["scanning"] = False
     pipeline_status["pending_enqueues"] = 0
-
-    await _document_routes._reserve_enqueue_slot(rag)
-    await _document_routes._reserve_enqueue_slot(rag)
-    assert rag.process_calls == 0
-
-    # Sibling A finishes first → no drain.
-    await _document_routes._release_enqueue_slot_and_drain_if_last(rag)
-    assert rag.process_calls == 0
-
-    # Sibling B finishes → final release triggers drain exactly once.
-    await _document_routes._release_enqueue_slot_and_drain_if_last(rag)
-    assert rag.process_calls == 1
-
-
-async def test_release_and_drain_solo_release_drains_immediately(tmp_path):
-    """Single reservation (no concurrency): the lone release is also the
-    final one and must trigger drain so the enqueued doc actually gets
-    processed.
-    """
-    import importlib
-
-    rag = _ScanRag({})
-    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
-    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
-    pipeline_status = await shared_storage.get_namespace_data(
-        "pipeline_status", workspace=rag.workspace
-    )
-    pipeline_status["busy"] = False
-    pipeline_status["scanning"] = False
-    pipeline_status["pending_enqueues"] = 0
-
-    await _document_routes._reserve_enqueue_slot(rag)
-    await _document_routes._release_enqueue_slot_and_drain_if_last(rag)
-    assert rag.process_calls == 1
-    assert pipeline_status["pending_enqueues"] == 0
-
-
-async def test_reserve_enqueue_slot_raises_409_when_busy_or_scanning(tmp_path):
-    """The reservation helper must surface 409 (not silently increment)
-    when the pipeline is already busy or scanning, so endpoints fail
-    fast and the caller sees a normal error response.
-    """
-    import importlib
-
-    rag = _ScanRag({})
-    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
-    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
-    pipeline_status = await shared_storage.get_namespace_data(
-        "pipeline_status", workspace=rag.workspace
-    )
-    pipeline_status["busy"] = False
-    pipeline_status["scanning"] = False
-    pipeline_status["pending_enqueues"] = 0
-
     pipeline_status["busy"] = True
-    with pytest.raises(_document_routes.HTTPException) as exc:
-        await _document_routes._reserve_enqueue_slot(rag)
-    assert exc.value.status_code == 409
-    # No leak when guard rejects.
+
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+
+    bg_a = _document_routes.BackgroundTasks()
+    upload_a = _document_routes.UploadFile(filename="a.docx", file=BytesIO(b"a bytes"))
+    response_a = await upload_endpoint(bg_a, upload_a)
+    assert response_a.status == "success"
+    assert pipeline_status["pending_enqueues"] == 1
+
+    bg_b = _document_routes.BackgroundTasks()
+    upload_b = _document_routes.UploadFile(filename="b.docx", file=BytesIO(b"b bytes"))
+    response_b = await upload_endpoint(bg_b, upload_b)
+    assert response_b.status == "success"
+    # Both reservations coexist while bg tasks are pending.
+    assert pipeline_status["pending_enqueues"] == 2
+    # Both files were written to disk; both bg tasks scheduled.
+    assert (tmp_path / "a.docx").exists()
+    assert (tmp_path / "b.docx").exists()
+    assert len(bg_a.tasks) == 1
+    assert len(bg_b.tasks) == 1
+
+
+async def test_reserve_enqueue_slot_allows_busy_rejects_scanning(tmp_path):
+    """Reservation only blocks on ``scanning``; ``busy`` is permitted.
+    Concurrent processing is what makes "upload while pipeline is busy"
+    possible — the running loop notices new docs via request_pending.
+    """
+    import importlib
+
+    rag = _ScanRag({})
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    # busy=True does NOT block reservation under the new contract.
+    pipeline_status["busy"] = True
+    assert await _document_routes._reserve_enqueue_slot(rag) is True
+    assert pipeline_status["pending_enqueues"] == 1
+    await _document_routes._release_enqueue_slot(rag)
     assert pipeline_status["pending_enqueues"] == 0
     pipeline_status["busy"] = False
 
+    # scanning=True still rejects with 409.
     pipeline_status["scanning"] = True
     with pytest.raises(_document_routes.HTTPException) as exc:
         await _document_routes._reserve_enqueue_slot(rag)

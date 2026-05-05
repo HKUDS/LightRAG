@@ -125,31 +125,32 @@ class _PipelineMixin:
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
                 mirrored to ``doc_status.metadata['process_options']``.
             from_scan: when True, the caller is the scan-owned background task
-                that already holds ``pipeline_status["scanning"]``.  In that
-                case the scanning portion of the busy guard is bypassed so
-                the scan can enqueue the files it just discovered.  External
-                callers must leave this False; the busy guard still rejects
-                concurrent indexing.
+                that already holds ``pipeline_status["scanning"]``.  Scan does
+                additional doc_status reads (classification, stale-stub
+                deletion) so it must serialise with itself and other writers;
+                ``from_scan=True`` bypasses the scanning guard so the scan
+                can enqueue the files it just discovered.  External callers
+                must leave this False.
 
         Returns:
             str: tracking ID for monitoring processing status
 
         Raises:
-            RuntimeError: if the pipeline is already busy or a scan is in
-                progress.  Per the concurrency contract, all writes to
-                ``doc_status`` / ``full_docs`` must wait for the in-flight
-                indexing or scanning to finish.  Callers from HTTP endpoints
-                should pre-check ``pipeline_status["busy"]`` /
-                ``pipeline_status["scanning"]`` and surface a 409 to clients
-                long before reaching this last-line guard.
+            RuntimeError: if a scan is in progress (and ``from_scan`` is
+                False).  Concurrent indexing (``busy=True``) is permitted —
+                the running processing loop is notified via
+                ``request_pending`` and will pick up the newly-enqueued doc
+                in its next iteration after the current batch finishes.
         """
-        # Pipeline-busy guard: refuse to mutate doc_status / full_docs while
-        # any indexing or scanning job is running.  This is the last line of
-        # defence — endpoints should fail fast with 409 before getting here.
-        # The scan-owned background task sets ``scanning=True`` itself before
-        # enqueuing the files it just discovered, so it passes
-        # ``from_scan=True`` to skip the scanning check while still being
-        # blocked by an unrelated in-flight indexing job.
+        # Concurrency contract: enqueue may proceed concurrently with the
+        # busy processing loop because (a) full_docs is upserted before
+        # doc_status, so a consistency check never sees a ghost row, and
+        # (b) the running loop re-queries doc_status by status after each
+        # batch and sets ``request_pending`` whenever new work arrives
+        # while busy.  Only an in-flight scan blocks enqueue: scan reads
+        # doc_status to make classification decisions and would race with
+        # mid-flight writes.  ``from_scan=True`` lifts that guard for the
+        # scan task's own enqueues.
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
         )
@@ -157,11 +158,6 @@ class _PipelineMixin:
             "pipeline_status", workspace=self.workspace
         )
         async with pipeline_status_lock:
-            if pipeline_status.get("busy"):
-                raise RuntimeError(
-                    "Cannot enqueue while pipeline is busy; "
-                    "wait for the running job to finish before retrying."
-                )
             if not from_scan and pipeline_status.get("scanning"):
                 raise RuntimeError(
                     "Cannot enqueue while pipeline is scanning; "
@@ -611,6 +607,17 @@ class _PipelineMixin:
         # Store document status (without content)
         await self.doc_status.upsert(new_docs)
         logger.debug(f"Stored {len(new_docs)} new unique documents")
+
+        # Notify any in-flight processing loop that new work has arrived.
+        # The loop checks ``request_pending`` after each batch and will
+        # re-query doc_status to pick up these PENDING rows.  Without
+        # this nudge a caller that does not subsequently call
+        # ``apipeline_process_enqueue_documents`` (or whose call races
+        # with the loop's just-finished batch) could leave the new docs
+        # stranded until the next unrelated trigger.
+        async with pipeline_status_lock:
+            if pipeline_status.get("busy"):
+                pipeline_status["request_pending"] = True
 
         return track_id
 

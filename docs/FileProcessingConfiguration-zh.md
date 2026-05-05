@@ -216,32 +216,76 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 
 ## 并发与重入约束
 
-为防止 `scan` / `upload` 与运行中的流水线相互覆盖 `doc_status` / `full_docs` 记录，所有写入入口都以 `pipeline_status["busy"]`（加 scan 自身的 `pipeline_status["scanning"]` 旗标）为唯一闸门。
+为防止 `scan` / `upload` / `insert` 与运行中的流水线相互覆盖 `doc_status` / `full_docs` 记录，所有写入入口在 `pipeline_status` 共享字典上协调。同一 workspace 下的 `pipeline_status_lock` 保证下表所有 transition 都在锁内原子完成：
+
+| 字段 | 语义 |
+| --- | --- |
+| `busy` | 处理循环 (`apipeline_process_enqueue_documents`) 运行中。**不阻塞 enqueue**——循环按 batch 拉取 `doc_status` 快照处理，每批结束后通过 `request_pending` 检查是否还有新工作。 |
+| `scanning` | `/documents/scan` 后台任务运行中。**与所有写者互斥**：scan 会读 `doc_status` 做分类决策（已处理 / 续跑 / 删除残余 stub / 归档），不能与并发写者交错。 |
+| `pending_enqueues` | 已通过 `_reserve_enqueue_slot` 但 bg task 未完成的 upload/insert 数。仅给 scan 端点参考——决定是否能拿独占。bg task 在 `finally` 里释放 slot。 |
+| `request_pending` | 让运行中的处理循环再扫一轮的信号。enqueue 在 `busy=True` 时写完 `doc_status` 后置位；处理循环每个 batch 结束后检查并重新拉快照。 |
 
 ### 入口行为
 
-| 入口 | 流水线 busy 或 scanning 中 | 否则 |
+| 入口 | 条件 | 行为 |
 | --- | --- | --- |
-| `/documents/upload` / `/documents/file` / `/documents/text` / `/documents/insert*` | 直接返回 HTTP 409 错误，不写文件、不调入队 | 进入下文"严格名字预检"后再保存与入队 |
-| `/documents/scan` | 落 warning 后立即返回 `scanning_skipped_pipeline_busy`，不 schedule 后台任务 | 设 `scanning=True` 后 schedule，task 结束统一清旗 |
-| `apipeline_enqueue_documents` 内部 | 抛 `RuntimeError("Cannot enqueue while pipeline is busy")` 作为最后一道闸 | 正常入队 |
+| `/documents/upload` / `/documents/text` / `/documents/texts` | `scanning=True` | 抛 HTTP 409，不写文件、不调入队 |
+| 同上 | 否则（含 `busy=True`） | 锁内 `pending_enqueues++` 预留 slot → 严格名字预检 → 保存文件 → schedule bg task；bg task 在 `finally` 释放 slot |
+| `/documents/scan` | `busy=True` 或 `scanning=True` 或 `pending_enqueues>0` | 落 warning 后立即返回 `scanning_skipped_pipeline_busy`，不 schedule 后台任务 |
+| 同上 | 全部 idle | 锁内设 `scanning=True` 后 schedule，task 结束在 `finally` 清旗 |
+| `apipeline_enqueue_documents` 内部 (last-line guard) | `scanning=True` 且 `from_scan=False` | 抛 `RuntimeError("Cannot enqueue while pipeline is scanning")` |
+| 同上 | 任何其它情况（含 `busy=True`） | 正常入队；写完 `doc_status` 后若 `busy=True` 自动 nudge `request_pending=True` |
 
-> 流水线启动后无法可靠判断 `INPUT` 目录中各文件具体处理到哪个阶段，对运行中的 `doc_status` 做任何修改（哪怕仅"重置 PENDING/FAILED"）都可能与 parse / analyze / process 工作线程的写入交错，导致存储记录与实际处理逻辑不一致。规则采用最严：busy 期间一律拒绝写入，让流水线跑完再说。
+`from_scan=True` 是 scan 后台任务自身入队时的旁路：scan 已持有 `scanning` 旗标，必须允许它把扫到的文件入队。
 
-### 严格名字预检（upload 路径，busy=False 时）
+### 为什么 `busy` 不再阻塞 enqueue
 
-upload 在保存文件前必须双道检查：
+旧版本里 `busy=True` 一律拒绝任何新入队，理由是"修改 `doc_status` 会与流水线工作线程交错"。但实际上：
+
+1. **写入顺序保证一致性**：`apipeline_enqueue_documents` 总是先 upsert `full_docs`、再 upsert `doc_status`。处理循环开头的 consistency check 仅删除"`doc_status` 行没有对应 `full_docs`"的孤儿——这种状态在并发 enqueue 中不可能出现。
+2. **批次级快照**：处理循环每个 batch 拉一次 `get_docs_by_statuses` 快照，新写入的 `PENDING` 行不会破坏当前 batch；下一轮通过 `request_pending` 重拉快照即可看到新工作。
+3. **`request_pending` 设计本就为此**：旧版同时存在 `request_pending` 字段——它就是为"运行中又有新工作"设计的，但被 busy 守护堵死了。
+
+新契约把这个机制启用起来后，**用户在长批次处理过程中仍可继续上传新文档**，bg task 写完 `doc_status` 后由运行中的循环自动接管。
+
+### 为什么 scan 仍是独占写者
+
+scan 不仅 enqueue 自己扫到的新文件，还会读 `doc_status` 决定每个文件去向：
+
+- 同名 `PROCESSED` 行 → 归档源文件、跳过入队。
+- 同名非 PROCESSED 且 `full_docs` 存在 → resume 路径，源文件**保留在 `INPUT/`**，不归档（pending-parse 解析器仍可能需要它），由处理循环按状态查询接走。
+- 同名 `FAILED` 且 `full_docs` 缺失 → 识别为之前 `apipeline_enqueue_error_documents` 写下的提取错误 stub（一致性检查会保留这种行供人工 review），scan 自动删除该 stub 并把当前文件按新文件重新入队，让用户"修好源文件再 scan 一次"能直接生效。
+
+这些"读—决策—写"组合不能与其它写者交错，否则分类决策会基于过期视图。所以 scan 必须独占，且 scan 端点会在 `busy` / `scanning` / `pending_enqueues>0` 任一存在时拒绝。
+
+### 严格名字预检（upload 路径）
+
+upload 通过 reservation 后、保存文件前必须双道检查：
 
 1. **INPUT 目录扫描**：把要保存的 basename 经 `canonicalize_parser_hinted_basename` 规范化，遍历 INPUT 目录里现有任何同 canonical 变体（含 hint / 不含 hint），命中即 409。
 2. **doc_status 查重**：用规范化 basename 调 `get_existing_doc_by_file_basename`，命中即 409。
 
-两道都过 → 保存文件 → 调 `apipeline_enqueue_documents`。
+两道都过 → 保存文件 → schedule bg task → bg task 调 `apipeline_enqueue_documents` 写库 + 调 `apipeline_process_enqueue_documents` 触发处理。
 
 > 旧版本曾允许 upload 在已有同名记录时悄悄写入 FAILED 重复条目；新规则改为 fail-fast，不在 doc_status 留下任何重复痕迹。如需替换同名文档，请先调用 `/documents/{doc_id}` 的删除接口。
 
+### 多 reservation 并发的协调
+
+两个 upload 同时进来时（scan 此时拿不到独占）：
+
+1. A `_reserve_enqueue_slot` → `pending_enqueues=1`，写文件，schedule bg task A，返回 success。
+2. B `_reserve_enqueue_slot` → `pending_enqueues=2`，写文件，schedule bg task B，返回 success。
+3. bg task A `apipeline_enqueue_documents` → 写 `doc_status` → 调 `apipeline_process_enqueue_documents` → 设 `busy=True` 处理 A 的文档。
+4. bg task B `apipeline_enqueue_documents` → 看到 `scanning=False`，正常写入；写完后看到 `busy=True`，自动设 `request_pending=True`。
+5. bg task B 调 `apipeline_process_enqueue_documents` → 看到 `busy=True`，设 `request_pending=True` 立即返回。
+6. A 的处理循环跑完当前 batch，看到 `request_pending=True`，重拉快照，把 B 的 `PENDING` 行接上处理。
+7. 全部完成后 `busy=False`、`pending_enqueues=0`。
+
+任何一个 bg task 都不会因为 busy 被误拒——因为 enqueue 不再检查 busy；处理循环也不会重复处理同一份 batch——`request_pending` 只在 batch 间生效，且每次重拉前清零。
+
 ### 移除 `reprocess_existing_non_processed`
 
-旧 `apipeline_enqueue_documents` 的 `reprocess_existing_non_processed=True` 行为会在 scan 时直接删除非 PROCESSED 的旧记录并重建，与本规则相冲突，已整段移除。scan 中遇到非 PROCESSED 同名文件直接归档到 `__parsed__/` 跳过，由"流水线启动时的续跑规则"在下一次流水线启动时统一接管。
+旧 `apipeline_enqueue_documents` 的 `reprocess_existing_non_processed=True` 行为会在 scan 时直接删除非 PROCESSED 的旧记录并重建，与本规则相冲突，已整段移除。scan 改为按"为什么 scan 仍是独占写者"一节的分类规则处理同名文件：归档 / 续跑 / 删 stub 后重入队，由"流水线启动时的续跑规则"在处理循环里统一接管。
 
 ## 流水线启动时的续跑规则
 

@@ -291,11 +291,13 @@ def test_apipeline_enqueue_persists_process_options(tmp_path):
 
 
 @pytest.mark.offline
-def test_apipeline_enqueue_rejects_when_pipeline_busy(tmp_path):
-    """Pipeline busy / scanning state forbids any new enqueue.  This is the
-    last-line guard inside ``apipeline_enqueue_documents``; HTTP endpoints
-    catch this earlier and return 409, but core API callers must surface the
-    invariant violation as a RuntimeError.
+def test_apipeline_enqueue_allows_concurrent_with_busy(tmp_path):
+    """``busy=True`` no longer blocks enqueue.  Concurrent processing is
+    explicitly permitted — the running loop's request_pending mechanism
+    picks up newly-enqueued docs after the current batch.  Enqueue
+    nudges request_pending so a freshly-arrived doc is never stranded
+    when the call site does not subsequently invoke
+    ``apipeline_process_enqueue_documents``.
     """
 
     async def _run():
@@ -317,18 +319,53 @@ def test_apipeline_enqueue_rejects_when_pipeline_busy(tmp_path):
             # Simulate an in-flight indexing job.
             async with pipeline_status_lock:
                 pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = False
             try:
-                with pytest.raises(RuntimeError, match="busy"):
-                    await rag.apipeline_enqueue_documents(
-                        "should not enqueue",
-                        file_paths="busy.txt",
-                        track_id="track-busy",
-                    )
+                returned_track_id = await rag.apipeline_enqueue_documents(
+                    "concurrent with busy",
+                    file_paths="concurrent.txt",
+                    track_id="track-concurrent",
+                )
+                assert returned_track_id == "track-concurrent"
+                # Enqueue nudged the running loop.
+                assert pipeline_status.get("request_pending") is True
             finally:
                 async with pipeline_status_lock:
                     pipeline_status["busy"] = False
+                    pipeline_status["request_pending"] = False
+        finally:
+            await rag.finalize_storages()
 
-            # Same guard fires for in-flight scans.
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_apipeline_enqueue_rejects_when_scanning(tmp_path):
+    """Scan is the only state that blocks new enqueues — scan reads
+    doc_status to make classification decisions and would race with
+    mid-flight writes.  The last-line guard inside
+    ``apipeline_enqueue_documents`` enforces this: HTTP endpoints catch
+    it earlier and return 409, but core API callers must surface the
+    invariant violation as a RuntimeError.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            # Scan in flight rejects.
             async with pipeline_status_lock:
                 pipeline_status["scanning"] = True
             try:
@@ -356,11 +393,78 @@ def test_apipeline_enqueue_rejects_when_pipeline_busy(tmp_path):
 
 
 @pytest.mark.offline
+def test_enqueue_during_busy_sets_request_pending(tmp_path):
+    """While the processing loop is running (busy=True), a concurrent
+    enqueue must set ``request_pending`` so the loop knows to scan
+    doc_status again after its current batch.  This is the mechanism
+    that makes "upload while pipeline is busy" actually drain the new
+    work — without it, freshly enqueued docs would be stranded until
+    an unrelated trigger.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = False
+            try:
+                # First enqueue: nudges request_pending.
+                await rag.apipeline_enqueue_documents(
+                    "first while busy",
+                    file_paths="first.txt",
+                    track_id="track-first",
+                )
+                assert pipeline_status.get("request_pending") is True
+
+                # Second enqueue while busy: stays True (idempotent).
+                async with pipeline_status_lock:
+                    pipeline_status["request_pending"] = False
+                await rag.apipeline_enqueue_documents(
+                    "second while busy",
+                    file_paths="second.txt",
+                    track_id="track-second",
+                )
+                assert pipeline_status.get("request_pending") is True
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+                    pipeline_status["request_pending"] = False
+
+            # When idle, enqueue does NOT set request_pending — there is
+            # no running loop to nudge.
+            await rag.apipeline_enqueue_documents(
+                "while idle",
+                file_paths="idle.txt",
+                track_id="track-idle",
+            )
+            assert pipeline_status.get("request_pending") is False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
     """The scan-owned background task sets ``scanning=True`` itself, so its
     own enqueue calls must be allowed through.  External callers (without
-    ``from_scan=True``) remain blocked, and an in-flight indexing job
-    (``busy=True``) still rejects even scan-owned enqueues.
+    ``from_scan=True``) remain blocked.  ``busy=True`` no longer rejects
+    enqueue (concurrent processing is permitted under the new contract),
+    so it is not exercised here.
     """
 
     async def _run():
@@ -401,23 +505,6 @@ def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
             finally:
                 async with pipeline_status_lock:
                     pipeline_status["scanning"] = False
-
-            # busy=True must still reject even scan-owned callers, because
-            # an indexing job is in flight and concurrent doc_status writes
-            # would race.
-            async with pipeline_status_lock:
-                pipeline_status["busy"] = True
-            try:
-                with pytest.raises(RuntimeError, match="busy"):
-                    await rag.apipeline_enqueue_documents(
-                        "should not enqueue",
-                        file_paths="busy_scan.txt",
-                        track_id="track-busy-scan",
-                        from_scan=True,
-                    )
-            finally:
-                async with pipeline_status_lock:
-                    pipeline_status["busy"] = False
         finally:
             await rag.finalize_storages()
 
