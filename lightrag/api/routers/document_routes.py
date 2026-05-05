@@ -1620,7 +1620,7 @@ async def pipeline_enqueue_file(
                     "file_paths": str(file_path),
                     "track_id": track_id,
                     "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-                    "parsed_engine": extraction_engine,
+                    "parse_engine": extraction_engine,
                     "from_scan": from_scan,
                 }
                 if process_options:
@@ -1934,7 +1934,7 @@ async def pipeline_enqueue_file(
                 enqueue_kwargs = {
                     "file_paths": file_path.name,
                     "track_id": track_id,
-                    "parsed_engine": PARSER_ENGINE_LEGACY,
+                    "parse_engine": PARSER_ENGINE_LEGACY,
                     "from_scan": from_scan,
                 }
                 if process_options:

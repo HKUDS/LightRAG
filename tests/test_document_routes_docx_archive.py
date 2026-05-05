@@ -87,7 +87,7 @@ class _FakeRag:
         file_paths=None,
         track_id=None,
         docs_format=None,
-        parsed_engine=None,
+        parse_engine=None,
         process_options=None,
         from_scan=False,
     ):
@@ -96,7 +96,7 @@ class _FakeRag:
             "file_path": file_paths,
             "track_id": track_id,
             "docs_format": docs_format,
-            "parsed_engine": parsed_engine,
+            "parse_engine": parse_engine,
             "process_options": process_options,
             "from_scan": from_scan,
         }
@@ -268,7 +268,7 @@ async def test_pipeline_index_file_leaves_lightrag_document_docx_for_parser_arch
     assert not (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
     assert rag.enqueued[0]["file_path"] == str(file_path)
     assert rag.enqueued[0]["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE
-    assert rag.enqueued[0]["parsed_engine"] == "native"
+    assert rag.enqueued[0]["parse_engine"] == "native"
 
 
 async def test_pipeline_enqueue_lightrag_document_docx_does_not_move_source(
@@ -289,7 +289,7 @@ async def test_pipeline_enqueue_lightrag_document_docx_does_not_move_source(
     assert not (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
     assert rag.enqueued[0]["file_path"] == str(file_path)
     assert rag.enqueued[0]["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE
-    assert rag.enqueued[0]["parsed_engine"] == "native"
+    assert rag.enqueued[0]["parse_engine"] == "native"
 
 
 async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
@@ -315,7 +315,7 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
             "file_path": file_path.name,
             "track_id": "track-docx",
             "docs_format": None,
-            "parsed_engine": "legacy",
+            "parse_engine": "legacy",
             "process_options": None,
             "from_scan": False,
         }
@@ -340,7 +340,7 @@ async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
             "file_path": file_path.name,
             "track_id": "track-md",
             "docs_format": None,
-            "parsed_engine": "legacy",
+            "parse_engine": "legacy",
             "process_options": None,
             "from_scan": False,
         }
@@ -400,7 +400,7 @@ async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
             "file_path": str(file_path),
             "track_id": "track-pdf",
             "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-            "parsed_engine": "mineru",
+            "parse_engine": "mineru",
             "process_options": None,
             "from_scan": False,
         }
@@ -428,7 +428,7 @@ async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
             "file_path": str(file_path),
             "track_id": "track-options",
             "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-            "parsed_engine": "native",
+            "parse_engine": "native",
             "process_options": "iet",
             "from_scan": False,
         }
@@ -451,7 +451,7 @@ async def test_pipeline_enqueue_lightrag_parser_rule_provides_default_options(
     assert success is True
     assert len(rag.enqueued) == 1
     enqueued = rag.enqueued[0]
-    assert enqueued["parsed_engine"] == "native"
+    assert enqueued["parse_engine"] == "native"
     assert enqueued["process_options"] == "iet"
 
 
@@ -474,7 +474,7 @@ async def test_pipeline_index_files_leaves_lightrag_document_docx_batch(
     assert all(
         item["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE for item in rag.enqueued
     )
-    assert all(item["parsed_engine"] == "native" for item in rag.enqueued)
+    assert all(item["parse_engine"] == "native" for item in rag.enqueued)
 
 
 async def test_scan_processed_same_name_archives_with_unique_name(
@@ -1728,7 +1728,7 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     parsed_artifact_dir = tmp_path / PARSED_DIR_NAME / f"{source_path.name}.parsed"
     assert parsed_artifact_dir.is_dir()
     assert (parsed_artifact_dir / "parsed-after-sync.blocks.jsonl").is_file()
-    assert rag.full_docs.data["doc-test"]["parsed_engine"] == "native"
+    assert rag.full_docs.data["doc-test"]["parse_engine"] == "native"
     assert rag.full_docs.data["doc-test"]["format"] == "lightrag"
     # Per docs/FileProcessingConfiguration-zh.md, content uses the {{LRdoc}}
     # marker plus a leading-text summary derived from merged blocks.
@@ -1828,7 +1828,7 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
         {
             "format": FULL_DOCS_FORMAT_LIGHTRAG,
             "lightrag_document_path": "report.blocks.jsonl",
-            "parsed_engine": "mineru",
+            "parse_engine": "mineru",
         },
     )
 

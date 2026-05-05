@@ -7,7 +7,7 @@ chunk-0 content and therefore different LLM cache keys.
 
 After the fix, ``parse_native`` writes ``.blocks.jsonl`` + sidecars and
 ``full_docs`` is in LIGHTRAG format. ``_load_lightrag_document_content``
-skips the ``meta`` line (which contains ``parsed_time``) and concatenates
+skips the ``meta`` line (which contains ``parse_time``) and concatenates
 only ``"type": "content"`` rows, so re-parsing must yield byte-identical
 ``merged_text`` and stable downstream chunk-0 content.
 """
@@ -112,7 +112,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
         # ---- Second parse ----
         # Restore the source file (archive moved it), reset the in-memory
         # full_docs row, and remove the parsed_dir so the writer rewrites
-        # both meta (with a fresh parsed_time) and content lines.
+        # both meta (with a fresh parse_time) and content lines.
         source_path.write_bytes(b"fake docx bytes")
         rag.full_docs.data.clear()
         parsed_artifact_dir = input_dir / PARSED_DIR_NAME / f"{source_path.name}.parsed"
@@ -130,7 +130,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
         merged2 = result2["content"]
 
         # Core invariant: merged_text byte-identical across runs even
-        # though parsed_time in the .blocks.jsonl meta line differs.
+        # though parse_time in the .blocks.jsonl meta line differs.
         assert merged1 == merged2
 
         # And: a hash computed over a chunk-0 derived from merged_text
@@ -156,7 +156,7 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
     tmp_path, monkeypatch
 ):
     """Sanity check: ``_load_lightrag_document_content`` must skip the
-    meta line (where the runtime ``parsed_time`` lives) and only return
+    meta line (where the runtime ``parse_time`` lives) and only return
     body content. This is what lets re-parsing produce stable text."""
 
     async def _run():
@@ -182,12 +182,12 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
             {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
         )
 
-        # The .blocks.jsonl on disk DOES contain "parsed_time" inside the
+        # The .blocks.jsonl on disk DOES contain "parse_time" inside the
         # meta line; the merged_text returned by parse_native MUST NOT.
         blocks_path = result["blocks_path"]
         on_disk = open(blocks_path, "r", encoding="utf-8").read()
-        assert "parsed_time" in on_disk
-        assert "parsed_time" not in result["content"]
+        assert "parse_time" in on_disk
+        assert "parse_time" not in result["content"]
         assert result["content"].strip() == "the body"
 
     asyncio.run(_run())
