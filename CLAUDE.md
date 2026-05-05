@@ -52,6 +52,35 @@ LightRAG uses 4 storage types with pluggable backends:
 
 Workspace isolation is implemented differently per storage type (subdirectories for file-based, prefixes for collections, fields for relational DBs).
 
+### Pipeline concurrency contract
+
+The document ingestion pipeline coordinates concurrent writers through `pipeline_status` (a per-workspace shared dict in `lightrag.kg.shared_storage`). Four fields, all mutated under `get_namespace_lock("pipeline_status", workspace=...)`:
+
+- **`busy`**: any pipeline-busy state. Set by both the processing loop AND destructive jobs (clear / per-doc delete). On its own, `busy=True` does NOT block enqueue — see `destructive_busy` for the exclusive subset.
+- **`destructive_busy`**: the busy job is `/documents/clear` or `/documents/{doc_id}` (delete). These DROP storages and remove input files; a concurrent enqueue accepted in this window would write to storage being torn down and silently lose the document. Reservation and the enqueue last-line guard reject when this is True.
+- **`scanning`**: a `/documents/scan` task is running (whole lifecycle: classification + processing). Used by the `/scan` endpoint to refuse overlapping scans. Does NOT on its own block uploads/inserts.
+- **`scanning_exclusive`**: True only during the scan task's classification phase, when `run_scanning_process` is reading `doc_status` to classify files (PROCESSED → archive, FAILED-without-`full_docs` → retry-as-new, etc.) and possibly deleting stale stubs. Reservation and the enqueue last-line guard reject when this is set. Cleared before the scan transitions to its processing phase, allowing concurrent uploads to land while scan-driven processing finishes.
+- **`pending_enqueues`**: count of `/upload`, `/text`, `/texts` endpoints that have reserved a slot (via `_reserve_enqueue_slot`) but whose bg task has not yet completed. Only the scan endpoint reads this — to refuse starting while uploads are mid-flight.
+- **`request_pending`**: a nudge to the running processing loop. Set by either (a) `apipeline_process_enqueue_documents` when called while `busy=True` or (b) `apipeline_enqueue_documents` after writing to `doc_status` while `busy=True`. The loop checks it after each batch and re-queries `doc_status` if set.
+
+Mutual-exclusion rules (all checked atomically inside the lock):
+
+| Operation | Refuses if | Writes |
+|---|---|---|
+| `_reserve_enqueue_slot` | `scanning_exclusive` or `destructive_busy` | `pending_enqueues++` |
+| `apipeline_enqueue_documents` (last-line guard) | (`scanning_exclusive` and not `from_scan`) or `destructive_busy` | — |
+| Scan endpoint reservation | `busy or scanning or pending_enqueues > 0` | `scanning = True` |
+| `apipeline_process_enqueue_documents` entry | (already busy → set `request_pending`, return) | `busy = True` (NOT `destructive_busy`) |
+| `clear_documents` / `delete_document` (synchronous reservation) | `busy or scanning or pending_enqueues > 0` | `busy = True`, `destructive_busy = True` |
+
+The contract permits **concurrent enqueue + processing**: a freshly-uploaded doc lands in `doc_status` while the loop is mid-batch, the loop sees `request_pending` after the current batch, re-queries `doc_status`, and picks up the new PENDING row. This is what enables "upload while pipeline is busy".
+
+Write order matters: `apipeline_enqueue_documents` writes `full_docs` BEFORE `doc_status`, so the consistency check (`_validate_and_fix_document_consistency`) at the start of each batch never sees a `doc_status` row without backing `full_docs` content.
+
+The dedup-and-upsert section inside `apipeline_enqueue_documents` is serialised by a workspace-scoped `enqueue_serialize` lock so two concurrent enqueues for the same content (different filenames) cannot both pass the `content_hash` dedup check and both write PENDING. The lock holds across `filter_keys` → basename / content_hash dedup → duplicate FAILED upserts → `full_docs.upsert` → `doc_status.upsert`. It does NOT block the processing loop's reads (those happen outside the lock and tolerate either snapshot of the row).
+
+`from_scan=True` is the scan task's bypass for the scanning guard inside `apipeline_enqueue_documents` — scan owns the `scanning` flag and must be allowed to enqueue the files it just discovered.
+
 ### Query Modes
 
 - **local**: Context-dependent retrieval focused on specific entities

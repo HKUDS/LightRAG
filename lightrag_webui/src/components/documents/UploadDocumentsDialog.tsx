@@ -103,13 +103,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
               }))
             })
 
-            if (result.status === 'duplicated') {
-              uploadErrors[file.name] = t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
-              setFileErrors(prev => ({
-                ...prev,
-                [file.name]: t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
-              }))
-            } else if (result.status !== 'success') {
+            if (result.status !== 'success') {
               uploadErrors[file.name] = result.message
               setFileErrors(prev => ({
                 ...prev,
@@ -124,13 +118,30 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
 
             // Handle HTTP errors, including 400 errors
             let errorMsg = errorMessage(err)
+            const duplicateFileMsg = t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
 
             // If it's an axios error with response data, try to extract more detailed error info
             if (err && typeof err === 'object' && 'response' in err) {
               const axiosError = err as { response?: { status: number, data?: { detail?: string } } }
-              if (axiosError.response?.status === 400) {
-                // Extract specific error message from backend response
-                errorMsg = axiosError.response.data?.detail || errorMsg
+              const status = axiosError.response?.status
+              const detail = axiosError.response?.data?.detail
+              if (status === 409) {
+                // Server now rejects same-name uploads with HTTP 409 instead of
+                // returning a 200 ``status="duplicated"`` payload.  Map the most
+                // common cases (existing record / file in INPUT dir) back to the
+                // dedicated "duplicate file" UI affordance, and surface other
+                // 409 reasons (pipeline busy / scanning) verbatim from the
+                // server detail so users can tell why they were rejected.
+                if (
+                  typeof detail === 'string' &&
+                  (/already contains/i.test(detail) || /Status:/i.test(detail))
+                ) {
+                  errorMsg = duplicateFileMsg
+                } else {
+                  errorMsg = detail || errorMsg
+                }
+              } else if (status === 400) {
+                errorMsg = detail || errorMsg
               }
 
               // Set progress to 100% to display error message

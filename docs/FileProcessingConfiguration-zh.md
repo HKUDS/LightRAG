@@ -191,8 +191,10 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - 对 `/documents/scan` 目录扫描：
   - 同一次扫描中如果有多个文件规范化后同名，优先处理带支持引擎 hint 的文件；若无任何 hint 变体，则处理排序后的第一个文件，其余文件会归档到 `__parsed__` 并跳过。
   - 如果同名记录已经是 `PROCESSED`，当前扫描到的文件视为已处理文件，系统会输出 warning，将该输入文件移动到同级 `__parsed__` 目录，并跳过入队。
-  - 如果同名记录不是 `PROCESSED`，当前扫描文件不会仅因文件名相同而跳过；系统会按新的扫描文件从头提取、入队并覆盖/重置未完成的同名状态。
-- 普通上传和核心入队 API 中，同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队；扫描路径的非 `PROCESSED` 同名重处理只用于目录扫描自动恢复。
+  - 如果同名记录不是 `PROCESSED`，扫描文件**不**仅因文件名相同而跳过，但**也不**会重新提取/覆盖既有记录。具体路径取决于既有记录的形态（与下文"为什么 scan 仍是独占写者"一节列举的分类规则一致）：
+    - 同名非 PROCESSED 且 `full_docs` 存在 → **resume 路径**：doc_status 现状保留，源文件留在 `INPUT/`，由处理循环按状态查询接走（不重新提取、不覆盖既有状态）。
+    - 同名 `FAILED` 且 `full_docs` 缺失 → 视为 `apipeline_enqueue_error_documents` 写下的提取错误 stub：scan 删掉这条 stub 后**把当前文件按新文件重新入队**。这是唯一会重新提取的子分支，目的是让"修好源文件再 scan 一次"自动生效。
+- 普通上传和核心入队 API 中，同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队；扫描路径上述两种自动恢复仅用于目录扫描场景。
 - 文本接口必须提供有效的 `file_source`，并按 `file_source` 的 basename 判断重复；缺少有效 `file_source` 时直接返回 400。
 - 核心 API `insert` / `ainsert` / `apipeline_enqueue_documents` 仍兼容未传 `file_paths` 的调用；这类文档的 `file_path` 会保存为 `unknown_source`，不会参与文件名查重，文档 ID 继续按文本内容生成。
 - 空字符串、`no-file-path` 和 `unknown_source` 都会被视为未知来源；它们不会阻止新的无来源文本入队，也不会作为同名文件互相去重。
@@ -213,3 +215,139 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - 存储后端通过 `get_doc_by_content_hash` 进行 hash 直查；命名约定与 `get_doc_by_file_basename` 一致。
 
 > 入队批次内（同一次 `apipeline_enqueue_documents` 调用）也会做 basename 与 content_hash 去重，命中时把后续条目直接写为 `FAILED` 并标记 `existing_status=batch_duplicate`。其中 basename 去重只对有效文件名生效；`unknown_source`、`no-file-path` 和空来源只参与内容 hash 去重。
+>
+> **跨调用并发去重**也由 workspace 级串行锁保证（详见 [enqueue 串行锁（防并发去重穿透）](#enqueue-串行锁防并发去重穿透)）：两次相同内容、不同文件名的并发入队不会双双穿透 `content_hash` 检查。
+
+## 并发与重入约束
+
+为防止 `scan` / `upload` / `insert` 与运行中的流水线相互覆盖 `doc_status` / `full_docs` 记录，所有写入入口在 `pipeline_status` 共享字典上协调。同一 workspace 下的 `pipeline_status_lock` 保证下表所有 transition 都在锁内原子完成：
+
+| 字段 | 语义 |
+| --- | --- |
+| `busy` | 流水线繁忙的笼统标志。处理循环和破坏性作业（clear/delete）都会设它。**仅有 `busy=True`（处理循环）不阻塞 enqueue**——循环按 batch 拉取 `doc_status` 快照处理，每批结束后通过 `request_pending` 检查是否还有新工作。 |
+| `destructive_busy` | `busy` 的破坏性子集：`/documents/clear` 或 `/documents/{doc_id}`（删除）正在 drop 存储 / 删源文件。reservation 和 enqueue last-line guard 都会拒绝——并发 enqueue 会写入正被 drop 的存储，已接受的文档会静默丢失。处理循环不会设此字段。 |
+| `scanning` | `/documents/scan` 后台任务运行中（整个生命周期：分类阶段 + 处理阶段）。仅 `/scan` 端点用它拒绝重叠 scan，本身**不**阻塞 upload/insert。 |
+| `scanning_exclusive` | `scanning` 的独占子集：只在 scan 的**分类阶段**为 True——run_scanning_process 在读 doc_status 分类（已处理 / 续跑 / 删 stub / 归档），不能与并发写者交错。reservation 和 enqueue last-line guard 都会拒绝。分类完成后会立即清旗，scan 进入处理阶段后允许并发 upload。 |
+| `pending_enqueues` | 已通过 `_reserve_enqueue_slot` 但 bg task 未完成的 upload/insert 数。仅给 scan 端点参考——决定是否能拿独占。bg task 在 `finally` 里释放 slot。 |
+| `request_pending` | 让运行中的处理循环再扫一轮的信号。enqueue 在 `busy=True` 时写完 `doc_status` 后置位；处理循环每个 batch 结束后检查并重新拉快照。 |
+
+### 入口行为
+
+| 入口 | 条件 | 行为 |
+| --- | --- | --- |
+| `/documents/upload` / `/documents/text` / `/documents/texts` | `scanning_exclusive=True` 或 `destructive_busy=True` | 抛 HTTP 409，不写文件、不调入队 |
+| 同上 | 否则（含纯 `busy=True`、scan 处理阶段 `scanning=True` 但 `scanning_exclusive=False`） | 锁内 `pending_enqueues++` 预留 slot → 严格名字预检 → 保存文件 → schedule bg task；bg task 在 `finally` 释放 slot |
+| `/documents/scan` | `busy=True` 或 `scanning=True` 或 `pending_enqueues>0` | 落 warning 后立即返回 `scanning_skipped_pipeline_busy`，不 schedule 后台任务 |
+| 同上 | 全部 idle | 锁内设 `scanning=True` 后 schedule，task 结束在 `finally` 清旗 |
+| `/documents/clear` / `/documents/delete_document` | `busy=True` 或 `scanning=True` 或 `pending_enqueues>0` | 端点同步返回 `status="busy"`，不 schedule 后台任务 |
+| 同上 | 全部 idle | 端点**同步**在锁内设 `busy=True` + `destructive_busy=True`（`delete_document` 在返回 `deletion_started` 之前），bg task 的 finally 一并清旗 |
+| `apipeline_enqueue_documents` 内部 (last-line guard) | `scanning_exclusive=True` 且 `from_scan=False`，或 `destructive_busy=True` | 抛 `RuntimeError("Cannot enqueue while scan is classifying / clearing or deleting")` |
+| 同上 | 任何其它情况（含纯 `busy=True`、scan 处理阶段） | 正常入队；写完 `doc_status` 后若 `busy=True` 自动 nudge `request_pending=True` |
+
+`from_scan=True` 是 scan 后台任务自身入队时的旁路：scan 已持有 `scanning` 旗标，必须允许它把扫到的文件入队。
+
+### 为什么 `busy` 不再阻塞 enqueue
+
+旧版本里 `busy=True` 一律拒绝任何新入队，理由是"修改 `doc_status` 会与流水线工作线程交错"。但实际上：
+
+1. **写入顺序保证一致性**：`apipeline_enqueue_documents` 总是先 upsert `full_docs`、再 upsert `doc_status`。处理循环开头的 consistency check 仅删除"`doc_status` 行没有对应 `full_docs`"的孤儿——这种状态在并发 enqueue 中不可能出现。
+2. **批次级快照**：处理循环每个 batch 拉一次 `get_docs_by_statuses` 快照，新写入的 `PENDING` 行不会破坏当前 batch；下一轮通过 `request_pending` 重拉快照即可看到新工作。
+3. **`request_pending` 设计本就为此**：旧版同时存在 `request_pending` 字段——它就是为"运行中又有新工作"设计的，但被 busy 守护堵死了。
+
+新契约把这个机制启用起来后，**用户在长批次处理过程中仍可继续上传新文档**，bg task 写完 `doc_status` 后由运行中的循环自动接管。
+
+### 为什么 scan 仍是独占写者
+
+scan 不仅 enqueue 自己扫到的新文件，还会读 `doc_status` 决定每个文件去向：
+
+- 同名 `PROCESSED` 行 → 归档源文件、跳过入队。
+- 同名非 PROCESSED 且 `full_docs` 存在 → resume 路径，源文件**保留在 `INPUT/`**，不归档（pending-parse 解析器仍可能需要它），由处理循环按状态查询接走。
+- 同名 `FAILED` 且 `full_docs` 缺失 → 识别为之前 `apipeline_enqueue_error_documents` 写下的提取错误 stub（一致性检查会保留这种行供人工 review），scan 自动删除该 stub 并把当前文件按新文件重新入队，让用户"修好源文件再 scan 一次"能直接生效。
+
+这些"读—决策—写"组合不能与其它写者交错，否则分类决策会基于过期视图。所以 scan 必须独占，且 scan 端点会在 `busy` / `scanning` / `pending_enqueues>0` 任一存在时拒绝。
+
+### 严格名字预检（upload 路径）
+
+upload 通过 reservation 后、保存文件前必须双道检查：
+
+1. **INPUT 目录扫描**：把要保存的 basename 经 `canonicalize_parser_hinted_basename` 规范化，遍历 INPUT 目录里现有任何同 canonical 变体（含 hint / 不含 hint），命中即 409。
+2. **doc_status 查重**：用规范化 basename 调 `get_existing_doc_by_file_basename`，命中即 409。
+
+两道都过 → 保存文件 → schedule bg task → bg task 调 `apipeline_enqueue_documents` 写库 + 调 `apipeline_process_enqueue_documents` 触发处理。
+
+> 旧版本曾允许 upload 在已有同名记录时悄悄写入 FAILED 重复条目；新规则改为 fail-fast，不在 doc_status 留下任何重复痕迹。如需替换同名文档，请先调用 `/documents/{doc_id}` 的删除接口。
+
+### 多 reservation 并发的协调
+
+两个 upload 同时进来时（scan 此时拿不到独占）：
+
+1. A `_reserve_enqueue_slot` → `pending_enqueues=1`，写文件，schedule bg task A，返回 success。
+2. B `_reserve_enqueue_slot` → `pending_enqueues=2`，写文件，schedule bg task B，返回 success。
+3. bg task A `apipeline_enqueue_documents` → 写 `doc_status` → 调 `apipeline_process_enqueue_documents` → 设 `busy=True` 处理 A 的文档。
+4. bg task B `apipeline_enqueue_documents` → 看到 `scanning=False`，正常写入；写完后看到 `busy=True`，自动设 `request_pending=True`。
+5. bg task B 调 `apipeline_process_enqueue_documents` → 看到 `busy=True`，设 `request_pending=True` 立即返回。
+6. A 的处理循环跑完当前 batch，看到 `request_pending=True`，重拉快照，把 B 的 `PENDING` 行接上处理。
+7. 全部完成后 `busy=False`、`pending_enqueues=0`。
+
+任何一个 bg task 都不会因为 busy 被误拒——因为 enqueue 不再检查 busy；处理循环也不会重复处理同一份 batch——`request_pending` 只在 batch 间生效，且每次重拉前清零。
+
+### enqueue 串行锁（防并发去重穿透）
+
+`apipeline_enqueue_documents` 内部"读 doc_status 做去重 → 写 `full_docs` / `doc_status`"这一段在 workspace 级 `enqueue_serialize` 锁内串行执行。原因：放开 busy/scan-processing 阶段允许并发 enqueue 之后，两次相同内容、不同文件名的入队（典型场景：scan 处理阶段的 enqueue 与 upload 同时进来）若在没有锁的情况下并发执行——
+
+1. A 读 `doc_status` 查 `content_hash`：未命中。
+2. B 读 `doc_status` 查 `content_hash`：仍未命中（A 还没 upsert）。
+3. A upsert `full_docs` + `doc_status`。
+4. B upsert `full_docs` + `doc_status`。
+
+结果：同 `content_hash` 的两条 `PENDING` 都进入流水线后续处理，原本应当被识别为 `duplicate_kind=content_hash` 的那条**没**被识别。
+
+加上串行锁后第二次 enqueue 一定能在去重读时看到第一次已 upsert 的行，正常走"无新唯一文档"的早返回路径并把本次记为 `duplicate_kind=content_hash` 的 FAILED 行。锁的作用范围**只覆盖**：
+
+- `filter_keys`（按 doc_id 排除已存在）
+- 文件名 / 内容 hash 去重读
+- 重复 FAILED 行的 upsert
+- `full_docs.upsert` + `doc_status.upsert`
+
+锁**不**覆盖 `request_pending` nudge（在锁外，只取一下 `pipeline_status_lock`），也**不**阻塞处理循环的 `get_docs_by_statuses` 读（处理循环走的是 `doc_status` 自身的并发读，与 enqueue 写是 KV 级原子，不抢同一把锁）。锁顺序：`enqueue_serialize → pipeline_status_lock`，无死锁路径。
+
+### 移除 `reprocess_existing_non_processed`
+
+旧 `apipeline_enqueue_documents` 的 `reprocess_existing_non_processed=True` 行为会在 scan 时直接删除非 PROCESSED 的旧记录并重建，与本规则相冲突，已整段移除。scan 改为按"为什么 scan 仍是独占写者"一节的分类规则处理同名文件：归档 / 续跑 / 删 stub 后重入队，由"流水线启动时的续跑规则"在处理循环里统一接管。
+
+## 流水线启动时的续跑规则
+
+每次 `apipeline_process_enqueue_documents` 起步时，会拉取所有处于 `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING` / `FAILED` 状态的文档继续处理。续跑路径**根据"内容是否已抽取"分流**，保证同一个文档无论之前进度如何，按当前 `process_options` 续跑都有幂等结果。
+
+### 判断"内容已抽取"
+
+读 `full_docs[doc_id]`：
+
+| `format` | 判定 |
+| --- | --- |
+| `lightrag` 且 `lightrag_document_path` 文件存在 | ✅ 已抽取 |
+| `raw` 且 `content` 非空 | ✅ 已抽取 |
+| 其它（含 `pending_parse`、记录缺失） | ❌ 未抽取 |
+
+### 分支 A：未抽取
+
+走完整流水线（`parse_native` / `parse_mineru` / `parse_docling` → `analyze_multimodal` → 分块 → 实体抽取），按 `full_docs.process_options` 决定每一阶段的行为。这是"首次入队"的常规流。
+
+### 分支 B：已抽取
+
+**一律跳过解析**（不重新调 `parse_*`），从 ANALYZING 阶段重启，并清光旧 chunks / entities 后按当前 `process_options` 重做：
+
+| 子步骤 | 行为 |
+| --- | --- |
+| 引擎对比 | 若 `process_options` 隐含的引擎 ≠ `full_docs.parsed_engine`，**仅 warn**，不重新解析。已抽取的内容是不可变事实，重新跑不同引擎会产生不一致。要切换引擎请先 delete 整个文档再重传。 |
+| 旧 chunks 清理 | 读 `doc_status.chunks_list`，从 `chunks_vdb` 与 `text_chunks` 全部 delete。理由：流水线产物中无法可靠区分"普通文本块 vs 多模态附加块"，按 chunk id 一律重新生成最简单也最可靠 |
+| 旧实体 / 关系清理 | 复用 `adelete_by_doc_id` 内部清理逻辑（抽出为 `_purge_doc_chunks_and_kg(doc_id)` helper），删除 `entity_chunks` / `relation_chunks` 中以这些 chunk id 为 source 的条目，并把图谱里因之失去全部源的孤立节点一并删除 |
+| `analyze_multimodal` | **不再看 `meta.analyze_time`**：按新 `process_options.{i,t,e}` 与 sidecar 中各 item 的 `llm_analyze_result` 取交集做增量分析（已分析的 item 跳过，新启用的模态从空状态开始分析）。`analyze_time` 改为"最近一次成功分析时间"语义，仅供观测 |
+| 重新分块 | 按新 `process_options.chunking` 重跑（interchange path 用 native heading-driven，legacy path 用 fixed） |
+| 实体抽取 / KG-skip | 按新 `process_options.skip_kg` 决定 |
+
+> 这条规则保证：用户改 `i/t/e` 重传同名文档（先删旧 doc 再上传带新 hint 的文件）时，多模态分析能增量补齐；改 `F`/`R`/`S` 时 chunks 与图谱重建；改 `!` 时停掉或恢复 KG 构建。引擎变更被视为"重大变更"，统一由 delete + 重传完成，不在续跑路径里隐式发生。
+
+### 与"文档重复判定规则"的关系
+
+续跑规则只对 `doc_id` 已经存在于 `doc_status` 的文档生效。新文件入队仍然走"并发与重入约束"中的严格名字预检 + "文档重复判定规则"中的 `canonical_basename` / `content_hash` 查重；续跑分支不会被用来"新文件挤掉旧 PROCESSED 记录"。
