@@ -1248,6 +1248,10 @@ async def pipeline_enqueue_file(
     try:
         content = ""
         ext = file_path.suffix.lower()
+        extraction_metadata = {
+            "extraction_format": "plain_text_chunking",
+            "engine": "legacy",
+        }
         file_size = 0
 
         # Get file size for error reporting
@@ -1602,7 +1606,10 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content,
+                    file_paths=file_path.name,
+                    track_id=track_id,
+                    metadata=extraction_metadata,
                 )
 
                 logger.info(

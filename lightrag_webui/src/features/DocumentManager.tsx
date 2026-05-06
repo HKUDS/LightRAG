@@ -18,6 +18,15 @@ import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger
+} from '@/components/ui/Dialog'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
 import {
   scanNewDocuments,
@@ -31,8 +40,9 @@ import {
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
+import { copyToClipboard } from '@/utils/clipboard'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, CopyIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -100,59 +110,133 @@ const formatMetadata = (metadata: Record<string, any>): string => {
     .join('\n');
 };
 
+const hasDocumentDetails = (doc: DocStatusResponse): boolean =>
+  Boolean(
+    doc.file_path ||
+    doc.track_id ||
+    doc.error_msg ||
+    (doc.metadata && Object.keys(doc.metadata).length > 0)
+  )
+
+const getFallbackExtractionDetails = (): Record<string, string> => ({
+  extraction_format: 'plain_text_chunking',
+  engine: 'legacy'
+})
+
+const formatDocumentDetails = (doc: DocStatusResponse): string => {
+  const details: string[] = []
+  const extraDocFields = doc as DocStatusResponse & {
+    extraction_format?: unknown
+    engine?: unknown
+  }
+  const fallbackExtractionDetails = getFallbackExtractionDetails()
+  const metadata = {
+    ...fallbackExtractionDetails,
+    ...(doc.metadata ?? {}),
+    ...(!doc.metadata?.extraction_format && extraDocFields.extraction_format !== undefined
+      ? { extraction_format: extraDocFields.extraction_format }
+      : {}),
+    ...(!doc.metadata?.engine && extraDocFields.engine !== undefined
+      ? { engine: extraDocFields.engine }
+      : {})
+  }
+
+  if (doc.track_id) {
+    details.push(`Track ID: ${doc.track_id}`)
+  }
+
+  if (Object.keys(metadata).length > 0) {
+    details.push(`Metadata:\n${formatMetadata(metadata)}`)
+  }
+
+  if (doc.error_msg) {
+    details.push(`Error Message:\n${doc.error_msg}`)
+  }
+
+  return details.join('\n\n')
+}
+
+const DocumentStatusDetailsDialog = ({ doc }: { doc: DocStatusResponse }) => {
+  const { t } = useTranslation()
+  const details = formatDocumentDetails(doc)
+
+  if (!details) {
+    return null
+  }
+
+  const openLabel = t('documentPanel.documentManager.details.openTooltip')
+  const copyLabel = t('documentPanel.documentManager.details.copyTooltip')
+
+  const handleCopy = async () => {
+    const result = await copyToClipboard(details)
+
+    if (result.success) {
+      toast.success(t('documentPanel.documentManager.details.copySuccess'))
+    } else {
+      toast.error(t('documentPanel.documentManager.details.copyFailed'))
+    }
+  }
+
+  return (
+    <Dialog>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DialogTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="ml-2 size-7"
+                aria-label={openLabel}
+              >
+                {doc.error_msg ? (
+                  <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                ) : (
+                  <Info className="h-4 w-4 text-blue-500" />
+                )}
+              </Button>
+            </DialogTrigger>
+          </TooltipTrigger>
+          <TooltipContent
+            side="top"
+            className="border-zinc-300 bg-popover text-popover-foreground font-sans text-sm dark:border-zinc-700"
+          >
+            {openLabel}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{t('documentPanel.documentManager.details.title')}</DialogTitle>
+          <DialogDescription className="break-all">
+            {doc.id}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="relative rounded-md border bg-muted/30">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="absolute top-2 right-2 z-10 size-7 bg-background/80 hover:bg-accent"
+            onClick={handleCopy}
+            tooltip={copyLabel}
+            side="left"
+            aria-label={copyLabel}
+          >
+            <CopyIcon className="h-4 w-4" />
+          </Button>
+          <div className="max-h-[60vh] min-h-[7.5em] overflow-y-auto p-3 pr-12">
+            <pre className="whitespace-pre-wrap break-words text-sm">{details}</pre>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 const pulseStyle = `
-/* Tooltip styles */
-.tooltip-container {
-  position: relative;
-  overflow: visible !important;
-}
-
-.tooltip {
-  position: fixed; /* Use fixed positioning to escape overflow constraints */
-  z-index: 9999; /* Ensure tooltip appears above all other elements */
-  max-width: 600px;
-  white-space: normal;
-  word-break: break-word;
-  overflow-wrap: break-word;
-  border-radius: 0.375rem;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.75rem; /* 12px */
-  background-color: rgba(0, 0, 0, 0.95);
-  color: white;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  pointer-events: none; /* Prevent tooltip from interfering with mouse events */
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.15s, visibility 0.15s;
-}
-
-.tooltip.visible {
-  opacity: 1;
-  visibility: visible;
-}
-
-.dark .tooltip {
-  background-color: rgba(255, 255, 255, 0.95);
-  color: black;
-}
-
-.tooltip pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: break-word;
-}
-
-/* Position tooltip helper class */
-.tooltip-helper {
-  position: absolute;
-  visibility: hidden;
-  pointer-events: none;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 0;
-}
-
 @keyframes pulse {
   0% {
     background-color: rgb(255 0 0 / 0.1);
@@ -520,68 +604,6 @@ export default function DocumentManager() {
 
   // Reference to the card content element
   const cardContentRef = useRef<HTMLDivElement>(null);
-
-  // Add tooltip position adjustment for fixed positioning
-  useEffect(() => {
-    if (!docs) return;
-
-    // Function to position tooltips
-    const positionTooltips = () => {
-      // Get all tooltip containers
-      const containers = document.querySelectorAll<HTMLElement>('.tooltip-container');
-
-      containers.forEach(container => {
-        const tooltip = container.querySelector<HTMLElement>('.tooltip');
-        if (!tooltip) return;
-
-        // Skip tooltips that aren't visible
-        if (!tooltip.classList.contains('visible')) return;
-
-        // Get container position
-        const rect = container.getBoundingClientRect();
-
-        // Position tooltip above the container
-        tooltip.style.left = `${rect.left}px`;
-        tooltip.style.top = `${rect.top - 5}px`;
-        tooltip.style.transform = 'translateY(-100%)';
-      });
-    };
-
-    // Set up event listeners
-    const handleMouseOver = (e: MouseEvent) => {
-      // Check if target or its parent is a tooltip container
-      const target = e.target as HTMLElement;
-      const container = target.closest('.tooltip-container');
-      if (!container) return;
-
-      // Find tooltip and make it visible
-      const tooltip = container.querySelector<HTMLElement>('.tooltip');
-      if (tooltip) {
-        tooltip.classList.add('visible');
-        // Position immediately without delay
-        positionTooltips();
-      }
-    };
-
-    const handleMouseOut = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      const container = target.closest('.tooltip-container');
-      if (!container) return;
-
-      const tooltip = container.querySelector<HTMLElement>('.tooltip');
-      if (tooltip) {
-        tooltip.classList.remove('visible');
-      }
-    };
-
-    document.addEventListener('mouseover', handleMouseOver);
-    document.addEventListener('mouseout', handleMouseOut);
-
-    return () => {
-      document.removeEventListener('mouseover', handleMouseOver);
-      document.removeEventListener('mouseout', handleMouseOut);
-    };
-  }, [docs]);
 
   const buildQuerySnapshot = useCallback((
     overrides: Partial<QuerySnapshot> = {}
@@ -1439,39 +1461,24 @@ export default function DocumentManager() {
                           <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                             {showFileName ? (
                               <>
-                                <div className="group relative overflow-visible tooltip-container">
-                                  <div className="truncate">
-                                    {getDisplayFileName(doc, 30)}
-                                  </div>
-                                  <div className="invisible group-hover:visible tooltip">
-                                    {doc.file_path}
-                                  </div>
+                                <div className="truncate" title={doc.file_path}>
+                                  {getDisplayFileName(doc, 30)}
                                 </div>
                                 <div className="text-xs text-gray-500">{doc.id}</div>
                               </>
                             ) : (
-                              <div className="group relative overflow-visible tooltip-container">
-                                <div className="truncate">
-                                  {doc.id}
-                                </div>
-                                <div className="invisible group-hover:visible tooltip">
-                                  {doc.file_path}
-                                </div>
+                              <div className="truncate" title={doc.file_path}>
+                                {doc.id}
                               </div>
                             )}
                           </TableCell>
                           <TableCell className="max-w-xs min-w-45 truncate overflow-visible">
-                            <div className="group relative overflow-visible tooltip-container">
-                              <div className="truncate">
-                                {doc.content_summary}
-                              </div>
-                              <div className="invisible group-hover:visible tooltip">
-                                {doc.content_summary}
-                              </div>
+                            <div className="truncate" title={doc.content_summary}>
+                              {doc.content_summary}
                             </div>
                           </TableCell>
                           <TableCell>
-                            <div className="group relative flex items-center overflow-visible tooltip-container">
+                            <div className="flex items-center">
                               {doc.status === 'processed' && (
                                 <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
                               )}
@@ -1488,27 +1495,7 @@ export default function DocumentManager() {
                                 <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
                               )}
 
-                              {/* Icon rendering logic */}
-                              {doc.error_msg ? (
-                                <AlertTriangle className="ml-2 h-4 w-4 text-yellow-500" />
-                              ) : (doc.metadata && Object.keys(doc.metadata).length > 0) && (
-                                <Info className="ml-2 h-4 w-4 text-blue-500" />
-                              )}
-
-                              {/* Tooltip rendering logic */}
-                              {(doc.error_msg || (doc.metadata && Object.keys(doc.metadata).length > 0) || doc.track_id) && (
-                                <div className="invisible group-hover:visible tooltip">
-                                  {doc.track_id && (
-                                    <div className="mt-1">Track ID: {doc.track_id}</div>
-                                  )}
-                                  {doc.metadata && Object.keys(doc.metadata).length > 0 && (
-                                    <pre>{formatMetadata(doc.metadata)}</pre>
-                                  )}
-                                  {doc.error_msg && (
-                                    <pre>{doc.error_msg}</pre>
-                                  )}
-                                </div>
-                              )}
+                              {hasDocumentDetails(doc) && <DocumentStatusDetailsDialog doc={doc} />}
                             </div>
                           </TableCell>
                           <TableCell>{doc.content_length ?? '-'}</TableCell>

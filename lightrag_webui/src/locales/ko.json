@@ -153,7 +153,16 @@
       "showButton": "표시",
       "hideButton": "숨기기",
       "showFileNameTooltip": "파일명 표시",
-      "hideFileNameTooltip": "파일명 숨기기"
+      "hideFileNameTooltip": "파일명 숨기기",
+      "details": {
+        "title": "상태 상세",
+        "openTooltip": "상태 상세 보기",
+        "content": "상세",
+        "copyButton": "복사",
+        "copyTooltip": "상태 상세 복사",
+        "copySuccess": "상태 상세가 복사되었습니다",
+        "copyFailed": "상태 상세 복사 실패"
+      }
     },
     "pipelineStatus": {
       "title": "파이프라인 상태",

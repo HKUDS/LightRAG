@@ -153,7 +153,16 @@
       "showButton": "表示",
       "hideButton": "非表示",
       "showFileNameTooltip": "ファイル名を表示",
-      "hideFileNameTooltip": "ファイル名を非表示"
+      "hideFileNameTooltip": "ファイル名を非表示",
+      "details": {
+        "title": "ステータス詳細",
+        "openTooltip": "ステータス詳細を表示",
+        "content": "詳細",
+        "copyButton": "コピー",
+        "copyTooltip": "ステータス詳細をコピー",
+        "copySuccess": "ステータス詳細をコピーしました",
+        "copyFailed": "ステータス詳細のコピーに失敗しました"
+      }
     },
     "pipelineStatus": {
       "title": "パイプラインステータス",

@@ -153,7 +153,16 @@
       "showButton": "显示",
       "hideButton": "隐藏",
       "showFileNameTooltip": "显示文件名",
-      "hideFileNameTooltip": "隐藏文件名"
+      "hideFileNameTooltip": "隐藏文件名",
+      "details": {
+        "title": "状态详情",
+        "openTooltip": "查看状态详情",
+        "content": "详情",
+        "copyButton": "复制",
+        "copyTooltip": "复制状态详情",
+        "copySuccess": "状态详情已复制",
+        "copyFailed": "复制状态详情失败"
+      }
     },
     "pipelineStatus": {
       "title": "流水线状态",

@@ -153,7 +153,16 @@
       "showButton": "Показати",
       "hideButton": "Приховати",
       "showFileNameTooltip": "Показати ім'я файлу",
-      "hideFileNameTooltip": "Приховати ім'я файлу"
+      "hideFileNameTooltip": "Приховати ім'я файлу",
+      "details": {
+        "title": "Відомості про статус",
+        "openTooltip": "Показати відомості про статус",
+        "content": "Відомості",
+        "copyButton": "Копіювати",
+        "copyTooltip": "Копіювати відомості про статус",
+        "copySuccess": "Відомості про статус скопійовано",
+        "copyFailed": "Не вдалося скопіювати відомості про статус"
+      }
     },
     "pipelineStatus": {
       "title": "Статус пайплайну",
