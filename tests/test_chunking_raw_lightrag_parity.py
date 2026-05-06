@@ -216,9 +216,9 @@ def test_chunking_input_parity_raw_vs_lightrag(tmp_path, monkeypatch):
             "chunking_func received different inputs for raw vs lightrag; "
             f"raw={spy_raw['input']!r}\nlr={spy_lr['input']!r}"
         )
-        assert not spy_lr["input"].startswith(LIGHTRAG_DOC_CONTENT_PREFIX), (
-            "{{LRdoc}} marker leaked into chunking_func input"
-        )
+        assert not spy_lr["input"].startswith(
+            LIGHTRAG_DOC_CONTENT_PREFIX
+        ), "{{LRdoc}} marker leaked into chunking_func input"
 
     asyncio.run(_run())
 
@@ -361,8 +361,12 @@ def test_jsonl_shaped_raw_text_chunks_as_plain_text(tmp_path):
         json.dumps({"type": "meta", "format_version": "1.0"})
         + "\n"
         + json.dumps(
-            {"type": "text", "chunk_id": "c0", "chunk_order_index": 0,
-             "content": "fake interchange line"}
+            {
+                "type": "text",
+                "chunk_id": "c0",
+                "chunk_order_index": 0,
+                "content": "fake interchange line",
+            }
         )
     )
 
@@ -481,9 +485,7 @@ def test_pending_parse_lightrag_summary_populated_after_processed(
         parse_document = importlib.import_module("lightrag.extraction.parse_document")
 
         def _stub_parse(file_bytes, source_file, doc_id):
-            content_list = [
-                {"type": "text", "text": para} for para in body_paragraphs
-            ]
+            content_list = [{"type": "text", "text": para} for para in body_paragraphs]
             return content_list, {}
 
         monkeypatch.setattr(

@@ -2027,7 +2027,9 @@ class _PipelineMixin:
                             # status_doc_w.content_summary /
                             # status_doc_w.content_length) preserve them.
                             refreshed_content_w = parsed_data_w.get("content", "") or ""
-                            refreshed_summary_w = get_content_summary(refreshed_content_w)
+                            refreshed_summary_w = get_content_summary(
+                                refreshed_content_w
+                            )
                             refreshed_length_w = len(refreshed_content_w)
                             status_doc_w.content_summary = refreshed_summary_w
                             status_doc_w.content_length = refreshed_length_w
