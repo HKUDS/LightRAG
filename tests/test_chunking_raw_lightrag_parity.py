@@ -24,6 +24,10 @@ guard the contract end-to-end:
   ANALYZING transition refreshes the summary from the parsed body so
   pending-parse rows no longer carry the empty enqueue-time placeholder
   through to the user-facing list APIs.
+* T7: a raw document whose body *literally* starts with ``{{LRdoc}}``
+  is chunked verbatim — guards against accidental re-introduction of an
+  unconditional ``strip_lightrag_doc_prefix`` at the chunking boundary
+  (which would silently drop the user's first 9 characters).
 """
 
 import asyncio
@@ -555,5 +559,52 @@ def test_pending_parse_lightrag_summary_populated_after_processed(
             )
         finally:
             await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# T7 — raw text starting with {{LRdoc}} must not be stripped at chunking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_raw_text_starting_with_marker_chunked_verbatim(tmp_path):
+    """A raw document whose body literally begins with ``{{LRdoc}}`` is a
+    legitimate user input — the chunking branch must not strip those 9
+    characters.  ``strip_lightrag_doc_prefix`` is a lightrag-only contract
+    enforced by ``parse_native``; raw paths return ``content_data["content"]``
+    verbatim, so chunking must hand the body to ``chunking_func`` unchanged."""
+
+    body_with_marker = LIGHTRAG_DOC_CONTENT_PREFIX + (
+        "literal-marker-prefix raw document body that should survive "
+        "the chunking boundary intact."
+    )
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        spy = _attach_chunking_spy(rag)
+        try:
+            await rag.apipeline_enqueue_documents(
+                body_with_marker,
+                file_paths="marker_raw.txt",
+                track_id="track-marker",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+        assert spy["calls"] >= 1, "raw doc never reached chunking_func"
+        # The full body — including the literal {{LRdoc}} prefix — must
+        # reach chunking_func; nothing in the chunking branch should
+        # treat the marker as a stripping signal for raw content.
+        assert spy["input"] == body_with_marker, (
+            "chunking_func received corrupted input: "
+            f"got {spy['input']!r}, expected {body_with_marker!r}"
+        )
+        assert spy["input"].startswith(LIGHTRAG_DOC_CONTENT_PREFIX), (
+            "literal marker prefix lost at chunking boundary"
+        )
 
     asyncio.run(_run())

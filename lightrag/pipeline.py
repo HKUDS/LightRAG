@@ -1436,11 +1436,14 @@ class _PipelineMixin:
                                     status_doc.chunks_count = 0
 
                             # F-chunking only — R/S strategies are deferred.
-                            # Both raw and lightrag formats funnel through the
-                            # same chunking_func: parse_native already strips
-                            # the {{LRdoc}} marker for lightrag, but a second
-                            # idempotent strip here protects future callers
-                            # that might surface prefixed content directly.
+                            # ``content`` here is always the bare body —
+                            # parse_native is the canonical place that strips
+                            # the {{LRdoc}} marker for lightrag, and raw /
+                            # pending-parse / mineru-fallback / docling-fallback
+                            # paths return ``content_data["content"]`` verbatim,
+                            # so a raw document whose literal text starts with
+                            # ``{{LRdoc}}`` keeps that prefix intact.  Stripping
+                            # again here would corrupt that case.
                             if doc_process_opts.chunking != "F":
                                 logger.warning(
                                     f"[chunking] process_options chunking="
@@ -1450,10 +1453,9 @@ class _PipelineMixin:
                                     f"('F')."
                                 )
 
-                            chunking_input = strip_lightrag_doc_prefix(content)
                             chunking_result = self.chunking_func(
                                 self.tokenizer,
-                                chunking_input,
+                                content,
                                 split_by_character,
                                 split_by_character_only,
                                 self.chunk_overlap_token_size,
