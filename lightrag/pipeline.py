@@ -3586,11 +3586,14 @@ class _PipelineMixin:
                 if not isinstance(item, dict):
                     continue
 
-                analysis = (
-                    item.get("llm_analyze_result")
-                    if isinstance(item.get("llm_analyze_result"), dict)
-                    else {}
-                )
+                # mm_chunks are VLM-output containers: without llm_analyze_result
+                # there is nothing meaningful to index. analyze_multimodal only
+                # writes this field for modalities opted into via i/t/e in
+                # process_options, so unopted modalities (and VLM failures)
+                # naturally produce no chunks here.
+                analysis = item.get("llm_analyze_result")
+                if not isinstance(analysis, dict) or not analysis:
+                    continue
                 name = str(analysis.get("name") or item.get("caption") or item_id)
                 summary = str(analysis.get("summary") or "").strip()
                 detail = str(analysis.get("detail_description") or "").strip()
