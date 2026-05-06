@@ -528,7 +528,7 @@ def test_resume_purges_old_chunks_when_content_already_extracted(tmp_path):
                         "content": "previously extracted body",
                         "file_path": "resume.txt",
                         "canonical_basename": "resume.txt",
-                        "format": "raw",
+                        "parse_format": "raw",
                         "parse_engine": "legacy",
                         "content_hash": "deadbeef",
                     }
@@ -606,7 +606,7 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
                         "content": "fresh body",
                         "file_path": "noskip.txt",
                         "canonical_basename": "noskip.txt",
-                        "format": "raw",
+                        "parse_format": "raw",
                         "parse_engine": "legacy",
                         "content_hash": "fresh",
                     }
@@ -1609,7 +1609,7 @@ def test_persist_parsed_full_docs_syncs_hash_to_doc_status(tmp_path):
                 {
                     "content": content,
                     "file_path": "pending.txt",
-                    "format": "raw",
+                    "parse_format": "raw",
                     "parse_engine": "native",
                 },
             )
@@ -1666,7 +1666,7 @@ def test_persist_parsed_full_docs_preserves_pending_metadata(tmp_path):
                 {
                     "content": "extracted body",
                     "file_path": "report.[native-iet!].docx",
-                    "format": "raw",
+                    "parse_format": "raw",
                     "parse_engine": PARSER_ENGINE_NATIVE,
                     "update_time": 12345,
                 },
@@ -1676,7 +1676,7 @@ def test_persist_parsed_full_docs_preserves_pending_metadata(tmp_path):
             assert post is not None
             # Parser-supplied fields take precedence...
             assert post["content"] == "extracted body"
-            assert post["format"] == "raw"
+            assert post["parse_format"] == "raw"
             # ...while metadata seeded at enqueue time is preserved.
             assert post.get("process_options") == "iet!"
             assert post.get("canonical_basename") == "report.docx"
@@ -1908,7 +1908,7 @@ def test_three_phase_status_flow(tmp_path, monkeypatch):
             return {
                 "doc_id": doc_id,
                 "file_path": file_path,
-                "format": "raw",
+                "parse_format": "raw",
                 "content": "hello world",
                 "blocks_path": "",
             }
@@ -2450,7 +2450,7 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
             content_data={"content": ""},
         )
 
-        assert parsed["format"] == "lightrag"
+        assert parsed["parse_format"] == "lightrag"
         assert parsed["blocks_path"]
         blocks_path = Path(parsed["blocks_path"])
         assert blocks_path.exists()
@@ -2474,7 +2474,7 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         assert equations["equations"]
 
         full_doc = await rag.full_docs.get_by_id("doc-1")
-        assert full_doc["format"] == "lightrag"
+        assert full_doc["parse_format"] == "lightrag"
         # Per docs/FileProcessingConfiguration-zh.md spec, ``content`` is now
         # ``{{LRdoc}}`` followed by a leading-text summary of the document.
         assert full_doc["content"].startswith("{{LRdoc}}")

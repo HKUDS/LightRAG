@@ -338,7 +338,7 @@ class _PipelineMixin:
                 "content": content,
                 "file_path": source_key,
                 "canonical_basename": canonical_key,
-                "format": doc_format,
+                "parse_format": doc_format,
             }
             if content_hash:
                 content_data["content_hash"] = content_hash
@@ -624,7 +624,9 @@ class _PipelineMixin:
                     "content": contents[doc_id].get("content", ""),
                     "file_path": contents[doc_id]["file_path"],
                     "canonical_basename": contents[doc_id].get("canonical_basename"),
-                    "format": contents[doc_id].get("format", FULL_DOCS_FORMAT_RAW),
+                    "parse_format": contents[doc_id].get(
+                        "parse_format", FULL_DOCS_FORMAT_RAW
+                    ),
                 }
                 for doc_id in new_docs.keys()
             }
@@ -1324,12 +1326,13 @@ class _PipelineMixin:
                                 content_data, dict
                             ) and (
                                 (
-                                    content_data.get("format")
+                                    content_data.get("parse_format")
                                     == FULL_DOCS_FORMAT_LIGHTRAG
                                     and content_data.get("lightrag_document_path")
                                 )
                                 or (
-                                    content_data.get("format") == FULL_DOCS_FORMAT_RAW
+                                    content_data.get("parse_format")
+                                    == FULL_DOCS_FORMAT_RAW
                                     and (content_data.get("content") or "").strip()
                                 )
                             )
@@ -2638,11 +2641,11 @@ class _PipelineMixin:
         ``source_path``, ...) that downstream stages still need after parsing.
         ``full_docs`` upserts overwrite the entire row, so we merge the
         existing record with the new ``record`` payload before upserting:
-        fresh fields from ``record`` (``content`` / ``format`` /
+        fresh fields from ``record`` (``content`` / ``parse_format`` /
         ``lightrag_document_path`` / ``parse_engine`` / ``update_time``)
         take precedence, while pre-existing fields are preserved.
         """
-        fmt = record.get("format")
+        fmt = record.get("parse_format")
         content_hash: str | None = None
         if fmt == FULL_DOCS_FORMAT_RAW:
             content_hash = compute_text_content_hash(record.get("content") or "")
@@ -3179,7 +3182,7 @@ class _PipelineMixin:
             {
                 "content": make_lightrag_doc_content(merged_text),
                 "file_path": file_path,
-                "format": FULL_DOCS_FORMAT_LIGHTRAG,
+                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
                 "lightrag_document_path": stored_blocks_path,
                 "parse_engine": engine,
                 "update_time": int(time.time()),
@@ -3191,7 +3194,7 @@ class _PipelineMixin:
         return {
             "doc_id": doc_id,
             "file_path": file_path,
-            "format": FULL_DOCS_FORMAT_LIGHTRAG,
+            "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
             "content": merged_text,
             "blocks_path": str(blocks_path),
         }
@@ -3200,7 +3203,7 @@ class _PipelineMixin:
         self, doc_id: str, file_path: str, content_data: dict[str, Any]
     ) -> dict[str, Any]:
         """Phase 1 parse for native/raw, lightrag and pending_parse formats."""
-        doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
+        doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
         if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
             doc_path = content_data.get("lightrag_document_path") or file_path
             doc_path = Path(resolve_lightrag_document_path(str(doc_path)))
@@ -3210,7 +3213,7 @@ class _PipelineMixin:
             return {
                 "doc_id": doc_id,
                 "file_path": file_path,
-                "format": doc_format,
+                "parse_format": doc_format,
                 "content": merged_text,
                 "blocks_path": blocks_path,
             }
@@ -3283,7 +3286,7 @@ class _PipelineMixin:
         return {
             "doc_id": doc_id,
             "file_path": file_path,
-            "format": FULL_DOCS_FORMAT_RAW,
+            "parse_format": FULL_DOCS_FORMAT_RAW,
             "content": content_data.get("content", ""),
             "blocks_path": "",
         }
@@ -3339,7 +3342,7 @@ class _PipelineMixin:
             {
                 "content": str(result_text),
                 "file_path": file_path,
-                "format": FULL_DOCS_FORMAT_RAW,
+                "parse_format": FULL_DOCS_FORMAT_RAW,
                 "parse_engine": PARSER_ENGINE_MINERU,
                 "update_time": int(time.time()),
             },
@@ -3348,7 +3351,7 @@ class _PipelineMixin:
         return {
             "doc_id": doc_id,
             "file_path": file_path,
-            "format": FULL_DOCS_FORMAT_RAW,
+            "parse_format": FULL_DOCS_FORMAT_RAW,
             "content": str(result_text),
             "blocks_path": "",
         }
@@ -3404,7 +3407,7 @@ class _PipelineMixin:
             {
                 "content": str(result_text),
                 "file_path": file_path,
-                "format": FULL_DOCS_FORMAT_RAW,
+                "parse_format": FULL_DOCS_FORMAT_RAW,
                 "parse_engine": PARSER_ENGINE_DOCLING,
                 "update_time": int(time.time()),
             },
@@ -3413,7 +3416,7 @@ class _PipelineMixin:
         return {
             "doc_id": doc_id,
             "file_path": file_path,
-            "format": FULL_DOCS_FORMAT_RAW,
+            "parse_format": FULL_DOCS_FORMAT_RAW,
             "content": str(result_text),
             "blocks_path": "",
         }

@@ -1714,13 +1714,13 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
         rag,
         "doc-test",
         str(source_path),
-        {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+        {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
     )
 
     # parse_native now returns LIGHTRAG-format parsed_data with merged_text
     # (not the {{LRdoc}} marker — that's only in the persisted full_docs row).
     assert result["content"]
-    assert result["format"] == "lightrag"
+    assert result["parse_format"] == "lightrag"
     assert result["blocks_path"]
     assert rag.full_docs.events == ["upsert", "index_done"]
     assert not source_path.exists()
@@ -1729,7 +1729,7 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     assert parsed_artifact_dir.is_dir()
     assert (parsed_artifact_dir / "parsed-after-sync.blocks.jsonl").is_file()
     assert rag.full_docs.data["doc-test"]["parse_engine"] == "native"
-    assert rag.full_docs.data["doc-test"]["format"] == "lightrag"
+    assert rag.full_docs.data["doc-test"]["parse_format"] == "lightrag"
     # Per docs/FileProcessingConfiguration-zh.md, content uses the {{LRdoc}}
     # marker plus a leading-text summary derived from merged blocks.
     assert rag.full_docs.data["doc-test"]["content"].startswith("{{LRdoc}}")
@@ -1785,7 +1785,7 @@ async def test_parse_native_docx_interchange_failure_raises_without_fallback(
             rag,
             "doc-test",
             str(source_path),
-            {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+            {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
         )
 
     assert source_path.exists()
@@ -1815,7 +1815,7 @@ async def test_parse_native_docx_empty_interchange_result_raises_without_fallbac
             rag,
             "doc-test",
             str(source_path),
-            {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+            {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
         )
 
     assert source_path.exists()
@@ -1826,7 +1826,7 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
     engine = resolve_stored_document_parser_engine(
         "report.[mineru].docx",
         {
-            "format": FULL_DOCS_FORMAT_LIGHTRAG,
+            "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
             "lightrag_document_path": "report.blocks.jsonl",
             "parse_engine": "mineru",
         },

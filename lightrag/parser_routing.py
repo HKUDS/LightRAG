@@ -452,7 +452,7 @@ def resolve_stored_document_parser_engine(
 ) -> str:
     """Resolve parser engine for a full_docs row during pipeline processing."""
     if content_data:
-        doc_format = content_data.get("format", FULL_DOCS_FORMAT_RAW)
+        doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
         if doc_format == FULL_DOCS_FORMAT_LIGHTRAG and content_data.get(
             "lightrag_document_path"
         ):

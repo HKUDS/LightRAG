@@ -104,7 +104,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
             rag,
             "doc-stable",
             str(source_path),
-            {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+            {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
         )
         merged1 = result1["content"]
         assert merged1, "first parse produced empty merged_text"
@@ -125,7 +125,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
             rag,
             "doc-stable",
             str(source_path),
-            {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+            {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
         )
         merged2 = result2["content"]
 
@@ -144,7 +144,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
         # And: full_docs.content uses the {{LRdoc}} marker plus a leading
         # summary derived from merged_text (not the legacy placeholder).
         record = rag.full_docs.data["doc-stable"]
-        assert record["format"] == "lightrag"
+        assert record["parse_format"] == "lightrag"
         assert record["content"].startswith("{{LRdoc}}")
         assert merged1[:40] in record["content"]
 
@@ -179,7 +179,7 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
             rag,
             "doc-skip",
             str(source_path),
-            {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+            {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
         )
 
         # The .blocks.jsonl on disk DOES contain "parse_time" inside the
@@ -239,7 +239,7 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
             rag,
             "doc-pic",
             str(source_path),
-            {"format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+            {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
         )
 
         blocks_path = Path(result["blocks_path"])
