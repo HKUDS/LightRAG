@@ -4,50 +4,62 @@
 
 为了配合此次改动，LightRAG的处理流处理逻辑做了重大的改动。本文还对文件重复判断逻辑、并发控制和流水线的继跑幂等逻辑做了相关说明，方便用户了解流水线的工作逻辑。
 
-## 支持的抽取引擎类型
+## 内容抽取与文件处理配置
 
-| 引擎 | 说明 | 支持的文件格式（后缀） |
-| --- | --- | --- |
-| `legacy` | 旧版提取方式，在加入管线前集中提取内容 | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
-| `native` | 内置智能结构化内容抽取器 | `docx` |
-| `mineru` | 外部 MinerU 内容提取引擎 | `pdf`  `docx`  `pptx`  `xlsx` |
-| `docling` | 外部 Docling 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
+LightRAG 的文件处理配置由两部分合成：内容抽取引擎决定原始文件如何被解析，处理选项决定解析后是否执行多模态分析、使用哪种分块方式，以及是否构建知识图谱。通常先用环境变量 `LIGHTRAG_PARSER` 按文件后缀设置默认规则，再用文件名中的 `[hint]` 覆盖单个文件。引擎和选项可以写在同一个配置片段里，例如 `docx:native-iet` 或 `report.[native-R!].docx`。
 
-> 为了向后兼容，在未修改配置的情况下升级系统文件内容提取方式方式会维持原来的legacy不变。如需启用新的内容处理引擎，需要按照以下方式来配置
+为了向后兼容，在未修改配置的情况下，升级后的文件内容提取方式会维持原来的 `legacy` 行为。如需启用新的内容处理引擎，请按本节说明配置。
 
+### 配置语法总览
 
+完整配置模型如下：
 
-## 设置默认内容抽取方式
+```text
+LIGHTRAG_PARSER=后缀:引擎-选项,后缀:引擎,*:legacy
+filename.[ENGINE].ext
+filename.[ENGINE-OPTIONS].ext
+filename.[OPTIONS].ext
+```
 
-使用环境变量 `LIGHTRAG_PARSER`可以给不同的文件后缀配置默认的文件内容提取方式以及默认的处理选项：
+- `LIGHTRAG_PARSER` 是默认规则表，按文件后缀匹配，例如 `pdf:mineru`、`docx:native-iet`。
+- 文件名 `[hint]` 是单文件覆盖规则，例如 `paper.[mineru].pdf`、`memo.[native-R!].docx`。
+- `ENGINE` 是内容抽取引擎：`legacy`、`native`、`mineru` 或 `docling`。
+- `OPTIONS` 是处理选项字符组合，例如 `iet`、`R!`、`S`。选项最终写入 `process_options`，由后续流水线阶段读取。
+- `ENGINE-OPTIONS` 中的连字符只用于分隔引擎和选项，不属于选项本身。
+
+常见组合示例：
 
 ```bash
-LIGHTRAG_PARSER=pdf:mineru,docx:docling,pptx:docling,xlsx:docling,*:legacy
+LIGHTRAG_PARSER=pdf:mineru,docx:native-iet,*:legacy
 MINERU_ENDPOINT=http://localhost:8000/api/v1/task
 DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 ```
 
-规则格式：
+```text
+my-proposal.[native-iet].docx   # 使用 native 引擎，开启图、表、公式分析
+my-memo.[native-R!].docx        # 使用 native 引擎，递归语义分块，禁止知识图谱构建
+my-proposal.[!].docx            # 使用默认引擎，仅禁止知识图谱构建
+my-proposal.[mineru].docx       # 使用 MinerU 引擎，处理选项全部默认
+```
+
+### 默认规则：`LIGHTRAG_PARSER`
+
+`LIGHTRAG_PARSER` 用来为不同文件后缀配置默认内容抽取引擎，也可以在引擎后追加该规则的默认处理选项：
 
 ```text
 后缀:引擎,后缀:引擎,*:legacy
 后缀:引擎;后缀:引擎;*:legacy
-后缀:引擎-选项                # 在引擎后追加默认处理选项（见下文“处理选项”一节）
+后缀:引擎-选项
 ```
-
-注意事项：
 
 - 左侧匹配的是文件后缀，不是完整文件名；应写 `pdf:mineru`，不要写 `*.pdf:mineru`。
 - 规则可以使用英文逗号 `,` 或分号 `;` 分隔。
-- 规则按从左到右的顺序检查；优先规则放在前面；通配符规则应放在最后。
-- 启动时会严格校验规则：未知内容提取引擎、错误后缀写法、显式使用不支持的后缀、外部引擎缺少 endpoint、处理选项中的非法字符都会导致启动失败。
-- 通配符规则只会让引擎处理其能力表支持的后缀。例如 `*:mineru;html:docling` 中，MinerU 只接管 MinerU 支持的后缀，`html` 会继续匹配到后续 `docling` 规则。
-- 如果所有规则都不可用，文件内容提取方式会回退到 `legacy`，如果legacy也不支持对应的文件后缀，会向系统加一个错误条目，上传文件保留在`INPUT`目录。
-- 引擎后缀 `-选项` 部分作为该规则匹配文件的默认 `process_options`，会被文件名 hint 中的 `[...]` 覆盖。例如 `LIGHTRAG_PARSER=docx:native-iet` 表示所有 `.docx` 默认采用 `native` 引擎并开启图、表、公式分析。
+- 规则按从左到右的顺序检查；优先规则放在前面，通配符规则通常放在最后。
+- 引擎后缀 `-选项` 部分作为该规则匹配文件的默认 `process_options`。例如 `LIGHTRAG_PARSER=docx:native-iet` 表示所有 `.docx` 默认采用 `native` 引擎，并开启图像、表格、公式分析。
 
-## 指定某个文件的内容抽取方式
+### 单文件覆盖：文件名 hint
 
-可以在文件名中使用中括号临时指定单个文件的处理方式：
+文件名中可以使用中括号临时指定单个文件的处理方式：
 
 ```text
 paper.[mineru].pdf
@@ -60,13 +72,29 @@ report.[legacy].pdf
 
 ```text
 [ENGINE]              # 仅指定引擎，处理选项使用默认或 LIGHTRAG_PARSER 提供的默认
-[ENGINE-OPTIONS]      # 引擎 + 处理选项
+[ENGINE-OPTIONS]      # 同时指定引擎和处理选项
 [OPTIONS]             # 仅指定处理选项，引擎仍按 LIGHTRAG_PARSER / 默认规则解析
 ```
 
-仅当首段以 `-` 分隔出第二段时第一段才被作为引擎候选；否则若整段能整体匹配引擎名（`mineru` / `native` / `docling` / `legacy`），视为只指定引擎；否则整段视为选项串。文件名 hint 的优先级高于 `LIGHTRAG_PARSER`。如果指定的引擎不支持该后缀，系统会回退到默认规则继续选择可用引擎。如果所有规则都不可用，文件内容提取方式会回退到 `legacy`，如果legacy也不支持对应的文件后缀，会向系统加一个错误条目，上传文件保留在`INPUT`目录。
+解析 hint 时，仅当首段以 `-` 分隔出第二段时，第一段才会被作为引擎候选；否则若整段能整体匹配引擎名（`mineru` / `native` / `docling` / `legacy`），视为只指定引擎；否则整段视为选项串。
 
-## 配资文件处理选项
+### 内容抽取引擎
+
+| 引擎 | 说明 | 支持的文件格式（后缀） |
+| --- | --- | --- |
+| `legacy` | 旧版提取方式，在加入管线前集中提取内容 | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
+| `native` | 内置智能结构化内容抽取器 | `docx` |
+| `mineru` | 外部 MinerU 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` |
+| `docling` | 外部 Docling 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
+
+`mineru` 和 `docling` 是外部内容提取引擎。启用相关规则时，必须在服务启动前配置对应 endpoint，例如：
+
+```bash
+MINERU_ENDPOINT=http://localhost:8000/api/v1/task
+DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
+```
+
+### 文件处理选项
 
 处理选项控制单个文件在多模态分析、知识图谱构建和文本分块上的行为。所有选项都是可选的；缺省值见下表。同一文件最多指定一种分块方式（`F` / `R` / `S`），其它选项可任意组合。
 
@@ -77,39 +105,34 @@ report.[legacy].pdf
 | `e` | 多模态 | 关闭 | 启用公式分析（VLM） |
 | `!` | 流水线 | 关闭 | 禁止实体/关系抽取，不构建知识图谱（仅保留 chunks 向量索引，naive / mix 检索仍可用） |
 | `F` | 分块 | 默认 | 固定长度或按分隔符机械分割（按分隔符分割时块不重叠） |
-| `R` | 分块 | — | 递归语义分块（优先按段落、句子分割）；此方法有待实现，暂时回退至 `F`，行为等同于固定分块 |
-| `S` | 分块 | — | 标题语义分块（优先按标题分割，标题块不重叠）；要求 `native` 抽取出的结构化输出，否则降级到 `F`。此方法目前仅仅是一个草稿，有待完善。 |
-
-举例：
-
-```text
-my-proposal.[native-iet].docx   # 使用 native 引擎，开启图、表、公式分析
-my-memo.[native-R!].md          # 使用 native 引擎，递归语义分块，禁止知识图谱构建，多模态默认关
-my-proposal.[!].docx            # 使用默认引擎（按 LIGHTRAG_PARSER 解析），仅禁止知识图谱构建
-my-proposal.[mineru].docx       # 使用 MinerU 引擎，多模态、分块、KG 全部默认（即多模态关、F 分块、构建 KG）
-```
-
-校验与解析规则：
-
-- `F`/`R`/`S` 至多出现一个；同一选项重复时只生效一次但不报错。
-- 大小写敏感：分块选项 `F`/`R`/`S` 必须大写；其它选项 `i`/`t`/`e`/`!` 小写。
-- 中括号内出现非法字符时，整个 hint 失效，引擎按默认规则解析、选项按 `LIGHTRAG_PARSER` 默认或全部默认；同时落日志 warning。
-- 如果文件名 hint 提供了非空选项串，则以 hint 为准；否则使用 `LIGHTRAG_PARSER` 规则中匹配项的默认选项；都没有则使用全部默认。
-- `S` 仅对 `native` 抽取出的结构化结果（interchange JSONL）有效；对 `legacy` 路径或非结构化输出会自动降级到 `F` 并记录 warning。
+| `R` | 分块 | - | 递归语义分块（优先按段落、句子分割）；此方法有待实现，暂时回退至 `F`，行为等同于固定分块 |
+| `S` | 分块 | - | 标题语义分块（优先按标题分割，标题块不重叠）；要求 `native` 抽取出的结构化输出，否则降级到 `F`。此方法目前仅仅是一个草稿，有待完善。 |
 
 > 多模态全局开关 `addon_params["enable_multimodal_pipeline"]` 已废弃，相关行为统一由文件级 `i` / `t` / `e` 选项控制。如启动配置仍包含该字段，会在日志输出 deprecation warning 并被忽略。
 
-### 选项作用阶段
+### 选项生效阶段
 
-处理选项的不同字符在流水线的不同阶段生效，具体如下：
+处理选项的不同字符在流水线的不同阶段生效：
 
 | 选项 | 作用阶段 | 说明 |
 | --- | --- | --- |
-| `i` / `t` / `e` | ANALYZING（VLM 分析） | 决定是否对 sidecar 中的图像 / 表格 / 公式调用 VLM 做摘要分析。**抽取阶段不受影响**：内容提取引擎按文档实际内容输出 `drawings.json` / `tables.json` / `equations.json` sidecar 文件。这样后续仅修改 `i`/`t`/`e` 选项触发"再分析"即可补做 VLM，无须重新解析原始文件。 |
+| `i` / `t` / `e` | ANALYZING（VLM 分析） | 决定是否对 sidecar 中的图像 / 表格 / 公式调用 VLM 做摘要分析。**抽取阶段不受影响**：内容提取引擎按文档实际内容输出 `drawings.json` / `tables.json` / `equations.json` sidecar 文件。这样后续仅修改 `i`/`t`/`e` 选项触发“再分析”即可补做 VLM，无须重新解析原始文件。 |
 | `!` | EXTRACTION（实体关系抽取） | 跳过实体/关系抽取与图谱写入；chunks 仍写入向量库以保留 naive / mix 检索能力。 |
 | `F` / `R` / `S` | CHUNKING（文本分块） | 决定使用哪种分块策略；对解析阶段输出无影响。 |
 
-> 模态可用性以"sidecar 文件是否存在"为唯一信号，内容提取引擎不需要在 meta 中声明能力。某文档若没有任何图像/表格/公式，对应 sidecar 不会写入；用户即使开启了 `i`/`t`/`e`，对应模态也只会被静默跳过，但 `analyze_multimodal` 会在该篇文档落一行 INFO 级日志（`[analyze_multimodal] process_options opted into i:drawings ... but the parser produced no such sidecar`），便于排查"VLM 为何没跑"。这种情况不会报错。
+> 模态可用性以“sidecar 文件是否存在”为唯一信号，内容提取引擎不需要在 meta 中声明能力。某文档若没有任何图像/表格/公式，对应 sidecar 不会写入；用户即使开启了 `i`/`t`/`e`，对应模态也只会被静默跳过，但 `analyze_multimodal` 会在该篇文档落一行 INFO 级日志（`[analyze_multimodal] process_options opted into i:drawings ... but the parser produced no such sidecar`），便于排查“VLM 为何没跑”。这种情况不会报错。
+
+### 校验、优先级与回退
+
+- 启动时会严格校验 `LIGHTRAG_PARSER`：未知内容提取引擎、错误后缀写法、显式使用不支持的后缀、外部引擎缺少 endpoint、处理选项中的非法字符都会导致启动失败。
+- 通配符规则只会让引擎处理其能力表支持的后缀。例如 `*:mineru;html:docling` 中，MinerU 只接管 MinerU 支持的后缀，`html` 会继续匹配到后续 `docling` 规则。
+- 文件名 hint 的优先级高于 `LIGHTRAG_PARSER`。如果 hint 指定的引擎不支持该后缀，系统会回退到默认规则继续选择可用引擎。
+- 如果文件名 hint 提供了非空选项串，则以 hint 为准；否则使用 `LIGHTRAG_PARSER` 规则中匹配项的默认选项；都没有则使用全部默认。
+- 如果所有规则都不可用，文件内容提取方式会回退到 `legacy`；如果 `legacy` 也不支持对应的文件后缀，会向系统添加一个错误条目，上传文件保留在 `INPUT` 目录。
+- `F`/`R`/`S` 至多出现一个；同一选项重复时只生效一次但不报错。
+- 大小写敏感：分块选项 `F`/`R`/`S` 必须大写；其它选项 `i`/`t`/`e`/`!` 小写。
+- 中括号内出现非法字符时，整个 hint 失效，引擎按默认规则解析，选项按 `LIGHTRAG_PARSER` 默认或全部默认；同时落日志 warning。
+- `S` 仅对 `native` 抽取出的结构化结果（interchange JSONL）有效；对 `legacy` 路径或非结构化输出会自动降级到 `F` 并记录 warning。
 
 ## 推荐配置
 
@@ -323,6 +346,8 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 
 每次 `apipeline_process_enqueue_documents` 起步时，会拉取所有处于 `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING` / `FAILED` 状态的文档继续处理。续跑路径**根据"内容是否已抽取"分流**，保证同一个文档无论之前进度如何，按当前 `process_options` 续跑都有幂等结果。
 
+续跑规则只对 `doc_id` 已经存在于 `doc_status` 的文档生效。新文件入队需要"并发与重入约束"中的文件查重逻辑，避免新文件挤掉旧的已经成功提取内容的文件记录。
+
 ### 判断"内容已抽取"
 
 读 `full_docs[doc_id]`：
@@ -351,7 +376,3 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 | 实体抽取 / KG-skip | 按新 `process_options.skip_kg` 决定 |
 
 > 这条规则保证：用户改 `i/t/e` 重传同名文档（先删旧 doc 再上传带新 hint 的文件）时，多模态分析能增量补齐；改 `F`/`R`/`S` 时 chunks 与图谱重建；改 `!` 时停掉或恢复 KG 构建。引擎变更被视为"重大变更"，统一由 delete + 重传完成，不在续跑路径里隐式发生。
-
-### 与"文档重复判定规则"的关系
-
-续跑规则只对 `doc_id` 已经存在于 `doc_status` 的文档生效。新文件入队仍然走"并发与重入约束"中的严格名字预检 + "文档重复判定规则"中的 `canonical_basename` / `content_hash` 查重；续跑分支不会被用来"新文件挤掉旧 PROCESSED 记录"。
