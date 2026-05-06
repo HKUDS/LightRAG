@@ -1,6 +1,8 @@
 # 文件处理方式配置说明
 
-从 LightRAG Server v1.5.0 开始，文件索引流水线支持使用外部的 MinerU 和 Docling 引擎进行文件内容的分析抽取，抽取内容将以 `LightRAG Document` 格式保存到`INPUT`输入目录下的 `__parsed__`子目录。`LightRAG Document`文件格式支持表格和图片等多模态数据，同时包含文章的章节段落元数据，方便日后进行内容溯源。LightRAG还提供了一个内置的 native 文件抽取引擎，可以高效地实现 docx 的智能内容抽取，支持章节标题、自动编号、表格和图片等内容的精确提取。
+从版本 v1.5.0 开始，LightRAG Server引入了一个文件处理的中间格式： `LightRAG Document` 。该格式支持表格和图片等多模态数据，同时包含文章的章节段落元数据，方便日后进行内容溯源。LightRAG为此还引入了多种支持这种中间格式的内容抽取引擎和文本分块方式。本文将介绍新添加的内容抽取引擎与文本分块方式的配置与使用说明。
+
+为了配合此次改动，LightRAG的处理流处理逻辑做了重大的改动。本文还对文件重复判断逻辑、并发控制和流水线的继跑幂等逻辑做了相关说明，方便用户了解流水线的工作逻辑。
 
 ## 支持的抽取引擎类型
 
@@ -13,7 +15,9 @@
 
 > 为了向后兼容，在未修改配置的情况下升级系统文件内容提取方式方式会维持原来的legacy不变。如需启用新的内容处理引擎，需要按照以下方式来配置
 
-## 修改默认内容抽取方式
+
+
+## 设置默认内容抽取方式
 
 使用环境变量 `LIGHTRAG_PARSER`可以给不同的文件后缀配置默认的文件内容提取方式以及默认的处理选项：
 
@@ -41,7 +45,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - 如果所有规则都不可用，文件内容提取方式会回退到 `legacy`，如果legacy也不支持对应的文件后缀，会向系统加一个错误条目，上传文件保留在`INPUT`目录。
 - 引擎后缀 `-选项` 部分作为该规则匹配文件的默认 `process_options`，会被文件名 hint 中的 `[...]` 覆盖。例如 `LIGHTRAG_PARSER=docx:native-iet` 表示所有 `.docx` 默认采用 `native` 引擎并开启图、表、公式分析。
 
-## 对单文件指定内容抽取方式
+## 指定某个文件的内容抽取方式
 
 可以在文件名中使用中括号临时指定单个文件的处理方式：
 
@@ -62,7 +66,7 @@ report.[legacy].pdf
 
 仅当首段以 `-` 分隔出第二段时第一段才被作为引擎候选；否则若整段能整体匹配引擎名（`mineru` / `native` / `docling` / `legacy`），视为只指定引擎；否则整段视为选项串。文件名 hint 的优先级高于 `LIGHTRAG_PARSER`。如果指定的引擎不支持该后缀，系统会回退到默认规则继续选择可用引擎。如果所有规则都不可用，文件内容提取方式会回退到 `legacy`，如果legacy也不支持对应的文件后缀，会向系统加一个错误条目，上传文件保留在`INPUT`目录。
 
-## 处理选项
+## 配资文件处理选项
 
 处理选项控制单个文件在多模态分析、知识图谱构建和文本分块上的行为。所有选项都是可选的；缺省值见下表。同一文件最多指定一种分块方式（`F` / `R` / `S`），其它选项可任意组合。
 
@@ -73,8 +77,8 @@ report.[legacy].pdf
 | `e` | 多模态 | 关闭 | 启用公式分析（VLM） |
 | `!` | 流水线 | 关闭 | 禁止实体/关系抽取，不构建知识图谱（仅保留 chunks 向量索引，naive / mix 检索仍可用） |
 | `F` | 分块 | 默认 | 固定长度或按分隔符机械分割（按分隔符分割时块不重叠） |
-| `R` | 分块 | — | 递归语义分块（优先按段落、句子分割）；当前版本回退至 `F`，行为等同于固定分块 |
-| `S` | 分块 | — | 标题语义分块（优先按标题分割，标题块不重叠）；要求 `native` 抽取出的结构化输出，否则降级到 `F` |
+| `R` | 分块 | — | 递归语义分块（优先按段落、句子分割）；此方法有待实现，暂时回退至 `F`，行为等同于固定分块 |
+| `S` | 分块 | — | 标题语义分块（优先按标题分割，标题块不重叠）；要求 `native` 抽取出的结构化输出，否则降级到 `F`。此方法目前仅仅是一个草稿，有待完善。 |
 
 举例：
 
@@ -155,7 +159,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | `canonical_basename` | 去掉处理提示 hint 后的规范化 basename（例如 `abc.docx`）。文件名查重以此字段为索引 key，保证 `abc.docx` 与 `abc.[native-iet].docx` 视为同一逻辑文档。 |
 | `source_path` | 入队时提供的原始路径（仅当含目录分隔符或绝对路径时才写入），供 `native` / `mineru` / `docling` 解析器定位真实文件位置。 |
 | `parse_format` | 内容格式：`pending_parse`, `raw`, `lightrag`。 |
-| `content` | `raw` 时保存抽取文本；`pending_parse` 时为空字符串；`lightrag` 时固定为以 `{{LRdoc}}`开头的一段内容摘要。 |
+| `content` | `raw` 时保存抽取文本；`pending_parse` 时为空字符串；`lightrag` 时存储以 `{{LRdoc}}` 开头的**完整合并文本**（拼接 `.blocks.jsonl` 中所有 `type=="content"` 行的 body 段），分块阶段 `parse_native` 会剥离前缀后再交给 chunking_func，与 `raw` 走完全相同的代码路径。 |
 | `content_hash` | 内容 MD5，用于跨文件名查重。`parse_format=raw` 取 `sanitize_text_for_encoding` 后文本的 hash；`parse_format=lightrag` 取 `*.blocks.jsonl` 文件 hash；`parse_format=pending_parse` 不写入，待抽取完成后补上。 |
 | `lightrag_document_path` | `parse_format=lightrag` 时保存结构化 LightRAG Document 的路径；新记录优先保存为相对 `INPUT_DIR` 的路径，例如 `__parsed__/report.docx.parsed/report.blocks.jsonl`。注意路径中的子目录与 blocks 文件名都使用规范化 basename（不含 hint）。 |
 | `parse_engine` | 实际完成抽取的引擎：`legacy`, `native`, `mineru`, `docling`。对于待抽取文件，也可暂存目标引擎。 |

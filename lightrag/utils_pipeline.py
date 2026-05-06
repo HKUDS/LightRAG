@@ -17,11 +17,14 @@ from pathlib import Path
 from typing import Any, cast
 
 from lightrag.base import DocProcessingStatus, DocStatus, DocStatusStorage
-from lightrag.constants import LIGHTRAG_DOC_CONTENT_PREFIX, PARSED_DIR_NAME
+from lightrag.constants import (
+    FULL_DOCS_FORMAT_LIGHTRAG,
+    LIGHTRAG_DOC_CONTENT_PREFIX,
+    PARSED_DIR_NAME,
+)
 from lightrag.parser_routing import canonicalize_parser_hinted_basename
 from lightrag.utils import (
     compute_mdhash_id,
-    get_content_summary,
     logger,
     move_file_to_parsed_dir,
 )
@@ -279,16 +282,40 @@ async def get_duplicate_doc_by_content_hash(
     return None
 
 
-def make_lightrag_doc_content(merged_text: str, max_length: int = 250) -> str:
+def make_lightrag_doc_content(merged_text: str) -> str:
     """Build the ``full_docs.content`` value for ``format=lightrag`` records.
 
-    The result has shape ``"{{LRdoc}}<summary>"`` where ``<summary>`` is the
-    same leading-text snippet that paginated APIs return in
-    ``content_summary`` (see ``get_content_summary``). This keeps the
-    behaviour mandated by ``docs/FileProcessingConfiguration-zh.md``.
+    The result has shape ``"{{LRdoc}}<merged_text>"`` — the marker prefix
+    distinguishes lightrag-format full_docs from raw-format ones, and the
+    body is the complete merged text from the ``.blocks.jsonl`` content
+    lines so F-chunking can run identically on raw and lightrag inputs
+    (the prefix is stripped at chunking time via
+    ``strip_lightrag_doc_prefix``).
     """
-    summary = get_content_summary(merged_text or "", max_length=max_length)
-    return f"{LIGHTRAG_DOC_CONTENT_PREFIX}{summary}"
+    return f"{LIGHTRAG_DOC_CONTENT_PREFIX}{merged_text or ''}"
+
+
+def strip_lightrag_doc_prefix(content: str | None, parse_format: str | None) -> str:
+    """Return the bare body for a stored ``full_docs.content`` value.
+
+    The ``{{LRdoc}}`` marker is stripped **only** when ``parse_format``
+    indicates the record is in lightrag format.  Any other ``parse_format``
+    (``raw``, ``pending_parse``, ``None`` ...) returns the content
+    unchanged so a raw document whose literal body happens to start with
+    ``{{LRdoc}}`` is never silently truncated.
+
+    Centralizing the format check here turns "must check format before
+    stripping" from a caller-side discipline into a structural property of
+    the function: any future call site that forgets to gate is protected
+    automatically.
+    """
+    if (
+        parse_format == FULL_DOCS_FORMAT_LIGHTRAG
+        and isinstance(content, str)
+        and content.startswith(LIGHTRAG_DOC_CONTENT_PREFIX)
+    ):
+        return content[len(LIGHTRAG_DOC_CONTENT_PREFIX) :]
+    return content or ""
 
 
 # ---------------------------------------------------------------------------
@@ -378,10 +405,15 @@ async def archive_source_after_full_docs_sync(source_path: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-async def load_lightrag_document_content(
-    lightrag_document_path: str,
-) -> tuple[str, str]:
-    """Load LightRAG Document blocks and return (merged_text, blocks_path)."""
+def resolve_lightrag_blocks_path(lightrag_document_path: str) -> str | None:
+    """Resolve the canonical ``.blocks.jsonl`` path without reading it.
+
+    Mirrors the path-candidate search used by
+    ``load_lightrag_document_content`` so callers that only need the
+    sidecar location (e.g. parse_native looking up
+    ``drawings.json`` / ``tables.json`` via ``_build_mm_chunks_from_sidecars``)
+    can skip the disk read.
+    """
     path = Path(lightrag_document_path)
     candidates: list[Path] = []
     if path.suffix == ".jsonl" and path.name.endswith(".blocks.jsonl"):
@@ -392,16 +424,22 @@ async def load_lightrag_document_content(
             candidates.extend(path.glob("*.blocks.jsonl"))
         else:
             candidates.append(path)
-
-    blocks_path = None
     for c in candidates:
         if c.exists() and c.is_file():
-            blocks_path = c
-            break
-    if blocks_path is None:
+            return str(c)
+    return None
+
+
+async def load_lightrag_document_content(
+    lightrag_document_path: str,
+) -> tuple[str, str]:
+    """Load LightRAG Document blocks and return (merged_text, blocks_path)."""
+    resolved = resolve_lightrag_blocks_path(lightrag_document_path)
+    if resolved is None:
         raise FileNotFoundError(
             f"LightRAG blocks file not found from path: {lightrag_document_path}"
         )
+    blocks_path = Path(resolved)
 
     merged_parts: list[str] = []
     with blocks_path.open("r", encoding="utf-8") as f:
