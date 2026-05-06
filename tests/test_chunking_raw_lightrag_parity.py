@@ -603,8 +603,8 @@ def test_raw_text_starting_with_marker_chunked_verbatim(tmp_path):
             "chunking_func received corrupted input: "
             f"got {spy['input']!r}, expected {body_with_marker!r}"
         )
-        assert spy["input"].startswith(LIGHTRAG_DOC_CONTENT_PREFIX), (
-            "literal marker prefix lost at chunking boundary"
-        )
+        assert spy["input"].startswith(
+            LIGHTRAG_DOC_CONTENT_PREFIX
+        ), "literal marker prefix lost at chunking boundary"
 
     asyncio.run(_run())
