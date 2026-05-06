@@ -281,11 +281,8 @@ class _PipelineMixin:
 
             # Body length excludes the {{LRdoc}} marker so duplicate-attempt
             # bookkeeping reports the same units as raw documents.
-            body_length = len(
-                strip_lightrag_doc_prefix(content)
-                if doc_format == FULL_DOCS_FORMAT_LIGHTRAG
-                else (content or "")
-            )
+            # strip_lightrag_doc_prefix is a no-op for non-lightrag formats.
+            body_length = len(strip_lightrag_doc_prefix(content, doc_format))
 
             # Compute content hash: skip for pending_parse (content extracted later).
             content_hash: str | None = None
@@ -421,12 +418,12 @@ class _PipelineMixin:
             # For lightrag-format full_docs the persisted content carries the
             # ``{{LRdoc}}`` marker; strip it so summary/length match raw
             # semantics (the marker is full_docs internal bookkeeping and
-            # must not leak into doc_status).
-            raw_content = content_data.get("content", "")
-            body_text = (
-                strip_lightrag_doc_prefix(raw_content)
-                if content_data.get("parse_format") == FULL_DOCS_FORMAT_LIGHTRAG
-                else raw_content
+            # must not leak into doc_status).  strip_lightrag_doc_prefix
+            # internally checks parse_format, so non-lightrag formats pass
+            # through untouched.
+            body_text = strip_lightrag_doc_prefix(
+                content_data.get("content", ""),
+                content_data.get("parse_format"),
             )
             base: dict[str, Any] = {
                 "status": DocStatus.PENDING,
@@ -3256,7 +3253,9 @@ class _PipelineMixin:
             # marker; strip it so the chunking path is identical to raw.
             # blocks_path is still resolved for downstream multimodal
             # sidecar reads (_build_mm_chunks_from_sidecars).
-            merged_text = strip_lightrag_doc_prefix(content_data.get("content"))
+            merged_text = strip_lightrag_doc_prefix(
+                content_data.get("content"), doc_format
+            )
             raw_doc_path = content_data.get("lightrag_document_path") or file_path
             resolved_doc_path = resolve_lightrag_document_path(str(raw_doc_path))
             blocks_path = resolve_lightrag_blocks_path(resolved_doc_path) or ""

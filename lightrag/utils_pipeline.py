@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Any, cast
 
 from lightrag.base import DocProcessingStatus, DocStatus, DocStatusStorage
-from lightrag.constants import LIGHTRAG_DOC_CONTENT_PREFIX, PARSED_DIR_NAME
+from lightrag.constants import (
+    FULL_DOCS_FORMAT_LIGHTRAG,
+    LIGHTRAG_DOC_CONTENT_PREFIX,
+    PARSED_DIR_NAME,
+)
 from lightrag.parser_routing import canonicalize_parser_hinted_basename
 from lightrag.utils import (
     compute_mdhash_id,
@@ -291,15 +295,25 @@ def make_lightrag_doc_content(merged_text: str) -> str:
     return f"{LIGHTRAG_DOC_CONTENT_PREFIX}{merged_text or ''}"
 
 
-def strip_lightrag_doc_prefix(content: str | None) -> str:
-    """Strip the ``{{LRdoc}}`` marker from a full_docs.content string.
+def strip_lightrag_doc_prefix(content: str | None, parse_format: str | None) -> str:
+    """Return the bare body for a stored ``full_docs.content`` value.
 
-    Idempotent: raw-format content (no prefix) and already-stripped strings
-    are returned unchanged. Use this before feeding full_docs.content into
-    chunking_func so raw and lightrag formats follow the exact same
-    downstream code path.
+    The ``{{LRdoc}}`` marker is stripped **only** when ``parse_format``
+    indicates the record is in lightrag format.  Any other ``parse_format``
+    (``raw``, ``pending_parse``, ``None`` ...) returns the content
+    unchanged so a raw document whose literal body happens to start with
+    ``{{LRdoc}}`` is never silently truncated.
+
+    Centralizing the format check here turns "must check format before
+    stripping" from a caller-side discipline into a structural property of
+    the function: any future call site that forgets to gate is protected
+    automatically.
     """
-    if isinstance(content, str) and content.startswith(LIGHTRAG_DOC_CONTENT_PREFIX):
+    if (
+        parse_format == FULL_DOCS_FORMAT_LIGHTRAG
+        and isinstance(content, str)
+        and content.startswith(LIGHTRAG_DOC_CONTENT_PREFIX)
+    ):
         return content[len(LIGHTRAG_DOC_CONTENT_PREFIX) :]
     return content or ""
 
