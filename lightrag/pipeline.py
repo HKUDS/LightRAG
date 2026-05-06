@@ -44,7 +44,6 @@ from lightrag.constants import (
 from lightrag.exceptions import PipelineCancelledException
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.operate import merge_nodes_and_edges
-from lightrag.extraction.interchange import parse_interchange_jsonl
 from lightrag.parser_routing import (
     canonicalize_parser_hinted_basename,
     resolve_file_parser_directives,
@@ -80,7 +79,9 @@ from lightrag.utils_pipeline import (
     normalize_parser_result_to_content_list,
     parsed_artifact_dir_for_source,
     resolve_doc_file_path,
+    resolve_lightrag_blocks_path,
     resolve_lightrag_document_path,
+    strip_lightrag_doc_prefix,
 )
 
 
@@ -278,6 +279,14 @@ class _PipelineMixin:
             canonical_key = canonical_keys[index]
             source_path = file_paths[index]
 
+            # Body length excludes the {{LRdoc}} marker so duplicate-attempt
+            # bookkeeping reports the same units as raw documents.
+            body_length = len(
+                strip_lightrag_doc_prefix(content)
+                if doc_format == FULL_DOCS_FORMAT_LIGHTRAG
+                else (content or "")
+            )
+
             # Compute content hash: skip for pending_parse (content extracted later).
             content_hash: str | None = None
             if doc_format == FULL_DOCS_FORMAT_RAW:
@@ -307,7 +316,7 @@ class _PipelineMixin:
                         "doc_id": doc_id,
                         "original_doc_id": source_to_doc_id[canonical_key],
                         "file_path": source_key,
-                        "content_length": len(content or ""),
+                        "content_length": body_length,
                         "existing_status": "batch_duplicate",
                         "existing_track_id": "",
                         "duplicate_kind": "filename",
@@ -321,7 +330,7 @@ class _PipelineMixin:
                         "doc_id": doc_id,
                         "original_doc_id": content_hash_to_doc_id[content_hash],
                         "file_path": source_key,
-                        "content_length": len(content or ""),
+                        "content_length": body_length,
                         "existing_status": "batch_duplicate",
                         "existing_track_id": "",
                         "duplicate_kind": "content_hash",
@@ -409,10 +418,20 @@ class _PipelineMixin:
 
         # 2. Generate document initial status (without content)
         def _initial_doc_status(content_data: dict[str, Any]) -> dict[str, Any]:
+            # For lightrag-format full_docs the persisted content carries the
+            # ``{{LRdoc}}`` marker; strip it so summary/length match raw
+            # semantics (the marker is full_docs internal bookkeeping and
+            # must not leak into doc_status).
+            raw_content = content_data.get("content", "")
+            body_text = (
+                strip_lightrag_doc_prefix(raw_content)
+                if content_data.get("parse_format") == FULL_DOCS_FORMAT_LIGHTRAG
+                else raw_content
+            )
             base: dict[str, Any] = {
                 "status": DocStatus.PENDING,
-                "content_summary": get_content_summary(content_data.get("content", "")),
-                "content_length": len(content_data.get("content", "")),
+                "content_summary": get_content_summary(body_text),
+                "content_length": len(body_text),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "file_path": content_data["file_path"],
@@ -1401,72 +1420,68 @@ class _PipelineMixin:
                                     status_doc.chunks_list = []
                                     status_doc.chunks_count = 0
 
-                            # Try to parse as interchange JSONL (smart extraction output)
-                            parsed_interchange = parse_interchange_jsonl(
-                                content, self.tokenizer
+                            # F-chunking only — R/S strategies are deferred.
+                            # Both raw and lightrag formats funnel through the
+                            # same chunking_func: parse_native already strips
+                            # the {{LRdoc}} marker for lightrag, but a second
+                            # idempotent strip here protects future callers
+                            # that might surface prefixed content directly.
+                            if doc_process_opts.chunking != "F":
+                                logger.warning(
+                                    f"[chunking] process_options chunking="
+                                    f"{doc_process_opts.chunking!r} requested for d-id: "
+                                    f"{doc_id}, file: {file_path}, but R/S strategies are "
+                                    f"not yet implemented; falling back to fixed chunking "
+                                    f"('F')."
+                                )
+
+                            chunking_input = strip_lightrag_doc_prefix(content)
+                            chunking_result = self.chunking_func(
+                                self.tokenizer,
+                                chunking_input,
+                                split_by_character,
+                                split_by_character_only,
+                                self.chunk_overlap_token_size,
+                                self.chunk_token_size,
                             )
-                            if parsed_interchange is not None:
-                                interchange_meta, interchange_chunks = (
-                                    parsed_interchange
-                                )
-                                logger.info(
-                                    f"Detected interchange JSONL for d-id: {doc_id}, {len(interchange_chunks)} chunks"
-                                )
-                                chunking_result = interchange_chunks
-                                extraction_meta = {
-                                    "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                                    "parse_engine": interchange_meta.get(
-                                        "parse_engine"
-                                    ),
-                                    "chunking_method": interchange_meta.get(
-                                        "chunking_method"
-                                    ),
-                                }
-                            else:
-                                # Per-document chunking strategy:
-                                #  - 'F' (default): use the configured chunking_func
-                                #    (chunking_by_token_size).
-                                #  - 'S' / 'R': require structured input which the
-                                #    legacy text path cannot provide; fall back to
-                                #    'F' and log a warning so the user knows their
-                                #    selection had no effect for this document.
-                                if doc_process_opts.chunking != "F":
-                                    logger.warning(
-                                        f"[chunking] process_options chunking="
-                                        f"{doc_process_opts.chunking!r} requested for d-id: "
-                                        f"{doc_id}, file: {file_path}, but no structured "
-                                        f"interchange output is available; falling back to "
-                                        f"fixed chunking ('F')."
-                                    )
-                                # Call chunking function, supporting both sync and async implementations
-                                chunking_result = self.chunking_func(
-                                    self.tokenizer,
-                                    content,
-                                    split_by_character,
-                                    split_by_character_only,
-                                    self.chunk_overlap_token_size,
-                                    self.chunk_token_size,
+                            if inspect.isawaitable(chunking_result):
+                                chunking_result = await chunking_result
+
+                            if not isinstance(chunking_result, (list, tuple)):
+                                raise TypeError(
+                                    f"chunking_func must return a list or tuple of dicts, "
+                                    f"got {type(chunking_result)}"
                                 )
 
-                                # If result is awaitable, await to get actual result
-                                if inspect.isawaitable(chunking_result):
-                                    chunking_result = await chunking_result
-
-                                # Validate return type
-                                if not isinstance(chunking_result, (list, tuple)):
-                                    raise TypeError(
-                                        f"chunking_func must return a list or tuple of dicts, "
-                                        f"got {type(chunking_result)}"
-                                    )
-                                extraction_meta = {
-                                    "parse_format": FULL_DOCS_FORMAT_RAW,
-                                    "parse_engine": "legacy",
-                                    "chunking_method": (
-                                        "fixed_token_fallback"
-                                        if doc_process_opts.chunking != "F"
-                                        else "fixed_token"
-                                    ),
-                                }
+                            # Reflect the format actually persisted in
+                            # full_docs.  Previously the failed-interchange
+                            # fallback always tagged parse_format=raw, which
+                            # silently disabled _run_multimodal_postprocess_hook
+                            # for lightrag documents (it gates on parse_format).
+                            persisted_format = (
+                                content_data.get("parse_format")
+                                if isinstance(content_data, dict)
+                                else FULL_DOCS_FORMAT_RAW
+                            ) or FULL_DOCS_FORMAT_RAW
+                            persisted_engine = (
+                                content_data.get("parse_engine")
+                                if isinstance(content_data, dict)
+                                else None
+                            )
+                            extraction_meta = {
+                                "parse_format": persisted_format,
+                                "parse_engine": persisted_engine
+                                or (
+                                    "native"
+                                    if persisted_format == FULL_DOCS_FORMAT_LIGHTRAG
+                                    else "legacy"
+                                ),
+                                "chunking_method": (
+                                    "fixed_token_fallback"
+                                    if doc_process_opts.chunking != "F"
+                                    else "fixed_token"
+                                ),
+                            }
 
                             # Multimodal post-process hook entrypoint:
                             # runs after interchange parsing and before entity extraction.
@@ -3205,11 +3220,15 @@ class _PipelineMixin:
         """Phase 1 parse for native/raw, lightrag and pending_parse formats."""
         doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
         if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
-            doc_path = content_data.get("lightrag_document_path") or file_path
-            doc_path = Path(resolve_lightrag_document_path(str(doc_path)))
-            merged_text, blocks_path = await load_lightrag_document_content(
-                str(doc_path)
-            )
+            # full_docs.content carries the merged text with the {{LRdoc}}
+            # marker; strip it so the chunking path is identical to raw.
+            # blocks_path is still resolved for downstream multimodal
+            # sidecar reads (_build_mm_chunks_from_sidecars).
+            merged_text = strip_lightrag_doc_prefix(content_data.get("content"))
+            raw_doc_path = content_data.get("lightrag_document_path") or file_path
+            resolved_doc_path = resolve_lightrag_document_path(str(raw_doc_path))
+            blocks_path = resolve_lightrag_blocks_path(resolved_doc_path) or ""
+
             return {
                 "doc_id": doc_id,
                 "file_path": file_path,
