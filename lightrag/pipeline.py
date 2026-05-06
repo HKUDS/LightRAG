@@ -1287,12 +1287,27 @@ class _PipelineMixin:
                                     return
 
                                 # ---- Phase 2: ANALYZING ----
+                                # Refresh content_summary / content_length from
+                                # the parsed body so pending_parse → lightrag /
+                                # raw documents (whose summary was empty and
+                                # length was 0 at enqueue) end up with real
+                                # values that propagate through every later
+                                # state transition.  We mirror the values onto
+                                # the in-memory status_doc dataclass — same
+                                # pattern as the content_hash refresh above —
+                                # so PROCESSING / PROCESSED upserts (which
+                                # read from status_doc.content_summary /
+                                # status_doc.content_length) preserve them.
+                                refreshed_summary = get_content_summary(content)
+                                refreshed_length = len(content)
+                                status_doc.content_summary = refreshed_summary
+                                status_doc.content_length = refreshed_length
                                 await self.doc_status.upsert(
                                     {
                                         doc_id: {
                                             "status": DocStatus.ANALYZING,
-                                            "content_summary": status_doc.content_summary,
-                                            "content_length": len(content),
+                                            "content_summary": refreshed_summary,
+                                            "content_length": refreshed_length,
                                             "created_at": status_doc.created_at,
                                             "updated_at": datetime.now(
                                                 timezone.utc
@@ -2001,14 +2016,27 @@ class _PipelineMixin:
                             file_path_w = getattr(
                                 status_doc_w, "file_path", "unknown_source"
                             )
+                            # Refresh content_summary / content_length from
+                            # the parsed body so pending_parse → lightrag /
+                            # raw documents (which start with empty summary
+                            # and zero length at enqueue) end up with real
+                            # values that propagate through every later
+                            # state transition.  Mirrors the values onto the
+                            # in-memory status_doc_w dataclass so PROCESSING /
+                            # PROCESSED upserts (which read from
+                            # status_doc_w.content_summary /
+                            # status_doc_w.content_length) preserve them.
+                            refreshed_content_w = parsed_data_w.get("content", "") or ""
+                            refreshed_summary_w = get_content_summary(refreshed_content_w)
+                            refreshed_length_w = len(refreshed_content_w)
+                            status_doc_w.content_summary = refreshed_summary_w
+                            status_doc_w.content_length = refreshed_length_w
                             await self.doc_status.upsert(
                                 {
                                     doc_id_w: {
                                         "status": DocStatus.ANALYZING,
-                                        "content_summary": status_doc_w.content_summary,
-                                        "content_length": len(
-                                            parsed_data_w.get("content", "")
-                                        ),
+                                        "content_summary": refreshed_summary_w,
+                                        "content_length": refreshed_length_w,
                                         "created_at": status_doc_w.created_at,
                                         "updated_at": datetime.now(
                                             timezone.utc

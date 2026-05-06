@@ -19,9 +19,15 @@ guard the contract end-to-end:
   the dropped interchange detection branch.
 * T5: ``process_options`` selecting R/S logs the deferred-strategy
   warning and falls back to fixed-token chunking.
+* T6: a ``pending_parse`` document that resolves to lightrag at parse
+  time ends up with a real ``content_summary`` after PROCESSED — the
+  ANALYZING transition refreshes the summary from the parsed body so
+  pending-parse rows no longer carry the empty enqueue-time placeholder
+  through to the user-facing list APIs.
 """
 
 import asyncio
+import importlib
 import json
 import logging
 from pathlib import Path
@@ -32,9 +38,15 @@ import pytest
 from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
+    FULL_DOCS_FORMAT_PENDING_PARSE,
     LIGHTRAG_DOC_CONTENT_PREFIX,
 )
-from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
+from lightrag.utils import (
+    EmbeddingFunc,
+    Tokenizer,
+    compute_mdhash_id,
+    get_content_summary,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -431,5 +443,115 @@ def test_rs_chunking_warns_and_falls_back_to_fixed(tmp_path):
         assert any(
             "R/S strategies are not yet implemented" in msg for msg in warning_messages
         ), f"deferred-strategy warning missing; saw: {warning_messages!r}"
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# T6 — pending_parse → lightrag summary is populated after PROCESSED
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_pending_parse_lightrag_summary_populated_after_processed(
+    tmp_path, monkeypatch
+):
+    """A document enqueued as ``pending_parse`` has empty content at
+    enqueue time, so ``content_summary`` starts empty.  After
+    ``parse_native`` produces ``.blocks.jsonl`` and the state machine
+    moves through ANALYZING → PROCESSING → PROCESSED, the summary must
+    reflect the parsed body — not the enqueue-time placeholder."""
+
+    body_paragraphs = [
+        "Pending-parse summary regression body paragraph one.",
+        "Body paragraph two carries enough text for a meaningful preview.",
+        "Body paragraph three closes the document.",
+    ]
+
+    async def _run():
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+        source_path = input_dir / "summary.docx"
+        source_path.write_bytes(b"fake docx bytes")
+
+        # Stub the docx parser so the parsed content_list is deterministic;
+        # the writer turns it into the canonical .blocks.jsonl + sidecars.
+        parse_document = importlib.import_module("lightrag.extraction.parse_document")
+
+        def _stub_parse(file_bytes, source_file, doc_id):
+            content_list = [
+                {"type": "text", "text": para} for para in body_paragraphs
+            ]
+            return content_list, {}
+
+        monkeypatch.setattr(
+            parse_document, "parse_docx_to_lightrag_content_list", _stub_parse
+        )
+
+        rag = _new_rag(tmp_path / "work")
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "",
+                file_paths="summary.docx",
+                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                track_id="track-summary",
+            )
+
+            doc_id = compute_mdhash_id("summary.docx", prefix="doc-")
+
+            pending = await rag.doc_status.get_by_id(doc_id)
+            assert pending is not None
+            pending_summary = (
+                pending.get("content_summary")
+                if isinstance(pending, dict)
+                else getattr(pending, "content_summary", "")
+            )
+            # At enqueue time pending_parse content is "" so summary is empty.
+            assert pending_summary == "", (
+                f"pending_parse should start with empty summary, got "
+                f"{pending_summary!r}"
+            )
+
+            await rag.apipeline_process_enqueue_documents()
+
+            final = await rag.doc_status.get_by_id(doc_id)
+            assert final is not None
+            final_summary = (
+                final.get("content_summary")
+                if isinstance(final, dict)
+                else getattr(final, "content_summary", "")
+            )
+            final_length = (
+                final.get("content_length")
+                if isinstance(final, dict)
+                else getattr(final, "content_length", 0)
+            )
+
+            assert final_summary, (
+                "content_summary still empty after PROCESSED; ANALYZING "
+                "refresh did not propagate"
+            )
+            assert not final_summary.startswith(LIGHTRAG_DOC_CONTENT_PREFIX), (
+                f"{{LRdoc}} marker leaked into doc_status summary: "
+                f"{final_summary!r}"
+            )
+            # The parser stub produces these paragraphs verbatim; the
+            # blocks.jsonl writer joins them with a blank line, so the
+            # summary must be a prefix of that merged text.
+            merged_text = "\n\n".join(body_paragraphs)
+            assert final_summary == get_content_summary(merged_text), (
+                f"summary should match get_content_summary(merged_text); "
+                f"got {final_summary!r} vs "
+                f"{get_content_summary(merged_text)!r}"
+            )
+            assert final_length == len(merged_text), (
+                f"content_length should equal len(merged_text)={len(merged_text)}, "
+                f"got {final_length}"
+            )
+        finally:
+            await rag.finalize_storages()
 
     asyncio.run(_run())
