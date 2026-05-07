@@ -13,6 +13,8 @@ only ``"type": "content"`` rows, so re-parsing must yield byte-identical
 """
 
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
 
@@ -201,6 +203,50 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
         assert "parse_time" in on_disk
         assert "parse_time" not in result["content"]
         assert result["content"].strip() == "the body"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monkeypatch):
+    """The native DOCX parser does not infer table titles, so its table
+    sidecar must not synthesize captions like ``表1``.
+    """
+
+    async def _run():
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+        source_path = input_dir / "table.docx"
+        source_path.write_bytes(b"fake")
+
+        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+            return [_block('before\n<table>[["A"]]</table>\nafter')]
+
+        monkeypatch.setattr(
+            "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+            _stub_extract,
+        )
+
+        rag = _MiniRag(tmp_path / "work")
+        result = await LightRAG.parse_native(
+            rag,
+            "doc-table",
+            str(source_path),
+            {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+        )
+
+        blocks_path = Path(result["blocks_path"])
+        lines = blocks_path.read_text(encoding="utf-8").splitlines()
+        block = json.loads(lines[1])
+        assert 'caption=""' in block["content"]
+        assert "表1" not in block["content"]
+
+        tables_path = blocks_path.with_suffix("").with_suffix(".tables.json")
+        tables = json.loads(tables_path.read_text(encoding="utf-8"))
+        table_entry = tables["tables"]["tb-doc-table-0001"]
+        assert table_entry["caption"] == ""
 
     asyncio.run(_run())
 

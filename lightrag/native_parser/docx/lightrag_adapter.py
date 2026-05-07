@@ -200,7 +200,7 @@ def _parse_docx_sync(
             local_table_count += 1
             idx = table_idx + local_table_count
             tb_id = f"tb-{doc_id}-{idx:04d}"
-            caption = f"表{idx}"
+            caption = ""
             table_json = match.group(1)
             try:
                 rows = json.loads(table_json)
