@@ -643,8 +643,8 @@ def smart_chunk(
     is skipped. Use this from callers that hand the resulting blocks to a
     downstream chunker (e.g. ``chunking_func`` after LightRAG Document load) —
     a second merge round there would be redundant, and stage D's
-    ``[续N]`` heading mutation is what historically broke the interchange
-    parser's ``[表格片段N]`` anchor.
+    ``[续N]`` heading mutation is what historically broke structured table
+    anchors such as ``[表格片段N]``.
     """
     blocks = _stage_a_heading_split(paragraphs)
     blocks = _stage_b_table_slice(blocks)

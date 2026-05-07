@@ -132,7 +132,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - `F`/`R`/`S` 至多出现一个；同一选项重复时只生效一次但不报错。
 - 大小写敏感：分块选项 `F`/`R`/`S` 必须大写；其它选项 `i`/`t`/`e`/`!` 小写。
 - 中括号内出现非法字符时，整个 hint 失效，引擎按默认规则解析，选项按 `LIGHTRAG_PARSER` 默认或全部默认；同时落日志 warning。
-- `S` 仅对 `native` 抽取出的结构化结果（interchange JSONL）有效；对 `legacy` 路径或非结构化输出会自动降级到 `F` 并记录 warning。
+- `S` 仅对 `native` 抽取出的 LightRAG Document 结构化结果有效；对 `legacy` 路径或非结构化输出会自动降级到 `F` 并记录 warning。
 
 ## 推荐配置
 
@@ -372,7 +372,7 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 | 旧 chunks 清理 | 读 `doc_status.chunks_list`，从 `chunks_vdb` 与 `text_chunks` 全部 delete。理由：流水线产物中无法可靠区分"普通文本块 vs 多模态附加块"，按 chunk id 一律重新生成最简单也最可靠 |
 | 旧实体 / 关系清理 | 复用 `adelete_by_doc_id` 内部清理逻辑（抽出为 `_purge_doc_chunks_and_kg(doc_id)` helper），删除 `entity_chunks` / `relation_chunks` 中以这些 chunk id 为 source 的条目，并把图谱里因之失去全部源的孤立节点一并删除 |
 | `analyze_multimodal` | **不再看 `meta.analyze_time`**：按新 `process_options.{i,t,e}` 与 sidecar 中各 item 的 `llm_analyze_result` 取交集做增量分析（已分析的 item 跳过，新启用的模态从空状态开始分析）。`analyze_time` 改为"最近一次成功分析时间"语义，仅供观测 |
-| 重新分块 | 按新 `process_options.chunking` 重跑（interchange path 用 native heading-driven，legacy path 用 fixed） |
+| 重新分块 | 按新 `process_options.chunking` 重跑（LightRAG Document path 用 native heading-driven，legacy path 用 fixed） |
 | 实体抽取 / KG-skip | 按新 `process_options.skip_kg` 决定 |
 
 > 这条规则保证：用户改 `i/t/e` 重传同名文档（先删旧 doc 再上传带新 hint 的文件）时，多模态分析能增量补齐；改 `F`/`R`/`S` 时 chunks 与图谱重建；改 `!` 时停掉或恢复 KG 构建。引擎变更被视为"重大变更"，统一由 delete + 重传完成，不在续跑路径里隐式发生。

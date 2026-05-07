@@ -1,8 +1,8 @@
 """End-to-end test: native docx → LightRAG Document → stable cache key.
 
-The original bug this guards against: ``parse_native`` used to write the
-full interchange JSONL string (with a runtime ``parsed_at`` field) into
-``full_docs.content``, so re-parsing the same docx produced different
+The original bug this guards against: ``parse_native`` used to write a
+runtime-stamped structured parser payload into ``full_docs.content``, so
+re-parsing the same docx produced different
 chunk-0 content and therefore different LLM cache keys.
 
 After the fix, ``parse_native`` writes ``.blocks.jsonl`` + sidecars and

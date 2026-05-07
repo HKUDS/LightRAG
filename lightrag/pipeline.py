@@ -1468,7 +1468,7 @@ class _PipelineMixin:
                                 )
 
                             # Reflect the format actually persisted in
-                            # full_docs.  Previously the failed-interchange
+                            # full_docs.  Previously a structured-parse
                             # fallback always tagged parse_format=raw, which
                             # silently disabled _run_multimodal_postprocess_hook
                             # for lightrag documents (it gates on parse_format).
@@ -1498,7 +1498,7 @@ class _PipelineMixin:
                             }
 
                             # Multimodal post-process hook entrypoint:
-                            # runs after interchange parsing and before entity extraction.
+                            # runs after chunking and before entity extraction.
                             chunking_result = (
                                 await self._run_multimodal_postprocess_hook(
                                     doc_id=doc_id,
@@ -3481,7 +3481,7 @@ class _PipelineMixin:
         """Multimodal post-process entrypoint.
 
         Placement:
-            interchange parsing -> [this hook] -> entity extraction
+            chunking -> [this hook] -> entity extraction
 
         Default behavior is no-op. This method defines a stable extension point
         for built-in multimodal processors.

@@ -12,11 +12,11 @@ guard the contract end-to-end:
   body length / summary (no marker leakage).
 * T3: ``_run_multimodal_postprocess_hook`` now sees
   ``extraction_meta["parse_format"] == "lightrag"`` for lightrag docs —
-  previously the failed-interchange fallback always tagged ``raw`` and
+  previously a structured-parse fallback always tagged ``raw`` and
   silently disabled the hook.
-* T4: a raw document whose body coincidentally *looks* like interchange
+* T4: a raw document whose body coincidentally *looks* like structured
   JSONL is still tokenised as plain text — guards against re-introducing
-  the dropped interchange detection branch.
+  dropped structured-format detection in the raw path.
 * T5: ``process_options`` selecting R/S logs the deferred-strategy
   warning and falls back to fixed-token chunking.
 * T6: a ``pending_parse`` document that resolves to lightrag at parse
@@ -292,7 +292,7 @@ def test_full_docs_content_carries_full_merged_text(tmp_path, monkeypatch):
 
 @pytest.mark.offline
 def test_multimodal_hook_sees_lightrag_parse_format(tmp_path, monkeypatch):
-    """Before the unification, the failed-interchange fallback tagged
+    """Before the unification, a structured-parse fallback tagged
     ``extraction_meta.parse_format = raw`` for lightrag docs, which made
     ``_run_multimodal_postprocess_hook`` return early because it gates
     on ``parse_format == lightrag``.  Assert the tag now reflects the
@@ -354,13 +354,13 @@ def test_multimodal_hook_sees_lightrag_parse_format(tmp_path, monkeypatch):
 
 @pytest.mark.offline
 def test_jsonl_shaped_raw_text_chunks_as_plain_text(tmp_path):
-    """A raw document whose body coincidentally resembles interchange JSONL
+    """A raw document whose body coincidentally resembles structured JSONL
     must be tokenised plainly — guarding against accidental
-    re-introduction of the removed interchange detection branch."""
+    re-introduction of removed structured-format detection."""
 
     # No trailing newline — sanitize_text_for_encoding strips trailing
     # whitespace on raw enqueue, and that pre-chunking cleanup is unrelated
-    # to interchange detection.
+    # to structured-format detection.
     pseudo_jsonl = (
         json.dumps({"type": "meta", "format_version": "1.0"})
         + "\n"
@@ -369,7 +369,7 @@ def test_jsonl_shaped_raw_text_chunks_as_plain_text(tmp_path):
                 "type": "text",
                 "chunk_id": "c0",
                 "chunk_order_index": 0,
-                "content": "fake interchange line",
+                "content": "fake structured line",
             }
         )
     )

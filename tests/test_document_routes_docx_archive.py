@@ -1761,16 +1761,16 @@ def test_parsed_artifact_dir_reuses_existing_parsed_parent(tmp_path):
     assert artifact_dir == parsed_dir / "demo.docx.parsed"
 
 
-async def test_parse_native_docx_interchange_failure_raises_without_fallback(
+async def test_parse_native_docx_content_list_failure_raises_without_fallback(
     tmp_path, monkeypatch
 ):
-    source_path = tmp_path / "interchange-failure.docx"
+    source_path = tmp_path / "content-list-failure.docx"
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
     parse_document = importlib.import_module("lightrag.extraction.parse_document")
 
     def _raise_parser(file_bytes, source_file, doc_id):
-        raise RuntimeError("interchange boom")
+        raise RuntimeError("content list boom")
 
     def _fail_fallback(file_bytes):
         raise AssertionError("plain text fallback should not run")
@@ -1780,7 +1780,7 @@ async def test_parse_native_docx_interchange_failure_raises_without_fallback(
     )
     monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
 
-    with pytest.raises(RuntimeError, match="interchange boom"):
+    with pytest.raises(RuntimeError, match="content list boom"):
         await LightRAG.parse_native(
             rag,
             "doc-test",
@@ -1792,10 +1792,10 @@ async def test_parse_native_docx_interchange_failure_raises_without_fallback(
     assert rag.full_docs.events == []
 
 
-async def test_parse_native_docx_empty_interchange_result_raises_without_fallback(
+async def test_parse_native_docx_empty_content_list_result_raises_without_fallback(
     tmp_path, monkeypatch
 ):
-    source_path = tmp_path / "empty-interchange.docx"
+    source_path = tmp_path / "empty-content-list.docx"
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
     parse_document = importlib.import_module("lightrag.extraction.parse_document")
