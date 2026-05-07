@@ -3274,59 +3274,39 @@ class _PipelineMixin:
             )
             p = Path(source_path)
             if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
-                from lightrag.extraction.parse_document import (
-                    parse_docx_to_lightrag_content_list,
+                from lightrag.native_parser.docx import (
+                    parse_docx_to_lightrag_document,
                 )
 
                 file_bytes = await asyncio.to_thread(p.read_bytes)
-                # Use the canonical (hint-stripped) basename so the image
-                # asset path embedded in content_list matches the directory
-                # _write_lightrag_document_from_content_list will create
-                # below (it also calls canonicalize_parser_hinted_basename).
-                canonical_basename = (
-                    canonicalize_parser_hinted_basename(file_path) or p.name
-                )
-                content_list, asset_blobs = await asyncio.to_thread(
-                    parse_docx_to_lightrag_content_list,
-                    file_bytes,
-                    canonical_basename,
-                    doc_id,
-                )
-                if not content_list:
-                    raise ValueError(
-                        f"DOCX parser returned empty content for {file_path}"
-                    )
-
-                # Reuse the shared writer that mineru/docling already use.
-                # It produces .blocks.jsonl + sidecar JSONs, persists
-                # full_docs as LIGHTRAG format, and archives the source.
-                # NOTE: this writer wipes parsed_dir at the start, so any
-                # image bytes must be written AFTER it returns.
-                parsed_data = await self._write_lightrag_document_from_content_list(
-                    doc_id=doc_id,
+                parsed_data = await parse_docx_to_lightrag_document(
+                    file_bytes=file_bytes,
                     file_path=file_path,
-                    content_list=content_list,
-                    engine=PARSER_ENGINE_NATIVE,
+                    doc_id=doc_id,
                     source_path=str(p),
                 )
 
-                # Now drop image assets into <parsed_dir>/<base>.blocks.assets/
-                # so the drawing items' img_path resolve correctly.
-                if asset_blobs:
-                    parsed_dir = parsed_artifact_dir_for_source(str(p), file_path)
-                    base_stem = (
-                        Path(
-                            canonicalize_parser_hinted_basename(file_path) or p.name
-                        ).stem
-                        or doc_id
-                    )
-                    asset_dir = parsed_dir / f"{base_stem}.blocks.assets"
-                    asset_dir.mkdir(parents=True, exist_ok=True)
-                    for filename, blob in asset_blobs.items():
-                        (asset_dir / filename).write_bytes(blob)
+                blocks_path = Path(parsed_data["blocks_path"])
+                stored_blocks_path = str(blocks_path)
+                try:
+                    stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
+                except ValueError:
+                    pass
+                await self._persist_parsed_full_docs(
+                    doc_id,
+                    {
+                        "content": make_lightrag_doc_content(parsed_data["content"]),
+                        "file_path": file_path,
+                        "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                        "lightrag_document_path": stored_blocks_path,
+                        "parse_engine": PARSER_ENGINE_NATIVE,
+                        "update_time": int(time.time()),
+                    },
+                )
+                await archive_docx_source_after_full_docs_sync(str(p))
                 logger.info(
                     f"[parse_native] pending_parse completed for {file_path} "
-                    f"via LightRAG Document ({len(content_list)} content_list items)"
+                    f"via native_parser/docx"
                 )
                 return parsed_data
             raise ValueError(

@@ -1785,20 +1785,21 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
             monkeypatch.setattr(lightrag_module, "datetime", _FrozenDateTime)
             monkeypatch.setattr(pipeline_module, "datetime", _FrozenDateTime)
 
-            parse_document = __import__(
-                "lightrag.extraction.parse_document",
-                fromlist=["parse_docx_to_lightrag_content_list"],
-            )
-            # Both docx files emit the same content_list, so combined with the
+            # Both docx files emit the same blocks list, so combined with the
             # frozen datetime the resulting .blocks.jsonl bytes are equal.
-            stable_content_list = [{"type": "text", "text": "same extracted body"}]
+            stable_block = {
+                "uuid": "p1",
+                "uuid_end": "p1",
+                "heading": "",
+                "content": "same extracted body",
+                "type": "text",
+                "parent_headings": [],
+                "level": 0,
+                "table_chunk_role": "none",
+            }
             monkeypatch.setattr(
-                parse_document,
-                "parse_docx_to_lightrag_content_list",
-                lambda file_bytes, source_file, doc_id: (
-                    list(stable_content_list),
-                    {},
-                ),
+                "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+                lambda *args, **kwargs: [dict(stable_block)],
             )
 
             # First original docx: enqueue, parse, mark PROCESSED.

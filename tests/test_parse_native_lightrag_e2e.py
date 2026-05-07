@@ -13,7 +13,6 @@ only ``"type": "content"`` rows, so re-parsing must yield byte-identical
 """
 
 import asyncio
-import importlib
 
 import pytest
 
@@ -23,6 +22,20 @@ from lightrag.constants import (
     PARSED_DIR_NAME,
 )
 from lightrag.utils import compute_args_hash
+
+
+def _block(content, *, heading="", level=0, parent=None, uuid="p1"):
+    """Build a synthetic block dict matching extract_audit_blocks output."""
+    return {
+        "uuid": uuid,
+        "uuid_end": uuid,
+        "heading": heading,
+        "content": content,
+        "type": "text",
+        "parent_headings": list(parent or []),
+        "level": level,
+        "table_chunk_role": "none",
+    }
 
 
 class _MiniFullDocs:
@@ -48,12 +61,9 @@ class _MiniDocStatus:
 
 
 class _MiniRag:
-    """Just enough surface for parse_native + _write_lightrag_document_*."""
+    """Just enough surface for parse_native + native_parser/docx adapter."""
 
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-    _write_lightrag_document_from_content_list = (
-        LightRAG._write_lightrag_document_from_content_list
-    )
 
     def __init__(self, working_dir):
         self.working_dir = str(working_dir)
@@ -77,22 +87,20 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
         source_path = input_dir / "stable.docx"
         source_path.write_bytes(b"fake docx bytes")
 
-        # Stub the docx parser so we get a deterministic content_list both
-        # times — the real cache stability guarantee comes from LightRAG
-        # writing a stable .blocks.jsonl content section, not from the
-        # parser itself being deterministic.
-        parse_document = importlib.import_module("lightrag.extraction.parse_document")
-        stable_content_list = [
-            {"type": "section_header", "text": "Title", "text_level": 1},
-            {"type": "text", "text": "First paragraph body."},
-            {"type": "text", "text": "Second paragraph body."},
+        # Stub extract_audit_blocks at the adapter so the upstream DOCX
+        # parser is never invoked. The adapter still does all the
+        # LightRAG-specific writing — that is what we want under test.
+        stable_blocks = [
+            _block("Title\nFirst paragraph body.\nSecond paragraph body.",
+                   heading="Title", level=1),
         ]
 
-        def _stub_parse(file_bytes, source_file, doc_id):
-            return list(stable_content_list), {}
+        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+            return [dict(b) for b in stable_blocks]
 
         monkeypatch.setattr(
-            parse_document, "parse_docx_to_lightrag_content_list", _stub_parse
+            "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+            _stub_extract,
         )
 
         rag = _MiniRag(tmp_path / "work")
@@ -167,11 +175,12 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
         source_path = input_dir / "skipmeta.docx"
         source_path.write_bytes(b"fake")
 
-        parse_document = importlib.import_module("lightrag.extraction.parse_document")
+        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+            return [_block("the body")]
+
         monkeypatch.setattr(
-            parse_document,
-            "parse_docx_to_lightrag_content_list",
-            lambda *_, **__: ([{"type": "text", "text": "the body"}], {}),
+            "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+            _stub_extract,
         )
 
         rag = _MiniRag(tmp_path / "work")
@@ -198,9 +207,8 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
     tmp_path, monkeypatch
 ):
     """Native parsing must drop image bytes into ``<base>.blocks.assets/``
-    after the LightRAG Document writer creates the parsed dir — the writer
-    wipes the directory at the start, so a naive "write images first" would
-    leave the assets dir empty.
+    after the adapter creates the parsed dir (which it wipes at the start),
+    and the drawings sidecar must reference the rewritten ids.
     """
     from pathlib import Path
 
@@ -212,26 +220,29 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
         source_path = input_dir / "with_pics.docx"
         source_path.write_bytes(b"fake")
 
-        parse_document = importlib.import_module("lightrag.extraction.parse_document")
-
-        def _stub_parse(file_bytes, source_file, doc_id):
-            base_stem = Path(source_file).stem
-            asset_dir_rel = f"{base_stem}.blocks.assets"
-            content_list = [
-                {"type": "text", "text": "intro"},
-                {
-                    "type": "image",
-                    "id": "1",
-                    "img_path": f"{asset_dir_rel}/pic.png",
-                    "image_caption": ["pic"],
-                },
-                {"type": "text", "text": "outro"},
+        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+            # The adapter already created the asset dir before calling us;
+            # write the fake image bytes there as a side-effect, then return
+            # a block whose content references that asset via <drawing .../>.
+            assert drawing_context is not None
+            assert drawing_context.export_dir_path is not None
+            (drawing_context.export_dir_path / "pic.png").write_bytes(
+                b"PNG-BYTES"
+            )
+            return [
+                _block(
+                    'intro\n'
+                    '<drawing id="1" name="pic" format="png" '
+                    'path="with_pics.blocks.assets/pic.png" />\n'
+                    'outro',
+                    heading="intro",
+                    level=1,
+                ),
             ]
-            asset_blobs = {"pic.png": b"PNG-BYTES"}
-            return content_list, asset_blobs
 
         monkeypatch.setattr(
-            parse_document, "parse_docx_to_lightrag_content_list", _stub_parse
+            "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+            _stub_extract,
         )
 
         rag = _MiniRag(tmp_path / "work")
@@ -245,15 +256,15 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
         blocks_path = Path(result["blocks_path"])
         parsed_dir = blocks_path.parent
         asset_dir = parsed_dir / "with_pics.blocks.assets"
-        # Asset dir must exist alongside .blocks.jsonl, and the image
-        # bytes must survive the writer's parsed_dir cleanup step.
+        # Asset dir must exist alongside .blocks.jsonl and survive the
+        # adapter's parsed_dir cleanup step.
         assert asset_dir.is_dir(), (
             f"asset dir not created at {asset_dir}; parsed_dir contents: "
             f"{list(parsed_dir.iterdir())}"
         )
         assert (asset_dir / "pic.png").read_bytes() == b"PNG-BYTES"
-        # And drawings.json sidecar should also be there since the
-        # content_list contained an image item.
+        # And drawings.json sidecar should also be there since the block
+        # contained a <drawing .../> markup the adapter had to record.
         assert (parsed_dir / "with_pics.drawings.json").is_file()
 
     asyncio.run(_run())
