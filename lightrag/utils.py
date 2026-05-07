@@ -3403,10 +3403,12 @@ def generate_reference_list_from_chunks(
     # 5. Build reference_list
     reference_list = []
     for i, file_path in enumerate(unique_file_paths):
-        reference_list.append({
-            "reference_id": str(i + 1),
-            "file_path": file_path,
-            "doc_id": file_path_to_doc_id.get(file_path, ""),
-        })
+        reference_list.append(
+            {
+                "reference_id": str(i + 1),
+                "file_path": file_path,
+                "doc_id": file_path_to_doc_id.get(file_path, ""),
+            }
+        )
 
     return reference_list, updated_chunks
