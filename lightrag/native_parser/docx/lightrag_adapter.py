@@ -248,7 +248,7 @@ def _parse_docx_sync(
                 end == len(source) or source[end] == "\n"
             )
             if not is_block:
-                return match.group(0)
+                return f'<equation format="latex">{latex}</equation>'
 
             local_equation_count += 1
             idx = equation_idx + local_equation_count
