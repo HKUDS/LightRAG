@@ -1,7 +1,8 @@
 """
-    Utility functions to extract text from the supported mathematical equations from xml tags and
-    convert them into LaTeX
+Utility functions to extract text from the supported mathematical equations from xml tags and
+convert them into LaTeX
 """
+
 from .cleaners import clean_exp
 
 ns_map = {

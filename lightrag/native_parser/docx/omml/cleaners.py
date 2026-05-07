@@ -1,6 +1,7 @@
 """
 Postprocessing functions for cleaning up latex equations in linear format which don't give valid LaTeX.
 """
+
 import re
 
 clean_exps = {

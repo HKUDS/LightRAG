@@ -61,9 +61,7 @@ def _normalize_dimension(rows_value: Any) -> tuple[int, int]:
     if not isinstance(rows_value, list):
         return 0, 0
     num_rows = len(rows_value)
-    num_cols = max(
-        (len(r) for r in rows_value if isinstance(r, list)), default=0
-    )
+    num_cols = max((len(r) for r in rows_value if isinstance(r, list)), default=0)
     return num_rows, num_cols
 
 
@@ -168,9 +166,7 @@ def _parse_docx_sync(
             pass
 
     if not blocks:
-        raise ValueError(
-            f"DOCX parser returned empty content for {file_path}"
-        )
+        raise ValueError(f"DOCX parser returned empty content for {file_path}")
 
     tables: dict[str, Any] = {}
     equations: dict[str, Any] = {}
@@ -211,9 +207,7 @@ def _parse_docx_sync(
             except Exception:
                 rows = []
             num_rows, num_cols = _normalize_dimension(rows)
-            content = (
-                json.dumps(rows, ensure_ascii=False) if rows else table_json
-            )
+            content = json.dumps(rows, ensure_ascii=False) if rows else table_json
             pending_tables[tb_id] = {
                 "id": tb_id,
                 "blockid": "",

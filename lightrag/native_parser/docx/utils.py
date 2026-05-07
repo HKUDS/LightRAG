@@ -11,6 +11,7 @@ import re
 try:
     from google import genai
     from google.genai import types
+
     HAS_GEMINI = True
 except ImportError:  # pragma: no cover - optional dependency
     genai = None
@@ -19,6 +20,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 try:
     import openai
+
     HAS_OPENAI = True
 except ImportError:  # pragma: no cover - optional dependency
     openai = None
@@ -45,11 +47,13 @@ def estimate_tokens(text: str) -> int:
     if not text:
         return 0
 
-    chinese_count = len(re.findall(r'[\u4e00-\u9fa5]', text))
+    chinese_count = len(re.findall(r"[\u4e00-\u9fa5]", text))
     json_chars_count = len(re.findall(r'[\[\]",{}]', text))
     other_count = len(text) - chinese_count - json_chars_count
 
-    base_estimate = (chinese_count * 0.75) + (json_chars_count * 1) + (other_count * 0.4)
+    base_estimate = (
+        (chinese_count * 0.75) + (json_chars_count * 1) + (other_count * 0.4)
+    )
     final_tokens = int(base_estimate * 1.05) + 2
     return final_tokens
 
@@ -72,11 +76,8 @@ def sanitize_xml_string(text: str) -> str:
     # Build a translation table to remove illegal control characters
     # Keep: \t (0x09), \n (0x0A), \r (0x0D)
     # Remove: 0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F
-    illegal_chars = ''.join(
-        chr(c) for c in range(0x20)
-        if c not in (0x09, 0x0A, 0x0D)
-    )
-    return text.translate(str.maketrans('', '', illegal_chars))
+    illegal_chars = "".join(chr(c) for c in range(0x20) if c not in (0x09, 0x0A, 0x0D))
+    return text.translate(str.maketrans("", "", illegal_chars))
 
 
 def is_vertex_ai_mode() -> bool:
@@ -135,10 +136,7 @@ def create_gemini_client(use_async: bool = False):
         # Note: ADC handles authentication automatically
         # via GOOGLE_APPLICATION_CREDENTIALS env var or gcloud auth
         client = genai.Client(
-            vertexai=True,
-            project=project,
-            location=location,
-            http_options=http_options
+            vertexai=True, project=project, location=location, http_options=http_options
         )
     else:
         # AI Studio mode - requires API key
@@ -234,11 +232,11 @@ def is_openai_reasoning_model(model_name: str) -> bool:
 
     # Handle proxy/router prefixes like "openai/o1-mini", "openrouter/gpt-5.2"
     # Extract the base model name after the last "/"
-    if '/' in model_lower:
-        model_lower = model_lower.rsplit('/', 1)[-1]
+    if "/" in model_lower:
+        model_lower = model_lower.rsplit("/", 1)[-1]
 
     # Match o-series and gpt-5 series
-    return model_lower.startswith(('o1', 'o3', 'o4', 'gpt-5'))
+    return model_lower.startswith(("o1", "o3", "o4", "gpt-5"))
 
 
 def is_openai_retryable(error: Exception) -> bool:
@@ -331,63 +329,63 @@ def is_gemini_retryable(error: Exception) -> bool:
     error_str = str(error).lower()
 
     # API key / authentication errors - do not retry
-    if 'api_key' in error_str or 'api key' in error_str:
+    if "api_key" in error_str or "api key" in error_str:
         return False
-    if 'authentication' in error_str or 'authenticate' in error_str:
+    if "authentication" in error_str or "authenticate" in error_str:
         return False
-    if 'invalid_api_key' in error_str or 'invalid api key' in error_str:
+    if "invalid_api_key" in error_str or "invalid api key" in error_str:
         return False
 
     # Permission / forbidden errors - do not retry
-    if 'permission' in error_str and 'denied' in error_str:
+    if "permission" in error_str and "denied" in error_str:
         return False
-    if 'forbidden' in error_str or '403' in error_str:
+    if "forbidden" in error_str or "403" in error_str:
         return False
 
     # Invalid request errors - do not retry
-    if 'invalid' in error_str and ('request' in error_str or 'argument' in error_str):
+    if "invalid" in error_str and ("request" in error_str or "argument" in error_str):
         return False
-    if '400' in error_str and 'bad request' in error_str:
+    if "400" in error_str and "bad request" in error_str:
         return False
 
     # Model not found - do not retry
-    if 'model' in error_str and ('not found' in error_str or 'not exist' in error_str):
+    if "model" in error_str and ("not found" in error_str or "not exist" in error_str):
         return False
-    if '404' in error_str:
+    if "404" in error_str:
         return False
 
     # Billing / permanent quota errors - do not retry
-    if 'billing' in error_str:
+    if "billing" in error_str:
         return False
-    if 'quota' in error_str and ('exceeded' in error_str or 'exhausted' in error_str):
+    if "quota" in error_str and ("exceeded" in error_str or "exhausted" in error_str):
         # Check if it mentions billing which indicates permanent quota issue
-        if 'billing' in error_str or 'payment' in error_str:
+        if "billing" in error_str or "payment" in error_str:
             return False
         # Temporary quota (rate limit) - should retry
         return True
 
     # Rate limit errors - should retry (429)
-    if 'rate' in error_str and 'limit' in error_str:
+    if "rate" in error_str and "limit" in error_str:
         return True
-    if '429' in error_str or 'resource_exhausted' in error_str:
+    if "429" in error_str or "resource_exhausted" in error_str:
         return True
 
     # Server errors - should retry (500, 502, 503, 504)
-    if any(code in error_str for code in ['500', '502', '503', '504']):
+    if any(code in error_str for code in ["500", "502", "503", "504"]):
         return True
-    if 'internal' in error_str and ('error' in error_str or 'server' in error_str):
+    if "internal" in error_str and ("error" in error_str or "server" in error_str):
         return True
-    if 'service' in error_str and 'unavailable' in error_str:
+    if "service" in error_str and "unavailable" in error_str:
         return True
-    if 'gateway' in error_str:
+    if "gateway" in error_str:
         return True
 
     # Timeout / connection errors - should retry
-    if 'timeout' in error_str or 'timed out' in error_str:
+    if "timeout" in error_str or "timed out" in error_str:
         return True
-    if 'connection' in error_str:
+    if "connection" in error_str:
         return True
-    if 'network' in error_str:
+    if "network" in error_str:
         return True
 
     # Unknown errors - default to retry with limited attempts
@@ -401,7 +399,7 @@ AUDIT_RESULT_SCHEMA = {
     "properties": {
         "is_violation": {
             "type": "boolean",
-            "description": "Whether any violations were found"
+            "description": "Whether any violations were found",
         },
         "violations": {
             "type": "array",
@@ -412,31 +410,37 @@ AUDIT_RESULT_SCHEMA = {
                 "properties": {
                     "rule_id": {
                         "type": "string",
-                        "description": "ID of the violated rule (e.g., R001)"
+                        "description": "ID of the violated rule (e.g., R001)",
                     },
                     "violation_text": {
                         "type": "string",
-                        "description": "The problematic text directly verbatim quote from the source content, and not span multiple cells"
+                        "description": "The problematic text directly verbatim quote from the source content, and not span multiple cells",
                     },
                     "violation_reason": {
                         "type": "string",
-                        "description": "Explanation of why this violates the rule"
+                        "description": "Explanation of why this violates the rule",
                     },
                     "fix_action": {
                         "type": "string",
                         "enum": ["replace", "manual"],
-                        "description": "Action type: replace substitutes text (including deletion-via-replace), manual requires human review"
+                        "description": "Action type: replace substitutes text (including deletion-via-replace), manual requires human review",
                     },
                     "revised_text": {
                         "type": "string",
-                        "description": "For replace: complete replacement text (including deletion-via-replace). For manual: additional guidance for human reviewer"
-                    }
+                        "description": "For replace: complete replacement text (including deletion-via-replace). For manual: additional guidance for human reviewer",
+                    },
                 },
-                "required": ["rule_id", "violation_text", "violation_reason", "fix_action", "revised_text"]
-            }
-        }
+                "required": [
+                    "rule_id",
+                    "violation_text",
+                    "violation_reason",
+                    "fix_action",
+                    "revised_text",
+                ],
+            },
+        },
     },
-    "required": ["is_violation", "violations"]
+    "required": ["is_violation", "violations"],
 }
 
 # JSON Schema for global extraction output
@@ -466,21 +470,21 @@ GLOBAL_EXTRACT_SCHEMA = {
                                         "properties": {
                                             "name": {"type": "string"},
                                             "value": {"type": "string"},
-                                            "evidence": {"type": "string"}
+                                            "evidence": {"type": "string"},
                                         },
-                                        "required": ["name", "value", "evidence"]
-                                    }
-                                }
+                                        "required": ["name", "value", "evidence"],
+                                    },
+                                },
                             },
-                            "required": ["entity", "fields"]
-                        }
-                    }
+                            "required": ["entity", "fields"],
+                        },
+                    },
                 },
-                "required": ["rule_id", "extracted_results"]
-            }
+                "required": ["rule_id", "extracted_results"],
+            },
         }
     },
-    "required": ["results"]
+    "required": ["results"],
 }
 
 # JSON Schema for global verification output
@@ -499,11 +503,8 @@ GLOBAL_VERIFY_SCHEMA = {
                     "uuid_end": {"type": "string"},
                     "violation_text": {"type": "string"},
                     "violation_reason": {"type": "string"},
-                    "fix_action": {
-                        "type": "string",
-                        "enum": ["replace", "manual"]
-                    },
-                    "revised_text": {"type": "string"}
+                    "fix_action": {"type": "string", "enum": ["replace", "manual"]},
+                    "revised_text": {"type": "string"},
                 },
                 "required": [
                     "rule_id",
@@ -512,12 +513,12 @@ GLOBAL_VERIFY_SCHEMA = {
                     "violation_text",
                     "violation_reason",
                     "fix_action",
-                    "revised_text"
-                ]
-            }
+                    "revised_text",
+                ],
+            },
         }
     },
-    "required": ["violations"]
+    "required": ["violations"],
 }
 
 
@@ -527,10 +528,15 @@ async def global_extract_gemini_async(
     model_name: str,
     client,
     thinking_level: str = None,
-    thinking_budget: int = None
+    thinking_budget: int = None,
 ) -> dict:
     thinking_config = None
-    if thinking_level and thinking_level.upper() in ("MINIMAL", "LOW", "MEDIUM", "HIGH"):
+    if thinking_level and thinking_level.upper() in (
+        "MINIMAL",
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+    ):
         level_map = {
             "MINIMAL": types.ThinkingLevel.MINIMAL,
             "LOW": types.ThinkingLevel.LOW,
@@ -541,14 +547,12 @@ async def global_extract_gemini_async(
             thinking_level=level_map[thinking_level.upper()]
         )
     elif thinking_budget is not None:
-        thinking_config = types.ThinkingConfig(
-            thinking_budget=int(thinking_budget)
-        )
+        thinking_config = types.ThinkingConfig(thinking_budget=int(thinking_budget))
 
     config_params = {
         "system_instruction": system_prompt,
         "response_mime_type": "application/json",
-        "response_schema": GLOBAL_EXTRACT_SCHEMA
+        "response_schema": GLOBAL_EXTRACT_SCHEMA,
     }
     if thinking_config:
         config_params["thinking_config"] = thinking_config
@@ -556,7 +560,7 @@ async def global_extract_gemini_async(
     response = await client.models.generate_content(
         model=model_name,
         contents=user_prompt,
-        config=types.GenerateContentConfig(**config_params)
+        config=types.GenerateContentConfig(**config_params),
     )
     return json.loads(response.text)
 
@@ -566,25 +570,28 @@ async def global_extract_openai_async(
     system_prompt: str,
     model_name: str,
     client,
-    reasoning_effort: str = None
+    reasoning_effort: str = None,
 ) -> dict:
     request_params = {
         "model": model_name,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ],
         "response_format": {
             "type": "json_schema",
             "json_schema": {
                 "name": "global_extract",
                 "strict": True,
-                "schema": GLOBAL_EXTRACT_SCHEMA
-            }
-        }
+                "schema": GLOBAL_EXTRACT_SCHEMA,
+            },
+        },
     }
-    if reasoning_effort and reasoning_effort.lower() in ("low", "medium", "high") \
-            and is_openai_reasoning_model(model_name):
+    if (
+        reasoning_effort
+        and reasoning_effort.lower() in ("low", "medium", "high")
+        and is_openai_reasoning_model(model_name)
+    ):
         request_params["reasoning_effort"] = reasoning_effort.lower()
 
     response = await client.chat.completions.create(**request_params)
@@ -597,10 +604,15 @@ async def global_verify_gemini_async(
     model_name: str,
     client,
     thinking_level: str = None,
-    thinking_budget: int = None
+    thinking_budget: int = None,
 ) -> dict:
     thinking_config = None
-    if thinking_level and thinking_level.upper() in ("MINIMAL", "LOW", "MEDIUM", "HIGH"):
+    if thinking_level and thinking_level.upper() in (
+        "MINIMAL",
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+    ):
         level_map = {
             "MINIMAL": types.ThinkingLevel.MINIMAL,
             "LOW": types.ThinkingLevel.LOW,
@@ -611,14 +623,12 @@ async def global_verify_gemini_async(
             thinking_level=level_map[thinking_level.upper()]
         )
     elif thinking_budget is not None:
-        thinking_config = types.ThinkingConfig(
-            thinking_budget=int(thinking_budget)
-        )
+        thinking_config = types.ThinkingConfig(thinking_budget=int(thinking_budget))
 
     config_params = {
         "system_instruction": system_prompt,
         "response_mime_type": "application/json",
-        "response_schema": GLOBAL_VERIFY_SCHEMA
+        "response_schema": GLOBAL_VERIFY_SCHEMA,
     }
     if thinking_config:
         config_params["thinking_config"] = thinking_config
@@ -626,7 +636,7 @@ async def global_verify_gemini_async(
     response = await client.models.generate_content(
         model=model_name,
         contents=user_prompt,
-        config=types.GenerateContentConfig(**config_params)
+        config=types.GenerateContentConfig(**config_params),
     )
     return json.loads(response.text)
 
@@ -636,25 +646,28 @@ async def global_verify_openai_async(
     system_prompt: str,
     model_name: str,
     client,
-    reasoning_effort: str = None
+    reasoning_effort: str = None,
 ) -> dict:
     request_params = {
         "model": model_name,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ],
         "response_format": {
             "type": "json_schema",
             "json_schema": {
                 "name": "global_verify",
                 "strict": True,
-                "schema": GLOBAL_VERIFY_SCHEMA
-            }
-        }
+                "schema": GLOBAL_VERIFY_SCHEMA,
+            },
+        },
     }
-    if reasoning_effort and reasoning_effort.lower() in ("low", "medium", "high") \
-            and is_openai_reasoning_model(model_name):
+    if (
+        reasoning_effort
+        and reasoning_effort.lower() in ("low", "medium", "high")
+        and is_openai_reasoning_model(model_name)
+    ):
         request_params["reasoning_effort"] = reasoning_effort.lower()
 
     response = await client.chat.completions.create(**request_params)
@@ -667,7 +680,7 @@ async def audit_block_gemini_async(
     model_name: str,
     client,
     thinking_level: str = None,
-    thinking_budget: int = None
+    thinking_budget: int = None,
 ) -> dict:
     """
     Audit a text block using Google Gemini with strict JSON mode (async version).
@@ -686,7 +699,12 @@ async def audit_block_gemini_async(
     # Build thinking config based on model and parameters
     thinking_config = None
 
-    if thinking_level and thinking_level.upper() in ("MINIMAL", "LOW", "MEDIUM", "HIGH"):
+    if thinking_level and thinking_level.upper() in (
+        "MINIMAL",
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+    ):
         # For Gemini 3 models
         level_map = {
             "MINIMAL": types.ThinkingLevel.MINIMAL,
@@ -699,14 +717,12 @@ async def audit_block_gemini_async(
         )
     elif thinking_budget is not None:
         # For Gemini 2.5 models
-        thinking_config = types.ThinkingConfig(
-            thinking_budget=int(thinking_budget)
-        )
+        thinking_config = types.ThinkingConfig(thinking_budget=int(thinking_budget))
 
     config_params = {
         "system_instruction": system_prompt,
         "response_mime_type": "application/json",
-        "response_schema": AUDIT_RESULT_SCHEMA
+        "response_schema": AUDIT_RESULT_SCHEMA,
     }
 
     # Only add thinking_config if it's configured
@@ -716,7 +732,7 @@ async def audit_block_gemini_async(
     response = await client.models.generate_content(
         model=model_name,
         contents=user_prompt,
-        config=types.GenerateContentConfig(**config_params)
+        config=types.GenerateContentConfig(**config_params),
     )
 
     # With structured output, response is guaranteed to be valid JSON
@@ -729,7 +745,7 @@ async def audit_block_openai_async(
     system_prompt: str,
     model_name: str,
     client,
-    reasoning_effort: str = None
+    reasoning_effort: str = None,
 ) -> dict:
     """
     Audit a text block using OpenAI with strict JSON mode (async version).
@@ -748,21 +764,24 @@ async def audit_block_openai_async(
         "model": model_name,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ],
         "response_format": {
             "type": "json_schema",
             "json_schema": {
                 "name": "audit_result",
                 "strict": True,
-                "schema": AUDIT_RESULT_SCHEMA
-            }
-        }
+                "schema": AUDIT_RESULT_SCHEMA,
+            },
+        },
     }
 
     # Add reasoning_effort only for o-series models that support it
-    if reasoning_effort and reasoning_effort.lower() in ("low", "medium", "high") \
-            and is_openai_reasoning_model(model_name):
+    if (
+        reasoning_effort
+        and reasoning_effort.lower() in ("low", "medium", "high")
+        and is_openai_reasoning_model(model_name)
+    ):
         request_params["reasoning_effort"] = reasoning_effort.lower()
 
     response = await client.chat.completions.create(**request_params)

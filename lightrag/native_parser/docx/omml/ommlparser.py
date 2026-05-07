@@ -7,6 +7,7 @@ class OMMLParser:
     """
     Parser class for reading OMML and converting it into LaTeX.
     """
+
     FUNCTION_MAP = {
         "sin": "\\sin",
         "cos": "\\cos",
@@ -375,7 +376,10 @@ class OMMLParser:
             return f"\\{func_name}\\limits_{{{subscript}}}^{{{superscript}}}{{{text}}}"
         if func_name not in self.FUNCTION_MAP:
             return f"{{{func_name}}}^{{{superscript}}}_{{{subscript}}}{{{text}}}"
-        return self.FUNCTION_MAP[func_name] + f"_{{{subscript}}}^{{{superscript}}}{{{text}}}"
+        return (
+            self.FUNCTION_MAP[func_name]
+            + f"_{{{subscript}}}^{{{superscript}}}{{{text}}}"
+        )
 
     def parse_s_sup(self, root: Element) -> str:
         content = ""

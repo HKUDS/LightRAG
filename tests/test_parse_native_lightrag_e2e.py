@@ -91,8 +91,11 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
         # parser is never invoked. The adapter still does all the
         # LightRAG-specific writing — that is what we want under test.
         stable_blocks = [
-            _block("Title\nFirst paragraph body.\nSecond paragraph body.",
-                   heading="Title", level=1),
+            _block(
+                "Title\nFirst paragraph body.\nSecond paragraph body.",
+                heading="Title",
+                level=1,
+            ),
         ]
 
         def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
@@ -226,15 +229,13 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
             # a block whose content references that asset via <drawing .../>.
             assert drawing_context is not None
             assert drawing_context.export_dir_path is not None
-            (drawing_context.export_dir_path / "pic.png").write_bytes(
-                b"PNG-BYTES"
-            )
+            (drawing_context.export_dir_path / "pic.png").write_bytes(b"PNG-BYTES")
             return [
                 _block(
-                    'intro\n'
+                    "intro\n"
                     '<drawing id="1" name="pic" format="png" '
                     'path="with_pics.blocks.assets/pic.png" />\n'
-                    'outro',
+                    "outro",
                     heading="intro",
                     level=1,
                 ),

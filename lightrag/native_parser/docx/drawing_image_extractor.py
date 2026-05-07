@@ -31,7 +31,9 @@ NS = {
 
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CONTENT_TYPE_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
-IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+IMAGE_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+)
 SOURCE_DOCUMENT_PART = "/word/document.xml"
 
 # Match old and new drawing placeholders (requires id/name, allows extra attributes)
@@ -235,7 +237,9 @@ def _load_relationships(ctx: DrawingExtractionContext) -> None:
                 if not content_type:
                     ext = PurePosixPath(part_name).suffix.lower().lstrip(".")
                     content_type = defaults.get(ext)
-                image_format = _normalize_image_format(content_type or _infer_format_from_target(part_name))
+                image_format = _normalize_image_format(
+                    content_type or _infer_format_from_target(part_name)
+                )
         else:
             image_format = _normalize_image_format(_infer_format_from_target(target))
 
