@@ -1253,6 +1253,22 @@ class _PipelineMixin:
 
                                 content = parsed_data.get("content", "")
 
+                                # Mirror non-fatal parser warnings (e.g. legacy
+                                # docx tables missing w14:paraId) onto the
+                                # in-memory status_doc so the
+                                # ANALYZING / PROCESSING / PROCESSED / FAILED
+                                # upserts carry the field through
+                                # ``doc_status_transition_metadata``.
+                                parse_warnings_payload = parsed_data.get(
+                                    "parse_warnings"
+                                )
+                                if parse_warnings_payload:
+                                    if not isinstance(status_doc.metadata, dict):
+                                        status_doc.metadata = {}
+                                    status_doc.metadata["parse_warnings"] = (
+                                        parse_warnings_payload
+                                    )
+
                                 # parse_* may have patched doc_status with the
                                 # content_hash that was missing for pending_parse.
                                 # Refresh the in-memory dataclass so subsequent
@@ -1950,6 +1966,22 @@ class _PipelineMixin:
                                     doc_id_w, file_path_w, content_data_w
                                 )
 
+                            # Mirror non-fatal parser warnings (e.g. legacy
+                            # docx tables missing w14:paraId) onto the
+                            # in-memory status_doc so the
+                            # ANALYZING / PROCESSING / PROCESSED / FAILED
+                            # upserts carry the field through
+                            # ``doc_status_transition_metadata``.
+                            parse_warnings_payload_w = parsed_data_w.get(
+                                "parse_warnings"
+                            )
+                            if parse_warnings_payload_w:
+                                if not isinstance(status_doc_w.metadata, dict):
+                                    status_doc_w.metadata = {}
+                                status_doc_w.metadata["parse_warnings"] = (
+                                    parse_warnings_payload_w
+                                )
+
                             # parse_* may have patched content_hash for
                             # pending_parse → raw transitions.
                             refreshed = await self.doc_status.get_by_id(doc_id_w)
@@ -2171,9 +2203,7 @@ class _PipelineMixin:
         flags so toggling options later does not require re-parsing — only
         the ``llm_analyze_result`` payload is gated here.
 
-        Idempotent by design: ``meta.analyze_time`` is treated as the
-        timestamp of the most recent successful pass rather than a
-        "completed" sentinel, and per-item ``llm_analyze_result`` already
+        Idempotent by design: per-item ``llm_analyze_result`` already
         present is not re-computed.  This lets users incrementally enable
         new modalities (e.g. add ``t`` after a prior ``i``-only pass) and
         re-trigger analysis without redundant VLM calls or losing prior
@@ -2252,12 +2282,6 @@ class _PipelineMixin:
             meta = json.loads(lines[0])
             if not isinstance(meta, dict) or meta.get("type") != "meta":
                 return parsed_data
-
-            # ``analyze_time`` is now the "most recent successful pass"
-            # timestamp.  We refresh it after the body finishes successfully
-            # rather than using it as an early-return gate, so re-triggering
-            # analyze_multimodal with newly-enabled i/t/e options proceeds.
-            now_iso = datetime.now(timezone.utc).isoformat()
 
             # Analyze sidecar multimodal items by VLM model role.
             use_vlm_func = self.role_llm_funcs["vlm"]
@@ -2568,23 +2592,12 @@ class _PipelineMixin:
                         f"[analyze_multimodal] failed to write sidecar {sidecar_path}: {sidecar_error}"
                     )
 
-            # Refresh ``meta.analyze_time`` to record the most-recent successful
-            # pass.  This happens after the sidecar loop so a crash mid-loop
-            # does not falsely advertise completion; on the next run the same
-            # already-analyzed items will be skipped anyway.
-            meta["analyze_time"] = now_iso
-            lines[0] = json.dumps(meta, ensure_ascii=False)
-            block_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-            parsed_data["analyze_time"] = now_iso
             parsed_data["multimodal_processed"] = True
             logger.info(
-                f"[analyze_multimodal] marked analyze_time for d-id: {doc_id}, file: {file_path}"
+                f"[analyze_multimodal] completed for d-id: {doc_id}, file: {file_path}"
             )
         except Exception as e:
-            logger.warning(
-                f"[analyze_multimodal] failed to update analyze_time for d-id: {doc_id}: {e}"
-            )
+            logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
         return parsed_data
 
     async def _call_protocol_parse_service(
@@ -3176,12 +3189,11 @@ class _PipelineMixin:
             "equation_file": bool(equations),
             "drawing_file": bool(drawings),
             "asset_dir": False,
-            "split_method": "raw_paragraph",
+            "split_option": {},
             "blocks": len(blocks_lines),
             "doc_id": doc_id,
             "parse_engine": engine,
             "parse_time": parse_time,
-            "analyze_time": "",
             "doc_title": Path(source_name).stem or source_name,
         }
         blocks_path.write_text(
@@ -3274,59 +3286,39 @@ class _PipelineMixin:
             )
             p = Path(source_path)
             if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
-                from lightrag.extraction.parse_document import (
-                    parse_docx_to_lightrag_content_list,
+                from lightrag.native_parser.docx import (
+                    parse_docx_to_lightrag_document,
                 )
 
                 file_bytes = await asyncio.to_thread(p.read_bytes)
-                # Use the canonical (hint-stripped) basename so the image
-                # asset path embedded in content_list matches the directory
-                # _write_lightrag_document_from_content_list will create
-                # below (it also calls canonicalize_parser_hinted_basename).
-                canonical_basename = (
-                    canonicalize_parser_hinted_basename(file_path) or p.name
-                )
-                content_list, asset_blobs = await asyncio.to_thread(
-                    parse_docx_to_lightrag_content_list,
-                    file_bytes,
-                    canonical_basename,
-                    doc_id,
-                )
-                if not content_list:
-                    raise ValueError(
-                        f"DOCX parser returned empty content for {file_path}"
-                    )
-
-                # Reuse the shared writer that mineru/docling already use.
-                # It produces .blocks.jsonl + sidecar JSONs, persists
-                # full_docs as LIGHTRAG format, and archives the source.
-                # NOTE: this writer wipes parsed_dir at the start, so any
-                # image bytes must be written AFTER it returns.
-                parsed_data = await self._write_lightrag_document_from_content_list(
-                    doc_id=doc_id,
+                parsed_data = await parse_docx_to_lightrag_document(
+                    file_bytes=file_bytes,
                     file_path=file_path,
-                    content_list=content_list,
-                    engine=PARSER_ENGINE_NATIVE,
+                    doc_id=doc_id,
                     source_path=str(p),
                 )
 
-                # Now drop image assets into <parsed_dir>/<base>.blocks.assets/
-                # so the drawing items' img_path resolve correctly.
-                if asset_blobs:
-                    parsed_dir = parsed_artifact_dir_for_source(str(p), file_path)
-                    base_stem = (
-                        Path(
-                            canonicalize_parser_hinted_basename(file_path) or p.name
-                        ).stem
-                        or doc_id
-                    )
-                    asset_dir = parsed_dir / f"{base_stem}.blocks.assets"
-                    asset_dir.mkdir(parents=True, exist_ok=True)
-                    for filename, blob in asset_blobs.items():
-                        (asset_dir / filename).write_bytes(blob)
+                blocks_path = Path(parsed_data["blocks_path"])
+                stored_blocks_path = str(blocks_path)
+                try:
+                    stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
+                except ValueError:
+                    pass
+                await self._persist_parsed_full_docs(
+                    doc_id,
+                    {
+                        "content": make_lightrag_doc_content(parsed_data["content"]),
+                        "file_path": file_path,
+                        "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                        "lightrag_document_path": stored_blocks_path,
+                        "parse_engine": PARSER_ENGINE_NATIVE,
+                        "update_time": int(time.time()),
+                    },
+                )
+                await archive_docx_source_after_full_docs_sync(str(p))
                 logger.info(
                     f"[parse_native] pending_parse completed for {file_path} "
-                    f"via LightRAG Document ({len(content_list)} content_list items)"
+                    f"via native_parser/docx"
                 )
                 return parsed_data
             raise ValueError(

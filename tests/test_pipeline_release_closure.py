@@ -1239,14 +1239,10 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
         assert new_result["name"] == "Item"
         assert new_result["summary"] == "ok"
 
-        # Exactly ONE VLM call total (for the table).  If analyze_time had
-        # short-circuited the function, the call count would be 0; if the
-        # idempotency check was missing, it would be 2.
+        # Exactly ONE VLM call total (for the table).  Per-item
+        # ``llm_analyze_result`` already-present is the idempotency guard:
+        # the count would be 2 if it were missing.
         assert call_count["n"] == 1
-
-        # meta.analyze_time was refreshed to reflect this most-recent pass.
-        meta = json.loads(blocks.read_text(encoding="utf-8").splitlines()[0])
-        assert meta.get("analyze_time")
 
     asyncio.run(_run())
 
@@ -1785,20 +1781,21 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
             monkeypatch.setattr(lightrag_module, "datetime", _FrozenDateTime)
             monkeypatch.setattr(pipeline_module, "datetime", _FrozenDateTime)
 
-            parse_document = __import__(
-                "lightrag.extraction.parse_document",
-                fromlist=["parse_docx_to_lightrag_content_list"],
-            )
-            # Both docx files emit the same content_list, so combined with the
+            # Both docx files emit the same blocks list, so combined with the
             # frozen datetime the resulting .blocks.jsonl bytes are equal.
-            stable_content_list = [{"type": "text", "text": "same extracted body"}]
+            stable_block = {
+                "uuid": "p1",
+                "uuid_end": "p1",
+                "heading": "",
+                "content": "same extracted body",
+                "type": "text",
+                "parent_headings": [],
+                "level": 0,
+                "table_chunk_role": "none",
+            }
             monkeypatch.setattr(
-                parse_document,
-                "parse_docx_to_lightrag_content_list",
-                lambda file_bytes, source_file, doc_id: (
-                    list(stable_content_list),
-                    {},
-                ),
+                "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+                lambda *args, **kwargs: [dict(stable_block)],
             )
 
             # First original docx: enqueue, parse, mark PROCESSED.
@@ -2006,9 +2003,6 @@ def test_analyze_multimodal_json_retry_and_writeback(tmp_path):
         }
         await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="ite")
 
-        meta = json.loads(blocks.read_text(encoding="utf-8").splitlines()[0])
-        assert meta.get("analyze_time")
-
         drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
         assert result["name"] == "Figure A"
@@ -2043,9 +2037,6 @@ def test_analyze_multimodal_uses_effective_vlm_max_async_when_role_none(tmp_path
             "doc-1", "demo.pdf", parsed, process_options="ite"
         )
 
-        meta = json.loads(blocks.read_text(encoding="utf-8").splitlines()[0])
-        assert meta.get("analyze_time")
-        assert result["analyze_time"]
         assert result["multimodal_processed"] is True
 
     asyncio.run(_run())

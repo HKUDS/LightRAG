@@ -31,7 +31,6 @@ guard the contract end-to-end:
 """
 
 import asyncio
-import importlib
 import json
 import logging
 from pathlib import Path
@@ -484,16 +483,26 @@ def test_pending_parse_lightrag_summary_populated_after_processed(
         source_path = input_dir / "summary.docx"
         source_path.write_bytes(b"fake docx bytes")
 
-        # Stub the docx parser so the parsed content_list is deterministic;
-        # the writer turns it into the canonical .blocks.jsonl + sidecars.
-        parse_document = importlib.import_module("lightrag.extraction.parse_document")
-
-        def _stub_parse(file_bytes, source_file, doc_id):
-            content_list = [{"type": "text", "text": para} for para in body_paragraphs]
-            return content_list, {}
+        # Stub the docx extractor so the parsed blocks are deterministic;
+        # the adapter still writes the canonical .blocks.jsonl + sidecars.
+        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+            return [
+                {
+                    "uuid": f"para-{i}",
+                    "uuid_end": f"para-{i}",
+                    "heading": "",
+                    "content": para,
+                    "type": "text",
+                    "parent_headings": [],
+                    "level": 0,
+                    "table_chunk_role": "none",
+                }
+                for i, para in enumerate(body_paragraphs)
+            ]
 
         monkeypatch.setattr(
-            parse_document, "parse_docx_to_lightrag_content_list", _stub_parse
+            "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+            _stub_extract,
         )
 
         rag = _new_rag(tmp_path / "work")

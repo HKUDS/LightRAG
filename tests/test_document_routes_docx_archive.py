@@ -1698,16 +1698,27 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
 
-    parse_document = importlib.import_module("lightrag.extraction.parse_document")
-
-    def _fake_parse_docx(file_bytes, source_file, doc_id):
-        # New entry returns (content_list, asset_blobs); a single text item
-        # is enough to exercise the archive + full_docs side-effects tested
-        # below — the LightRAG Document writer will turn it into one block.
-        return [{"type": "text", "text": "parsed"}], {}
+    def _fake_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        # extract_audit_blocks returns a list of block dicts; a single text
+        # block is enough to exercise the archive + full_docs side-effects
+        # tested below — the adapter will turn it into one .blocks.jsonl
+        # content row.
+        return [
+            {
+                "uuid": "p1",
+                "uuid_end": "p1",
+                "heading": "",
+                "content": "parsed",
+                "type": "text",
+                "parent_headings": [],
+                "level": 0,
+                "table_chunk_role": "none",
+            }
+        ]
 
     monkeypatch.setattr(
-        parse_document, "parse_docx_to_lightrag_content_list", _fake_parse_docx
+        "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+        _fake_extract,
     )
 
     result = await LightRAG.parse_native(
@@ -1767,16 +1778,16 @@ async def test_parse_native_docx_content_list_failure_raises_without_fallback(
     source_path = tmp_path / "content-list-failure.docx"
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
-    parse_document = importlib.import_module("lightrag.extraction.parse_document")
 
-    def _raise_parser(file_bytes, source_file, doc_id):
+    def _raise_parser(file_path, fixlevel=None, drawing_context=None, **kwargs):
         raise RuntimeError("content list boom")
 
     def _fail_fallback(file_bytes):
         raise AssertionError("plain text fallback should not run")
 
     monkeypatch.setattr(
-        parse_document, "parse_docx_to_lightrag_content_list", _raise_parser
+        "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+        _raise_parser,
     )
     monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
 
@@ -1798,15 +1809,13 @@ async def test_parse_native_docx_empty_content_list_result_raises_without_fallba
     source_path = tmp_path / "empty-content-list.docx"
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
-    parse_document = importlib.import_module("lightrag.extraction.parse_document")
 
     def _fail_fallback(file_bytes):
         raise AssertionError("plain text fallback should not run")
 
     monkeypatch.setattr(
-        parse_document,
-        "parse_docx_to_lightrag_content_list",
-        lambda *args, **kwargs: ([], {}),
+        "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+        lambda *args, **kwargs: [],
     )
     monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
 

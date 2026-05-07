@@ -88,3 +88,6 @@ CLAUDE.md
 
 # Google Jules
 .jules/
+
+# native_parser/docx CLI output (audit JSONL + image dir)
+/parse_output/
