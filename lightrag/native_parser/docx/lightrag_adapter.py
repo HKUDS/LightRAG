@@ -350,12 +350,11 @@ def _parse_docx_sync(
         "equation_file": bool(equations),
         "drawing_file": bool(drawings),
         "asset_dir": asset_dir_present,
-        "split_method": "raw_paragraph",
+        "split_option": {"fixlevel": 0},
         "blocks": len(blocks_lines),
         "doc_id": doc_id,
         "parse_engine": PARSER_ENGINE_NATIVE,
         "parse_time": parse_time,
-        "analyze_time": "",
         "doc_title": Path(canonical_basename).stem or canonical_basename,
     }
 
