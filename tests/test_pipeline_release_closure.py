@@ -2856,6 +2856,222 @@ def test_parse_docling_empty_service_result_raises_without_fallback(
 
 
 @pytest.mark.offline
+def test_parse_docling_uses_docling_serve_async_defaults(tmp_path, monkeypatch):
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        src_file = tmp_path / "demo.pdf"
+        src_file.write_bytes(b"fake-pdf")
+
+        captured_protocol = {}
+
+        async def _fake_service(protocol, file_path):
+            captured_protocol.update(protocol)
+            assert file_path == str(src_file)
+            return "# Extracted markdown"
+
+        monkeypatch.setattr(rag, "_call_protocol_parse_service", _fake_service)
+        monkeypatch.setenv(
+            "DOCLING_ENDPOINT", "http://localhost:5001/v1/convert/file/async"
+        )
+
+        parsed = await rag.parse_docling(
+            doc_id="doc-docling-defaults",
+            file_path=str(src_file),
+            content_data={"content": ""},
+        )
+
+        assert parsed["content"] == "# Extracted markdown"
+        assert (
+            captured_protocol["poll_url_template"]
+            == "http://localhost:5001/v1/status/poll/{task_id}"
+        )
+        assert (
+            captured_protocol["result_url_template"]
+            == "http://localhost:5001/v1/result/{task_id}"
+        )
+        assert captured_protocol["status_field"] == "task_status"
+        assert captured_protocol["content_field"] == "document.md_content"
+        assert captured_protocol["file_field"] == "files"
+        assert captured_protocol["failed_values"] == "failed,error,failure"
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_protocol_parse_service_raises_on_docling_failure_status(tmp_path, monkeypatch):
+    class FakeTimeout:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.status_code = 200
+            self.text = json.dumps(payload)
+
+        def json(self):
+            return json.loads(self.text)
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, files=None, json=None):
+            del url, files, json
+            return FakeResponse({"task_id": "job-1", "task_status": "queued"})
+
+        async def get(self, url, params=None):
+            del url, params
+            return FakeResponse(
+                {
+                    "task_id": "job-1",
+                    "task_status": "failure",
+                    "error": "conversion failed",
+                }
+            )
+
+    class FakeHttpx:
+        Timeout = FakeTimeout
+        AsyncClient = FakeAsyncClient
+
+    async def _fake_sleep(delay):
+        del delay
+
+    async def _run():
+        import lightrag.pipeline as pipeline_module
+
+        monkeypatch.setattr(pipeline_module, "httpx", FakeHttpx)
+        monkeypatch.setattr(pipeline_module.asyncio, "sleep", _fake_sleep)
+
+        src_file = tmp_path / "demo.pdf"
+        src_file.write_bytes(b"fake-pdf")
+        rag = _new_rag(tmp_path / "work")
+
+        with pytest.raises(RuntimeError, match="Parse service failed"):
+            await rag._call_protocol_parse_service(
+                {
+                    "upload_url": "http://localhost:5001/v1/convert/file/async",
+                    "poll_url_template": "http://localhost:5001/v1/status/poll/{task_id}",
+                    "id_field": "task_id",
+                    "status_field": "task_status",
+                    "content_field": "document.md_content",
+                    "file_field": "files",
+                    "success_values": "success",
+                    "failed_values": "failed,error,failure",
+                    "poll_interval_seconds": 0,
+                    "max_polls": 1,
+                },
+                str(src_file),
+            )
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_protocol_parse_service_extracts_docling_result_markdown(tmp_path, monkeypatch):
+    posted_files = []
+    requested_urls = []
+
+    class FakeTimeout:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.status_code = 200
+            self.text = json.dumps(payload)
+
+        def json(self):
+            return json.loads(self.text)
+
+        def raise_for_status(self):
+            pass
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, files=None, json=None):
+            del json
+            posted_files.append(files)
+            requested_urls.append(url)
+            return FakeResponse({"task_id": "task-1", "task_status": "queued"})
+
+        async def get(self, url, params=None):
+            del params
+            requested_urls.append(url)
+            if url.endswith("/v1/status/poll/task-1"):
+                return FakeResponse({"task_id": "task-1", "task_status": "success"})
+            return FakeResponse(
+                {
+                    "document": {
+                        "filename": "demo.pdf",
+                        "md_content": "# Docling markdown\n\nBody",
+                    },
+                    "status": "success",
+                }
+            )
+
+    class FakeHttpx:
+        Timeout = FakeTimeout
+        AsyncClient = FakeAsyncClient
+
+    async def _fake_sleep(delay):
+        del delay
+
+    async def _run():
+        import lightrag.pipeline as pipeline_module
+
+        monkeypatch.setattr(pipeline_module, "httpx", FakeHttpx)
+        monkeypatch.setattr(pipeline_module.asyncio, "sleep", _fake_sleep)
+
+        src_file = tmp_path / "demo.pdf"
+        src_file.write_bytes(b"fake-pdf")
+        rag = _new_rag(tmp_path / "work")
+
+        result = await rag._call_protocol_parse_service(
+            {
+                "upload_url": "http://localhost:5001/v1/convert/file/async",
+                "poll_url_template": "http://localhost:5001/v1/status/poll/{task_id}",
+                "result_url_template": "http://localhost:5001/v1/result/{task_id}",
+                "id_field": "task_id",
+                "status_field": "task_status",
+                "content_field": "document.md_content",
+                "file_field": "files",
+                "success_values": "success",
+                "poll_interval_seconds": 0,
+                "max_polls": 1,
+            },
+            str(src_file),
+        )
+
+        assert result == "# Docling markdown\n\nBody"
+        assert "files" in posted_files[0]
+        assert requested_urls == [
+            "http://localhost:5001/v1/convert/file/async",
+            "http://localhost:5001/v1/status/poll/task-1",
+            "http://localhost:5001/v1/result/task-1",
+        ]
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_build_chunks_dict_preserves_existing_llm_cache_list():
     """Regression: build_chunks_dict_from_chunking_result must not overwrite
     a chunk's pre-existing llm_cache_list — multimodal chunks arrive with

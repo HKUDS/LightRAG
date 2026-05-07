@@ -2214,8 +2214,7 @@ class _PipelineMixin:
                 )
             else:
                 error_msg = (
-                    f"User cancelled {current_file_number}/"
-                    f"{total_files}: {file_path}"
+                    f"User cancelled {current_file_number}/{total_files}: {file_path}"
                 )
             logger.warning(error_msg)
             async with pipeline_status_lock:
@@ -2416,22 +2415,31 @@ class _PipelineMixin:
         endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
         if not endpoint:
             raise ValueError("DOCLING_ENDPOINT is required for Docling parsing")
+        docling_base = endpoint.rstrip("/")
+        convert_path = "/v1/convert/file/async"
+        if docling_base.endswith(convert_path):
+            docling_base = docling_base[: -len(convert_path)]
         protocol = {
             "upload_url": endpoint,
             "poll_url_template": os.getenv(
                 "DOCLING_POLL_ENDPOINT",
-                endpoint + "/{task_id}",
+                docling_base + "/v1/status/poll/{task_id}",
             ),
             "poll_method": os.getenv("DOCLING_POLL_METHOD", "GET"),
             "id_field": os.getenv("DOCLING_ID_FIELD", "task_id"),
-            "status_field": os.getenv("DOCLING_STATUS_FIELD", "status"),
+            "status_field": os.getenv("DOCLING_STATUS_FIELD", "task_status"),
             "result_url_field": os.getenv("DOCLING_RESULT_URL_FIELD", "result_url"),
-            "content_field": os.getenv("DOCLING_CONTENT_FIELD", "content"),
+            "result_url_template": os.getenv(
+                "DOCLING_RESULT_ENDPOINT",
+                docling_base + "/v1/result/{task_id}",
+            ),
+            "content_field": os.getenv("DOCLING_CONTENT_FIELD", "document.md_content"),
+            "file_field": os.getenv("DOCLING_FILE_FIELD", "files"),
             "success_values": os.getenv(
                 "DOCLING_SUCCESS_VALUES",
                 "done,success,succeeded,completed,finished",
             ),
-            "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error"),
+            "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error,failure"),
             "poll_interval_seconds": float(
                 os.getenv("DOCLING_POLL_INTERVAL_SECONDS", "2")
             ),
@@ -2493,7 +2501,9 @@ class _PipelineMixin:
         id_field = str(protocol.get("id_field", "id"))
         status_field = str(protocol.get("status_field", "status"))
         result_url_field = str(protocol.get("result_url_field", "result_url"))
+        result_url_template = str(protocol.get("result_url_template", "")).strip()
         content_field = str(protocol.get("content_field", "content"))
+        file_field = str(protocol.get("file_field", "file"))
         poll_url_tpl = str(protocol.get("poll_url_template", "")).strip()
         poll_method = str(protocol.get("poll_method", "GET")).upper()
         poll_interval = float(protocol.get("poll_interval_seconds", 2.0))
@@ -2513,11 +2523,28 @@ class _PipelineMixin:
             if x.strip()
         )
 
+        def _string_content(value: Any) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return value or None
+            return json.dumps(value, ensure_ascii=False)
+
+        def _extract_response_content(text: str) -> str | None:
+            if not text:
+                return None
+            try:
+                payload = json.loads(text)
+            except Exception:
+                return text
+            content_val = get_by_path(payload, content_field)
+            return _string_content(content_val) or text
+
         timeout = httpx.Timeout(120.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             with open(file_path, "rb") as f:
                 resp = await client.post(
-                    upload_url, files={"file": (Path(file_path).name, f)}
+                    upload_url, files={file_field: (Path(file_path).name, f)}
                 )
             if resp.status_code >= 400:
                 raise RuntimeError(
@@ -2527,7 +2554,7 @@ class _PipelineMixin:
             task_id = get_by_path(upload_payload, id_field)
             if not task_id:
                 direct_content = get_by_path(upload_payload, content_field)
-                return str(direct_content) if direct_content else None
+                return _string_content(direct_content)
             task_id = str(task_id)
 
             poll_url = (
@@ -2548,12 +2575,16 @@ class _PipelineMixin:
 
                 if status_val in success_values:
                     result_url = get_by_path(poll_payload, result_url_field)
+                    if not result_url and result_url_template:
+                        result_url = result_url_template.format(
+                            task_id=task_id, trace_id=task_id, id=task_id
+                        )
                     if result_url:
                         dl = await client.get(str(result_url))
                         dl.raise_for_status()
-                        return dl.text
+                        return _extract_response_content(dl.text)
                     content_val = get_by_path(poll_payload, content_field)
-                    return str(content_val) if content_val else None
+                    return _string_content(content_val)
                 if status_val in failed_values:
                     raise RuntimeError(
                         f"Parse service failed for task {task_id}: {poll_payload}"

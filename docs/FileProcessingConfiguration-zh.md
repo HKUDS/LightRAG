@@ -84,7 +84,7 @@ filename.[OPTIONS].ext
 ```bash
 LIGHTRAG_PARSER=pdf:mineru-R,docx:native-ietP,*:legacy-R
 MINERU_ENDPOINT=http://localhost:8000/api/v1/task
-DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
+DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
 ```
 
 ```text

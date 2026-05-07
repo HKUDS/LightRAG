@@ -20,7 +20,7 @@ Configure parser routing and external parser service endpoints in `.env`:
 ```bash
 LIGHTRAG_PARSER=pdf:mineru,docx:docling,pptx:docling,xlsx:docling,*:legacy
 MINERU_ENDPOINT=http://localhost:8000/api/v1/task
-DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
+DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
 ```
 
 Then upload documents through LightRAG Server. `LIGHTRAG_PARSER` rules match suffixes such as `pdf`, may be separated with commas or semicolons, and are evaluated from left to right. If a rule enables MinerU or Docling, the matching endpoint must be configured before server startup. Per-file hints such as `paper.[mineru].pdf` and `memo.[native].docx` override the default rules. Parsed multimodal sidecars are written by the pipeline and consumed by the normal indexing flow. See [File Processing Configuration](./FileProcessingConfiguration-zh.md) for detailed routing rules and examples.
