@@ -63,6 +63,11 @@ def _xml_attr_escape(value: str) -> str:
     )
 
 
+def _caption_attr(caption: str) -> str:
+    """Render a leading-space ``caption="..."`` attribute, empty when absent."""
+    return f' caption="{_xml_attr_escape(caption)}"' if caption else ""
+
+
 def _normalize_dimension(rows_value: Any) -> tuple[int, int]:
     if not isinstance(rows_value, list):
         return 0, 0
@@ -226,8 +231,8 @@ def _parse_docx_sync(
                 "footnotes": [],
             }
             return (
-                f'<table id="{_xml_attr_escape(tb_id)}" format="json" '
-                f'caption="{_xml_attr_escape(caption)}">{table_json}</table>'
+                f'<table id="{_xml_attr_escape(tb_id)}" format="json"'
+                f"{_caption_attr(caption)}>{table_json}</table>"
             )
 
         def _replace_equation(match: re.Match) -> str:
@@ -260,8 +265,8 @@ def _parse_docx_sync(
                 "footnotes": [],
             }
             return (
-                f'<equation id="{_xml_attr_escape(eq_id)}" format="latex" '
-                f'caption="{_xml_attr_escape(caption)}">{latex}</equation>'
+                f'<equation id="{_xml_attr_escape(eq_id)}" format="latex"'
+                f"{_caption_attr(caption)}>{latex}</equation>"
             )
 
         def _replace_drawing(match: re.Match) -> str:
@@ -289,8 +294,8 @@ def _parse_docx_sync(
             }
             return (
                 f'<drawing id="{_xml_attr_escape(dr_id)}" '
-                f'format="{_xml_attr_escape(fmt)}" '
-                f'caption="{_xml_attr_escape(caption)}" '
+                f'format="{_xml_attr_escape(fmt)}"'
+                f"{_caption_attr(caption)} "
                 f'path="{_xml_attr_escape(path_val)}" '
                 f'src="{_xml_attr_escape(src_val)}" />'
             )

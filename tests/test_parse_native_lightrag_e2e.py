@@ -240,7 +240,7 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
         blocks_path = Path(result["blocks_path"])
         lines = blocks_path.read_text(encoding="utf-8").splitlines()
         block = json.loads(lines[1])
-        assert 'caption=""' in block["content"]
+        assert "caption=" not in block["content"]
         assert "表1" not in block["content"]
 
         tables_path = blocks_path.with_suffix("").with_suffix(".tables.json")
