@@ -13,6 +13,7 @@ from typing import List
 from .drawing_image_extractor import (
     DrawingExtractionContext,
     extract_drawing_placeholder_from_element,
+    extract_vml_image_placeholder_from_element,
 )
 
 
@@ -61,6 +62,12 @@ def extract_text_from_run_table(
             # Skip page and column breaks (layout elements)
         elif tag == "drawing":
             text += extract_drawing_placeholder_from_element(
+                child,
+                context=drawing_context,
+                include_extended_attrs=True,
+            )
+        elif tag in ("pict", "object"):
+            text += extract_vml_image_placeholder_from_element(
                 child,
                 context=drawing_context,
                 include_extended_attrs=True,

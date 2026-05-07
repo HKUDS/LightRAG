@@ -27,6 +27,7 @@ NS = {
     "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "v": "urn:schemas-microsoft-com:vml",
 }
 
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -267,6 +268,23 @@ def _extract_blip_relationship(drawing_elem) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _extract_imagedata_relationship(container_elem) -> Optional[str]:
+    """Find an image relationship id from a w:pict / w:object via v:imagedata.
+
+    These legacy VML containers are how Word references EMF/WMF metafiles
+    (and the rendered preview of any embedded OLE object). v:imagedata uses
+    ``r:id`` to point at the image part for both embedded and externally
+    linked images — the relationship's ``TargetMode`` is what disambiguates
+    the two cases, so the caller must inspect the resolved relationship.
+    """
+    r_id_attr = f"{{{NS['r']}}}id"
+    for imgdata in container_elem.findall(".//v:imagedata", NS):
+        rel_id = imgdata.get(r_id_attr)
+        if rel_id:
+            return rel_id
+    return None
+
+
 def _build_placeholder(attrs: Dict[str, str]) -> str:
     ordered_keys = ["id", "name", "path", "format"]
     pieces = []
@@ -318,6 +336,57 @@ def extract_drawing_placeholder_from_element(
                 elif rel_kind == "link":
                     if rel.target:
                         attrs["path"] = rel.target
+                    if rel.image_format:
+                        attrs["format"] = rel.image_format
+
+    return _build_placeholder(attrs)
+
+
+def extract_vml_image_placeholder_from_element(
+    container_elem,
+    context: Optional[DrawingExtractionContext] = None,
+    include_extended_attrs: bool = True,
+) -> str:
+    """
+    Build a <drawing ... /> placeholder from a w:pict or w:object element.
+
+    Legacy Word documents and OLE-embedded objects (Visio diagrams, equation
+    editor previews, etc.) expose their rendered image via VML rather than
+    DrawingML. The image is referenced through ``<v:imagedata r:id="..."/>``
+    inside ``<v:shape>``, and the underlying bytes are commonly EMF/WMF
+    metafiles. This function exports those bytes through the same context as
+    DrawingML images so EMF/WMF assets land in the blocks.assets directory
+    alongside PNG/JPEG ones.
+
+    The output placeholder format matches
+    ``extract_drawing_placeholder_from_element`` so downstream consumers
+    treat both paths uniformly.
+    """
+    shape = container_elem.find(".//v:shape", NS)
+    attrs = {
+        "id": shape.get("id", "") if shape is not None else "",
+        "name": shape.get("alt", "") if shape is not None else "",
+    }
+
+    if include_extended_attrs:
+        rel_id = _extract_imagedata_relationship(container_elem)
+        if rel_id and context is not None:
+            rel = context.resolve_relationship(rel_id)
+            if rel is not None and rel.rel_type == IMAGE_REL_TYPE:
+                # VML reuses r:id for both embedded image parts and externally
+                # linked images; only the resolved TargetMode tells us which.
+                # Treating an external relationship as embedded would call
+                # export_embedded_image() (which short-circuits on external)
+                # and silently drop the linked path.
+                if rel.target_mode.lower() == "external":
+                    if rel.target:
+                        attrs["path"] = rel.target
+                    if rel.image_format:
+                        attrs["format"] = rel.image_format
+                else:
+                    rel_path = context.export_embedded_image(rel)
+                    if rel_path:
+                        attrs["path"] = rel_path
                     if rel.image_format:
                         attrs["format"] = rel.image_format
 
