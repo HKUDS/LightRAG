@@ -1253,6 +1253,22 @@ class _PipelineMixin:
 
                                 content = parsed_data.get("content", "")
 
+                                # Mirror non-fatal parser warnings (e.g. legacy
+                                # docx tables missing w14:paraId) onto the
+                                # in-memory status_doc so the
+                                # ANALYZING / PROCESSING / PROCESSED / FAILED
+                                # upserts carry the field through
+                                # ``doc_status_transition_metadata``.
+                                parse_warnings_payload = parsed_data.get(
+                                    "parse_warnings"
+                                )
+                                if parse_warnings_payload:
+                                    if not isinstance(status_doc.metadata, dict):
+                                        status_doc.metadata = {}
+                                    status_doc.metadata["parse_warnings"] = (
+                                        parse_warnings_payload
+                                    )
+
                                 # parse_* may have patched doc_status with the
                                 # content_hash that was missing for pending_parse.
                                 # Refresh the in-memory dataclass so subsequent
@@ -1948,6 +1964,22 @@ class _PipelineMixin:
                             else:
                                 parsed_data_w = await self.parse_native(
                                     doc_id_w, file_path_w, content_data_w
+                                )
+
+                            # Mirror non-fatal parser warnings (e.g. legacy
+                            # docx tables missing w14:paraId) onto the
+                            # in-memory status_doc so the
+                            # ANALYZING / PROCESSING / PROCESSED / FAILED
+                            # upserts carry the field through
+                            # ``doc_status_transition_metadata``.
+                            parse_warnings_payload_w = parsed_data_w.get(
+                                "parse_warnings"
+                            )
+                            if parse_warnings_payload_w:
+                                if not isinstance(status_doc_w.metadata, dict):
+                                    status_doc_w.metadata = {}
+                                status_doc_w.metadata["parse_warnings"] = (
+                                    parse_warnings_payload_w
                                 )
 
                             # parse_* may have patched content_hash for

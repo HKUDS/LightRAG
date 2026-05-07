@@ -142,7 +142,13 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # chunk / KG-skip stages and by admin/list APIs throughout the document's
 # lifetime, so we cannot let an intermediate transition (PARSING /
 # ANALYZING / PROCESSING / PROCESSED / FAILED upsert) clobber it.
-_DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = ("process_options",)
+# ``parse_warnings`` records non-fatal parser warnings (e.g. legacy docx
+# tables missing ``w14:paraId``) that admins should be able to surface
+# alongside the document record after PROCESSED.
+_DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
+    "process_options",
+    "parse_warnings",
+)
 
 
 def doc_status_metadata_carry_over(status_doc: Any) -> dict[str, Any]:

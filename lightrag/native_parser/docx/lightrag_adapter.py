@@ -104,7 +104,10 @@ async def parse_docx_to_lightrag_document(
     Returns:
         ``{doc_id, file_path, parse_format, content, blocks_path}`` — the same
         shape ``parse_native`` previously consumed from
-        :func:`_write_lightrag_document_from_content_list`.
+        :func:`_write_lightrag_document_from_content_list`. When the document
+        triggered any non-fatal parse warnings, a ``parse_warnings`` dict is
+        also included (e.g. ``{"tables_without_paraid": 3}``); the pipeline
+        forwards this into ``doc_status.metadata.parse_warnings``.
     """
     return await asyncio.to_thread(
         _parse_docx_sync,
@@ -154,6 +157,8 @@ def _parse_docx_sync(
         tmp.write(file_bytes)
         temp_docx = Path(tmp.name)
 
+    parse_warnings: dict[str, Any] = {}
+
     try:
         asset_dir.mkdir(parents=True, exist_ok=True)
         ctx = DrawingExtractionContext(
@@ -169,6 +174,7 @@ def _parse_docx_sync(
             debug=debug,
             fixlevel=0,
             drawing_context=ctx,
+            parse_warnings=parse_warnings,
         )
     finally:
         try:
@@ -178,6 +184,19 @@ def _parse_docx_sync(
 
     if not blocks:
         raise ValueError(f"DOCX parser returned empty content for {file_path}")
+
+    missing_paraid_count = int(parse_warnings.get("missing_paraid_count", 0) or 0)
+    if missing_paraid_count > 0:
+        # Surface once per document — the parser may encounter many missing
+        # paraIds (legacy / non-Word docx authors omit ``w14:paraId``), but a
+        # single warning with the count is enough for the user. Affected
+        # blocks emit ``positions: [{"type": "paraid", "range": null}]``.
+        logger.warning(
+            "[native_parser/docx] %s: %d paragraphs lack paraId; "
+            "Re-saving file in Word 2013+ to regenerate ids.",
+            Path(file_path).name,
+            missing_paraid_count,
+        )
 
     tables: dict[str, Any] = {}
     equations: dict[str, Any] = {}
@@ -194,8 +213,11 @@ def _parse_docx_sync(
         heading = block.get("heading") or ""
         level = int(block.get("level", 0) or 0)
         parent_headings = list(block.get("parent_headings") or [])
-        uuid_start = block.get("uuid") or ""
-        uuid_end = block.get("uuid_end") or uuid_start
+        # Keep ``None`` (rather than collapsing to a peer / empty string) so
+        # downstream consumers can distinguish "start missing", "end missing"
+        # and "both missing" via the per-side null in ``range``.
+        uuid_start = block.get("uuid") or None
+        uuid_end = block.get("uuid_end") or None
 
         # Sidecar entries for this block are accumulated locally so a block
         # that strips to empty does not leak orphan ids into the global maps.
@@ -326,14 +348,18 @@ def _parse_docx_sync(
         equation_idx += local_equation_count
         drawing_idx += local_drawing_count
 
-        positions: list[dict[str, Any]] = []
-        if uuid_start:
-            positions.append(
-                {
-                    "type": "paraid",
-                    "range": [uuid_start, uuid_end or uuid_start],
-                }
-            )
+        # Always emit a paraid position entry for docx blocks. ``range`` is a
+        # ``[start, end]`` pair where each side is the source paragraph /
+        # table cell paraId, or ``null`` when the source lacked
+        # ``w14:paraId``. Per-side nulls let consumers distinguish
+        # "start missing" / "end missing" / "both missing" without relying
+        # on an outer null.
+        positions: list[dict[str, Any]] = [
+            {
+                "type": "paraid",
+                "range": [uuid_start, uuid_end],
+            }
+        ]
 
         blocks_lines.append(
             json.dumps(
@@ -429,13 +455,19 @@ def _parse_docx_sync(
         asset_dir_present,
     )
 
-    return {
+    result: dict[str, Any] = {
         "doc_id": doc_id,
         "file_path": file_path,
         "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
         "content": merged_text,
         "blocks_path": str(blocks_path),
     }
+    if missing_paraid_count > 0:
+        # Pipeline reads this from the parsed_data dict and writes it to
+        # ``doc_status.metadata.parse_warnings`` so admin/list APIs can
+        # surface the issue alongside the document record.
+        result["parse_warnings"] = {"missing_paraid_count": missing_paraid_count}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +627,7 @@ def main() -> None:
     blocks_path = Path(parsed_data["blocks_path"])
     parsed_dir = blocks_path.parent
 
-    print(f"\nWrote: {blocks_path}")
+    print(f"Wrote: {blocks_path}")
     sidecar_files = sorted(
         p.name
         for p in parsed_dir.iterdir()
