@@ -309,7 +309,6 @@ def _parse_docx_sync(
             positions.append(
                 {
                     "type": "paraid",
-                    "anchor": "",
                     "range": [uuid_start, uuid_end or uuid_start],
                 }
             )
