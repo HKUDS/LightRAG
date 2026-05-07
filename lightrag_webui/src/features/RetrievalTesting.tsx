@@ -622,6 +622,16 @@ export default function RetrievalTesting() {
     useSettingsStore.getState().setRetrievalHistory([])
   }, [setMessages])
 
+  // Disable auto-scroll when the user clicks inside the messages container.
+  // The ref mutation pattern is intentional and matches how it's mutated elsewhere
+  // (wheel/scroll handlers in the effect above); the linter flags it here regardless.
+  const handleMessagesContainerClick = useCallback(() => {
+    if (shouldFollowScrollRef.current) {
+      // eslint-disable-next-line react-hooks/immutability
+      shouldFollowScrollRef.current = false;
+    }
+  }, [])
+
   // Handle copying message content with robust clipboard support
   const handleCopyMessage = useCallback(async (message: MessageWithError) => {
     const contentToCopy = message.role === 'user'
@@ -682,11 +692,7 @@ export default function RetrievalTesting() {
           <div
             ref={messagesContainerRef}
             className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2"
-            onClick={() => {
-              if (shouldFollowScrollRef.current) {
-                shouldFollowScrollRef.current = false;
-              }
-            }}
+            onClick={handleMessagesContainerClick}
           >
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               {messages.length === 0 ? (

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
@@ -66,9 +66,14 @@ const EditablePropertyRow = ({
     sourceEntity: string
   } | null>(null)
 
-  useEffect(() => {
+  // Sync currentValue when the incoming initialValue prop changes.
+  // Uses a render-time previous-value comparison instead of useEffect to avoid
+  // cascading renders flagged by react-hooks/set-state-in-effect.
+  const [previousInitialValue, setPreviousInitialValue] = useState(initialValue)
+  if (initialValue !== previousInitialValue) {
+    setPreviousInitialValue(initialValue)
     setCurrentValue(initialValue)
-  }, [initialValue])
+  }
 
   const handleEditClick = () => {
     if (isEditable && !isEditing) {

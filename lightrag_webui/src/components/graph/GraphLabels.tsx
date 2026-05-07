@@ -61,17 +61,21 @@ const GraphLabels = () => {
     initializeHistory()
   }, [])
 
-  // Force AsyncSelect to re-render when label changes externally (e.g., from entity rename/merge)
-  useEffect(() => {
+  // Force AsyncSelect to re-render when label or dropdownRefreshTrigger changes.
+  // Uses render-time previous-value comparison to avoid cascading renders from
+  // setState-in-useEffect, while still bumping the key on external changes.
+  const [previousLabel, setPreviousLabel] = useState(label)
+  const [previousDropdownTrigger, setPreviousDropdownTrigger] = useState(dropdownRefreshTrigger)
+  if (label !== previousLabel) {
+    setPreviousLabel(label)
     setSelectKey(prev => prev + 1)
-  }, [label])
-
-  // Force AsyncSelect to re-render when dropdown refresh is triggered (e.g., after entity rename)
-  useEffect(() => {
+  }
+  if (dropdownRefreshTrigger !== previousDropdownTrigger) {
+    setPreviousDropdownTrigger(dropdownRefreshTrigger)
     if (dropdownRefreshTrigger > 0) {
       setSelectKey(prev => prev + 1)
     }
-  }, [dropdownRefreshTrigger])
+  }
 
   // Monitor pipeline state changes: busy -> idle
   useEffect(() => {

@@ -60,13 +60,21 @@ export const ChatMessage = ({
   // Directly use props passed from the parent.
   const { thinkingContent, displayContent, thinkingTime, isThinking } = message
 
-  // Reset expansion state when new thinking starts
-  useEffect(() => {
+  // Reset expansion state when new thinking starts.
+  // Render-time comparison avoids cascading renders from setState-in-useEffect.
+  const [previousThinkingState, setPreviousThinkingState] = useState({
+    isThinking,
+    messageId: message.id
+  })
+  if (
+    previousThinkingState.isThinking !== isThinking ||
+    previousThinkingState.messageId !== message.id
+  ) {
+    setPreviousThinkingState({ isThinking, messageId: message.id })
     if (isThinking) {
-      // When thinking starts, always reset to collapsed state
       setIsThinkingExpanded(false)
     }
-  }, [isThinking, message.id])
+  }
 
   // The content to display is now non-ambiguous.
   const finalThinkingContent = thinkingContent
