@@ -5,7 +5,7 @@ the LightRAG Document artifacts directly to disk:
 
 - ``<base>.blocks.jsonl``           — main file (meta line + content lines)
 - ``<base>.tables.json``            — table sidecar (only when non-empty)
-- ``<base>.equations.json``         — equation sidecar (only when non-empty)
+- ``<base>.equations.json``         — equation sidecar (block equations only)
 - ``<base>.drawings.json``          — drawing sidecar (only when non-empty)
 - ``<base>.blocks.assets/``         — exported image bytes (only when non-empty)
 
@@ -13,6 +13,12 @@ Inline ``<table>{json}</table>``, ``<equation>{latex}</equation>`` and
 ``<drawing .../>`` placeholders produced by the upstream extractor are rewritten
 in-place to carry stable LightRAG ids and captions, while sidecar entries hold
 the full structured payload required by downstream multimodal stages.
+
+Equations are split into two classes by surrounding whitespace: a tag wedged
+between two newlines (or at the content boundary on a side that would otherwise
+require ``\n``) is a *block* equation and lands in ``equations.json``; any other
+``<equation>`` is *inline* and is left untouched in the block text without a
+sidecar entry, so multimodal stages skip it.
 """
 
 from __future__ import annotations
@@ -226,11 +232,23 @@ def _parse_docx_sync(
 
         def _replace_equation(match: re.Match) -> str:
             nonlocal local_equation_count
+            latex = match.group(1)
+
+            # Block equation = tag wedged between newlines (or content edge).
+            # Inline equations stay verbatim in the block text and are not
+            # promoted to sidecar entries.
+            source = match.string
+            start, end = match.start(), match.end()
+            is_block = (start == 0 or source[start - 1] == "\n") and (
+                end == len(source) or source[end] == "\n"
+            )
+            if not is_block:
+                return match.group(0)
+
             local_equation_count += 1
             idx = equation_idx + local_equation_count
             eq_id = f"eq-{doc_id}-{idx:04d}"
             caption = ""
-            latex = match.group(1)
             pending_equations[eq_id] = {
                 "id": eq_id,
                 "blockid": "",
