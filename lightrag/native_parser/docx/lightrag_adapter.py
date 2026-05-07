@@ -218,7 +218,6 @@ def _parse_docx_sync(
                 "index": idx - 1,
                 "caption": caption,
                 "footnotes": [],
-                "image": None,
             }
             return (
                 f'<table id="{_xml_attr_escape(tb_id)}" format="json" '
@@ -230,7 +229,7 @@ def _parse_docx_sync(
             local_equation_count += 1
             idx = equation_idx + local_equation_count
             eq_id = f"eq-{doc_id}-{idx:04d}"
-            caption = f"公式{idx}"
+            caption = ""
             latex = match.group(1)
             pending_equations[eq_id] = {
                 "id": eq_id,
@@ -254,7 +253,7 @@ def _parse_docx_sync(
             placeholder = match.group(0)
             attrs = parse_drawing_attributes(placeholder)
             dr_id = f"dr-{doc_id}-{idx:04d}"
-            caption = f"图{idx}"
+            caption = ""
             path_val = attrs.get("path", "") or ""
             src_val = attrs.get("src", "") or ""
             fmt = attrs.get("format", "") or ""
