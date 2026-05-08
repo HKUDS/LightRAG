@@ -25,6 +25,16 @@ load_dotenv(dotenv_path=".env", override=False)
 @dataclass
 class NetworkXStorage(BaseGraphStorage):
     @staticmethod
+    def _normalize_node_id(node_id: str) -> str:
+        """Normalize node ID for case-insensitive matching.
+
+        Knowledge graphs should treat 'Apple' and 'apple' as the same entity.
+        This ensures consistent node identity regardless of case variation
+        from LLM extraction or external injection.
+        """
+        return node_id.lower() if isinstance(node_id, str) else node_id
+
+    @staticmethod
     def load_nx_graph(file_name) -> nx.Graph:
         if os.path.exists(file_name):
             return nx.read_graphml(file_name)
@@ -98,38 +108,47 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def has_node(self, node_id: str) -> bool:
         graph = await self._get_graph()
-        return graph.has_node(node_id)
+        return graph.has_node(self._normalize_node_id(node_id))
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         graph = await self._get_graph()
-        return graph.has_edge(source_node_id, target_node_id)
+        return graph.has_edge(
+            self._normalize_node_id(source_node_id),
+            self._normalize_node_id(target_node_id),
+        )
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         graph = await self._get_graph()
-        return graph.nodes.get(node_id)
+        return graph.nodes.get(self._normalize_node_id(node_id))
 
     async def node_degree(self, node_id: str) -> int:
         graph = await self._get_graph()
-        if graph.has_node(node_id):
-            return graph.degree(node_id)
+        nid = self._normalize_node_id(node_id)
+        if graph.has_node(nid):
+            return graph.degree(nid)
         return 0
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         graph = await self._get_graph()
-        src_degree = graph.degree(src_id) if graph.has_node(src_id) else 0
-        tgt_degree = graph.degree(tgt_id) if graph.has_node(tgt_id) else 0
+        norm_src = self._normalize_node_id(src_id)
+        norm_tgt = self._normalize_node_id(tgt_id)
+        src_degree = graph.degree(norm_src) if graph.has_node(norm_src) else 0
+        tgt_degree = graph.degree(norm_tgt) if graph.has_node(norm_tgt) else 0
         return src_degree + tgt_degree
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
         graph = await self._get_graph()
-        return graph.edges.get((source_node_id, target_node_id))
+        return graph.edges.get(
+            (self._normalize_node_id(source_node_id), self._normalize_node_id(target_node_id))
+        )
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         graph = await self._get_graph()
-        if graph.has_node(source_node_id):
-            return list(graph.edges(source_node_id))
+        nid = self._normalize_node_id(source_node_id)
+        if graph.has_node(nid):
+            return list(graph.edges(nid))
         return None
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
@@ -140,7 +159,7 @@ class NetworkXStorage(BaseGraphStorage):
            KG-storage-log should be used to avoid data corruption
         """
         graph = await self._get_graph()
-        graph.add_node(node_id, **node_data)
+        graph.add_node(self._normalize_node_id(node_id), **node_data)
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
@@ -152,7 +171,11 @@ class NetworkXStorage(BaseGraphStorage):
            KG-storage-log should be used to avoid data corruption
         """
         graph = await self._get_graph()
-        graph.add_edge(source_node_id, target_node_id, **edge_data)
+        graph.add_edge(
+            self._normalize_node_id(source_node_id),
+            self._normalize_node_id(target_node_id),
+            **edge_data,
+        )
 
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes in a single call.
@@ -165,7 +188,7 @@ class NetworkXStorage(BaseGraphStorage):
         """
         graph = await self._get_graph()
         for node_id, node_data in nodes:
-            graph.add_node(node_id, **node_data)
+            graph.add_node(self._normalize_node_id(node_id), **node_data)
 
     async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
         """Check existence of multiple nodes in a single call.
@@ -174,7 +197,7 @@ class NetworkXStorage(BaseGraphStorage):
             Set of node_ids that exist in the graph.
         """
         graph = await self._get_graph()
-        return {nid for nid in node_ids if graph.has_node(nid)}
+        return {nid for nid in node_ids if graph.has_node(self._normalize_node_id(nid))}
 
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
@@ -186,7 +209,11 @@ class NetworkXStorage(BaseGraphStorage):
         """
         graph = await self._get_graph()
         for src, tgt, edge_data in edges:
-            graph.add_edge(src, tgt, **edge_data)
+            graph.add_edge(
+                self._normalize_node_id(src),
+                self._normalize_node_id(tgt),
+                **edge_data,
+            )
 
     async def delete_node(self, node_id: str) -> None:
         """
@@ -196,8 +223,9 @@ class NetworkXStorage(BaseGraphStorage):
            KG-storage-log should be used to avoid data corruption
         """
         graph = await self._get_graph()
-        if graph.has_node(node_id):
-            graph.remove_node(node_id)
+        nid = self._normalize_node_id(node_id)
+        if graph.has_node(nid):
+            graph.remove_node(nid)
             logger.debug(f"[{self.workspace}] Node {node_id} deleted from the graph")
         else:
             logger.warning(
@@ -217,8 +245,9 @@ class NetworkXStorage(BaseGraphStorage):
         """
         graph = await self._get_graph()
         for node in nodes:
-            if graph.has_node(node):
-                graph.remove_node(node)
+            nid = self._normalize_node_id(node)
+            if graph.has_node(nid):
+                graph.remove_node(nid)
 
     async def remove_edges(self, edges: list[tuple[str, str]]):
         """Delete multiple edges
@@ -233,8 +262,10 @@ class NetworkXStorage(BaseGraphStorage):
         """
         graph = await self._get_graph()
         for source, target in edges:
-            if graph.has_edge(source, target):
-                graph.remove_edge(source, target)
+            norm_src = self._normalize_node_id(source)
+            norm_tgt = self._normalize_node_id(target)
+            if graph.has_edge(norm_src, norm_tgt):
+                graph.remove_edge(norm_src, norm_tgt)
 
     async def get_all_labels(self) -> list[str]:
         """
@@ -378,8 +409,10 @@ class NetworkXStorage(BaseGraphStorage):
             # Create subgraph with the highest degree nodes
             subgraph = graph.subgraph(limited_nodes)
         else:
+            # Normalize the starting node label for case-insensitive lookup
+            norm_label = self._normalize_node_id(node_label)
             # Check if node exists
-            if node_label not in graph:
+            if norm_label not in graph:
                 logger.warning(
                     f"[{self.workspace}] Node {node_label} not found in the graph"
                 )
@@ -389,7 +422,7 @@ class NetworkXStorage(BaseGraphStorage):
             bfs_nodes = []
             visited = set()
             # Store (node, depth, degree) in the queue
-            queue = deque([(node_label, 0, graph.degree(node_label))])
+            queue = deque([(norm_label, 0, graph.degree(norm_label))])
 
             # Flag to track if there are unexplored neighbors due to depth limit
             has_unexplored_neighbors = False
