@@ -4,11 +4,12 @@ LightRAG FastAPI Server
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
 )
+import json
 import os
 import re
 import logging
@@ -76,6 +77,15 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
+
+
+# Fixed WebUI mount path. Used as `app.mount(WEBUI_PATH, ...)` and as the
+# in-app component of `webuiPrefix` injected into window.__LIGHTRAG_CONFIG__
+# (which the browser sees as `LIGHTRAG_API_PREFIX + WEBUI_PATH + "/"`).
+# Not user-configurable: a single mount path simplifies the operator surface
+# and matches how LightRAG is deployed in practice. See
+# docs/MultiSiteDeployment.md.
+WEBUI_PATH = "/webui"
 
 
 def _clean_workspace_value(value: Any) -> str | None:
@@ -374,98 +384,6 @@ def check_frontend_build():
         return (True, False)  # Assume assets exist and up-to-date on error
 
 
-def check_webui_build_prefix(api_prefix: str, webui_path: str) -> None:
-    """Warn if the WebUI build's baked-in path prefix doesn't match what
-    this server will expose.
-
-    Background: the WebUI is a Vite-built static bundle. `VITE_WEBUI_PREFIX`
-    is statically replaced into `index.html` and the JS chunk imports at
-    `bun run build` time. If an admin later changes `LIGHTRAG_API_PREFIX` /
-    `LIGHTRAG_WEBUI_PATH` without rebuilding (e.g. when reusing a single
-    image across multiple sites), `index.html` still loads, but every
-    `<script src=...>` and `<link href=...>` points at the OLD prefix and
-    404s — a confusing failure mode that's easy to miss in browser logs.
-
-    This check parses one asset reference from the built `index.html`,
-    derives the prefix that was baked in, and compares it to the
-    browser-visible path = api_prefix + webui_path + "/" — the same formula
-    documented in `env.example`. If they disagree it prints a loud warning
-    with the exact command to rebuild.
-
-    Args:
-        api_prefix: normalized LIGHTRAG_API_PREFIX (e.g. "/site01" or "")
-        webui_path: normalized LIGHTRAG_WEBUI_PATH (e.g. "/webui")
-    """
-    index_html = Path(__file__).parent / "webui" / "index.html"
-    if not index_html.exists():
-        # No build to check — `check_frontend_build` already warned.
-        return
-
-    try:
-        html = index_html.read_text(encoding="utf-8")
-    except OSError as e:
-        logger.warning(f"Could not read WebUI index.html for prefix check: {e}")
-        return
-
-    # Vite emits assets under `<base>assets/...` (see assetFileNames). Pull
-    # the prefix out of the first such reference. Match either src= or href=
-    # to cover <script> and <link> tags.
-    match = re.search(r'(?:src|href)="([^"]*?)/assets/[^"]*"', html)
-    if not match:
-        # Build artifact format unexpected — skip silently rather than
-        # spam a warning the admin can't act on.
-        logger.debug("Could not infer WebUI baked prefix from index.html")
-        return
-
-    baked_prefix = match.group(1) + "/"
-    expected_prefix = f"{api_prefix}{webui_path}/"
-
-    if baked_prefix == expected_prefix:
-        logger.info(f"WebUI build prefix matches server config: {expected_prefix}")
-        return
-
-    # Structured warning so log aggregators / tests can pick it up.
-    rebuild_cmd = (
-        ("VITE_API_PREFIX=" + api_prefix + " " if api_prefix else "")
-        + "VITE_WEBUI_PREFIX="
-        + expected_prefix
-        + " bun run build"
-    )
-    logger.warning(
-        "WebUI build prefix mismatch: built with %s but server will expose"
-        " at %s (LIGHTRAG_API_PREFIX=%s + LIGHTRAG_WEBUI_PATH=%s + '/')."
-        " Asset URLs will 404 until the WebUI is rebuilt with: %s",
-        baked_prefix,
-        expected_prefix,
-        api_prefix or "<empty>",
-        webui_path,
-        rebuild_cmd,
-    )
-
-    # Banner duplicates the warning for an operator watching the splash —
-    # easy to miss a single log line among startup chatter.
-    ASCIIColors.yellow("\n" + "=" * 80)
-    ASCIIColors.yellow("WARNING: WebUI Build Prefix Mismatch")
-    ASCIIColors.yellow("=" * 80)
-    ASCIIColors.yellow(f"WebUI was built with prefix:    {baked_prefix}")
-    ASCIIColors.yellow(f"This server will expose it at:  {expected_prefix}")
-    ASCIIColors.yellow(
-        f"  (LIGHTRAG_API_PREFIX={api_prefix or '<empty>'}"
-        f' + LIGHTRAG_WEBUI_PATH={webui_path} + "/")\n'
-    )
-    ASCIIColors.yellow("The WebUI HTML will load, but its asset URLs (JS/CSS) will 404")
-    ASCIIColors.yellow(
-        "because they were baked at build time. Rebuild the WebUI with:\n"
-    )
-    ASCIIColors.cyan("    cd lightrag_webui")
-    if api_prefix:
-        ASCIIColors.cyan(f"    VITE_API_PREFIX={api_prefix} \\")
-    ASCIIColors.cyan(f"    VITE_WEBUI_PREFIX={expected_prefix} \\")
-    ASCIIColors.cyan("    bun run build")
-    ASCIIColors.cyan("    cd ..")
-    ASCIIColors.yellow("=" * 80 + "\n")
-
-
 def create_app(args):
     # Check frontend build first and get status
     webui_assets_exist, is_frontend_outdated = check_frontend_build()
@@ -571,28 +489,22 @@ def create_app(args):
         + "\n\n[View ReDoc documentation](/redoc)"
     )
 
-    # Normalize API prefix and WebUI mount path. Both accept user input from
-    # CLI/env, so we strip surrounding whitespace, strip a trailing slash
-    # (Starlette's app.mount rejects mount paths ending in '/'), and treat
-    # empty/"/" as "use the default". A leading slash is ensured.
-    def _normalize_path(value: str | None, default: str) -> str:
+    # Normalize the API prefix from CLI/env. Strip surrounding whitespace,
+    # strip a trailing slash, and treat empty/"/" as "no prefix". A leading
+    # slash is ensured. The WebUI mount path is fixed at "/webui" — see
+    # docs/MultiSiteDeployment.md for the rationale.
+    def _normalize_api_prefix(value: str | None) -> str:
         if value is None:
-            return default
+            return ""
         value = value.strip()
         if not value or value == "/":
-            return default
+            return ""
         if not value.startswith("/"):
             value = "/" + value
         return value.rstrip("/")
 
-    api_prefix = _normalize_path(getattr(args, "api_prefix", None), default="")
-    webui_path = _normalize_path(getattr(args, "webui_path", None), default="/webui")
-
-    # Loud warning at startup if the WebUI build's baked prefix disagrees
-    # with the prefix this server will expose. Skipped when no build exists
-    # (check_frontend_build already warned about that).
-    if webui_assets_exist:
-        check_webui_build_prefix(api_prefix, webui_path)
+    api_prefix = _normalize_api_prefix(getattr(args, "api_prefix", None))
+    webui_path = WEBUI_PATH
 
     app_kwargs = {
         "title": "LightRAG Server API",
@@ -1969,12 +1881,49 @@ def create_app(args):
             logger.error(f"Error getting health status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # Custom StaticFiles class for smart caching
+    # Pre-render the runtime-config <script> once. The browser-visible URL
+    # prefixes are NOT baked into the bundle anymore — index.html ships with
+    # a placeholder comment that we replace with this snippet on every HTML
+    # response, so one build serves any reverse-proxy mount point.
+    #
+    # `</` → `<\/` escaping prevents an embedded "</script>" sequence from
+    # breaking out of the inline script (defense-in-depth — values come from
+    # admin config, not user input).
+    _runtime_config_payload = json.dumps(
+        {
+            "apiPrefix": api_prefix,
+            "webuiPrefix": f"{api_prefix}{webui_path}/",
+        }
+    ).replace("</", "<\\/")
+    runtime_config_script = (
+        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};</script>"
+    )
+
+    # Custom StaticFiles class for smart caching + runtime config injection
     class SmartStaticFiles(StaticFiles):  # Renamed from NoCacheStaticFiles
+        # Replaced in index.html on every request. Keep in sync with
+        # lightrag_webui/index.html.
+        RUNTIME_CONFIG_PLACEHOLDER = b"<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
+
         async def get_response(self, path: str, scope):
             response = await super().get_response(path, scope)
 
-            is_html = path.endswith(".html") or response.media_type == "text/html"
+            # `path` is empty when accessing the mount root (StaticFiles
+            # rewrites it to index.html internally) — match on media_type
+            # too so we still inject in that case.
+            is_html = (
+                path.endswith(".html")
+                or path == ""
+                or path.endswith("/")
+                or getattr(response, "media_type", None) == "text/html"
+            )
+
+            if (
+                is_html
+                and getattr(response, "status_code", 0) == 200
+                and isinstance(response, FileResponse)
+            ):
+                response = self._inject_runtime_config(response)
 
             if is_html:
                 response.headers["Cache-Control"] = (
@@ -1997,6 +1946,32 @@ def create_app(args):
                 response.headers["Content-Type"] = "text/css"
 
             return response
+
+        def _inject_runtime_config(self, response: FileResponse) -> Response:
+            """Replace the runtime-config placeholder in index.html.
+
+            Returns the original FileResponse if the placeholder is absent
+            (older build, or a non-index HTML file) — avoids breaking
+            previously-working bundles during upgrades.
+            """
+            try:
+                content = Path(response.path).read_bytes()
+            except OSError as e:
+                logger.warning(
+                    "Could not read %s for runtime config injection: %s",
+                    response.path,
+                    e,
+                )
+                return response
+
+            if self.RUNTIME_CONFIG_PLACEHOLDER not in content:
+                return response
+
+            new_content = content.replace(
+                self.RUNTIME_CONFIG_PLACEHOLDER,
+                runtime_config_script.encode("utf-8"),
+            )
+            return Response(content=new_content, media_type="text/html")
 
     # Mount Swagger UI static files for offline support
     swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"

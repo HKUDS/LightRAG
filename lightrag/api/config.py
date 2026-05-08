@@ -382,12 +382,6 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("LIGHTRAG_API_PREFIX", ""),
         help="API path prefix (e.g., /api/v1). Prepended to all API routes. Default: none (root).",
     )
-    parser.add_argument(
-        "--webui-path",
-        type=str,
-        default=get_env_value("LIGHTRAG_WEBUI_PATH", "/webui"),
-        help="Path to mount WebUI static files. Default: /webui",
-    )
 
     # Server workers configuration
     parser.add_argument(

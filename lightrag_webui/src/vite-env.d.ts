@@ -1,50 +1,34 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  /* ───────────── dev-server proxy ───────────── */
+
+  /** When `true`, `bun run dev` proxies the listed endpoints to the backend. */
   readonly VITE_API_PROXY: string
+  /** Comma-separated list of paths the dev server forwards to the backend. */
   readonly VITE_API_ENDPOINTS: string
+  /** Backend origin the dev server forwards to (e.g. `http://localhost:9621`). */
   readonly VITE_BACKEND_URL: string
 
-  /**
-   * Browser-visible URL prefix used as `axios.baseURL`, in `fetch()` template
-   * strings, and as the iframe `src` for the API docs page.
+  /* ───────────── dev-time multi-site simulation ─────────────
    *
-   * Must equal the backend `LIGHTRAG_API_PREFIX` for the same site — i.e.
-   * the prefix the reverse proxy strips before forwarding to FastAPI.
-   * Empty / `/` → no prefix (single-instance deployment).
+   * Optional. Lets `bun run dev` mimic a reverse-proxied deployment so the
+   * SPA can be exercised under the same path prefix it will see in
+   * production — without a rebuild. Read by `vite.config.ts` and injected
+   * into `index.html` as `window.__LIGHTRAG_CONFIG__`, mirroring what the
+   * FastAPI server does at request time in production. The matching
+   * `webuiPrefix` is derived as `${VITE_DEV_API_PREFIX}/webui/` (the WebUI
+   * mount path is fixed at /webui server-side).
    *
-   * Multi-site example (site01 routed at `https://host/site01/...`):
-   *     VITE_API_PREFIX=/site01
+   * Empty / unset → no prefix; the dev server behaves the same as today.
    *
-   * Statically replaced into the bundle at `bun run build` time, so each
-   * site needs its own WebUI build until runtime config injection lands.
-   * See `lightrag_webui/.env.example` and the project root `env.example`.
-   *
-   * Always read through {@link normalizeApiPrefix}; do not concatenate the
-   * raw value, otherwise `/` produces protocol-relative `//path` and a
-   * trailing slash produces `//`.
+   * See `lightrag_webui/env.development.smaple` and
+   * `docs/MultiSiteDeployment.md` for end-to-end examples.
    */
-  readonly VITE_API_PREFIX?: string
 
-  /**
-   * Browser-visible URL prefix where the WebUI itself is served. Used as
-   * Vite's `base` option (asset paths in `index.html`) and by `<a>` links.
-   *
-   * Must equal `LIGHTRAG_API_PREFIX + LIGHTRAG_WEBUI_PATH + "/"` — i.e. the
-   * FULL path the user's browser sees, including any reverse-proxy prefix
-   * in front of the in-app mount path.
-   *
-   * Multi-site example (site01 WebUI at `https://host/site01/webui/`):
-   *     VITE_WEBUI_PREFIX=/site01/webui/
-   *
-   * Statically replaced into the bundle at `bun run build` time, so each
-   * site needs its own WebUI build until runtime config injection lands.
-   * See `lightrag_webui/.env.example` and the project root `env.example`.
-   *
-   * Always read through {@link normalizeWebuiPrefix}; the helper guarantees
-   * a leading `/` and exactly one trailing `/` as Vite requires.
-   */
-  readonly VITE_WEBUI_PREFIX?: string
+  /** Browser-visible API prefix to simulate in dev. Must match the backend's
+   *  `LIGHTRAG_API_PREFIX` if a real prefixed backend is being proxied to. */
+  readonly VITE_DEV_API_PREFIX?: string
 }
 
 interface ImportMeta {
