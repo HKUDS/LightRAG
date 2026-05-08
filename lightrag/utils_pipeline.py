@@ -33,6 +33,53 @@ from lightrag.utils import (
 PLACEHOLDER_DOCUMENT_SOURCES = {"", "no-file-path", "unknown_source"}
 
 
+def build_chunks_dict_from_chunking_result(
+    chunking_result: list[dict[str, Any]],
+    *,
+    doc_id: str,
+    file_path: str,
+) -> dict[str, dict[str, Any]]:
+    """Assemble the per-doc chunks dict written into chunks_vdb / text_chunks.
+
+    Resolves a stable ``chunk_key`` for each entry — preferring an explicit
+    ``chunk_id`` (auto-prefixed with ``doc_id-`` if not already), falling back
+    to a positional ``chunk-NNN`` derived from ``chunk_order_index``, and
+    finally hashing on collision so two entries inside one document never
+    overwrite each other.
+    """
+    chunks: dict[str, dict[str, Any]] = {}
+    for dp in chunking_result:
+        chunk_content = dp.get("content", "")
+        if not chunk_content:
+            continue
+        raw_chunk_id = dp.get("chunk_id", "")
+        order = dp.get("chunk_order_index")
+        if isinstance(raw_chunk_id, str) and raw_chunk_id.strip():
+            chunk_key = (
+                raw_chunk_id
+                if raw_chunk_id.startswith(f"{doc_id}-")
+                else f"{doc_id}-{raw_chunk_id}"
+            )
+        elif isinstance(order, int):
+            chunk_key = f"{doc_id}-chunk-{order:03d}"
+        else:
+            chunk_key = compute_mdhash_id(f"{doc_id}:{chunk_content}", prefix="chunk-")
+
+        # Hard collision guard (same chunk_id inside one document).
+        if chunk_key in chunks:
+            chunk_key = compute_mdhash_id(
+                f"{doc_id}:{order}:{chunk_content}",
+                prefix="chunk-",
+            )
+        chunks[chunk_key] = {
+            **dp,
+            "full_doc_id": doc_id,
+            "file_path": file_path,
+            "llm_cache_list": [],
+        }
+    return chunks
+
+
 def chunk_fields_from_status_doc(
     status_doc: DocProcessingStatus,
 ) -> tuple[list[str], int]:
