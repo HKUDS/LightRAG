@@ -10,8 +10,6 @@ from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
-router = APIRouter(tags=["query"])
-
 
 class QueryRequest(BaseModel):
     query: str = Field(
@@ -191,6 +189,12 @@ class StreamChunkResponse(BaseModel):
 
 
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+    # Fresh router per call. A module-level instance would accumulate
+    # duplicate routes when the factory is invoked more than once in the
+    # same process (e.g. across tests), which triggers FastAPI's
+    # "Duplicate Operation ID" warnings.
+    router = APIRouter(tags=["query"])
+
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(

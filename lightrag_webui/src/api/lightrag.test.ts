@@ -186,7 +186,7 @@ describe('getDocumentsPaginated', () => {
     }
 
     let callCount = 0
-    let resolveSharedRequest: ((value: any) => void) | null = null
+    let resolveSharedRequest: ((value: any) => void) | undefined
     let abortCount = 0
 
     apiModule.__setPaginatedDocumentsPostForTests((_request, controller) => {

@@ -3,15 +3,19 @@ import path from 'path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// Use relative import instead of '@/lib/constants' path alias.
-// The '@' alias is configured in this file's resolve.alias and only takes effect
-// during bundling — Node.js cannot resolve it when loading vite.config.ts itself.
-// Bun resolves tsconfig paths natively, masking the issue, but Node.js does not.
-import { webuiPrefix } from './src/lib/constants'
+// Use relative imports here. The '@' alias is configured in resolve.alias
+// below and only takes effect during bundling — Node cannot resolve it when
+// loading vite.config.ts. Bun resolves tsconfig paths natively, masking the
+// issue, but Node does not.
+//
+// Likewise, do NOT pull `webuiPrefix` from './src/lib/constants': that value
+// is read from `import.meta.env.VITE_*`, which Vite only populates inside
+// source files (statically replaced at build). In the config file itself
+// `import.meta.env` lacks user `VITE_*` vars, so the constant would silently
+// collapse to its fallback. Use `loadEnv()` to get the real value.
+import { normalizeWebuiPrefix } from './src/lib/pathPrefix'
 
 // https://vite.dev/config/
-// Use functional config form so we can call loadEnv(). import.meta.env is only
-// available inside Bun's runtime; Node.js leaves it undefined, crashing the build.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
 
@@ -25,8 +29,7 @@ export default defineConfig(({ mode }) => {
       // This ensures mhchem extension registered in main.tsx is available to rehype-katex
       dedupe: ['katex']
     },
-    // base: env.VITE_BASE_URL || '/webui/',
-    base: webuiPrefix,
+    base: normalizeWebuiPrefix(env.VITE_WEBUI_PREFIX),
     build: {
       outDir: path.resolve(__dirname, '../lightrag/api/webui'),
       emptyOutDir: true,
