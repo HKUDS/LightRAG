@@ -957,19 +957,25 @@ class LightRAG:
                 effective_max_async = max_async
             else:
                 stored = getattr(self, max_async_attr)
-                effective_max_async = stored if stored is not None else self.llm_model_max_async
+                effective_max_async = (
+                    stored if stored is not None else self.llm_model_max_async
+                )
 
             if timeout is not None:
                 effective_timeout = timeout
             else:
                 stored = getattr(self, timeout_attr)
-                effective_timeout = stored if stored is not None else self.default_llm_timeout
+                effective_timeout = (
+                    stored if stored is not None else self.default_llm_timeout
+                )
 
             if model_kwargs is not None:
                 effective_kwargs = model_kwargs
             else:
                 stored = getattr(self, kwargs_attr)
-                effective_kwargs = stored if stored is not None else self.llm_model_kwargs
+                effective_kwargs = (
+                    stored if stored is not None else self.llm_model_kwargs
+                )
 
             # Rebuild the wrapped function with independent queue
             hashing_kv = self.llm_response_cache
