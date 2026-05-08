@@ -22,6 +22,7 @@ import re
 import shutil
 import time
 import traceback
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,7 @@ from lightrag.utils_pipeline import (
     archive_docx_source_after_full_docs_sync,
     archive_source_after_full_docs_sync,
     augment_chunk_results_with_mm_entities,
+    build_chunks_dict_from_chunking_result,
     chunk_fields_from_status_doc,
     compute_file_content_hash,
     compute_text_content_hash,
@@ -83,6 +85,43 @@ from lightrag.utils_pipeline import (
     resolve_lightrag_document_path,
     strip_lightrag_doc_prefix,
 )
+
+
+# Document statuses the pipeline considers "in-flight or pending" — used by
+# both the initial snapshot and every refetch after a request_pending
+# continuation.  Module-level so we don't reconstruct the list on every
+# pipeline entry.
+_INFLIGHT_DOC_STATUSES = (
+    DocStatus.PROCESSING,
+    DocStatus.FAILED,
+    DocStatus.PENDING,
+    DocStatus.PARSING,
+    DocStatus.ANALYZING,
+)
+
+
+@dataclass
+class _BatchRunContext:
+    """Per-batch shared state for the parse/analyze/process worker pipeline.
+
+    Bundles the cross-cutting handles (pipeline_status, locks, queues,
+    semaphore) so worker methods accept a single ``ctx`` argument instead of
+    ~8 individually plumbed parameters.  ``processed_count`` mutates inside
+    each batch and is always read/written under ``pipeline_status_lock``.
+    """
+
+    pipeline_status: dict
+    pipeline_status_lock: Any
+    semaphore: asyncio.Semaphore
+    total_files: int
+    q_native: asyncio.Queue
+    q_mineru: asyncio.Queue
+    q_docling: asyncio.Queue
+    q_analyze: asyncio.Queue
+    q_process: asyncio.Queue
+    split_by_character: str | None = None
+    split_by_character_only: bool = False
+    processed_count: int = 0
 
 
 class _PipelineMixin:
@@ -936,6 +975,827 @@ class _PipelineMixin:
             pipeline_status["busy"] = False
             return True
 
+    async def _upsert_doc_status_transition(
+        self,
+        doc_id: str,
+        status: DocStatus,
+        status_doc: DocProcessingStatus,
+        file_path: str,
+        *,
+        extra_fields: dict[str, Any] | None = None,
+        metadata_extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Single source of truth for doc_status state-transition upserts.
+
+        Mirrors the field set used at every PARSING / ANALYZING / PROCESSING /
+        PROCESSED / FAILED transition.  ``extra_fields`` carries
+        ``chunks_count`` / ``chunks_list`` / ``error_msg``; ``metadata_extra``
+        is forwarded to ``doc_status_transition_metadata`` so carry-over
+        fields (e.g. ``process_options``) survive every state change.
+        """
+        payload: dict[str, Any] = {
+            "status": status,
+            "content_summary": status_doc.content_summary,
+            "content_length": status_doc.content_length,
+            "created_at": status_doc.created_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "file_path": file_path,
+            "track_id": status_doc.track_id,
+            "content_hash": status_doc.content_hash,
+            "metadata": doc_status_transition_metadata(
+                status_doc, extra=metadata_extra
+            ),
+        }
+        if extra_fields:
+            payload.update(extra_fields)
+        await self.doc_status.upsert({doc_id: payload})
+
+    async def _raise_if_cancelled(
+        self,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Raise ``PipelineCancelledException`` if the user has requested cancel."""
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled")
+
+    async def _finalize_doc_failure(
+        self,
+        *,
+        doc_id: str,
+        status_doc: DocProcessingStatus,
+        file_path: str,
+        error: BaseException,
+        stage_label: str,
+        current_file_number: int,
+        total_files: int,
+        failed_chunks_snapshot: tuple[list[str], int],
+        pending_tasks: list[asyncio.Task],
+        metadata_extra: dict[str, Any],
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Common epilogue for an extract / merge stage failure.
+
+        Logs the error (or cancellation), cancels any pending stage tasks,
+        flushes the LLM response cache, and writes a FAILED status row that
+        preserves the failed chunks snapshot and processing-time metadata.
+        """
+        if isinstance(error, PipelineCancelledException):
+            if stage_label == "merge":
+                error_msg = (
+                    f"User cancelled during merge {current_file_number}/"
+                    f"{total_files}: {file_path}"
+                )
+            else:
+                error_msg = (
+                    f"User cancelled {current_file_number}/"
+                    f"{total_files}: {file_path}"
+                )
+            logger.warning(error_msg)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = error_msg
+                pipeline_status["history_messages"].append(error_msg)
+        else:
+            logger.error(traceback.format_exc())
+            if stage_label == "merge":
+                error_msg = (
+                    f"Merging stage failed in document "
+                    f"{current_file_number}/{total_files}: {file_path}"
+                )
+            else:
+                error_msg = (
+                    f"Failed to extract document "
+                    f"{current_file_number}/{total_files}: {file_path}"
+                )
+            logger.error(error_msg)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = error_msg
+                pipeline_status["history_messages"].append(traceback.format_exc())
+                pipeline_status["history_messages"].append(error_msg)
+
+        for task in pending_tasks:
+            if task and not task.done():
+                task.cancel()
+
+        if self.llm_response_cache:
+            try:
+                await self.llm_response_cache.index_done_callback()
+            except Exception as persist_error:
+                logger.error(f"Failed to persist LLM cache: {persist_error}")
+
+        failed_chunks_list, failed_chunks_count = failed_chunks_snapshot
+        await self._upsert_doc_status_transition(
+            doc_id=doc_id,
+            status=DocStatus.FAILED,
+            status_doc=status_doc,
+            file_path=file_path,
+            extra_fields={
+                "error_msg": str(error),
+                "chunks_count": failed_chunks_count,
+                "chunks_list": failed_chunks_list,
+            },
+            metadata_extra=metadata_extra,
+        )
+
+    async def _purge_stale_extraction_if_resuming(
+        self,
+        *,
+        doc_id: str,
+        status_doc: DocProcessingStatus,
+        file_path: str,
+        content_data: dict[str, Any] | None,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """If the document already has extracted content, purge stale chunks
+        and KG contributions before re-running chunking + entity extraction
+        under the current ``process_options``.
+
+        Mutates ``status_doc.chunks_list`` / ``chunks_count`` to reflect the
+        purge so subsequent state-machine upserts don't write back stale IDs.
+        Also emits an engine-mismatch warning when the filename hint disagrees
+        with the stored ``parse_engine`` — the extracted content is the source
+        of truth, so the user must delete + re-upload to switch engines.
+        """
+        content_already_extracted = isinstance(content_data, dict) and (
+            (
+                content_data.get("parse_format") == FULL_DOCS_FORMAT_LIGHTRAG
+                and content_data.get("lightrag_document_path")
+            )
+            or (
+                content_data.get("parse_format") == FULL_DOCS_FORMAT_RAW
+                and (content_data.get("content") or "").strip()
+            )
+        )
+        if not content_already_extracted:
+            return
+
+        intended_engine, _ = resolve_file_parser_directives(file_path)
+        stored_engine = (content_data.get("parse_engine") or "").lower()
+        if intended_engine and stored_engine and intended_engine != stored_engine:
+            log_message = (
+                f"[resume] {doc_id}: filename hint / "
+                f"LIGHTRAG_PARSER implies engine="
+                f"{intended_engine!r} but full_docs "
+                f"already has parse_engine="
+                f"{stored_engine!r}; keeping the existing "
+                f"extraction.  Delete + re-upload to "
+                f"switch engines."
+            )
+            logger.warning(log_message)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
+        stored_chunk_ids = {
+            chunk_id
+            for chunk_id in (status_doc.chunks_list or [])
+            if isinstance(chunk_id, str) and chunk_id
+        }
+        if not stored_chunk_ids:
+            return
+
+        log_message = (
+            f"[resume] {doc_id}: purging "
+            f"{len(stored_chunk_ids)} chunk(s) and "
+            f"associated KG entries from a previous run "
+            f"before rebuilding under current "
+            f"process_options"
+        )
+        logger.info(log_message)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
+        await self._purge_doc_chunks_and_kg(
+            doc_id,
+            stored_chunk_ids,
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+        )
+        # The status_doc carries chunks_list / chunks_count from the prior
+        # run; clear them so subsequent state-machine upserts don't write
+        # back stale IDs.
+        status_doc.chunks_list = []
+        status_doc.chunks_count = 0
+
+    @staticmethod
+    def _format_job_name(
+        to_process_docs: dict[str, DocProcessingStatus],
+        total_files: int,
+    ) -> str:
+        """Build the ``job_name`` shown in pipeline_status for one batch."""
+        first_doc = next(iter(to_process_docs.values()))
+        first_doc_path = first_doc.file_path
+        if first_doc_path:
+            path_prefix = first_doc_path[:20] + (
+                "..." if len(first_doc_path) > 20 else ""
+            )
+        else:
+            path_prefix = "unknown_source"
+        return f"{path_prefix}[{total_files} files]"
+
+    async def _parse_worker(
+        self,
+        engine: str,
+        in_q: asyncio.Queue,
+        ctx: _BatchRunContext,
+    ) -> None:
+        """Layer 1 worker: consume (doc_id, status_doc) and emit parsed data.
+
+        Marks PARSING, runs the engine-specific parser (mineru / docling /
+        native), refreshes ``content_hash`` if the parser patched it, and
+        either short-circuits via ``_mark_duplicate_after_parse`` or hands
+        off to ``q_analyze``.  Writes FAILED on exception.
+        """
+        while True:
+            item = await in_q.get()
+            try:
+                doc_id_w, status_doc_w = item
+                file_path_w = getattr(status_doc_w, "file_path", "unknown_source")
+                content_data_w = await self.full_docs.get_by_id(doc_id_w)
+                if not content_data_w:
+                    raise Exception(
+                        f"Document content not found in full_docs for doc_id: {doc_id_w}"
+                    )
+                await self._upsert_doc_status_transition(
+                    doc_id=doc_id_w,
+                    status=DocStatus.PARSING,
+                    status_doc=status_doc_w,
+                    file_path=file_path_w,
+                )
+                if engine == "mineru":
+                    parsed_data_w = await self.parse_mineru(
+                        doc_id_w, file_path_w, content_data_w
+                    )
+                elif engine == "docling":
+                    parsed_data_w = await self.parse_docling(
+                        doc_id_w, file_path_w, content_data_w
+                    )
+                else:
+                    parsed_data_w = await self.parse_native(
+                        doc_id_w, file_path_w, content_data_w
+                    )
+
+                # Mirror non-fatal parser warnings (e.g. legacy docx tables
+                # missing w14:paraId) onto the in-memory status_doc so the
+                # ANALYZING / PROCESSING / PROCESSED / FAILED upserts carry
+                # the field through ``doc_status_transition_metadata``.
+                parse_warnings_payload_w = parsed_data_w.get("parse_warnings")
+                if parse_warnings_payload_w:
+                    if not isinstance(status_doc_w.metadata, dict):
+                        status_doc_w.metadata = {}
+                    status_doc_w.metadata["parse_warnings"] = parse_warnings_payload_w
+
+                # parse_* may have patched content_hash for
+                # pending_parse → raw transitions.
+                refreshed = await self.doc_status.get_by_id(doc_id_w)
+                if refreshed:
+                    refreshed_hash = (
+                        refreshed.get("content_hash")
+                        if isinstance(refreshed, dict)
+                        else getattr(refreshed, "content_hash", None)
+                    )
+                    if refreshed_hash:
+                        status_doc_w.content_hash = refreshed_hash
+
+                if await self._mark_duplicate_after_parse(
+                    doc_id=doc_id_w,
+                    status_doc=status_doc_w,
+                    file_path=file_path_w,
+                    content_hash=status_doc_w.content_hash,
+                    content_length=len(parsed_data_w.get("content", "")),
+                    content_data=content_data_w,
+                    pipeline_status=ctx.pipeline_status,
+                    pipeline_status_lock=ctx.pipeline_status_lock,
+                ):
+                    continue
+
+                await ctx.q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
+            except Exception as e:
+                logger.error(f"Parse worker failed ({engine}): {e}")
+                try:
+                    await self._upsert_doc_status_transition(
+                        doc_id=doc_id_w,
+                        status=DocStatus.FAILED,
+                        status_doc=status_doc_w,
+                        file_path=getattr(status_doc_w, "file_path", "unknown_source"),
+                        extra_fields={"error_msg": str(e)},
+                    )
+                except Exception:
+                    pass
+            finally:
+                in_q.task_done()
+
+    async def _analyze_worker(self, ctx: _BatchRunContext) -> None:
+        """Layer 2 worker: run multimodal analysis (VLM) and feed q_process.
+
+        Refreshes ``content_summary`` / ``content_length`` from the parsed
+        body (pending_parse → lightrag / raw documents start with empty
+        summary / zero length at enqueue) so PROCESSING / PROCESSED upserts
+        end up with real values.
+        """
+        while True:
+            item = await ctx.q_analyze.get()
+            try:
+                doc_id_w, status_doc_w, parsed_data_w = item
+                file_path_w = getattr(status_doc_w, "file_path", "unknown_source")
+                refreshed_content_w = parsed_data_w.get("content", "") or ""
+                refreshed_summary_w = get_content_summary(refreshed_content_w)
+                refreshed_length_w = len(refreshed_content_w)
+                status_doc_w.content_summary = refreshed_summary_w
+                status_doc_w.content_length = refreshed_length_w
+                await self._upsert_doc_status_transition(
+                    doc_id=doc_id_w,
+                    status=DocStatus.ANALYZING,
+                    status_doc=status_doc_w,
+                    file_path=file_path_w,
+                )
+                analyzed = await self.analyze_multimodal(
+                    doc_id=doc_id_w,
+                    file_path=file_path_w,
+                    parsed_data=parsed_data_w,
+                )
+                await ctx.q_process.put((doc_id_w, status_doc_w, analyzed))
+            except Exception as e:
+                logger.error(f"Analyze worker failed: {e}")
+            finally:
+                ctx.q_analyze.task_done()
+
+    async def _process_worker(self, ctx: _BatchRunContext) -> None:
+        """Layer 3 worker: dispatch each ready document to single-doc processing."""
+        while True:
+            item = await ctx.q_process.get()
+            try:
+                doc_id_w, status_doc_w, parsed_data_w = item
+                await self._process_single_document(
+                    doc_id=doc_id_w,
+                    status_doc=status_doc_w,
+                    parsed_data=parsed_data_w,
+                    ctx=ctx,
+                )
+            finally:
+                ctx.q_process.task_done()
+
+    async def _process_single_document(
+        self,
+        *,
+        doc_id: str,
+        status_doc: DocProcessingStatus,
+        parsed_data: dict[str, Any],
+        ctx: _BatchRunContext,
+    ) -> None:
+        """Single-document state machine: chunking → KG extraction → merge.
+
+        Always invoked from ``_process_worker`` with ``parsed_data`` already
+        populated by ``_parse_worker`` + ``_analyze_worker``.  Drives the
+        PROCESSING → PROCESSED state machine, with FAILED fallbacks at both
+        the extract and merge stage boundaries.
+        """
+        from lightrag.parser_routing import parse_process_options
+
+        file_path = resolve_doc_file_path(status_doc=status_doc)
+        current_file_number = 0
+        file_extraction_stage_ok = False
+        processing_start_time = int(time.time())
+        first_stage_tasks: list[asyncio.Task] = []
+        entity_relation_task: asyncio.Task | None = None
+        chunks: dict[str, Any] = {}
+        content_data: dict[str, Any] | None = None
+        extraction_meta: dict[str, Any] = {}
+        chunk_results: list = []
+        doc_process_opts = parse_process_options("")
+
+        def get_failed_chunk_snapshot() -> tuple[list[str], int]:
+            if chunks:
+                chunk_ids = list(chunks.keys())
+                return chunk_ids, len(chunk_ids)
+            return chunk_fields_from_status_doc(status_doc)
+
+        async with ctx.semaphore:
+            try:
+                # Resolve file_path from full_docs before honoring a queued
+                # cancellation so corrupted doc_status placeholders do not
+                # get written back again during retry/cancel flows.
+                content_data = await self.full_docs.get_by_id(doc_id)
+                if content_data:
+                    file_path = resolve_doc_file_path(
+                        status_doc=status_doc,
+                        content_data=content_data,
+                    )
+                    status_doc.file_path = file_path
+
+                # Check for cancellation before starting document processing.
+                # file_path is resolved before this check so queued documents
+                # do not lose their source path on early cancellation.
+                await self._raise_if_cancelled(
+                    ctx.pipeline_status, ctx.pipeline_status_lock
+                )
+
+                async with ctx.pipeline_status_lock:
+                    ctx.processed_count += 1
+                    current_file_number = ctx.processed_count
+                    ctx.pipeline_status["cur_batch"] = ctx.processed_count
+
+                    log_message = (
+                        f"Extracting stage {current_file_number}/"
+                        f"{ctx.total_files}: {file_path}"
+                    )
+                    logger.info(log_message)
+                    ctx.pipeline_status["history_messages"].append(log_message)
+                    log_message = f"Processing d-id: {doc_id}"
+                    logger.info(log_message)
+                    ctx.pipeline_status["latest_message"] = log_message
+                    ctx.pipeline_status["history_messages"].append(log_message)
+
+                    # Prevent memory growth: keep only latest 5000 messages
+                    # when exceeding 10000.  Trim in place so Manager.list-
+                    # backed shared state remains appendable and visible
+                    # across processes.
+                    if len(ctx.pipeline_status["history_messages"]) > 10000:
+                        logger.info(
+                            f"Trimming pipeline history from {len(ctx.pipeline_status['history_messages'])} to 5000 messages"
+                        )
+                        del ctx.pipeline_status["history_messages"][:-5000]
+
+                content = parsed_data.get("content", "")
+
+                # Decode per-document processing options once; later stages
+                # (multimodal hook / KG extraction) re-read them from
+                # full_docs as well.
+                doc_process_opts = parse_process_options(
+                    (content_data or {}).get("process_options", "")
+                )
+
+                # Resume guard: if content was already extracted under
+                # earlier process_options, purge stale chunks + KG before
+                # rebuilding.
+                await self._purge_stale_extraction_if_resuming(
+                    doc_id=doc_id,
+                    status_doc=status_doc,
+                    file_path=file_path,
+                    content_data=content_data,
+                    pipeline_status=ctx.pipeline_status,
+                    pipeline_status_lock=ctx.pipeline_status_lock,
+                )
+
+                # F-chunking only — R/S strategies are deferred.
+                if doc_process_opts.chunking != "F":
+                    logger.warning(
+                        f"[chunking] process_options chunking="
+                        f"{doc_process_opts.chunking!r} requested for d-id: "
+                        f"{doc_id}, file: {file_path}, but R/S strategies are "
+                        f"not yet implemented; falling back to fixed chunking "
+                        f"('F')."
+                    )
+
+                chunking_result = self.chunking_func(
+                    self.tokenizer,
+                    content,
+                    ctx.split_by_character,
+                    ctx.split_by_character_only,
+                    self.chunk_overlap_token_size,
+                    self.chunk_token_size,
+                )
+                if inspect.isawaitable(chunking_result):
+                    chunking_result = await chunking_result
+
+                if not isinstance(chunking_result, (list, tuple)):
+                    raise TypeError(
+                        f"chunking_func must return a list or tuple of dicts, "
+                        f"got {type(chunking_result)}"
+                    )
+
+                # Reflect the format actually persisted in full_docs.
+                # Previously a structured-parse fallback always tagged
+                # parse_format=raw, which silently disabled
+                # _run_multimodal_postprocess_hook for lightrag documents.
+                persisted_format = (
+                    content_data.get("parse_format")
+                    if isinstance(content_data, dict)
+                    else FULL_DOCS_FORMAT_RAW
+                ) or FULL_DOCS_FORMAT_RAW
+                persisted_engine = (
+                    content_data.get("parse_engine")
+                    if isinstance(content_data, dict)
+                    else None
+                )
+                extraction_meta = {
+                    "parse_format": persisted_format,
+                    "parse_engine": persisted_engine
+                    or (
+                        "native"
+                        if persisted_format == FULL_DOCS_FORMAT_LIGHTRAG
+                        else "legacy"
+                    ),
+                    "chunking_method": (
+                        "fixed_token_fallback"
+                        if doc_process_opts.chunking != "F"
+                        else "fixed_token"
+                    ),
+                }
+
+                # Multimodal post-process hook entrypoint:
+                # runs after chunking and before entity extraction.
+                chunking_result = await self._run_multimodal_postprocess_hook(
+                    doc_id=doc_id,
+                    file_path=file_path,
+                    chunking_result=chunking_result,
+                    extraction_meta=extraction_meta,
+                )
+
+                mm_specs: list[dict[str, Any]] = []
+                blocks_path = str(parsed_data.get("blocks_path") or "").strip()
+                if blocks_path:
+                    max_order = -1
+                    for ch in chunking_result:
+                        if isinstance(ch, dict) and isinstance(
+                            ch.get("chunk_order_index"), int
+                        ):
+                            max_order = max(max_order, int(ch["chunk_order_index"]))
+                    mm_chunks, mm_specs = self._build_mm_chunks_from_sidecars(
+                        doc_id=doc_id,
+                        file_path=file_path,
+                        blocks_path=blocks_path,
+                        base_order_index=max_order + 1,
+                    )
+                    if mm_chunks:
+                        chunking_result = list(chunking_result) + mm_chunks
+                        extraction_meta["mm_chunks"] = len(mm_chunks)
+
+                # Final hard guard before embedding: split any oversize
+                # chunk while preserving heading hierarchy metadata.
+                if (
+                    self.embedding_token_limit is not None
+                    and self.embedding_token_limit > 0
+                ):
+                    original_chunk_count = len(chunking_result)
+                    chunking_result = enforce_chunk_token_limit_before_embedding(
+                        chunking_result=chunking_result,
+                        tokenizer=self.tokenizer,
+                        max_tokens=self.embedding_token_limit,
+                    )
+                    if len(chunking_result) != original_chunk_count:
+                        logger.info(
+                            "Applied hard fallback split before embedding for "
+                            f"d-id: {doc_id}, chunks {original_chunk_count} -> {len(chunking_result)} "
+                            f"(limit={self.embedding_token_limit})"
+                        )
+                        extraction_meta["hard_fallback_split"] = True
+                        extraction_meta["pre_split_chunks"] = original_chunk_count
+                        extraction_meta["post_split_chunks"] = len(chunking_result)
+
+                chunks = build_chunks_dict_from_chunking_result(
+                    chunking_result, doc_id=doc_id, file_path=file_path
+                )
+
+                if not chunks:
+                    logger.warning("No document chunks to process")
+
+                processing_start_time = int(time.time())
+
+                await self._raise_if_cancelled(
+                    ctx.pipeline_status, ctx.pipeline_status_lock
+                )
+
+                # Stage 1: persist doc_status PROCESSING + chunks in parallel.
+                doc_status_task = asyncio.create_task(
+                    self._upsert_doc_status_transition(
+                        doc_id=doc_id,
+                        status=DocStatus.PROCESSING,
+                        status_doc=status_doc,
+                        file_path=file_path,
+                        extra_fields={
+                            "chunks_count": len(chunks),
+                            "chunks_list": list(chunks.keys()),
+                        },
+                        metadata_extra={
+                            "processing_start_time": processing_start_time,
+                            **extraction_meta,
+                        },
+                    )
+                )
+                chunks_vdb_task = asyncio.create_task(self.chunks_vdb.upsert(chunks))
+                text_chunks_task = asyncio.create_task(self.text_chunks.upsert(chunks))
+                first_stage_tasks = [
+                    doc_status_task,
+                    chunks_vdb_task,
+                    text_chunks_task,
+                ]
+                entity_relation_task = None
+
+                await asyncio.gather(*first_stage_tasks)
+
+                # Stage 2: entity/relation extraction (after text_chunks are
+                # saved).  When the user opted out via process_options '!',
+                # skip extraction entirely; chunks remain in the vector
+                # store so naive / mix retrieval still works.
+                if doc_process_opts.skip_kg:
+                    logger.info(
+                        f"[skip_kg] process_options '!' set for d-id: {doc_id}; "
+                        f"skipping entity/relation extraction"
+                    )
+                    chunk_results = []
+                    extraction_meta["skip_kg"] = True
+                else:
+                    entity_relation_task = asyncio.create_task(
+                        self._process_extract_entities(
+                            chunks,
+                            ctx.pipeline_status,
+                            ctx.pipeline_status_lock,
+                        )
+                    )
+                    chunk_results = await entity_relation_task
+                    chunk_results = augment_chunk_results_with_mm_entities(
+                        chunk_results=chunk_results,
+                        mm_specs=mm_specs,
+                        file_path=file_path,
+                    )
+                file_extraction_stage_ok = True
+
+            except Exception as e:
+                pending_tasks = first_stage_tasks + (
+                    [entity_relation_task] if entity_relation_task else []
+                )
+                await self._finalize_doc_failure(
+                    doc_id=doc_id,
+                    status_doc=status_doc,
+                    file_path=file_path,
+                    error=e,
+                    stage_label="extract",
+                    current_file_number=current_file_number,
+                    total_files=ctx.total_files,
+                    failed_chunks_snapshot=get_failed_chunk_snapshot(),
+                    pending_tasks=pending_tasks,
+                    metadata_extra={
+                        "processing_start_time": processing_start_time,
+                        "processing_end_time": int(time.time()),
+                    },
+                    pipeline_status=ctx.pipeline_status,
+                    pipeline_status_lock=ctx.pipeline_status_lock,
+                )
+
+            # Concurrency is controlled by keyed lock for individual
+            # entities and relationships.
+            if file_extraction_stage_ok:
+                try:
+                    await self._raise_if_cancelled(
+                        ctx.pipeline_status, ctx.pipeline_status_lock
+                    )
+
+                    # Use chunk_results from entity_relation_task.  When
+                    # skip_kg is set, chunk_results is empty so there are no
+                    # nodes/edges to merge — but we still need to flush the
+                    # chunks_vdb / text_chunks writes (already done above)
+                    # and reach PROCESSED.
+                    if not doc_process_opts.skip_kg:
+                        await merge_nodes_and_edges(
+                            chunk_results=chunk_results,
+                            knowledge_graph_inst=self.chunk_entity_relation_graph,
+                            entity_vdb=self.entities_vdb,
+                            relationships_vdb=self.relationships_vdb,
+                            global_config=self._build_global_config(),
+                            full_entities_storage=self.full_entities,
+                            full_relations_storage=self.full_relations,
+                            doc_id=doc_id,
+                            pipeline_status=ctx.pipeline_status,
+                            pipeline_status_lock=ctx.pipeline_status_lock,
+                            llm_response_cache=self.llm_response_cache,
+                            entity_chunks_storage=self.entity_chunks,
+                            relation_chunks_storage=self.relation_chunks,
+                            current_file_number=current_file_number,
+                            total_files=ctx.total_files,
+                            file_path=file_path,
+                        )
+
+                    processing_end_time = int(time.time())
+                    await self._upsert_doc_status_transition(
+                        doc_id=doc_id,
+                        status=DocStatus.PROCESSED,
+                        status_doc=status_doc,
+                        file_path=file_path,
+                        extra_fields={
+                            "chunks_count": len(chunks),
+                            "chunks_list": list(chunks.keys()),
+                        },
+                        metadata_extra={
+                            "processing_start_time": processing_start_time,
+                            "processing_end_time": processing_end_time,
+                            **extraction_meta,
+                        },
+                    )
+
+                    await self._insert_done()
+
+                    async with ctx.pipeline_status_lock:
+                        log_message = (
+                            f"Completed processing file "
+                            f"{current_file_number}/{ctx.total_files}: "
+                            f"{file_path}"
+                        )
+                        logger.info(log_message)
+                        ctx.pipeline_status["latest_message"] = log_message
+                        ctx.pipeline_status["history_messages"].append(log_message)
+
+                except Exception as e:
+                    await self._finalize_doc_failure(
+                        doc_id=doc_id,
+                        status_doc=status_doc,
+                        file_path=file_path,
+                        error=e,
+                        stage_label="merge",
+                        current_file_number=current_file_number,
+                        total_files=ctx.total_files,
+                        failed_chunks_snapshot=get_failed_chunk_snapshot(),
+                        pending_tasks=[],
+                        metadata_extra={
+                            "processing_start_time": processing_start_time,
+                            "processing_end_time": int(time.time()),
+                            **extraction_meta,
+                        },
+                        pipeline_status=ctx.pipeline_status,
+                        pipeline_status_lock=ctx.pipeline_status_lock,
+                    )
+
+    async def _run_pipeline_batch(
+        self,
+        to_process_docs: dict[str, DocProcessingStatus],
+        *,
+        split_by_character: str | None,
+        split_by_character_only: bool,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Run one batch of pending documents through the parse → analyze →
+        process queues.
+
+        Three cascading layers of queues:
+          - Layer 1: Content Parsing  (parse_native / parse_mineru / parse_docling)
+          - Layer 2: Multimodal Analyze  (analyze_multimodal)
+          - Layer 3: Entity / Relation Extraction  (process_single_document)
+        """
+        total_files = len(to_process_docs)
+        pipeline_status["job_name"] = self._format_job_name(
+            to_process_docs, total_files
+        )
+
+        ctx = _BatchRunContext(
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+            semaphore=asyncio.Semaphore(self.max_parallel_insert),
+            total_files=total_files,
+            q_native=asyncio.Queue(maxsize=self.queue_size_default),
+            q_mineru=asyncio.Queue(maxsize=self.queue_size_default),
+            q_docling=asyncio.Queue(maxsize=self.queue_size_default),
+            q_analyze=asyncio.Queue(maxsize=self.queue_size_default),
+            q_process=asyncio.Queue(maxsize=self.queue_size_insert),
+            split_by_character=split_by_character,
+            split_by_character_only=split_by_character_only,
+        )
+
+        workers: list[asyncio.Task] = []
+        for _ in range(max(1, self.max_parallel_parse_native)):
+            workers.append(
+                asyncio.create_task(self._parse_worker("native", ctx.q_native, ctx))
+            )
+        for _ in range(max(1, self.max_parallel_parse_mineru)):
+            workers.append(
+                asyncio.create_task(self._parse_worker("mineru", ctx.q_mineru, ctx))
+            )
+        for _ in range(max(1, self.max_parallel_parse_docling)):
+            workers.append(
+                asyncio.create_task(self._parse_worker("docling", ctx.q_docling, ctx))
+            )
+        for _ in range(max(1, self.max_parallel_analyze)):
+            workers.append(asyncio.create_task(self._analyze_worker(ctx)))
+        for _ in range(max(1, self.max_parallel_insert)):
+            workers.append(asyncio.create_task(self._process_worker(ctx)))
+
+        # Add pending files to the correct parsing queue
+        for doc_id, status_doc in to_process_docs.items():
+            content_data = await self.full_docs.get_by_id(doc_id) or {}
+            engine = resolve_stored_document_parser_engine(
+                file_path=getattr(status_doc, "file_path", "unknown_source"),
+                content_data=content_data,
+            )
+            if engine == "mineru":
+                await ctx.q_mineru.put((doc_id, status_doc))
+            elif engine == "docling":
+                await ctx.q_docling.put((doc_id, status_doc))
+            else:
+                await ctx.q_native.put((doc_id, status_doc))
+
+        await asyncio.gather(
+            ctx.q_native.join(), ctx.q_mineru.join(), ctx.q_docling.join()
+        )
+        await ctx.q_analyze.join()
+        await ctx.q_process.join()
+
+        for w in workers:
+            w.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
     async def apipeline_process_enqueue_documents(
         self,
         split_by_character: str | None = None,
@@ -952,8 +1812,6 @@ class _PipelineMixin:
         4. Process each chunk for entity and relation extraction
         5. Update the document status
         """
-
-        # Get pipeline status shared data and lock
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
         )
@@ -961,24 +1819,14 @@ class _PipelineMixin:
             "pipeline_status", workspace=self.workspace
         )
 
-        # Check if another process is already processing the queue
-        # Statuses the pipeline considers "in-flight or pending"; used by
-        # both the initial snapshot and every refetch after a
-        # request_pending continuation.
-        _processing_statuses = [
-            DocStatus.PROCESSING,
-            DocStatus.FAILED,
-            DocStatus.PENDING,
-            DocStatus.PARSING,
-            DocStatus.ANALYZING,
-        ]
-
         async with pipeline_status_lock:
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
                 to_process_docs: dict[
                     str, DocProcessingStatus
-                ] = await self.doc_status.get_docs_by_statuses(_processing_statuses)
+                ] = await self.doc_status.get_docs_by_statuses(
+                    list(_INFLIGHT_DOC_STATUSES)
+                )
 
                 if not to_process_docs:
                     logger.info("No documents to process")
@@ -1018,28 +1866,13 @@ class _PipelineMixin:
         # could strand newly-enqueued PENDING docs.
         busy_released_in_loop = False
 
-        async def _try_atomic_release() -> bool:
-            """Thin wrapper that updates the local
-            ``busy_released_in_loop`` flag based on the result of
-            ``_atomic_release_busy_or_consume_pending``.
-            """
-            nonlocal busy_released_in_loop
-            released = await self._atomic_release_busy_or_consume_pending(
-                pipeline_status, pipeline_status_lock
-            )
-            if released:
-                busy_released_in_loop = True
-            return released
-
         try:
             # Process documents until no more documents or requests
             while True:
                 # Check for cancellation request at the start of main loop
                 async with pipeline_status_lock:
                     if pipeline_status.get("cancellation_requested", False):
-                        # Clear pending request
                         pipeline_status["request_pending"] = False
-                        # Celar cancellation flag
                         pipeline_status["cancellation_requested"] = False
 
                         log_message = "Pipeline cancelled by user"
@@ -1055,14 +1888,17 @@ class _PipelineMixin:
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    if await _try_atomic_release():
+                    if await self._atomic_release_busy_or_consume_pending(
+                        pipeline_status, pipeline_status_lock
+                    ):
+                        busy_released_in_loop = True
                         break
                     to_process_docs = await self.doc_status.get_docs_by_statuses(
-                        _processing_statuses
+                        list(_INFLIGHT_DOC_STATUSES)
                     )
                     continue
 
-                # Validate document data consistency and fix any issues as part of the pipeline
+                # Validate document data consistency and fix any issues
                 to_process_docs = await self._validate_and_fix_document_consistency(
                     to_process_docs, pipeline_status, pipeline_status_lock
                 )
@@ -1074,1090 +1910,41 @@ class _PipelineMixin:
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    if await _try_atomic_release():
+                    if await self._atomic_release_busy_or_consume_pending(
+                        pipeline_status, pipeline_status_lock
+                    ):
+                        busy_released_in_loop = True
                         break
                     to_process_docs = await self.doc_status.get_docs_by_statuses(
-                        _processing_statuses
+                        list(_INFLIGHT_DOC_STATUSES)
                     )
                     continue
 
                 log_message = f"Processing {len(to_process_docs)} document(s)"
                 logger.info(log_message)
-
-                # Update pipeline_status, batchs now represents the total number of files to be processed
                 pipeline_status["docs"] = len(to_process_docs)
                 pipeline_status["batchs"] = len(to_process_docs)
                 pipeline_status["cur_batch"] = 0
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-                # Three cascading layers of queues:
-                # Layer 1: Content Parsing - parse_native/parse_mineru/parse_docling
-                # Layer 2: Multimoldal Ananlyze - analyze_multimodal
-                # Layer 3: Entity and Relation Extraction - process_document
-
-                # Content Parsing Queues
-                q_native: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
-                q_mineru: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_default)
-                q_docling: asyncio.Queue = asyncio.Queue(
-                    maxsize=self.queue_size_default
+                await self._run_pipeline_batch(
+                    to_process_docs,
+                    split_by_character=split_by_character,
+                    split_by_character_only=split_by_character_only,
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
                 )
-                # Multimoldal Anlyaze Queue
-                q_analyze: asyncio.Queue = asyncio.Queue(
-                    maxsize=self.queue_size_default
-                )
-                # Entity and Relation Extraction Queue
-                q_process: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size_insert)
-
-                workers: list[asyncio.Task] = []
-
-                # Get first document's file path and total count for job name
-                first_doc_id, first_doc = next(iter(to_process_docs.items()))
-                first_doc_path = first_doc.file_path
-
-                # Handle cases where first_doc_path is None
-                if first_doc_path:
-                    path_prefix = first_doc_path[:20] + (
-                        "..." if len(first_doc_path) > 20 else ""
-                    )
-                else:
-                    path_prefix = "unknown_source"
-
-                total_files = len(to_process_docs)
-                job_name = f"{path_prefix}[{total_files} files]"
-                pipeline_status["job_name"] = job_name
-
-                # Create a counter to track the number of processed files
-                processed_count = 0
-                # Create a semaphore to limit the number of concurrent file processing
-                semaphore = asyncio.Semaphore(self.max_parallel_insert)
-
-                async def process_document(
-                    doc_id: str,
-                    status_doc: DocProcessingStatus,
-                    split_by_character: str | None,
-                    split_by_character_only: bool,
-                    pipeline_status: dict,
-                    pipeline_status_lock: asyncio.Lock,
-                    semaphore: asyncio.Semaphore,
-                    pre_parsed_data: dict[str, Any] | None = None,
-                ) -> None:
-                    """Process single document"""
-                    # Initialize variables at the start to prevent UnboundLocalError in error handling
-                    file_path = resolve_doc_file_path(status_doc=status_doc)
-                    current_file_number = 0
-                    file_extraction_stage_ok = False
-                    processing_start_time = int(time.time())
-                    first_stage_tasks = []
-                    entity_relation_task = None
-                    chunks: dict[str, Any] = {}
-                    content_data: dict[str, Any] | None = None
-
-                    def get_failed_chunk_snapshot() -> tuple[list[str], int]:
-                        if chunks:
-                            chunk_ids = list(chunks.keys())
-                            return chunk_ids, len(chunk_ids)
-                        return chunk_fields_from_status_doc(status_doc)
-
-                    async with semaphore:
-                        nonlocal processed_count
-                        # Initialize to prevent UnboundLocalError in error handling
-                        first_stage_tasks = []
-                        entity_relation_task = None
-                        try:
-                            # Resolve file_path from full_docs before honoring a queued
-                            # cancellation so corrupted doc_status placeholders do not
-                            # get written back again during retry/cancel flows.
-                            content_data = await self.full_docs.get_by_id(doc_id)
-                            if content_data:
-                                file_path = resolve_doc_file_path(
-                                    status_doc=status_doc,
-                                    content_data=content_data,
-                                )
-                                status_doc.file_path = file_path
-
-                            # Check for cancellation before starting document processing.
-                            # file_path is resolved before this check so queued documents
-                            # do not lose their source path on early cancellation.
-                            async with pipeline_status_lock:
-                                if pipeline_status.get("cancellation_requested", False):
-                                    raise PipelineCancelledException("User cancelled")
-
-                            async with pipeline_status_lock:
-                                # Update processed file count and save current file number
-                                processed_count += 1
-                                current_file_number = (
-                                    processed_count  # Save the current file number
-                                )
-                                pipeline_status["cur_batch"] = processed_count
-
-                                log_message = f"Extracting stage {current_file_number}/{total_files}: {file_path}"
-                                logger.info(log_message)
-                                pipeline_status["history_messages"].append(log_message)
-                                log_message = f"Processing d-id: {doc_id}"
-                                logger.info(log_message)
-                                pipeline_status["latest_message"] = log_message
-                                pipeline_status["history_messages"].append(log_message)
-
-                                # Prevent memory growth: keep only latest 5000 messages when exceeding 10000
-                                if len(pipeline_status["history_messages"]) > 10000:
-                                    logger.info(
-                                        f"Trimming pipeline history from {len(pipeline_status['history_messages'])} to 5000 messages"
-                                    )
-                                    # Trim in place so Manager.list-backed shared state
-                                    # remains appendable and visible across processes.
-                                    del pipeline_status["history_messages"][:-5000]
-
-                            if pre_parsed_data is None:
-                                # ---- Phase 1: PARSING ----
-                                await self.doc_status.upsert(
-                                    {
-                                        doc_id: {
-                                            "status": DocStatus.PARSING,
-                                            "content_summary": status_doc.content_summary,
-                                            "content_length": status_doc.content_length,
-                                            "created_at": status_doc.created_at,
-                                            "updated_at": datetime.now(
-                                                timezone.utc
-                                            ).isoformat(),
-                                            "file_path": file_path,
-                                            "track_id": status_doc.track_id,
-                                            "content_hash": status_doc.content_hash,
-                                            "metadata": doc_status_transition_metadata(
-                                                status_doc
-                                            ),
-                                        }
-                                    }
-                                )
-
-                                if not content_data:
-                                    raise Exception(
-                                        f"Document content not found in full_docs for doc_id: {doc_id}"
-                                    )
-
-                                parse_engine = resolve_stored_document_parser_engine(
-                                    file_path=file_path, content_data=content_data
-                                )
-                                if parse_engine == "mineru":
-                                    parsed_data = await self.parse_mineru(
-                                        doc_id, file_path, content_data
-                                    )
-                                elif parse_engine == "docling":
-                                    parsed_data = await self.parse_docling(
-                                        doc_id, file_path, content_data
-                                    )
-                                else:
-                                    parsed_data = await self.parse_native(
-                                        doc_id, file_path, content_data
-                                    )
-
-                                content = parsed_data.get("content", "")
-
-                                # Mirror non-fatal parser warnings (e.g. legacy
-                                # docx tables missing w14:paraId) onto the
-                                # in-memory status_doc so the
-                                # ANALYZING / PROCESSING / PROCESSED / FAILED
-                                # upserts carry the field through
-                                # ``doc_status_transition_metadata``.
-                                parse_warnings_payload = parsed_data.get(
-                                    "parse_warnings"
-                                )
-                                if parse_warnings_payload:
-                                    if not isinstance(status_doc.metadata, dict):
-                                        status_doc.metadata = {}
-                                    status_doc.metadata["parse_warnings"] = (
-                                        parse_warnings_payload
-                                    )
-
-                                # parse_* may have patched doc_status with the
-                                # content_hash that was missing for pending_parse.
-                                # Refresh the in-memory dataclass so subsequent
-                                # state-machine upserts preserve it.
-                                refreshed_status = await self.doc_status.get_by_id(
-                                    doc_id
-                                )
-                                if refreshed_status:
-                                    refreshed_hash = (
-                                        refreshed_status.get("content_hash")
-                                        if isinstance(refreshed_status, dict)
-                                        else getattr(
-                                            refreshed_status, "content_hash", None
-                                        )
-                                    )
-                                    if refreshed_hash:
-                                        status_doc.content_hash = refreshed_hash
-
-                                if await self._mark_duplicate_after_parse(
-                                    doc_id=doc_id,
-                                    status_doc=status_doc,
-                                    file_path=file_path,
-                                    content_hash=status_doc.content_hash,
-                                    content_length=len(content),
-                                    content_data=content_data,
-                                    pipeline_status=pipeline_status,
-                                    pipeline_status_lock=pipeline_status_lock,
-                                ):
-                                    return
-
-                                # ---- Phase 2: ANALYZING ----
-                                # Refresh content_summary / content_length from
-                                # the parsed body so pending_parse → lightrag /
-                                # raw documents (whose summary was empty and
-                                # length was 0 at enqueue) end up with real
-                                # values that propagate through every later
-                                # state transition.  We mirror the values onto
-                                # the in-memory status_doc dataclass — same
-                                # pattern as the content_hash refresh above —
-                                # so PROCESSING / PROCESSED upserts (which
-                                # read from status_doc.content_summary /
-                                # status_doc.content_length) preserve them.
-                                refreshed_summary = get_content_summary(content)
-                                refreshed_length = len(content)
-                                status_doc.content_summary = refreshed_summary
-                                status_doc.content_length = refreshed_length
-                                await self.doc_status.upsert(
-                                    {
-                                        doc_id: {
-                                            "status": DocStatus.ANALYZING,
-                                            "content_summary": refreshed_summary,
-                                            "content_length": refreshed_length,
-                                            "created_at": status_doc.created_at,
-                                            "updated_at": datetime.now(
-                                                timezone.utc
-                                            ).isoformat(),
-                                            "file_path": file_path,
-                                            "track_id": status_doc.track_id,
-                                            "content_hash": status_doc.content_hash,
-                                            "metadata": doc_status_transition_metadata(
-                                                status_doc
-                                            ),
-                                        }
-                                    }
-                                )
-                                parsed_data = await self.analyze_multimodal(
-                                    doc_id=doc_id,
-                                    file_path=file_path,
-                                    parsed_data=parsed_data,
-                                )
-                            else:
-                                parsed_data = pre_parsed_data
-                                content = parsed_data.get("content", "")
-
-                            extraction_meta: dict[str, Any] = {}
-
-                            # Decode per-document processing options once; later
-                            # stages (multimodal hook / KG extraction) re-read
-                            # them from full_docs as well.
-                            from lightrag.parser_routing import (
-                                parse_process_options,
-                            )
-
-                            doc_process_opts = parse_process_options(
-                                (content_data or {}).get("process_options", "")
-                            )
-
-                            # ---- Resume guard ----
-                            # When the pipeline picks up a non-fresh document whose
-                            # content has already been extracted into full_docs, we
-                            # must purge any stale chunks / entities / relations
-                            # from a previous interrupted attempt BEFORE re-running
-                            # chunking + entity extraction under the *current*
-                            # process_options.  Skipping this would either leave
-                            # orphaned chunk-IDs in the vector DB or mix old and
-                            # new chunks together, neither of which is safe.
-                            #
-                            # Both pipeline entry points (worker-driven and inline)
-                            # converge here, so this is the single canonical place
-                            # to do the purge regardless of which path got us here.
-                            content_already_extracted = isinstance(
-                                content_data, dict
-                            ) and (
-                                (
-                                    content_data.get("parse_format")
-                                    == FULL_DOCS_FORMAT_LIGHTRAG
-                                    and content_data.get("lightrag_document_path")
-                                )
-                                or (
-                                    content_data.get("parse_format")
-                                    == FULL_DOCS_FORMAT_RAW
-                                    and (content_data.get("content") or "").strip()
-                                )
-                            )
-                            stored_chunk_ids = set(
-                                chunk_id
-                                for chunk_id in (status_doc.chunks_list or [])
-                                if isinstance(chunk_id, str) and chunk_id
-                            )
-                            if content_already_extracted:
-                                # Engine-mismatch warning: changing the parser engine
-                                # after extraction is *not* honoured — the extracted
-                                # content is the source of truth.  Users wanting to
-                                # re-extract with a new engine must delete +
-                                # re-upload.
-                                intended_engine, _ = resolve_file_parser_directives(
-                                    file_path
-                                )
-                                stored_engine = (
-                                    content_data.get("parse_engine") or ""
-                                ).lower()
-                                if (
-                                    intended_engine
-                                    and stored_engine
-                                    and intended_engine != stored_engine
-                                ):
-                                    log_message = (
-                                        f"[resume] {doc_id}: filename hint / "
-                                        f"LIGHTRAG_PARSER implies engine="
-                                        f"{intended_engine!r} but full_docs "
-                                        f"already has parse_engine="
-                                        f"{stored_engine!r}; keeping the existing "
-                                        f"extraction.  Delete + re-upload to "
-                                        f"switch engines."
-                                    )
-                                    logger.warning(log_message)
-                                    async with pipeline_status_lock:
-                                        pipeline_status["latest_message"] = log_message
-                                        pipeline_status["history_messages"].append(
-                                            log_message
-                                        )
-
-                                if stored_chunk_ids:
-                                    log_message = (
-                                        f"[resume] {doc_id}: purging "
-                                        f"{len(stored_chunk_ids)} chunk(s) and "
-                                        f"associated KG entries from a previous run "
-                                        f"before rebuilding under current "
-                                        f"process_options"
-                                    )
-                                    logger.info(log_message)
-                                    async with pipeline_status_lock:
-                                        pipeline_status["latest_message"] = log_message
-                                        pipeline_status["history_messages"].append(
-                                            log_message
-                                        )
-                                    await self._purge_doc_chunks_and_kg(
-                                        doc_id,
-                                        stored_chunk_ids,
-                                        pipeline_status=pipeline_status,
-                                        pipeline_status_lock=pipeline_status_lock,
-                                    )
-                                    # The status_doc carries chunks_list / chunks_count
-                                    # from the prior run; clear them so subsequent
-                                    # state-machine upserts don't accidentally
-                                    # re-write stale IDs.
-                                    status_doc.chunks_list = []
-                                    status_doc.chunks_count = 0
-
-                            # F-chunking only — R/S strategies are deferred.
-                            # ``content`` here is always the bare body —
-                            # parse_native is the canonical place that strips
-                            # the {{LRdoc}} marker for lightrag, and raw /
-                            # pending-parse / mineru-fallback / docling-fallback
-                            # paths return ``content_data["content"]`` verbatim,
-                            # so a raw document whose literal text starts with
-                            # ``{{LRdoc}}`` keeps that prefix intact.  Stripping
-                            # again here would corrupt that case.
-                            if doc_process_opts.chunking != "F":
-                                logger.warning(
-                                    f"[chunking] process_options chunking="
-                                    f"{doc_process_opts.chunking!r} requested for d-id: "
-                                    f"{doc_id}, file: {file_path}, but R/S strategies are "
-                                    f"not yet implemented; falling back to fixed chunking "
-                                    f"('F')."
-                                )
-
-                            chunking_result = self.chunking_func(
-                                self.tokenizer,
-                                content,
-                                split_by_character,
-                                split_by_character_only,
-                                self.chunk_overlap_token_size,
-                                self.chunk_token_size,
-                            )
-                            if inspect.isawaitable(chunking_result):
-                                chunking_result = await chunking_result
-
-                            if not isinstance(chunking_result, (list, tuple)):
-                                raise TypeError(
-                                    f"chunking_func must return a list or tuple of dicts, "
-                                    f"got {type(chunking_result)}"
-                                )
-
-                            # Reflect the format actually persisted in
-                            # full_docs.  Previously a structured-parse
-                            # fallback always tagged parse_format=raw, which
-                            # silently disabled _run_multimodal_postprocess_hook
-                            # for lightrag documents (it gates on parse_format).
-                            persisted_format = (
-                                content_data.get("parse_format")
-                                if isinstance(content_data, dict)
-                                else FULL_DOCS_FORMAT_RAW
-                            ) or FULL_DOCS_FORMAT_RAW
-                            persisted_engine = (
-                                content_data.get("parse_engine")
-                                if isinstance(content_data, dict)
-                                else None
-                            )
-                            extraction_meta = {
-                                "parse_format": persisted_format,
-                                "parse_engine": persisted_engine
-                                or (
-                                    "native"
-                                    if persisted_format == FULL_DOCS_FORMAT_LIGHTRAG
-                                    else "legacy"
-                                ),
-                                "chunking_method": (
-                                    "fixed_token_fallback"
-                                    if doc_process_opts.chunking != "F"
-                                    else "fixed_token"
-                                ),
-                            }
-
-                            # Multimodal post-process hook entrypoint:
-                            # runs after chunking and before entity extraction.
-                            chunking_result = (
-                                await self._run_multimodal_postprocess_hook(
-                                    doc_id=doc_id,
-                                    file_path=file_path,
-                                    chunking_result=chunking_result,
-                                    extraction_meta=extraction_meta,
-                                )
-                            )
-
-                            mm_specs: list[dict[str, Any]] = []
-                            blocks_path = str(
-                                parsed_data.get("blocks_path") or ""
-                            ).strip()
-                            if blocks_path:
-                                max_order = -1
-                                for ch in chunking_result:
-                                    if isinstance(ch, dict) and isinstance(
-                                        ch.get("chunk_order_index"), int
-                                    ):
-                                        max_order = max(
-                                            max_order, int(ch["chunk_order_index"])
-                                        )
-                                mm_chunks, mm_specs = (
-                                    self._build_mm_chunks_from_sidecars(
-                                        doc_id=doc_id,
-                                        file_path=file_path,
-                                        blocks_path=blocks_path,
-                                        base_order_index=max_order + 1,
-                                    )
-                                )
-                                if mm_chunks:
-                                    chunking_result = list(chunking_result) + mm_chunks
-                                    extraction_meta["mm_chunks"] = len(mm_chunks)
-
-                            # Final hard guard before embedding:
-                            # split any oversize chunk while preserving heading hierarchy metadata.
-                            if (
-                                self.embedding_token_limit is not None
-                                and self.embedding_token_limit > 0
-                            ):
-                                original_chunk_count = len(chunking_result)
-                                chunking_result = (
-                                    enforce_chunk_token_limit_before_embedding(
-                                        chunking_result=chunking_result,
-                                        tokenizer=self.tokenizer,
-                                        max_tokens=self.embedding_token_limit,
-                                    )
-                                )
-                                if len(chunking_result) != original_chunk_count:
-                                    logger.info(
-                                        "Applied hard fallback split before embedding for "
-                                        f"d-id: {doc_id}, chunks {original_chunk_count} -> {len(chunking_result)} "
-                                        f"(limit={self.embedding_token_limit})"
-                                    )
-                                    extraction_meta["hard_fallback_split"] = True
-                                    extraction_meta["pre_split_chunks"] = (
-                                        original_chunk_count
-                                    )
-                                    extraction_meta["post_split_chunks"] = len(
-                                        chunking_result
-                                    )
-
-                            # Build chunks dictionary
-                            chunks: dict[str, Any] = {}
-                            for dp in chunking_result:
-                                chunk_content = dp.get("content", "")
-                                if not chunk_content:
-                                    continue
-                                raw_chunk_id = dp.get("chunk_id", "")
-                                order = dp.get("chunk_order_index")
-                                if (
-                                    isinstance(raw_chunk_id, str)
-                                    and raw_chunk_id.strip()
-                                ):
-                                    if raw_chunk_id.startswith(f"{doc_id}-"):
-                                        chunk_key = raw_chunk_id
-                                    else:
-                                        chunk_key = f"{doc_id}-{raw_chunk_id}"
-                                elif isinstance(order, int):
-                                    chunk_key = f"{doc_id}-chunk-{order:03d}"
-                                else:
-                                    chunk_key = compute_mdhash_id(
-                                        f"{doc_id}:{chunk_content}", prefix="chunk-"
-                                    )
-
-                                # Hard collision guard (same chunk_id inside one document).
-                                if chunk_key in chunks:
-                                    chunk_key = compute_mdhash_id(
-                                        f"{doc_id}:{order}:{chunk_content}",
-                                        prefix="chunk-",
-                                    )
-                                chunks[chunk_key] = {
-                                    **dp,
-                                    "full_doc_id": doc_id,
-                                    "file_path": file_path,
-                                    "llm_cache_list": [],
-                                }
-
-                            if not chunks:
-                                logger.warning("No document chunks to process")
-
-                            # Record processing start time
-                            processing_start_time = int(time.time())
-
-                            # Check for cancellation before entity extraction
-                            async with pipeline_status_lock:
-                                if pipeline_status.get("cancellation_requested", False):
-                                    raise PipelineCancelledException("User cancelled")
-
-                            # Process document in two stages
-                            # Stage 1: Process text chunks and docs (parallel execution)
-                            doc_status_task = asyncio.create_task(
-                                self.doc_status.upsert(
-                                    {
-                                        doc_id: {
-                                            "status": DocStatus.PROCESSING,
-                                            "chunks_count": len(chunks),
-                                            "chunks_list": list(
-                                                chunks.keys()
-                                            ),  # Save chunks list
-                                            "content_summary": status_doc.content_summary,
-                                            "content_length": status_doc.content_length,
-                                            "created_at": status_doc.created_at,
-                                            "updated_at": datetime.now(
-                                                timezone.utc
-                                            ).isoformat(),
-                                            "file_path": file_path,
-                                            "track_id": status_doc.track_id,  # Preserve existing track_id
-                                            "content_hash": status_doc.content_hash,
-                                            "metadata": doc_status_transition_metadata(
-                                                status_doc,
-                                                extra={
-                                                    "processing_start_time": processing_start_time,
-                                                    **extraction_meta,
-                                                },
-                                            ),
-                                        }
-                                    }
-                                )
-                            )
-                            chunks_vdb_task = asyncio.create_task(
-                                self.chunks_vdb.upsert(chunks)
-                            )
-                            text_chunks_task = asyncio.create_task(
-                                self.text_chunks.upsert(chunks)
-                            )
-
-                            # First stage tasks (parallel execution)
-                            first_stage_tasks = [
-                                doc_status_task,
-                                chunks_vdb_task,
-                                text_chunks_task,
-                            ]
-                            entity_relation_task = None
-
-                            # Execute first stage tasks
-                            await asyncio.gather(*first_stage_tasks)
-
-                            # Stage 2: Process entity relation graph (after text_chunks are saved).
-                            # When the user opted out via process_options '!', skip
-                            # entity/relation extraction entirely; chunks remain in
-                            # the vector store so naive / mix retrieval still works.
-                            if doc_process_opts.skip_kg:
-                                logger.info(
-                                    f"[skip_kg] process_options '!' set for d-id: {doc_id}; "
-                                    f"skipping entity/relation extraction"
-                                )
-                                chunk_results = []
-                                extraction_meta["skip_kg"] = True
-                            else:
-                                entity_relation_task = asyncio.create_task(
-                                    self._process_extract_entities(
-                                        chunks, pipeline_status, pipeline_status_lock
-                                    )
-                                )
-                                chunk_results = await entity_relation_task
-                                chunk_results = augment_chunk_results_with_mm_entities(
-                                    chunk_results=chunk_results,
-                                    mm_specs=mm_specs,
-                                    file_path=file_path,
-                                )
-                            file_extraction_stage_ok = True
-
-                        except Exception as e:
-                            # Check if this is a user cancellation
-                            if isinstance(e, PipelineCancelledException):
-                                # User cancellation - log brief message only, no traceback
-                                error_msg = f"User cancelled {current_file_number}/{total_files}: {file_path}"
-                                logger.warning(error_msg)
-                                async with pipeline_status_lock:
-                                    pipeline_status["latest_message"] = error_msg
-                                    pipeline_status["history_messages"].append(
-                                        error_msg
-                                    )
-                            else:
-                                # Other exceptions - log with traceback
-                                logger.error(traceback.format_exc())
-                                error_msg = f"Failed to extract document {current_file_number}/{total_files}: {file_path}"
-                                logger.error(error_msg)
-                                async with pipeline_status_lock:
-                                    pipeline_status["latest_message"] = error_msg
-                                    pipeline_status["history_messages"].append(
-                                        traceback.format_exc()
-                                    )
-                                    pipeline_status["history_messages"].append(
-                                        error_msg
-                                    )
-
-                            # Cancel tasks that are not yet completed
-                            all_tasks = first_stage_tasks + (
-                                [entity_relation_task] if entity_relation_task else []
-                            )
-                            for task in all_tasks:
-                                if task and not task.done():
-                                    task.cancel()
-
-                            # Persistent llm cache with error handling
-                            if self.llm_response_cache:
-                                try:
-                                    await self.llm_response_cache.index_done_callback()
-                                except Exception as persist_error:
-                                    logger.error(
-                                        f"Failed to persist LLM cache: {persist_error}"
-                                    )
-
-                            # Record processing end time for failed case
-                            processing_end_time = int(time.time())
-                            failed_chunks_list, failed_chunks_count = (
-                                get_failed_chunk_snapshot()
-                            )
-
-                            # Update document status to failed
-                            await self.doc_status.upsert(
-                                {
-                                    doc_id: {
-                                        "status": DocStatus.FAILED,
-                                        "error_msg": str(e),
-                                        "chunks_count": failed_chunks_count,
-                                        "chunks_list": failed_chunks_list,
-                                        "content_summary": status_doc.content_summary,
-                                        "content_length": status_doc.content_length,
-                                        "created_at": status_doc.created_at,
-                                        "updated_at": datetime.now(
-                                            timezone.utc
-                                        ).isoformat(),
-                                        "file_path": file_path,
-                                        "track_id": status_doc.track_id,  # Preserve existing track_id
-                                        "content_hash": status_doc.content_hash,
-                                        "metadata": doc_status_transition_metadata(
-                                            status_doc,
-                                            extra={
-                                                "processing_start_time": processing_start_time,
-                                                "processing_end_time": processing_end_time,
-                                            },
-                                        ),
-                                    }
-                                }
-                            )
-
-                        # Concurrency is controlled by keyed lock for individual entities and relationships
-                        if file_extraction_stage_ok:
-                            try:
-                                # Check for cancellation before merge
-                                async with pipeline_status_lock:
-                                    if pipeline_status.get(
-                                        "cancellation_requested", False
-                                    ):
-                                        raise PipelineCancelledException(
-                                            "User cancelled"
-                                        )
-
-                                # Use chunk_results from entity_relation_task.
-                                # When skip_kg is set, chunk_results is empty so
-                                # there are no nodes/edges to merge — but we
-                                # still need to flush the chunks_vdb / text_chunks
-                                # writes (already done above) and reach PROCESSED.
-                                if not doc_process_opts.skip_kg:
-                                    await merge_nodes_and_edges(
-                                        chunk_results=chunk_results,  # result collected from entity_relation_task
-                                        knowledge_graph_inst=self.chunk_entity_relation_graph,
-                                        entity_vdb=self.entities_vdb,
-                                        relationships_vdb=self.relationships_vdb,
-                                        global_config=self._build_global_config(),
-                                        full_entities_storage=self.full_entities,
-                                        full_relations_storage=self.full_relations,
-                                        doc_id=doc_id,
-                                        pipeline_status=pipeline_status,
-                                        pipeline_status_lock=pipeline_status_lock,
-                                        llm_response_cache=self.llm_response_cache,
-                                        entity_chunks_storage=self.entity_chunks,
-                                        relation_chunks_storage=self.relation_chunks,
-                                        current_file_number=current_file_number,
-                                        total_files=total_files,
-                                        file_path=file_path,
-                                    )
-
-                                # Record processing end time
-                                processing_end_time = int(time.time())
-
-                                await self.doc_status.upsert(
-                                    {
-                                        doc_id: {
-                                            "status": DocStatus.PROCESSED,
-                                            "chunks_count": len(chunks),
-                                            "chunks_list": list(chunks.keys()),
-                                            "content_summary": status_doc.content_summary,
-                                            "content_length": status_doc.content_length,
-                                            "created_at": status_doc.created_at,
-                                            "updated_at": datetime.now(
-                                                timezone.utc
-                                            ).isoformat(),
-                                            "file_path": file_path,
-                                            "track_id": status_doc.track_id,  # Preserve existing track_id
-                                            "content_hash": status_doc.content_hash,
-                                            "metadata": doc_status_transition_metadata(
-                                                status_doc,
-                                                extra={
-                                                    "processing_start_time": processing_start_time,
-                                                    "processing_end_time": processing_end_time,
-                                                    **extraction_meta,
-                                                },
-                                            ),
-                                        }
-                                    }
-                                )
-
-                                # Call _insert_done after processing each file
-                                await self._insert_done()
-
-                                async with pipeline_status_lock:
-                                    log_message = f"Completed processing file {current_file_number}/{total_files}: {file_path}"
-                                    logger.info(log_message)
-                                    pipeline_status["latest_message"] = log_message
-                                    pipeline_status["history_messages"].append(
-                                        log_message
-                                    )
-
-                            except Exception as e:
-                                # Check if this is a user cancellation
-                                if isinstance(e, PipelineCancelledException):
-                                    # User cancellation - log brief message only, no traceback
-                                    error_msg = f"User cancelled during merge {current_file_number}/{total_files}: {file_path}"
-                                    logger.warning(error_msg)
-                                    async with pipeline_status_lock:
-                                        pipeline_status["latest_message"] = error_msg
-                                        pipeline_status["history_messages"].append(
-                                            error_msg
-                                        )
-                                else:
-                                    # Other exceptions - log with traceback
-                                    logger.error(traceback.format_exc())
-                                    error_msg = f"Merging stage failed in document {current_file_number}/{total_files}: {file_path}"
-                                    logger.error(error_msg)
-                                    async with pipeline_status_lock:
-                                        pipeline_status["latest_message"] = error_msg
-                                        pipeline_status["history_messages"].append(
-                                            traceback.format_exc()
-                                        )
-                                        pipeline_status["history_messages"].append(
-                                            error_msg
-                                        )
-
-                                # Persistent llm cache with error handling
-                                if self.llm_response_cache:
-                                    try:
-                                        await self.llm_response_cache.index_done_callback()
-                                    except Exception as persist_error:
-                                        logger.error(
-                                            f"Failed to persist LLM cache: {persist_error}"
-                                        )
-
-                                # Record processing end time for failed case
-                                processing_end_time = int(time.time())
-                                failed_chunks_list, failed_chunks_count = (
-                                    get_failed_chunk_snapshot()
-                                )
-
-                                # Update document status to failed
-                                await self.doc_status.upsert(
-                                    {
-                                        doc_id: {
-                                            "status": DocStatus.FAILED,
-                                            "error_msg": str(e),
-                                            "chunks_count": failed_chunks_count,
-                                            "chunks_list": failed_chunks_list,
-                                            "content_summary": status_doc.content_summary,
-                                            "content_length": status_doc.content_length,
-                                            "created_at": status_doc.created_at,
-                                            "updated_at": datetime.now(
-                                                timezone.utc
-                                            ).isoformat(),
-                                            "file_path": file_path,
-                                            "track_id": status_doc.track_id,  # Preserve existing track_id
-                                            "content_hash": status_doc.content_hash,
-                                            "metadata": doc_status_transition_metadata(
-                                                status_doc,
-                                                extra={
-                                                    "processing_start_time": processing_start_time,
-                                                    "processing_end_time": processing_end_time,
-                                                    **extraction_meta,
-                                                },
-                                            ),
-                                        }
-                                    }
-                                )
-
-                async def parse_worker(engine: str, in_q: asyncio.Queue):
-                    while True:
-                        item = await in_q.get()
-                        try:
-                            doc_id_w, status_doc_w = item
-                            file_path_w = getattr(
-                                status_doc_w, "file_path", "unknown_source"
-                            )
-                            content_data_w = await self.full_docs.get_by_id(doc_id_w)
-                            if not content_data_w:
-                                raise Exception(
-                                    f"Document content not found in full_docs for doc_id: {doc_id_w}"
-                                )
-                            await self.doc_status.upsert(
-                                {
-                                    doc_id_w: {
-                                        "status": DocStatus.PARSING,
-                                        "content_summary": status_doc_w.content_summary,
-                                        "content_length": status_doc_w.content_length,
-                                        "created_at": status_doc_w.created_at,
-                                        "updated_at": datetime.now(
-                                            timezone.utc
-                                        ).isoformat(),
-                                        "file_path": file_path_w,
-                                        "track_id": status_doc_w.track_id,
-                                        "content_hash": status_doc_w.content_hash,
-                                        "metadata": doc_status_transition_metadata(
-                                            status_doc_w
-                                        ),
-                                    }
-                                }
-                            )
-                            if engine == "mineru":
-                                parsed_data_w = await self.parse_mineru(
-                                    doc_id_w, file_path_w, content_data_w
-                                )
-                            elif engine == "docling":
-                                parsed_data_w = await self.parse_docling(
-                                    doc_id_w, file_path_w, content_data_w
-                                )
-                            else:
-                                parsed_data_w = await self.parse_native(
-                                    doc_id_w, file_path_w, content_data_w
-                                )
-
-                            # Mirror non-fatal parser warnings (e.g. legacy
-                            # docx tables missing w14:paraId) onto the
-                            # in-memory status_doc so the
-                            # ANALYZING / PROCESSING / PROCESSED / FAILED
-                            # upserts carry the field through
-                            # ``doc_status_transition_metadata``.
-                            parse_warnings_payload_w = parsed_data_w.get(
-                                "parse_warnings"
-                            )
-                            if parse_warnings_payload_w:
-                                if not isinstance(status_doc_w.metadata, dict):
-                                    status_doc_w.metadata = {}
-                                status_doc_w.metadata["parse_warnings"] = (
-                                    parse_warnings_payload_w
-                                )
-
-                            # parse_* may have patched content_hash for
-                            # pending_parse → raw transitions.
-                            refreshed = await self.doc_status.get_by_id(doc_id_w)
-                            if refreshed:
-                                refreshed_hash = (
-                                    refreshed.get("content_hash")
-                                    if isinstance(refreshed, dict)
-                                    else getattr(refreshed, "content_hash", None)
-                                )
-                                if refreshed_hash:
-                                    status_doc_w.content_hash = refreshed_hash
-
-                            if await self._mark_duplicate_after_parse(
-                                doc_id=doc_id_w,
-                                status_doc=status_doc_w,
-                                file_path=file_path_w,
-                                content_hash=status_doc_w.content_hash,
-                                content_length=len(parsed_data_w.get("content", "")),
-                                content_data=content_data_w,
-                                pipeline_status=pipeline_status,
-                                pipeline_status_lock=pipeline_status_lock,
-                            ):
-                                continue
-
-                            await q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
-                        except Exception as e:
-                            logger.error(f"Parse worker failed ({engine}): {e}")
-                            try:
-                                await self.doc_status.upsert(
-                                    {
-                                        doc_id_w: {
-                                            "status": DocStatus.FAILED,
-                                            "error_msg": str(e),
-                                            "content_summary": status_doc_w.content_summary,
-                                            "content_length": status_doc_w.content_length,
-                                            "created_at": status_doc_w.created_at,
-                                            "updated_at": datetime.now(
-                                                timezone.utc
-                                            ).isoformat(),
-                                            "file_path": getattr(
-                                                status_doc_w,
-                                                "file_path",
-                                                "unknown_source",
-                                            ),
-                                            "track_id": status_doc_w.track_id,
-                                            "content_hash": status_doc_w.content_hash,
-                                            "metadata": doc_status_transition_metadata(
-                                                status_doc_w
-                                            ),
-                                        }
-                                    }
-                                )
-                            except Exception:
-                                pass
-                        finally:
-                            in_q.task_done()
-
-                async def analyze_worker():
-                    while True:
-                        item = await q_analyze.get()
-                        try:
-                            doc_id_w, status_doc_w, parsed_data_w = item
-                            file_path_w = getattr(
-                                status_doc_w, "file_path", "unknown_source"
-                            )
-                            # Refresh content_summary / content_length from
-                            # the parsed body so pending_parse → lightrag /
-                            # raw documents (which start with empty summary
-                            # and zero length at enqueue) end up with real
-                            # values that propagate through every later
-                            # state transition.  Mirrors the values onto the
-                            # in-memory status_doc_w dataclass so PROCESSING /
-                            # PROCESSED upserts (which read from
-                            # status_doc_w.content_summary /
-                            # status_doc_w.content_length) preserve them.
-                            refreshed_content_w = parsed_data_w.get("content", "") or ""
-                            refreshed_summary_w = get_content_summary(
-                                refreshed_content_w
-                            )
-                            refreshed_length_w = len(refreshed_content_w)
-                            status_doc_w.content_summary = refreshed_summary_w
-                            status_doc_w.content_length = refreshed_length_w
-                            await self.doc_status.upsert(
-                                {
-                                    doc_id_w: {
-                                        "status": DocStatus.ANALYZING,
-                                        "content_summary": refreshed_summary_w,
-                                        "content_length": refreshed_length_w,
-                                        "created_at": status_doc_w.created_at,
-                                        "updated_at": datetime.now(
-                                            timezone.utc
-                                        ).isoformat(),
-                                        "file_path": file_path_w,
-                                        "track_id": status_doc_w.track_id,
-                                        "content_hash": status_doc_w.content_hash,
-                                        "metadata": doc_status_transition_metadata(
-                                            status_doc_w
-                                        ),
-                                    }
-                                }
-                            )
-                            analyzed = await self.analyze_multimodal(
-                                doc_id=doc_id_w,
-                                file_path=file_path_w,
-                                parsed_data=parsed_data_w,
-                            )
-                            await q_process.put((doc_id_w, status_doc_w, analyzed))
-                        except Exception as e:
-                            logger.error(f"Analyze worker failed: {e}")
-                        finally:
-                            q_analyze.task_done()
-
-                async def process_worker():
-                    while True:
-                        item = await q_process.get()
-                        try:
-                            doc_id_w, status_doc_w, parsed_data_w = item
-                            await process_document(
-                                doc_id_w,
-                                status_doc_w,
-                                split_by_character,
-                                split_by_character_only,
-                                pipeline_status,
-                                pipeline_status_lock,
-                                semaphore,
-                                pre_parsed_data=parsed_data_w,
-                            )
-                        finally:
-                            q_process.task_done()
-
-                # Create workers for each queue of pipeline layer
-                for _ in range(max(1, self.max_parallel_parse_native)):
-                    workers.append(
-                        asyncio.create_task(parse_worker("native", q_native))
-                    )
-                for _ in range(max(1, self.max_parallel_parse_mineru)):
-                    workers.append(
-                        asyncio.create_task(parse_worker("mineru", q_mineru))
-                    )
-                for _ in range(max(1, self.max_parallel_parse_docling)):
-                    workers.append(
-                        asyncio.create_task(parse_worker("docling", q_docling))
-                    )
-                for _ in range(max(1, self.max_parallel_analyze)):
-                    workers.append(asyncio.create_task(analyze_worker()))
-                for _ in range(max(1, self.max_parallel_insert)):
-                    workers.append(asyncio.create_task(process_worker()))
-
-                # Add pending files to the correct parsing queue
-                for doc_id, status_doc in to_process_docs.items():
-                    content_data = await self.full_docs.get_by_id(doc_id) or {}
-                    engine = resolve_stored_document_parser_engine(
-                        file_path=getattr(status_doc, "file_path", "unknown_source"),
-                        content_data=content_data,
-                    )
-                    if engine == "mineru":
-                        await q_mineru.put((doc_id, status_doc))
-                    elif engine == "docling":
-                        await q_docling.put((doc_id, status_doc))
-                    else:
-                        await q_native.put((doc_id, status_doc))
-
-                await asyncio.gather(q_native.join(), q_mineru.join(), q_docling.join())
-                await q_analyze.join()
-                await q_process.join()
-
-                for w in workers:
-                    w.cancel()
-                await asyncio.gather(*workers, return_exceptions=True)
 
                 # Atomic exit handoff: if request_pending was set during
                 # this batch (e.g. a concurrent enqueue while busy=True),
                 # clear it and refetch.  Otherwise release ``busy`` under
                 # the SAME lock so a concurrent enqueue cannot squeeze a
                 # request_pending=True past us into a now-stranded state.
-                if await _try_atomic_release():
+                if await self._atomic_release_busy_or_consume_pending(
+                    pipeline_status, pipeline_status_lock
+                ):
+                    busy_released_in_loop = True
                     break
 
                 log_message = "Processing additional documents due to pending request"
@@ -2167,7 +1954,7 @@ class _PipelineMixin:
 
                 # Check for pending documents again
                 to_process_docs = await self.doc_status.get_docs_by_statuses(
-                    _processing_statuses
+                    list(_INFLIGHT_DOC_STATUSES)
                 )
 
         finally:
