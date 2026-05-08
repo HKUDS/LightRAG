@@ -134,6 +134,10 @@ class _PipelineMixin:
     which remain in the main class and are resolved through MRO.
     """
 
+    # ============================================================
+    # Public document ingestion API (entry points)
+    # ============================================================
+
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
@@ -799,6 +803,266 @@ class _PipelineMixin:
                     f"File processing error: - ID: {doc_id} {error_doc['file_path']}"
                 )
 
+    async def apipeline_process_enqueue_documents(
+        self,
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+    ) -> None:
+        """
+        Process pending documents by splitting them into chunks, processing
+        each chunk for entity and relation extraction, and updating the
+        document status.
+
+        1. Get all pending, failed, and abnormally terminated processing documents.
+        2. Validate document data consistency and fix any issues
+        3. Split document content into chunks
+        4. Process each chunk for entity and relation extraction
+        5. Update the document status
+        """
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=self.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=self.workspace
+        )
+
+        async with pipeline_status_lock:
+            # Ensure only one worker is processing documents
+            if not pipeline_status.get("busy", False):
+                to_process_docs: dict[
+                    str, DocProcessingStatus
+                ] = await self.doc_status.get_docs_by_statuses(
+                    list(_INFLIGHT_DOC_STATUSES)
+                )
+
+                if not to_process_docs:
+                    logger.info("No documents to process")
+                    return
+
+                pipeline_status.update(
+                    {
+                        "busy": True,
+                        "job_name": "Default Job",
+                        "job_start": datetime.now(timezone.utc).isoformat(),
+                        "docs": 0,
+                        "batchs": 0,  # Total number of files to be processed
+                        "cur_batch": 0,  # Number of files already processed
+                        "request_pending": False,  # Clear any previous request
+                        "cancellation_requested": False,  # Initialize cancellation flag
+                        "latest_message": "",
+                    }
+                )
+                # Cleaning history_messages without breaking it as a shared list object
+                del pipeline_status["history_messages"][:]
+            else:
+                # Another process is busy, just set request flag and return
+                pipeline_status["request_pending"] = True
+                logger.info(
+                    "Another process is already processing the document queue. Request queued."
+                )
+                return
+
+        # Tracks whether the loop has already released ``busy`` under
+        # the same critical section that observed request_pending=False.
+        # This makes the exit handoff atomic: a concurrent enqueue can
+        # either set request_pending BEFORE we release (in which case
+        # the loop continues with a fresh snapshot) or AFTER (in which
+        # case it sees busy=False and starts a new loop via its own
+        # process_enqueue call).  Without this, a small window between
+        # "loop reads request_pending=False" and "finally clears busy"
+        # could strand newly-enqueued PENDING docs.
+        busy_released_in_loop = False
+
+        try:
+            # Process documents until no more documents or requests
+            while True:
+                # Check for cancellation request at the start of main loop
+                async with pipeline_status_lock:
+                    if pipeline_status.get("cancellation_requested", False):
+                        pipeline_status["request_pending"] = False
+                        pipeline_status["cancellation_requested"] = False
+
+                        log_message = "Pipeline cancelled by user"
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+
+                        # Exit directly, skipping request_pending check
+                        return
+
+                if not to_process_docs:
+                    log_message = "All enqueued documents have been processed"
+                    logger.info(log_message)
+                    pipeline_status["latest_message"] = log_message
+                    pipeline_status["history_messages"].append(log_message)
+                    if await self._atomic_release_busy_or_consume_pending(
+                        pipeline_status, pipeline_status_lock
+                    ):
+                        busy_released_in_loop = True
+                        break
+                    to_process_docs = await self.doc_status.get_docs_by_statuses(
+                        list(_INFLIGHT_DOC_STATUSES)
+                    )
+                    continue
+
+                # Validate document data consistency and fix any issues
+                to_process_docs = await self._validate_and_fix_document_consistency(
+                    to_process_docs, pipeline_status, pipeline_status_lock
+                )
+
+                if not to_process_docs:
+                    log_message = (
+                        "No valid documents to process after consistency check"
+                    )
+                    logger.info(log_message)
+                    pipeline_status["latest_message"] = log_message
+                    pipeline_status["history_messages"].append(log_message)
+                    if await self._atomic_release_busy_or_consume_pending(
+                        pipeline_status, pipeline_status_lock
+                    ):
+                        busy_released_in_loop = True
+                        break
+                    to_process_docs = await self.doc_status.get_docs_by_statuses(
+                        list(_INFLIGHT_DOC_STATUSES)
+                    )
+                    continue
+
+                log_message = f"Processing {len(to_process_docs)} document(s)"
+                logger.info(log_message)
+                pipeline_status["docs"] = len(to_process_docs)
+                pipeline_status["batchs"] = len(to_process_docs)
+                pipeline_status["cur_batch"] = 0
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
+                await self._run_pipeline_batch(
+                    to_process_docs,
+                    split_by_character=split_by_character,
+                    split_by_character_only=split_by_character_only,
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                )
+
+                # Atomic exit handoff: if request_pending was set during
+                # this batch (e.g. a concurrent enqueue while busy=True),
+                # clear it and refetch.  Otherwise release ``busy`` under
+                # the SAME lock so a concurrent enqueue cannot squeeze a
+                # request_pending=True past us into a now-stranded state.
+                if await self._atomic_release_busy_or_consume_pending(
+                    pipeline_status, pipeline_status_lock
+                ):
+                    busy_released_in_loop = True
+                    break
+
+                log_message = "Processing additional documents due to pending request"
+                logger.info(log_message)
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
+                # Check for pending documents again
+                to_process_docs = await self.doc_status.get_docs_by_statuses(
+                    list(_INFLIGHT_DOC_STATUSES)
+                )
+
+        finally:
+            log_message = "Enqueued document processing pipeline stopped"
+            logger.info(log_message)
+            # If the loop already released ``busy`` under the atomic exit
+            # check, don't clobber it here — a concurrent enqueue may have
+            # observed busy=False and started a new processing pass that
+            # has set busy=True for itself.  Cancellation flag and log
+            # bookkeeping are always safe to update.
+            async with pipeline_status_lock:
+                if not busy_released_in_loop:
+                    pipeline_status["busy"] = False
+                pipeline_status["cancellation_requested"] = (
+                    False  # Always reset cancellation flag
+                )
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
+    # ============================================================
+    # Pipeline orchestration
+    # ============================================================
+
+    async def _run_pipeline_batch(
+        self,
+        to_process_docs: dict[str, DocProcessingStatus],
+        *,
+        split_by_character: str | None,
+        split_by_character_only: bool,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Run one batch of pending documents through the parse → analyze →
+        process queues.
+
+        Three cascading layers of queues:
+          - Layer 1: Content Parsing  (parse_native / parse_mineru / parse_docling)
+          - Layer 2: Multimodal Analyze  (analyze_multimodal)
+          - Layer 3: Entity / Relation Extraction  (process_single_document)
+        """
+        total_files = len(to_process_docs)
+        pipeline_status["job_name"] = self._format_job_name(
+            to_process_docs, total_files
+        )
+
+        ctx = _BatchRunContext(
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+            semaphore=asyncio.Semaphore(self.max_parallel_insert),
+            total_files=total_files,
+            q_native=asyncio.Queue(maxsize=self.queue_size_default),
+            q_mineru=asyncio.Queue(maxsize=self.queue_size_default),
+            q_docling=asyncio.Queue(maxsize=self.queue_size_default),
+            q_analyze=asyncio.Queue(maxsize=self.queue_size_default),
+            q_process=asyncio.Queue(maxsize=self.queue_size_insert),
+            split_by_character=split_by_character,
+            split_by_character_only=split_by_character_only,
+        )
+
+        workers: list[asyncio.Task] = []
+        for _ in range(max(1, self.max_parallel_parse_native)):
+            workers.append(
+                asyncio.create_task(self._parse_worker("native", ctx.q_native, ctx))
+            )
+        for _ in range(max(1, self.max_parallel_parse_mineru)):
+            workers.append(
+                asyncio.create_task(self._parse_worker("mineru", ctx.q_mineru, ctx))
+            )
+        for _ in range(max(1, self.max_parallel_parse_docling)):
+            workers.append(
+                asyncio.create_task(self._parse_worker("docling", ctx.q_docling, ctx))
+            )
+        for _ in range(max(1, self.max_parallel_analyze)):
+            workers.append(asyncio.create_task(self._analyze_worker(ctx)))
+        for _ in range(max(1, self.max_parallel_insert)):
+            workers.append(asyncio.create_task(self._process_worker(ctx)))
+
+        # Add pending files to the correct parsing queue
+        for doc_id, status_doc in to_process_docs.items():
+            content_data = await self.full_docs.get_by_id(doc_id) or {}
+            engine = resolve_stored_document_parser_engine(
+                file_path=getattr(status_doc, "file_path", "unknown_source"),
+                content_data=content_data,
+            )
+            if engine == "mineru":
+                await ctx.q_mineru.put((doc_id, status_doc))
+            elif engine == "docling":
+                await ctx.q_docling.put((doc_id, status_doc))
+            else:
+                await ctx.q_native.put((doc_id, status_doc))
+
+        await asyncio.gather(
+            ctx.q_native.join(), ctx.q_mineru.join(), ctx.q_docling.join()
+        )
+        await ctx.q_analyze.join()
+        await ctx.q_process.join()
+
+        for w in workers:
+            w.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
     async def _validate_and_fix_document_consistency(
         self,
         to_process_docs: dict[str, DocProcessingStatus],
@@ -975,211 +1239,6 @@ class _PipelineMixin:
             pipeline_status["busy"] = False
             return True
 
-    async def _upsert_doc_status_transition(
-        self,
-        doc_id: str,
-        status: DocStatus,
-        status_doc: DocProcessingStatus,
-        file_path: str,
-        *,
-        extra_fields: dict[str, Any] | None = None,
-        metadata_extra: dict[str, Any] | None = None,
-    ) -> None:
-        """Single source of truth for doc_status state-transition upserts.
-
-        Mirrors the field set used at every PARSING / ANALYZING / PROCESSING /
-        PROCESSED / FAILED transition.  ``extra_fields`` carries
-        ``chunks_count`` / ``chunks_list`` / ``error_msg``; ``metadata_extra``
-        is forwarded to ``doc_status_transition_metadata`` so carry-over
-        fields (e.g. ``process_options``) survive every state change.
-        """
-        payload: dict[str, Any] = {
-            "status": status,
-            "content_summary": status_doc.content_summary,
-            "content_length": status_doc.content_length,
-            "created_at": status_doc.created_at,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "file_path": file_path,
-            "track_id": status_doc.track_id,
-            "content_hash": status_doc.content_hash,
-            "metadata": doc_status_transition_metadata(
-                status_doc, extra=metadata_extra
-            ),
-        }
-        if extra_fields:
-            payload.update(extra_fields)
-        await self.doc_status.upsert({doc_id: payload})
-
-    async def _raise_if_cancelled(
-        self,
-        pipeline_status: dict,
-        pipeline_status_lock,
-    ) -> None:
-        """Raise ``PipelineCancelledException`` if the user has requested cancel."""
-        async with pipeline_status_lock:
-            if pipeline_status.get("cancellation_requested", False):
-                raise PipelineCancelledException("User cancelled")
-
-    async def _finalize_doc_failure(
-        self,
-        *,
-        doc_id: str,
-        status_doc: DocProcessingStatus,
-        file_path: str,
-        error: BaseException,
-        stage_label: str,
-        current_file_number: int,
-        total_files: int,
-        failed_chunks_snapshot: tuple[list[str], int],
-        pending_tasks: list[asyncio.Task],
-        metadata_extra: dict[str, Any],
-        pipeline_status: dict,
-        pipeline_status_lock,
-    ) -> None:
-        """Common epilogue for an extract / merge stage failure.
-
-        Logs the error (or cancellation), cancels any pending stage tasks,
-        flushes the LLM response cache, and writes a FAILED status row that
-        preserves the failed chunks snapshot and processing-time metadata.
-        """
-        if isinstance(error, PipelineCancelledException):
-            if stage_label == "merge":
-                error_msg = (
-                    f"User cancelled during merge {current_file_number}/"
-                    f"{total_files}: {file_path}"
-                )
-            else:
-                error_msg = (
-                    f"User cancelled {current_file_number}/"
-                    f"{total_files}: {file_path}"
-                )
-            logger.warning(error_msg)
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(error_msg)
-        else:
-            logger.error(traceback.format_exc())
-            if stage_label == "merge":
-                error_msg = (
-                    f"Merging stage failed in document "
-                    f"{current_file_number}/{total_files}: {file_path}"
-                )
-            else:
-                error_msg = (
-                    f"Failed to extract document "
-                    f"{current_file_number}/{total_files}: {file_path}"
-                )
-            logger.error(error_msg)
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(traceback.format_exc())
-                pipeline_status["history_messages"].append(error_msg)
-
-        for task in pending_tasks:
-            if task and not task.done():
-                task.cancel()
-
-        if self.llm_response_cache:
-            try:
-                await self.llm_response_cache.index_done_callback()
-            except Exception as persist_error:
-                logger.error(f"Failed to persist LLM cache: {persist_error}")
-
-        failed_chunks_list, failed_chunks_count = failed_chunks_snapshot
-        await self._upsert_doc_status_transition(
-            doc_id=doc_id,
-            status=DocStatus.FAILED,
-            status_doc=status_doc,
-            file_path=file_path,
-            extra_fields={
-                "error_msg": str(error),
-                "chunks_count": failed_chunks_count,
-                "chunks_list": failed_chunks_list,
-            },
-            metadata_extra=metadata_extra,
-        )
-
-    async def _purge_stale_extraction_if_resuming(
-        self,
-        *,
-        doc_id: str,
-        status_doc: DocProcessingStatus,
-        file_path: str,
-        content_data: dict[str, Any] | None,
-        pipeline_status: dict,
-        pipeline_status_lock,
-    ) -> None:
-        """If the document already has extracted content, purge stale chunks
-        and KG contributions before re-running chunking + entity extraction
-        under the current ``process_options``.
-
-        Mutates ``status_doc.chunks_list`` / ``chunks_count`` to reflect the
-        purge so subsequent state-machine upserts don't write back stale IDs.
-        Also emits an engine-mismatch warning when the filename hint disagrees
-        with the stored ``parse_engine`` — the extracted content is the source
-        of truth, so the user must delete + re-upload to switch engines.
-        """
-        content_already_extracted = isinstance(content_data, dict) and (
-            (
-                content_data.get("parse_format") == FULL_DOCS_FORMAT_LIGHTRAG
-                and content_data.get("lightrag_document_path")
-            )
-            or (
-                content_data.get("parse_format") == FULL_DOCS_FORMAT_RAW
-                and (content_data.get("content") or "").strip()
-            )
-        )
-        if not content_already_extracted:
-            return
-
-        intended_engine, _ = resolve_file_parser_directives(file_path)
-        stored_engine = (content_data.get("parse_engine") or "").lower()
-        if intended_engine and stored_engine and intended_engine != stored_engine:
-            log_message = (
-                f"[resume] {doc_id}: filename hint / "
-                f"LIGHTRAG_PARSER implies engine="
-                f"{intended_engine!r} but full_docs "
-                f"already has parse_engine="
-                f"{stored_engine!r}; keeping the existing "
-                f"extraction.  Delete + re-upload to "
-                f"switch engines."
-            )
-            logger.warning(log_message)
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-        stored_chunk_ids = {
-            chunk_id
-            for chunk_id in (status_doc.chunks_list or [])
-            if isinstance(chunk_id, str) and chunk_id
-        }
-        if not stored_chunk_ids:
-            return
-
-        log_message = (
-            f"[resume] {doc_id}: purging "
-            f"{len(stored_chunk_ids)} chunk(s) and "
-            f"associated KG entries from a previous run "
-            f"before rebuilding under current "
-            f"process_options"
-        )
-        logger.info(log_message)
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
-        await self._purge_doc_chunks_and_kg(
-            doc_id,
-            stored_chunk_ids,
-            pipeline_status=pipeline_status,
-            pipeline_status_lock=pipeline_status_lock,
-        )
-        # The status_doc carries chunks_list / chunks_count from the prior
-        # run; clear them so subsequent state-machine upserts don't write
-        # back stale IDs.
-        status_doc.chunks_list = []
-        status_doc.chunks_count = 0
-
     @staticmethod
     def _format_job_name(
         to_process_docs: dict[str, DocProcessingStatus],
@@ -1195,6 +1254,10 @@ class _PipelineMixin:
         else:
             path_prefix = "unknown_source"
         return f"{path_prefix}[{total_files} files]"
+
+    # ============================================================
+    # Cascading queue workers (Layer 1 -> 2 -> 3)
+    # ============================================================
 
     async def _parse_worker(
         self,
@@ -1337,6 +1400,10 @@ class _PipelineMixin:
                 )
             finally:
                 ctx.q_process.task_done()
+
+    # ============================================================
+    # Single-document state machine
+    # ============================================================
 
     async def _process_single_document(
         self,
@@ -1718,674 +1785,430 @@ class _PipelineMixin:
                         pipeline_status_lock=ctx.pipeline_status_lock,
                     )
 
-    async def _run_pipeline_batch(
+    async def _purge_stale_extraction_if_resuming(
         self,
-        to_process_docs: dict[str, DocProcessingStatus],
         *,
-        split_by_character: str | None,
-        split_by_character_only: bool,
+        doc_id: str,
+        status_doc: DocProcessingStatus,
+        file_path: str,
+        content_data: dict[str, Any] | None,
         pipeline_status: dict,
         pipeline_status_lock,
     ) -> None:
-        """Run one batch of pending documents through the parse → analyze →
-        process queues.
+        """If the document already has extracted content, purge stale chunks
+        and KG contributions before re-running chunking + entity extraction
+        under the current ``process_options``.
 
-        Three cascading layers of queues:
-          - Layer 1: Content Parsing  (parse_native / parse_mineru / parse_docling)
-          - Layer 2: Multimodal Analyze  (analyze_multimodal)
-          - Layer 3: Entity / Relation Extraction  (process_single_document)
+        Mutates ``status_doc.chunks_list`` / ``chunks_count`` to reflect the
+        purge so subsequent state-machine upserts don't write back stale IDs.
+        Also emits an engine-mismatch warning when the filename hint disagrees
+        with the stored ``parse_engine`` — the extracted content is the source
+        of truth, so the user must delete + re-upload to switch engines.
         """
-        total_files = len(to_process_docs)
-        pipeline_status["job_name"] = self._format_job_name(
-            to_process_docs, total_files
+        content_already_extracted = isinstance(content_data, dict) and (
+            (
+                content_data.get("parse_format") == FULL_DOCS_FORMAT_LIGHTRAG
+                and content_data.get("lightrag_document_path")
+            )
+            or (
+                content_data.get("parse_format") == FULL_DOCS_FORMAT_RAW
+                and (content_data.get("content") or "").strip()
+            )
         )
+        if not content_already_extracted:
+            return
 
-        ctx = _BatchRunContext(
+        intended_engine, _ = resolve_file_parser_directives(file_path)
+        stored_engine = (content_data.get("parse_engine") or "").lower()
+        if intended_engine and stored_engine and intended_engine != stored_engine:
+            log_message = (
+                f"[resume] {doc_id}: filename hint / "
+                f"LIGHTRAG_PARSER implies engine="
+                f"{intended_engine!r} but full_docs "
+                f"already has parse_engine="
+                f"{stored_engine!r}; keeping the existing "
+                f"extraction.  Delete + re-upload to "
+                f"switch engines."
+            )
+            logger.warning(log_message)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
+        stored_chunk_ids = {
+            chunk_id
+            for chunk_id in (status_doc.chunks_list or [])
+            if isinstance(chunk_id, str) and chunk_id
+        }
+        if not stored_chunk_ids:
+            return
+
+        log_message = (
+            f"[resume] {doc_id}: purging "
+            f"{len(stored_chunk_ids)} chunk(s) and "
+            f"associated KG entries from a previous run "
+            f"before rebuilding under current "
+            f"process_options"
+        )
+        logger.info(log_message)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
+        await self._purge_doc_chunks_and_kg(
+            doc_id,
+            stored_chunk_ids,
             pipeline_status=pipeline_status,
             pipeline_status_lock=pipeline_status_lock,
-            semaphore=asyncio.Semaphore(self.max_parallel_insert),
-            total_files=total_files,
-            q_native=asyncio.Queue(maxsize=self.queue_size_default),
-            q_mineru=asyncio.Queue(maxsize=self.queue_size_default),
-            q_docling=asyncio.Queue(maxsize=self.queue_size_default),
-            q_analyze=asyncio.Queue(maxsize=self.queue_size_default),
-            q_process=asyncio.Queue(maxsize=self.queue_size_insert),
-            split_by_character=split_by_character,
-            split_by_character_only=split_by_character_only,
         )
+        # The status_doc carries chunks_list / chunks_count from the prior
+        # run; clear them so subsequent state-machine upserts don't write
+        # back stale IDs.
+        status_doc.chunks_list = []
+        status_doc.chunks_count = 0
 
-        workers: list[asyncio.Task] = []
-        for _ in range(max(1, self.max_parallel_parse_native)):
-            workers.append(
-                asyncio.create_task(self._parse_worker("native", ctx.q_native, ctx))
-            )
-        for _ in range(max(1, self.max_parallel_parse_mineru)):
-            workers.append(
-                asyncio.create_task(self._parse_worker("mineru", ctx.q_mineru, ctx))
-            )
-        for _ in range(max(1, self.max_parallel_parse_docling)):
-            workers.append(
-                asyncio.create_task(self._parse_worker("docling", ctx.q_docling, ctx))
-            )
-        for _ in range(max(1, self.max_parallel_analyze)):
-            workers.append(asyncio.create_task(self._analyze_worker(ctx)))
-        for _ in range(max(1, self.max_parallel_insert)):
-            workers.append(asyncio.create_task(self._process_worker(ctx)))
+    # ============================================================
+    # doc_status state-machine helpers (shared by all layers)
+    # ============================================================
 
-        # Add pending files to the correct parsing queue
-        for doc_id, status_doc in to_process_docs.items():
-            content_data = await self.full_docs.get_by_id(doc_id) or {}
-            engine = resolve_stored_document_parser_engine(
-                file_path=getattr(status_doc, "file_path", "unknown_source"),
-                content_data=content_data,
-            )
-            if engine == "mineru":
-                await ctx.q_mineru.put((doc_id, status_doc))
-            elif engine == "docling":
-                await ctx.q_docling.put((doc_id, status_doc))
-            else:
-                await ctx.q_native.put((doc_id, status_doc))
-
-        await asyncio.gather(
-            ctx.q_native.join(), ctx.q_mineru.join(), ctx.q_docling.join()
-        )
-        await ctx.q_analyze.join()
-        await ctx.q_process.join()
-
-        for w in workers:
-            w.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
-
-    async def apipeline_process_enqueue_documents(
-        self,
-        split_by_character: str | None = None,
-        split_by_character_only: bool = False,
-    ) -> None:
-        """
-        Process pending documents by splitting them into chunks, processing
-        each chunk for entity and relation extraction, and updating the
-        document status.
-
-        1. Get all pending, failed, and abnormally terminated processing documents.
-        2. Validate document data consistency and fix any issues
-        3. Split document content into chunks
-        4. Process each chunk for entity and relation extraction
-        5. Update the document status
-        """
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=self.workspace
-        )
-        pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=self.workspace
-        )
-
-        async with pipeline_status_lock:
-            # Ensure only one worker is processing documents
-            if not pipeline_status.get("busy", False):
-                to_process_docs: dict[
-                    str, DocProcessingStatus
-                ] = await self.doc_status.get_docs_by_statuses(
-                    list(_INFLIGHT_DOC_STATUSES)
-                )
-
-                if not to_process_docs:
-                    logger.info("No documents to process")
-                    return
-
-                pipeline_status.update(
-                    {
-                        "busy": True,
-                        "job_name": "Default Job",
-                        "job_start": datetime.now(timezone.utc).isoformat(),
-                        "docs": 0,
-                        "batchs": 0,  # Total number of files to be processed
-                        "cur_batch": 0,  # Number of files already processed
-                        "request_pending": False,  # Clear any previous request
-                        "cancellation_requested": False,  # Initialize cancellation flag
-                        "latest_message": "",
-                    }
-                )
-                # Cleaning history_messages without breaking it as a shared list object
-                del pipeline_status["history_messages"][:]
-            else:
-                # Another process is busy, just set request flag and return
-                pipeline_status["request_pending"] = True
-                logger.info(
-                    "Another process is already processing the document queue. Request queued."
-                )
-                return
-
-        # Tracks whether the loop has already released ``busy`` under
-        # the same critical section that observed request_pending=False.
-        # This makes the exit handoff atomic: a concurrent enqueue can
-        # either set request_pending BEFORE we release (in which case
-        # the loop continues with a fresh snapshot) or AFTER (in which
-        # case it sees busy=False and starts a new loop via its own
-        # process_enqueue call).  Without this, a small window between
-        # "loop reads request_pending=False" and "finally clears busy"
-        # could strand newly-enqueued PENDING docs.
-        busy_released_in_loop = False
-
-        try:
-            # Process documents until no more documents or requests
-            while True:
-                # Check for cancellation request at the start of main loop
-                async with pipeline_status_lock:
-                    if pipeline_status.get("cancellation_requested", False):
-                        pipeline_status["request_pending"] = False
-                        pipeline_status["cancellation_requested"] = False
-
-                        log_message = "Pipeline cancelled by user"
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
-
-                        # Exit directly, skipping request_pending check
-                        return
-
-                if not to_process_docs:
-                    log_message = "All enqueued documents have been processed"
-                    logger.info(log_message)
-                    pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
-                    if await self._atomic_release_busy_or_consume_pending(
-                        pipeline_status, pipeline_status_lock
-                    ):
-                        busy_released_in_loop = True
-                        break
-                    to_process_docs = await self.doc_status.get_docs_by_statuses(
-                        list(_INFLIGHT_DOC_STATUSES)
-                    )
-                    continue
-
-                # Validate document data consistency and fix any issues
-                to_process_docs = await self._validate_and_fix_document_consistency(
-                    to_process_docs, pipeline_status, pipeline_status_lock
-                )
-
-                if not to_process_docs:
-                    log_message = (
-                        "No valid documents to process after consistency check"
-                    )
-                    logger.info(log_message)
-                    pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
-                    if await self._atomic_release_busy_or_consume_pending(
-                        pipeline_status, pipeline_status_lock
-                    ):
-                        busy_released_in_loop = True
-                        break
-                    to_process_docs = await self.doc_status.get_docs_by_statuses(
-                        list(_INFLIGHT_DOC_STATUSES)
-                    )
-                    continue
-
-                log_message = f"Processing {len(to_process_docs)} document(s)"
-                logger.info(log_message)
-                pipeline_status["docs"] = len(to_process_docs)
-                pipeline_status["batchs"] = len(to_process_docs)
-                pipeline_status["cur_batch"] = 0
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-                await self._run_pipeline_batch(
-                    to_process_docs,
-                    split_by_character=split_by_character,
-                    split_by_character_only=split_by_character_only,
-                    pipeline_status=pipeline_status,
-                    pipeline_status_lock=pipeline_status_lock,
-                )
-
-                # Atomic exit handoff: if request_pending was set during
-                # this batch (e.g. a concurrent enqueue while busy=True),
-                # clear it and refetch.  Otherwise release ``busy`` under
-                # the SAME lock so a concurrent enqueue cannot squeeze a
-                # request_pending=True past us into a now-stranded state.
-                if await self._atomic_release_busy_or_consume_pending(
-                    pipeline_status, pipeline_status_lock
-                ):
-                    busy_released_in_loop = True
-                    break
-
-                log_message = "Processing additional documents due to pending request"
-                logger.info(log_message)
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-                # Check for pending documents again
-                to_process_docs = await self.doc_status.get_docs_by_statuses(
-                    list(_INFLIGHT_DOC_STATUSES)
-                )
-
-        finally:
-            log_message = "Enqueued document processing pipeline stopped"
-            logger.info(log_message)
-            # If the loop already released ``busy`` under the atomic exit
-            # check, don't clobber it here — a concurrent enqueue may have
-            # observed busy=False and started a new processing pass that
-            # has set busy=True for itself.  Cancellation flag and log
-            # bookkeeping are always safe to update.
-            async with pipeline_status_lock:
-                if not busy_released_in_loop:
-                    pipeline_status["busy"] = False
-                pipeline_status["cancellation_requested"] = (
-                    False  # Always reset cancellation flag
-                )
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-    async def analyze_multimodal(
+    async def _upsert_doc_status_transition(
         self,
         doc_id: str,
+        status: DocStatus,
+        status_doc: DocProcessingStatus,
         file_path: str,
-        parsed_data: dict[str, Any],
         *,
-        process_options: str | None = None,
-    ) -> dict[str, Any]:
-        """Phase 2: Multimodal analysis (VLM). Writes llm_analyze_result to LightRAG Document.
+        extra_fields: dict[str, Any] | None = None,
+        metadata_extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Single source of truth for doc_status state-transition upserts.
 
-        Per-document ``i`` / ``t`` / ``e`` flags from
-        ``full_docs.process_options`` decide which modalities are sent to the
-        VLM.  Sidecars are always written by the parser regardless of these
-        flags so toggling options later does not require re-parsing — only
-        the ``llm_analyze_result`` payload is gated here.
-
-        Idempotent by design: per-item ``llm_analyze_result`` already
-        present is not re-computed.  This lets users incrementally enable
-        new modalities (e.g. add ``t`` after a prior ``i``-only pass) and
-        re-trigger analysis without redundant VLM calls or losing prior
-        results.
-
-        Args:
-            process_options: Optional override that bypasses the
-                ``full_docs.process_options`` lookup; primarily used by unit
-                tests that exercise the VLM analysis path without going
-                through the enqueue pipeline.
+        Mirrors the field set used at every PARSING / ANALYZING / PROCESSING /
+        PROCESSED / FAILED transition.  ``extra_fields`` carries
+        ``chunks_count`` / ``chunks_list`` / ``error_msg``; ``metadata_extra``
+        is forwarded to ``doc_status_transition_metadata`` so carry-over
+        fields (e.g. ``process_options``) survive every state change.
         """
-        from lightrag.parser_routing import parse_process_options
+        payload: dict[str, Any] = {
+            "status": status,
+            "content_summary": status_doc.content_summary,
+            "content_length": status_doc.content_length,
+            "created_at": status_doc.created_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "file_path": file_path,
+            "track_id": status_doc.track_id,
+            "content_hash": status_doc.content_hash,
+            "metadata": doc_status_transition_metadata(
+                status_doc, extra=metadata_extra
+            ),
+        }
+        if extra_fields:
+            payload.update(extra_fields)
+        await self.doc_status.upsert({doc_id: payload})
 
-        blocks_path = parsed_data.get("blocks_path")
-        if not blocks_path:
-            return parsed_data
+    async def _raise_if_cancelled(
+        self,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Raise ``PipelineCancelledException`` if the user has requested cancel."""
+        async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                raise PipelineCancelledException("User cancelled")
 
-        block_file = Path(blocks_path)
-        if not block_file.exists():
-            return parsed_data
+    async def _finalize_doc_failure(
+        self,
+        *,
+        doc_id: str,
+        status_doc: DocProcessingStatus,
+        file_path: str,
+        error: BaseException,
+        stage_label: str,
+        current_file_number: int,
+        total_files: int,
+        failed_chunks_snapshot: tuple[list[str], int],
+        pending_tasks: list[asyncio.Task],
+        metadata_extra: dict[str, Any],
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Common epilogue for an extract / merge stage failure.
 
-        # Resolve which modalities the user opted into for this document.
-        if process_options is None:
-            try:
-                content_data = await self.full_docs.get_by_id(doc_id) or {}
-            except Exception:
-                content_data = {}
-            options_str = (
-                content_data.get("process_options")
-                if isinstance(content_data, dict)
-                else ""
-            ) or ""
+        Logs the error (or cancellation), cancels any pending stage tasks,
+        flushes the LLM response cache, and writes a FAILED status row that
+        preserves the failed chunks snapshot and processing-time metadata.
+        """
+        if isinstance(error, PipelineCancelledException):
+            if stage_label == "merge":
+                error_msg = (
+                    f"User cancelled during merge {current_file_number}/"
+                    f"{total_files}: {file_path}"
+                )
+            else:
+                error_msg = (
+                    f"User cancelled {current_file_number}/"
+                    f"{total_files}: {file_path}"
+                )
+            logger.warning(error_msg)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = error_msg
+                pipeline_status["history_messages"].append(error_msg)
         else:
-            options_str = process_options
-        process_opts = parse_process_options(options_str)
-        if not (process_opts.images or process_opts.tables or process_opts.equations):
-            logger.debug(
-                f"[analyze_multimodal] no i/t/e options set for d-id: {doc_id}; "
-                f"skipping VLM analysis"
+            logger.error(traceback.format_exc())
+            if stage_label == "merge":
+                error_msg = (
+                    f"Merging stage failed in document "
+                    f"{current_file_number}/{total_files}: {file_path}"
+                )
+            else:
+                error_msg = (
+                    f"Failed to extract document "
+                    f"{current_file_number}/{total_files}: {file_path}"
+                )
+            logger.error(error_msg)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = error_msg
+                pipeline_status["history_messages"].append(traceback.format_exc())
+                pipeline_status["history_messages"].append(error_msg)
+
+        for task in pending_tasks:
+            if task and not task.done():
+                task.cancel()
+
+        if self.llm_response_cache:
+            try:
+                await self.llm_response_cache.index_done_callback()
+            except Exception as persist_error:
+                logger.error(f"Failed to persist LLM cache: {persist_error}")
+
+        failed_chunks_list, failed_chunks_count = failed_chunks_snapshot
+        await self._upsert_doc_status_transition(
+            doc_id=doc_id,
+            status=DocStatus.FAILED,
+            status_doc=status_doc,
+            file_path=file_path,
+            extra_fields={
+                "error_msg": str(error),
+                "chunks_count": failed_chunks_count,
+                "chunks_list": failed_chunks_list,
+            },
+            metadata_extra=metadata_extra,
+        )
+
+    # ============================================================
+    # Parser engines (also called by tests directly)
+    # ============================================================
+
+    async def parse_native(
+        self, doc_id: str, file_path: str, content_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Phase 1 parse for native/raw, lightrag and pending_parse formats."""
+        doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
+        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
+            # full_docs.content carries the merged text with the {{LRdoc}}
+            # marker; strip it so the chunking path is identical to raw.
+            # blocks_path is still resolved for downstream multimodal
+            # sidecar reads (_build_mm_chunks_from_sidecars).
+            merged_text = strip_lightrag_doc_prefix(
+                content_data.get("content"), doc_format
             )
-            return parsed_data
+            raw_doc_path = content_data.get("lightrag_document_path") or file_path
+            resolved_doc_path = resolve_lightrag_document_path(str(raw_doc_path))
+            blocks_path = resolve_lightrag_blocks_path(resolved_doc_path) or ""
 
-        # Diagnose opt-in vs sidecar mismatch up-front so users investigating
-        # "why did VLM not run on my images" see a one-line INFO per document
-        # instead of silent skips.  Empty sidecars are a normal outcome
-        # (some documents simply have no images/tables/equations), so this is
-        # informational rather than a warning.
-        sidecar_base = str(block_file)
-        if sidecar_base.endswith(".blocks.jsonl"):
-            sidecar_base = sidecar_base[: -len(".blocks.jsonl")]
-        opt_in_missing: list[str] = []
-        for opt_char, modality, suffix in (
-            ("i", "drawings", ".drawings.json"),
-            ("t", "tables", ".tables.json"),
-            ("e", "equations", ".equations.json"),
-        ):
-            enabled = {
-                "i": process_opts.images,
-                "t": process_opts.tables,
-                "e": process_opts.equations,
-            }[opt_char]
-            if enabled and not Path(sidecar_base + suffix).exists():
-                opt_in_missing.append(f"{opt_char}:{modality}")
-        if opt_in_missing:
-            logger.info(
-                f"[analyze_multimodal] process_options opted into "
-                f"{','.join(opt_in_missing)} for d-id: {doc_id} (file={file_path}), "
-                f"but the parser produced no such sidecar; VLM analysis skipped "
-                f"for those modalities."
+            return {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "parse_format": doc_format,
+                "content": merged_text,
+                "blocks_path": blocks_path,
+            }
+
+        if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
+            source_path = self._resolve_source_file_for_parser(
+                str(content_data.get("source_path") or file_path)
             )
+            p = Path(source_path)
+            if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
+                from lightrag.native_parser.docx import (
+                    parse_docx_to_lightrag_document,
+                )
 
-        try:
-            lines = block_file.read_text(encoding="utf-8").splitlines()
-            if not lines:
-                return parsed_data
-            meta = json.loads(lines[0])
-            if not isinstance(meta, dict) or meta.get("type") != "meta":
-                return parsed_data
+                file_bytes = await asyncio.to_thread(p.read_bytes)
+                parsed_data = await parse_docx_to_lightrag_document(
+                    file_bytes=file_bytes,
+                    file_path=file_path,
+                    doc_id=doc_id,
+                    source_path=str(p),
+                )
 
-            # Analyze sidecar multimodal items by VLM model role.
-            use_vlm_func = self.role_llm_funcs["vlm"]
-            effective_vlm_max_async = self._get_effective_role_llm_max_async("vlm")
-            sem = asyncio.Semaphore(max(1, effective_vlm_max_async))
-            analyze_retries = max(0, int(os.getenv("VLM_ANALYZE_RETRIES", "2")))
-            max_image_bytes = max(
-                256 * 1024, int(os.getenv("VLM_MAX_IMAGE_BYTES", str(5 * 1024 * 1024)))
-            )
-
-            def _extract_json_obj(text: str) -> dict[str, Any]:
-                if not text:
-                    return {}
+                blocks_path = Path(parsed_data["blocks_path"])
+                stored_blocks_path = str(blocks_path)
                 try:
-                    obj = json.loads(text)
-                    if isinstance(obj, dict):
-                        return obj
-                except Exception:
+                    stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
+                except ValueError:
                     pass
-                m = re.search(r"\{[\s\S]*\}", text)
-                if m:
-                    try:
-                        obj = json.loads(m.group(0))
-                        if isinstance(obj, dict):
-                            return obj
-                    except Exception:
-                        pass
-                return {}
-
-            async def _analyze_item(
-                root_key: str, item_id: str, item: dict[str, Any]
-            ) -> dict[str, Any]:
-                def _conservative_result(reason: str) -> dict[str, Any]:
-                    base_name = item.get("caption") or item_id
-                    modality = (
-                        "image"
-                        if root_key == "drawings"
-                        else "table"
-                        if root_key == "tables"
-                        else "equation"
-                    )
-                    conservative = {
-                        "name": base_name,
-                        "summary": (
-                            f"Conservative summary only: unavailable or weak visual evidence for {modality}."
-                        ),
-                        "detail_description": (
-                            f"No grounded visual evidence. Reason: {reason}. "
-                            "Only metadata-level description is retained."
-                        ),
-                        "grounded": False,
-                        "grounding_reason": reason,
-                    }
-                    if root_key == "drawings":
-                        conservative["image_type"] = ""
-                    return conservative
-
-                def _build_image_data_url(path_str: str | None) -> str | None:
-                    if not path_str:
-                        return None
-                    p = Path(path_str)
-                    if not p.exists() or not p.is_file():
-                        return None
-                    try:
-                        raw = p.read_bytes()
-                    except Exception:
-                        return None
-                    if not raw:
-                        return None
-                    if len(raw) > max_image_bytes:
-                        logger.warning(
-                            f"[analyze_multimodal] image too large ({len(raw)} bytes) for {root_key}/{item_id}, skip image input"
-                        )
-                        return None
-                    mime, _ = mimetypes.guess_type(str(p))
-                    if not mime:
-                        mime = "image/png"
-                    b64 = base64.b64encode(raw).decode("ascii")
-                    return f"data:{mime};base64,{b64}"
-
-                def _normalize_text(value: Any) -> str:
-                    if value is None:
-                        return ""
-                    if isinstance(value, str):
-                        return value.strip()
-                    if isinstance(value, (list, tuple)):
-                        return "\n".join(
-                            str(v).strip() for v in value if str(v).strip()
-                        )
-                    return str(value).strip()
-
-                def _normalize_grounded_value(value: Any) -> Any:
-                    if isinstance(value, bool) or value is None:
-                        return value
-                    if isinstance(value, str):
-                        lowered = value.strip().lower()
-                        if lowered == "true":
-                            return True
-                        if lowered == "false":
-                            return False
-                    if isinstance(value, (int, float)) and value in {0, 1}:
-                        return bool(value)
-                    return value
-
-                default_result = {
-                    "name": item.get("caption") or item_id,
-                    "summary": "",
-                    "detail_description": "",
-                }
-                if root_key == "drawings":
-                    default_result["image_type"] = ""
-                schema_hint = (
-                    '{"name":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
-                    if root_key != "drawings"
-                    else '{"name":"string","image_type":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
+                await self._persist_parsed_full_docs(
+                    doc_id,
+                    {
+                        "content": make_lightrag_doc_content(parsed_data["content"]),
+                        "file_path": file_path,
+                        "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                        "lightrag_document_path": stored_blocks_path,
+                        "parse_engine": PARSER_ENGINE_NATIVE,
+                        "update_time": int(time.time()),
+                    },
                 )
-                image_data_url = _build_image_data_url(
-                    item.get("path") or item.get("img_path") or item.get("image_path")
+                await archive_docx_source_after_full_docs_sync(str(p))
+                logger.info(
+                    f"[parse_native] pending_parse completed for {file_path} "
+                    f"via native_parser/docx"
                 )
-                has_visual_evidence = bool(image_data_url)
-                caption_text = _normalize_text(item.get("caption"))
-                footnotes_text = _normalize_text(item.get("footnotes"))
-                content_text = _normalize_text(item.get("content"))
-                has_textual_evidence = root_key in {
-                    "tables",
-                    "equations",
-                } and any((caption_text, footnotes_text, content_text))
-                evidence_mode = (
-                    "visual"
-                    if has_visual_evidence
-                    else "textual"
-                    if has_textual_evidence
-                    else "none"
-                )
-                for attempt in range(analyze_retries + 1):
-                    prompt = (
-                        "You are a multimodal analyzer.\n"
-                        "Return ONLY one JSON object. No markdown. No explanation.\n"
-                        "Grounding policy:\n"
-                        "- Do NOT invent unseen objects, domains, diseases, or scenarios.\n"
-                        "- Prefer the strongest available evidence source.\n"
-                        "- For tables/equations without image evidence, analyze from content/caption/footnotes first.\n"
-                        "- In textual-only mode, do not invent appearance/layout details that are not supported by the provided content.\n"
-                        "- If evidence is missing/weak/uncertain, set grounded=false and keep summary/detail conservative.\n"
-                        "- If grounded=false, avoid rich semantic claims; keep to metadata-level statements only.\n"
-                        f"JSON schema example: {schema_hint}\n"
-                        f"modality={root_key}\n"
-                        f"item_id={item_id}\n"
-                        f"caption={caption_text}\n"
-                        f"footnotes={footnotes_text}\n"
-                        f"content={content_text}\n"
-                        f"has_visual_evidence={has_visual_evidence}\n"
-                        f"has_textual_evidence={has_textual_evidence}\n"
-                        f"evidence_mode={evidence_mode}\n"
-                        "Constraints:\n"
-                        "- summary: <= 120 words\n"
-                        "- detail_description: <= 500 words\n"
-                    )
-                    messages = None
-                    if image_data_url:
-                        messages = [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {"url": image_data_url},
-                                    },
-                                ],
-                            }
-                        ]
-                    async with sem:
-                        if messages:
-                            try:
-                                result_text = await use_vlm_func(
-                                    prompt, stream=False, messages=messages
-                                )
-                            except TypeError:
-                                # Backward compatibility for providers that don't accept messages.
-                                result_text = await use_vlm_func(prompt, stream=False)
-                            except Exception as msg_err:
-                                logger.warning(
-                                    f"[analyze_multimodal] visual call failed for {root_key}/{item_id}: {msg_err}"
-                                )
-                                return _conservative_result("visual_call_failed")
-                        else:
-                            result_text = await use_vlm_func(prompt, stream=False)
-                    parsed = _extract_json_obj(str(result_text))
-                    if (
-                        parsed
-                        and isinstance(parsed.get("name"), str)
-                        and isinstance(parsed.get("summary"), str)
-                        and isinstance(parsed.get("detail_description"), str)
-                    ):
-                        if "grounded" in parsed:
-                            parsed["grounded"] = _normalize_grounded_value(
-                                parsed.get("grounded")
-                            )
-                        default_result.update(
-                            {
-                                k: v
-                                for k, v in parsed.items()
-                                if k
-                                in {
-                                    "name",
-                                    "summary",
-                                    "detail_description",
-                                    "image_type",
-                                    "grounded",
-                                    "grounding_reason",
-                                }
-                            }
-                        )
-                        if evidence_mode == "none":
-                            return _conservative_result("missing_image")
-                        if parsed.get("grounded") is False:
-                            reason = str(
-                                parsed.get("grounding_reason")
-                                or (
-                                    "weak_visual_evidence"
-                                    if evidence_mode == "visual"
-                                    else "weak_textual_evidence"
-                                )
-                            )
-                            return _conservative_result(reason)
-                        if "grounded" not in default_result:
-                            default_result["grounded"] = True
-                        if not default_result.get("grounding_reason"):
-                            default_result["grounding_reason"] = (
-                                "visual_evidence"
-                                if evidence_mode == "visual"
-                                else "textual_content_only"
-                            )
-                        return default_result
-                    if attempt < analyze_retries:
-                        logger.warning(
-                            f"[analyze_multimodal] invalid JSON, retry {attempt + 1}/{analyze_retries} for {root_key}/{item_id}"
-                        )
-                if evidence_mode == "none":
-                    return _conservative_result("missing_image")
-                return _conservative_result("analysis_failed")
-
-            # Write back llm_analyze_result to multimodal sidecar files.
-            base_name = str(block_file)
-            if base_name.endswith(".blocks.jsonl"):
-                base_name = base_name[: -len(".blocks.jsonl")]
-            sidecars = [
-                (Path(base_name + ".drawings.json"), "drawings", process_opts.images),
-                (Path(base_name + ".tables.json"), "tables", process_opts.tables),
-                (
-                    Path(base_name + ".equations.json"),
-                    "equations",
-                    process_opts.equations,
-                ),
-            ]
-            for sidecar_path, root_key, enabled in sidecars:
-                if not enabled:
-                    continue
-                if not sidecar_path.exists():
-                    continue
-                try:
-                    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-                    items = payload.get(root_key, {})
-                    if isinstance(items, dict):
-                        analyze_tasks = []
-                        valid_keys = []
-                        skipped_existing = 0
-                        for item_id, item in items.items():
-                            if not isinstance(item, dict):
-                                continue
-                            # Idempotency: skip items that already have a VLM
-                            # result from a prior pass.  A user re-enabling
-                            # additional modalities should not re-spend tokens
-                            # on items that were already analyzed.
-                            if isinstance(item.get("llm_analyze_result"), dict):
-                                skipped_existing += 1
-                                continue
-                            valid_keys.append(item_id)
-                            analyze_tasks.append(_analyze_item(root_key, item_id, item))
-                        if skipped_existing:
-                            logger.debug(
-                                f"[analyze_multimodal] {root_key}: "
-                                f"{skipped_existing} item(s) already have "
-                                f"llm_analyze_result, skipping; "
-                                f"{len(analyze_tasks)} item(s) to analyze"
-                            )
-                        analyzed_results = await asyncio.gather(
-                            *analyze_tasks, return_exceptions=True
-                        )
-                        for idx, item_id in enumerate(valid_keys):
-                            item = items.get(item_id)
-                            if not isinstance(item, dict):
-                                continue
-                            result_obj = analyzed_results[idx]
-                            if isinstance(result_obj, Exception):
-                                logger.warning(
-                                    f"[analyze_multimodal] item analyze failed: {root_key}/{item_id}: {result_obj}"
-                                )
-                                continue
-                            item["llm_analyze_result"] = result_obj
-                    sidecar_path.write_text(
-                        json.dumps(payload, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                except Exception as sidecar_error:
-                    logger.warning(
-                        f"[analyze_multimodal] failed to write sidecar {sidecar_path}: {sidecar_error}"
-                    )
-
-            parsed_data["multimodal_processed"] = True
-            logger.info(
-                f"[analyze_multimodal] completed for d-id: {doc_id}, file: {file_path}"
+                return parsed_data
+            raise ValueError(
+                f"Native parser does not support pending file: {file_path}"
             )
-        except Exception as e:
-            logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
-        return parsed_data
+
+        return {
+            "doc_id": doc_id,
+            "file_path": file_path,
+            "parse_format": FULL_DOCS_FORMAT_RAW,
+            "content": content_data.get("content", ""),
+            "blocks_path": "",
+        }
+
+    async def parse_mineru(
+        self, doc_id: str, file_path: str, content_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        endpoint = os.getenv("MINERU_ENDPOINT", "").strip()
+        if not endpoint:
+            raise ValueError("MINERU_ENDPOINT is required for MinerU parsing")
+        protocol = {
+            "upload_url": endpoint,
+            "poll_url_template": os.getenv(
+                "MINERU_POLL_ENDPOINT",
+                endpoint + "/{trace_id}",
+            ),
+            "poll_method": os.getenv("MINERU_POLL_METHOD", "GET"),
+            "id_field": os.getenv("MINERU_ID_FIELD", "trace_id"),
+            "status_field": os.getenv("MINERU_STATUS_FIELD", "status"),
+            "result_url_field": os.getenv("MINERU_RESULT_URL_FIELD", "result_url"),
+            "content_field": os.getenv("MINERU_CONTENT_FIELD", "content"),
+            "success_values": os.getenv(
+                "MINERU_SUCCESS_VALUES",
+                "done,success,succeeded,completed,finished",
+            ),
+            "failed_values": os.getenv("MINERU_FAILED_VALUES", "failed,error"),
+            "poll_interval_seconds": float(
+                os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2")
+            ),
+            "max_polls": int(os.getenv("MINERU_MAX_POLLS", "180")),
+        }
+        source_file_path = self._resolve_source_file_for_parser(
+            str(content_data.get("source_path") or file_path)
+        )
+        result_text = await self._call_protocol_parse_service(
+            protocol=protocol,
+            file_path=source_file_path,
+        )
+        content_list = normalize_parser_result_to_content_list(result_text)
+        if content_list:
+            return await self._write_lightrag_document_from_content_list(
+                doc_id=doc_id,
+                file_path=file_path,
+                content_list=content_list,
+                engine=PARSER_ENGINE_MINERU,
+                source_path=source_file_path,
+            )
+        if not result_text:
+            raise ValueError(f"MinerU parser returned empty content for {file_path}")
+
+        await self._persist_parsed_full_docs(
+            doc_id,
+            {
+                "content": str(result_text),
+                "file_path": file_path,
+                "parse_format": FULL_DOCS_FORMAT_RAW,
+                "parse_engine": PARSER_ENGINE_MINERU,
+                "update_time": int(time.time()),
+            },
+        )
+        await archive_docx_source_after_full_docs_sync(source_file_path)
+        return {
+            "doc_id": doc_id,
+            "file_path": file_path,
+            "parse_format": FULL_DOCS_FORMAT_RAW,
+            "content": str(result_text),
+            "blocks_path": "",
+        }
+
+    async def parse_docling(
+        self, doc_id: str, file_path: str, content_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
+        if not endpoint:
+            raise ValueError("DOCLING_ENDPOINT is required for Docling parsing")
+        protocol = {
+            "upload_url": endpoint,
+            "poll_url_template": os.getenv(
+                "DOCLING_POLL_ENDPOINT",
+                endpoint + "/{task_id}",
+            ),
+            "poll_method": os.getenv("DOCLING_POLL_METHOD", "GET"),
+            "id_field": os.getenv("DOCLING_ID_FIELD", "task_id"),
+            "status_field": os.getenv("DOCLING_STATUS_FIELD", "status"),
+            "result_url_field": os.getenv("DOCLING_RESULT_URL_FIELD", "result_url"),
+            "content_field": os.getenv("DOCLING_CONTENT_FIELD", "content"),
+            "success_values": os.getenv(
+                "DOCLING_SUCCESS_VALUES",
+                "done,success,succeeded,completed,finished",
+            ),
+            "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error"),
+            "poll_interval_seconds": float(
+                os.getenv("DOCLING_POLL_INTERVAL_SECONDS", "2")
+            ),
+            "max_polls": int(os.getenv("DOCLING_MAX_POLLS", "180")),
+        }
+        source_file_path = self._resolve_source_file_for_parser(
+            str(content_data.get("source_path") or file_path)
+        )
+        result_text = await self._call_protocol_parse_service(
+            protocol=protocol,
+            file_path=source_file_path,
+        )
+        content_list = normalize_parser_result_to_content_list(result_text)
+        if content_list:
+            return await self._write_lightrag_document_from_content_list(
+                doc_id=doc_id,
+                file_path=file_path,
+                content_list=content_list,
+                engine=PARSER_ENGINE_DOCLING,
+                source_path=source_file_path,
+            )
+        if not result_text:
+            raise ValueError(f"Docling parser returned empty content for {file_path}")
+
+        await self._persist_parsed_full_docs(
+            doc_id,
+            {
+                "content": str(result_text),
+                "file_path": file_path,
+                "parse_format": FULL_DOCS_FORMAT_RAW,
+                "parse_engine": PARSER_ENGINE_DOCLING,
+                "update_time": int(time.time()),
+            },
+        )
+        await archive_docx_source_after_full_docs_sync(source_file_path)
+        return {
+            "doc_id": doc_id,
+            "file_path": file_path,
+            "parse_format": FULL_DOCS_FORMAT_RAW,
+            "content": str(result_text),
+            "blocks_path": "",
+        }
+
+    # ============================================================
+    # Parser internals
+    # ============================================================
 
     async def _call_protocol_parse_service(
         self, protocol: dict[str, Any], file_path: str
@@ -3042,213 +2865,422 @@ class _PipelineMixin:
             "blocks_path": str(blocks_path),
         }
 
-    async def parse_native(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
+    # ============================================================
+    # Multimodal / VLM
+    # ============================================================
+
+    async def analyze_multimodal(
+        self,
+        doc_id: str,
+        file_path: str,
+        parsed_data: dict[str, Any],
+        *,
+        process_options: str | None = None,
     ) -> dict[str, Any]:
-        """Phase 1 parse for native/raw, lightrag and pending_parse formats."""
-        doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
-        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
-            # full_docs.content carries the merged text with the {{LRdoc}}
-            # marker; strip it so the chunking path is identical to raw.
-            # blocks_path is still resolved for downstream multimodal
-            # sidecar reads (_build_mm_chunks_from_sidecars).
-            merged_text = strip_lightrag_doc_prefix(
-                content_data.get("content"), doc_format
+        """Phase 2: Multimodal analysis (VLM). Writes llm_analyze_result to LightRAG Document.
+
+        Per-document ``i`` / ``t`` / ``e`` flags from
+        ``full_docs.process_options`` decide which modalities are sent to the
+        VLM.  Sidecars are always written by the parser regardless of these
+        flags so toggling options later does not require re-parsing — only
+        the ``llm_analyze_result`` payload is gated here.
+
+        Idempotent by design: per-item ``llm_analyze_result`` already
+        present is not re-computed.  This lets users incrementally enable
+        new modalities (e.g. add ``t`` after a prior ``i``-only pass) and
+        re-trigger analysis without redundant VLM calls or losing prior
+        results.
+
+        Args:
+            process_options: Optional override that bypasses the
+                ``full_docs.process_options`` lookup; primarily used by unit
+                tests that exercise the VLM analysis path without going
+                through the enqueue pipeline.
+        """
+        from lightrag.parser_routing import parse_process_options
+
+        blocks_path = parsed_data.get("blocks_path")
+        if not blocks_path:
+            return parsed_data
+
+        block_file = Path(blocks_path)
+        if not block_file.exists():
+            return parsed_data
+
+        # Resolve which modalities the user opted into for this document.
+        if process_options is None:
+            try:
+                content_data = await self.full_docs.get_by_id(doc_id) or {}
+            except Exception:
+                content_data = {}
+            options_str = (
+                content_data.get("process_options")
+                if isinstance(content_data, dict)
+                else ""
+            ) or ""
+        else:
+            options_str = process_options
+        process_opts = parse_process_options(options_str)
+        if not (process_opts.images or process_opts.tables or process_opts.equations):
+            logger.debug(
+                f"[analyze_multimodal] no i/t/e options set for d-id: {doc_id}; "
+                f"skipping VLM analysis"
             )
-            raw_doc_path = content_data.get("lightrag_document_path") or file_path
-            resolved_doc_path = resolve_lightrag_document_path(str(raw_doc_path))
-            blocks_path = resolve_lightrag_blocks_path(resolved_doc_path) or ""
+            return parsed_data
 
-            return {
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "parse_format": doc_format,
-                "content": merged_text,
-                "blocks_path": blocks_path,
-            }
-
-        if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-            source_path = self._resolve_source_file_for_parser(
-                str(content_data.get("source_path") or file_path)
+        # Diagnose opt-in vs sidecar mismatch up-front so users investigating
+        # "why did VLM not run on my images" see a one-line INFO per document
+        # instead of silent skips.  Empty sidecars are a normal outcome
+        # (some documents simply have no images/tables/equations), so this is
+        # informational rather than a warning.
+        sidecar_base = str(block_file)
+        if sidecar_base.endswith(".blocks.jsonl"):
+            sidecar_base = sidecar_base[: -len(".blocks.jsonl")]
+        opt_in_missing: list[str] = []
+        for opt_char, modality, suffix in (
+            ("i", "drawings", ".drawings.json"),
+            ("t", "tables", ".tables.json"),
+            ("e", "equations", ".equations.json"),
+        ):
+            enabled = {
+                "i": process_opts.images,
+                "t": process_opts.tables,
+                "e": process_opts.equations,
+            }[opt_char]
+            if enabled and not Path(sidecar_base + suffix).exists():
+                opt_in_missing.append(f"{opt_char}:{modality}")
+        if opt_in_missing:
+            logger.info(
+                f"[analyze_multimodal] process_options opted into "
+                f"{','.join(opt_in_missing)} for d-id: {doc_id} (file={file_path}), "
+                f"but the parser produced no such sidecar; VLM analysis skipped "
+                f"for those modalities."
             )
-            p = Path(source_path)
-            if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
-                from lightrag.native_parser.docx import (
-                    parse_docx_to_lightrag_document,
-                )
 
-                file_bytes = await asyncio.to_thread(p.read_bytes)
-                parsed_data = await parse_docx_to_lightrag_document(
-                    file_bytes=file_bytes,
-                    file_path=file_path,
-                    doc_id=doc_id,
-                    source_path=str(p),
-                )
-
-                blocks_path = Path(parsed_data["blocks_path"])
-                stored_blocks_path = str(blocks_path)
-                try:
-                    stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
-                except ValueError:
-                    pass
-                await self._persist_parsed_full_docs(
-                    doc_id,
-                    {
-                        "content": make_lightrag_doc_content(parsed_data["content"]),
-                        "file_path": file_path,
-                        "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                        "lightrag_document_path": stored_blocks_path,
-                        "parse_engine": PARSER_ENGINE_NATIVE,
-                        "update_time": int(time.time()),
-                    },
-                )
-                await archive_docx_source_after_full_docs_sync(str(p))
-                logger.info(
-                    f"[parse_native] pending_parse completed for {file_path} "
-                    f"via native_parser/docx"
-                )
+        try:
+            lines = block_file.read_text(encoding="utf-8").splitlines()
+            if not lines:
                 return parsed_data
-            raise ValueError(
-                f"Native parser does not support pending file: {file_path}"
+            meta = json.loads(lines[0])
+            if not isinstance(meta, dict) or meta.get("type") != "meta":
+                return parsed_data
+
+            # Analyze sidecar multimodal items by VLM model role.
+            use_vlm_func = self.role_llm_funcs["vlm"]
+            effective_vlm_max_async = self._get_effective_role_llm_max_async("vlm")
+            sem = asyncio.Semaphore(max(1, effective_vlm_max_async))
+            analyze_retries = max(0, int(os.getenv("VLM_ANALYZE_RETRIES", "2")))
+            max_image_bytes = max(
+                256 * 1024, int(os.getenv("VLM_MAX_IMAGE_BYTES", str(5 * 1024 * 1024)))
             )
 
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_RAW,
-            "content": content_data.get("content", ""),
-            "blocks_path": "",
-        }
+            def _extract_json_obj(text: str) -> dict[str, Any]:
+                if not text:
+                    return {}
+                try:
+                    obj = json.loads(text)
+                    if isinstance(obj, dict):
+                        return obj
+                except Exception:
+                    pass
+                m = re.search(r"\{[\s\S]*\}", text)
+                if m:
+                    try:
+                        obj = json.loads(m.group(0))
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        pass
+                return {}
 
-    async def parse_mineru(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        endpoint = os.getenv("MINERU_ENDPOINT", "").strip()
-        if not endpoint:
-            raise ValueError("MINERU_ENDPOINT is required for MinerU parsing")
-        protocol = {
-            "upload_url": endpoint,
-            "poll_url_template": os.getenv(
-                "MINERU_POLL_ENDPOINT",
-                endpoint + "/{trace_id}",
-            ),
-            "poll_method": os.getenv("MINERU_POLL_METHOD", "GET"),
-            "id_field": os.getenv("MINERU_ID_FIELD", "trace_id"),
-            "status_field": os.getenv("MINERU_STATUS_FIELD", "status"),
-            "result_url_field": os.getenv("MINERU_RESULT_URL_FIELD", "result_url"),
-            "content_field": os.getenv("MINERU_CONTENT_FIELD", "content"),
-            "success_values": os.getenv(
-                "MINERU_SUCCESS_VALUES",
-                "done,success,succeeded,completed,finished",
-            ),
-            "failed_values": os.getenv("MINERU_FAILED_VALUES", "failed,error"),
-            "poll_interval_seconds": float(
-                os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2")
-            ),
-            "max_polls": int(os.getenv("MINERU_MAX_POLLS", "180")),
-        }
-        source_file_path = self._resolve_source_file_for_parser(
-            str(content_data.get("source_path") or file_path)
-        )
-        result_text = await self._call_protocol_parse_service(
-            protocol=protocol,
-            file_path=source_file_path,
-        )
-        content_list = normalize_parser_result_to_content_list(result_text)
-        if content_list:
-            return await self._write_lightrag_document_from_content_list(
-                doc_id=doc_id,
-                file_path=file_path,
-                content_list=content_list,
-                engine=PARSER_ENGINE_MINERU,
-                source_path=source_file_path,
+            async def _analyze_item(
+                root_key: str, item_id: str, item: dict[str, Any]
+            ) -> dict[str, Any]:
+                def _conservative_result(reason: str) -> dict[str, Any]:
+                    base_name = item.get("caption") or item_id
+                    modality = (
+                        "image"
+                        if root_key == "drawings"
+                        else "table"
+                        if root_key == "tables"
+                        else "equation"
+                    )
+                    conservative = {
+                        "name": base_name,
+                        "summary": (
+                            f"Conservative summary only: unavailable or weak visual evidence for {modality}."
+                        ),
+                        "detail_description": (
+                            f"No grounded visual evidence. Reason: {reason}. "
+                            "Only metadata-level description is retained."
+                        ),
+                        "grounded": False,
+                        "grounding_reason": reason,
+                    }
+                    if root_key == "drawings":
+                        conservative["image_type"] = ""
+                    return conservative
+
+                def _build_image_data_url(path_str: str | None) -> str | None:
+                    if not path_str:
+                        return None
+                    p = Path(path_str)
+                    if not p.exists() or not p.is_file():
+                        return None
+                    try:
+                        raw = p.read_bytes()
+                    except Exception:
+                        return None
+                    if not raw:
+                        return None
+                    if len(raw) > max_image_bytes:
+                        logger.warning(
+                            f"[analyze_multimodal] image too large ({len(raw)} bytes) for {root_key}/{item_id}, skip image input"
+                        )
+                        return None
+                    mime, _ = mimetypes.guess_type(str(p))
+                    if not mime:
+                        mime = "image/png"
+                    b64 = base64.b64encode(raw).decode("ascii")
+                    return f"data:{mime};base64,{b64}"
+
+                def _normalize_text(value: Any) -> str:
+                    if value is None:
+                        return ""
+                    if isinstance(value, str):
+                        return value.strip()
+                    if isinstance(value, (list, tuple)):
+                        return "\n".join(
+                            str(v).strip() for v in value if str(v).strip()
+                        )
+                    return str(value).strip()
+
+                def _normalize_grounded_value(value: Any) -> Any:
+                    if isinstance(value, bool) or value is None:
+                        return value
+                    if isinstance(value, str):
+                        lowered = value.strip().lower()
+                        if lowered == "true":
+                            return True
+                        if lowered == "false":
+                            return False
+                    if isinstance(value, (int, float)) and value in {0, 1}:
+                        return bool(value)
+                    return value
+
+                default_result = {
+                    "name": item.get("caption") or item_id,
+                    "summary": "",
+                    "detail_description": "",
+                }
+                if root_key == "drawings":
+                    default_result["image_type"] = ""
+                schema_hint = (
+                    '{"name":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
+                    if root_key != "drawings"
+                    else '{"name":"string","image_type":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
+                )
+                image_data_url = _build_image_data_url(
+                    item.get("path") or item.get("img_path") or item.get("image_path")
+                )
+                has_visual_evidence = bool(image_data_url)
+                caption_text = _normalize_text(item.get("caption"))
+                footnotes_text = _normalize_text(item.get("footnotes"))
+                content_text = _normalize_text(item.get("content"))
+                has_textual_evidence = root_key in {
+                    "tables",
+                    "equations",
+                } and any((caption_text, footnotes_text, content_text))
+                evidence_mode = (
+                    "visual"
+                    if has_visual_evidence
+                    else "textual"
+                    if has_textual_evidence
+                    else "none"
+                )
+                for attempt in range(analyze_retries + 1):
+                    prompt = (
+                        "You are a multimodal analyzer.\n"
+                        "Return ONLY one JSON object. No markdown. No explanation.\n"
+                        "Grounding policy:\n"
+                        "- Do NOT invent unseen objects, domains, diseases, or scenarios.\n"
+                        "- Prefer the strongest available evidence source.\n"
+                        "- For tables/equations without image evidence, analyze from content/caption/footnotes first.\n"
+                        "- In textual-only mode, do not invent appearance/layout details that are not supported by the provided content.\n"
+                        "- If evidence is missing/weak/uncertain, set grounded=false and keep summary/detail conservative.\n"
+                        "- If grounded=false, avoid rich semantic claims; keep to metadata-level statements only.\n"
+                        f"JSON schema example: {schema_hint}\n"
+                        f"modality={root_key}\n"
+                        f"item_id={item_id}\n"
+                        f"caption={caption_text}\n"
+                        f"footnotes={footnotes_text}\n"
+                        f"content={content_text}\n"
+                        f"has_visual_evidence={has_visual_evidence}\n"
+                        f"has_textual_evidence={has_textual_evidence}\n"
+                        f"evidence_mode={evidence_mode}\n"
+                        "Constraints:\n"
+                        "- summary: <= 120 words\n"
+                        "- detail_description: <= 500 words\n"
+                    )
+                    messages = None
+                    if image_data_url:
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": image_data_url},
+                                    },
+                                ],
+                            }
+                        ]
+                    async with sem:
+                        if messages:
+                            try:
+                                result_text = await use_vlm_func(
+                                    prompt, stream=False, messages=messages
+                                )
+                            except TypeError:
+                                # Backward compatibility for providers that don't accept messages.
+                                result_text = await use_vlm_func(prompt, stream=False)
+                            except Exception as msg_err:
+                                logger.warning(
+                                    f"[analyze_multimodal] visual call failed for {root_key}/{item_id}: {msg_err}"
+                                )
+                                return _conservative_result("visual_call_failed")
+                        else:
+                            result_text = await use_vlm_func(prompt, stream=False)
+                    parsed = _extract_json_obj(str(result_text))
+                    if (
+                        parsed
+                        and isinstance(parsed.get("name"), str)
+                        and isinstance(parsed.get("summary"), str)
+                        and isinstance(parsed.get("detail_description"), str)
+                    ):
+                        if "grounded" in parsed:
+                            parsed["grounded"] = _normalize_grounded_value(
+                                parsed.get("grounded")
+                            )
+                        default_result.update(
+                            {
+                                k: v
+                                for k, v in parsed.items()
+                                if k
+                                in {
+                                    "name",
+                                    "summary",
+                                    "detail_description",
+                                    "image_type",
+                                    "grounded",
+                                    "grounding_reason",
+                                }
+                            }
+                        )
+                        if evidence_mode == "none":
+                            return _conservative_result("missing_image")
+                        if parsed.get("grounded") is False:
+                            reason = str(
+                                parsed.get("grounding_reason")
+                                or (
+                                    "weak_visual_evidence"
+                                    if evidence_mode == "visual"
+                                    else "weak_textual_evidence"
+                                )
+                            )
+                            return _conservative_result(reason)
+                        if "grounded" not in default_result:
+                            default_result["grounded"] = True
+                        if not default_result.get("grounding_reason"):
+                            default_result["grounding_reason"] = (
+                                "visual_evidence"
+                                if evidence_mode == "visual"
+                                else "textual_content_only"
+                            )
+                        return default_result
+                    if attempt < analyze_retries:
+                        logger.warning(
+                            f"[analyze_multimodal] invalid JSON, retry {attempt + 1}/{analyze_retries} for {root_key}/{item_id}"
+                        )
+                if evidence_mode == "none":
+                    return _conservative_result("missing_image")
+                return _conservative_result("analysis_failed")
+
+            # Write back llm_analyze_result to multimodal sidecar files.
+            base_name = str(block_file)
+            if base_name.endswith(".blocks.jsonl"):
+                base_name = base_name[: -len(".blocks.jsonl")]
+            sidecars = [
+                (Path(base_name + ".drawings.json"), "drawings", process_opts.images),
+                (Path(base_name + ".tables.json"), "tables", process_opts.tables),
+                (
+                    Path(base_name + ".equations.json"),
+                    "equations",
+                    process_opts.equations,
+                ),
+            ]
+            for sidecar_path, root_key, enabled in sidecars:
+                if not enabled:
+                    continue
+                if not sidecar_path.exists():
+                    continue
+                try:
+                    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                    items = payload.get(root_key, {})
+                    if isinstance(items, dict):
+                        analyze_tasks = []
+                        valid_keys = []
+                        skipped_existing = 0
+                        for item_id, item in items.items():
+                            if not isinstance(item, dict):
+                                continue
+                            # Idempotency: skip items that already have a VLM
+                            # result from a prior pass.  A user re-enabling
+                            # additional modalities should not re-spend tokens
+                            # on items that were already analyzed.
+                            if isinstance(item.get("llm_analyze_result"), dict):
+                                skipped_existing += 1
+                                continue
+                            valid_keys.append(item_id)
+                            analyze_tasks.append(_analyze_item(root_key, item_id, item))
+                        if skipped_existing:
+                            logger.debug(
+                                f"[analyze_multimodal] {root_key}: "
+                                f"{skipped_existing} item(s) already have "
+                                f"llm_analyze_result, skipping; "
+                                f"{len(analyze_tasks)} item(s) to analyze"
+                            )
+                        analyzed_results = await asyncio.gather(
+                            *analyze_tasks, return_exceptions=True
+                        )
+                        for idx, item_id in enumerate(valid_keys):
+                            item = items.get(item_id)
+                            if not isinstance(item, dict):
+                                continue
+                            result_obj = analyzed_results[idx]
+                            if isinstance(result_obj, Exception):
+                                logger.warning(
+                                    f"[analyze_multimodal] item analyze failed: {root_key}/{item_id}: {result_obj}"
+                                )
+                                continue
+                            item["llm_analyze_result"] = result_obj
+                    sidecar_path.write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception as sidecar_error:
+                    logger.warning(
+                        f"[analyze_multimodal] failed to write sidecar {sidecar_path}: {sidecar_error}"
+                    )
+
+            parsed_data["multimodal_processed"] = True
+            logger.info(
+                f"[analyze_multimodal] completed for d-id: {doc_id}, file: {file_path}"
             )
-        if not result_text:
-            raise ValueError(f"MinerU parser returned empty content for {file_path}")
-
-        await self._persist_parsed_full_docs(
-            doc_id,
-            {
-                "content": str(result_text),
-                "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_RAW,
-                "parse_engine": PARSER_ENGINE_MINERU,
-                "update_time": int(time.time()),
-            },
-        )
-        await archive_docx_source_after_full_docs_sync(source_file_path)
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_RAW,
-            "content": str(result_text),
-            "blocks_path": "",
-        }
-
-    async def parse_docling(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
-        if not endpoint:
-            raise ValueError("DOCLING_ENDPOINT is required for Docling parsing")
-        protocol = {
-            "upload_url": endpoint,
-            "poll_url_template": os.getenv(
-                "DOCLING_POLL_ENDPOINT",
-                endpoint + "/{task_id}",
-            ),
-            "poll_method": os.getenv("DOCLING_POLL_METHOD", "GET"),
-            "id_field": os.getenv("DOCLING_ID_FIELD", "task_id"),
-            "status_field": os.getenv("DOCLING_STATUS_FIELD", "status"),
-            "result_url_field": os.getenv("DOCLING_RESULT_URL_FIELD", "result_url"),
-            "content_field": os.getenv("DOCLING_CONTENT_FIELD", "content"),
-            "success_values": os.getenv(
-                "DOCLING_SUCCESS_VALUES",
-                "done,success,succeeded,completed,finished",
-            ),
-            "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error"),
-            "poll_interval_seconds": float(
-                os.getenv("DOCLING_POLL_INTERVAL_SECONDS", "2")
-            ),
-            "max_polls": int(os.getenv("DOCLING_MAX_POLLS", "180")),
-        }
-        source_file_path = self._resolve_source_file_for_parser(
-            str(content_data.get("source_path") or file_path)
-        )
-        result_text = await self._call_protocol_parse_service(
-            protocol=protocol,
-            file_path=source_file_path,
-        )
-        content_list = normalize_parser_result_to_content_list(result_text)
-        if content_list:
-            return await self._write_lightrag_document_from_content_list(
-                doc_id=doc_id,
-                file_path=file_path,
-                content_list=content_list,
-                engine=PARSER_ENGINE_DOCLING,
-                source_path=source_file_path,
-            )
-        if not result_text:
-            raise ValueError(f"Docling parser returned empty content for {file_path}")
-
-        await self._persist_parsed_full_docs(
-            doc_id,
-            {
-                "content": str(result_text),
-                "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_RAW,
-                "parse_engine": PARSER_ENGINE_DOCLING,
-                "update_time": int(time.time()),
-            },
-        )
-        await archive_docx_source_after_full_docs_sync(source_file_path)
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_RAW,
-            "content": str(result_text),
-            "blocks_path": "",
-        }
+        except Exception as e:
+            logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
+        return parsed_data
 
     async def _run_multimodal_postprocess_hook(
         self,
