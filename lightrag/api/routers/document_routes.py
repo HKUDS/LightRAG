@@ -19,9 +19,10 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Query,
     UploadFile,
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
@@ -240,6 +241,11 @@ class InsertTextRequest(BaseModel):
     file_source: Optional[str] = Field(
         default=None, min_length=0, description="File Source"
     )
+    doc_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description="Optional custom document ID. If not provided, an MD5 hash-based ID will be auto-generated from the content.",
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -251,11 +257,19 @@ class InsertTextRequest(BaseModel):
     def normalize_source_before(cls, file_source: Optional[str]) -> str:
         return normalize_file_path(file_source)
 
+    @field_validator("doc_id", mode="after")
+    @classmethod
+    def strip_doc_id_after(cls, doc_id: Optional[str]) -> Optional[str]:
+        if doc_id is None:
+            return None
+        return doc_id.strip()
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
+                "doc_id": "my-custom-doc-id",
             }
         }
     )
@@ -276,6 +290,10 @@ class InsertTextsRequest(BaseModel):
     file_sources: Optional[list[str]] = Field(
         default=None, min_length=0, description="Sources of the texts"
     )
+    doc_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Optional custom document IDs, one per text. If provided, length must match texts. If not provided, MD5 hash-based IDs will be auto-generated from content.",
+    )
 
     @field_validator("texts", mode="after")
     @classmethod
@@ -292,6 +310,30 @@ class InsertTextsRequest(BaseModel):
 
         return [normalize_file_path(file_source) for file_source in file_sources]
 
+    @field_validator("doc_ids", mode="after")
+    @classmethod
+    def validate_doc_ids(cls, doc_ids: Optional[list[str]]) -> Optional[list[str]]:
+        if doc_ids is None:
+            return None
+        if not doc_ids:
+            raise ValueError("doc_ids list cannot be empty")
+        validated = []
+        for did in doc_ids:
+            if not did or not did.strip():
+                raise ValueError("Document IDs must not be empty or whitespace-only")
+            validated.append(did.strip())
+        if len(validated) != len(set(validated)):
+            raise ValueError("Document IDs must be unique within the request")
+        return validated
+
+    @model_validator(mode="after")
+    def check_doc_ids_length(self):
+        if self.doc_ids is not None and len(self.doc_ids) != len(self.texts):
+            raise ValueError(
+                f"doc_ids length ({len(self.doc_ids)}) must match texts length ({len(self.texts)})"
+            )
+        return self
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -301,6 +343,10 @@ class InsertTextsRequest(BaseModel):
                 ],
                 "file_sources": [
                     "First file source (optional)",
+                ],
+                "doc_ids": [
+                    "my-doc-1",
+                    "my-doc-2",
                 ],
             }
         }
@@ -1229,7 +1275,7 @@ def _extract_xlsx(file_bytes: bytes) -> str:
 
 
 async def pipeline_enqueue_file(
-    rag: LightRAG, file_path: Path, track_id: str = None
+    rag: LightRAG, file_path: Path, track_id: str = None, doc_id: str | None = None
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1602,7 +1648,10 @@ async def pipeline_enqueue_file(
 
             try:
                 await rag.apipeline_enqueue_documents(
-                    content, file_paths=file_path.name, track_id=track_id
+                    content,
+                    ids=[doc_id] if doc_id else None,
+                    file_paths=file_path.name,
+                    track_id=track_id,
                 )
 
                 logger.info(
@@ -1686,17 +1735,20 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+async def pipeline_index_file(
+    rag: LightRAG, file_path: Path, track_id: str = None, doc_id: str | None = None
+):
     """Index a file with track_id
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        doc_id: Optional custom document ID
     """
     try:
         success, returned_track_id = await pipeline_enqueue_file(
-            rag, file_path, track_id
+            rag, file_path, track_id, doc_id=doc_id
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -1745,6 +1797,7 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    doc_ids: List[str] | None = None,
 ):
     """Index a list of texts with track_id
 
@@ -1753,6 +1806,7 @@ async def pipeline_index_texts(
         texts: The texts to index
         file_sources: Sources of the texts
         track_id: Optional tracking ID
+        doc_ids: Optional custom document IDs, one per text
     """
     if not texts:
         return
@@ -1770,7 +1824,10 @@ async def pipeline_index_texts(
             )
 
     await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=normalized_file_sources, track_id=track_id
+        input=texts,
+        ids=doc_ids,
+        file_paths=normalized_file_sources,
+        track_id=track_id,
     )
     await rag.apipeline_process_enqueue_documents()
 
@@ -2119,7 +2176,9 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        doc_id: Optional[str] = Query(default=None, description="Optional custom document ID"),
     ):
         """
         Upload a file to the input directory and index it.
@@ -2173,6 +2232,9 @@ def create_document_routes(
             HTTPException: If the file type is not supported (400), file too large (413), or other errors occur (500).
         """
         try:
+            # Normalize doc_id early
+            doc_id = doc_id.strip() if doc_id else None
+
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
 
@@ -2215,6 +2277,18 @@ def create_document_routes(
                     message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
                     track_id=existing_track_id,
                 )
+
+            # Check if custom doc_id already exists in doc_status storage
+            if doc_id:
+                existing_doc = await rag.doc_status.get_by_id(doc_id)
+                if existing_doc:
+                    status = existing_doc.get("status", "unknown")
+                    existing_track_id = existing_doc.get("track_id") or ""
+                    return InsertResponse(
+                        status="duplicated",
+                        message=f"Document ID '{doc_id}' already exists in document storage (Status: {status}).",
+                        track_id=existing_track_id,
+                    )
 
             file_path = doc_manager.input_dir / safe_filename
             # Check if file already exists in file system
@@ -2267,7 +2341,9 @@ def create_document_routes(
             track_id = generate_track_id("upload")
 
             # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            background_tasks.add_task(
+                pipeline_index_file, rag, file_path, track_id, doc_id=doc_id
+            )
 
             return InsertResponse(
                 status="success",
@@ -2326,9 +2402,12 @@ def create_document_routes(
                         track_id=existing_track_id,
                     )
 
-            # Check if content already exists by computing content hash (doc_id)
-            sanitized_text = sanitize_text_for_encoding(request.text)
-            content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
+            # Check if content already exists
+            if request.doc_id:
+                content_doc_id = request.doc_id.strip()
+            else:
+                sanitized_text = sanitize_text_for_encoding(request.text)
+                content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
             existing_doc = await rag.doc_status.get_by_id(content_doc_id)
             if existing_doc:
                 # Content already exists, return duplicated with existing track_id
@@ -2336,7 +2415,7 @@ def create_document_routes(
                 existing_track_id = existing_doc.get("track_id") or ""
                 return InsertResponse(
                     status="duplicated",
-                    message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                    message=f"Document ID '{content_doc_id}' already exists in document storage (Status: {status}).",
                     track_id=existing_track_id,
                 )
 
@@ -2349,6 +2428,7 @@ def create_document_routes(
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
+                doc_ids=[request.doc_id] if request.doc_id else None,
             )
 
             return InsertResponse(
@@ -2408,20 +2488,31 @@ def create_document_routes(
                                 track_id=existing_track_id,
                             )
 
-            # Check if any content already exists by computing content hash (doc_id)
-            for text in request.texts:
-                sanitized_text = sanitize_text_for_encoding(text)
-                content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
-                existing_doc = await rag.doc_status.get_by_id(content_doc_id)
-                if existing_doc:
-                    # Content already exists, return duplicated with existing track_id
-                    status = existing_doc.get("status", "unknown")
-                    existing_track_id = existing_doc.get("track_id") or ""
-                    return InsertResponse(
-                        status="duplicated",
-                        message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
-                        track_id=existing_track_id,
-                    )
+            # Check if any content already exists
+            if request.doc_ids:
+                existing_docs = await rag.doc_status.get_by_ids(request.doc_ids)
+                for doc_id, existing_doc in zip(request.doc_ids, existing_docs):
+                    if existing_doc is not None:
+                        status = existing_doc.get("status", "unknown")
+                        existing_track_id = existing_doc.get("track_id") or ""
+                        return InsertResponse(
+                            status="duplicated",
+                            message=f"Document ID '{doc_id}' already exists in document storage (Status: {status}).",
+                            track_id=existing_track_id,
+                        )
+            else:
+                for text in request.texts:
+                    sanitized_text = sanitize_text_for_encoding(text)
+                    content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
+                    existing_doc = await rag.doc_status.get_by_id(content_doc_id)
+                    if existing_doc:
+                        status = existing_doc.get("status", "unknown")
+                        existing_track_id = existing_doc.get("track_id") or ""
+                        return InsertResponse(
+                            status="duplicated",
+                            message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                            track_id=existing_track_id,
+                        )
 
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
@@ -2432,6 +2523,7 @@ def create_document_routes(
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
+                doc_ids=request.doc_ids,
             )
 
             return InsertResponse(
