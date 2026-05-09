@@ -1849,9 +1849,13 @@ class _PipelineMixin:
                             f"d-id: {doc_id}, chunks {original_chunk_count} -> {len(chunking_result)} "
                             f"(limit={self.embedding_token_limit})"
                         )
-                        extraction_meta["hard_fallback_split"] = True
-                        extraction_meta["pre_split_chunks"] = original_chunk_count
-                        extraction_meta["post_split_chunks"] = len(chunking_result)
+                        # Compact "pre -> post" summary mirrors the log
+                        # middle segment.  Field is only present when a
+                        # hard split actually occurred, so its presence
+                        # alone signals the trigger.
+                        extraction_meta["hard_fallback_split"] = (
+                            f"{original_chunk_count} -> {len(chunking_result)}"
+                        )
 
                 chunks = build_chunks_dict_from_chunking_result(
                     chunking_result, doc_id=doc_id, file_path=file_path
