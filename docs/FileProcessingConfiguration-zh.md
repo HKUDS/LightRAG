@@ -1,8 +1,14 @@
 # 文件处理方式配置说明
 
-从版本 v1.5.0 开始，LightRAG Server引入了一个文件处理的中间格式： `LightRAG Document` 。该格式支持表格和图片等多模态数据，同时包含文章的章节段落元数据，方便日后进行内容溯源。LightRAG为此还引入了多种支持这种中间格式的内容抽取引擎和文本分块方式。本文将介绍新添加的内容抽取引擎与文本分块方式的配置与使用说明。
+从版本 v1.5.0 （目前在dev分支）开始，LightRAG的文件处理管线进行了重大的升级：
 
-为了配合此次改动，LightRAG的处理流处理逻辑做了重大的改动。本文还对文件重复判断逻辑、并发控制和流水线的继跑幂等逻辑做了相关说明，方便用户了解流水线的工作逻辑。
+* 支持多种文件内容抽引擎：legacy、native、mineru、docling
+* 支持多种文本块分块方法：Fix、Recursive、Vector、Paragraph
+* 支持对个别文件关闭实体关系抽取
+
+LightRAG Server引入了一个文件处理的中间格式： `LightRAG Document` 。该格式支持表格和图片等多模态数据，同时包含文章的章节段落元数据，方便日后进行内容溯源。
+
+本文将对文件处理管线中如何配置文件处理方式进行说明。并对文件重复判断逻辑、并发控制和流水线的继跑幂等逻辑做了相关说明，方便用户理解整个管线的工作逻辑。
 
 ## 内容抽取与文件处理配置
 
@@ -24,7 +30,7 @@ filename.[OPTIONS].ext
 - `LIGHTRAG_PARSER` 是默认规则表，按文件后缀匹配，例如 `pdf:mineru`、`docx:native-iet`。
 - 文件名 `[hint]` 是单文件覆盖规则，例如 `paper.[mineru].pdf`、`memo.[native-R!].docx`。
 - `ENGINE` 是内容抽取引擎：`legacy`、`native`、`mineru` 或 `docling`。
-- `OPTIONS` 是处理选项字符组合，例如 `iet`、`R!`、`S`。选项最终写入 `process_options`，由后续流水线阶段读取。
+- `OPTIONS` 是处理选项字符组合，例如 `iet`、`R!`、`P`。选项最终写入 `process_options`，由后续流水线阶段读取。
 - `ENGINE-OPTIONS` 中的连字符只用于分隔引擎和选项，不属于选项本身。
 
 常见组合示例：
@@ -104,9 +110,10 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | `t` | 多模态 | 关闭 | 启用表格分析（VLM） |
 | `e` | 多模态 | 关闭 | 启用公式分析（VLM） |
 | `!` | 流水线 | 关闭 | 禁止实体/关系抽取，不构建知识图谱（仅保留 chunks 向量索引，naive / mix 检索仍可用） |
-| `F` | 分块 | 默认 | 固定长度或按分隔符机械分割（按分隔符分割时块不重叠） |
-| `R` | 分块 | - | 递归语义分块（优先按段落、句子分割）；此方法有待实现，暂时回退至 `F`，行为等同于固定分块 |
-| `S` | 分块 | - | 标题语义分块（优先按标题分割，标题块不重叠）；要求 `native` 抽取出的结构化输出，否则降级到 `F`。此方法目前仅仅是一个草稿，有待完善。 |
+| `F` | 分块 | 默认 | Fix/固定长度分块：遗留方法, 按固定Token长度或按分隔符机械分割（按分隔符分割时块不重叠） |
+| `R` | 分块 | - | Recursive/递归字符分块(RecursiveCharacterTextSplitter from LangChain)：接收一个分隔符列表（默认是 ["\n\n", "\n", " ", ""]）。它会优先尝试用双换行符切分（保留段落语义）；如果切出的块依然超过 Token 限制，才会降级使用单换行符，甚至空格。 |
+| `V` | 分块 | - | Vector/向量语义分块(SemanticChunker from LangChain)：它首先按句子拆分文本，计算相邻句子的 Embedding，然后根据指定的阈值策略（如百分位 percentile、标准差 standard_deviation 或四分位距 interquartile）寻找语义断层进行切分。 |
+| `P` | 分块 | - | Paragraph/段落语义分块（native）；优先按标题分割，文本块内容不重叠。如果一个标题下的文本太长，超出允许的文本块最大长度，则内部按照递归语义分块方式进行分拆。 |
 
 > 多模态全局开关 `addon_params["enable_multimodal_pipeline"]` 已废弃，相关行为统一由文件级 `i` / `t` / `e` 选项控制。如启动配置仍包含该字段，会在日志输出 deprecation warning 并被忽略。
 
@@ -115,10 +122,10 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 处理选项的不同字符在流水线的不同阶段生效：
 
 | 选项 | 作用阶段 | 说明 |
-| --- | --- | --- |
-| `i` / `t` / `e` | ANALYZING（VLM 分析） | 决定是否对 sidecar 中的图像 / 表格 / 公式调用 VLM 做摘要分析。**抽取阶段不受影响**：内容提取引擎按文档实际内容输出 `drawings.json` / `tables.json` / `equations.json` sidecar 文件。这样后续仅修改 `i`/`t`/`e` 选项触发“再分析”即可补做 VLM，无须重新解析原始文件。 |
-| `!` | EXTRACTION（实体关系抽取） | 跳过实体/关系抽取与图谱写入；chunks 仍写入向量库以保留 naive / mix 检索能力。 |
-| `F` / `R` / `S` | CHUNKING（文本分块） | 决定使用哪种分块策略；对解析阶段输出无影响。 |
+| :-: | --- | --- |
+| i/t/e | Analyzing多模态分析 | 决定是否对 sidecar 中的图像 / 表格 / 公式调用 VLM 做摘要分析。**抽取阶段不受影响**：内容提取引擎按文档实际内容输出 `drawings.json` / `tables.json` / `equations.json` sidecar 文件。这样后续仅修改 `i`/`t`/`e` 选项触发“再分析”即可补做 VLM，无须重新解析原始文件。 |
+| ! | Extraction实体关系抽取 | 跳过实体/关系抽取与图谱写入；chunks 仍写入向量库以保留 naive / mix 检索能力。 |
+| F/R/V/P | Chunking文本分块 | 决定使用哪种分块策略；对解析阶段输出无影响。 |
 
 > 模态可用性以“sidecar 文件是否存在”为唯一信号，内容提取引擎不需要在 meta 中声明能力。某文档若没有任何图像/表格/公式，对应 sidecar 不会写入；用户即使开启了 `i`/`t`/`e`，对应模态也只会被静默跳过，但 `analyze_multimodal` 会在该篇文档落一行 INFO 级日志（`[analyze_multimodal] process_options opted into i:drawings ... but the parser produced no such sidecar`），便于排查“VLM 为何没跑”。这种情况不会报错。
 
