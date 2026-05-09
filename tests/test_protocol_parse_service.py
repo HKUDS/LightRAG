@@ -324,3 +324,100 @@ def test_parse_docling_protocol_defaults_match_docling_serve(
         await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_parse_docling_endpoint_with_trailing_slash_still_derives_defaults(
+    tmp_path, monkeypatch
+):
+    """A trailing slash on ``DOCLING_ENDPOINT`` must not defeat the
+    suffix-based derivation of poll/result paths."""
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(self, protocol, file_path):
+        captured.update(protocol)
+        return "noop"
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        sample = tmp_path / "sample.pdf"
+        sample.write_bytes(b"%PDF-1.4 fake")
+
+        monkeypatch.setenv(
+            "DOCLING_ENDPOINT", "http://localhost:5001/v1/convert/file/async/"
+        )
+        monkeypatch.setattr(
+            type(rag), "_call_protocol_parse_service", _capture, raising=True
+        )
+
+        try:
+            await rag.parse_docling(
+                doc_id="d-2",
+                file_path=str(sample),
+                content_data={"content": "x"},
+            )
+        except Exception:
+            pass
+
+        # rstrip("/") on the endpoint must drop the trailing slash so the
+        # derivation produces spec paths, not endpoint + "/{task_id}".
+        assert (
+            captured["poll_url_template"]
+            == "http://localhost:5001/v1/status/poll/{task_id}"
+        )
+        assert (
+            captured["result_url_template"]
+            == "http://localhost:5001/v1/result/{task_id}"
+        )
+        assert captured["upload_url"] == "http://localhost:5001/v1/convert/file/async"
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("bad_value", ["", "   ", None])
+def test_call_protocol_normalizes_empty_upload_field_name(
+    tmp_path, mock_docling_serve, bad_value
+):
+    """Empty / whitespace-only / missing ``upload_field_name`` must fall back
+    to the historical default ``"file"`` rather than producing an invalid
+    multipart key. With docling-serve as the upstream this still 422s
+    (expected — the default is wrong for docling), but the failure mode is
+    explicit instead of a silent malformed request."""
+
+    base = mock_docling_serve["base"]
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        sample = tmp_path / "sample.pdf"
+        sample.write_bytes(b"%PDF-1.4 fake")
+
+        protocol: dict[str, Any] = {
+            "upload_url": f"{base}/v1/convert/file/async",
+            "upload_field_name": bad_value,
+            "poll_url_template": f"{base}/v1/status/poll/{{task_id}}",
+            "id_field": "task_id",
+            "status_field": "task_status",
+            "success_values": "success",
+            "failed_values": "failure",
+            "poll_interval_seconds": 0.05,
+            "max_polls": 5,
+        }
+
+        # The 422 response from docling-serve must mention the missing
+        # ``files`` field — proving the fallback used a real multipart key.
+        with pytest.raises(RuntimeError, match=r"422.*files"):
+            await rag._call_protocol_parse_service(
+                protocol=protocol, file_path=str(sample)
+            )
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())

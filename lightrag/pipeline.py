@@ -2146,13 +2146,14 @@ class _PipelineMixin:
     async def parse_docling(
         self, doc_id: str, file_path: str, content_data: dict[str, Any]
     ) -> dict[str, Any]:
-        endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
+        endpoint = os.getenv("DOCLING_ENDPOINT", "").strip().rstrip("/")
         if not endpoint:
             raise ValueError("DOCLING_ENDPOINT is required for Docling parsing")
         # docling-serve mounts paths under a common base. Derive defaults for
         # poll/result paths from the upload endpoint when the user only sets
         # DOCLING_ENDPOINT, so out-of-the-box config matches the real spec
-        # (https://docling-project.github.io/docling-serve/usage/).
+        # (https://docling-project.github.io/docling-serve/usage/). The
+        # rstrip above makes the suffix check tolerant of trailing slashes.
         upload_suffix = "/v1/convert/file/async"
         if endpoint.endswith(upload_suffix):
             base = endpoint[: -len(upload_suffix)]
@@ -2243,7 +2244,12 @@ class _PipelineMixin:
         result_url_field = str(protocol.get("result_url_field", "result_url"))
         result_url_tpl = str(protocol.get("result_url_template", "")).strip()
         content_field = str(protocol.get("content_field", "content"))
-        upload_field_name = str(protocol.get("upload_field_name", "file"))
+        # Normalize: an explicit empty string or whitespace-only env value
+        # would otherwise produce an invalid multipart key. Fall back to the
+        # historical default rather than letting the upload fail obscurely.
+        upload_field_name = (
+            str(protocol.get("upload_field_name") or "").strip() or "file"
+        )
         poll_url_tpl = str(protocol.get("poll_url_template", "")).strip()
         poll_method = str(protocol.get("poll_method", "GET")).upper()
         poll_interval = float(protocol.get("poll_interval_seconds", 2.0))
