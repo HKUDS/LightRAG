@@ -471,9 +471,9 @@ def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path, monkeypatch):
             lightrag_logger.removeHandler(list_handler)
             await rag.finalize_storages()
 
-        assert captured["calls"] >= 1, (
-            "R should fall back to chunking_by_fixed_token (new contract)"
-        )
+        assert (
+            captured["calls"] >= 1
+        ), "R should fall back to chunking_by_fixed_token (new contract)"
         assert legacy_spy["calls"] == 0, (
             "explicit process_options selector must bypass legacy "
             "chunking_func; got "
@@ -485,8 +485,7 @@ def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path, monkeypatch):
             if rec.levelno == logging.WARNING
         ]
         assert any(
-            "R/V strategies are not yet implemented" in msg
-            for msg in warning_messages
+            "R/V strategies are not yet implemented" in msg for msg in warning_messages
         ), f"deferred-strategy warning missing; saw: {warning_messages!r}"
 
     asyncio.run(_run())

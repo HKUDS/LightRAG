@@ -196,5 +196,3 @@ docx body
 - 通过 `extract_audit_blocks(file_path, debug=True)` 开启调试输出，会打印阶段 C 切分前后的 token 分布、阶段 D 每轮 / 每相位的合并次数、最终块数与超大块预警等。
 - `parse_warnings` 字典在解析过程中累积非致命告警（例如缺失 `w14:paraId` 的段落或表格数），调用方（adapter / CLI）可据此输出一行汇总警告。
 - 可以通过传入 `fixlevel=N` 切到"固定层级模式"（仅按 `level ≤ N` 的标题切分、关闭再切分与合并），用于对比、调参或紧急规避。
-
-

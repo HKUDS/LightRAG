@@ -71,7 +71,7 @@ _TABLE_CHUNK_SUFFIX_LABEL = "表格片段"
 #   <table id="tb-…" format="json"[ caption="…"]>{rows_json}</table>
 # blocks.jsonl invariants guarantee the tag has no embedded newlines.
 _TABLE_TAG_RE = re.compile(
-    r'<table\s+(?P<attrs>[^>]*)>(?P<body>.*?)</table>',
+    r"<table\s+(?P<attrs>[^>]*)>(?P<body>.*?)</table>",
     re.DOTALL,
 )
 
@@ -567,11 +567,8 @@ def _merge_small_blocks(
 
                     if _can_merge_forward(cur_role, phase="A") and i + 1 < len(result):
                         nxt = result[i + 1]
-                        if (
-                            nxt.get("level", 1) == current_level
-                            and _can_merge_backward(
-                                nxt.get("table_chunk_role", "none")
-                            )
+                        if nxt.get("level", 1) == current_level and _can_merge_backward(
+                            nxt.get("table_chunk_role", "none")
                         ):
                             combined = _merged_pair(
                                 cur, nxt, keep="left", tokenizer=tokenizer
@@ -582,11 +579,7 @@ def _merge_small_blocks(
                                 changed = True
                                 merged = True
 
-                    if (
-                        not merged
-                        and _can_merge_backward(cur_role)
-                        and new_result
-                    ):
+                    if not merged and _can_merge_backward(cur_role) and new_result:
                         prev = new_result[-1]
                         if (
                             prev.get("level", 1) == current_level
@@ -674,11 +667,8 @@ def _merge_small_blocks(
 
                     if _can_merge_forward(cur_role, phase="B") and i + 1 < len(result):
                         nxt = result[i + 1]
-                        if (
-                            nxt.get("level", 1) > current_level
-                            and _can_merge_backward(
-                                nxt.get("table_chunk_role", "none")
-                            )
+                        if nxt.get("level", 1) > current_level and _can_merge_backward(
+                            nxt.get("table_chunk_role", "none")
                         ):
                             combined = _merged_pair(
                                 cur, nxt, keep="left", tokenizer=tokenizer
@@ -689,11 +679,7 @@ def _merge_small_blocks(
                                 changed = True
                                 merged = True
 
-                    if (
-                        not merged
-                        and _can_merge_backward(cur_role)
-                        and new_result
-                    ):
+                    if not merged and _can_merge_backward(cur_role) and new_result:
                         prev = new_result[-1]
                         if (
                             prev.get("level", 1) < current_level
