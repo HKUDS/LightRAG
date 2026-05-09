@@ -416,14 +416,44 @@ class _ListHandler(logging.Handler):
 
 
 @pytest.mark.offline
-def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path):
-    """``process_options=R`` (or ``V`` / ``P``) must log the
-    ``not yet implemented`` warning and run F-chunking anyway."""
+def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path, monkeypatch):
+    """``process_options=R`` (or ``V``) must log the deferred-strategy
+    warning and still produce F-chunked output.
+
+    Under the new chunker dispatch, an explicit chunking selector in
+    ``process_options`` (any of ``F``/``R``/``V``/``P``) bypasses the
+    legacy ``chunking_func`` entirely and routes to the standardized
+    file-chunker contract. R/V are not yet implemented so the
+    dispatcher falls back to ``chunking_by_fixed_token`` (the F
+    strategy under the new contract). The test verifies both halves of
+    that contract:
+
+      1. ``chunking_by_fixed_token`` is the function that actually
+         runs, not the legacy ``chunking_func`` (which stays untouched
+         since the user explicitly selected a strategy).
+      2. The dispatcher logs the ``R/V strategies are not yet
+         implemented`` warning so users see why ``R`` was downgraded.
+    """
+
+    import lightrag.chunker as chunker_pkg
+    from lightrag.chunker import chunking_by_fixed_token as real_fixed
+
+    captured = {"calls": 0}
+
+    def _fixed_spy(*args, **kwargs):
+        captured["calls"] += 1
+        return real_fixed(*args, **kwargs)
+
+    # The dispatcher does ``from lightrag.chunker import
+    # chunking_by_fixed_token`` inside the function body, which
+    # re-resolves the name from the package each call — patching the
+    # package attribute is enough to intercept it.
+    monkeypatch.setattr(chunker_pkg, "chunking_by_fixed_token", _fixed_spy)
 
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
-        spy = _attach_chunking_spy(rag)
+        legacy_spy = _attach_chunking_spy(rag)
 
         lightrag_logger = logging.getLogger("lightrag")
         list_handler = _ListHandler()
@@ -441,14 +471,21 @@ def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path):
             lightrag_logger.removeHandler(list_handler)
             await rag.finalize_storages()
 
-        assert spy["calls"] >= 1, "R/V/P path should still call chunking_func (F)"
+        assert captured["calls"] >= 1, (
+            "R should fall back to chunking_by_fixed_token (new contract)"
+        )
+        assert legacy_spy["calls"] == 0, (
+            "explicit process_options selector must bypass legacy "
+            "chunking_func; got "
+            f"{legacy_spy['calls']} calls"
+        )
         warning_messages = [
             rec.getMessage()
             for rec in list_handler.records
             if rec.levelno == logging.WARNING
         ]
         assert any(
-            "R/V/P strategies are not yet implemented" in msg
+            "R/V strategies are not yet implemented" in msg
             for msg in warning_messages
         ), f"deferred-strategy warning missing; saw: {warning_messages!r}"
 
