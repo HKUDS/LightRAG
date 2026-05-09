@@ -193,8 +193,8 @@ def test_parse_process_options_decodes_flags():
     assert opts.skip_kg and opts.chunking == "R"
     assert not opts.images and not opts.tables and not opts.equations
 
-    opts = parse_process_options("S")
-    assert opts.chunking == "S"
+    opts = parse_process_options("P")
+    assert opts.chunking == "P"
 
     opts = parse_process_options("")
     assert not (opts.images or opts.tables or opts.equations or opts.skip_kg)

@@ -100,9 +100,13 @@ MINERU_ENDPOINT=http://localhost:8000/api/v1/task
 DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 ```
 
+`legacy`内容提取引擎抽取的内容为`raw`格式，即仅保存在`full_docs`存储的`content`字段。`native` `mineru` `docling`内容提取引擎抽取的内容格式为`raw` + `lightrag`双格式，完整的内容以文件形式保存在 sidecar 目录，纯文本内容同时保存在`content`字段。
+
+lightrag
+
 ### 文件处理选项
 
-处理选项控制单个文件在多模态分析、知识图谱构建和文本分块上的行为。所有选项都是可选的；缺省值见下表。同一文件最多指定一种分块方式（`F` / `R` / `S`），其它选项可任意组合。
+处理选项控制单个文件在多模态分析、知识图谱构建和文本分块上的行为。所有选项都是可选的；缺省值见下表。同一文件最多指定一种分块方式（F/R/V/P），其它选项可任意组合。
 
 | 选项 | 类型 | 默认 | 含义 |
 | --- | --- | --- | --- |
@@ -113,9 +117,9 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | `F` | 分块 | 默认 | Fix/固定长度分块：遗留方法, 按固定Token长度或按分隔符机械分割（按分隔符分割时块不重叠） |
 | `R` | 分块 | - | Recursive/递归字符分块(RecursiveCharacterTextSplitter from LangChain)：接收一个分隔符列表（默认是 ["\n\n", "\n", " ", ""]）。它会优先尝试用双换行符切分（保留段落语义）；如果切出的块依然超过 Token 限制，才会降级使用单换行符，甚至空格。 |
 | `V` | 分块 | - | Vector/向量语义分块(SemanticChunker from LangChain)：它首先按句子拆分文本，计算相邻句子的 Embedding，然后根据指定的阈值策略（如百分位 percentile、标准差 standard_deviation 或四分位距 interquartile）寻找语义断层进行切分。 |
-| `P` | 分块 | - | Paragraph/段落语义分块（native）；优先按标题分割，文本块内容不重叠。如果一个标题下的文本太长，超出允许的文本块最大长度，则内部按照递归语义分块方式进行分拆。 |
+| `P` | 分块 | - | Paragraph/段落语义分块（native）；优先按标题分割，文本块内容不重叠。如果一个标题下的文本太长，超出允许的文本块最大长度，则内部按照递归语义分块方式进行分拆。此分块方只能运用在保存在sidecar目录的`lightrag`内容。如果`lightrag`内容不存在，将退化为使用`R`方法进行文本分块。 |
 
-> 多模态全局开关 `addon_params["enable_multimodal_pipeline"]` 已废弃，相关行为统一由文件级 `i` / `t` / `e` 选项控制。如启动配置仍包含该字段，会在日志输出 deprecation warning 并被忽略。
+> 多模态全局开关 `addon_params["enable_multimodal_pipeline"]` 已废弃，相关行为统一由文件级 `i/t/e` 选项控制。如启动配置仍包含该字段，会在日志输出 deprecation warning 并被忽略。
 
 ### 选项生效阶段
 
@@ -127,7 +131,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | ! | Extraction实体关系抽取 | 跳过实体/关系抽取与图谱写入；chunks 仍写入向量库以保留 naive / mix 检索能力。 |
 | F/R/V/P | Chunking文本分块 | 决定使用哪种分块策略；对解析阶段输出无影响。 |
 
-> 模态可用性以“sidecar 文件是否存在”为唯一信号，内容提取引擎不需要在 meta 中声明能力。某文档若没有任何图像/表格/公式，对应 sidecar 不会写入；用户即使开启了 `i`/`t`/`e`，对应模态也只会被静默跳过，但 `analyze_multimodal` 会在该篇文档落一行 INFO 级日志（`[analyze_multimodal] process_options opted into i:drawings ... but the parser produced no such sidecar`），便于排查“VLM 为何没跑”。这种情况不会报错。
+> 模态可用性以“sidecar 文件是否存在”为唯一信号，内容提取引擎不需要在 meta 中声明能力。某文档若没有任何图像/表格/公式，对应 sidecar 不会写入；用户即使开启了 `i/t/e`，对应模态也只会被静默跳过，但 `analyze_multimodal` 会在该篇文档落一行 INFO 级日志（`[analyze_multimodal] process_options opted into i:drawings ... but the parser produced no such sidecar`），便于排查“VLM 为何没跑”。这种情况不会报错。
 
 ### 校验、优先级与回退
 
@@ -136,10 +140,10 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 - 文件名 hint 的优先级高于 `LIGHTRAG_PARSER`。如果 hint 指定的引擎不支持该后缀，系统会回退到默认规则继续选择可用引擎。
 - 如果文件名 hint 提供了非空选项串，则以 hint 为准；否则使用 `LIGHTRAG_PARSER` 规则中匹配项的默认选项；都没有则使用全部默认。
 - 如果所有规则都不可用，文件内容提取方式会回退到 `legacy`；如果 `legacy` 也不支持对应的文件后缀，会向系统添加一个错误条目，上传文件保留在 `INPUT` 目录。
-- `F`/`R`/`S` 至多出现一个；同一选项重复时只生效一次但不报错。
-- 大小写敏感：分块选项 `F`/`R`/`S` 必须大写；其它选项 `i`/`t`/`e`/`!` 小写。
+- F/R/V/P至多出现一个；同一选项重复时只生效一次但不报错。
+- 大小写敏感：分块选项 F/R/V/P必须大写；其它选项 i/t/e小写。
 - 中括号内出现非法字符时，整个 hint 失效，引擎按默认规则解析，选项按 `LIGHTRAG_PARSER` 默认或全部默认；同时落日志 warning。
-- `S` 仅对 `native` 抽取出的 LightRAG Document 结构化结果有效；对 `legacy` 路径或非结构化输出会自动降级到 `F` 并记录 warning。
+- `P` 仅对 `native` 抽取出的 LightRAG Document 结构化结果有效；对 `legacy` 路径或非结构化输出会自动降级到 `F` 并记录 warning。
 
 ## 推荐配置
 
@@ -193,7 +197,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | `content_hash` | 内容 MD5，用于跨文件名查重。`parse_format=raw` 取 `sanitize_text_for_encoding` 后文本的 hash；`parse_format=lightrag` 取 `*.blocks.jsonl` 文件 hash；`parse_format=pending_parse` 不写入，待抽取完成后补上。 |
 | `lightrag_document_path` | `parse_format=lightrag` 时保存结构化 LightRAG Document 的路径；新记录优先保存为相对 `INPUT_DIR` 的路径，例如 `__parsed__/report.docx.parsed/report.blocks.jsonl`。注意路径中的子目录与 blocks 文件名都使用规范化 basename（不含 hint）。 |
 | `parse_engine` | 实际完成抽取的引擎：`legacy`, `native`, `mineru`, `docling`。对于待抽取文件，也可暂存目标引擎。 |
-| `process_options` | 入队时记录的原始处理选项串（不含引擎名和分隔 `-`），例如 `"iet"`、`"R!"`、`""`。下游各阶段以此字段为权威源，决定是否启用图像/表格/公式分析（`i`/`t`/`e`）、是否禁止知识图谱构建（`!`）以及分块方式（`F`/`R`/`S`）。空字符串等价于全部默认值。 |
+| `process_options` | 入队时记录的原始处理选项串（不含引擎名和分隔 `-`），例如 `"iet"`、`"R!"`、`""`。下游各阶段以此字段为权威源，决定是否启用图像/表格/公式分析（`i/t/e`）、是否禁止知识图谱构建（`!`）以及分块方式（`F/R/V/P`）。空字符串等价于全部默认值。 |
 
 `pending_parse` 表示文件已经入队，但还没有完成抽取。抽取成功后会改写为 `raw` 或 `lightrag`，并补齐 `content_hash`。抽取失败时保留 `pending_parse` 和空 `content`，便于后续排查和重试。
 
@@ -202,7 +206,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 
 ## 内容提取结果目录结构
 
-`__parsed__` 是输入目录旁的归档与分析结果目录。它同时保存已经处理过的原始文档，以及结构化解析产生的 LightRAG Document 文件和图片等资源。
+`__parsed__` 是输入目录旁的归档与分析结果目录。它同时保存已经处理过的原始文档，以及结构化解析产生的 LightRAG Document （lightrag格式）的文件和图片等资源。
 
 - 原始文件归档：`legacy` 本地抽取成功并入队后，原文件会移动到同级 `__parsed__` 目录；`native` / `mineru` / `docling` 会先保留原文件供 pipeline 解析，解析成功并写入 `full_docs` 后再移动到 `__parsed__`。**归档时保留原始文件名（含 `[hint]`）**，例如 `report.[native-iet].docx` 归档为 `__parsed__/report.[native-iet].docx`，便于追溯用户最初的命名与处理选项。
 - 分析结果目录：结构化解析结果会写入以**规范化文件名**（去掉 `[hint]`）加 `.parsed` 后缀命名的子目录，避免与归档原文件同名冲突，并保证当文件名 hint 或处理选项变化时同一逻辑文档继续指向同一目录。例如 `report.docx`、`report.[native].docx`、`report.[native-iet].docx` 的分析结果都写入 `__parsed__/report.docx.parsed/`。
@@ -382,4 +386,4 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 | 重新分块 | 按新 `process_options.chunking` 重跑（LightRAG Document path 用 native heading-driven，legacy path 用 fixed） |
 | 实体抽取 / KG-skip | 按新 `process_options.skip_kg` 决定 |
 
-> 这条规则保证：用户改 `i/t/e` 重传同名文档（先删旧 doc 再上传带新 hint 的文件）时，多模态分析能增量补齐；改 `F`/`R`/`S` 时 chunks 与图谱重建；改 `!` 时停掉或恢复 KG 构建。引擎变更被视为"重大变更"，统一由 delete + 重传完成，不在续跑路径里隐式发生。
+> 这条规则保证：用户改 `i/t/e` 重传同名文档（先删旧 doc 再上传带新 hint 的文件）时，多模态分析能增量补齐；改 `F/R/V/P` 时 chunks 与图谱重建；改 `!` 时停掉或恢复 KG 构建。引擎变更被视为"重大变更"，统一由 delete + 重传完成，不在续跑路径里隐式发生。

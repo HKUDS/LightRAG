@@ -17,7 +17,7 @@ guard the contract end-to-end:
 * T4: a raw document whose body coincidentally *looks* like structured
   JSONL is still tokenised as plain text — guards against re-introducing
   dropped structured-format detection in the raw path.
-* T5: ``process_options`` selecting R/S logs the deferred-strategy
+* T5: ``process_options`` selecting R/V/P logs the deferred-strategy
   warning and falls back to fixed-token chunking.
 * T6: a ``pending_parse`` document that resolves to lightrag at parse
   time ends up with a real ``content_summary`` after PROCESSED — the
@@ -395,7 +395,7 @@ def test_jsonl_shaped_raw_text_chunks_as_plain_text(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# T5 — R/S process_options trigger the deferred-strategy warning
+# T5 — R/V/P process_options trigger the deferred-strategy warning
 # ---------------------------------------------------------------------------
 
 
@@ -416,8 +416,8 @@ class _ListHandler(logging.Handler):
 
 
 @pytest.mark.offline
-def test_rs_chunking_warns_and_falls_back_to_fixed(tmp_path):
-    """``process_options=R`` (or ``S``) must log the
+def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path):
+    """``process_options=R`` (or ``V`` / ``P``) must log the
     ``not yet implemented`` warning and run F-chunking anyway."""
 
     async def _run():
@@ -431,7 +431,7 @@ def test_rs_chunking_warns_and_falls_back_to_fixed(tmp_path):
         lightrag_logger.addHandler(list_handler)
         try:
             await rag.apipeline_enqueue_documents(
-                "Body for R/S fallback test.",
+                "Body for R/V/P fallback test.",
                 file_paths="rs.[native-R].txt",
                 track_id="track-rs",
                 process_options="R",
@@ -441,14 +441,15 @@ def test_rs_chunking_warns_and_falls_back_to_fixed(tmp_path):
             lightrag_logger.removeHandler(list_handler)
             await rag.finalize_storages()
 
-        assert spy["calls"] >= 1, "R/S path should still call chunking_func (F)"
+        assert spy["calls"] >= 1, "R/V/P path should still call chunking_func (F)"
         warning_messages = [
             rec.getMessage()
             for rec in list_handler.records
             if rec.levelno == logging.WARNING
         ]
         assert any(
-            "R/S strategies are not yet implemented" in msg for msg in warning_messages
+            "R/V/P strategies are not yet implemented" in msg
+            for msg in warning_messages
         ), f"deferred-strategy warning missing; saw: {warning_messages!r}"
 
     asyncio.run(_run())

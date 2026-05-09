@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
@@ -18,12 +18,14 @@ from lightrag.constants import (
     PARSER_ENGINE_SUFFIX_CAPABILITIES,
     PROCESS_OPTION_CHUNK_CHARS,
     PROCESS_OPTION_CHUNK_FIXED,
-    PROCESS_OPTION_CHUNK_HEADING,
+    PROCESS_OPTION_CHUNK_VECTOR,
+    PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
     PROCESS_OPTION_EQUATIONS,
     PROCESS_OPTION_IMAGES,
     PROCESS_OPTION_SKIP_KG,
     PROCESS_OPTION_TABLES,
+    ProcessChunkingOption,
     SUPPORTED_PARSER_ENGINES,
     SUPPORTED_PROCESS_OPTIONS,
 )
@@ -52,7 +54,7 @@ def normalize_parser_engine(engine: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-file processing options (i/t/e/!/F/R/S)
+# Per-file processing options (i/t/e/!/F/R/V/P)
 # ---------------------------------------------------------------------------
 
 
@@ -70,7 +72,7 @@ class ProcessOptions:
     tables: bool = False
     equations: bool = False
     skip_kg: bool = False
-    chunking: Literal["F", "R", "S"] = PROCESS_OPTION_CHUNK_FIXED
+    chunking: ProcessChunkingOption = PROCESS_OPTION_CHUNK_FIXED
 
 
 _PROCESS_OPTION_DEFAULT = ProcessOptions()
@@ -108,7 +110,7 @@ def validate_process_options(
         errors.append(
             f"{label} specifies multiple chunking modes "
             f"({'/'.join(seen_chunkers)}); pick one of "
-            f"{PROCESS_OPTION_CHUNK_FIXED}/{PROCESS_OPTION_CHUNK_RECURSIVE}/{PROCESS_OPTION_CHUNK_HEADING}"
+            f"{PROCESS_OPTION_CHUNK_FIXED}/{PROCESS_OPTION_CHUNK_RECURSIVE}/{PROCESS_OPTION_CHUNK_VECTOR}/{PROCESS_OPTION_CHUNK_PARAGRAH}"
         )
     return errors
 
@@ -119,7 +121,7 @@ def parse_process_options(options: Any) -> ProcessOptions:
     if not raw:
         return _PROCESS_OPTION_DEFAULT
     chars = set(raw)
-    chunking: Literal["F", "R", "S"] = PROCESS_OPTION_CHUNK_FIXED
+    chunking: ProcessChunkingOption = PROCESS_OPTION_CHUNK_FIXED
     # Pick the first chunking selector encountered; validate_process_options
     # already filters duplicates upstream.
     for ch in raw:

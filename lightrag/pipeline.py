@@ -166,7 +166,7 @@ class _PipelineMixin:
             docs_format: "raw" (default) or "lightrag"; when "lightrag" content may be empty and content-dedup is skipped
             lightrag_document_paths: paths to LightRAG Document (e.g. .blocks.jsonl dir or base path), when docs_format is lightrag
             parse_engine: file extraction engine already used or target engine for pending_parse
-            process_options: per-document processing options string (i/t/e/!/F/R/S);
+            process_options: per-document processing options string (i/t/e/!/F/R/V/P);
                 accepted as a single string broadcast to every input or as a list
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
                 mirrored to ``doc_status.metadata['process_options']``.
@@ -1507,12 +1507,12 @@ class _PipelineMixin:
                     pipeline_status_lock=ctx.pipeline_status_lock,
                 )
 
-                # F-chunking only — R/S strategies are deferred.
+                # F-chunking only — R/V/P strategies are deferred.
                 if doc_process_opts.chunking != "F":
                     logger.warning(
                         f"[chunking] process_options chunking="
                         f"{doc_process_opts.chunking!r} requested for d-id: "
-                        f"{doc_id}, file: {file_path}, but R/S strategies are "
+                        f"{doc_id}, file: {file_path}, but R/V/P strategies are "
                         f"not yet implemented; falling back to fixed chunking "
                         f"('F')."
                     )

@@ -971,7 +971,7 @@ def split_long_block(
             "  1. Open the document in Microsoft Word\n"
             f'  2. Locate the section under heading "{preview}"\n'
             f"  3. Add short headings or paragraph breaks (≤{MAX_ANCHOR_CANDIDATE_LENGTH} chars) to divide the content\n"
-            "  4. Re-upload it to LightRAG"
+            "  4. Re-upload it to LightRAG",
         )
         sys.exit(1)
 

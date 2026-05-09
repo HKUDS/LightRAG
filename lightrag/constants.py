@@ -6,6 +6,8 @@ different parts of the LightRAG system. Centralizing these values ensures
 consistency and makes maintenance easier.
 """
 
+from typing import Literal, TypeAlias
+
 # Default values for server settings
 DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
@@ -174,17 +176,26 @@ PROCESS_OPTION_IMAGES = "i"  # Enable VLM analysis for drawings/images
 PROCESS_OPTION_TABLES = "t"  # Enable VLM analysis for tables
 PROCESS_OPTION_EQUATIONS = "e"  # Enable VLM analysis for equations
 PROCESS_OPTION_SKIP_KG = "!"  # Skip entity/relation extraction (no KG build)
-PROCESS_OPTION_CHUNK_FIXED = "F"  # Fixed-length / separator chunking (default)
-PROCESS_OPTION_CHUNK_RECURSIVE = (
-    "R"  # Recursive semantic chunking (currently aliased to F)
+ProcessChunkingOption: TypeAlias = Literal["F", "R", "V", "P"]
+PROCESS_OPTION_CHUNK_FIXED: ProcessChunkingOption = (
+    "F"  # Fixed-length / separator chunking (default)
 )
-PROCESS_OPTION_CHUNK_HEADING = "S"  # Heading-driven semantic chunking
+PROCESS_OPTION_CHUNK_RECURSIVE: ProcessChunkingOption = (
+    "R"  # Recursive semantic chunking
+)
+PROCESS_OPTION_CHUNK_VECTOR: ProcessChunkingOption = (
+    "V"  # Vector-driven semantic chunking
+)
+PROCESS_OPTION_CHUNK_PARAGRAH: ProcessChunkingOption = (
+    "P"  # Paragrah-driven semantic chunking
+)
 
-PROCESS_OPTION_CHUNK_CHARS = frozenset(
+PROCESS_OPTION_CHUNK_CHARS: frozenset[ProcessChunkingOption] = frozenset(
     {
         PROCESS_OPTION_CHUNK_FIXED,
         PROCESS_OPTION_CHUNK_RECURSIVE,
-        PROCESS_OPTION_CHUNK_HEADING,
+        PROCESS_OPTION_CHUNK_VECTOR,
+        PROCESS_OPTION_CHUNK_PARAGRAH,
     }
 )
 SUPPORTED_PROCESS_OPTIONS = frozenset(
@@ -195,7 +206,8 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
         PROCESS_OPTION_SKIP_KG,
         PROCESS_OPTION_CHUNK_FIXED,
         PROCESS_OPTION_CHUNK_RECURSIVE,
-        PROCESS_OPTION_CHUNK_HEADING,
+        PROCESS_OPTION_CHUNK_VECTOR,
+        PROCESS_OPTION_CHUNK_PARAGRAH,
     }
 )
 
