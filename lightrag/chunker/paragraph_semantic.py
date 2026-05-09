@@ -376,13 +376,18 @@ def _split_long_block(
     )
     target_size = total / target_blocks
 
-    # Build anchor candidates with cumulative token offsets.
+    # Build anchor candidates with cumulative token offsets. Index 0 is
+    # excluded: an anchor at the first paragraph yields an empty leading
+    # slice and a tail equal to the input, so it cannot divide the block —
+    # selecting it would re-enter this function with the same arguments
+    # and recurse until RecursionError.
     candidates: list[dict[str, Any]] = []
     cumulative = 0
     for idx, para in enumerate(paragraphs):
         text = para["text"]
         if (
-            not para.get("is_table", False)
+            idx > 0
+            and not para.get("is_table", False)
             and 0 < len(text) <= _MAX_ANCHOR_CANDIDATE_LENGTH
         ):
             candidates.append({"index": idx, "text": text, "position": cumulative})
