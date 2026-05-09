@@ -2084,6 +2084,7 @@ class _PipelineMixin:
             raise ValueError("MINERU_ENDPOINT is required for MinerU parsing")
         protocol = {
             "upload_url": endpoint,
+            "upload_field_name": os.getenv("MINERU_UPLOAD_FIELD_NAME", "file"),
             "poll_url_template": os.getenv(
                 "MINERU_POLL_ENDPOINT",
                 endpoint + "/{trace_id}",
@@ -2092,6 +2093,7 @@ class _PipelineMixin:
             "id_field": os.getenv("MINERU_ID_FIELD", "trace_id"),
             "status_field": os.getenv("MINERU_STATUS_FIELD", "status"),
             "result_url_field": os.getenv("MINERU_RESULT_URL_FIELD", "result_url"),
+            "result_url_template": os.getenv("MINERU_RESULT_URL_TEMPLATE", ""),
             "content_field": os.getenv("MINERU_CONTENT_FIELD", "content"),
             "success_values": os.getenv(
                 "MINERU_SUCCESS_VALUES",
@@ -2147,22 +2149,37 @@ class _PipelineMixin:
         endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
         if not endpoint:
             raise ValueError("DOCLING_ENDPOINT is required for Docling parsing")
+        # docling-serve mounts paths under a common base. Derive defaults for
+        # poll/result paths from the upload endpoint when the user only sets
+        # DOCLING_ENDPOINT, so out-of-the-box config matches the real spec
+        # (https://docling-project.github.io/docling-serve/usage/).
+        upload_suffix = "/v1/convert/file/async"
+        if endpoint.endswith(upload_suffix):
+            base = endpoint[: -len(upload_suffix)]
+            default_poll = base + "/v1/status/poll/{task_id}"
+            default_result_tpl = base + "/v1/result/{task_id}"
+        else:
+            default_poll = endpoint + "/{task_id}"
+            default_result_tpl = ""
         protocol = {
             "upload_url": endpoint,
-            "poll_url_template": os.getenv(
-                "DOCLING_POLL_ENDPOINT",
-                endpoint + "/{task_id}",
-            ),
+            "upload_field_name": os.getenv("DOCLING_UPLOAD_FIELD_NAME", "files"),
+            "poll_url_template": os.getenv("DOCLING_POLL_ENDPOINT", default_poll),
             "poll_method": os.getenv("DOCLING_POLL_METHOD", "GET"),
             "id_field": os.getenv("DOCLING_ID_FIELD", "task_id"),
-            "status_field": os.getenv("DOCLING_STATUS_FIELD", "status"),
+            "status_field": os.getenv("DOCLING_STATUS_FIELD", "task_status"),
             "result_url_field": os.getenv("DOCLING_RESULT_URL_FIELD", "result_url"),
+            "result_url_template": os.getenv(
+                "DOCLING_RESULT_URL_TEMPLATE", default_result_tpl
+            ),
             "content_field": os.getenv("DOCLING_CONTENT_FIELD", "content"),
             "success_values": os.getenv(
                 "DOCLING_SUCCESS_VALUES",
                 "done,success,succeeded,completed,finished",
             ),
-            "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error"),
+            "failed_values": os.getenv(
+                "DOCLING_FAILED_VALUES", "failed,failure,error"
+            ),
             "poll_interval_seconds": float(
                 os.getenv("DOCLING_POLL_INTERVAL_SECONDS", "2")
             ),
@@ -2224,7 +2241,9 @@ class _PipelineMixin:
         id_field = str(protocol.get("id_field", "id"))
         status_field = str(protocol.get("status_field", "status"))
         result_url_field = str(protocol.get("result_url_field", "result_url"))
+        result_url_tpl = str(protocol.get("result_url_template", "")).strip()
         content_field = str(protocol.get("content_field", "content"))
+        upload_field_name = str(protocol.get("upload_field_name", "file"))
         poll_url_tpl = str(protocol.get("poll_url_template", "")).strip()
         poll_method = str(protocol.get("poll_method", "GET")).upper()
         poll_interval = float(protocol.get("poll_interval_seconds", 2.0))
@@ -2248,7 +2267,8 @@ class _PipelineMixin:
         async with httpx.AsyncClient(timeout=timeout) as client:
             with open(file_path, "rb") as f:
                 resp = await client.post(
-                    upload_url, files={"file": (Path(file_path).name, f)}
+                    upload_url,
+                    files={upload_field_name: (Path(file_path).name, f)},
                 )
             if resp.status_code >= 400:
                 raise RuntimeError(
@@ -2279,6 +2299,10 @@ class _PipelineMixin:
 
                 if status_val in success_values:
                     result_url = get_by_path(poll_payload, result_url_field)
+                    if not result_url and result_url_tpl:
+                        result_url = result_url_tpl.format(
+                            task_id=task_id, trace_id=task_id, id=task_id
+                        )
                     if result_url:
                         dl = await client.get(str(result_url))
                         dl.raise_for_status()
