@@ -1288,39 +1288,58 @@ class SanitizingJSONEncoder(json.JSONEncoder):
 
 def write_json(json_obj, file_name):
     """
-    Write JSON data to file with optimized sanitization strategy.
+    Atomic + concurrency-safe JSON write.
 
-    This function uses a two-stage approach:
-    1. Fast path: Try direct serialization (works for clean data ~99% of time)
-    2. Slow path: Use custom encoder that sanitizes during serialization
+    Concurrency safety strategy (防止 doc_status.json 截断):
+    1. Write to <file>.tmp.<pid> first
+    2. fcntl LOCK_EX during write (cross-process advisory lock)
+    3. fsync to flush kernel buffer
+    4. os.replace() atomically swap into target path
+       (POSIX guarantees rename is atomic — no half-written state visible)
 
-    The custom encoder approach avoids creating a deep copy of the data,
-    making it memory-efficient. When sanitization occurs, the caller should
-    reload the cleaned data from the file to update shared memory.
-
-    Args:
-        json_obj: Object to serialize (may be a shallow copy from shared memory)
-        file_name: Output file path
+    Two-stage sanitization preserved from original implementation.
 
     Returns:
-        bool: True if sanitization was applied (caller should reload data),
-              False if direct write succeeded (no reload needed)
+        bool: True if sanitization was applied, False if direct write succeeded.
     """
+    import fcntl
+    import os as _os
+
+    tmp_name = f"{file_name}.tmp.{_os.getpid()}"
+
+    def _atomic_write(use_sanitizer: bool) -> None:
+        with open(tmp_name, "w", encoding="utf-8") as f:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # 进程间排他锁
+            except (OSError, AttributeError):
+                pass  # 系统不支持 flock 时降级（仍有原子 rename 保护）
+            if use_sanitizer:
+                json.dump(
+                    json_obj, f, indent=2, ensure_ascii=False,
+                    cls=SanitizingJSONEncoder,
+                )
+            else:
+                json.dump(json_obj, f, indent=2, ensure_ascii=False)
+            f.flush()
+            _os.fsync(f.fileno())
+        _os.replace(tmp_name, file_name)  # POSIX atomic rename
+
     try:
         # Strategy 1: Fast path - try direct serialization
-        with open(file_name, "w", encoding="utf-8") as f:
-            json.dump(json_obj, f, indent=2, ensure_ascii=False)
-        return False  # No sanitization needed, no reload required
-
+        _atomic_write(use_sanitizer=False)
+        return False
     except (UnicodeEncodeError, UnicodeDecodeError) as e:
         logger.debug(f"Direct JSON write failed, using sanitizing encoder: {e}")
+        # 清理 fast path 残留 tmp
+        try:
+            _os.remove(tmp_name)
+        except OSError:
+            pass
 
-    # Strategy 2: Use custom encoder (sanitizes during serialization, zero memory copy)
-    with open(file_name, "w", encoding="utf-8") as f:
-        json.dump(json_obj, f, indent=2, ensure_ascii=False, cls=SanitizingJSONEncoder)
-
+    # Strategy 2: Sanitizing encoder
+    _atomic_write(use_sanitizer=True)
     logger.info(f"JSON sanitization applied during write: {file_name}")
-    return True  # Sanitization applied, reload recommended
+    return True
 
 
 class TokenizerInterface(Protocol):
