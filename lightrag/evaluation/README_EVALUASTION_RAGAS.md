@@ -54,6 +54,15 @@ pip install -e ".[evaluation]"
 
 ### 2. Run Evaluation
 
+**Optional offline sample retrieval check (no API/model calls):**
+```bash
+python lightrag/evaluation/offline_retrieval_check.py --strict
+```
+
+This checks whether the bundled sample questions can lexically retrieve their
+expected sample documents before running LightRAG, embeddings, LLM calls, or
+RAGAS.
+
 **Basic usage (uses defaults):**
 ```bash
 cd /path/to/LightRAG
