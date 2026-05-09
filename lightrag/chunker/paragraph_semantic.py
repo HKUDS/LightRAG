@@ -416,26 +416,72 @@ def _split_long_block(
         cumulative += _count_tokens(tokenizer, text)
 
     if not candidates:
+        # All paragraphs in the block are longer than the anchor-length
+        # cap (typical for dense academic prose: every paragraph is a
+        # full body section).  Anchor-driven splitting cannot proceed,
+        # but we must NOT emit a single oversized chunk: the
+        # embedding-time hard fallback uses ``embedding_token_limit``
+        # (often 8K), not ``chunk_token_size``, so the chunk would
+        # silently exceed the user-configured size.  Defer to R
+        # (langchain RecursiveCharacterTextSplitter) for character-level
+        # splitting that respects ``target_max`` in tokens.  Sub-chunks
+        # inherit the heading hierarchy of the original block so KG
+        # extraction still has the document context.  Lazy import dodges
+        # the recursive_character ↔ paragraph_semantic circular
+        # dependency (same pattern as the sidecar-missing branch above).
         logger.warning(
             "[paragraph_semantic_chunking] block under heading %r exceeds "
             "target_max=%d tokens (~%d tokens) but has no eligible anchor "
-            "paragraph (≤ %d chars). Emitting as single oversized chunk; "
-            "the embedding-time hard fallback will tokenize-split as needed.",
+            "paragraph (≤ %d chars); falling back to recursive-character "
+            "splitting on this block.",
             heading,
             target_max,
             total,
             _MAX_ANCHOR_CANDIDATE_LENGTH,
         )
-        return [
-            _new_block(
-                heading=heading,
-                parent_headings=parent_headings,
-                level=level,
-                paragraphs=paragraphs,
-                table_chunk_role=table_chunk_role,
-                tokenizer=tokenizer,
+        from lightrag.chunker.recursive_character import (
+            chunking_by_recursive_character,
+        )
+
+        r_pieces = chunking_by_recursive_character(
+            tokenizer,
+            content,
+            target_max,
+            chunk_overlap_token_size=0,
+        )
+        if not r_pieces:
+            # Defensive: R produced nothing (e.g. whitespace-only after
+            # strip).  Emit the original oversized block so the document
+            # is never silently dropped.
+            return [
+                _new_block(
+                    heading=heading,
+                    parent_headings=parent_headings,
+                    level=level,
+                    paragraphs=paragraphs,
+                    table_chunk_role=table_chunk_role,
+                    tokenizer=tokenizer,
+                )
+            ]
+        sub_blocks: list[dict[str, Any]] = []
+        for i, piece in enumerate(r_pieces):
+            piece_text = piece.get("content", "")
+            if not piece_text:
+                continue
+            sub_blocks.append(
+                _new_block(
+                    heading=heading,
+                    parent_headings=parent_headings,
+                    level=level,
+                    paragraphs=[{"text": piece_text, "is_table": False}],
+                    # Only the first sub-block keeps the inbound
+                    # table_chunk_role; the rest are text-only by
+                    # construction (mirrors the anchor-split path below).
+                    table_chunk_role=table_chunk_role if i == 0 else "none",
+                    tokenizer=tokenizer,
+                )
             )
-        ]
+        return sub_blocks
 
     # Pick the anchors closest to evenly-spaced ideal positions.
     pool = list(candidates)

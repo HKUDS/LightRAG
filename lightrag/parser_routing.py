@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from lightrag.constants import (
+    DEFAULT_R_SEPARATORS,
+    DEFAULT_SENTENCE_SPLIT_REGEX,
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
@@ -220,8 +222,13 @@ def default_chunker_config() -> dict[str, Any]:
             ),
         },
         "recursive_character": {
+            # Default separators include CJK sentence-ending punctuation
+            # so Chinese / mixed-language documents split at semantic
+            # boundaries instead of falling through to character-level
+            # splitting.  See ``constants.DEFAULT_R_SEPARATORS`` for
+            # cascade order rationale.
             "separators": json.loads(
-                os.getenv("CHUNK_R_SEPARATORS", '["\\n\\n","\\n"," ",""]')
+                os.getenv("CHUNK_R_SEPARATORS", json.dumps(list(DEFAULT_R_SEPARATORS)))
             ),
         },
         "semantic_vector": {
@@ -232,6 +239,13 @@ def default_chunker_config() -> dict[str, Any]:
                 os.getenv("CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT")
             ),
             "buffer_size": int(os.getenv("CHUNK_V_BUFFER_SIZE", "1")),
+            # Default extends LangChain's English-only sentence splitter
+            # with CJK terminators so SemanticChunker can actually find
+            # sentence boundaries on Chinese input.  Override per
+            # deployment if you need a different language mix.
+            "sentence_split_regex": os.getenv(
+                "CHUNK_V_SENTENCE_SPLIT_REGEX", DEFAULT_SENTENCE_SPLIT_REGEX
+            ),
         },
         "paragraph_semantic": {},
     }
