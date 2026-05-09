@@ -71,7 +71,7 @@ _TABLE_CHUNK_SUFFIX_LABEL = "表格片段"
 #   <table id="tb-…" format="json"[ caption="…"]>{rows_json}</table>
 # blocks.jsonl invariants guarantee the tag has no embedded newlines.
 _TABLE_TAG_RE = re.compile(
-    r'<table\s+(?P<attrs>[^>]*)>(?P<body>.*?)</table>',
+    r"<table\s+(?P<attrs>[^>]*)>(?P<body>.*?)</table>",
     re.DOTALL,
 )
 
@@ -183,6 +183,9 @@ def _split_rows_by_tokens(
         math.ceil(total / target_ideal),
         math.ceil(total / target_max),
     )
+    # Cap at len(rows) so target_rows >= 1; otherwise int((i+1)*target_rows)
+    # can collapse to ``start`` and emit empty <table>[]</table> slices.
+    target_chunks = min(target_chunks, len(rows))
     target_rows = len(rows) / target_chunks
 
     chunks: list[list[Any]] = []
@@ -191,7 +194,9 @@ def _split_rows_by_tokens(
         if i == target_chunks - 1:
             end = len(rows)
         else:
-            end = min(int((i + 1) * target_rows), len(rows))
+            # max(start + 1, ...) guarantees forward progress (>= 1 row per
+            # slice) even at fractional target_rows boundaries.
+            end = max(start + 1, min(int((i + 1) * target_rows), len(rows)))
             remaining = len(rows) - end
             if remaining > 0 and remaining < target_rows * 0.3:
                 end = len(rows)
@@ -245,10 +250,19 @@ def _expand_block_with_table_splits(
 
     out: list[dict[str, Any]] = []
     cur_paras: list[dict[str, Any]] = []
+    # Role to assign to ``cur_paras`` when it next flushes. Tracks the
+    # boundary semantics across split-table iterations so the merged
+    # block carries "first" / "last" instead of defaulting to "none" —
+    # otherwise Stage D's directional protections (a "first" block must
+    # not absorb backward, a "last" block must not absorb forward) silently
+    # disappear after the slice glues with surrounding paragraphs.
+    cur_role = "none"
     table_split_counter = 0
 
-    def flush_cur(role: str = "none") -> None:
+    def flush_cur() -> None:
+        nonlocal cur_role
         if not cur_paras:
+            cur_role = "none"
             return
         out.append(
             _new_block(
@@ -256,11 +270,12 @@ def _expand_block_with_table_splits(
                 parent_headings=block["parent_headings"],
                 level=block["level"],
                 paragraphs=cur_paras,
-                table_chunk_role=role,
+                table_chunk_role=cur_role,
                 tokenizer=tokenizer,
             )
         )
         cur_paras.clear()
+        cur_role = "none"
 
     for para in paragraphs:
         text = para["text"]
@@ -297,14 +312,21 @@ def _expand_block_with_table_splits(
             if is_first:
                 # First slice glues with everything currently accumulated
                 # (= the paragraphs that appeared before the table inside
-                # this heading block).
+                # this heading block). If the buffer still carries the
+                # "last" tail of a previous oversized table, flush it first
+                # so its protective role survives instead of being
+                # overwritten by "first".
+                if cur_role == "last":
+                    flush_cur()
                 cur_paras.append(chunk_para)
+                cur_role = "first"
             elif is_last:
                 # Flush the accumulated "first-glued" block, then begin a
                 # new accumulation seeded with this last slice — it will
                 # absorb the paragraphs that appear after the table.
                 flush_cur()
                 cur_paras.append(chunk_para)
+                cur_role = "last"
             else:
                 # Middle slice: flush the first-glued block, then emit
                 # this middle slice as a standalone block that Stage D
@@ -376,13 +398,18 @@ def _split_long_block(
     )
     target_size = total / target_blocks
 
-    # Build anchor candidates with cumulative token offsets.
+    # Build anchor candidates with cumulative token offsets. Index 0 is
+    # excluded: an anchor at the first paragraph yields an empty leading
+    # slice and a tail equal to the input, so it cannot divide the block —
+    # selecting it would re-enter this function with the same arguments
+    # and recurse until RecursionError.
     candidates: list[dict[str, Any]] = []
     cumulative = 0
     for idx, para in enumerate(paragraphs):
         text = para["text"]
         if (
-            not para.get("is_table", False)
+            idx > 0
+            and not para.get("is_table", False)
             and 0 < len(text) <= _MAX_ANCHOR_CANDIDATE_LENGTH
         ):
             candidates.append({"index": idx, "text": text, "position": cumulative})
@@ -567,11 +594,8 @@ def _merge_small_blocks(
 
                     if _can_merge_forward(cur_role, phase="A") and i + 1 < len(result):
                         nxt = result[i + 1]
-                        if (
-                            nxt.get("level", 1) == current_level
-                            and _can_merge_backward(
-                                nxt.get("table_chunk_role", "none")
-                            )
+                        if nxt.get("level", 1) == current_level and _can_merge_backward(
+                            nxt.get("table_chunk_role", "none")
                         ):
                             combined = _merged_pair(
                                 cur, nxt, keep="left", tokenizer=tokenizer
@@ -582,11 +606,7 @@ def _merge_small_blocks(
                                 changed = True
                                 merged = True
 
-                    if (
-                        not merged
-                        and _can_merge_backward(cur_role)
-                        and new_result
-                    ):
+                    if not merged and _can_merge_backward(cur_role) and new_result:
                         prev = new_result[-1]
                         if (
                             prev.get("level", 1) == current_level
@@ -674,11 +694,8 @@ def _merge_small_blocks(
 
                     if _can_merge_forward(cur_role, phase="B") and i + 1 < len(result):
                         nxt = result[i + 1]
-                        if (
-                            nxt.get("level", 1) > current_level
-                            and _can_merge_backward(
-                                nxt.get("table_chunk_role", "none")
-                            )
+                        if nxt.get("level", 1) > current_level and _can_merge_backward(
+                            nxt.get("table_chunk_role", "none")
                         ):
                             combined = _merged_pair(
                                 cur, nxt, keep="left", tokenizer=tokenizer
@@ -689,11 +706,7 @@ def _merge_small_blocks(
                                 changed = True
                                 merged = True
 
-                    if (
-                        not merged
-                        and _can_merge_backward(cur_role)
-                        and new_result
-                    ):
+                    if not merged and _can_merge_backward(cur_role) and new_result:
                         prev = new_result[-1]
                         if (
                             prev.get("level", 1) < current_level
