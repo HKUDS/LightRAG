@@ -96,8 +96,8 @@ api = [
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
     "defusedxml>=0.7.0,<1.0.0",    # Safer XML parser used by native_parser/docx
     # Chunking strategies (process_options=R / V); lazy-imported by lightrag.chunker
-    "langchain-text-splitters>=0.3",
-    "langchain-experimental>=0.3",
+    "langchain-text-splitters>=0.3,<2",
+    "langchain-experimental>=0.3,<1",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
