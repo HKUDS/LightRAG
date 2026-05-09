@@ -65,6 +65,33 @@ def _sanitize_index_name(name: str) -> str:
     return sanitized
 
 
+def _extract_bulk_failed_ids(failed: list[Any] | None) -> set[str]:
+    """Extract document _id values from an opensearch-py bulk ``failed`` list.
+
+    ``async_bulk(raise_on_error=False)`` returns ``(success, failed)`` where
+    ``failed`` is a list of per-action error dicts shaped like::
+
+        {"index": {"_id": "...", "status": 409, "error": {...}}}
+        {"delete": {"_id": "...", "status": 404, ...}}
+
+    The exact key depends on the action's ``_op_type``. This helper iterates
+    the list and collects every nested ``_id`` it finds. Unrecognised entries
+    are skipped silently so a malformed item never crashes the flush path.
+    """
+    if not failed:
+        return set()
+    failed_ids: set[str] = set()
+    for entry in failed:
+        if not isinstance(entry, dict):
+            continue
+        for op_payload in entry.values():
+            if isinstance(op_payload, dict):
+                doc_id = op_payload.get("_id")
+                if isinstance(doc_id, str):
+                    failed_ids.add(doc_id)
+    return failed_ids
+
+
 # Detected at first connection; True when OpenSearch >= 3.3.0.
 _shard_doc_supported: bool | None = None
 
@@ -2630,6 +2657,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
         self.cosine_better_than_threshold = cosine_threshold
         self._max_batch_size = self.global_config["embedding_batch_num"]
+        # Pending writes are flushed via _flush_pending_vector_ops() during
+        # index_done_callback() / finalize(). This batches many small upsert()
+        # invocations into a single async_bulk roundtrip. See issue #2785.
+        self._pending_vector_docs: dict[str, dict[str, Any]] = {}
+        self._pending_vector_deletes: set[str] = set()
+        self._flush_lock = asyncio.Lock()
 
     async def initialize(self):
         """Initialize client and create k-NN vector index."""
@@ -2740,17 +2773,29 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
     async def finalize(self):
         """Release the OpenSearch client connection."""
-        if self.client is not None:
-            await ClientManager.release_client(self.client)
-            self.client = None
+        try:
+            await self._flush_pending_vector_ops()
+        finally:
+            if self.client is not None:
+                await ClientManager.release_client(self.client)
+                self.client = None
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Generate embeddings and upsert vectors in batches."""
+        """Generate embeddings and buffer vector docs for batched flush.
+
+        Docs are buffered in ``self._pending_vector_docs`` and flushed in a
+        single ``async_bulk`` call during ``index_done_callback()`` /
+        ``finalize()``. This is a behavioral change relative to per-call
+        ``async_bulk``: writes are not durable in OpenSearch until the next
+        flush, which matches the contract used by other LightRAG storage
+        backends ("changes will be persisted during the next
+        index_done_callback").
+        """
         if not data:
             return
         await self._ensure_index_ready()
         logger.debug(
-            f"[{self.workspace}] Upserting {len(data)} vectors to {self.namespace}"
+            f"[{self.workspace}] Buffering {len(data)} vectors for {self.namespace}"
         )
         current_time = int(time.time())
 
@@ -2781,30 +2826,80 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             doc["vector"] = embeddings[i - 1].tolist()
             await _cooperative_yield(i)
 
-        actions = []
-        for i, doc in enumerate(list_data, start=1):
-            actions.append(
-                {
-                    "_op_type": "index",
-                    "_index": self._index_name,
-                    "_id": doc["_id"],
-                    "_source": {k: v for k, v in doc.items() if k != "_id"},
-                }
-            )
-            await _cooperative_yield(i)
-        try:
-            # No per-operation refresh: immediate reads use ID-based mget (translog),
-            # k-NN search visibility is guaranteed after index_done_callback() batch refresh.
-            success, failed = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False
-            )
-            if failed:
-                logger.warning(
-                    f"[{self.workspace}] {len(failed)} vectors failed to upsert"
+        # Buffer: an upsert overrides a pending delete on the same id.
+        for doc in list_data:
+            doc_id = doc["_id"]
+            self._pending_vector_deletes.discard(doc_id)
+            self._pending_vector_docs[doc_id] = {
+                k: v for k, v in doc.items() if k != "_id"
+            }
+
+    async def _flush_pending_vector_ops(self) -> None:
+        """Flush buffered vector upserts and deletes via a single async_bulk call.
+
+        Returns silently when there is nothing to flush. On failure the
+        buffers are preserved so the next flush can retry.
+        """
+        async with self._flush_lock:
+            if not self._pending_vector_docs and not self._pending_vector_deletes:
+                return
+            if self.client is None:
+                return
+            await self._ensure_index_ready()
+
+            actions: list[dict[str, Any]] = []
+            for doc_id in self._pending_vector_deletes:
+                actions.append(
+                    {
+                        "_op_type": "delete",
+                        "_index": self._index_name,
+                        "_id": doc_id,
+                    }
                 )
-        except OpenSearchException as e:
-            logger.error(f"[{self.workspace}] Error upserting vectors: {e}")
-            raise
+            for doc_id, source in self._pending_vector_docs.items():
+                actions.append(
+                    {
+                        "_op_type": "index",
+                        "_index": self._index_name,
+                        "_id": doc_id,
+                        "_source": source,
+                    }
+                )
+
+            pending_upsert_count = len(self._pending_vector_docs)
+            pending_delete_count = len(self._pending_vector_deletes)
+            try:
+                # No per-operation refresh: search visibility is established by
+                # the refresh in index_done_callback().
+                success, failed = await helpers.async_bulk(
+                    self.client, actions, raise_on_error=False
+                )
+            except OpenSearchException as e:
+                logger.error(
+                    f"[{self.workspace}] Error flushing vector ops "
+                    f"(upserts={pending_upsert_count}, deletes={pending_delete_count}): {e}"
+                )
+                raise
+
+            failed_ids = _extract_bulk_failed_ids(failed)
+            if failed_ids:
+                logger.warning(
+                    f"[{self.workspace}] {len(failed_ids)} vector ops failed to flush; "
+                    f"will retry on next flush"
+                )
+
+            # Preserve only failed entries so the next flush can retry them;
+            # successfully flushed ops are dropped from the buffers.
+            self._pending_vector_docs = {
+                k: v for k, v in self._pending_vector_docs.items() if k in failed_ids
+            }
+            self._pending_vector_deletes = {
+                k for k in self._pending_vector_deletes if k in failed_ids
+            }
+            logger.debug(
+                f"[{self.workspace}] Flushed vector ops: {success} ok, "
+                f"{len(failed_ids)} failed"
+            )
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
@@ -2859,9 +2954,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             return []
 
     async def index_done_callback(self) -> None:
-        """Refresh index to make recently indexed vectors searchable."""
+        """Flush pending vector ops and refresh the index for k-NN visibility."""
         if not self._index_ready:
             return
+        await self._flush_pending_vector_ops()
         try:
             await self.client.indices.refresh(index=self._index_name)
         except OpenSearchException as e:
@@ -2872,7 +2968,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             pass
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        """Get a vector document by ID."""
+        """Get a vector document by ID, with read-your-writes against the buffer."""
+        if id in self._pending_vector_deletes:
+            return None
+        pending = self._pending_vector_docs.get(id)
+        if pending is not None:
+            doc = {k: v for k, v in pending.items() if k != "vector"}
+            doc["id"] = id
+            return doc
         if not self._index_ready:
             return None
         try:
@@ -2890,38 +2993,73 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get multiple vector documents by IDs, preserving order."""
+        """Get multiple vector documents by IDs (read-your-writes), preserving order."""
         if not ids:
             return []
-        if not self._index_ready:
-            return [None] * len(ids)
-        try:
-            response = await self.client.mget(index=self._index_name, body={"ids": ids})
-            doc_map = {}
-            for doc in response["docs"]:
-                if doc.get("found"):
-                    data = doc["_source"]
-                    data["id"] = doc["_id"]
-                    doc_map[doc["_id"]] = data
-            return [doc_map.get(id) for id in ids]
-        except OpenSearchException as e:
-            if _is_missing_index_error(e):
-                self._mark_index_missing()
-                return [None] * len(ids)
-            logger.error(f"[{self.workspace}] Error getting vectors by ids: {e}")
-            return [None] * len(ids)
+        # Resolve from buffer first; remaining ids fall through to OpenSearch.
+        buffered: dict[str, dict[str, Any] | None] = {}
+        remaining: list[str] = []
+        for doc_id in ids:
+            if doc_id in self._pending_vector_deletes:
+                buffered[doc_id] = None
+                continue
+            pending = self._pending_vector_docs.get(doc_id)
+            if pending is not None:
+                doc = {k: v for k, v in pending.items() if k != "vector"}
+                doc["id"] = doc_id
+                buffered[doc_id] = doc
+                continue
+            remaining.append(doc_id)
+
+        doc_map: dict[str, dict[str, Any] | None] = {}
+        if remaining and self._index_ready:
+            try:
+                response = await self.client.mget(
+                    index=self._index_name, body={"ids": remaining}
+                )
+                for doc in response["docs"]:
+                    if doc.get("found"):
+                        data = doc["_source"]
+                        data["id"] = doc["_id"]
+                        doc_map[doc["_id"]] = data
+            except OpenSearchException as e:
+                if _is_missing_index_error(e):
+                    self._mark_index_missing()
+                else:
+                    logger.error(
+                        f"[{self.workspace}] Error getting vectors by ids: {e}"
+                    )
+
+        return [
+            buffered[doc_id] if doc_id in buffered else doc_map.get(doc_id)
+            for doc_id in ids
+        ]
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
-        """Get only the vector embeddings for given IDs."""
+        """Get vector embeddings for given IDs, with read-your-writes."""
         if not ids:
             return {}
+        result: dict[str, list[float]] = {}
+        remaining: list[str] = []
+        for doc_id in ids:
+            if doc_id in self._pending_vector_deletes:
+                continue
+            pending = self._pending_vector_docs.get(doc_id)
+            if pending is not None and "vector" in pending:
+                result[doc_id] = pending["vector"]
+                continue
+            remaining.append(doc_id)
+
+        if not remaining:
+            return result
         if not self._index_ready:
-            return {}
+            return result
         try:
             response = await self.client.mget(
-                index=self._index_name, body={"ids": ids}, _source_includes=["vector"]
+                index=self._index_name,
+                body={"ids": remaining},
+                _source_includes=["vector"],
             )
-            result = {}
             for doc in response["docs"]:
                 if doc.get("found") and "vector" in doc.get("_source", {}):
                     result[doc["_id"]] = doc["_source"]["vector"]
@@ -2929,63 +3067,54 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
-                return {}
+                return result
             logger.error(f"[{self.workspace}] Error getting vectors: {e}")
-            return {}
+            return result
 
     async def delete(self, ids: list[str]) -> None:
-        """Delete vectors by their IDs."""
+        """Buffer vector deletes for batched flush.
+
+        A delete cancels any pending upsert for the same id; the actual bulk
+        delete is performed by ``_flush_pending_vector_ops`` during the next
+        ``index_done_callback`` / ``finalize`` call.
+        """
         if not ids:
-            return
-        if not self._index_ready:
             return
         if isinstance(ids, set):
             ids = list(ids)
-        try:
-            # No per-operation refresh: search visibility after index_done_callback().
-            actions = [
-                {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
-                for doc_id in ids
-            ]
-            result = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False
-            )
-            logger.debug(
-                f"[{self.workspace}] Deleted {result[0]} vectors from {self.namespace}"
-            )
-        except OpenSearchException as e:
-            if _is_missing_index_error(e):
-                self._mark_index_missing()
-                return
-            logger.error(f"[{self.workspace}] Error deleting vectors: {e}")
+        for doc_id in ids:
+            self._pending_vector_docs.pop(doc_id, None)
+            self._pending_vector_deletes.add(doc_id)
+        logger.debug(
+            f"[{self.workspace}] Buffered delete for {len(ids)} vectors in {self.namespace}"
+        )
 
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete an entity vector by computing its hash ID."""
-        if not self._index_ready:
-            return
-        try:
-            # No per-operation refresh: search visibility after index_done_callback().
-            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            try:
-                await self.client.delete(index=self._index_name, id=entity_id)
-                logger.debug(f"[{self.workspace}] Deleted entity {entity_name}")
-            except NotFoundError as e:
-                if _is_missing_index_error(e):
-                    self._mark_index_missing()
-                    return
-                logger.debug(f"[{self.workspace}] Entity {entity_name} not found")
-        except OpenSearchException as e:
-            if _is_missing_index_error(e):
-                self._mark_index_missing()
-                return
-            logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
+        """Buffer an entity vector delete by computing its hash ID."""
+        entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+        self._pending_vector_docs.pop(entity_id, None)
+        self._pending_vector_deletes.add(entity_id)
+        logger.debug(f"[{self.workspace}] Buffered delete for entity {entity_name}")
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete all relation vectors where entity appears as src or tgt."""
+        """Delete all relation vectors where entity appears as src or tgt.
+
+        Pending buffered upserts that match are pruned in-memory; persisted
+        rows are removed via the server-side ``delete_by_query``. Other
+        unrelated buffered writes are left in place and will flush normally
+        on the next ``index_done_callback``.
+        """
+        # Prune matching docs from the pending upsert buffer.
+        for doc_id in [
+            k
+            for k, v in self._pending_vector_docs.items()
+            if v.get("src_id") == entity_name or v.get("tgt_id") == entity_name
+        ]:
+            self._pending_vector_docs.pop(doc_id, None)
+
         if not self._index_ready:
             return
         try:
-            # No per-operation refresh: search visibility after index_done_callback().
             body = {
                 "query": {
                     "bool": {
@@ -3012,7 +3141,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
 
     async def drop(self) -> dict[str, str]:
-        """Delete and recreate the vector index."""
+        """Delete and recreate the vector index, discarding pending buffers."""
+        # Pending writes are meaningless once the index is dropped.
+        self._pending_vector_docs.clear()
+        self._pending_vector_deletes.clear()
         try:
             try:
                 await self.client.indices.delete(index=self._index_name)
