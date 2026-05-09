@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG, ROLES, RoleLLMConfig
+from lightrag.constants import DEFAULT_R_SEPARATORS
 from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
 
 
@@ -618,8 +619,8 @@ def test_runtime_addon_params_mutation_affects_subsequent_enqueue(tmp_path):
 
     sep_pre, row_post = asyncio.run(_run())
 
-    # Pre-mutation doc keeps the original LangChain default cascade.
-    assert sep_pre == ["\n\n", "\n", " ", ""]
+    # Pre-mutation doc keeps the env-driven default cascade.
+    assert sep_pre == list(DEFAULT_R_SEPARATORS)
     # Post-mutation doc reflects the runtime change.
     assert row_post["chunk_options"]["recursive_character"]["separators"] == [
         "##",

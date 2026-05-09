@@ -43,12 +43,15 @@ def test_split_long_block_short_lead_then_huge_does_not_recurse():
         target_ideal=750,
     )
 
-    # Falls through to the "no eligible anchor" branch and emits the
-    # oversized block as a single chunk; the embedding-time hard fallback
-    # is responsible for tokenize-splitting it down.
-    assert len(blocks) == 1
-    assert blocks[0]["paragraphs"] == paragraphs
-    assert blocks[0]["tokens"] > 1000
+    # Falls through to the "no eligible anchor" branch and now defers to
+    # recursive-character splitting so ``target_max`` is honored without
+    # relying on the embedding-time hard fallback (which uses a different
+    # threshold).  The original recursion-guard contract still holds: the
+    # function returns a finite list rather than recursing forever.
+    assert len(blocks) > 1
+    assert all(b["tokens"] <= 1000 for b in blocks)
+    # Heading hierarchy is preserved on every R-derived sub-block.
+    assert all(b["heading"] == "Heading" for b in blocks)
 
 
 @pytest.mark.offline

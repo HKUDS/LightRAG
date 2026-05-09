@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
 from lightrag.utils import EmbeddingFunc, Tokenizer, logger
 
 try:
@@ -86,15 +87,17 @@ async def chunking_by_semantic_vector(
     breakpoint_threshold_type: str = "percentile",
     breakpoint_threshold_amount: float | None = None,
     buffer_size: int = 1,
+    sentence_split_regex: str = DEFAULT_SENTENCE_SPLIT_REGEX,
 ) -> list[dict[str, Any]]:
     """Semantic vector chunker — the ``"V"`` chunking strategy.
 
     Args:
         tokenizer: LightRAG tokenizer (used for output token counts).
         content: Text to split.
-        chunk_token_size: Advisory cap (tokens). SemanticChunker does NOT
-            enforce a maximum; oversized chunks are hard-split before
-            embedding by ``enforce_chunk_token_limit_before_embedding``.
+        chunk_token_size: Hard upper bound (tokens). SemanticChunker does
+            NOT enforce a maximum natively, so any piece that exceeds
+            this value is re-split via
+            :func:`chunking_by_recursive_character` before being emitted.
         embedding_func: LightRAG :class:`EmbeddingFunc`. When ``None``
             this chunker logs a warning and falls back to
             :func:`chunking_by_recursive_character`.
@@ -105,6 +108,11 @@ async def chunking_by_semantic_vector(
             LangChain pick the per-type default (e.g. 95 for percentile).
         buffer_size: Number of adjacent sentences combined when computing
             distances (LangChain default: 1).
+        sentence_split_regex: Pattern fed to LangChain's
+            :class:`SemanticChunker` for the initial sentence split.
+            Default extends the upstream English-only pattern with
+            Chinese sentence terminators ``。？！`` so mixed-language and
+            pure-Chinese inputs split correctly.
 
     Returns:
         Ordered list of ``{"tokens", "content", "chunk_order_index"}``
@@ -148,6 +156,7 @@ async def chunking_by_semantic_vector(
         "embeddings": adapter,
         "buffer_size": int(buffer_size),
         "breakpoint_threshold_type": breakpoint_threshold_type,
+        "sentence_split_regex": sentence_split_regex,
     }
     if breakpoint_threshold_amount is not None:
         chunker_kwargs["breakpoint_threshold_amount"] = float(
@@ -157,16 +166,52 @@ async def chunking_by_semantic_vector(
     splitter = SemanticChunker(**chunker_kwargs)
     pieces = await asyncio.to_thread(splitter.split_text, content)
 
+    # SemanticChunker has no internal size cap; oversized pieces here
+    # would otherwise rely on the embedding-time hard fallback (which
+    # uses ``embedding_token_limit``, not ``chunk_token_size``) to split
+    # them.  Enforce ``chunk_token_size`` directly via R for any piece
+    # that exceeds it so the user-configured size is actually honored.
+    # Lazy import dodges the recursive_character ↔ semantic_vector
+    # circular dependency (same pattern as the embedding-None fallback
+    # above).
+    from lightrag.chunker.recursive_character import (
+        chunking_by_recursive_character,
+    )
+
+    target_max = max(int(chunk_token_size), 1)
     results: list[dict[str, Any]] = []
     for piece in pieces:
         body = piece.strip()
         if not body:
             continue
-        results.append(
-            {
-                "tokens": len(tokenizer.encode(body)),
-                "content": body,
-                "chunk_order_index": len(results),
-            }
+        piece_tokens = len(tokenizer.encode(body))
+        if piece_tokens <= target_max:
+            results.append(
+                {
+                    "tokens": piece_tokens,
+                    "content": body,
+                    "chunk_order_index": len(results),
+                }
+            )
+            continue
+        # Oversized semantic piece: re-split via R while preserving the
+        # surrounding chunk order.  ``chunk_overlap_token_size=0`` keeps
+        # V's non-overlapping semantics.
+        sub_pieces = chunking_by_recursive_character(
+            tokenizer,
+            body,
+            target_max,
+            chunk_overlap_token_size=0,
         )
+        for sub in sub_pieces:
+            sub_body = sub.get("content", "")
+            if not sub_body:
+                continue
+            results.append(
+                {
+                    "tokens": sub.get("tokens", len(tokenizer.encode(sub_body))),
+                    "content": sub_body,
+                    "chunk_order_index": len(results),
+                }
+            )
     return results

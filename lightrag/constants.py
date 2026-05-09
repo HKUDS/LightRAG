@@ -80,6 +80,34 @@ DEFAULT_TEMPERATURE = 1.0
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations
 DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
 
+# Chunker defaults — i18n-aware so Chinese / mixed-language documents
+# split correctly out of the box.  Override per deployment via
+# CHUNK_R_SEPARATORS / CHUNK_V_SENTENCE_SPLIT_REGEX env vars.
+#
+# DEFAULT_R_SEPARATORS: cascade tried by langchain RecursiveCharacterTextSplitter.
+# Order matters — strongest boundary first: paragraph (\n\n) > line (\n) >
+# Chinese sentence-end (。！？) > Chinese semi-clause (；，) > space > char.
+# English sentence-ending punctuation (.?!) is intentionally NOT included
+# because RecursiveCharacterTextSplitter does literal-string splitting, so
+# "." would also split numerals (``0.95``) and abbreviations (``e.g.``).
+# The English path falls through space / char as before.
+DEFAULT_R_SEPARATORS: tuple[str, ...] = (
+    "\n\n",
+    "\n",
+    "。",
+    "！",
+    "？",
+    "；",
+    "，",
+    " ",
+    "",
+)
+# DEFAULT_SENTENCE_SPLIT_REGEX: pattern fed to langchain SemanticChunker.
+# Two alternates so the English branch keeps its ``\s+`` requirement
+# (avoiding ``0.95`` mid-token splits) while the Chinese branch matches
+# bare ``。？！`` (CJK has no inter-sentence whitespace).
+DEFAULT_SENTENCE_SPLIT_REGEX = r"(?<=[.?!])\s+|(?<=[。？！])"
+
 # LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]
 FULL_DOCS_FORMAT_LIGHTRAG = "lightrag"  # content in LightRAG Document files
