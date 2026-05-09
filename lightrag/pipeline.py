@@ -1661,10 +1661,7 @@ class _PipelineMixin:
                         p_blocks_path = (
                             str(parsed_data.get("blocks_path") or "").strip() or None
                         )
-                        chunk_opts_str = _format_chunking_params(
-                            p_chunk_size,
-                            {**p_opts, "blocks_path": p_blocks_path},
-                        )
+                        chunk_opts_str = _format_chunking_params(p_chunk_size, p_opts)
                         logger.info(f"Chunking P: {chunk_opts_str}, file: {file_path}")
                         chunking_result = chunking_by_paragraph_semantic(
                             self.tokenizer,
