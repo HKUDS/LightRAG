@@ -245,6 +245,15 @@ def default_chunker_config() -> dict[str, Any]:
     if r_overlap_raw is not None:
         config["recursive_character"]["chunk_overlap_token_size"] = int(r_overlap_raw)
 
+    # P strategy carries its own ``chunk_token_size`` override so the
+    # paragraph-semantic merge target can diverge from the global
+    # ``CHUNK_SIZE`` (e.g. heading-aligned chunks may want a larger
+    # ceiling).  Slot is left absent when unset; the dispatcher falls
+    # back to the top-level ``chunk_token_size`` resolved by overlay.
+    p_size_raw = os.getenv("CHUNK_P_SIZE")
+    if p_size_raw is not None:
+        config["paragraph_semantic"]["chunk_token_size"] = int(p_size_raw)
+
     return config
 
 

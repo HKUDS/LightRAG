@@ -200,7 +200,9 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
     "breakpoint_threshold_amount": null,                      // null = LangChain 默认
     "buffer_size": 1
   },
-  "paragraph_semantic": {}                                    // P 当前无 user-tunable knob
+  "paragraph_semantic": {                                     // P 专属
+    "chunk_token_size": 3000                                  // 不写沿用通用设置，建议设置大一些的分块大小
+  }
 }
 ```
 
@@ -222,8 +224,9 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 | `CHUNK_V_BREAKPOINT_THRESHOLD_TYPE` | `percentile` | str | V 阈值类型；可选 `percentile` / `standard_deviation` / `interquartile` / `gradient` |
 | `CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT` | （未设 = `null`） | float? | V 阈值大小；`null` 让 LangChain 按类型自选默认（如 percentile=95） |
 | `CHUNK_V_BUFFER_SIZE` | `1` | int | V 句子缓冲窗，距离计算时合并的相邻句数 |
+| `CHUNK_P_SIZE` | 未设 | int | P strategy 特定 `chunk_token_size`；高于顶层 legacy 兜底（`LightRAG(chunk_token_size=…)` / `CHUNK_SIZE`）。未设时 P 沿用顶层解析结果 |
 
-P 暂不暴露 env 变量；其内部比例常量是算法刻度，会随 `chunk_token_size` 自动按比例推导。
+P 的内部比例常量是算法刻度，会随 `chunk_token_size` 自动按比例推导；通过设置 `CHUNK_P_SIZE` 可让 P 用独立的 `chunk_token_size`，避免共享 `CHUNK_SIZE` 时被其他策略的偏好（如 F 偏小）拖累。
 
 `LightRAG.ainsert(split_by_character=…, split_by_character_only=…)` 的运行时参数在入队时由 `resolve_chunk_options` 覆写到 `chunk_options.fixed_token`：`split_by_character` 非 `None` 即覆盖 env 默认；`split_by_character_only=True` 即覆盖（`False` 是签名默认值，与"未指定"无法区分，所以 env 默认胜出）。
 

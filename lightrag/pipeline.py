@@ -1605,15 +1605,26 @@ class _PipelineMixin:
 
                     strategy = doc_process_opts.chunking
                     if strategy == "P":
+                        # P carries its own optional ``chunk_token_size``
+                        # override (CHUNK_P_SIZE env or
+                        # ``addon_params['chunker']['paragraph_semantic']``);
+                        # pop it out of the kwargs so we don't pass it
+                        # both positionally and via ``**`` splat (which
+                        # would TypeError).  Fall back to the shared
+                        # top-level resolved size when unset.
+                        p_opts = dict(chunk_opts.get("paragraph_semantic") or {})
+                        p_chunk_size = int(
+                            p_opts.pop("chunk_token_size", resolved_chunk_size)
+                        )
                         chunking_result = chunking_by_paragraph_semantic(
                             self.tokenizer,
                             content,
-                            resolved_chunk_size,
+                            p_chunk_size,
                             blocks_path=(
                                 str(parsed_data.get("blocks_path") or "").strip()
                                 or None
                             ),
-                            **(chunk_opts.get("paragraph_semantic") or {}),
+                            **p_opts,
                         )
                     elif strategy == "R":
                         chunking_result = chunking_by_recursive_character(
