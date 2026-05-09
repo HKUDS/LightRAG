@@ -2804,9 +2804,7 @@ class TestVectorStorageBatching:
             return (len(actions), [])
 
         with patch.object(ClientManager, "get_client", return_value=mock_client):
-            with patch(
-                "lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk
-            ):
+            with patch("lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk):
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.upsert({"v1": {"content": "first"}})
@@ -2845,9 +2843,7 @@ class TestVectorStorageBatching:
             )
 
         with patch.object(ClientManager, "get_client", return_value=mock_client):
-            with patch(
-                "lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk
-            ):
+            with patch("lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk):
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.upsert({"v1": {"content": "first"}})
