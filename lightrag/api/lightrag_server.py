@@ -316,6 +316,7 @@ def create_app(args):
         "azure_openai",
         "aws_bedrock",
         "gemini",
+        "anthropic",
     ]:
         raise Exception("llm binding not supported")
 
@@ -632,6 +633,81 @@ def create_app(args):
 
         return optimized_gemini_model_complete
 
+    def create_optimized_anthropic_llm_func(args, llm_timeout: int):
+        """Anthropic-compatible LLM function (works with Zhipu /api/anthropic endpoint).
+        Uses non-streaming + retry on rate limit / timeout / connection error.
+        """
+        from anthropic import (
+            AsyncAnthropic,
+            RateLimitError,
+            APIConnectionError,
+            APITimeoutError,
+        )
+        from tenacity import (
+            retry,
+            stop_after_attempt,
+            wait_random_exponential,
+            retry_if_exception_type,
+        )
+
+        @retry(
+            stop=stop_after_attempt(10),  # 最多 10 次（覆盖 ~5 分钟限流风暴）
+            # 带 jitter 的指数退避：避免所有 retry 同步重发引发二次雪崩
+            wait=wait_random_exponential(multiplier=2, min=4, max=120),
+            retry=retry_if_exception_type(
+                (RateLimitError, APIConnectionError, APITimeoutError)
+            ),
+            reraise=True,
+        )
+        async def _call_with_retry(client, create_params):
+            return await client.messages.create(**create_params)
+
+        async def optimized_anthropic_model_complete(
+            prompt,
+            system_prompt=None,
+            history_messages=None,
+            keyword_extraction=False,
+            **kwargs,
+        ) -> str:
+            for k in ("keyword_extraction", "response_format", "hashing_kv",
+                      "stream", "enable_cot", "history_messages"):
+                kwargs.pop(k, None)
+
+            if history_messages is None:
+                history_messages = []
+
+            client_kwargs = {
+                "api_key": args.llm_binding_api_key,
+                "timeout": llm_timeout,
+            }
+            if args.llm_binding_host:
+                client_kwargs["base_url"] = args.llm_binding_host
+            client = AsyncAnthropic(**client_kwargs)
+
+            messages = list(history_messages)
+            messages.append({"role": "user", "content": prompt})
+
+            create_params = {
+                "model": args.llm_model,
+                "messages": messages,
+                "max_tokens": int(os.getenv("ANTHROPIC_LLM_MAX_TOKENS", "8192")),
+            }
+            if system_prompt:
+                create_params["system"] = system_prompt
+            for k, v in kwargs.items():
+                if k not in ("timeout",):
+                    create_params[k] = v
+
+            msg = await _call_with_retry(client, create_params)
+            parts = []
+            for block in getattr(msg, "content", []) or []:
+                text = getattr(block, "text", None)
+                if text:
+                    parts.append(text)
+            return "".join(parts)
+
+        return optimized_anthropic_model_complete
+
     def create_llm_model_func(binding: str):
         """
         Create LLM model function based on binding type.
@@ -655,6 +731,8 @@ def create_app(args):
                 )
             elif binding == "gemini":
                 return create_optimized_gemini_llm_func(config_cache, args, llm_timeout)
+            elif binding == "anthropic":
+                return create_optimized_anthropic_llm_func(args, llm_timeout)
             else:  # openai and compatible
                 # Use optimized function with pre-processed configuration
                 return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
