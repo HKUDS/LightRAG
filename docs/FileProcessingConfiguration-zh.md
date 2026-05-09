@@ -53,7 +53,7 @@ LIGHTRAG_PARSER=docx:native-ietV
 ```bash
 LIGHTRAG_PARSER=md:legacy-R,docx:native-R,*:mineru-R,*:docling-R,*:legacy-R
 MINERU_ENDPOINT=http://localhost:8000/api/v1/task
-DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
+DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
 ```
 
 ## 二、内容抽取与处理选项配置
@@ -143,7 +143,7 @@ notes.[R].md
 
 ```bash
 MINERU_ENDPOINT=http://localhost:8000/api/v1/task
-DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
+DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
 ```
 
 `legacy` 内容提取引擎抽取的内容为 `raw` 格式，即仅保存在 `full_docs` 存储的 `content` 字段。`native` / `mineru` / `docling` 内容提取引擎抽取的内容格式为 `raw` + `lightrag` 双格式，完整的内容以文件形式保存在 sidecar 目录，纯文本内容同时保存在 `content` 字段。
