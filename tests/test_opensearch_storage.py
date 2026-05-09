@@ -5,6 +5,8 @@ All tests use mocks — no running OpenSearch instance required.
 Run with: pytest tests/test_opensearch_storage.py -v
 """
 
+import asyncio
+
 import pytest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
@@ -2668,16 +2670,15 @@ class TestVectorStorageBatching:
     async def test_failed_flush_entries_retained_for_retry(
         self, global_config, embed_func, mock_client
     ):
-        """When async_bulk reports per-doc failures, those entries stay buffered."""
+        """Transient (5xx) per-doc failures stay buffered for the next flush."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
             ) as mock_bulk:
-                # First flush: v1 succeeds, v2 fails. Failed item shape per
-                # opensearch-py: {"index": {"_id": ..., "status": ..., "error": ...}}
+                # First flush: v1 succeeds, v2 fails with 503 (retryable).
                 mock_bulk.return_value = (
                     1,
-                    [{"index": {"_id": "v2", "status": 500, "error": "boom"}}],
+                    [{"index": {"_id": "v2", "status": 503, "error": "down"}}],
                 )
                 s = self._make(global_config, embed_func)
                 await s.initialize()
@@ -2723,20 +2724,145 @@ class TestVectorStorageBatching:
                 assert "rel-2" in s._pending_vector_docs
                 mock_client.delete_by_query.assert_awaited_once()
 
-    def test_extract_bulk_failed_ids_handles_shapes(self):
+    def test_extract_bulk_failed_ids_classifies_by_status(self):
         from lightrag.kg.opensearch_impl import _extract_bulk_failed_ids
 
-        assert _extract_bulk_failed_ids(None) == set()
-        assert _extract_bulk_failed_ids([]) == set()
-        assert _extract_bulk_failed_ids(
+        # No failures -> two empty sets.
+        assert _extract_bulk_failed_ids(None) == (set(), set())
+        assert _extract_bulk_failed_ids([]) == (set(), set())
+
+        retryable, non_retryable = _extract_bulk_failed_ids(
             [
-                {"index": {"_id": "a", "status": 500}},
-                {"delete": {"_id": "b", "status": 404}},
-                {"create": {"_id": "c"}},
-                "garbage",  # malformed entries are skipped
-                {"update": {}},  # no _id -> ignored
+                # Retryable: 5xx server error.
+                {"index": {"_id": "r-500", "status": 500}},
+                # Retryable: rate-limited.
+                {"index": {"_id": "r-429", "status": 429}},
+                # Retryable: missing status (network / parse failure).
+                {"create": {"_id": "r-none"}},
+                # Non-retryable: bad request.
+                {"index": {"_id": "n-400", "status": 400}},
+                # Non-retryable: not found on update (doc disappeared).
+                {"update": {"_id": "n-404", "status": 404}},
+                # Special case: delete of missing doc -> dropped from BOTH
+                # sets, since the row is already gone.
+                {"delete": {"_id": "drop-404", "status": 404}},
+                # Malformed entries are skipped silently.
+                "garbage",
+                {"update": {}},
             ]
-        ) == {"a", "b", "c"}
+        )
+        assert retryable == {"r-500", "r-429", "r-none"}
+        assert non_retryable == {"n-400", "n-404"}
+
+    @pytest.mark.asyncio
+    async def test_failed_flush_drops_non_retryable_entries(
+        self, global_config, embed_func, mock_client
+    ):
+        """4xx (non-429) failures are dropped, not perpetually retried."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                # v1 fails permanently (400 mapping error); v2 fails
+                # transiently (503).
+                mock_bulk.return_value = (
+                    0,
+                    [
+                        {"index": {"_id": "v1", "status": 400, "error": "bad mapping"}},
+                        {"index": {"_id": "v2", "status": 503, "error": "down"}},
+                    ],
+                )
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert(
+                    {"v1": {"content": "bad"}, "v2": {"content": "transient"}}
+                )
+                await s.index_done_callback()
+                # v1 is dropped (non-retryable), v2 is retained (retryable).
+                assert "v1" not in s._pending_vector_docs
+                assert "v2" in s._pending_vector_docs
+
+    @pytest.mark.asyncio
+    async def test_concurrent_writes_during_flush_are_preserved(
+        self, global_config, embed_func, mock_client
+    ):
+        """A concurrent upsert that runs while async_bulk is awaiting must
+        not be dropped from the buffer when the flush completes.
+
+        This is the race that Codex / Copilot flagged: the original
+        implementation rebuilt ``_pending_vector_docs`` from the live
+        buffer post-bulk, which silently lost any new writes added
+        during the flush. The snapshot-and-flush rewrite isolates the
+        bulk action set from later writes.
+        """
+        flush_started = asyncio.Event()
+        flush_can_finish = asyncio.Event()
+
+        async def slow_bulk(client, actions, raise_on_error=False, **kwargs):
+            flush_started.set()
+            await flush_can_finish.wait()
+            return (len(actions), [])
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk
+            ):
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "first"}})
+
+                flush_task = asyncio.create_task(s.index_done_callback())
+                await flush_started.wait()
+                # The flush has snapshotted v1 and is awaiting the bulk
+                # call. Now write a new doc concurrently.
+                await s.upsert({"v2": {"content": "concurrent"}})
+                # Release the bulk call.
+                flush_can_finish.set()
+                await flush_task
+
+                # v1 was sent and cleared. v2 was added during the flush
+                # and must still be buffered for the next index_done_callback.
+                assert "v1" not in s._pending_vector_docs
+                assert "v2" in s._pending_vector_docs
+
+    @pytest.mark.asyncio
+    async def test_concurrent_delete_during_flush_supersedes_retried_upsert(
+        self, global_config, embed_func, mock_client
+    ):
+        """A delete added during a flush wins over a retried upsert for the
+        same id when the snapshot is merged back."""
+        flush_started = asyncio.Event()
+        flush_can_finish = asyncio.Event()
+
+        async def slow_bulk(client, actions, raise_on_error=False, **kwargs):
+            flush_started.set()
+            await flush_can_finish.wait()
+            # Report v1's upsert as transient failure -> snapshot will try
+            # to merge v1 back into the live buffer.
+            return (
+                0,
+                [{"index": {"_id": "v1", "status": 503, "error": "down"}}],
+            )
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk
+            ):
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "first"}})
+
+                flush_task = asyncio.create_task(s.index_done_callback())
+                await flush_started.wait()
+                # Concurrent delete for v1 lands while the flush is in
+                # flight; this should shadow the merge-back of the failed
+                # upsert.
+                await s.delete(["v1"])
+                flush_can_finish.set()
+                await flush_task
+
+                assert "v1" not in s._pending_vector_docs
+                assert "v1" in s._pending_vector_deletes
 
 
 # ---------------------------------------------------------------------------

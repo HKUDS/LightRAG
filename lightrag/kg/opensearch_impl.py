@@ -65,31 +65,59 @@ def _sanitize_index_name(name: str) -> str:
     return sanitized
 
 
-def _extract_bulk_failed_ids(failed: list[Any] | None) -> set[str]:
-    """Extract document _id values from an opensearch-py bulk ``failed`` list.
+# HTTP statuses that indicate a transient failure where retrying makes sense:
+# request timeout, rate limit, and the standard 5xx server-error range.
+# A missing status (None) typically means a network or parse error before the
+# server responded, which is also retriable.
+_RETRYABLE_BULK_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _extract_bulk_failed_ids(
+    failed: list[Any] | None,
+) -> tuple[set[str], set[str]]:
+    """Split an opensearch-py bulk ``failed`` list into retryable / dead ids.
 
     ``async_bulk(raise_on_error=False)`` returns ``(success, failed)`` where
     ``failed`` is a list of per-action error dicts shaped like::
 
-        {"index": {"_id": "...", "status": 409, "error": {...}}}
+        {"index":  {"_id": "...", "status": 500, "error": {...}}}
         {"delete": {"_id": "...", "status": 404, ...}}
+        {"create": {"_id": "...", "status": 409, ...}}
 
-    The exact key depends on the action's ``_op_type``. This helper iterates
-    the list and collects every nested ``_id`` it finds. Unrecognised entries
-    are skipped silently so a malformed item never crashes the flush path.
+    Returns ``(retryable, non_retryable)``:
+      * ``retryable``     — transient statuses where a future flush should
+        try again (408 / 429 / 5xx, plus a missing status which usually
+        means a network-level failure before the server responded).
+      * ``non_retryable`` — permanent statuses (most 4xx, mapping errors,
+        etc.) where retrying would just spin forever. ``404`` on a delete
+        is treated as success-equivalent and dropped from both sets.
+
+    Unrecognised or malformed entries are skipped so a stray dict shape
+    never crashes the flush path.
     """
+    retryable: set[str] = set()
+    non_retryable: set[str] = set()
     if not failed:
-        return set()
-    failed_ids: set[str] = set()
+        return retryable, non_retryable
     for entry in failed:
         if not isinstance(entry, dict):
             continue
-        for op_payload in entry.values():
-            if isinstance(op_payload, dict):
-                doc_id = op_payload.get("_id")
-                if isinstance(doc_id, str):
-                    failed_ids.add(doc_id)
-    return failed_ids
+        for op_name, op_payload in entry.items():
+            if not isinstance(op_payload, dict):
+                continue
+            doc_id = op_payload.get("_id")
+            if not isinstance(doc_id, str):
+                continue
+            status = op_payload.get("status")
+            # Deleting a missing doc is not a real failure -- the row is
+            # already gone, so we don't carry it forward on every flush.
+            if op_name == "delete" and status == 404:
+                continue
+            if status is None or status in _RETRYABLE_BULK_STATUSES:
+                retryable.add(doc_id)
+            else:
+                non_retryable.add(doc_id)
+    return retryable, non_retryable
 
 
 # Detected at first connection; True when OpenSearch >= 3.3.0.
@@ -2837,18 +2865,49 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     async def _flush_pending_vector_ops(self) -> None:
         """Flush buffered vector upserts and deletes via a single async_bulk call.
 
-        Returns silently when there is nothing to flush. On failure the
-        buffers are preserved so the next flush can retry.
+        Concurrency contract: ``upsert`` / ``delete`` mutate the pending
+        buffers without taking ``_flush_lock`` so they don't block while a
+        flush is in flight. To stay race-free this method snapshots the
+        live buffers and atomically swaps in fresh empty containers
+        *inside the lock, before any await*. Concurrent ``upsert`` /
+        ``delete`` calls during the awaits below then write into the new
+        buffers and survive the flush. The post-bulk reset only touches
+        the snapshot -- newly-buffered writes are never dropped.
+
+        On failure the snapshot is merged back into the live buffers, but
+        only for ids that have not been superseded by a newer write
+        (a pending delete shadows a retried upsert; a pending upsert
+        shadows a retried delete). Non-retryable bulk failures (most
+        4xx, e.g. mapping errors) are logged and dropped from both sets
+        so they don't loop forever.
         """
         async with self._flush_lock:
             if not self._pending_vector_docs and not self._pending_vector_deletes:
                 return
             if self.client is None:
                 return
-            await self._ensure_index_ready()
+
+            # Snapshot then atomically swap in fresh empty buffers. Concurrent
+            # upsert / delete calls during the await chain below now mutate
+            # the new buffers; the snapshot is private to this flush.
+            pending_docs_snap = self._pending_vector_docs
+            pending_deletes_snap = self._pending_vector_deletes
+            self._pending_vector_docs = {}
+            self._pending_vector_deletes = set()
+
+            try:
+                await self._ensure_index_ready()
+            except OpenSearchException:
+                # Couldn't even prepare the index; nothing was sent. Push
+                # the snapshot back into the live buffers so the next flush
+                # gets another shot, respecting any newer writes.
+                self._merge_back_snapshot(
+                    pending_docs_snap, pending_deletes_snap, retryable=None
+                )
+                raise
 
             actions: list[dict[str, Any]] = []
-            for doc_id in self._pending_vector_deletes:
+            for doc_id in pending_deletes_snap:
                 actions.append(
                     {
                         "_op_type": "delete",
@@ -2856,7 +2915,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                         "_id": doc_id,
                     }
                 )
-            for doc_id, source in self._pending_vector_docs.items():
+            for doc_id, source in pending_docs_snap.items():
                 actions.append(
                     {
                         "_op_type": "index",
@@ -2866,40 +2925,86 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     }
                 )
 
-            pending_upsert_count = len(self._pending_vector_docs)
-            pending_delete_count = len(self._pending_vector_deletes)
             try:
-                # No per-operation refresh: search visibility is established by
-                # the refresh in index_done_callback().
+                # No per-operation refresh: search visibility is established
+                # by the refresh in index_done_callback().
                 success, failed = await helpers.async_bulk(
                     self.client, actions, raise_on_error=False
                 )
             except OpenSearchException as e:
                 logger.error(
                     f"[{self.workspace}] Error flushing vector ops "
-                    f"(upserts={pending_upsert_count}, deletes={pending_delete_count}): {e}"
+                    f"(upserts={len(pending_docs_snap)}, "
+                    f"deletes={len(pending_deletes_snap)}): {e}"
+                )
+                # The bulk call did not return per-doc statuses, so we
+                # cannot tell which actions persisted. Treat every snapshot
+                # entry as retryable; OpenSearch index ops are idempotent on
+                # _id and a re-deleted missing doc is filtered as 404.
+                self._merge_back_snapshot(
+                    pending_docs_snap, pending_deletes_snap, retryable=None
                 )
                 raise
 
-            failed_ids = _extract_bulk_failed_ids(failed)
-            if failed_ids:
-                logger.warning(
-                    f"[{self.workspace}] {len(failed_ids)} vector ops failed to flush; "
-                    f"will retry on next flush"
+            retryable_ids, non_retryable_ids = _extract_bulk_failed_ids(failed)
+            if retryable_ids:
+                self._merge_back_snapshot(
+                    pending_docs_snap,
+                    pending_deletes_snap,
+                    retryable=retryable_ids,
                 )
-
-            # Preserve only failed entries so the next flush can retry them;
-            # successfully flushed ops are dropped from the buffers.
-            self._pending_vector_docs = {
-                k: v for k, v in self._pending_vector_docs.items() if k in failed_ids
-            }
-            self._pending_vector_deletes = {
-                k for k in self._pending_vector_deletes if k in failed_ids
-            }
+                logger.warning(
+                    f"[{self.workspace}] {len(retryable_ids)} vector ops will "
+                    f"retry on the next flush (transient failure)"
+                )
+            if non_retryable_ids:
+                logger.warning(
+                    f"[{self.workspace}] {len(non_retryable_ids)} vector ops "
+                    f"failed permanently and were dropped (non-retryable status)"
+                )
             logger.debug(
                 f"[{self.workspace}] Flushed vector ops: {success} ok, "
-                f"{len(failed_ids)} failed"
+                f"retry={len(retryable_ids)}, dropped={len(non_retryable_ids)}"
             )
+
+    def _merge_back_snapshot(
+        self,
+        docs_snap: dict[str, dict[str, Any]],
+        deletes_snap: set[str],
+        retryable: set[str] | None,
+    ) -> None:
+        """Re-add snapshot entries to the live buffers without overwriting a
+        newer concurrent write.
+
+        ``retryable`` selects which ids to merge back:
+          * ``None``     — merge everything (caller could not get per-doc
+            statuses, e.g. the bulk call raised before responding).
+          * ``set[str]`` — merge only ids in the set (transient failures
+            from ``async_bulk(raise_on_error=False)``).
+
+        Per-id precedence rules:
+          * an id already in the live ``_pending_vector_docs`` was written
+            by a concurrent ``upsert`` while the flush was running; keep
+            that newer payload.
+          * an id already in the live ``_pending_vector_deletes`` was
+            tombstoned by a concurrent ``delete``; respect the delete.
+          * a snapshot delete is suppressed if a concurrent ``upsert`` for
+            the same id is now pending — the upsert wins.
+        """
+        for doc_id, source in docs_snap.items():
+            if retryable is not None and doc_id not in retryable:
+                continue
+            if doc_id in self._pending_vector_docs:
+                continue
+            if doc_id in self._pending_vector_deletes:
+                continue
+            self._pending_vector_docs[doc_id] = source
+        for doc_id in deletes_snap:
+            if retryable is not None and doc_id not in retryable:
+                continue
+            if doc_id in self._pending_vector_docs:
+                continue
+            self._pending_vector_deletes.add(doc_id)
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
