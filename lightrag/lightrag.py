@@ -95,8 +95,8 @@ from lightrag.base import (
     QueryResult,
 )
 from lightrag.namespace import NameSpace
+from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
-    chunking_by_token_size,
     extract_entities,
     kg_query,
     naive_query,
@@ -286,27 +286,55 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Union[List[Dict[str, Any]], Awaitable[List[Dict[str, Any]]]],
     ] = field(default_factory=lambda: chunking_by_token_size)
     """
-    Custom chunking function for splitting text into chunks before processing.
+    Legacy chunking-function customization point. Synchronous or async.
 
-    The function can be either synchronous or asynchronous.
+    **When this function is actually invoked.** The chunker dispatch in
+    ``_PipelineMixin._process_single_document`` is driven by the
+    document's ``process_options``:
 
-    The function should take the following parameters:
+      - If ``process_options`` explicitly contains a chunking selector
+        char (``F``/``R``/``V``/``P``), the dispatcher routes to a
+        chunker that follows the new file-chunker contract — see
+        :mod:`lightrag.chunker` (``chunking_by_fixed_token`` for ``F``,
+        ``chunking_by_paragraph_semantic`` for ``P``; ``R``/``V`` are
+        not yet implemented and fall back to ``F``). **This
+        ``chunking_func`` is NOT called in that case** — it is a
+        legacy escape hatch and is intentionally bypassed when the user
+        opted into a specific strategy.
+
+      - If ``process_options`` does **not** name a chunking strategy
+        (empty string, or only non-chunking flags such as ``i`` / ``t``
+        / ``e`` / ``!``), the dispatcher invokes this ``chunking_func``
+        with the legacy 6-arg signature below. This is the path taken
+        by direct ``ainsert(text)`` calls and by any document whose
+        ``process_options`` simply does not select a chunker.
+
+    The presence/absence of the selector is exposed by
+    :attr:`lightrag.parser_routing.ProcessOptions.chunking_explicit`.
+
+    **Signature** — preserved unchanged from earlier LightRAG releases
+    so externally-supplied chunkers continue to drop in without edits:
 
         - `tokenizer`: A Tokenizer instance to use for tokenization.
         - `content`: The text to be split into chunks.
-        - `split_by_character`: The character to split the text on. If None, the text is split into chunks of `chunk_token_size` tokens.
-        - `split_by_character_only`: If True, the text is split only on the specified character.
-        - `chunk_overlap_token_size`: The number of overlapping tokens between consecutive chunks.
+        - `split_by_character`: The character to split the text on. If
+          None, the text is split into chunks of `chunk_token_size`
+          tokens.
+        - `split_by_character_only`: If True, the text is split only on
+          the specified character.
+        - `chunk_overlap_token_size`: The number of overlapping tokens
+          between consecutive chunks.
         - `chunk_token_size`: The maximum number of tokens per chunk.
 
+    The function should return a list of dictionaries (or an awaitable
+    that resolves to one), each containing:
 
-    The function should return a list of dictionaries (or an awaitable that resolves to a list),
-    where each dictionary contains the following keys:
         - `tokens` (int): The number of tokens in the chunk.
         - `content` (str): The text content of the chunk.
-        - `chunk_order_index` (int): Zero-based index indicating the chunk's order in the document.
+        - `chunk_order_index` (int): Zero-based index indicating the
+          chunk's order in the document.
 
-    Defaults to `chunking_by_token_size` if not specified.
+    Defaults to :func:`lightrag.chunker.chunking_by_token_size`.
     """
 
     # Embedding

@@ -1507,24 +1507,60 @@ class _PipelineMixin:
                     pipeline_status_lock=ctx.pipeline_status_lock,
                 )
 
-                # F-chunking only — R/V/P strategies are deferred.
-                if doc_process_opts.chunking != "F":
-                    logger.warning(
-                        f"[chunking] process_options chunking="
-                        f"{doc_process_opts.chunking!r} requested for d-id: "
-                        f"{doc_id}, file: {file_path}, but R/V/P strategies are "
-                        f"not yet implemented; falling back to fixed chunking "
-                        f"('F')."
+                # Chunker dispatch is driven by whether ``process_options``
+                # explicitly named a chunking strategy:
+                #   - Explicit selector (F/R/V/P present in the raw
+                #     options string): dispatch to a chunker that
+                #     follows the standardized file-chunker contract
+                #     ``(tokenizer, content, chunk_token_size, *,
+                #     <strategy kwargs>)``.
+                #   - No selector supplied: honor the
+                #     externally-customizable ``self.chunking_func``
+                #     with its legacy 6-arg signature so existing
+                #     callers (typically :meth:`ainsert` for raw text)
+                #     keep working unchanged.
+                if doc_process_opts.chunking_explicit:
+                    from lightrag.chunker import (
+                        chunking_by_fixed_token,
+                        chunking_by_paragraph_semantic,
                     )
 
-                chunking_result = self.chunking_func(
-                    self.tokenizer,
-                    content,
-                    ctx.split_by_character,
-                    ctx.split_by_character_only,
-                    self.chunk_overlap_token_size,
-                    self.chunk_token_size,
-                )
+                    if doc_process_opts.chunking == "P":
+                        chunking_result = chunking_by_paragraph_semantic(
+                            self.tokenizer,
+                            content,
+                            self.chunk_token_size,
+                            blocks_path=(
+                                str(parsed_data.get("blocks_path") or "").strip()
+                                or None
+                            ),
+                        )
+                    else:
+                        if doc_process_opts.chunking != "F":
+                            logger.warning(
+                                f"[chunking] process_options chunking="
+                                f"{doc_process_opts.chunking!r} requested for "
+                                f"d-id: {doc_id}, file: {file_path}, but R/V "
+                                f"strategies are not yet implemented; falling "
+                                f"back to fixed chunking ('F')."
+                            )
+                        chunking_result = chunking_by_fixed_token(
+                            self.tokenizer,
+                            content,
+                            self.chunk_token_size,
+                            chunk_overlap_token_size=self.chunk_overlap_token_size,
+                            split_by_character=ctx.split_by_character,
+                            split_by_character_only=ctx.split_by_character_only,
+                        )
+                else:
+                    chunking_result = self.chunking_func(
+                        self.tokenizer,
+                        content,
+                        ctx.split_by_character,
+                        ctx.split_by_character_only,
+                        self.chunk_overlap_token_size,
+                        self.chunk_token_size,
+                    )
                 if inspect.isawaitable(chunking_result):
                     chunking_result = await chunking_result
 
@@ -1557,9 +1593,22 @@ class _PipelineMixin:
                         else "legacy"
                     ),
                     "chunking_method": (
-                        "fixed_token_fallback"
-                        if doc_process_opts.chunking != "F"
-                        else "fixed_token"
+                        # Explicit selector in process_options: reflect
+                        # the dispatched strategy.
+                        (
+                            "paragraph_semantic"
+                            if doc_process_opts.chunking == "P"
+                            else (
+                                "fixed_token_fallback"
+                                if doc_process_opts.chunking != "F"
+                                else "fixed_token"
+                            )
+                        )
+                        if doc_process_opts.chunking_explicit
+                        # No selector: chunking_func was invoked, which
+                        # defaults to chunking_by_token_size but may be
+                        # customized by the caller.
+                        else "legacy_chunking_func"
                     ),
                 }
 

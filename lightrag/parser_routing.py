@@ -74,6 +74,20 @@ class ProcessOptions:
     skip_kg: bool = False
     chunking: ProcessChunkingOption = PROCESS_OPTION_CHUNK_FIXED
 
+    @property
+    def chunking_explicit(self) -> bool:
+        """True iff ``raw`` actually contains a chunking selector char.
+
+        Distinguishes "user explicitly opted into a chunking strategy"
+        from "no chunking selector supplied — pipeline used the default".
+        ``chunking`` itself is unreliable for this question because it
+        falls back to :data:`PROCESS_OPTION_CHUNK_FIXED` in both cases.
+        Used by ``_process_single_document`` to decide whether to
+        dispatch via the new file-chunker contract or to honor the
+        legacy externally-supplied :attr:`LightRAG.chunking_func`.
+        """
+        return any(c in PROCESS_OPTION_CHUNK_CHARS for c in self.raw)
+
 
 _PROCESS_OPTION_DEFAULT = ProcessOptions()
 
