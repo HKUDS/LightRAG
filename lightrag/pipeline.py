@@ -122,17 +122,16 @@ _CHUNK_LOG_KEY_ALIASES: dict[str, str] = {
 }
 
 
-def _format_chunking_log(
-    strategy: str,
+def _format_chunking_params(
     chunk_size: int,
     params: dict[str, Any],
-    file_path: str,
 ) -> str:
-    """Format the per-document chunking start log line.
+    """Format the ``size=..., key=value, ...`` portion shared by the chunking
+    start log line and ``doc_status.metadata['chunk_opts']``.
 
     Drops keys with ``None``/empty values so the line stays scannable;
     callers pass the strategy-specific kwargs they're about to splat
-    into the chunker so the log mirrors the actual call.  Long keys are
+    into the chunker so the output mirrors the actual call.  Long keys are
     aliased to short forms via ``_CHUNK_LOG_KEY_ALIASES``.
     """
     pieces = [f"size={chunk_size}"]
@@ -145,7 +144,7 @@ def _format_chunking_log(
         pieces.append(
             f"{short}={value!r}" if isinstance(value, str) else f"{short}={value}"
         )
-    return f"Chunking {strategy}: {', '.join(pieces)}, file: {file_path}"
+    return ", ".join(pieces)
 
 
 @dataclass
@@ -1632,6 +1631,11 @@ class _PipelineMixin:
                     chunk_opts.get("chunk_token_size") or self.chunk_token_size
                 )
 
+                # Captured per-strategy below; persisted to
+                # ``doc_status.metadata['chunk_opts']`` via ``extraction_meta``
+                # so admin/list APIs can see the actual chunker params used.
+                chunk_opts_str: str = ""
+
                 if doc_process_opts.chunking_explicit:
                     from lightrag.chunker import (
                         chunking_by_fixed_token,
@@ -1656,14 +1660,11 @@ class _PipelineMixin:
                         p_blocks_path = (
                             str(parsed_data.get("blocks_path") or "").strip() or None
                         )
-                        logger.info(
-                            _format_chunking_log(
-                                "P",
-                                p_chunk_size,
-                                {**p_opts, "blocks_path": p_blocks_path},
-                                file_path,
-                            )
+                        chunk_opts_str = _format_chunking_params(
+                            p_chunk_size,
+                            {**p_opts, "blocks_path": p_blocks_path},
                         )
+                        logger.info(f"Chunking P: {chunk_opts_str}, file: {file_path}")
                         chunking_result = chunking_by_paragraph_semantic(
                             self.tokenizer,
                             content,
@@ -1683,9 +1684,8 @@ class _PipelineMixin:
                         r_chunk_size = int(
                             r_opts.pop("chunk_token_size", resolved_chunk_size)
                         )
-                        logger.info(
-                            _format_chunking_log("R", r_chunk_size, r_opts, file_path)
-                        )
+                        chunk_opts_str = _format_chunking_params(r_chunk_size, r_opts)
+                        logger.info(f"Chunking R: {chunk_opts_str}, file: {file_path}")
                         chunking_result = chunking_by_recursive_character(
                             self.tokenizer,
                             content,
@@ -1701,9 +1701,8 @@ class _PipelineMixin:
                         v_chunk_size = int(
                             v_opts.pop("chunk_token_size", resolved_chunk_size)
                         )
-                        logger.info(
-                            _format_chunking_log("V", v_chunk_size, v_opts, file_path)
-                        )
+                        chunk_opts_str = _format_chunking_params(v_chunk_size, v_opts)
+                        logger.info(f"Chunking V: {chunk_opts_str}, file: {file_path}")
                         chunking_result = await chunking_by_semantic_vector(
                             self.tokenizer,
                             content,
@@ -1713,11 +1712,10 @@ class _PipelineMixin:
                         )
                     else:  # "F"
                         f_opts = chunk_opts.get("fixed_token") or {}
-                        logger.info(
-                            _format_chunking_log(
-                                "F", resolved_chunk_size, f_opts, file_path
-                            )
+                        chunk_opts_str = _format_chunking_params(
+                            resolved_chunk_size, f_opts
                         )
+                        logger.info(f"Chunking F: {chunk_opts_str}, file: {file_path}")
                         chunking_result = chunking_by_fixed_token(
                             self.tokenizer,
                             content,
@@ -1726,22 +1724,21 @@ class _PipelineMixin:
                         )
                 else:
                     f_opts = chunk_opts.get("fixed_token") or {}
+                    chunk_opts_str = _format_chunking_params(
+                        resolved_chunk_size,
+                        {
+                            "split_by_character": f_opts.get("split_by_character"),
+                            "split_by_character_only": f_opts.get(
+                                "split_by_character_only", False
+                            ),
+                            "overlap": f_opts.get(
+                                "chunk_overlap_token_size",
+                                self.chunk_overlap_token_size,
+                            ),
+                        },
+                    )
                     logger.info(
-                        _format_chunking_log(
-                            "F(legacy)",
-                            resolved_chunk_size,
-                            {
-                                "split_by_character": f_opts.get("split_by_character"),
-                                "split_by_character_only": f_opts.get(
-                                    "split_by_character_only", False
-                                ),
-                                "overlap": f_opts.get(
-                                    "chunk_overlap_token_size",
-                                    self.chunk_overlap_token_size,
-                                ),
-                            },
-                            file_path,
-                        )
+                        f"Chunking F(legacy): {chunk_opts_str}, file: {file_path}"
                     )
                     chunking_result = self.chunking_func(
                         self.tokenizer,
@@ -1799,6 +1796,11 @@ class _PipelineMixin:
                         # customized by the caller.
                         else "legacy_chunking_func"
                     ),
+                    # Mirrors the chunking start log line (params portion only,
+                    # without the strategy prefix or file path) so admins can
+                    # see the actual chunker params used.  Carried across
+                    # transitions via ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
+                    "chunk_opts": chunk_opts_str,
                 }
 
                 # Multimodal post-process hook entrypoint:

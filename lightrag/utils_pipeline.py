@@ -192,9 +192,15 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # ``parse_warnings`` records non-fatal parser warnings (e.g. legacy docx
 # tables missing ``w14:paraId``) that admins should be able to surface
 # alongside the document record after PROCESSED.
+# ``chunk_opts`` is written when entering PROCESSING (via ``extraction_meta``)
+# and records the actual chunker params used for that document in the same
+# format as the ``Chunking <strategy>: ...`` log line (params portion only).
+# Carrying it forward keeps the value visible after PROCESSING -> FAILED,
+# whose ``metadata_extra`` only carries timing fields.
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "process_options",
     "parse_warnings",
+    "chunk_opts",
 )
 
 
