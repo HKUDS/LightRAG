@@ -111,6 +111,43 @@ _CHUNKING_METHOD_LABELS: dict[str, str] = {
 }
 
 
+_CHUNK_LOG_KEY_ALIASES: dict[str, str] = {
+    "chunk_overlap_token_size": "overlap",
+    "breakpoint_threshold_type": "breakpoint",
+    "breakpoint_threshold_amount": "amount",
+    "buffer_size": "buffer",
+    "split_by_character": "split_by",
+    "split_by_character_only": "split_only",
+    "separators": "seps",
+}
+
+
+def _format_chunking_log(
+    strategy: str,
+    chunk_size: int,
+    params: dict[str, Any],
+    file_path: str,
+) -> str:
+    """Format the per-document chunking start log line.
+
+    Drops keys with ``None``/empty values so the line stays scannable;
+    callers pass the strategy-specific kwargs they're about to splat
+    into the chunker so the log mirrors the actual call.  Long keys are
+    aliased to short forms via ``_CHUNK_LOG_KEY_ALIASES``.
+    """
+    pieces = [f"size={chunk_size}"]
+    for key, value in params.items():
+        if value is None:
+            continue
+        if isinstance(value, (list, dict, str)) and len(value) == 0:
+            continue
+        short = _CHUNK_LOG_KEY_ALIASES.get(key, key)
+        pieces.append(
+            f"{short}={value!r}" if isinstance(value, str) else f"{short}={value}"
+        )
+    return f"Chunking {strategy}: {', '.join(pieces)}, file: {file_path}"
+
+
 @dataclass
 class _BatchRunContext:
     """Per-batch shared state for the parse/analyze/process worker pipeline.
@@ -1616,14 +1653,22 @@ class _PipelineMixin:
                         p_chunk_size = int(
                             p_opts.pop("chunk_token_size", resolved_chunk_size)
                         )
+                        p_blocks_path = (
+                            str(parsed_data.get("blocks_path") or "").strip() or None
+                        )
+                        logger.info(
+                            _format_chunking_log(
+                                "P",
+                                p_chunk_size,
+                                {**p_opts, "blocks_path": p_blocks_path},
+                                file_path,
+                            )
+                        )
                         chunking_result = chunking_by_paragraph_semantic(
                             self.tokenizer,
                             content,
                             p_chunk_size,
-                            blocks_path=(
-                                str(parsed_data.get("blocks_path") or "").strip()
-                                or None
-                            ),
+                            blocks_path=p_blocks_path,
                             **p_opts,
                         )
                     elif strategy == "R":
@@ -1637,6 +1682,9 @@ class _PipelineMixin:
                         r_opts = dict(chunk_opts.get("recursive_character") or {})
                         r_chunk_size = int(
                             r_opts.pop("chunk_token_size", resolved_chunk_size)
+                        )
+                        logger.info(
+                            _format_chunking_log("R", r_chunk_size, r_opts, file_path)
                         )
                         chunking_result = chunking_by_recursive_character(
                             self.tokenizer,
@@ -1653,6 +1701,9 @@ class _PipelineMixin:
                         v_chunk_size = int(
                             v_opts.pop("chunk_token_size", resolved_chunk_size)
                         )
+                        logger.info(
+                            _format_chunking_log("V", v_chunk_size, v_opts, file_path)
+                        )
                         chunking_result = await chunking_by_semantic_vector(
                             self.tokenizer,
                             content,
@@ -1661,14 +1712,37 @@ class _PipelineMixin:
                             **v_opts,
                         )
                     else:  # "F"
+                        f_opts = chunk_opts.get("fixed_token") or {}
+                        logger.info(
+                            _format_chunking_log(
+                                "F", resolved_chunk_size, f_opts, file_path
+                            )
+                        )
                         chunking_result = chunking_by_fixed_token(
                             self.tokenizer,
                             content,
                             resolved_chunk_size,
-                            **(chunk_opts.get("fixed_token") or {}),
+                            **f_opts,
                         )
                 else:
                     f_opts = chunk_opts.get("fixed_token") or {}
+                    logger.info(
+                        _format_chunking_log(
+                            "F(legacy)",
+                            resolved_chunk_size,
+                            {
+                                "split_by_character": f_opts.get("split_by_character"),
+                                "split_by_character_only": f_opts.get(
+                                    "split_by_character_only", False
+                                ),
+                                "overlap": f_opts.get(
+                                    "chunk_overlap_token_size",
+                                    self.chunk_overlap_token_size,
+                                ),
+                            },
+                            file_path,
+                        )
+                    )
                     chunking_result = self.chunking_func(
                         self.tokenizer,
                         content,
