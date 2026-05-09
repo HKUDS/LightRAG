@@ -183,6 +183,9 @@ def _split_rows_by_tokens(
         math.ceil(total / target_ideal),
         math.ceil(total / target_max),
     )
+    # Cap at len(rows) so target_rows >= 1; otherwise int((i+1)*target_rows)
+    # can collapse to ``start`` and emit empty <table>[]</table> slices.
+    target_chunks = min(target_chunks, len(rows))
     target_rows = len(rows) / target_chunks
 
     chunks: list[list[Any]] = []
@@ -191,7 +194,9 @@ def _split_rows_by_tokens(
         if i == target_chunks - 1:
             end = len(rows)
         else:
-            end = min(int((i + 1) * target_rows), len(rows))
+            # max(start + 1, ...) guarantees forward progress (>= 1 row per
+            # slice) even at fractional target_rows boundaries.
+            end = max(start + 1, min(int((i + 1) * target_rows), len(rows)))
             remaining = len(rows) - end
             if remaining > 0 and remaining < target_rows * 0.3:
                 end = len(rows)
@@ -245,10 +250,19 @@ def _expand_block_with_table_splits(
 
     out: list[dict[str, Any]] = []
     cur_paras: list[dict[str, Any]] = []
+    # Role to assign to ``cur_paras`` when it next flushes. Tracks the
+    # boundary semantics across split-table iterations so the merged
+    # block carries "first" / "last" instead of defaulting to "none" —
+    # otherwise Stage D's directional protections (a "first" block must
+    # not absorb backward, a "last" block must not absorb forward) silently
+    # disappear after the slice glues with surrounding paragraphs.
+    cur_role = "none"
     table_split_counter = 0
 
-    def flush_cur(role: str = "none") -> None:
+    def flush_cur() -> None:
+        nonlocal cur_role
         if not cur_paras:
+            cur_role = "none"
             return
         out.append(
             _new_block(
@@ -256,11 +270,12 @@ def _expand_block_with_table_splits(
                 parent_headings=block["parent_headings"],
                 level=block["level"],
                 paragraphs=cur_paras,
-                table_chunk_role=role,
+                table_chunk_role=cur_role,
                 tokenizer=tokenizer,
             )
         )
         cur_paras.clear()
+        cur_role = "none"
 
     for para in paragraphs:
         text = para["text"]
@@ -297,14 +312,21 @@ def _expand_block_with_table_splits(
             if is_first:
                 # First slice glues with everything currently accumulated
                 # (= the paragraphs that appeared before the table inside
-                # this heading block).
+                # this heading block). If the buffer still carries the
+                # "last" tail of a previous oversized table, flush it first
+                # so its protective role survives instead of being
+                # overwritten by "first".
+                if cur_role == "last":
+                    flush_cur()
                 cur_paras.append(chunk_para)
+                cur_role = "first"
             elif is_last:
                 # Flush the accumulated "first-glued" block, then begin a
                 # new accumulation seeded with this last slice — it will
                 # absorb the paragraphs that appear after the table.
                 flush_cur()
                 cur_paras.append(chunk_para)
+                cur_role = "last"
             else:
                 # Middle slice: flush the first-glued block, then emit
                 # this middle slice as a standalone block that Stage D
