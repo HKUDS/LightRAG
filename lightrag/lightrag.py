@@ -620,6 +620,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     def _set_runtime_addon_params(self, addon_params: Mapping[str, Any] | None) -> None:
         self._replace_addon_params(addon_params, mark_dirty=True)
+        self._apply_chunk_size_overlay()
 
     def _apply_chunk_size_overlay(self) -> None:
         """Reconcile chunk-size config across all four configuration tiers.
