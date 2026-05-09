@@ -625,3 +625,161 @@ def test_runtime_addon_params_mutation_affects_subsequent_enqueue(tmp_path):
         "##",
         "\n",
     ]
+
+
+@pytest.mark.offline
+def test_r_strategy_uses_dedicated_chunk_size_env(tmp_path, monkeypatch):
+    """``CHUNK_R_SIZE`` must give R its own ``chunk_token_size``,
+    decoupled from the global ``CHUNK_SIZE`` shared by F/V."""
+    monkeypatch.setenv("CHUNK_SIZE", "1200")
+    monkeypatch.setenv("CHUNK_R_SIZE", "777")
+
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    def _r_spy(tokenizer, content, chunk_token_size, **kwargs):
+        captured["chunk_token_size"] = chunk_token_size
+        captured["kwargs"] = dict(kwargs)
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_recursive_character", _r_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "stand-in body for recursive-character chunker",
+                file_paths="ctor.[native-R].txt",
+                track_id="track-r-size",
+                process_options="R",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+    assert captured.get("chunk_token_size") == 777, (
+        "R chunker must receive CHUNK_R_SIZE-derived chunk_token_size, "
+        f"not the global CHUNK_SIZE; got {captured!r}"
+    )
+    # Dispatcher must not double-pass chunk_token_size as kwarg.
+    assert "chunk_token_size" not in captured["kwargs"]
+
+
+@pytest.mark.offline
+def test_r_strategy_falls_back_to_global_chunk_size(tmp_path, monkeypatch):
+    """When ``CHUNK_R_SIZE`` is unset and no per-doc R override is
+    supplied, R inherits the top-level ``chunk_token_size`` resolved
+    from the standard chain (here: ``LightRAG(chunk_token_size=…)``)."""
+    monkeypatch.delenv("CHUNK_R_SIZE", raising=False)
+    monkeypatch.delenv("CHUNK_SIZE", raising=False)
+
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    def _r_spy(tokenizer, content, chunk_token_size, **kwargs):
+        captured["chunk_token_size"] = chunk_token_size
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_recursive_character", _r_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path, chunk_token_size=444)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "fallback body",
+                file_paths="ctor.[native-R].txt",
+                track_id="track-r-fallback",
+                process_options="R",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+    assert captured.get("chunk_token_size") == 444
+
+
+@pytest.mark.offline
+def test_v_strategy_uses_dedicated_chunk_size_env(tmp_path, monkeypatch):
+    """``CHUNK_V_SIZE`` must give V its own ``chunk_token_size`` advisory
+    ceiling, decoupled from the global ``CHUNK_SIZE`` shared by F/R."""
+    monkeypatch.setenv("CHUNK_SIZE", "1200")
+    monkeypatch.setenv("CHUNK_V_SIZE", "2500")
+
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    async def _v_spy(
+        tokenizer, content, chunk_token_size, *, embedding_func=None, **kwargs
+    ):
+        captured["chunk_token_size"] = chunk_token_size
+        captured["kwargs"] = dict(kwargs)
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_semantic_vector", _v_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "stand-in body for semantic-vector chunker",
+                file_paths="ctor.[native-V].txt",
+                track_id="track-v-size",
+                process_options="V",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+    assert captured.get("chunk_token_size") == 2500, (
+        "V chunker must receive CHUNK_V_SIZE-derived chunk_token_size, "
+        f"not the global CHUNK_SIZE; got {captured!r}"
+    )
+    # Dispatcher must not double-pass chunk_token_size as kwarg.
+    assert "chunk_token_size" not in captured["kwargs"]
+
+
+@pytest.mark.offline
+def test_v_strategy_falls_back_to_global_chunk_size(tmp_path, monkeypatch):
+    """When ``CHUNK_V_SIZE`` is unset and no per-doc V override is
+    supplied, V inherits the top-level ``chunk_token_size`` resolved
+    from the standard chain (here: ``LightRAG(chunk_token_size=…)``)."""
+    monkeypatch.delenv("CHUNK_V_SIZE", raising=False)
+    monkeypatch.delenv("CHUNK_SIZE", raising=False)
+
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    async def _v_spy(
+        tokenizer, content, chunk_token_size, *, embedding_func=None, **kwargs
+    ):
+        captured["chunk_token_size"] = chunk_token_size
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_semantic_vector", _v_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path, chunk_token_size=555)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "fallback body",
+                file_paths="ctor.[native-V].txt",
+                track_id="track-v-fallback",
+                process_options="V",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+    assert captured.get("chunk_token_size") == 555

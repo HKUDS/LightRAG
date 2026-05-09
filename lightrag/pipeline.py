@@ -1627,19 +1627,38 @@ class _PipelineMixin:
                             **p_opts,
                         )
                     elif strategy == "R":
+                        # R carries its own optional ``chunk_token_size``
+                        # override (CHUNK_R_SIZE env or
+                        # ``addon_params['chunker']['recursive_character']``);
+                        # pop it out of the kwargs so we don't pass it
+                        # both positionally and via ``**`` splat (which
+                        # would TypeError).  Fall back to the shared
+                        # top-level resolved size when unset.
+                        r_opts = dict(chunk_opts.get("recursive_character") or {})
+                        r_chunk_size = int(
+                            r_opts.pop("chunk_token_size", resolved_chunk_size)
+                        )
                         chunking_result = chunking_by_recursive_character(
                             self.tokenizer,
                             content,
-                            resolved_chunk_size,
-                            **(chunk_opts.get("recursive_character") or {}),
+                            r_chunk_size,
+                            **r_opts,
                         )
                     elif strategy == "V":
+                        # V carries its own optional ``chunk_token_size``
+                        # advisory ceiling override (CHUNK_V_SIZE env or
+                        # ``addon_params['chunker']['semantic_vector']``);
+                        # same pop-then-splat pattern as P/R.
+                        v_opts = dict(chunk_opts.get("semantic_vector") or {})
+                        v_chunk_size = int(
+                            v_opts.pop("chunk_token_size", resolved_chunk_size)
+                        )
                         chunking_result = await chunking_by_semantic_vector(
                             self.tokenizer,
                             content,
-                            resolved_chunk_size,
+                            v_chunk_size,
                             embedding_func=self.embedding_func,
-                            **(chunk_opts.get("semantic_vector") or {}),
+                            **v_opts,
                         )
                     else:  # "F"
                         chunking_result = chunking_by_fixed_token(

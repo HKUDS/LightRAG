@@ -191,7 +191,8 @@ def default_chunker_config() -> dict[str, Any]:
 
     Provenance / precedence note: this function reads only
     *strategy-specific* env vars (``CHUNK_F_OVERLAP_SIZE``,
-    ``CHUNK_R_OVERLAP_SIZE``, ``CHUNK_R_SEPARATORS``, ``CHUNK_V_*``,
+    ``CHUNK_R_SIZE``, ``CHUNK_R_OVERLAP_SIZE``, ``CHUNK_R_SEPARATORS``,
+    ``CHUNK_V_SIZE``, ``CHUNK_V_*``, ``CHUNK_P_SIZE``,
     ``CHUNK_F_SPLIT_BY_CHARACTER``…).  It does **not** read the legacy
     top-level envs ``CHUNK_SIZE`` / ``CHUNK_OVERLAP_SIZE``, and it
     deliberately **omits** ``chunk_overlap_token_size`` from a strategy
@@ -253,6 +254,17 @@ def default_chunker_config() -> dict[str, Any]:
     p_size_raw = os.getenv("CHUNK_P_SIZE")
     if p_size_raw is not None:
         config["paragraph_semantic"]["chunk_token_size"] = int(p_size_raw)
+
+    # R/V strategies likewise carry their own optional ``chunk_token_size``
+    # overrides (recursive character splitting may want a smaller target,
+    # semantic-vector clustering a larger advisory ceiling).  Same
+    # slot-absent convention as P.
+    r_size_raw = os.getenv("CHUNK_R_SIZE")
+    if r_size_raw is not None:
+        config["recursive_character"]["chunk_token_size"] = int(r_size_raw)
+    v_size_raw = os.getenv("CHUNK_V_SIZE")
+    if v_size_raw is not None:
+        config["semantic_vector"]["chunk_token_size"] = int(v_size_raw)
 
     return config
 
