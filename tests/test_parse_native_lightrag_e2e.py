@@ -27,7 +27,7 @@ from lightrag.utils import compute_args_hash
 
 
 def _block(content, *, heading="", level=0, parent=None, uuid="p1"):
-    """Build a synthetic block dict matching extract_audit_blocks output."""
+    """Build a synthetic block dict matching extract_docx_blocks output."""
     return {
         "uuid": uuid,
         "uuid_end": uuid,
@@ -89,7 +89,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
         source_path = input_dir / "stable.docx"
         source_path.write_bytes(b"fake docx bytes")
 
-        # Stub extract_audit_blocks at the adapter so the upstream DOCX
+        # Stub extract_docx_blocks at the adapter so the upstream DOCX
         # parser is never invoked. The adapter still does all the
         # LightRAG-specific writing — that is what we want under test.
         stable_blocks = [
@@ -104,7 +104,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
             return [dict(b) for b in stable_blocks]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+            "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
             _stub_extract,
         )
 
@@ -184,7 +184,7 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
             return [_block("the body")]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+            "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
             _stub_extract,
         )
 
@@ -225,7 +225,7 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
             return [_block('before\n<table>[["A"]]</table>\nafter')]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+            "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
             _stub_extract,
         )
 
@@ -288,7 +288,7 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
             ]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.lightrag_adapter.extract_audit_blocks",
+            "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
             _stub_extract,
         )
 

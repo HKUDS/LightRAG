@@ -111,7 +111,7 @@ def validate_heading_length(heading_text: str, para_id: str):
             f"Actual length: {len(heading_text)} characters",
             "  1. Open the document in Microsoft Word\n"
             f"  2. Shorten this heading to {MAX_HEADING_LENGTH} characters or less\n"
-            "  3. Re-run the audit workflow",
+            "  3. Re-upload it to LightRAG",
         )
         sys.exit(1)
 
@@ -134,12 +134,12 @@ def validate_table_tokens(table_json: str, block_heading: str):
             f"A table in the document is too large for LLM processing.\n\n"
             f'Location: Under heading "{block_heading}"\n'
             f"Table size: ~{table_tokens} tokens ({len(table_json)} characters)\n\n"
-            "Large tables can cause issues with automated auditing.",
+            "Large tables can cause issues with file chunking.",
             "  1. Open the document in Microsoft Word\n"
             f'  2. Locate the table under heading "{block_heading}"\n'
             "  3. Split the table into smaller tables, or\n"
             "  4. Simplify the table content\n"
-            "  5. Re-run the audit workflow",
+            "  5. Re-upload it to LightRAG",
         )
         sys.exit(1)
 
@@ -971,8 +971,7 @@ def split_long_block(
             "  1. Open the document in Microsoft Word\n"
             f'  2. Locate the section under heading "{preview}"\n'
             f"  3. Add short headings or paragraph breaks (≤{MAX_ANCHOR_CANDIDATE_LENGTH} chars) to divide the content\n"
-            "  4. Re-run the audit workflow\n\n"
-            f"Tip: Short headings like '概述', '背景', '详细说明' can serve as natural split points.",
+            "  4. Re-upload it to LightRAG"
         )
         sys.exit(1)
 
@@ -1458,7 +1457,7 @@ def _flush_current_block(
     blocks.append(block)
 
 
-def extract_audit_blocks(
+def extract_docx_blocks(
     file_path: str,
     debug: bool = False,
     fixlevel: int = None,
@@ -1466,7 +1465,7 @@ def extract_audit_blocks(
     parse_warnings: dict | None = None,
 ) -> list:
     """
-    Extract text blocks (chunks) from a DOCX file for auditing.
+    Extract text blocks (chunks) from a DOCX file for chunking later.
 
     Uses python-docx with custom numbering resolver to:
     1. Capture automatic numbering (list labels)

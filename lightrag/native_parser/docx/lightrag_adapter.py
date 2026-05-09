@@ -1,6 +1,6 @@
 """LightRAG Document writer for the native DOCX parser.
 
-The adapter calls :func:`extract_audit_blocks` with ``fixlevel=0`` and writes
+The adapter calls :func:`extract_docx_blocks` with ``fixlevel=0`` and writes
 the LightRAG Document artifacts directly to disk:
 
 - ``<base>.blocks.jsonl``           — main file (meta line + content lines)
@@ -47,7 +47,7 @@ from .drawing_image_extractor import (
     _load_relationships,
     parse_drawing_attributes,
 )
-from .parse_document import extract_audit_blocks
+from .parse_document import extract_docx_blocks
 
 
 _TABLE_TAG_RE = re.compile(r"<table>(.*?)</table>", re.DOTALL)
@@ -98,7 +98,7 @@ async def parse_docx_to_lightrag_document(
             provided, the writer drops ``.blocks.jsonl`` and sidecars under
             this directory instead of the production ``__parsed__/`` location.
             Used by the debugging CLI.
-        debug: When True, the upstream ``extract_audit_blocks`` emits split
+        debug: When True, the upstream ``extract_docx_blocks`` emits split
             traces to stderr (CLI debugging only).
 
     Returns:
@@ -150,7 +150,7 @@ def _parse_docx_sync(
     drawings_path = parsed_dir / f"{base_name}.drawings.json"
     asset_dir = parsed_dir / f"{base_name}.blocks.assets"
 
-    # extract_audit_blocks() and DrawingExtractionContext both work against a
+    # extract_docx_blocks() and DrawingExtractionContext both work against a
     # filesystem path (the latter opens the docx as a zip), so persist the
     # caller-provided bytes to a temp file and clean up at the end.
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
@@ -169,7 +169,7 @@ def _parse_docx_sync(
         )
         _load_relationships(ctx)
 
-        blocks = extract_audit_blocks(
+        blocks = extract_docx_blocks(
             str(temp_docx),
             debug=debug,
             fixlevel=0,
@@ -576,7 +576,7 @@ def main() -> None:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Forward debug flag to extract_audit_blocks for split traces.",
+        help="Forward debug flag to extract_docx_blocks for split traces.",
     )
     parser.add_argument(
         "--preview",
