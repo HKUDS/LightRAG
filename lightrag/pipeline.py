@@ -113,14 +113,12 @@ _CHUNKING_METHOD_LABELS: dict[str, str] = {
 
 _CHUNK_LOG_KEY_ALIASES: dict[str, str] = {
     "chunk_overlap_token_size": "overlap",
-    "breakpoint_threshold_type": "breakpoint",
+    "breakpoint_threshold_type": "break",
     "breakpoint_threshold_amount": "amount",
-    "buffer_size": "buffer",
+    "buffer_size": "buf",
     "split_by_character": "split_by",
     "split_by_character_only": "split_only",
     "separators": "seps",
-    "breakpoint": "break",
-    "buffer": "buf",
     "sentence_split_regex": "regex",
 }
 
