@@ -809,18 +809,21 @@ def chunking_by_paragraph_semantic(
     small_tail_threshold = max(int(target_max * _SMALL_TAIL_RATIO), 1)
 
     rows: list[dict[str, Any]] = []
-    if blocks_path:
+    fallback_reason: str | None = None
+    if not blocks_path:
+        fallback_reason = "blocks_path is empty"
+    else:
         try:
             rows = _load_blocks_from_jsonl(blocks_path)
         except OSError as exc:
-            logger.warning(
-                "[paragraph_semantic_chunking] cannot read blocks.jsonl at %s: "
-                "%s; falling back to chunking_by_token_size on merged content.",
-                blocks_path,
-                exc,
-            )
+            fallback_reason = f"cannot read blocks.jsonl at {blocks_path}: {exc}"
+        else:
+            if not rows:
+                fallback_reason = (
+                    f"blocks.jsonl at {blocks_path} contains no content rows"
+                )
 
-    if not rows:
+    if fallback_reason is not None:
         # Defer to the fixed-token strategy when blocks.jsonl is absent —
         # ensures non-docx documents and edge-case parses still produce
         # chunks instead of silently dropping content. The fixed-token
@@ -829,12 +832,18 @@ def chunking_by_paragraph_semantic(
         # explicitly per-document, and the fallback only fires when the
         # required sidecar is unavailable, so default token-window
         # behaviour is the right thing to do.
+        logger.warning(
+            "[paragraph_semantic_chunking] %s; falling back to fixed-token "
+            "chunking with chunk_token_size=%d.",
+            fallback_reason,
+            target_max,
+        )
         from lightrag.chunker.token_size import chunking_by_token_size
 
         return chunking_by_token_size(
             tokenizer,
             content,
-            target_max,
+            chunk_token_size=target_max,
         )
 
     # Build initial blocks (Stage A output, already persisted).
