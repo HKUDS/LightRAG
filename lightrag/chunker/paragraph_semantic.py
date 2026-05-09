@@ -770,9 +770,13 @@ def chunking_by_paragraph_semantic(
             audit-mode 6000/8000 ratio); see threshold ratio constants
             above for the full mapping.
         blocks_path: Path to the document's ``.blocks.jsonl`` sidecar
-            (typically ``parsed_data["blocks_path"]``). When ``None`` or
-            unreadable, this function falls back to
-            :func:`chunking_by_token_size` on ``content``.
+            (typically ``parsed_data["blocks_path"]``). When ``None``,
+            unreadable, or empty, this function falls back to
+            :func:`chunking_by_recursive_character` on ``content``
+            (per ``docs/FileProcessingConfiguration-zh.md`` line 120 / 146).
+            That fallback hard-requires ``langchain-text-splitters``;
+            an :class:`ImportError` is surfaced rather than silently
+            degrading further.
 
     Returns:
         Ordered list of chunk dicts, each shaped:
@@ -824,26 +828,29 @@ def chunking_by_paragraph_semantic(
                 )
 
     if fallback_reason is not None:
-        # Defer to the fixed-token strategy when blocks.jsonl is absent —
-        # ensures non-docx documents and edge-case parses still produce
-        # chunks instead of silently dropping content. The fixed-token
-        # strategy's delimiter / overlap knobs are deliberately not
-        # plumbed through here: paragraph-semantic chunking is opted into
-        # explicitly per-document, and the fallback only fires when the
-        # required sidecar is unavailable, so default token-window
-        # behaviour is the right thing to do.
+        # Defer to recursive-character chunking when the sidecar is
+        # absent — ensures non-docx documents and edge-case parses still
+        # produce chunks instead of silently dropping content.  Document
+        # contract (FileProcessingConfiguration-zh.md L120 / L146) is
+        # explicit that P falls back to R; that contract requires
+        # langchain-text-splitters to be installed, so an ImportError
+        # here is intentional rather than a silent degrade to F.  Lazy
+        # import dodges the recursive_character ↔ paragraph_semantic
+        # circular dependency.
         logger.warning(
-            "[paragraph_semantic_chunking] %s; falling back to fixed-token "
-            "chunking with chunk_token_size=%d.",
+            "[paragraph_semantic_chunking] %s; falling back to "
+            "recursive-character chunking with chunk_token_size=%d.",
             fallback_reason,
             target_max,
         )
-        from lightrag.chunker.token_size import chunking_by_token_size
+        from lightrag.chunker.recursive_character import (
+            chunking_by_recursive_character,
+        )
 
-        return chunking_by_token_size(
+        return chunking_by_recursive_character(
             tokenizer,
             content,
-            chunk_token_size=target_max,
+            target_max,
         )
 
     # Build initial blocks (Stage A output, already persisted).

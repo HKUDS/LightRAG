@@ -29,7 +29,11 @@ from lightrag.constants import (
     SUPPORTED_PARSER_ENGINES,
     SUPPORTED_PROCESS_OPTIONS,
 )
-from lightrag.utils import logger
+from lightrag.utils import logger, parse_optional_float
+
+import json
+from collections.abc import Mapping
+from copy import deepcopy
 
 _PARSER_RULE_SPLIT_RE = re.compile(r"[;,]")
 _PARSER_ENGINE_ENDPOINT_ENV = {
@@ -150,6 +154,123 @@ def parse_process_options(options: Any) -> ProcessOptions:
         skip_kg=PROCESS_OPTION_SKIP_KG in chars,
         chunking=chunking,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-chunker parameter snapshot (chunk_options) — counterpart to the
+# F/R/V/P selector in ``ProcessOptions``.  ``process_options`` chooses
+# the strategy; ``chunk_options`` carries the parameters the chosen
+# strategy reads.
+# ---------------------------------------------------------------------------
+
+
+def _env_optional_str(key: str) -> str | None:
+    """Return the env value as a string, collapsing empty / 'None' to None."""
+    raw = os.getenv(key)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped or stripped.lower() == "none":
+        return None
+    return raw
+
+
+def _env_bool(key: str, default: bool = False) -> bool:
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on", "t", "y")
+
+
+def default_chunker_config() -> dict[str, Any]:
+    """Snapshot the env-driven defaults for every shipped chunker.
+
+    Result has one ``chunk_token_size`` key common to all strategies and
+    one nested sub-dict per strategy whose keys mirror that strategy's
+    keyword-only signature (so :func:`resolve_chunk_options` can splat
+    them straight into the chunker call).
+
+    Read at instance-creation time via
+    :func:`lightrag.addon_params.default_addon_params`; users can mutate
+    ``addon_params['chunker']`` at runtime to change the defaults applied
+    to subsequently enqueued documents (already-enqueued docs hold a
+    frozen ``full_docs[doc_id]['chunk_options']`` snapshot).
+    """
+    common_overlap = int(os.getenv("CHUNK_OVERLAP_SIZE", "100"))
+    return {
+        "chunk_token_size": int(os.getenv("CHUNK_SIZE", "1200")),
+        "fixed_token": {
+            "chunk_overlap_token_size": int(
+                os.getenv("CHUNK_F_OVERLAP_SIZE", str(common_overlap))
+            ),
+            "split_by_character": _env_optional_str("CHUNK_F_SPLIT_BY_CHARACTER"),
+            "split_by_character_only": _env_bool(
+                "CHUNK_F_SPLIT_BY_CHARACTER_ONLY", False
+            ),
+        },
+        "recursive_character": {
+            "chunk_overlap_token_size": int(
+                os.getenv("CHUNK_R_OVERLAP_SIZE", str(common_overlap))
+            ),
+            "separators": json.loads(
+                os.getenv("CHUNK_R_SEPARATORS", '["\\n\\n","\\n"," ",""]')
+            ),
+        },
+        "semantic_vector": {
+            "breakpoint_threshold_type": os.getenv(
+                "CHUNK_V_BREAKPOINT_THRESHOLD_TYPE", "percentile"
+            ),
+            "breakpoint_threshold_amount": parse_optional_float(
+                os.getenv("CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT")
+            ),
+            "buffer_size": int(os.getenv("CHUNK_V_BUFFER_SIZE", "1")),
+        },
+        "paragraph_semantic": {},
+    }
+
+
+def resolve_chunk_options(
+    addon_params: Mapping[str, Any] | None,
+    *,
+    split_by_character: str | None = None,
+    split_by_character_only: bool = False,
+) -> dict[str, Any]:
+    """Build a per-document ``chunk_options`` snapshot.
+
+    Reads the chunker config from ``addon_params['chunker']``, falling
+    back to a freshly built :func:`default_chunker_config` when the
+    addon-params mapping is missing or hasn't been populated.  The F
+    runtime args from ``LightRAG.ainsert`` overlay the ``fixed_token``
+    sub-dict — non-default values win over the env-driven defaults so
+    callers can opt out of an env-set delimiter on a per-call basis:
+
+      - ``split_by_character`` overrides the env when **non-None**.
+        ``None`` (signature default) means "use the env / addon_params
+        default".
+      - ``split_by_character_only`` overrides the env when **True**.
+        ``False`` (signature default) means "use the env / addon_params
+        default" — there's no clean way to distinguish "unset" from
+        "explicit False" with a positional default, so the env wins
+        unless the caller actively opts in.
+
+    The returned snapshot is an independent deep copy: mutating it has
+    no effect on subsequent resolutions.
+    """
+    src: Mapping[str, Any] | None = None
+    if isinstance(addon_params, Mapping):
+        candidate = addon_params.get("chunker")
+        if isinstance(candidate, Mapping):
+            src = candidate
+    if src is None:
+        src = default_chunker_config()
+    snapshot = deepcopy(dict(src))
+
+    fixed = snapshot.setdefault("fixed_token", {})
+    if split_by_character is not None:
+        fixed["split_by_character"] = split_by_character
+    if split_by_character_only:
+        fixed["split_by_character_only"] = True
+    return snapshot
 
 
 def split_engine_and_options(bracket_inner: str) -> tuple[str | None, str]:

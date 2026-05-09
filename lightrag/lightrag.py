@@ -262,7 +262,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     chunk_overlap_token_size: int = field(
         default=int(os.getenv("CHUNK_OVERLAP_SIZE", 100))
     )
-    """Number of overlapping tokens between consecutive text chunks to preserve context."""
+    """Number of overlapping tokens between consecutive text chunks to preserve context.
+
+    Per-strategy chunker parameters (R / V separators, thresholds,
+    overlap overrides, etc.) live in ``addon_params['chunker']`` and
+    are documented in
+    :func:`lightrag.parser_routing.default_chunker_config`.  Per-doc
+    snapshots are persisted to ``full_docs[doc_id]['chunk_options']``
+    at enqueue time."""
 
     tokenizer: Optional[Tokenizer] = field(default=None)
     """
@@ -1146,10 +1153,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if track_id is None:
             track_id = generate_track_id("insert")
 
-        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
-        await self.apipeline_process_enqueue_documents(
-            split_by_character, split_by_character_only
+        # Capture the F-strategy runtime args into a chunk_options
+        # snapshot before enqueue so they become a per-document
+        # setting.  ``apipeline_enqueue_documents`` itself doesn't take
+        # split args — chunk_options is the canonical chunker-config
+        # carrier; runtime split args are an ainsert-only concern.
+        from lightrag.parser_routing import resolve_chunk_options
+
+        chunk_opts = resolve_chunk_options(
+            self.addon_params,
+            split_by_character=split_by_character,
+            split_by_character_only=split_by_character_only,
         )
+        await self.apipeline_enqueue_documents(
+            input,
+            ids,
+            file_paths,
+            track_id,
+            chunk_options=chunk_opts,
+        )
+        await self.apipeline_process_enqueue_documents()
 
         return track_id
 

@@ -226,6 +226,23 @@ async def safe_vdb_operation_with_exception(
                     await asyncio.sleep(retry_delay)
 
 
+def parse_optional_float(raw: str | None) -> float | None:
+    """Decode env strings (or any text) into ``float | None``.
+
+    Empty string and the literal ``"None"`` (case-insensitive) collapse
+    to ``None`` so users can leave a knob un-set in ``.env`` and have
+    the consuming code fall back to its own default.  Any other
+    non-numeric value raises :class:`ValueError` so misconfigured envs
+    fail loudly at parse time rather than silently downstream.
+    """
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped or stripped.lower() == "none":
+        return None
+    return float(stripped)
+
+
 def get_env_value(
     env_key: str, default: any, value_type: type = str, special_none: bool = False
 ) -> any:

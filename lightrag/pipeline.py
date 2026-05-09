@@ -18,6 +18,7 @@ import inspect
 import json
 import mimetypes
 import os
+from copy import deepcopy
 import re
 import shutil
 import time
@@ -100,6 +101,16 @@ _INFLIGHT_DOC_STATUSES = (
 )
 
 
+# Map ``process_options.chunking`` selector → ``extraction_meta.chunking_method``
+# string used by the pipeline observability layer and the resume path.
+_CHUNKING_METHOD_LABELS: dict[str, str] = {
+    "F": "fixed_token",
+    "R": "recursive_character",
+    "V": "semantic_vector",
+    "P": "paragraph_semantic",
+}
+
+
 @dataclass
 class _BatchRunContext:
     """Per-batch shared state for the parse/analyze/process worker pipeline.
@@ -119,8 +130,6 @@ class _BatchRunContext:
     q_docling: asyncio.Queue
     q_analyze: asyncio.Queue
     q_process: asyncio.Queue
-    split_by_character: str | None = None
-    split_by_character_only: bool = False
     processed_count: int = 0
 
 
@@ -148,6 +157,7 @@ class _PipelineMixin:
         lightrag_document_paths: str | list[str] | None = None,
         parse_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
+        chunk_options: dict | list[dict] | None = None,
         from_scan: bool = False,
     ) -> str:
         """
@@ -170,6 +180,22 @@ class _PipelineMixin:
                 accepted as a single string broadcast to every input or as a list
                 aligned with ``input``. Stored verbatim on ``full_docs`` and
                 mirrored to ``doc_status.metadata['process_options']``.
+            chunk_options: per-document chunker parameter snapshot.
+                Accepted as ``dict`` (broadcast to every input) or
+                ``list[dict]`` (aligned with ``input``).  When ``None``,
+                each doc's snapshot is built via
+                :func:`lightrag.parser_routing.resolve_chunk_options`
+                from ``self.addon_params['chunker']``.  Persisted to
+                ``full_docs[doc_id]['chunk_options']`` and consumed by
+                :meth:`_process_single_document` to drive the file
+                chunkers (F / R / V / P).  Callers that need to bake
+                F-strategy runtime args (``split_by_character`` /
+                ``split_by_character_only``) into the snapshot — e.g.
+                :meth:`LightRAG.ainsert` — should call
+                :func:`resolve_chunk_options` themselves and pass the
+                result here; this function is intentionally chunker-
+                config agnostic.  See
+                ``docs/FileProcessingConfiguration-zh.md`` for the schema.
             from_scan: when True, the caller is the scan-owned background task
                 that already holds ``pipeline_status["scanning"]``.  Scan
                 does additional doc_status reads during its classification
@@ -246,6 +272,8 @@ class _PipelineMixin:
             parse_engine = [parse_engine] * len(input)
         if isinstance(process_options, str):
             process_options = [process_options] * len(input)
+        if isinstance(chunk_options, dict):
+            chunk_options = [chunk_options] * len(input)
 
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
@@ -276,6 +304,10 @@ class _PipelineMixin:
             raise ValueError(
                 "Number of process options must match the number of documents"
             )
+        if chunk_options is not None and len(chunk_options) != len(input):
+            raise ValueError(
+                "Number of chunk_options dicts must match the number of documents"
+            )
 
         def _parse_engine_at(index: int) -> str | None:
             if parse_engine is None:
@@ -289,6 +321,28 @@ class _PipelineMixin:
             from lightrag.parser_routing import sanitize_process_options
 
             return sanitize_process_options(process_options[index])
+
+        def _chunk_options_at(index: int) -> dict[str, Any]:
+            """Resolve the per-doc chunk_options snapshot.
+
+            When the caller supplied ``chunk_options`` we take a deep
+            copy so two docs in the same batch (broadcast from a single
+            dict) cannot share mutable inner sub-dicts; otherwise we
+            build a fresh snapshot from ``self.addon_params['chunker']``.
+
+            F-strategy runtime args (``split_by_character`` /
+            ``split_by_character_only`` from :meth:`LightRAG.ainsert`)
+            are baked into the snapshot upstream — ainsert calls
+            :func:`lightrag.parser_routing.resolve_chunk_options` itself
+            and passes the result via ``chunk_options=``.  This function
+            is purely a persistence helper; chunker-config construction
+            is not its concern.
+            """
+            from lightrag.parser_routing import resolve_chunk_options
+
+            if chunk_options is not None:
+                return deepcopy(chunk_options[index])
+            return resolve_chunk_options(self.addon_params)
 
         # 1. Validate ids and build contents (when lightrag: no content dedup, content may be empty)
         if ids is not None:
@@ -404,6 +458,11 @@ class _PipelineMixin:
             options_str = _process_options_at(index)
             if options_str:
                 content_data["process_options"] = options_str
+            # Always snapshot chunk_options at enqueue time — independent
+            # of whether process_options selected a specific strategy —
+            # so the per-doc parameters are frozen even when ``F``
+            # (default) is used.
+            content_data["chunk_options"] = _chunk_options_at(index)
             contents[doc_id] = content_data
 
         if is_lightrag_format:
@@ -710,6 +769,12 @@ class _PipelineMixin:
                     full_docs_data[doc_id]["process_options"] = contents[doc_id][
                         "process_options"
                     ]
+                # ``chunk_options`` is always populated by ``_add_content``
+                # at enqueue time so it's persisted unconditionally.
+                if contents[doc_id].get("chunk_options") is not None:
+                    full_docs_data[doc_id]["chunk_options"] = contents[doc_id][
+                        "chunk_options"
+                    ]
             await self.full_docs.upsert(full_docs_data)
             # Persist data to disk immediately
             await self.full_docs.index_done_callback()
@@ -803,11 +868,7 @@ class _PipelineMixin:
                     f"File processing error: - ID: {doc_id} {error_doc['file_path']}"
                 )
 
-    async def apipeline_process_enqueue_documents(
-        self,
-        split_by_character: str | None = None,
-        split_by_character_only: bool = False,
-    ) -> None:
+    async def apipeline_process_enqueue_documents(self) -> None:
         """
         Process pending documents by splitting them into chunks, processing
         each chunk for entity and relation extraction, and updating the
@@ -937,8 +998,6 @@ class _PipelineMixin:
 
                 await self._run_pipeline_batch(
                     to_process_docs,
-                    split_by_character=split_by_character,
-                    split_by_character_only=split_by_character_only,
                     pipeline_status=pipeline_status,
                     pipeline_status_lock=pipeline_status_lock,
                 )
@@ -989,8 +1048,6 @@ class _PipelineMixin:
         self,
         to_process_docs: dict[str, DocProcessingStatus],
         *,
-        split_by_character: str | None,
-        split_by_character_only: bool,
         pipeline_status: dict,
         pipeline_status_lock,
     ) -> None:
@@ -1017,8 +1074,6 @@ class _PipelineMixin:
             q_docling=asyncio.Queue(maxsize=self.queue_size_default),
             q_analyze=asyncio.Queue(maxsize=self.queue_size_default),
             q_process=asyncio.Queue(maxsize=self.queue_size_insert),
-            split_by_character=split_by_character,
-            split_by_character_only=split_by_character_only,
         )
 
         workers: list[asyncio.Task] = []
@@ -1513,53 +1568,87 @@ class _PipelineMixin:
                 #     options string): dispatch to a chunker that
                 #     follows the standardized file-chunker contract
                 #     ``(tokenizer, content, chunk_token_size, *,
-                #     <strategy kwargs>)``.
+                #     <strategy kwargs>)``, with kwargs supplied from
+                #     the per-doc ``chunk_options`` snapshot persisted
+                #     at enqueue time.
                 #   - No selector supplied: honor the
                 #     externally-customizable ``self.chunking_func``
                 #     with its legacy 6-arg signature so existing
                 #     callers (typically :meth:`ainsert` for raw text)
-                #     keep working unchanged.
+                #     keep working unchanged.  Legacy callers still
+                #     read parameters from ``chunk_options`` first
+                #     (per-doc snapshot), with ctx values as fallback
+                #     for already-enqueued docs predating chunk_options.
+                chunk_opts = (content_data or {}).get("chunk_options")
+                if not isinstance(chunk_opts, dict) or not chunk_opts:
+                    # Backwards compatibility: rows enqueued before the
+                    # chunk_options snapshot was added fall back to a
+                    # fresh build from current addon_params['chunker'].
+                    # F-strategy split args fall back to whatever lives
+                    # in addon_params['chunker']['fixed_token']; runtime
+                    # overrides are an ainsert-time concern and don't
+                    # apply at process time for legacy rows.
+                    from lightrag.parser_routing import resolve_chunk_options
+
+                    chunk_opts = resolve_chunk_options(self.addon_params)
+                resolved_chunk_size = int(
+                    chunk_opts.get("chunk_token_size") or self.chunk_token_size
+                )
+
                 if doc_process_opts.chunking_explicit:
                     from lightrag.chunker import (
                         chunking_by_fixed_token,
                         chunking_by_paragraph_semantic,
+                        chunking_by_recursive_character,
+                        chunking_by_semantic_vector,
                     )
 
-                    if doc_process_opts.chunking == "P":
+                    strategy = doc_process_opts.chunking
+                    if strategy == "P":
                         chunking_result = chunking_by_paragraph_semantic(
                             self.tokenizer,
                             content,
-                            self.chunk_token_size,
+                            resolved_chunk_size,
                             blocks_path=(
                                 str(parsed_data.get("blocks_path") or "").strip()
                                 or None
                             ),
+                            **(chunk_opts.get("paragraph_semantic") or {}),
                         )
-                    else:
-                        if doc_process_opts.chunking != "F":
-                            logger.warning(
-                                f"[chunking] process_options chunking="
-                                f"{doc_process_opts.chunking!r} requested for "
-                                f"d-id: {doc_id}, file: {file_path}, but R/V "
-                                f"strategies are not yet implemented; falling "
-                                f"back to fixed chunking ('F')."
-                            )
+                    elif strategy == "R":
+                        chunking_result = chunking_by_recursive_character(
+                            self.tokenizer,
+                            content,
+                            resolved_chunk_size,
+                            **(chunk_opts.get("recursive_character") or {}),
+                        )
+                    elif strategy == "V":
+                        chunking_result = await chunking_by_semantic_vector(
+                            self.tokenizer,
+                            content,
+                            resolved_chunk_size,
+                            embedding_func=self.embedding_func,
+                            **(chunk_opts.get("semantic_vector") or {}),
+                        )
+                    else:  # "F"
                         chunking_result = chunking_by_fixed_token(
                             self.tokenizer,
                             content,
-                            self.chunk_token_size,
-                            chunk_overlap_token_size=self.chunk_overlap_token_size,
-                            split_by_character=ctx.split_by_character,
-                            split_by_character_only=ctx.split_by_character_only,
+                            resolved_chunk_size,
+                            **(chunk_opts.get("fixed_token") or {}),
                         )
                 else:
+                    f_opts = chunk_opts.get("fixed_token") or {}
                     chunking_result = self.chunking_func(
                         self.tokenizer,
                         content,
-                        ctx.split_by_character,
-                        ctx.split_by_character_only,
-                        self.chunk_overlap_token_size,
-                        self.chunk_token_size,
+                        f_opts.get("split_by_character"),
+                        f_opts.get("split_by_character_only", False),
+                        f_opts.get(
+                            "chunk_overlap_token_size",
+                            self.chunk_overlap_token_size,
+                        ),
+                        resolved_chunk_size,
                     )
                 if inspect.isawaitable(chunking_result):
                     chunking_result = await chunking_result
@@ -1594,15 +1683,11 @@ class _PipelineMixin:
                     ),
                     "chunking_method": (
                         # Explicit selector in process_options: reflect
-                        # the dispatched strategy.
-                        (
-                            "paragraph_semantic"
-                            if doc_process_opts.chunking == "P"
-                            else (
-                                "fixed_token_fallback"
-                                if doc_process_opts.chunking != "F"
-                                else "fixed_token"
-                            )
+                        # the dispatched strategy.  ``fixed_token_fallback``
+                        # is preserved as a defensive label in case a
+                        # future selector char slips past the validator.
+                        _CHUNKING_METHOD_LABELS.get(
+                            doc_process_opts.chunking, "fixed_token_fallback"
                         )
                         if doc_process_opts.chunking_explicit
                         # No selector: chunking_func was invoked, which

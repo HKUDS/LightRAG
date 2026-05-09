@@ -133,6 +133,91 @@ lightrag
 
 > 模态可用性以“sidecar 文件是否存在”为唯一信号，内容提取引擎不需要在 meta 中声明能力。某文档若没有任何图像/表格/公式，对应 sidecar 不会写入；用户即使开启了 `i/t/e`，对应模态也只会被静默跳过，但 `analyze_multimodal` 会在该篇文档落一行 INFO 级日志（`[analyze_multimodal] process_options opted into i:drawings ... but the parser produced no such sidecar`），便于排查“VLM 为何没跑”。这种情况不会报错。
 
+### 分块器参数与 `chunk_options`
+
+`process_options` 选**用哪种**分块策略（F/R/V/P），`chunk_options` 决定那一路分块器**用哪些参数**。两者职责正交：前者是单字符 selector，后者是结构化字典。
+
+#### 三级配置链路
+
+```
+env vars                                                  (启动期一次性读取)
+   │
+   ▼
+addon_params["chunker"]                                   (LightRAG 实例字段，运行时可改)
+   │
+   ▼  resolve_chunk_options(addon_params, split_by_character=…, split_by_character_only=…)
+   │
+full_docs[doc_id]["chunk_options"]                       (入队时冻结，每文件独立快照)
+   │
+   ▼
+chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按 selector 派发)
+```
+
+- **env vars** 在 `LightRAG.__init__` 阶段（确切地说由 `default_addon_params()` 调用 `default_chunker_config()`）读一次，灌进 `addon_params["chunker"]`。
+- **`addon_params["chunker"]`** 是 `ObservableAddonParams` 字段，可以运行时改：
+  ```python
+  rag.addon_params["chunker"]["recursive_character"]["separators"] = ["##", "\n", " "]
+  ```
+  改完后，**后续入队**的文档拿到新默认；已入队文档保留入队时的快照不变。
+- **`full_docs.chunk_options`** 由 `apipeline_enqueue_documents(chunk_options=…)` 写入：调用方传入 `dict` / `list[dict]` 即原样持久化；不传则由 `resolve_chunk_options(self.addon_params, ...)` 现场拼装一份。
+- **分块器调用**从 `full_docs.chunk_options` 取对应子字典，按 `process_options.chunking` selector 派发到 F/R/V/P。
+
+三层语义保证：
+
+1. **复现性**：env 改了，重启后老文档仍按入队那一刻的快照分块，结果不变。
+2. **续跑一致性**：续跑分支 B（内容已抽取，按当前 `process_options` 重做分块）读的也是 `full_docs.chunk_options`，避免 env 漂移破坏一致性。
+3. **per-file 个性化**：调用方可以为每个文件传不同的 `chunk_options`（典型用法：管理 UI 单独配置某个文件的 separators 或 V 阈值），将来上传 API 也可在 form / hint 中接收覆盖。
+
+#### 字段结构
+
+```jsonc
+{
+  "chunk_token_size": 1200,                                   // 通用 token 上限
+  "fixed_token": {                                            // F 专属
+    "chunk_overlap_token_size": 100,
+    "split_by_character": null,
+    "split_by_character_only": false
+  },
+  "recursive_character": {                                    // R 专属
+    "chunk_overlap_token_size": 100,
+    "separators": ["\n\n", "\n", " ", ""]
+  },
+  "semantic_vector": {                                        // V 专属
+    "breakpoint_threshold_type": "percentile",                // percentile | standard_deviation | interquartile | gradient
+    "breakpoint_threshold_amount": null,                      // null = LangChain 默认
+    "buffer_size": 1
+  },
+  "paragraph_semantic": {}                                    // P 当前无 user-tunable knob
+}
+```
+
+各子字典与对应分块器函数的 keyword-only 参数一一对应；新增参数时无需改 dispatcher，只在 chunker 函数添加 kwarg 即可。
+
+#### 环境变量
+
+下表所有变量在 `LightRAG` 实例化时由 `default_chunker_config()` 一次性读入 `addon_params["chunker"]`。修改 env 后需要新建 `LightRAG` 实例（或直接改 `addon_params["chunker"]`）才生效；已入队的文档持有冻结快照不受影响。
+
+| 变量 | 默认 | 类型 | 作用域 |
+|---|---|---|---|
+| `CHUNK_SIZE` | `1200` | int | `chunk_token_size`，所有策略共用 token 上限 |
+| `CHUNK_OVERLAP_SIZE` | `100` | int | F 与 R 共用的 overlap 默认 |
+| `CHUNK_F_OVERLAP_SIZE` | 继承 `CHUNK_OVERLAP_SIZE` | int | F 单独覆盖 |
+| `CHUNK_F_SPLIT_BY_CHARACTER` | （未设 = `null`） | str? | F 预切分隔符；`null` / 空串 = 仅按 token 窗 |
+| `CHUNK_F_SPLIT_BY_CHARACTER_ONLY` | `false` | bool | F 严格模式：不二次按 token 切，超长抛错 |
+| `CHUNK_R_OVERLAP_SIZE` | 继承 `CHUNK_OVERLAP_SIZE` | int | R 单独覆盖 |
+| `CHUNK_R_SEPARATORS` | `["\n\n","\n"," ",""]` | JSON 数组字符串 | R 分隔符级联，按从语义最强到最弱排列 |
+| `CHUNK_V_BREAKPOINT_THRESHOLD_TYPE` | `percentile` | str | V 阈值类型；可选 `percentile` / `standard_deviation` / `interquartile` / `gradient` |
+| `CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT` | （未设 = `null`） | float? | V 阈值大小；`null` 让 LangChain 按类型自选默认（如 percentile=95） |
+| `CHUNK_V_BUFFER_SIZE` | `1` | int | V 句子缓冲窗，距离计算时合并的相邻句数 |
+
+P 暂不暴露 env 变量；其内部比例常量是算法刻度，会随 `chunk_token_size` 自动按比例推导。
+
+`LightRAG.ainsert(split_by_character=…, split_by_character_only=…)` 的运行时参数在入队时由 `resolve_chunk_options` 覆写到 `chunk_options.fixed_token`：`split_by_character` 非 `None` 即覆盖 env 默认；`split_by_character_only=True` 即覆盖（`False` 是签名默认值，与"未指定"无法区分，所以 env 默认胜出）。
+
+#### 缺失兼容
+
+老文档入队时还没有 `chunk_options` 字段；分块时 dispatcher 会调用 `resolve_chunk_options(self.addon_params, …)` 兜底现场拼装。建议在升级后通过 reprocess 一次让老文档拿到 `chunk_options` 快照。
+
 ### 校验、优先级与回退
 
 - 启动时会严格校验 `LIGHTRAG_PARSER`：未知内容提取引擎、错误后缀写法、显式使用不支持的后缀、外部引擎缺少 endpoint、处理选项中的非法字符都会导致启动失败。
@@ -198,6 +283,7 @@ DOCLING_ENDPOINT=http://localhost:8081/v1/convert/file/async
 | `lightrag_document_path` | `parse_format=lightrag` 时保存结构化 LightRAG Document 的路径；新记录优先保存为相对 `INPUT_DIR` 的路径，例如 `__parsed__/report.docx.parsed/report.blocks.jsonl`。注意路径中的子目录与 blocks 文件名都使用规范化 basename（不含 hint）。 |
 | `parse_engine` | 实际完成抽取的引擎：`legacy`, `native`, `mineru`, `docling`。对于待抽取文件，也可暂存目标引擎。 |
 | `process_options` | 入队时记录的原始处理选项串（不含引擎名和分隔 `-`），例如 `"iet"`、`"R!"`、`""`。下游各阶段以此字段为权威源，决定是否启用图像/表格/公式分析（`i/t/e`）、是否禁止知识图谱构建（`!`）以及分块方式（`F/R/V/P`）。空字符串等价于全部默认值。 |
+| `chunk_options` | 入队时**冻结**的分块器参数快照（嵌套字典）。由调用方传入或由 `LightRAG._resolve_chunk_options()` 从实例字段（含 env 默认）兜底。`process_options` 选哪种分块策略（F/R/V/P），`chunk_options` 决定那一路分块器使用哪些参数。下游 `_process_single_document` 在分块前从此字段读取专属 kwargs；持久化保证 env 变化、续跑、重启后老文档行为可复现。允许 per-doc 覆盖（典型用法：管理 UI / 上传 API 为单个文件指定不同 separators）。详见下方"分块器参数与 chunk_options"小节。 |
 
 `pending_parse` 表示文件已经入队，但还没有完成抽取。抽取成功后会改写为 `raw` 或 `lightrag`，并补齐 `content_hash`。抽取失败时保留 `pending_parse` 和空 `content`，便于后续排查和重试。
 
@@ -383,7 +469,7 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 | 旧 chunks 清理 | 读 `doc_status.chunks_list`，从 `chunks_vdb` 与 `text_chunks` 全部 delete。理由：流水线产物中无法可靠区分"普通文本块 vs 多模态附加块"，按 chunk id 一律重新生成最简单也最可靠 |
 | 旧实体 / 关系清理 | 复用 `adelete_by_doc_id` 内部清理逻辑（抽出为 `_purge_doc_chunks_and_kg(doc_id)` helper），删除 `entity_chunks` / `relation_chunks` 中以这些 chunk id 为 source 的条目，并把图谱里因之失去全部源的孤立节点一并删除 |
 | `analyze_multimodal` | **不再看 `meta.analyze_time`**：按新 `process_options.{i,t,e}` 与 sidecar 中各 item 的 `llm_analyze_result` 取交集做增量分析（已分析的 item 跳过，新启用的模态从空状态开始分析）。`analyze_time` 改为"最近一次成功分析时间"语义，仅供观测 |
-| 重新分块 | 按新 `process_options.chunking` 重跑（LightRAG Document path 用 native heading-driven，legacy path 用 fixed） |
+| 重新分块 | 按新 `process_options.chunking` 选策略，参数从 `full_docs.chunk_options` 读取（入队快照，不会因续跑被覆盖；env 改动后老文档仍按入队那一刻的参数分块）。LightRAG Document path 在 `process_options=P` 时走 paragraph_semantic，否则按 selector 分发到 F/R/V。 |
 | 实体抽取 / KG-skip | 按新 `process_options.skip_kg` 决定 |
 
 > 这条规则保证：用户改 `i/t/e` 重传同名文档（先删旧 doc 再上传带新 hint 的文件）时，多模态分析能增量补齐；改 `F/R/V/P` 时 chunks 与图谱重建；改 `!` 时停掉或恢复 KG 构建。引擎变更被视为"重大变更"，统一由 delete + 重传完成，不在续跑路径里隐式发生。
