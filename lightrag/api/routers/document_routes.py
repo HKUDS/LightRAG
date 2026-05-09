@@ -30,6 +30,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     PARSER_ENGINE_LEGACY,
     PARSED_DIR_NAME,
+    PROCESS_OPTION_CHUNK_FIXED,
 )
 from lightrag.parser_routing import (
     canonicalize_parser_hinted_basename,
@@ -1616,6 +1617,7 @@ async def pipeline_enqueue_file(
             file_size = 0
 
         extraction_engine, process_options = resolve_file_parser_directives(file_path)
+        api_process_options = process_options or PROCESS_OPTION_CHUNK_FIXED
         if extraction_engine != PARSER_ENGINE_LEGACY:
             try:
                 enqueue_kwargs = {
@@ -1623,10 +1625,9 @@ async def pipeline_enqueue_file(
                     "track_id": track_id,
                     "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
                     "parse_engine": extraction_engine,
+                    "process_options": api_process_options,
                     "from_scan": from_scan,
                 }
-                if process_options:
-                    enqueue_kwargs["process_options"] = process_options
                 enqueue_result = await rag.apipeline_enqueue_documents(
                     "", **enqueue_kwargs
                 )
@@ -1937,10 +1938,9 @@ async def pipeline_enqueue_file(
                     "file_paths": file_path.name,
                     "track_id": track_id,
                     "parse_engine": PARSER_ENGINE_LEGACY,
+                    "process_options": api_process_options,
                     "from_scan": from_scan,
                 }
-                if process_options:
-                    enqueue_kwargs["process_options"] = process_options
                 enqueue_result = await rag.apipeline_enqueue_documents(
                     content, **enqueue_kwargs
                 )
@@ -2112,7 +2112,10 @@ async def pipeline_index_texts(
         raise ValueError("File sources must be unique by filename")
 
     await rag.apipeline_enqueue_documents(
-        input=texts, file_paths=normalized_file_sources, track_id=track_id
+        input=texts,
+        file_paths=normalized_file_sources,
+        track_id=track_id,
+        process_options=PROCESS_OPTION_CHUNK_FIXED,
     )
     await rag.apipeline_process_enqueue_documents()
 

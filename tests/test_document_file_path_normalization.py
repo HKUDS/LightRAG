@@ -10,6 +10,7 @@ from lightrag.api.routers.document_routes import (  # noqa: E402
     pipeline_index_texts,
 )
 from lightrag.base import DocStatus  # noqa: E402
+from lightrag.constants import PROCESS_OPTION_CHUNK_FIXED  # noqa: E402
 
 
 class DummyRAG:
@@ -17,9 +18,16 @@ class DummyRAG:
         self.enqueued_calls = []
         self.processed = False
 
-    async def apipeline_enqueue_documents(self, input, file_paths=None, track_id=None):
+    async def apipeline_enqueue_documents(
+        self, input, file_paths=None, track_id=None, process_options=None
+    ):
         self.enqueued_calls.append(
-            {"input": input, "file_paths": file_paths, "track_id": track_id}
+            {
+                "input": input,
+                "file_paths": file_paths,
+                "track_id": track_id,
+                "process_options": process_options,
+            }
         )
 
     async def apipeline_process_enqueue_documents(self):
@@ -54,7 +62,12 @@ async def test_pipeline_index_texts_normalizes_file_sources_to_basename():
     )
 
     assert rag.enqueued_calls == [
-        {"input": ["alpha"], "file_paths": ["alpha.txt"], "track_id": "track-1"}
+        {
+            "input": ["alpha"],
+            "file_paths": ["alpha.txt"],
+            "track_id": "track-1",
+            "process_options": PROCESS_OPTION_CHUNK_FIXED,
+        }
     ]
     assert rag.processed is True
 

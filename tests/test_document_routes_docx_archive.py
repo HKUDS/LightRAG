@@ -23,6 +23,7 @@ DeletionResult = _base.DeletionResult
 FULL_DOCS_FORMAT_LIGHTRAG = _constants.FULL_DOCS_FORMAT_LIGHTRAG
 FULL_DOCS_FORMAT_PENDING_PARSE = _constants.FULL_DOCS_FORMAT_PENDING_PARSE
 PARSED_DIR_NAME = _constants.PARSED_DIR_NAME
+PROCESS_OPTION_CHUNK_FIXED = _constants.PROCESS_OPTION_CHUNK_FIXED
 compute_mdhash_id = _utils.compute_mdhash_id
 LightRAG = _lightrag.LightRAG
 resolve_stored_document_parser_engine = (
@@ -30,6 +31,7 @@ resolve_stored_document_parser_engine = (
 )
 pipeline_index_file = _document_routes.pipeline_index_file
 pipeline_index_files = _document_routes.pipeline_index_files
+pipeline_index_texts = _document_routes.pipeline_index_texts
 pipeline_enqueue_file = _document_routes.pipeline_enqueue_file
 run_scanning_process = _document_routes.run_scanning_process
 DocumentManager = _document_routes.DocumentManager
@@ -316,7 +318,7 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
             "track_id": "track-docx",
             "docs_format": None,
             "parse_engine": "legacy",
-            "process_options": None,
+            "process_options": PROCESS_OPTION_CHUNK_FIXED,
             "from_scan": False,
         }
     ]
@@ -341,7 +343,7 @@ async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
             "track_id": "track-md",
             "docs_format": None,
             "parse_engine": "legacy",
-            "process_options": None,
+            "process_options": PROCESS_OPTION_CHUNK_FIXED,
             "from_scan": False,
         }
     ]
@@ -401,7 +403,7 @@ async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
             "track_id": "track-pdf",
             "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parse_engine": "mineru",
-            "process_options": None,
+            "process_options": PROCESS_OPTION_CHUNK_FIXED,
             "from_scan": False,
         }
     ]
@@ -475,6 +477,32 @@ async def test_pipeline_index_files_leaves_lightrag_document_docx_batch(
         item["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE for item in rag.enqueued
     )
     assert all(item["parse_engine"] == "native" for item in rag.enqueued)
+    assert all(
+        item["process_options"] == PROCESS_OPTION_CHUNK_FIXED for item in rag.enqueued
+    )
+
+
+async def test_pipeline_index_texts_sets_api_default_process_options():
+    rag = _FakeRag()
+
+    await pipeline_index_texts(
+        rag,
+        ["first text", "second text"],
+        file_sources=["first.txt", "second.txt"],
+        track_id="track-texts",
+    )
+
+    assert rag.enqueued == [
+        {
+            "input": ["first text", "second text"],
+            "file_path": ["first.txt", "second.txt"],
+            "track_id": "track-texts",
+            "docs_format": None,
+            "parse_engine": None,
+            "process_options": PROCESS_OPTION_CHUNK_FIXED,
+            "from_scan": False,
+        }
+    ]
 
 
 async def test_scan_processed_same_name_archives_with_unique_name(
