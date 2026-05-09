@@ -11,13 +11,13 @@ Two contracts coexist intentionally:
 
     so externally-supplied :attr:`lightrag.LightRAG.chunking_func`
     implementations continue to work unchanged. The legacy contract is
-    only invoked for the **non-file text insert path** (e.g.
-    :meth:`LightRAG.ainsert` with raw text), preserving the historical
-    customization point.
+    only invoked when ``process_options`` does NOT specify a chunking
+    selector (i.e. ``chunking_explicit`` is False) — typically direct
+    :meth:`LightRAG.ainsert` calls with raw text.
 
-  - **File-chunker contract** — for documents that went through the
-    native parser (``parse_format == "lightrag"``), the file-based
-    dispatcher in ``_PipelineMixin._process_single_document`` reads
+  - **File-chunker contract** — for documents whose ``process_options``
+    explicitly selects a chunking strategy, the file-based dispatcher in
+    ``_PipelineMixin._process_single_document`` reads
     ``doc_process_opts.chunking`` and routes to a chunker following the
     standardized signature
 
@@ -26,18 +26,32 @@ Two contracts coexist intentionally:
 
     Currently shipped file chunkers:
 
-      - :func:`chunking_by_fixed_token` — the ``"F"`` strategy (same
+      - :func:`chunking_by_fixed_token` — the ``"F"`` strategy. Same
         algorithm as :func:`chunking_by_token_size`, surfaced under the
-        new contract).
-      - :func:`chunking_by_paragraph_semantic` — the ``"P"`` strategy
-        (heading-aware semantic chunker; consumes the docx-native
-        ``.blocks.jsonl`` sidecar).
+        new contract.
+      - :func:`chunking_by_recursive_character` — the ``"R"`` strategy.
+        Wraps LangChain ``RecursiveCharacterTextSplitter``; recursively
+        splits on a separator cascade with token-aware sizing.
+      - :func:`chunking_by_semantic_vector` — the ``"V"`` strategy.
+        Wraps LangChain ``SemanticChunker``; sentence-level embedding
+        similarity finds breakpoints. Async; needs an
+        :class:`~lightrag.utils.EmbeddingFunc`.
+      - :func:`chunking_by_paragraph_semantic` — the ``"P"`` strategy.
+        Heading-aware semantic chunker; consumes the docx-native
+        ``.blocks.jsonl`` sidecar. Falls back to R when the sidecar is
+        missing or unreadable.
 
 See ``docs/ParagraphSemanticChunking-zh.md`` for the algorithm behind
-the ``"P"`` strategy.
+the ``"P"`` strategy and ``docs/FileProcessingConfiguration-zh.md`` for
+how ``process_options`` and the new ``chunk_options`` snapshot drive
+chunker selection per document.
 """
 
 from lightrag.chunker.paragraph_semantic import chunking_by_paragraph_semantic
+from lightrag.chunker.recursive_character import (
+    chunking_by_recursive_character,
+)
+from lightrag.chunker.semantic_vector import chunking_by_semantic_vector
 from lightrag.chunker.token_size import (
     chunking_by_fixed_token,
     chunking_by_token_size,
@@ -46,5 +60,7 @@ from lightrag.chunker.token_size import (
 __all__ = [
     "chunking_by_fixed_token",
     "chunking_by_paragraph_semantic",
+    "chunking_by_recursive_character",
+    "chunking_by_semantic_vector",
     "chunking_by_token_size",
 ]

@@ -39,14 +39,28 @@ def _emit_deprecated_addon_warnings(params: Mapping[str, Any]) -> None:
 
 
 def default_addon_params() -> dict[str, Any]:
+    # Lazy import to avoid the parser_routing → utils → … cycle that
+    # would otherwise form when parser_routing imports back into this
+    # module via ``LightRAG`` construction paths.
+    from lightrag.parser_routing import default_chunker_config
+
     return {
         "language": get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str),
         "entity_type_prompt_file": get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
+        # Per-strategy chunker parameters; mutate at runtime (e.g.
+        # ``rag.addon_params["chunker"]["recursive_character"]["separators"]
+        # = [...]``) to change defaults applied to subsequently
+        # enqueued documents.  Per-document snapshots are persisted to
+        # ``full_docs[doc_id]["chunk_options"]`` at enqueue time and
+        # are not affected by later runtime mutations.
+        "chunker": default_chunker_config(),
     }
 
 
 def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, Any]:
     """Coerce ``addon_params`` to a plain dict with env defaults backfilled."""
+    from lightrag.parser_routing import default_chunker_config
+
     if addon_params is None:
         normalized = default_addon_params()
     elif isinstance(addon_params, Mapping):
@@ -64,7 +78,7 @@ def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, 
 
     # When the caller supplies addon_params explicitly, the dataclass
     # default_factory is skipped — fall back to environment variables so
-    # ENTITY_TYPE_PROMPT_FILE / SUMMARY_LANGUAGE still apply.
+    # ENTITY_TYPE_PROMPT_FILE / SUMMARY_LANGUAGE / chunker still apply.
     normalized.setdefault(
         "language", get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str)
     )
@@ -72,6 +86,12 @@ def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, 
         "entity_type_prompt_file",
         get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
     )
+    # Build the chunker default lazily — `default_chunker_config()` reads env
+    # vars (e.g. CHUNK_R_SEPARATORS via json.loads) and would raise on a
+    # malformed value, which would prevent an explicit caller-supplied
+    # `chunker` from bypassing a broken environment.
+    if "chunker" not in normalized:
+        normalized["chunker"] = default_chunker_config()
     return normalized
 
 

@@ -416,39 +416,33 @@ class _ListHandler(logging.Handler):
 
 
 @pytest.mark.offline
-def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path, monkeypatch):
-    """``process_options=R`` (or ``V``) must log the deferred-strategy
-    warning and still produce F-chunked output.
+def test_explicit_R_dispatches_to_recursive_character(tmp_path, monkeypatch):
+    """``process_options=R`` must invoke
+    :func:`chunking_by_recursive_character` (the new file-chunker
+    contract) rather than the legacy ``chunking_func``.
 
-    Under the new chunker dispatch, an explicit chunking selector in
-    ``process_options`` (any of ``F``/``R``/``V``/``P``) bypasses the
-    legacy ``chunking_func`` entirely and routes to the standardized
-    file-chunker contract. R/V are not yet implemented so the
-    dispatcher falls back to ``chunking_by_fixed_token`` (the F
-    strategy under the new contract). The test verifies both halves of
-    that contract:
-
-      1. ``chunking_by_fixed_token`` is the function that actually
-         runs, not the legacy ``chunking_func`` (which stays untouched
-         since the user explicitly selected a strategy).
-      2. The dispatcher logs the ``R/V strategies are not yet
-         implemented`` warning so users see why ``R`` was downgraded.
+    Verifies the explicit-selector dispatch contract:
+      1. ``chunking_by_recursive_character`` runs at least once.
+      2. The legacy ``chunking_func`` is bypassed entirely.
+      3. The deprecated "R/V not yet implemented" warning no longer
+         appears (now that R has a real implementation).
     """
 
+    pytest.importorskip("langchain_text_splitters")
+
     import lightrag.chunker as chunker_pkg
-    from lightrag.chunker import chunking_by_fixed_token as real_fixed
+    from lightrag.chunker import chunking_by_recursive_character as real_r
 
     captured = {"calls": 0}
 
-    def _fixed_spy(*args, **kwargs):
+    def _r_spy(*args, **kwargs):
         captured["calls"] += 1
-        return real_fixed(*args, **kwargs)
+        return real_r(*args, **kwargs)
 
-    # The dispatcher does ``from lightrag.chunker import
-    # chunking_by_fixed_token`` inside the function body, which
-    # re-resolves the name from the package each call — patching the
-    # package attribute is enough to intercept it.
-    monkeypatch.setattr(chunker_pkg, "chunking_by_fixed_token", _fixed_spy)
+    # The dispatcher does ``from lightrag.chunker import …`` inside the
+    # function body, which re-resolves the name from the package each
+    # call — patching the package attribute is enough to intercept it.
+    monkeypatch.setattr(chunker_pkg, "chunking_by_recursive_character", _r_spy)
 
     async def _run():
         rag = _new_rag(tmp_path)
@@ -461,7 +455,7 @@ def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path, monkeypatch):
         lightrag_logger.addHandler(list_handler)
         try:
             await rag.apipeline_enqueue_documents(
-                "Body for R/V/P fallback test.",
+                "Body paragraph one.\n\nBody paragraph two for R dispatch test.",
                 file_paths="rs.[native-R].txt",
                 track_id="track-rs",
                 process_options="R",
@@ -471,9 +465,7 @@ def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path, monkeypatch):
             lightrag_logger.removeHandler(list_handler)
             await rag.finalize_storages()
 
-        assert (
-            captured["calls"] >= 1
-        ), "R should fall back to chunking_by_fixed_token (new contract)"
+        assert captured["calls"] >= 1, "R must route to chunking_by_recursive_character"
         assert legacy_spy["calls"] == 0, (
             "explicit process_options selector must bypass legacy "
             "chunking_func; got "
@@ -484,9 +476,66 @@ def test_nonfixed_chunking_warns_and_falls_back_to_fixed(tmp_path, monkeypatch):
             for rec in list_handler.records
             if rec.levelno == logging.WARNING
         ]
-        assert any(
+        assert not any(
             "R/V strategies are not yet implemented" in msg for msg in warning_messages
-        ), f"deferred-strategy warning missing; saw: {warning_messages!r}"
+        ), (
+            "deprecated 'not yet implemented' warning must be gone now "
+            f"that R is wired up; saw: {warning_messages!r}"
+        )
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_explicit_V_dispatches_to_semantic_vector(tmp_path, monkeypatch):
+    """``process_options=V`` must invoke
+    :func:`chunking_by_semantic_vector` and bypass the legacy
+    ``chunking_func``.  The test installs a stub embedding (the spy
+    short-circuits before the real LangChain SemanticChunker runs) so
+    the assertion is purely about dispatch routing, not chunk quality.
+    """
+
+    pytest.importorskip("langchain_experimental")
+
+    import lightrag.chunker as chunker_pkg
+
+    captured = {"calls": 0}
+
+    async def _v_spy(*args, **kwargs):
+        # Short-circuit: skip langchain SemanticChunker entirely and
+        # return one synthetic chunk.  We're only verifying that the
+        # dispatcher routed here with the right keyword args.
+        captured["calls"] += 1
+        captured["embedding_func"] = kwargs.get("embedding_func")
+        captured["chunk_token_size"] = args[2] if len(args) > 2 else None
+        return [
+            {"tokens": 5, "content": "stub", "chunk_order_index": 0},
+        ]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_semantic_vector", _v_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        legacy_spy = _attach_chunking_spy(rag)
+        try:
+            await rag.apipeline_enqueue_documents(
+                "Body for V dispatch test. Sentence one. Sentence two.",
+                file_paths="vs.[native-V].txt",
+                track_id="track-vs",
+                process_options="V",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+        assert captured["calls"] >= 1, "V must route to chunking_by_semantic_vector"
+        assert (
+            captured.get("embedding_func") is rag.embedding_func
+        ), "dispatcher must hand the LightRAG embedding_func to the V chunker"
+        assert legacy_spy["calls"] == 0, (
+            "explicit process_options selector must bypass legacy " "chunking_func"
+        )
 
     asyncio.run(_run())
 

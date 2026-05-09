@@ -256,13 +256,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     # Text chunking
     # ---
 
-    chunk_token_size: int = field(default=int(os.getenv("CHUNK_SIZE", 1200)))
-    """Maximum number of tokens per text chunk when splitting documents."""
+    chunk_token_size: int | None = field(default=None)
+    """Maximum number of tokens per text chunk when splitting documents.
 
-    chunk_overlap_token_size: int = field(
-        default=int(os.getenv("CHUNK_OVERLAP_SIZE", 100))
-    )
-    """Number of overlapping tokens between consecutive text chunks to preserve context."""
+    ``None`` means "use ``addon_params['chunker']['chunk_token_size']``"
+    (env-driven via ``CHUNK_SIZE``).  When the constructor is given a
+    non-None value it overlays onto ``addon_params['chunker']`` in
+    ``__post_init__`` so the per-document ``chunk_options`` snapshot
+    actually picks it up.  Always an ``int`` after construction —
+    back-filled from the resolved chunker config so legacy readers
+    (``self.chunk_token_size``) keep working."""
+
+    chunk_overlap_token_size: int | None = field(default=None)
+    """Number of overlapping tokens between consecutive text chunks (F-strategy semantics).
+
+    ``None`` means "use the per-strategy default in
+    ``addon_params['chunker']``" (env-driven via
+    ``CHUNK_F_OVERLAP_SIZE`` / ``CHUNK_R_OVERLAP_SIZE`` falling back to
+    ``CHUNK_OVERLAP_SIZE``).  When non-None at construction time, the
+    value overlays onto every strategy sub-dict that natively takes
+    ``chunk_overlap_token_size`` (``fixed_token``, ``recursive_character``)
+    so the per-doc snapshot reflects the constructor choice.  Per-strategy
+    chunker parameters (R / V separators, thresholds, overlap overrides,
+    etc.) live in ``addon_params['chunker']`` and are documented in
+    :func:`lightrag.parser_routing.default_chunker_config`.  Per-doc
+    snapshots are persisted to ``full_docs[doc_id]['chunk_options']``
+    at enqueue time."""
 
     tokenizer: Optional[Tokenizer] = field(default=None)
     """
@@ -601,6 +620,72 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     def _set_runtime_addon_params(self, addon_params: Mapping[str, Any] | None) -> None:
         self._replace_addon_params(addon_params, mark_dirty=True)
+        self._apply_chunk_size_overlay()
+
+    def _apply_chunk_size_overlay(self) -> None:
+        """Reconcile chunk-size config across all four configuration tiers.
+
+        Specificity-ordered precedence (high → low) per slot:
+
+        1. ``addon_params['chunker']`` explicit (user-supplied dict that
+           already carries the key).
+        2. Strategy-specific env (``CHUNK_F_OVERLAP_SIZE`` /
+           ``CHUNK_R_OVERLAP_SIZE`` — already pre-filled by
+           :func:`lightrag.parser_routing.default_chunker_config` *only*
+           when the env var is set).  No strategy-specific top-level
+           ``CHUNK_*_SIZE`` exists today; if added later, plug it in
+           between this tier and the legacy ctor tier.
+        3. Legacy constructor field
+           (``LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)``).
+           Strategy-agnostic; only fills slots that were not already set
+           by tiers 1–2.
+        4. Legacy env (``CHUNK_SIZE`` / ``CHUNK_OVERLAP_SIZE``) — final
+           fallback.
+
+        After this runs, ``self._addon_params['chunker']`` carries fully
+        resolved values for every slot the pipeline needs, and the
+        legacy ``self.chunk_token_size`` / ``self.chunk_overlap_token_size``
+        instance fields are back-filled to ``int`` so downstream readers
+        (e.g. ``_process_single_document``'s
+        ``chunk_opts.get("chunk_token_size") or self.chunk_token_size``
+        fallback) keep working.
+        """
+        chunker_cfg = self._addon_params.get("chunker")
+        if not isinstance(chunker_cfg, dict):
+            chunker_cfg = {}
+            self._addon_params["chunker"] = chunker_cfg
+
+        # Top-level chunk_token_size — no strategy-specific env exists,
+        # so the chain is: addon_params > legacy ctor > CHUNK_SIZE env.
+        if "chunk_token_size" not in chunker_cfg:
+            if self.chunk_token_size is not None:
+                chunker_cfg["chunk_token_size"] = self.chunk_token_size
+            else:
+                chunker_cfg["chunk_token_size"] = int(os.getenv("CHUNK_SIZE", 1200))
+
+        # Per-strategy chunk_overlap_token_size — strategy env (if set)
+        # already lives in the sub-dict.  Slots still missing fall back
+        # to the legacy ctor field, then CHUNK_OVERLAP_SIZE env.
+        if self.chunk_overlap_token_size is not None:
+            legacy_overlap_default = self.chunk_overlap_token_size
+        else:
+            legacy_overlap_default = int(os.getenv("CHUNK_OVERLAP_SIZE", 100))
+        for strategy_key in ("fixed_token", "recursive_character"):
+            sub = chunker_cfg.get(strategy_key)
+            if not isinstance(sub, dict):
+                sub = {}
+                chunker_cfg[strategy_key] = sub
+            if "chunk_overlap_token_size" not in sub:
+                sub["chunk_overlap_token_size"] = legacy_overlap_default
+
+        # Back-fill legacy instance fields → always int afterwards.
+        # Overlap mirrors the F-strategy resolved value, matching the
+        # F-flavoured legacy ``self.chunk_overlap_token_size`` semantics
+        # used by the legacy 6-arg ``chunking_func`` path.
+        self.chunk_token_size = chunker_cfg["chunk_token_size"]
+        self.chunk_overlap_token_size = chunker_cfg["fixed_token"][
+            "chunk_overlap_token_size"
+        ]
 
     def _refresh_addon_params_cache(self) -> None:
         summary_language = self._addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
@@ -684,6 +769,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
 
         self._replace_addon_params(addon_params, mark_dirty=False)
+        self._apply_chunk_size_overlay()
         self._refresh_addon_params_cache()
 
         # Handle deprecated parameters
@@ -1146,10 +1232,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if track_id is None:
             track_id = generate_track_id("insert")
 
-        await self.apipeline_enqueue_documents(input, ids, file_paths, track_id)
-        await self.apipeline_process_enqueue_documents(
-            split_by_character, split_by_character_only
+        # Capture the F-strategy runtime args into a chunk_options
+        # snapshot before enqueue so they become a per-document
+        # setting.  ``apipeline_enqueue_documents`` itself doesn't take
+        # split args — chunk_options is the canonical chunker-config
+        # carrier; runtime split args are an ainsert-only concern.
+        from lightrag.parser_routing import resolve_chunk_options
+
+        chunk_opts = resolve_chunk_options(
+            self.addon_params,
+            split_by_character=split_by_character,
+            split_by_character_only=split_by_character_only,
         )
+        await self.apipeline_enqueue_documents(
+            input,
+            ids,
+            file_paths,
+            track_id,
+            chunk_options=chunk_opts,
+        )
+        await self.apipeline_process_enqueue_documents()
 
         return track_id
 
