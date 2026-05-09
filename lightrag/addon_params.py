@@ -86,7 +86,12 @@ def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, 
         "entity_type_prompt_file",
         get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
     )
-    normalized.setdefault("chunker", default_chunker_config())
+    # Build the chunker default lazily — `default_chunker_config()` reads env
+    # vars (e.g. CHUNK_R_SEPARATORS via json.loads) and would raise on a
+    # malformed value, which would prevent an explicit caller-supplied
+    # `chunker` from bypassing a broken environment.
+    if "chunker" not in normalized:
+        normalized["chunker"] = default_chunker_config()
     return normalized
 
 
