@@ -119,6 +119,9 @@ _CHUNK_LOG_KEY_ALIASES: dict[str, str] = {
     "split_by_character": "split_by",
     "split_by_character_only": "split_only",
     "separators": "seps",
+    "breakpoint": "break",
+    "buffer": "buf",
+    "sentence_split_regex": "regex",
 }
 
 
