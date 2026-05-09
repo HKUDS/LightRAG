@@ -789,7 +789,7 @@ def _merge_small_blocks(
 def chunking_by_paragraph_semantic(
     tokenizer: Tokenizer,
     content: str,
-    chunk_token_size: int = 1200,
+    chunk_token_size: int = 2000,
     *,
     blocks_path: str | None = None,
 ) -> list[dict[str, Any]]:
