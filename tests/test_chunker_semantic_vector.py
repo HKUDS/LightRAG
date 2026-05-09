@@ -70,9 +70,7 @@ def test_v_chunker_runs_with_stub_embedding():
 
     assert len(chunks) >= 1
     # Each chunk dict has the canonical schema.
-    assert all(
-        {"tokens", "content", "chunk_order_index"} <= set(c) for c in chunks
-    )
+    assert all({"tokens", "content", "chunk_order_index"} <= set(c) for c in chunks)
     # chunk_order_index is contiguous starting at 0.
     assert [c["chunk_order_index"] for c in chunks] == list(range(len(chunks)))
     # No empty content rows.

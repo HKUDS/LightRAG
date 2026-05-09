@@ -465,9 +465,7 @@ def test_explicit_R_dispatches_to_recursive_character(tmp_path, monkeypatch):
             lightrag_logger.removeHandler(list_handler)
             await rag.finalize_storages()
 
-        assert captured["calls"] >= 1, (
-            "R must route to chunking_by_recursive_character"
-        )
+        assert captured["calls"] >= 1, "R must route to chunking_by_recursive_character"
         assert legacy_spy["calls"] == 0, (
             "explicit process_options selector must bypass legacy "
             "chunking_func; got "
@@ -479,8 +477,7 @@ def test_explicit_R_dispatches_to_recursive_character(tmp_path, monkeypatch):
             if rec.levelno == logging.WARNING
         ]
         assert not any(
-            "R/V strategies are not yet implemented" in msg
-            for msg in warning_messages
+            "R/V strategies are not yet implemented" in msg for msg in warning_messages
         ), (
             "deprecated 'not yet implemented' warning must be gone now "
             f"that R is wired up; saw: {warning_messages!r}"
@@ -532,15 +529,12 @@ def test_explicit_V_dispatches_to_semantic_vector(tmp_path, monkeypatch):
         finally:
             await rag.finalize_storages()
 
-        assert captured["calls"] >= 1, (
-            "V must route to chunking_by_semantic_vector"
-        )
-        assert captured.get("embedding_func") is rag.embedding_func, (
-            "dispatcher must hand the LightRAG embedding_func to the V chunker"
-        )
+        assert captured["calls"] >= 1, "V must route to chunking_by_semantic_vector"
+        assert (
+            captured.get("embedding_func") is rag.embedding_func
+        ), "dispatcher must hand the LightRAG embedding_func to the V chunker"
         assert legacy_spy["calls"] == 0, (
-            "explicit process_options selector must bypass legacy "
-            "chunking_func"
+            "explicit process_options selector must bypass legacy " "chunking_func"
         )
 
     asyncio.run(_run())

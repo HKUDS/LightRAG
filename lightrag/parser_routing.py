@@ -183,12 +183,27 @@ def _env_bool(key: str, default: bool = False) -> bool:
 
 
 def default_chunker_config() -> dict[str, Any]:
-    """Snapshot the env-driven defaults for every shipped chunker.
+    """Snapshot the **strategy-specific** env-driven defaults for every shipped chunker.
 
-    Result has one ``chunk_token_size`` key common to all strategies and
-    one nested sub-dict per strategy whose keys mirror that strategy's
+    Builds a per-strategy sub-dict whose keys mirror each strategy's
     keyword-only signature (so :func:`resolve_chunk_options` can splat
     them straight into the chunker call).
+
+    Provenance / precedence note: this function reads only
+    *strategy-specific* env vars (``CHUNK_F_OVERLAP_SIZE``,
+    ``CHUNK_R_OVERLAP_SIZE``, ``CHUNK_R_SEPARATORS``, ``CHUNK_V_*``,
+    ``CHUNK_F_SPLIT_BY_CHARACTER``…).  It does **not** read the legacy
+    top-level envs ``CHUNK_SIZE`` / ``CHUNK_OVERLAP_SIZE``, and it
+    deliberately **omits** ``chunk_overlap_token_size`` from a strategy
+    sub-dict when its own env var is unset — leaving the slot empty is
+    the signal that lets
+    :meth:`LightRAG._apply_chunk_size_overlay` apply the legacy
+    constructor field (``LightRAG(chunk_overlap_token_size=…)``) and
+    finally the legacy ``CHUNK_OVERLAP_SIZE`` env in that order.  Same
+    rationale for top-level ``chunk_token_size`` — overlay fills it from
+    ``LightRAG(chunk_token_size=…)`` then ``CHUNK_SIZE`` env.  Net
+    precedence (high → low): ``addon_params`` explicit > strategy env
+    > legacy ctor field > legacy env.
 
     Read at instance-creation time via
     :func:`lightrag.addon_params.default_addon_params`; users can mutate
@@ -196,22 +211,14 @@ def default_chunker_config() -> dict[str, Any]:
     to subsequently enqueued documents (already-enqueued docs hold a
     frozen ``full_docs[doc_id]['chunk_options']`` snapshot).
     """
-    common_overlap = int(os.getenv("CHUNK_OVERLAP_SIZE", "100"))
-    return {
-        "chunk_token_size": int(os.getenv("CHUNK_SIZE", "1200")),
+    config: dict[str, Any] = {
         "fixed_token": {
-            "chunk_overlap_token_size": int(
-                os.getenv("CHUNK_F_OVERLAP_SIZE", str(common_overlap))
-            ),
             "split_by_character": _env_optional_str("CHUNK_F_SPLIT_BY_CHARACTER"),
             "split_by_character_only": _env_bool(
                 "CHUNK_F_SPLIT_BY_CHARACTER_ONLY", False
             ),
         },
         "recursive_character": {
-            "chunk_overlap_token_size": int(
-                os.getenv("CHUNK_R_OVERLAP_SIZE", str(common_overlap))
-            ),
             "separators": json.loads(
                 os.getenv("CHUNK_R_SEPARATORS", '["\\n\\n","\\n"," ",""]')
             ),
@@ -227,6 +234,18 @@ def default_chunker_config() -> dict[str, Any]:
         },
         "paragraph_semantic": {},
     }
+
+    # Strategy-specific overlap envs only — leave the slot absent when
+    # unset so overlay can detect provenance and fill from the legacy
+    # tier (constructor field → CHUNK_OVERLAP_SIZE env).
+    f_overlap_raw = os.getenv("CHUNK_F_OVERLAP_SIZE")
+    if f_overlap_raw is not None:
+        config["fixed_token"]["chunk_overlap_token_size"] = int(f_overlap_raw)
+    r_overlap_raw = os.getenv("CHUNK_R_OVERLAP_SIZE")
+    if r_overlap_raw is not None:
+        config["recursive_character"]["chunk_overlap_token_size"] = int(r_overlap_raw)
+
+    return config
 
 
 def resolve_chunk_options(

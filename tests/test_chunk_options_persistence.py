@@ -121,10 +121,7 @@ def test_env_driven_snapshot_persisted_in_full_docs(tmp_path, monkeypatch):
 
     assert chunk_opts is not None, "chunk_options must be persisted"
     assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 42
-    assert (
-        chunk_opts["semantic_vector"]["breakpoint_threshold_type"]
-        == "interquartile"
-    )
+    assert chunk_opts["semantic_vector"]["breakpoint_threshold_type"] == "interquartile"
     assert chunk_opts["semantic_vector"]["buffer_size"] == 3
     assert chunk_opts["fixed_token"]["split_by_character"] == "\n\n"
     assert chunk_opts["fixed_token"]["split_by_character_only"] is True
@@ -185,9 +182,9 @@ def test_caller_supplied_chunk_options_reach_chunker(tmp_path, monkeypatch):
 
     asyncio.run(_run())
 
-    assert captured.get("chunk_token_size") == 100, (
-        f"R chunker must receive caller-supplied chunk_token_size; got {captured!r}"
-    )
+    assert (
+        captured.get("chunk_token_size") == 100
+    ), f"R chunker must receive caller-supplied chunk_token_size; got {captured!r}"
     assert captured["kwargs"]["separators"] == ["|", ""]
     assert captured["kwargs"]["chunk_overlap_token_size"] == 0
 
@@ -265,6 +262,242 @@ def test_per_file_chunk_options_list(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
+def test_constructor_chunk_size_overlays_addon_params(tmp_path, monkeypatch):
+    """``LightRAG(chunk_token_size=N, chunk_overlap_token_size=M)`` must
+    actually take effect — the per-doc snapshot is built from
+    ``addon_params['chunker']``, so the constructor values have to be
+    overlaid onto it (otherwise env-driven defaults would silently win).
+    """
+    # Set env vars to non-default values so the env path would be
+    # observably different from the constructor path.
+    monkeypatch.setenv("CHUNK_SIZE", "1200")
+    monkeypatch.setenv("CHUNK_OVERLAP_SIZE", "100")
+
+    async def _run():
+        rag = _new_rag(
+            tmp_path,
+            chunk_token_size=7,
+            chunk_overlap_token_size=2,
+        )
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "Body for constructor overlay test.",
+                ids=["doc-ctor-overlay"],
+                file_paths="ctor.txt",
+                track_id="track-ctor",
+            )
+            row = await rag.full_docs.get_by_id("doc-ctor-overlay")
+        finally:
+            await rag.finalize_storages()
+        return row, rag.addon_params
+
+    row, addon_params = asyncio.run(_run())
+    assert row is not None
+    chunk_opts = row["chunk_options"]
+    # Top-level chunk_token_size carries the constructor value.
+    assert chunk_opts["chunk_token_size"] == 7
+    # F and R sub-dicts both pick up the legacy overlap field; V
+    # doesn't have chunk_overlap_token_size and must remain unchanged.
+    assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 2
+    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 2
+    assert "chunk_overlap_token_size" not in chunk_opts["semantic_vector"]
+    # addon_params reflects the same overlay so subsequent runtime
+    # mutations operate on the constructor-supplied baseline.
+    assert addon_params["chunker"]["chunk_token_size"] == 7
+    assert addon_params["chunker"]["fixed_token"]["chunk_overlap_token_size"] == 2
+
+
+@pytest.mark.offline
+def test_addon_params_chunker_wins_when_constructor_field_unset(tmp_path):
+    """If the constructor field is left at its default (``None``), an
+    explicit ``addon_params={'chunker': {...}}`` must NOT be clobbered.
+    """
+
+    async def _run():
+        rag = _new_rag(
+            tmp_path,
+            addon_params={
+                "chunker": {
+                    "chunk_token_size": 5000,
+                    "fixed_token": {
+                        "chunk_overlap_token_size": 250,
+                        "split_by_character": None,
+                        "split_by_character_only": False,
+                    },
+                    "recursive_character": {
+                        "chunk_overlap_token_size": 250,
+                        "separators": ["\n\n", "\n", " ", ""],
+                    },
+                    "semantic_vector": {
+                        "breakpoint_threshold_type": "percentile",
+                        "breakpoint_threshold_amount": None,
+                        "buffer_size": 1,
+                    },
+                    "paragraph_semantic": {},
+                },
+            },
+        )
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "Body for addon-only overlay test.",
+                ids=["doc-addon-only"],
+                file_paths="addon.txt",
+                track_id="track-addon",
+            )
+            row = await rag.full_docs.get_by_id("doc-addon-only")
+        finally:
+            await rag.finalize_storages()
+        return row, rag.chunk_token_size, rag.chunk_overlap_token_size
+
+    row, ctor_size, ctor_overlap = asyncio.run(_run())
+    assert row is not None
+    assert row["chunk_options"]["chunk_token_size"] == 5000
+    assert row["chunk_options"]["fixed_token"]["chunk_overlap_token_size"] == 250
+    # Legacy instance fields back-fill from addon_params (not env defaults).
+    assert ctor_size == 5000
+    assert ctor_overlap == 250
+
+
+@pytest.mark.offline
+def test_strategy_env_wins_over_legacy_ctor_field(tmp_path, monkeypatch):
+    """Specificity-ordered precedence: strategy-specific env vars beat
+    the strategy-agnostic legacy constructor field.
+
+    Setup: ``CHUNK_R_OVERLAP_SIZE=42`` is strategy-specific for R.
+    ``LightRAG(chunk_overlap_token_size=2)`` is the legacy
+    strategy-agnostic field.  R must end up at 42 (env wins on its own
+    strategy slot), F at 2 (no F-specific env, so legacy field fills).
+    """
+    monkeypatch.setenv("CHUNK_R_OVERLAP_SIZE", "42")
+    monkeypatch.delenv("CHUNK_F_OVERLAP_SIZE", raising=False)
+    monkeypatch.delenv("CHUNK_OVERLAP_SIZE", raising=False)
+
+    async def _run():
+        rag = _new_rag(tmp_path, chunk_overlap_token_size=2)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "Body for strategy-vs-ctor precedence test.",
+                ids=["doc-strategy-vs-ctor"],
+                file_paths="prec.txt",
+                track_id="track-prec",
+            )
+            row = await rag.full_docs.get_by_id("doc-strategy-vs-ctor")
+        finally:
+            await rag.finalize_storages()
+        return row, rag.chunk_overlap_token_size
+
+    row, ctor_field = asyncio.run(_run())
+    assert row is not None
+    chunk_opts = row["chunk_options"]
+    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 42, (
+        "Strategy-specific CHUNK_R_OVERLAP_SIZE must win over the "
+        "legacy chunk_overlap_token_size constructor field."
+    )
+    assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 2, (
+        "Without a CHUNK_F_OVERLAP_SIZE override, the F slot falls back "
+        "to the legacy constructor field."
+    )
+    # self.chunk_overlap_token_size mirrors the F-strategy resolved value.
+    assert ctor_field == 2
+
+
+@pytest.mark.offline
+def test_legacy_env_is_final_fallback(tmp_path, monkeypatch):
+    """When neither a strategy env nor the legacy ctor field is set,
+    the legacy ``CHUNK_OVERLAP_SIZE`` env is the final fallback for
+    every per-strategy overlap slot."""
+    monkeypatch.delenv("CHUNK_F_OVERLAP_SIZE", raising=False)
+    monkeypatch.delenv("CHUNK_R_OVERLAP_SIZE", raising=False)
+    monkeypatch.setenv("CHUNK_OVERLAP_SIZE", "77")
+
+    async def _run():
+        rag = _new_rag(tmp_path)  # no chunk_overlap_token_size kwarg
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "Body for legacy-env fallback test.",
+                ids=["doc-legacy-env"],
+                file_paths="legacy.txt",
+                track_id="track-legacy",
+            )
+            row = await rag.full_docs.get_by_id("doc-legacy-env")
+        finally:
+            await rag.finalize_storages()
+        return row, rag.chunk_overlap_token_size
+
+    row, ctor_field = asyncio.run(_run())
+    chunk_opts = row["chunk_options"]
+    assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 77
+    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 77
+    assert ctor_field == 77
+
+    # Mixed case: F-specific env set, legacy still acts as R's fallback.
+    monkeypatch.setenv("CHUNK_F_OVERLAP_SIZE", "10")
+
+    async def _run_mixed():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "Body for mixed-env fallback test.",
+                ids=["doc-mixed-env"],
+                file_paths="mixed.txt",
+                track_id="track-mixed",
+            )
+            row = await rag.full_docs.get_by_id("doc-mixed-env")
+        finally:
+            await rag.finalize_storages()
+        return row
+
+    row = asyncio.run(_run_mixed())
+    chunk_opts = row["chunk_options"]
+    assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 10
+    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 77
+
+
+@pytest.mark.offline
+def test_addon_params_strategy_wins_over_strategy_env(tmp_path, monkeypatch):
+    """Highest tier check: a value sitting in
+    ``addon_params['chunker'][<strategy>]['chunk_overlap_token_size']``
+    must beat even a strategy-specific env."""
+    monkeypatch.setenv("CHUNK_R_OVERLAP_SIZE", "42")
+
+    async def _run():
+        rag = _new_rag(
+            tmp_path,
+            addon_params={
+                "chunker": {
+                    "recursive_character": {
+                        "chunk_overlap_token_size": 999,
+                        "separators": ["\n\n", "\n", " ", ""],
+                    },
+                },
+            },
+        )
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "Body for addon-vs-env precedence test.",
+                ids=["doc-addon-vs-env"],
+                file_paths="addon.txt",
+                track_id="track-addon",
+            )
+            row = await rag.full_docs.get_by_id("doc-addon-vs-env")
+        finally:
+            await rag.finalize_storages()
+        return row
+
+    row = asyncio.run(_run())
+    chunk_opts = row["chunk_options"]
+    assert (
+        chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 999
+    ), "addon_params explicit value must beat strategy-specific env."
+
+
+@pytest.mark.offline
 def test_runtime_addon_params_mutation_affects_subsequent_enqueue(tmp_path):
     """Mutating ``rag.addon_params['chunker']`` after construction must
     take effect for documents enqueued *after* the mutation, while
@@ -310,7 +543,7 @@ def test_runtime_addon_params_mutation_affects_subsequent_enqueue(tmp_path):
     # Pre-mutation doc keeps the original LangChain default cascade.
     assert sep_pre == ["\n\n", "\n", " ", ""]
     # Post-mutation doc reflects the runtime change.
-    assert (
-        row_post["chunk_options"]["recursive_character"]["separators"]
-        == ["##", "\n"]
-    )
+    assert row_post["chunk_options"]["recursive_character"]["separators"] == [
+        "##",
+        "\n",
+    ]
