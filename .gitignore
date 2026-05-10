@@ -78,13 +78,9 @@ ignore_this.txt
 # temporary test files in project root
 /test_*
 
-# Cline files
+# AI Agent files
 memory-bank
-.claude/CLAUDE.md
 .claude/
-
-# Claude Code
-CLAUDE.md
 
 # Google Jules
 .jules/
