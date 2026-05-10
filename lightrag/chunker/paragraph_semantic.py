@@ -655,14 +655,15 @@ def _split_long_block(
     Mirrors :func:`lightrag.native_parser.docx.parse_document.split_long_block`,
     parameterised on ``target_max`` / ``target_ideal``. Tables (``is_table``)
     are excluded from the anchor candidate pool, so Stage B's row-level
-    splits stay intact. When no anchor exists, returns the block as a
-    single oversized chunk and lets the embedding-time hard fallback split
-    handle the cap (the audit-mode parser would `sys.exit(1)` here, but
-    the RAG pipeline must never drop a document silently).
+    splits stay intact. When no anchor exists (including the single-
+    paragraph oversized case), the no-anchor branch below honors the cap
+    via row-boundary splitting (for tables) or character-level splitting
+    (for prose). The audit-mode parser would ``sys.exit(1)`` on no-anchor
+    failure, but the RAG pipeline must never drop a document silently.
     """
     content = "\n".join(p["text"] for p in paragraphs)
     total = _count_tokens(tokenizer, content)
-    if total <= target_max or len(paragraphs) <= 1:
+    if total <= target_max:
         return [
             _new_block(
                 heading=heading,
@@ -871,11 +872,13 @@ def _split_long_block(
             )
         )
 
-    # Recursive guard: if any sub-block still exceeds target_max with more
-    # than one paragraph available, try to split it further.
+    # Recursive guard: any sub-block still over target_max is re-split,
+    # including single-paragraph subs — the no-anchor branch above honors
+    # the cap via row-boundary or character-level splitting and is the
+    # only path that can shrink them.
     out: list[dict[str, Any]] = []
     for sub in sub_blocks:
-        if sub["tokens"] > target_max and len(sub["paragraphs"]) > 1:
+        if sub["tokens"] > target_max:
             out.extend(
                 _split_long_block(
                     sub["paragraphs"],
@@ -1032,22 +1035,28 @@ def _merge_small_blocks(
                                 nxt = result[j]
                                 absorbed_paragraphs.extend(nxt["paragraphs"])
                                 absorbed_content += "\n\n" + nxt["content"]
-                            new_result.append(
-                                {
-                                    "heading": cur["heading"],
-                                    "parent_headings": list(cur["parent_headings"]),
-                                    "level": cur["level"],
-                                    "paragraphs": absorbed_paragraphs,
-                                    "content": absorbed_content,
-                                    "tokens": _count_tokens(
-                                        tokenizer, absorbed_content
-                                    ),
-                                    "table_chunk_role": "none",
-                                }
-                            )
-                            i = end_idx
-                            changed = True
-                            continue
+                            # The cheap predicate above sums per-block
+                            # tokens, but absorption joins blocks with
+                            # ``"\n\n"`` — those separator tokens are
+                            # real and can push the merged block over
+                            # target_max. Re-measure the joined content
+                            # before committing to absorb.
+                            absorbed_tokens = _count_tokens(tokenizer, absorbed_content)
+                            if absorbed_tokens <= target_max:
+                                new_result.append(
+                                    {
+                                        "heading": cur["heading"],
+                                        "parent_headings": list(cur["parent_headings"]),
+                                        "level": cur["level"],
+                                        "paragraphs": absorbed_paragraphs,
+                                        "content": absorbed_content,
+                                        "tokens": absorbed_tokens,
+                                        "table_chunk_role": "none",
+                                    }
+                                )
+                                i = end_idx
+                                changed = True
+                                continue
                     new_result.append(cur)
                     i += 1
             result = new_result
@@ -1237,10 +1246,17 @@ def chunking_by_paragraph_semantic(
             chunking_by_recursive_character,
         )
 
+        # Paragraph-semantic chunking does not produce overlapping
+        # chunks; honor that contract on the fallback path too — R's
+        # default ``chunk_overlap_token_size=100`` would otherwise leak
+        # in and produce overlapping pieces (the in-pipeline fallbacks
+        # at :func:`_character_split_text` set this to 0 explicitly for
+        # the same reason).
         return chunking_by_recursive_character(
             tokenizer,
             content,
             target_max,
+            chunk_overlap_token_size=0,
         )
 
     # Build initial blocks (Stage A output, already persisted).

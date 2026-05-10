@@ -86,6 +86,33 @@ def test_split_long_block_no_anchor_pack_accounts_for_separator():
 
 
 @pytest.mark.offline
+def test_split_long_block_single_paragraph_oversized_is_character_split():
+    # A single oversized paragraph used to trigger the early-return at
+    # ``len(paragraphs) <= 1`` and the recursive-guard's ``> 1`` clause,
+    # so the function emitted one ~total-token block that silently
+    # blew past target_max. With both gates relaxed, the no-anchor
+    # branch's character fallback honors the cap on this case too.
+    tokenizer = _make_tokenizer()
+    paragraphs = [{"text": "x" * 4000}]
+
+    blocks = _split_long_block(
+        paragraphs,
+        heading="Heading",
+        parent_headings=[],
+        level=2,
+        table_chunk_role="none",
+        tokenizer=tokenizer,
+        target_max=1000,
+        target_ideal=750,
+    )
+
+    assert len(blocks) > 1, "single oversized paragraph must be split, not kept whole"
+    assert all(b["tokens"] <= 1000 for b in blocks), [b["tokens"] for b in blocks]
+    # Heading hierarchy is preserved on every R-derived sub-block.
+    assert all(b["heading"] == "Heading" for b in blocks)
+
+
+@pytest.mark.offline
 def test_split_long_block_uses_later_short_anchor():
     # Sanity check: a short paragraph at idx>0 IS still a valid divider.
     tokenizer = _make_tokenizer()
