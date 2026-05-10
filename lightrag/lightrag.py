@@ -630,7 +630,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         1. ``addon_params['chunker']`` explicit (user-supplied dict that
            already carries the key).
         2. Strategy-specific env (``CHUNK_F_OVERLAP_SIZE`` /
-           ``CHUNK_R_OVERLAP_SIZE`` — already pre-filled by
+           ``CHUNK_R_OVERLAP_SIZE`` / ``CHUNK_P_OVERLAP_SIZE`` — already pre-filled by
            :func:`lightrag.parser_routing.default_chunker_config` *only*
            when the env var is set).  No strategy-specific top-level
            ``CHUNK_*_SIZE`` exists today; if added later, plug it in
@@ -670,7 +670,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             legacy_overlap_default = self.chunk_overlap_token_size
         else:
             legacy_overlap_default = int(os.getenv("CHUNK_OVERLAP_SIZE", 100))
-        for strategy_key in ("fixed_token", "recursive_character"):
+        for strategy_key in (
+            "fixed_token",
+            "recursive_character",
+            "paragraph_semantic",
+        ):
             sub = chunker_cfg.get(strategy_key)
             if not isinstance(sub, dict):
                 sub = {}

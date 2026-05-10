@@ -16,11 +16,22 @@ Pipeline:
   - Stage A — heading-driven initial split: already done at parse time and
     persisted as one row per block in ``blocks.jsonl``.
   - Stage B — oversized-table re-split + first/middle/last gluing: invoked
-    here when an embedded ``<table … format="json">`` exceeds
-    ``TABLE_MAX_TOKENS``.
+    here when an embedded ``<table … format="json">`` (or
+    ``format="html"``) exceeds ``TABLE_MAX_TOKENS``. Splitting prefers
+    structural row boundaries (JSON list items, HTML ``<tr>`` rows) so
+    each fragment remains a legal ``<table>`` tag; only when no row
+    boundary is available, or a single row alone exceeds the cap, does
+    the splitter fall back to ``chunking_by_recursive_character`` on
+    that specific fragment. When two oversized tables are separated by
+    text inside the same heading block, the bridge text may be duplicated
+    into both table boundary chunks so each table keeps nearby context.
   - Stage C — anchor-driven long-block re-split: short non-table
     paragraphs (≤ 100 chars) are promoted as split points and the block
-    is rebalanced toward ``IDEAL_BLOCK_TOKENS``.
+    is rebalanced toward ``IDEAL_BLOCK_TOKENS``. When no anchor exists,
+    table-aware fallback applies the same row-boundary-first strategy
+    to any oversized table paragraph and only character-splits the
+    residual non-table content. Character fallback for ordinary text uses
+    the configured paragraph-semantic overlap.
   - Stage D — bottom-up, level-aware small-block merging: undersized
     blocks get absorbed by same-level neighbours (Phase A), shallower
     levels (Phase B), and a final tail-absorption pass eliminates the
@@ -33,7 +44,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from lightrag.utils import Tokenizer, logger
 
@@ -64,9 +75,6 @@ _SMALL_TAIL_RATIO = 0.125
 # Anchor candidate length is a UI/readability constraint — keep absolute.
 _MAX_ANCHOR_CANDIDATE_LENGTH = 100  # characters
 
-# Heading suffix used when promoting middle table chunks to standalone blocks.
-_TABLE_CHUNK_SUFFIX_LABEL = "表格片段"
-
 # Strict regex for a post-rewrite table tag emitted by ``lightrag_adapter``:
 #   <table id="tb-…" format="json"[ caption="…"]>{rows_json}</table>
 # blocks.jsonl invariants guarantee the tag has no embedded newlines.
@@ -74,6 +82,16 @@ _TABLE_TAG_RE = re.compile(
     r"<table\s+(?P<attrs>[^>]*)>(?P<body>.*?)</table>",
     re.DOTALL,
 )
+
+# Format detection regex inside the attrs string, e.g. format="json".
+_TABLE_FORMAT_RE = re.compile(r"""format\s*=\s*["'](?P<fmt>[^"']+)["']""")
+
+# HTML <tr>...</tr> row extractor. Standard HTML disallows nested <tr>,
+# so a non-greedy match is sufficient for well-formed input.
+_HTML_TR_RE = re.compile(r"<tr\b[^>]*>.*?</tr>", re.DOTALL | re.IGNORECASE)
+
+_LEGACY_TABLE_CHUNK_SUFFIX_RE = re.compile(r"\s*\[表格片段\d+\]\s*$")
+_PART_SUFFIX_RE = re.compile(r"\s*\[part\s+\d+\]\s*$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +103,40 @@ def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
     if not text:
         return 0
     return len(tokenizer.encode(text))
+
+
+def _bounded_overlap(target_max: int, chunk_overlap_token_size: int) -> int:
+    """Return an overlap value safe for recursive-character splitting."""
+    overlap = max(int(chunk_overlap_token_size), 0)
+    if target_max <= 1:
+        return 0
+    return min(overlap, target_max - 1)
+
+
+def _strip_generated_heading_suffixes(heading: str) -> str:
+    """Remove generated split suffixes before assigning a fresh part number."""
+    cleaned = (heading or "").rstrip()
+    while True:
+        next_cleaned = _PART_SUFFIX_RE.sub("", cleaned).rstrip()
+        next_cleaned = _LEGACY_TABLE_CHUNK_SUFFIX_RE.sub("", next_cleaned).rstrip()
+        if next_cleaned == cleaned:
+            return cleaned
+        cleaned = next_cleaned
+
+
+def _append_part_suffix(heading: str, part_number: int) -> str:
+    base = _strip_generated_heading_suffixes(heading)
+    suffix = f"[part {part_number}]"
+    return f"{base} {suffix}" if base else suffix
+
+
+def _apply_part_suffixes(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tag split fragments from one original block as ``[part n]``."""
+    if len(blocks) <= 1:
+        return blocks
+    for idx, block in enumerate(blocks, start=1):
+        block["heading"] = _append_part_suffix(block.get("heading", ""), idx)
+    return blocks
 
 
 def _is_table_paragraph(text: str) -> bool:
@@ -123,6 +175,97 @@ def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
             if isinstance(obj, dict) and obj.get("type") == "content":
                 rows.append(obj)
     return rows
+
+
+def _detect_table_format(attrs: str, body: str) -> str | None:
+    """Return ``"json"``, ``"html"`` or ``None`` for a parsed ``<table>`` tag.
+
+    Prefers an explicit ``format="…"`` attribute. When silent, sniffs the
+    body: a leading ``[`` / ``{`` (after whitespace) implies JSON; the
+    presence of any ``<tr`` tag implies HTML. Anything else is unknown
+    and falls back to character splitting at the call site.
+    """
+    match = _TABLE_FORMAT_RE.search(attrs or "")
+    if match:
+        fmt = match.group("fmt").strip().lower()
+        if fmt in {"json", "html"}:
+            return fmt
+        return None
+    stripped = (body or "").lstrip()
+    if stripped.startswith(("[", "{")):
+        return "json"
+    if "<tr" in stripped.lower():
+        return "html"
+    return None
+
+
+def _split_html_rows(body: str) -> list[str] | None:
+    """Extract ``<tr>...</tr>`` rows from an HTML table body.
+
+    Returns the list of row strings (each preserved with its ``<tr>``
+    wrapper) or ``None`` if no row was found — the latter is the signal
+    for the caller to fall through to character splitting.
+
+    Text between rows (``<thead>`` / ``<tbody>`` wrappers, whitespace,
+    captions outside ``<tr>``) is dropped: each output string is a
+    self-contained row. This is a pragmatic simplification — full DOM
+    parsing would require ``lxml`` / ``beautifulsoup4``, an unjustified
+    dependency for a fallback path.
+    """
+    rows = _HTML_TR_RE.findall(body or "")
+    if not rows:
+        return None
+    return rows
+
+
+def _split_html_rows_by_tokens(
+    rows: list[str],
+    tokenizer: Tokenizer,
+    *,
+    target_max: int,
+    target_ideal: int,
+    last_min: int,
+) -> list[list[str]]:
+    """HTML-string analog of :func:`_split_rows_by_tokens`.
+
+    Same balanced-split + tail-merge algorithm; rows are concatenated
+    with ``""`` (rather than serialised as JSON) for token measurement.
+    """
+    total = _count_tokens(tokenizer, "".join(rows))
+    if total <= target_max or len(rows) <= 1:
+        return [rows]
+
+    target_chunks = max(
+        math.ceil(total / target_ideal),
+        math.ceil(total / target_max),
+    )
+    target_chunks = min(target_chunks, len(rows))
+    target_rows = len(rows) / target_chunks
+
+    chunks: list[list[str]] = []
+    start = 0
+    for i in range(target_chunks):
+        if i == target_chunks - 1:
+            end = len(rows)
+        else:
+            end = max(start + 1, min(int((i + 1) * target_rows), len(rows)))
+            remaining = len(rows) - end
+            if remaining > 0 and remaining < target_rows * 0.3:
+                end = len(rows)
+        chunks.append(rows[start:end])
+        start = end
+        if start >= len(rows):
+            break
+
+    if len(chunks) >= 2:
+        last_text = "".join(chunks[-1])
+        if _count_tokens(tokenizer, last_text) < last_min:
+            merged = chunks[-2] + chunks[-1]
+            merged_tokens = _count_tokens(tokenizer, "".join(merged))
+            if merged_tokens <= target_max:
+                chunks[-2] = merged
+                chunks.pop()
+    return chunks
 
 
 def _new_block(
@@ -219,6 +362,184 @@ def _split_rows_by_tokens(
     return chunks
 
 
+def _character_split_text(
+    text: str,
+    tokenizer: Tokenizer,
+    *,
+    target_max: int,
+    chunk_overlap_token_size: int = 0,
+) -> list[str]:
+    """Character-level fallback wrapped to return plain-text pieces.
+
+    Lazy import dodges the ``recursive_character`` ↔ ``paragraph_semantic``
+    circular dependency (same pattern as the sidecar-missing fallback in
+    :func:`chunking_by_paragraph_semantic`). Callers that split ordinary
+    prose pass the paragraph-semantic overlap; table character fallbacks
+    leave the default at zero so structured table row chunks do not gain
+    implicit row-level overlap.
+    """
+    from lightrag.chunker.recursive_character import (
+        chunking_by_recursive_character,
+    )
+
+    pieces = chunking_by_recursive_character(
+        tokenizer,
+        text,
+        target_max,
+        chunk_overlap_token_size=_bounded_overlap(target_max, chunk_overlap_token_size),
+    )
+    return [p["content"] for p in pieces if p.get("content")]
+
+
+def _split_table_text(
+    table_text: str,
+    *,
+    tokenizer: Tokenizer,
+    target_max: int,
+    target_ideal: int,
+    last_min: int,
+) -> list[str]:
+    """Split a single oversized ``<table>...</table>`` text into ≤ target_max pieces.
+
+    Strategy (mirrors the user-supplied contract in
+    ``docs/ParagraphSemanticChunking-zh.md`` — row boundary first,
+    character fallback last):
+
+      1. Match the outer ``<table {attrs}>{body}</table>``. If the regex
+         fails, character-split the original text and return.
+      2. Detect the body format via :func:`_detect_table_format` (with
+         body sniffing when ``attrs`` is silent).
+      3. Row-boundary split: JSON via :func:`_split_rows_by_tokens`,
+         HTML via :func:`_split_html_rows_by_tokens`. Re-wrap every
+         row-chunk as ``<table {attrs}>{rows}</table>``.
+      4. For any wrapped chunk still exceeding ``target_max``
+         (single-row chunks where the row alone exceeds the cap, or
+         row-split returned a single chunk because rows were ≤ 1),
+         character-fallback that specific chunk's text.
+      5. Unknown / unparseable format → character-fallback the entire
+         original text.
+
+    Output strings are either:
+      - a re-wrapped ``<table {attrs}>{rows}</table>`` (legal markup,
+        callers may keep ``is_table=True`` for these), or
+      - a character-fallback fragment (no ``<table>`` wrapper, callers
+        should mark ``is_table=False``).
+    """
+    match = _TABLE_TAG_RE.match((table_text or "").strip())
+    if not match:
+        return _character_split_text(table_text, tokenizer, target_max=target_max)
+    attrs = match.group("attrs")
+    body = match.group("body")
+    fmt = _detect_table_format(attrs, body)
+
+    # Budget the <table {attrs}></table> wrapper out of the per-chunk
+    # caps before calling the row splitter — the splitter only measures
+    # the body (json.dumps(rows) / "".join(rows)), so without this the
+    # wrapped chunk can exceed target_max purely from the wrapper, which
+    # would force a needless character-fallback below.
+    wrapper_overhead = _count_tokens(tokenizer, f"<table {attrs}></table>")
+    body_max = max(target_max - wrapper_overhead, 1)
+    body_ideal = max(min(target_ideal, target_max) - wrapper_overhead, 1)
+    body_last_min = max(last_min - wrapper_overhead, 1)
+    row_chunks: list[list[Any]] | None = None
+    serialize: Callable[[list[Any]], str] | None = None
+    if fmt == "json":
+        try:
+            rows = json.loads(body)
+        except json.JSONDecodeError:
+            rows = None
+        if isinstance(rows, list) and len(rows) > 1:
+            row_chunks = _split_rows_by_tokens(
+                rows,
+                tokenizer,
+                target_max=body_max,
+                target_ideal=body_ideal,
+                last_min=body_last_min,
+            )
+
+            def serialize(chunk_rows: list[Any]) -> str:
+                return (
+                    f"<table {attrs}>"
+                    f"{json.dumps(chunk_rows, ensure_ascii=False)}"
+                    f"</table>"
+                )
+
+    elif fmt == "html":
+        rows_html = _split_html_rows(body)
+        if rows_html and len(rows_html) > 1:
+            row_chunks = _split_html_rows_by_tokens(
+                rows_html,
+                tokenizer,
+                target_max=body_max,
+                target_ideal=body_ideal,
+                last_min=body_last_min,
+            )
+
+            def serialize(chunk_rows: list[str]) -> str:
+                return f"<table {attrs}>{''.join(chunk_rows)}</table>"
+
+    if row_chunks is None or serialize is None:
+        # No row boundary available (single-row table, parse failure,
+        # unknown format) → character-fallback the whole text.
+        return _character_split_text(table_text, tokenizer, target_max=target_max)
+
+    # Re-split any chunk whose wrapped form still exceeds target_max
+    # before resorting to character-level shredding. The row splitter's
+    # balanced-cut heuristic can produce uneven chunks when row sizes
+    # vary, and only a chunk that has collapsed to a single row (where
+    # row-boundary splitting can no longer reduce it) belongs in the
+    # character fallback.
+    pieces: list[str] = []
+    pending: list[list[Any]] = list(row_chunks)
+    while pending:
+        chunk_rows = pending.pop(0)
+        wrapped = serialize(chunk_rows)
+        if _count_tokens(tokenizer, wrapped) <= target_max:
+            pieces.append(wrapped)
+            continue
+        if len(chunk_rows) <= 1:
+            pieces.extend(
+                _character_split_text(wrapped, tokenizer, target_max=target_max)
+            )
+            continue
+        # Force a finer cut: cap the next-pass body budget at half the
+        # current wrapped size so target_chunks >= 2 inside the splitter.
+        # This guarantees forward progress (one row at minimum per
+        # sub-chunk, see the splitter's len(rows) cap).
+        halved = max(_count_tokens(tokenizer, wrapped) // 2, 1)
+        sub_max = max(min(body_max, halved), 1)
+        sub_ideal = max(sub_max // 2, 1)
+        sub_last_min = max(min(body_last_min, sub_max // 2), 1)
+        if fmt == "json":
+            sub_chunks = _split_rows_by_tokens(
+                chunk_rows,
+                tokenizer,
+                target_max=sub_max,
+                target_ideal=sub_ideal,
+                last_min=sub_last_min,
+            )
+        else:
+            sub_chunks = _split_html_rows_by_tokens(
+                chunk_rows,
+                tokenizer,
+                target_max=sub_max,
+                target_ideal=sub_ideal,
+                last_min=sub_last_min,
+            )
+        if len(sub_chunks) <= 1:
+            # The splitter could not reduce further (e.g. one row already
+            # dominates the body). Avoid an infinite loop and let the
+            # character fallback handle this stubborn chunk.
+            pieces.extend(
+                _character_split_text(wrapped, tokenizer, target_max=target_max)
+            )
+            continue
+        # Process the finer cuts before any remaining peer chunks so the
+        # output keeps source order.
+        pending[0:0] = sub_chunks
+    return pieces
+
+
 def _expand_block_with_table_splits(
     block: dict[str, Any],
     *,
@@ -226,6 +547,8 @@ def _expand_block_with_table_splits(
     table_max: int,
     table_ideal: int,
     table_min_last: int,
+    target_max: int | None = None,
+    chunk_overlap_token_size: int = 0,
 ) -> list[dict[str, Any]]:
     """Apply Stage B to one heading-driven block.
 
@@ -233,13 +556,23 @@ def _expand_block_with_table_splits(
       - the first row-slice glues with paragraphs already accumulated in
         the current expansion (i.e. content *before* the table);
       - middle slices are emitted as standalone blocks tagged
-        ``table_chunk_role == "middle"`` with a ``[表格片段N]`` heading
-        suffix so Stage D refuses to merge them;
+        ``table_chunk_role == "middle"`` so Stage D refuses to merge them;
       - the last slice begins a fresh accumulation that will glue with
         paragraphs *after* the table.
 
-    Tables within the size limit pass through untouched.
+    When a ``last`` table slice is followed by short bridge text and then
+    another oversized table's ``first`` slice, the bridge text is split
+    into table boundary context: a prefix may be duplicated into the
+    previous table block and a suffix into the next table block. If the
+    bridge is longer than both context budgets, the remaining middle text
+    is emitted as a standalone text block. Tables within the size limit
+    pass through untouched.
     """
+    if target_max is None:
+        target_max = table_max
+    target_max = max(int(target_max), 1)
+    context_overlap = _bounded_overlap(target_max, chunk_overlap_token_size)
+    sep_tokens = _count_tokens(tokenizer, "\n")
     paragraphs = block["paragraphs"]
     has_oversized_table = any(
         p["is_table"] and _count_tokens(tokenizer, p["text"]) > table_max
@@ -257,7 +590,6 @@ def _expand_block_with_table_splits(
     # not absorb backward, a "last" block must not absorb forward) silently
     # disappear after the slice glues with surrounding paragraphs.
     cur_role = "none"
-    table_split_counter = 0
 
     def flush_cur() -> None:
         nonlocal cur_role
@@ -277,37 +609,145 @@ def _expand_block_with_table_splits(
         cur_paras.clear()
         cur_role = "none"
 
+    def _append_bridge_block(
+        paragraphs: list[dict[str, Any]],
+        table_chunk_role: str,
+    ) -> None:
+        if not paragraphs:
+            return
+        out.append(
+            _new_block(
+                heading=block["heading"],
+                parent_headings=block["parent_headings"],
+                level=block["level"],
+                paragraphs=paragraphs,
+                table_chunk_role=table_chunk_role,
+                tokenizer=tokenizer,
+            )
+        )
+
+    def _text_paragraph(text: str) -> dict[str, Any] | None:
+        if not text or not text.strip():
+            return None
+        return {"text": text, "is_table": False}
+
+    def _context_capacity(base_paras: list[dict[str, Any]]) -> int:
+        if context_overlap <= 0:
+            return 0
+        base_text = "\n".join(p["text"] for p in base_paras)
+        base_tokens = _count_tokens(tokenizer, base_text)
+        if base_tokens >= target_max:
+            return 0
+        # The context paragraph is joined to the table fragment with "\n".
+        return max(min(context_overlap, target_max - base_tokens - sep_tokens), 0)
+
+    def _flush_last_bridge_before_next_first(
+        next_first_para: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Flush ``last + bridge`` before a following table ``first``.
+
+        Returns context paragraphs to prepend to the following first-table
+        block. Only non-table bridge paragraphs are duplicated/sliced; if
+        the bridge contains tables we keep the prior non-overlapping flush.
+        """
+        nonlocal cur_role
+        if not cur_paras:
+            cur_role = "none"
+            return []
+
+        seed_paras = [cur_paras[0]]
+        bridge_paras = cur_paras[1:]
+        if (
+            context_overlap <= 0
+            or not bridge_paras
+            or any(p.get("is_table", False) for p in bridge_paras)
+        ):
+            flush_cur()
+            return []
+
+        bridge_text = "\n".join(p["text"] for p in bridge_paras)
+        bridge_tokens = tokenizer.encode(bridge_text)
+        if not bridge_tokens:
+            flush_cur()
+            return []
+
+        prev_budget = _context_capacity(seed_paras)
+        next_budget = _context_capacity([next_first_para])
+        bridge_len = len(bridge_tokens)
+
+        if bridge_len <= prev_budget and bridge_len <= next_budget:
+            prefix_text = bridge_text
+            suffix_text = bridge_text
+            middle_text = ""
+        else:
+            prefix_len = min(prev_budget, bridge_len)
+            suffix_len = min(next_budget, bridge_len)
+            middle_start = prefix_len
+            middle_end = max(middle_start, bridge_len - suffix_len)
+
+            prefix_text = (
+                tokenizer.decode(bridge_tokens[:prefix_len]) if prefix_len else ""
+            )
+            suffix_text = (
+                tokenizer.decode(bridge_tokens[bridge_len - suffix_len :])
+                if suffix_len
+                else ""
+            )
+            middle_text = (
+                tokenizer.decode(bridge_tokens[middle_start:middle_end])
+                if middle_end > middle_start
+                else ""
+            )
+
+        prev_paras = list(seed_paras)
+        prefix_para = _text_paragraph(prefix_text)
+        if prefix_para is not None:
+            prev_paras.append(prefix_para)
+        _append_bridge_block(prev_paras, "last")
+
+        middle_para = _text_paragraph(middle_text)
+        if middle_para is not None:
+            _append_bridge_block([middle_para], "none")
+
+        cur_paras.clear()
+        cur_role = "none"
+
+        suffix_para = _text_paragraph(suffix_text)
+        return [suffix_para] if suffix_para is not None else []
+
     for para in paragraphs:
         text = para["text"]
         if not (para["is_table"] and _count_tokens(tokenizer, text) > table_max):
             cur_paras.append(para)
             continue
 
-        parsed = _parse_table_tag(text)
-        if parsed is None:
-            cur_paras.append(para)
-            continue
-        attrs, rows = parsed
-        row_chunks = _split_rows_by_tokens(
-            rows,
-            tokenizer,
+        # Row-boundary first, character fallback last. ``_split_table_text``
+        # returns one or more strings: row-wrapped ``<table>...</table>``
+        # fragments where row-splitting succeeded, plain text where it
+        # had to character-split (single-row tables, parse failures,
+        # rows whose own size exceeded ``table_max``).
+        pieces = _split_table_text(
+            text,
+            tokenizer=tokenizer,
             target_max=table_max,
             target_ideal=table_ideal,
             last_min=table_min_last,
         )
-        if len(row_chunks) <= 1:
+        if len(pieces) <= 1:
+            # No reduction was possible (e.g. very small unparseable table
+            # that already fits within ``table_max`` after a no-op character
+            # fallback). Keep the original paragraph to preserve content.
             cur_paras.append(para)
             continue
 
-        for chunk_idx, chunk_rows in enumerate(row_chunks):
-            chunk_text = (
-                f"<table {attrs}>"
-                f"{json.dumps(chunk_rows, ensure_ascii=False)}"
-                f"</table>"
+        for chunk_idx, piece_text in enumerate(pieces):
+            stripped = piece_text.strip()
+            is_still_table = stripped.startswith("<table ") and stripped.endswith(
+                "</table>"
             )
-            chunk_para = {"text": chunk_text, "is_table": True}
+            chunk_para = {"text": piece_text, "is_table": is_still_table}
             is_first = chunk_idx == 0
-            is_last = chunk_idx == len(row_chunks) - 1
+            is_last = chunk_idx == len(pieces) - 1
 
             if is_first:
                 # First slice glues with everything currently accumulated
@@ -317,7 +757,7 @@ def _expand_block_with_table_splits(
                 # so its protective role survives instead of being
                 # overwritten by "first".
                 if cur_role == "last":
-                    flush_cur()
+                    cur_paras.extend(_flush_last_bridge_before_next_first(chunk_para))
                 cur_paras.append(chunk_para)
                 cur_role = "first"
             elif is_last:
@@ -332,14 +772,9 @@ def _expand_block_with_table_splits(
                 # this middle slice as a standalone block that Stage D
                 # MUST keep intact (table_chunk_role == "middle").
                 flush_cur()
-                table_split_counter += 1
-                middle_heading = (
-                    f"{block['heading']} "
-                    f"[{_TABLE_CHUNK_SUFFIX_LABEL}{table_split_counter}]"
-                )
                 out.append(
                     _new_block(
-                        heading=middle_heading,
+                        heading=block["heading"],
                         parent_headings=block["parent_headings"],
                         level=block["level"],
                         paragraphs=[chunk_para],
@@ -367,20 +802,26 @@ def _split_long_block(
     tokenizer: Tokenizer,
     target_max: int,
     target_ideal: int,
+    chunk_overlap_token_size: int = 100,
 ) -> list[dict[str, Any]]:
     """Split an oversized block into balanced sub-blocks at short-paragraph anchors.
 
     Mirrors :func:`lightrag.native_parser.docx.parse_document.split_long_block`,
     parameterised on ``target_max`` / ``target_ideal``. Tables (``is_table``)
     are excluded from the anchor candidate pool, so Stage B's row-level
-    splits stay intact. When no anchor exists, returns the block as a
-    single oversized chunk and lets the embedding-time hard fallback split
-    handle the cap (the audit-mode parser would `sys.exit(1)` here, but
-    the RAG pipeline must never drop a document silently).
+    splits stay intact. When no anchor exists (including the single-
+    paragraph oversized case), the no-anchor branch below honors the cap
+    via row-boundary splitting (for tables) or character-level splitting
+    (for prose). The audit-mode parser would ``sys.exit(1)`` on no-anchor
+    failure, but the RAG pipeline must never drop a document silently.
+    Character-level splitting of ordinary prose uses
+    ``chunk_overlap_token_size`` so long text under one JSONL content row
+    keeps semantic continuity across adjacent chunks.
     """
+    chunk_overlap_token_size = _bounded_overlap(target_max, chunk_overlap_token_size)
     content = "\n".join(p["text"] for p in paragraphs)
     total = _count_tokens(tokenizer, content)
-    if total <= target_max or len(paragraphs) <= 1:
+    if total <= target_max:
         return [
             _new_block(
                 heading=heading,
@@ -422,37 +863,89 @@ def _split_long_block(
         # but we must NOT emit a single oversized chunk: the
         # embedding-time hard fallback uses ``embedding_token_limit``
         # (often 8K), not ``chunk_token_size``, so the chunk would
-        # silently exceed the user-configured size.  Defer to R
-        # (langchain RecursiveCharacterTextSplitter) for character-level
-        # splitting that respects ``target_max`` in tokens.  Sub-chunks
-        # inherit the heading hierarchy of the original block so KG
-        # extraction still has the document context.  Lazy import dodges
-        # the recursive_character ↔ paragraph_semantic circular
-        # dependency (same pattern as the sidecar-missing branch above).
+        # silently exceed the user-configured size.  Prefer
+        # row-boundary splitting on any oversized table paragraph
+        # before falling back to character-level splitting on residual
+        # content — character splitting destroys ``<table>`` markup
+        # mid-tag and produces fragments LLMs can't interpret as
+        # tables.
         logger.warning(
             "[paragraph_semantic_chunking] block under heading %r exceeds "
             "target_max=%d tokens (~%d tokens) but has no eligible anchor "
-            "paragraph (≤ %d chars); falling back to recursive-character "
-            "splitting on this block.",
+            "paragraph (≤ %d chars); preferring table row-boundary split, "
+            "falling back to recursive-character splitting on residual "
+            "content.",
             heading,
             target_max,
             total,
             _MAX_ANCHOR_CANDIDATE_LENGTH,
         )
-        from lightrag.chunker.recursive_character import (
-            chunking_by_recursive_character,
-        )
 
-        r_pieces = chunking_by_recursive_character(
-            tokenizer,
-            content,
-            target_max,
-            chunk_overlap_token_size=0,
-        )
-        if not r_pieces:
-            # Defensive: R produced nothing (e.g. whitespace-only after
-            # strip).  Emit the original oversized block so the document
-            # is never silently dropped.
+        # Step 1: expand each oversized table paragraph into row-bounded
+        # pieces; non-table or in-budget paragraphs pass through verbatim.
+        # ``last_min`` mirrors Stage B's ratio (no separate constant — the
+        # tail-merge threshold is purely a row-balancing heuristic).
+        last_min = max(int(target_max * _TABLE_MIN_LAST_RATIO), 1)
+        pieces: list[str] = []
+        for para in paragraphs:
+            text = para["text"]
+            if (
+                para.get("is_table", False)
+                and _count_tokens(tokenizer, text) > target_max
+            ):
+                pieces.extend(
+                    _split_table_text(
+                        text,
+                        tokenizer=tokenizer,
+                        target_max=target_max,
+                        target_ideal=target_ideal,
+                        last_min=last_min,
+                    )
+                )
+            else:
+                pieces.append(text)
+
+        # Step 2: greedy-pack pieces into chunks ≤ target_max. A piece
+        # that is itself oversized (e.g. a single dense prose paragraph
+        # without short anchors) is character-split via
+        # :func:`chunking_by_recursive_character` after flushing the
+        # current buffer. The "\n" separator inserted by ``"\n".join(buf)``
+        # also costs tokens, so it must be debited from the budget —
+        # otherwise two pieces that sum to exactly target_max would
+        # overflow once joined.
+        sep_tokens = _count_tokens(tokenizer, "\n")
+        chunks_text: list[str] = []
+        buf: list[str] = []
+        buf_tokens = 0
+        for piece in pieces:
+            piece_tokens = _count_tokens(tokenizer, piece)
+            if piece_tokens > target_max:
+                if buf:
+                    chunks_text.append("\n".join(buf))
+                    buf, buf_tokens = [], 0
+                chunks_text.extend(
+                    _character_split_text(
+                        piece,
+                        tokenizer,
+                        target_max=target_max,
+                        chunk_overlap_token_size=chunk_overlap_token_size,
+                    )
+                )
+                continue
+            addition = piece_tokens + (sep_tokens if buf else 0)
+            if buf and buf_tokens + addition > target_max:
+                chunks_text.append("\n".join(buf))
+                buf, buf_tokens = [], 0
+                addition = piece_tokens
+            buf.append(piece)
+            buf_tokens += addition
+        if buf:
+            chunks_text.append("\n".join(buf))
+
+        if not chunks_text:
+            # Defensive: every piece was empty after stripping. Emit the
+            # original oversized block so the document is never silently
+            # dropped (matches the prior behaviour of the empty-R branch).
             return [
                 _new_block(
                     heading=heading,
@@ -463,17 +956,19 @@ def _split_long_block(
                     tokenizer=tokenizer,
                 )
             ]
+
         sub_blocks: list[dict[str, Any]] = []
-        for i, piece in enumerate(r_pieces):
-            piece_text = piece.get("content", "")
-            if not piece_text:
-                continue
+        for i, chunk_text in enumerate(chunks_text):
+            stripped = chunk_text.strip()
+            is_still_table = stripped.startswith("<table ") and stripped.endswith(
+                "</table>"
+            )
             sub_blocks.append(
                 _new_block(
                     heading=heading,
                     parent_headings=parent_headings,
                     level=level,
-                    paragraphs=[{"text": piece_text, "is_table": False}],
+                    paragraphs=[{"text": chunk_text, "is_table": is_still_table}],
                     # Only the first sub-block keeps the inbound
                     # table_chunk_role; the rest are text-only by
                     # construction (mirrors the anchor-split path below).
@@ -540,11 +1035,13 @@ def _split_long_block(
             )
         )
 
-    # Recursive guard: if any sub-block still exceeds target_max with more
-    # than one paragraph available, try to split it further.
+    # Recursive guard: any sub-block still over target_max is re-split,
+    # including single-paragraph subs — the no-anchor branch above honors
+    # the cap via row-boundary or character-level splitting and is the
+    # only path that can shrink them.
     out: list[dict[str, Any]] = []
     for sub in sub_blocks:
-        if sub["tokens"] > target_max and len(sub["paragraphs"]) > 1:
+        if sub["tokens"] > target_max:
             out.extend(
                 _split_long_block(
                     sub["paragraphs"],
@@ -555,6 +1052,7 @@ def _split_long_block(
                     tokenizer=tokenizer,
                     target_max=target_max,
                     target_ideal=target_ideal,
+                    chunk_overlap_token_size=chunk_overlap_token_size,
                 )
             )
         else:
@@ -701,22 +1199,28 @@ def _merge_small_blocks(
                                 nxt = result[j]
                                 absorbed_paragraphs.extend(nxt["paragraphs"])
                                 absorbed_content += "\n\n" + nxt["content"]
-                            new_result.append(
-                                {
-                                    "heading": cur["heading"],
-                                    "parent_headings": list(cur["parent_headings"]),
-                                    "level": cur["level"],
-                                    "paragraphs": absorbed_paragraphs,
-                                    "content": absorbed_content,
-                                    "tokens": _count_tokens(
-                                        tokenizer, absorbed_content
-                                    ),
-                                    "table_chunk_role": "none",
-                                }
-                            )
-                            i = end_idx
-                            changed = True
-                            continue
+                            # The cheap predicate above sums per-block
+                            # tokens, but absorption joins blocks with
+                            # ``"\n\n"`` — those separator tokens are
+                            # real and can push the merged block over
+                            # target_max. Re-measure the joined content
+                            # before committing to absorb.
+                            absorbed_tokens = _count_tokens(tokenizer, absorbed_content)
+                            if absorbed_tokens <= target_max:
+                                new_result.append(
+                                    {
+                                        "heading": cur["heading"],
+                                        "parent_headings": list(cur["parent_headings"]),
+                                        "level": cur["level"],
+                                        "paragraphs": absorbed_paragraphs,
+                                        "content": absorbed_content,
+                                        "tokens": absorbed_tokens,
+                                        "table_chunk_role": "none",
+                                    }
+                                )
+                                i = end_idx
+                                changed = True
+                                continue
                     new_result.append(cur)
                     i += 1
             result = new_result
@@ -792,6 +1296,7 @@ def chunking_by_paragraph_semantic(
     chunk_token_size: int = 2000,
     *,
     blocks_path: str | None = None,
+    chunk_overlap_token_size: int = 100,
 ) -> list[dict[str, Any]]:
     """Paragraph Semantic Chunking — the ``chunking="P"`` strategy.
 
@@ -812,11 +1317,16 @@ def chunking_by_paragraph_semantic(
       - ``blocks_path`` (this strategy's required input — the
         ``.blocks.jsonl`` sidecar produced at parse time)
 
-    Knobs that ``chunking_by_token_size`` exposes (``split_by_character``,
-    ``split_by_character_only``, ``chunk_overlap_token_size``) are
+    Knobs that ``chunking_by_token_size`` exposes for delimiter-based
+    splitting (``split_by_character``, ``split_by_character_only``) are
     deliberately absent here because paragraph-semantic chunks are
-    heading-aligned and non-overlapping by construction; surfacing those
-    knobs would invite misuse.
+    heading-aligned. ``chunk_overlap_token_size`` is supported for two
+    paragraph-semantic cases where overlap preserves meaning inside one
+    JSONL content row: recursive-character fallback for long prose, and
+    bridge text duplicated around adjacent oversized table boundary chunks.
+    When one original ``blocks.jsonl`` content row is split into multiple
+    fragments, every fragment heading receives a row-local ``[part n]``
+    suffix; unsplit rows keep their original heading.
 
     Args:
         tokenizer: LightRAG tokenizer (used for all token counting; matches
@@ -836,6 +1346,11 @@ def chunking_by_paragraph_semantic(
             That fallback hard-requires ``langchain-text-splitters``;
             an :class:`ImportError` is surfaced rather than silently
             degrading further.
+        chunk_overlap_token_size: Token overlap used only when P must
+            fall back to recursive-character splitting of ordinary text,
+            and as the per-side budget for duplicating text between two
+            adjacent oversized table chunks. Structural table row splits
+            remain row-bounded and non-overlapping.
 
     Returns:
         Ordered list of chunk dicts, each shaped:
@@ -850,10 +1365,16 @@ def chunking_by_paragraph_semantic(
             lossless because table/equation/drawing tags are emitted as
             single-line replacements.
           - ``heading`` / ``parent_headings`` / ``level`` → consumed
-            directly by Stage C/D for hierarchy-aware merging.
+            directly by Stage C/D for hierarchy-aware merging. If one
+            original content row produces multiple fragments, the current
+            ``heading`` receives a ``[part n]`` suffix after Stage B/C and
+            before Stage D. ``parent_headings`` remain unchanged.
           - ``<table id="…" format="json">{rows_json}</table>`` tags →
             JSON body parsed in Stage B for row-level re-split when the
-            tag exceeds the per-table token cap.
+            tag exceeds the per-table token cap. When two split tables
+            have short text between them, that text may be repeated in
+            both table boundary chunks; longer bridge text leaves any
+            middle remainder as a separate text block.
           - ``<equation>`` / ``<drawing>`` tags → treated as atomic
             non-table paragraphs — neither splittable nor anchorable.
           - Per-paragraph paraIds are NOT preserved in blocks.jsonl
@@ -870,6 +1391,7 @@ def chunking_by_paragraph_semantic(
     table_ideal = max(int(target_max * _TABLE_IDEAL_RATIO), 1)
     table_min_last = max(int(table_max * _TABLE_MIN_LAST_RATIO), 1)
     small_tail_threshold = max(int(target_max * _SMALL_TAIL_RATIO), 1)
+    overlap = _bounded_overlap(target_max, chunk_overlap_token_size)
 
     rows: list[dict[str, Any]] = []
     fallback_reason: str | None = None
@@ -910,6 +1432,7 @@ def chunking_by_paragraph_semantic(
             tokenizer,
             content,
             target_max,
+            chunk_overlap_token_size=overlap,
         )
 
     # Build initial blocks (Stage A output, already persisted).
@@ -932,34 +1455,37 @@ def chunking_by_paragraph_semantic(
             )
         )
 
-    # Stage B — oversized-table re-split + first/middle/last gluing.
-    after_b: list[dict[str, Any]] = []
+    # Stage B/C are run per original blocks.jsonl content row so split
+    # fragments can be labelled with [part n] using a row-local counter
+    # before Stage D merges small neighbours.
+    after_c: list[dict[str, Any]] = []
     for blk in initial:
-        after_b.extend(
-            _expand_block_with_table_splits(
-                blk,
-                tokenizer=tokenizer,
-                table_max=table_max,
-                table_ideal=table_ideal,
-                table_min_last=table_min_last,
-            )
+        block_after_b = _expand_block_with_table_splits(
+            blk,
+            tokenizer=tokenizer,
+            table_max=table_max,
+            table_ideal=table_ideal,
+            table_min_last=table_min_last,
+            target_max=target_max,
+            chunk_overlap_token_size=overlap,
         )
 
-    # Stage C — anchor-driven long-block re-split.
-    after_c: list[dict[str, Any]] = []
-    for blk in after_b:
-        after_c.extend(
-            _split_long_block(
-                blk["paragraphs"],
-                blk["heading"],
-                blk["parent_headings"],
-                blk["level"],
-                blk.get("table_chunk_role", "none"),
-                tokenizer=tokenizer,
-                target_max=target_max,
-                target_ideal=target_ideal,
+        block_after_c: list[dict[str, Any]] = []
+        for split_blk in block_after_b:
+            block_after_c.extend(
+                _split_long_block(
+                    split_blk["paragraphs"],
+                    split_blk["heading"],
+                    split_blk["parent_headings"],
+                    split_blk["level"],
+                    split_blk.get("table_chunk_role", "none"),
+                    tokenizer=tokenizer,
+                    target_max=target_max,
+                    target_ideal=target_ideal,
+                    chunk_overlap_token_size=overlap,
+                )
             )
-        )
+        after_c.extend(_apply_part_suffixes(block_after_c))
 
     # Stage D — bottom-up, level-aware small-block merging.
     final = _merge_small_blocks(

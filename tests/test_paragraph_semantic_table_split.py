@@ -5,8 +5,13 @@ import json
 import pytest
 
 from lightrag.chunker.paragraph_semantic import (
+    _detect_table_format,
     _expand_block_with_table_splits,
+    _split_html_rows,
+    _split_long_block,
     _split_rows_by_tokens,
+    _split_table_text,
+    chunking_by_paragraph_semantic,
 )
 from lightrag.utils import Tokenizer, TokenizerInterface
 
@@ -86,6 +91,19 @@ def _build_oversized_table_text(num_rows: int, row_payload_size: int) -> str:
     return f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
 
 
+def _write_blocks_jsonl(tmp_path, content: str) -> str:
+    path = tmp_path / "doc.blocks.jsonl"
+    row = {
+        "type": "content",
+        "heading": "Section",
+        "parent_headings": [],
+        "level": 2,
+        "content": content,
+    }
+    path.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
+    return str(path)
+
+
 @pytest.mark.offline
 def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     # An oversized table sandwiched between leading and trailing paragraphs
@@ -129,6 +147,9 @@ def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     assert any(
         p["text"] == "trailing paragraph" for p in out[-1]["paragraphs"]
     ), "trailing paragraph must glue with the last table slice"
+    assert all(
+        "表格片段" not in b["heading"] for b in out
+    ), "Stage B should not expose legacy table-fragment heading suffixes"
 
 
 @pytest.mark.offline
@@ -176,3 +197,360 @@ def test_expand_block_two_oversized_tables_separates_last_and_first_roles():
     assert (
         ("last", "first") in transitions
     ), f"expected a last->first boundary between the two split tables, got {roles}"
+
+
+@pytest.mark.offline
+def test_expand_block_duplicates_short_text_between_oversized_tables():
+    tokenizer = _make_tokenizer()
+    bridge = "between tables"
+    block = {
+        "heading": "Section",
+        "parent_headings": [],
+        "level": 2,
+        "paragraphs": [
+            {
+                "text": _build_oversized_table_text(num_rows=4, row_payload_size=200),
+                "is_table": True,
+            },
+            {"text": bridge, "is_table": False},
+            {
+                "text": _build_oversized_table_text(num_rows=4, row_payload_size=200),
+                "is_table": True,
+            },
+        ],
+    }
+
+    out = _expand_block_with_table_splits(
+        block,
+        tokenizer=tokenizer,
+        table_max=400,
+        table_ideal=300,
+        table_min_last=128,
+        target_max=800,
+        chunk_overlap_token_size=100,
+    )
+
+    roles = [b["table_chunk_role"] for b in out]
+    boundary_idx = next(
+        i
+        for i, (left, right) in enumerate(zip(roles, roles[1:]))
+        if (left, right) == ("last", "first")
+    )
+    assert bridge in out[boundary_idx]["content"]
+    assert bridge in out[boundary_idx + 1]["content"]
+
+
+@pytest.mark.offline
+def test_expand_block_emits_middle_text_when_table_bridge_is_long():
+    tokenizer = _make_tokenizer()
+    bridge = ("A" * 45) + ("B" * 50) + ("C" * 45)
+    block = {
+        "heading": "Section",
+        "parent_headings": [],
+        "level": 2,
+        "paragraphs": [
+            {
+                "text": _build_oversized_table_text(num_rows=6, row_payload_size=120),
+                "is_table": True,
+            },
+            {"text": bridge, "is_table": False},
+            {
+                "text": _build_oversized_table_text(num_rows=6, row_payload_size=120),
+                "is_table": True,
+            },
+        ],
+    }
+
+    out = _expand_block_with_table_splits(
+        block,
+        tokenizer=tokenizer,
+        table_max=260,
+        table_ideal=180,
+        table_min_last=32,
+        target_max=400,
+        chunk_overlap_token_size=45,
+    )
+
+    middle_idx = next(
+        i
+        for i, blk in enumerate(out)
+        if blk["table_chunk_role"] == "none" and blk["content"] == "B" * 50
+    )
+    assert out[middle_idx - 1]["table_chunk_role"] == "last"
+    assert "A" * 45 in out[middle_idx - 1]["content"]
+    assert "B" * 50 not in out[middle_idx - 1]["content"]
+    assert out[middle_idx + 1]["table_chunk_role"] == "first"
+    assert out[middle_idx + 1]["content"].startswith("C" * 45)
+    assert "B" * 50 not in out[middle_idx + 1]["content"]
+    assert all(b["tokens"] <= 400 for b in out), [b["tokens"] for b in out]
+
+
+@pytest.mark.offline
+def test_public_chunking_adds_part_suffixes_to_all_table_split_fragments(tmp_path):
+    tokenizer = _make_tokenizer()
+    body = "\n".join(
+        [
+            "lead paragraph",
+            _build_oversized_table_text(num_rows=6, row_payload_size=200),
+            "trailing paragraph",
+        ]
+    )
+    blocks_path = _write_blocks_jsonl(tmp_path, body)
+
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer,
+        body,
+        chunk_token_size=800,
+        blocks_path=blocks_path,
+        chunk_overlap_token_size=0,
+    )
+
+    assert len(chunks) > 1
+    assert [chunk["heading"] for chunk in chunks] == [
+        f"Section [part {idx}]" for idx in range(1, len(chunks) + 1)
+    ]
+    assert all("表格片段" not in chunk["heading"] for chunk in chunks)
+
+
+# ---------------------------------------------------------------------------
+# Table-aware fallback tests (row-boundary first, character last).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_detect_table_format_explicit_attr():
+    assert _detect_table_format('id="t1" format="json"', "[]") == "json"
+    assert _detect_table_format("format='html'", "<tr></tr>") == "html"
+    # Unknown formats fall through (force the caller to use char fallback).
+    assert _detect_table_format('format="markdown"', "...") is None
+
+
+@pytest.mark.offline
+def test_detect_table_format_sniff_when_attrs_silent():
+    assert _detect_table_format("", '[{"a":1}]') == "json"
+    assert _detect_table_format("", "<tr><td>x</td></tr>") == "html"
+    # Body that doesn't look like JSON or HTML → unknown.
+    assert _detect_table_format("", "plain text rows") is None
+
+
+@pytest.mark.offline
+def test_split_html_rows_extracts_tr_elements():
+    body = (
+        "<thead><tr><th>h</th></tr></thead>"
+        "<tbody><tr><td>a</td></tr><tr><td>b</td></tr></tbody>"
+    )
+    rows = _split_html_rows(body)
+    assert rows is not None
+    assert len(rows) == 3
+    assert all(r.startswith("<tr") and r.endswith("</tr>") for r in rows)
+
+
+@pytest.mark.offline
+def test_split_html_rows_no_tr_returns_none():
+    assert _split_html_rows("just text, no rows") is None
+    assert _split_html_rows("") is None
+
+
+@pytest.mark.offline
+def test_split_table_text_single_row_oversized_falls_to_character_split():
+    # A 1-row table whose single cell is huge cannot be reduced via row
+    # boundary — the function must fall to character splitting and respect
+    # target_max on every output piece.
+    tokenizer = _make_tokenizer()
+    rows = [[{"col": "x" * 2000}]]
+    table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=500,
+        target_ideal=350,
+        last_min=128,
+    )
+
+    assert len(pieces) >= 2, "single-row oversized table must produce multiple pieces"
+    # Every piece honors the cap (this is the contract violation the user
+    # reported when the previous code emitted a single 2000-token table).
+    assert all(_count_tokens(tokenizer, p) <= 500 for p in pieces)
+
+
+@pytest.mark.offline
+def test_split_table_text_multirow_one_huge_row_mixed_output():
+    # A multi-row table where most rows fit but one row is itself huge.
+    # The fit-able rows must keep <table>...</table> wrapping; the huge
+    # row's chunk falls to character splitting.
+    tokenizer = _make_tokenizer()
+    small_row = [{"col": "ok"}]
+    huge_row = [{"col": "z" * 2000}]
+    rows = [small_row, huge_row, small_row]
+    table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=500,
+        target_ideal=350,
+        last_min=64,
+    )
+
+    assert all(_count_tokens(tokenizer, p) <= 500 for p in pieces)
+    # At least one fragment for the small rows must survive as legal markup.
+    table_pieces = [p for p in pieces if p.startswith("<table ")]
+    assert table_pieces, "expected at least one <table>-wrapped piece for fit-able rows"
+    # The huge row must produce non-table text fragments (character split).
+    text_pieces = [p for p in pieces if not p.startswith("<table ")]
+    assert text_pieces, "huge row must yield character-split text fragments"
+
+
+@pytest.mark.offline
+def test_split_table_text_html_table_split_by_tr():
+    # HTML-format table: rows are <tr>...</tr>; each output fragment must
+    # remain a legal <table {attrs}>{rows}</table> string.
+    tokenizer = _make_tokenizer()
+    body = "".join(f"<tr><td>{'r' * 200}</td></tr>" for _ in range(5))
+    table_text = f'<table id="tb-h1" format="html">{body}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=500,
+        target_ideal=350,
+        last_min=64,
+    )
+
+    assert len(pieces) >= 2
+    # All pieces should be legal <table>...</table> fragments (none of the
+    # rows individually exceeds target_max, so no character fallback).
+    assert all(p.startswith("<table ") and p.endswith("</table>") for p in pieces)
+    assert all(_count_tokens(tokenizer, p) <= 500 for p in pieces)
+
+
+@pytest.mark.offline
+def test_split_table_text_unknown_format_falls_to_character():
+    # No format attr, body that doesn't look like JSON/HTML → unknown.
+    tokenizer = _make_tokenizer()
+    table_text = '<table id="weird">' + ("plain row text " * 300) + "</table>"
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=500,
+        target_ideal=350,
+        last_min=64,
+    )
+
+    assert len(pieces) >= 2
+    assert all(_count_tokens(tokenizer, p) <= 500 for p in pieces)
+
+
+@pytest.mark.offline
+def test_expand_block_single_row_table_no_longer_left_intact():
+    # Stage B integration: previously a single-row oversized table was
+    # appended back to cur_paras unchanged, leading the block to reach
+    # Stage C with the table whole and the character fallback shredding
+    # the <table> tag. After the fix, Stage B itself produces multiple
+    # pieces for such a table.
+    tokenizer = _make_tokenizer()
+    rows = [[{"col": "x" * 2000}]]  # single huge row
+    table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+    block = {
+        "heading": "Section",
+        "parent_headings": [],
+        "level": 2,
+        "paragraphs": [
+            {"text": "lead", "is_table": False},
+            {"text": table_text, "is_table": True},
+            {"text": "trail", "is_table": False},
+        ],
+    }
+
+    out = _expand_block_with_table_splits(
+        block,
+        tokenizer=tokenizer,
+        table_max=400,
+        table_ideal=300,
+        table_min_last=128,
+    )
+
+    # Multiple sub-blocks must be produced; the oversized table no longer
+    # passes through whole.
+    assert len(out) >= 2
+    # First/last role protection still fires when the table was reduced.
+    roles = [b["table_chunk_role"] for b in out]
+    assert (
+        "first" in roles or "last" in roles
+    ), f"expected first/last role assignment after table split, got {roles}"
+
+
+@pytest.mark.offline
+def test_split_long_block_table_dominant_no_anchor_keeps_some_table_markup():
+    # Stage C integration: a block dominated by an oversized table with no
+    # anchor candidates used to be character-split end-to-end, destroying
+    # the <table> tag. After the fix, at least some output sub-blocks
+    # retain legal <table>...</table> markup for the rows that fit.
+    tokenizer = _make_tokenizer()
+    # Many small rows -> row-boundary split produces multiple legal
+    # <table> fragments, none of which individually exceed target_max.
+    rows = [[{"col": f"r{i}-" + "v" * 200}] for i in range(8)]
+    table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+
+    paragraphs = [
+        {"text": "Sufficiently long lead paragraph " * 30, "is_table": False},
+        {"text": table_text, "is_table": True},
+    ]
+
+    sub_blocks = _split_long_block(
+        paragraphs,
+        heading="Heading",
+        parent_headings=[],
+        level=2,
+        table_chunk_role="none",
+        tokenizer=tokenizer,
+        target_max=600,
+        target_ideal=450,
+    )
+
+    # Every sub-block respects the cap.
+    assert all(b["tokens"] <= 600 for b in sub_blocks)
+    # At least one sub-block keeps an unbroken <table> fragment somewhere
+    # in its content (proof that row-boundary preservation kicked in).
+    contents = [b["content"] for b in sub_blocks]
+    assert any(
+        ("<table " in c and "</table>" in c) for c in contents
+    ), "expected at least one sub-block to retain a legal <table> fragment"
+
+
+@pytest.mark.offline
+def test_split_table_text_budgets_wrapper_overhead_for_target_max():
+    # ``_split_rows_by_tokens`` measures only the body (json.dumps(rows));
+    # the surrounding ``<table {attrs}></table>`` wrapper costs tokens too.
+    # Without wrapper-aware budgeting, a chunk whose body just fits
+    # target_max would overflow once wrapped and trigger character
+    # fallback — shredding the row structure for no good reason.
+    tokenizer = _make_tokenizer()
+    # A long attrs string forces a non-trivial wrapper overhead so the
+    # body-only budget previously chosen (==target_max) overflows when
+    # the wrapper is added back in.
+    attrs_padding = "x" * 80
+    rows = [[{"col": "y" * 80}] for _ in range(4)]
+    table_text = f'<table id="{attrs_padding}" format="json">{json.dumps(rows)}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=250,
+        target_ideal=180,
+        last_min=64,
+    )
+
+    # Every output piece honors the cap.
+    assert all(_count_tokens(tokenizer, p) <= 250 for p in pieces), [
+        _count_tokens(tokenizer, p) for p in pieces
+    ]
+    # Row structure preserved — none of the pieces fell back to
+    # character fragments because of accidental wrapper overflow.
+    assert all(p.startswith("<table ") and p.endswith("</table>") for p in pieces)
+
+
+def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
+    return len(tokenizer.encode(text))
