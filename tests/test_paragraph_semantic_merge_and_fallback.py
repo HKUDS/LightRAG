@@ -85,11 +85,11 @@ def test_tail_absorption_still_fires_when_joined_size_fits():
 
 
 @pytest.mark.offline
-def test_paragraph_semantic_fallback_disables_recursive_character_overlap(monkeypatch):
+def test_paragraph_semantic_fallback_passes_configured_recursive_overlap(monkeypatch):
     # When ``blocks_path`` is missing, paragraph-semantic chunking
-    # delegates to ``chunking_by_recursive_character``. R defaults to
-    # ``chunk_overlap_token_size=100``, but P contracts non-overlapping
-    # output — the fallback must explicitly request zero overlap.
+    # delegates to ``chunking_by_recursive_character``. P now permits
+    # overlap for long text under one JSONL row, so the fallback must
+    # pass through the configured overlap rather than forcing zero.
     captured: dict[str, object] = {}
 
     def fake_chunker(
@@ -120,9 +120,10 @@ def test_paragraph_semantic_fallback_disables_recursive_character_overlap(monkey
         "fallback corpus",
         chunk_token_size=500,
         blocks_path=None,
+        chunk_overlap_token_size=37,
     )
 
     assert (
-        captured.get("chunk_overlap_token_size") == 0
-    ), "P→R fallback must pass chunk_overlap_token_size=0 to honor P's no-overlap contract"
+        captured.get("chunk_overlap_token_size") == 37
+    ), "P→R fallback must pass the configured chunk_overlap_token_size"
     assert captured.get("chunk_token_size") == 500

@@ -182,6 +182,92 @@ def test_expand_block_two_oversized_tables_separates_last_and_first_roles():
     ), f"expected a last->first boundary between the two split tables, got {roles}"
 
 
+@pytest.mark.offline
+def test_expand_block_duplicates_short_text_between_oversized_tables():
+    tokenizer = _make_tokenizer()
+    bridge = "between tables"
+    block = {
+        "heading": "Section",
+        "parent_headings": [],
+        "level": 2,
+        "paragraphs": [
+            {
+                "text": _build_oversized_table_text(num_rows=4, row_payload_size=200),
+                "is_table": True,
+            },
+            {"text": bridge, "is_table": False},
+            {
+                "text": _build_oversized_table_text(num_rows=4, row_payload_size=200),
+                "is_table": True,
+            },
+        ],
+    }
+
+    out = _expand_block_with_table_splits(
+        block,
+        tokenizer=tokenizer,
+        table_max=400,
+        table_ideal=300,
+        table_min_last=128,
+        target_max=800,
+        chunk_overlap_token_size=100,
+    )
+
+    roles = [b["table_chunk_role"] for b in out]
+    boundary_idx = next(
+        i
+        for i, (left, right) in enumerate(zip(roles, roles[1:]))
+        if (left, right) == ("last", "first")
+    )
+    assert bridge in out[boundary_idx]["content"]
+    assert bridge in out[boundary_idx + 1]["content"]
+
+
+@pytest.mark.offline
+def test_expand_block_emits_middle_text_when_table_bridge_is_long():
+    tokenizer = _make_tokenizer()
+    bridge = ("A" * 45) + ("B" * 50) + ("C" * 45)
+    block = {
+        "heading": "Section",
+        "parent_headings": [],
+        "level": 2,
+        "paragraphs": [
+            {
+                "text": _build_oversized_table_text(num_rows=6, row_payload_size=120),
+                "is_table": True,
+            },
+            {"text": bridge, "is_table": False},
+            {
+                "text": _build_oversized_table_text(num_rows=6, row_payload_size=120),
+                "is_table": True,
+            },
+        ],
+    }
+
+    out = _expand_block_with_table_splits(
+        block,
+        tokenizer=tokenizer,
+        table_max=260,
+        table_ideal=180,
+        table_min_last=32,
+        target_max=400,
+        chunk_overlap_token_size=45,
+    )
+
+    middle_idx = next(
+        i
+        for i, blk in enumerate(out)
+        if blk["table_chunk_role"] == "none" and blk["content"] == "B" * 50
+    )
+    assert out[middle_idx - 1]["table_chunk_role"] == "last"
+    assert "A" * 45 in out[middle_idx - 1]["content"]
+    assert "B" * 50 not in out[middle_idx - 1]["content"]
+    assert out[middle_idx + 1]["table_chunk_role"] == "first"
+    assert out[middle_idx + 1]["content"].startswith("C" * 45)
+    assert "B" * 50 not in out[middle_idx + 1]["content"]
+    assert all(b["tokens"] <= 400 for b in out), [b["tokens"] for b in out]
+
+
 # ---------------------------------------------------------------------------
 # Table-aware fallback tests (row-boundary first, character last).
 # ---------------------------------------------------------------------------

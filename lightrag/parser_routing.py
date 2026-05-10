@@ -195,6 +195,7 @@ def default_chunker_config() -> dict[str, Any]:
     *strategy-specific* env vars (``CHUNK_F_OVERLAP_SIZE``,
     ``CHUNK_R_SIZE``, ``CHUNK_R_OVERLAP_SIZE``, ``CHUNK_R_SEPARATORS``,
     ``CHUNK_V_SIZE``, ``CHUNK_V_*``, ``CHUNK_P_SIZE``,
+    ``CHUNK_P_OVERLAP_SIZE``,
     ``CHUNK_F_SPLIT_BY_CHARACTER``…).  It does **not** read the legacy
     top-level envs ``CHUNK_SIZE`` / ``CHUNK_OVERLAP_SIZE``, and it
     deliberately **omits** ``chunk_overlap_token_size`` from a strategy
@@ -259,6 +260,9 @@ def default_chunker_config() -> dict[str, Any]:
     r_overlap_raw = os.getenv("CHUNK_R_OVERLAP_SIZE")
     if r_overlap_raw is not None:
         config["recursive_character"]["chunk_overlap_token_size"] = int(r_overlap_raw)
+    p_overlap_raw = os.getenv("CHUNK_P_OVERLAP_SIZE")
+    if p_overlap_raw is not None:
+        config["paragraph_semantic"]["chunk_overlap_token_size"] = int(p_overlap_raw)
 
     # P strategy carries its own ``chunk_token_size`` override so the
     # paragraph-semantic merge target can diverge from the global

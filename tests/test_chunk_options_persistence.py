@@ -298,15 +298,19 @@ def test_constructor_chunk_size_overlays_addon_params(tmp_path, monkeypatch):
     chunk_opts = row["chunk_options"]
     # Top-level chunk_token_size carries the constructor value.
     assert chunk_opts["chunk_token_size"] == 7
-    # F and R sub-dicts both pick up the legacy overlap field; V
+    # F, R, and P sub-dicts pick up the legacy overlap field; V
     # doesn't have chunk_overlap_token_size and must remain unchanged.
     assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 2
     assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 2
+    assert chunk_opts["paragraph_semantic"]["chunk_overlap_token_size"] == 2
     assert "chunk_overlap_token_size" not in chunk_opts["semantic_vector"]
     # addon_params reflects the same overlay so subsequent runtime
     # mutations operate on the constructor-supplied baseline.
     assert addon_params["chunker"]["chunk_token_size"] == 7
     assert addon_params["chunker"]["fixed_token"]["chunk_overlap_token_size"] == 2
+    assert (
+        addon_params["chunker"]["paragraph_semantic"]["chunk_overlap_token_size"] == 2
+    )
 
 
 @pytest.mark.offline
@@ -401,6 +405,7 @@ def test_strategy_env_wins_over_legacy_ctor_field(tmp_path, monkeypatch):
         "Without a CHUNK_F_OVERLAP_SIZE override, the F slot falls back "
         "to the legacy constructor field."
     )
+    assert chunk_opts["paragraph_semantic"]["chunk_overlap_token_size"] == 2
     # self.chunk_overlap_token_size mirrors the F-strategy resolved value.
     assert ctor_field == 2
 
@@ -433,6 +438,7 @@ def test_legacy_env_is_final_fallback(tmp_path, monkeypatch):
     chunk_opts = row["chunk_options"]
     assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 77
     assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 77
+    assert chunk_opts["paragraph_semantic"]["chunk_overlap_token_size"] == 77
     assert ctor_field == 77
 
     # Mixed case: F-specific env set, legacy still acts as R's fallback.
@@ -457,6 +463,7 @@ def test_legacy_env_is_final_fallback(tmp_path, monkeypatch):
     chunk_opts = row["chunk_options"]
     assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 10
     assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 77
+    assert chunk_opts["paragraph_semantic"]["chunk_overlap_token_size"] == 77
 
 
 @pytest.mark.offline
@@ -535,6 +542,43 @@ def test_p_strategy_falls_back_to_global_chunk_size(tmp_path, monkeypatch):
 
     asyncio.run(_run())
     assert captured.get("chunk_token_size") == 333
+
+
+@pytest.mark.offline
+def test_p_strategy_uses_dedicated_overlap_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHUNK_OVERLAP_SIZE", "11")
+    monkeypatch.setenv("CHUNK_P_OVERLAP_SIZE", "66")
+
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    def _p_spy(tokenizer, content, chunk_token_size, *, blocks_path=None, **kwargs):
+        captured["kwargs"] = dict(kwargs)
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_paragraph_semantic", _p_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            await rag.apipeline_enqueue_documents(
+                "P overlap body",
+                ids=["doc-p-overlap"],
+                file_paths="ctor.[native-P].txt",
+                track_id="track-p-overlap",
+                process_options="P",
+            )
+            row = await rag.full_docs.get_by_id("doc-p-overlap")
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+        return row
+
+    row = asyncio.run(_run())
+    assert row["chunk_options"]["paragraph_semantic"]["chunk_overlap_token_size"] == 66
+    assert captured["kwargs"]["chunk_overlap_token_size"] == 66
 
 
 @pytest.mark.offline

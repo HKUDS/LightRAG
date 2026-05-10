@@ -113,6 +113,55 @@ def test_split_long_block_single_paragraph_oversized_is_character_split():
 
 
 @pytest.mark.offline
+def test_split_long_block_character_fallback_keeps_configured_overlap(monkeypatch):
+    tokenizer = _make_tokenizer()
+    captured: dict[str, int] = {}
+
+    def fake_chunker(
+        tokenizer,
+        content,
+        chunk_token_size: int = 1200,
+        *,
+        chunk_overlap_token_size: int = 100,
+        separators=None,
+    ):
+        captured["chunk_overlap_token_size"] = chunk_overlap_token_size
+        step = max(chunk_token_size - chunk_overlap_token_size, 1)
+        tokens = tokenizer.encode(content)
+        chunks = []
+        for start in range(0, len(tokens), step):
+            piece = tokenizer.decode(tokens[start : start + chunk_token_size])
+            chunks.append(
+                {
+                    "tokens": len(tokenizer.encode(piece)),
+                    "content": piece,
+                    "chunk_order_index": len(chunks),
+                }
+            )
+        return chunks
+
+    import lightrag.chunker.recursive_character as rc_mod
+
+    monkeypatch.setattr(rc_mod, "chunking_by_recursive_character", fake_chunker)
+
+    blocks = _split_long_block(
+        [{"text": "x" * 260}],
+        heading="Heading",
+        parent_headings=[],
+        level=2,
+        table_chunk_role="none",
+        tokenizer=tokenizer,
+        target_max=100,
+        target_ideal=75,
+        chunk_overlap_token_size=25,
+    )
+
+    assert captured["chunk_overlap_token_size"] == 25
+    assert len(blocks) > 1
+    assert blocks[0]["content"][-25:] == blocks[1]["content"][:25]
+
+
+@pytest.mark.offline
 def test_split_long_block_uses_later_short_anchor():
     # Sanity check: a short paragraph at idx>0 IS still a valid divider.
     tokenizer = _make_tokenizer()
