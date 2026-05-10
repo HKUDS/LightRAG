@@ -41,7 +41,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from lightrag.utils import Tokenizer, logger
 
@@ -391,7 +391,17 @@ def _split_table_text(
     body = match.group("body")
     fmt = _detect_table_format(attrs, body)
 
-    row_chunks_serialized: list[str] | None = None
+    # Budget the <table {attrs}></table> wrapper out of the per-chunk
+    # caps before calling the row splitter — the splitter only measures
+    # the body (json.dumps(rows) / "".join(rows)), so without this the
+    # wrapped chunk can exceed target_max purely from the wrapper, which
+    # would force a needless character-fallback below.
+    wrapper_overhead = _count_tokens(tokenizer, f"<table {attrs}></table>")
+    body_max = max(target_max - wrapper_overhead, 1)
+    body_ideal = max(min(target_ideal, target_max) - wrapper_overhead, 1)
+    body_last_min = max(last_min - wrapper_overhead, 1)
+    row_chunks: list[list[Any]] | None = None
+    serialize: Callable[[list[Any]], str] | None = None
     if fmt == "json":
         try:
             rows = json.loads(body)
@@ -401,46 +411,91 @@ def _split_table_text(
             row_chunks = _split_rows_by_tokens(
                 rows,
                 tokenizer,
-                target_max=target_max,
-                target_ideal=target_ideal,
-                last_min=last_min,
+                target_max=body_max,
+                target_ideal=body_ideal,
+                last_min=body_last_min,
             )
-            row_chunks_serialized = [
-                f"<table {attrs}>"
-                f"{json.dumps(chunk_rows, ensure_ascii=False)}"
-                f"</table>"
-                for chunk_rows in row_chunks
-            ]
+
+            def serialize(chunk_rows: list[Any]) -> str:
+                return (
+                    f"<table {attrs}>"
+                    f"{json.dumps(chunk_rows, ensure_ascii=False)}"
+                    f"</table>"
+                )
+
     elif fmt == "html":
         rows_html = _split_html_rows(body)
         if rows_html and len(rows_html) > 1:
             row_chunks = _split_html_rows_by_tokens(
                 rows_html,
                 tokenizer,
-                target_max=target_max,
-                target_ideal=target_ideal,
-                last_min=last_min,
+                target_max=body_max,
+                target_ideal=body_ideal,
+                last_min=body_last_min,
             )
-            row_chunks_serialized = [
-                f"<table {attrs}>{''.join(chunk_rows)}</table>"
-                for chunk_rows in row_chunks
-            ]
 
-    if not row_chunks_serialized:
+            def serialize(chunk_rows: list[str]) -> str:
+                return f"<table {attrs}>{''.join(chunk_rows)}</table>"
+
+    if row_chunks is None or serialize is None:
         # No row boundary available (single-row table, parse failure,
         # unknown format) → character-fallback the whole text.
         return _character_split_text(table_text, tokenizer, target_max=target_max)
 
+    # Re-split any chunk whose wrapped form still exceeds target_max
+    # before resorting to character-level shredding. The row splitter's
+    # balanced-cut heuristic can produce uneven chunks when row sizes
+    # vary, and only a chunk that has collapsed to a single row (where
+    # row-boundary splitting can no longer reduce it) belongs in the
+    # character fallback.
     pieces: list[str] = []
-    for chunk_text in row_chunks_serialized:
-        if _count_tokens(tokenizer, chunk_text) > target_max:
-            # A single row exceeds the cap on its own; preserve as much
-            # structure as possible by character-splitting only this chunk.
+    pending: list[list[Any]] = list(row_chunks)
+    while pending:
+        chunk_rows = pending.pop(0)
+        wrapped = serialize(chunk_rows)
+        if _count_tokens(tokenizer, wrapped) <= target_max:
+            pieces.append(wrapped)
+            continue
+        if len(chunk_rows) <= 1:
             pieces.extend(
-                _character_split_text(chunk_text, tokenizer, target_max=target_max)
+                _character_split_text(wrapped, tokenizer, target_max=target_max)
+            )
+            continue
+        # Force a finer cut: cap the next-pass body budget at half the
+        # current wrapped size so target_chunks >= 2 inside the splitter.
+        # This guarantees forward progress (one row at minimum per
+        # sub-chunk, see the splitter's len(rows) cap).
+        halved = max(_count_tokens(tokenizer, wrapped) // 2, 1)
+        sub_max = max(min(body_max, halved), 1)
+        sub_ideal = max(sub_max // 2, 1)
+        sub_last_min = max(min(body_last_min, sub_max // 2), 1)
+        if fmt == "json":
+            sub_chunks = _split_rows_by_tokens(
+                chunk_rows,
+                tokenizer,
+                target_max=sub_max,
+                target_ideal=sub_ideal,
+                last_min=sub_last_min,
             )
         else:
-            pieces.append(chunk_text)
+            sub_chunks = _split_html_rows_by_tokens(
+                chunk_rows,
+                tokenizer,
+                target_max=sub_max,
+                target_ideal=sub_ideal,
+                last_min=sub_last_min,
+            )
+        if len(sub_chunks) <= 1:
+            # The splitter could not reduce further (e.g. one row already
+            # dominates the body). Avoid an infinite loop and let the
+            # character fallback handle this stubborn chunk.
+            pieces.extend(
+                _character_split_text(wrapped, tokenizer, target_max=target_max)
+            )
+            continue
+        # Process the finer cuts before any remaining peer chunks so the
+        # output keeps source order.
+        pending[0:0] = sub_chunks
     return pieces
 
 
@@ -695,7 +750,11 @@ def _split_long_block(
         # that is itself oversized (e.g. a single dense prose paragraph
         # without short anchors) is character-split via
         # :func:`chunking_by_recursive_character` after flushing the
-        # current buffer.
+        # current buffer. The "\n" separator inserted by ``"\n".join(buf)``
+        # also costs tokens, so it must be debited from the budget —
+        # otherwise two pieces that sum to exactly target_max would
+        # overflow once joined.
+        sep_tokens = _count_tokens(tokenizer, "\n")
         chunks_text: list[str] = []
         buf: list[str] = []
         buf_tokens = 0
@@ -709,11 +768,13 @@ def _split_long_block(
                     _character_split_text(piece, tokenizer, target_max=target_max)
                 )
                 continue
-            if buf_tokens + piece_tokens > target_max and buf:
+            addition = piece_tokens + (sep_tokens if buf else 0)
+            if buf and buf_tokens + addition > target_max:
                 chunks_text.append("\n".join(buf))
                 buf, buf_tokens = [], 0
+                addition = piece_tokens
             buf.append(piece)
-            buf_tokens += piece_tokens
+            buf_tokens += addition
         if buf:
             chunks_text.append("\n".join(buf))
 

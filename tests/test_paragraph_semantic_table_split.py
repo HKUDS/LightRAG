@@ -390,5 +390,37 @@ def test_split_long_block_table_dominant_no_anchor_keeps_some_table_markup():
     ), "expected at least one sub-block to retain a legal <table> fragment"
 
 
+@pytest.mark.offline
+def test_split_table_text_budgets_wrapper_overhead_for_target_max():
+    # ``_split_rows_by_tokens`` measures only the body (json.dumps(rows));
+    # the surrounding ``<table {attrs}></table>`` wrapper costs tokens too.
+    # Without wrapper-aware budgeting, a chunk whose body just fits
+    # target_max would overflow once wrapped and trigger character
+    # fallback — shredding the row structure for no good reason.
+    tokenizer = _make_tokenizer()
+    # A long attrs string forces a non-trivial wrapper overhead so the
+    # body-only budget previously chosen (==target_max) overflows when
+    # the wrapper is added back in.
+    attrs_padding = "x" * 80
+    rows = [[{"col": "y" * 80}] for _ in range(4)]
+    table_text = f'<table id="{attrs_padding}" format="json">{json.dumps(rows)}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=250,
+        target_ideal=180,
+        last_min=64,
+    )
+
+    # Every output piece honors the cap.
+    assert all(_count_tokens(tokenizer, p) <= 250 for p in pieces), [
+        _count_tokens(tokenizer, p) for p in pieces
+    ]
+    # Row structure preserved — none of the pieces fell back to
+    # character fragments because of accidental wrapper overflow.
+    assert all(p.startswith("<table ") and p.endswith("</table>") for p in pieces)
+
+
 def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
     return len(tokenizer.encode(text))
