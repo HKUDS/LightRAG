@@ -75,9 +75,6 @@ _SMALL_TAIL_RATIO = 0.125
 # Anchor candidate length is a UI/readability constraint — keep absolute.
 _MAX_ANCHOR_CANDIDATE_LENGTH = 100  # characters
 
-# Heading suffix used when promoting middle table chunks to standalone blocks.
-_TABLE_CHUNK_SUFFIX_LABEL = "表格片段"
-
 # Strict regex for a post-rewrite table tag emitted by ``lightrag_adapter``:
 #   <table id="tb-…" format="json"[ caption="…"]>{rows_json}</table>
 # blocks.jsonl invariants guarantee the tag has no embedded newlines.
@@ -92,6 +89,9 @@ _TABLE_FORMAT_RE = re.compile(r"""format\s*=\s*["'](?P<fmt>[^"']+)["']""")
 # HTML <tr>...</tr> row extractor. Standard HTML disallows nested <tr>,
 # so a non-greedy match is sufficient for well-formed input.
 _HTML_TR_RE = re.compile(r"<tr\b[^>]*>.*?</tr>", re.DOTALL | re.IGNORECASE)
+
+_LEGACY_TABLE_CHUNK_SUFFIX_RE = re.compile(r"\s*\[表格片段\d+\]\s*$")
+_PART_SUFFIX_RE = re.compile(r"\s*\[part\s+\d+\]\s*$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +111,32 @@ def _bounded_overlap(target_max: int, chunk_overlap_token_size: int) -> int:
     if target_max <= 1:
         return 0
     return min(overlap, target_max - 1)
+
+
+def _strip_generated_heading_suffixes(heading: str) -> str:
+    """Remove generated split suffixes before assigning a fresh part number."""
+    cleaned = (heading or "").rstrip()
+    while True:
+        next_cleaned = _PART_SUFFIX_RE.sub("", cleaned).rstrip()
+        next_cleaned = _LEGACY_TABLE_CHUNK_SUFFIX_RE.sub("", next_cleaned).rstrip()
+        if next_cleaned == cleaned:
+            return cleaned
+        cleaned = next_cleaned
+
+
+def _append_part_suffix(heading: str, part_number: int) -> str:
+    base = _strip_generated_heading_suffixes(heading)
+    suffix = f"[part {part_number}]"
+    return f"{base} {suffix}" if base else suffix
+
+
+def _apply_part_suffixes(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tag split fragments from one original block as ``[part n]``."""
+    if len(blocks) <= 1:
+        return blocks
+    for idx, block in enumerate(blocks, start=1):
+        block["heading"] = _append_part_suffix(block.get("heading", ""), idx)
+    return blocks
 
 
 def _is_table_paragraph(text: str) -> bool:
@@ -530,8 +556,7 @@ def _expand_block_with_table_splits(
       - the first row-slice glues with paragraphs already accumulated in
         the current expansion (i.e. content *before* the table);
       - middle slices are emitted as standalone blocks tagged
-        ``table_chunk_role == "middle"`` with a ``[表格片段N]`` heading
-        suffix so Stage D refuses to merge them;
+        ``table_chunk_role == "middle"`` so Stage D refuses to merge them;
       - the last slice begins a fresh accumulation that will glue with
         paragraphs *after* the table.
 
@@ -565,7 +590,6 @@ def _expand_block_with_table_splits(
     # not absorb backward, a "last" block must not absorb forward) silently
     # disappear after the slice glues with surrounding paragraphs.
     cur_role = "none"
-    table_split_counter = 0
 
     def flush_cur() -> None:
         nonlocal cur_role
@@ -748,14 +772,9 @@ def _expand_block_with_table_splits(
                 # this middle slice as a standalone block that Stage D
                 # MUST keep intact (table_chunk_role == "middle").
                 flush_cur()
-                table_split_counter += 1
-                middle_heading = (
-                    f"{block['heading']} "
-                    f"[{_TABLE_CHUNK_SUFFIX_LABEL}{table_split_counter}]"
-                )
                 out.append(
                     _new_block(
-                        heading=middle_heading,
+                        heading=block["heading"],
                         parent_headings=block["parent_headings"],
                         level=block["level"],
                         paragraphs=[chunk_para],
@@ -1305,6 +1324,9 @@ def chunking_by_paragraph_semantic(
     paragraph-semantic cases where overlap preserves meaning inside one
     JSONL content row: recursive-character fallback for long prose, and
     bridge text duplicated around adjacent oversized table boundary chunks.
+    When one original ``blocks.jsonl`` content row is split into multiple
+    fragments, every fragment heading receives a row-local ``[part n]``
+    suffix; unsplit rows keep their original heading.
 
     Args:
         tokenizer: LightRAG tokenizer (used for all token counting; matches
@@ -1343,7 +1365,10 @@ def chunking_by_paragraph_semantic(
             lossless because table/equation/drawing tags are emitted as
             single-line replacements.
           - ``heading`` / ``parent_headings`` / ``level`` → consumed
-            directly by Stage C/D for hierarchy-aware merging.
+            directly by Stage C/D for hierarchy-aware merging. If one
+            original content row produces multiple fragments, the current
+            ``heading`` receives a ``[part n]`` suffix after Stage B/C and
+            before Stage D. ``parent_headings`` remain unchanged.
           - ``<table id="…" format="json">{rows_json}</table>`` tags →
             JSON body parsed in Stage B for row-level re-split when the
             tag exceeds the per-table token cap. When two split tables
@@ -1430,37 +1455,37 @@ def chunking_by_paragraph_semantic(
             )
         )
 
-    # Stage B — oversized-table re-split + first/middle/last gluing.
-    after_b: list[dict[str, Any]] = []
+    # Stage B/C are run per original blocks.jsonl content row so split
+    # fragments can be labelled with [part n] using a row-local counter
+    # before Stage D merges small neighbours.
+    after_c: list[dict[str, Any]] = []
     for blk in initial:
-        after_b.extend(
-            _expand_block_with_table_splits(
-                blk,
-                tokenizer=tokenizer,
-                table_max=table_max,
-                table_ideal=table_ideal,
-                table_min_last=table_min_last,
-                target_max=target_max,
-                chunk_overlap_token_size=overlap,
-            )
+        block_after_b = _expand_block_with_table_splits(
+            blk,
+            tokenizer=tokenizer,
+            table_max=table_max,
+            table_ideal=table_ideal,
+            table_min_last=table_min_last,
+            target_max=target_max,
+            chunk_overlap_token_size=overlap,
         )
 
-    # Stage C — anchor-driven long-block re-split.
-    after_c: list[dict[str, Any]] = []
-    for blk in after_b:
-        after_c.extend(
-            _split_long_block(
-                blk["paragraphs"],
-                blk["heading"],
-                blk["parent_headings"],
-                blk["level"],
-                blk.get("table_chunk_role", "none"),
-                tokenizer=tokenizer,
-                target_max=target_max,
-                target_ideal=target_ideal,
-                chunk_overlap_token_size=overlap,
+        block_after_c: list[dict[str, Any]] = []
+        for split_blk in block_after_b:
+            block_after_c.extend(
+                _split_long_block(
+                    split_blk["paragraphs"],
+                    split_blk["heading"],
+                    split_blk["parent_headings"],
+                    split_blk["level"],
+                    split_blk.get("table_chunk_role", "none"),
+                    tokenizer=tokenizer,
+                    target_max=target_max,
+                    target_ideal=target_ideal,
+                    chunk_overlap_token_size=overlap,
+                )
             )
-        )
+        after_c.extend(_apply_part_suffixes(block_after_c))
 
     # Stage D — bottom-up, level-aware small-block merging.
     final = _merge_small_blocks(

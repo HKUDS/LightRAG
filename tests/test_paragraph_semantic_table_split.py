@@ -11,6 +11,7 @@ from lightrag.chunker.paragraph_semantic import (
     _split_long_block,
     _split_rows_by_tokens,
     _split_table_text,
+    chunking_by_paragraph_semantic,
 )
 from lightrag.utils import Tokenizer, TokenizerInterface
 
@@ -90,6 +91,19 @@ def _build_oversized_table_text(num_rows: int, row_payload_size: int) -> str:
     return f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
 
 
+def _write_blocks_jsonl(tmp_path, content: str) -> str:
+    path = tmp_path / "doc.blocks.jsonl"
+    row = {
+        "type": "content",
+        "heading": "Section",
+        "parent_headings": [],
+        "level": 2,
+        "content": content,
+    }
+    path.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
+    return str(path)
+
+
 @pytest.mark.offline
 def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     # An oversized table sandwiched between leading and trailing paragraphs
@@ -133,6 +147,9 @@ def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     assert any(
         p["text"] == "trailing paragraph" for p in out[-1]["paragraphs"]
     ), "trailing paragraph must glue with the last table slice"
+    assert all(
+        "表格片段" not in b["heading"] for b in out
+    ), "Stage B should not expose legacy table-fragment heading suffixes"
 
 
 @pytest.mark.offline
@@ -266,6 +283,33 @@ def test_expand_block_emits_middle_text_when_table_bridge_is_long():
     assert out[middle_idx + 1]["content"].startswith("C" * 45)
     assert "B" * 50 not in out[middle_idx + 1]["content"]
     assert all(b["tokens"] <= 400 for b in out), [b["tokens"] for b in out]
+
+
+@pytest.mark.offline
+def test_public_chunking_adds_part_suffixes_to_all_table_split_fragments(tmp_path):
+    tokenizer = _make_tokenizer()
+    body = "\n".join(
+        [
+            "lead paragraph",
+            _build_oversized_table_text(num_rows=6, row_payload_size=200),
+            "trailing paragraph",
+        ]
+    )
+    blocks_path = _write_blocks_jsonl(tmp_path, body)
+
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer,
+        body,
+        chunk_token_size=800,
+        blocks_path=blocks_path,
+        chunk_overlap_token_size=0,
+    )
+
+    assert len(chunks) > 1
+    assert [chunk["heading"] for chunk in chunks] == [
+        f"Section [part {idx}]" for idx in range(1, len(chunks) + 1)
+    ]
+    assert all("表格片段" not in chunk["heading"] for chunk in chunks)
 
 
 # ---------------------------------------------------------------------------
