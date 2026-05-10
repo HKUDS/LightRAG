@@ -2173,7 +2173,14 @@ class _PipelineMixin:
             "result_url_template": os.getenv(
                 "DOCLING_RESULT_URL_TEMPLATE", default_result_tpl
             ),
-            "content_field": os.getenv("DOCLING_CONTENT_FIELD", "content"),
+            # docling-serve's /v1/result/{task_id} returns a wrapper JSON:
+            # {"document": {"md_content": "...", "text_content": "...", ...}}.
+            # Default to ``document.md_content`` so the parsed markdown is
+            # extracted; switch to ``document.text_content`` (plain text) or
+            # ``document.html_content`` via this env var for other formats.
+            "content_field": os.getenv(
+                "DOCLING_CONTENT_FIELD", "document.md_content"
+            ),
             "success_values": os.getenv(
                 "DOCLING_SUCCESS_VALUES",
                 "done,success,succeeded,completed,finished",
@@ -2312,7 +2319,23 @@ class _PipelineMixin:
                     if result_url:
                         dl = await client.get(str(result_url))
                         dl.raise_for_status()
-                        return dl.text
+                        raw_text = dl.text
+                        # docling-serve's /v1/result/{task_id} returns a JSON
+                        # wrapper ({"document": {"md_content": ...}, ...}),
+                        # not the parsed body. Extract via content_field when
+                        # the response parses as JSON; otherwise fall through
+                        # to the raw text (plain-text result endpoints, e.g.
+                        # the test mock and some MinerU deployments).
+                        if content_field:
+                            try:
+                                parsed = json.loads(raw_text)
+                            except (ValueError, TypeError):
+                                parsed = None
+                            if isinstance(parsed, (dict, list)):
+                                extracted = get_by_path(parsed, content_field)
+                                if isinstance(extracted, str) and extracted:
+                                    return extracted
+                        return raw_text
                     content_val = get_by_path(poll_payload, content_field)
                     return str(content_val) if content_val else None
                 if status_val in failed_values:
