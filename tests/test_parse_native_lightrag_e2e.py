@@ -23,7 +23,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     PARSED_DIR_NAME,
 )
-from lightrag.utils import compute_args_hash
+from lightrag.utils import Tokenizer, TokenizerInterface, compute_args_hash
 
 
 def _block(content, *, heading="", level=0, parent=None, uuid="p1"):
@@ -62,15 +62,27 @@ class _MiniDocStatus:
         return None
 
 
+class _CharTokenizer(TokenizerInterface):
+    def encode(self, content: str):
+        return [ord(ch) for ch in content]
+
+    def decode(self, tokens):
+        return "".join(chr(t) for t in tokens)
+
+
 class _MiniRag:
     """Just enough surface for parse_native + native_parser/docx adapter."""
 
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
+    _enrich_parsed_sidecars_with_surrounding = (
+        LightRAG._enrich_parsed_sidecars_with_surrounding
+    )
 
     def __init__(self, working_dir):
         self.working_dir = str(working_dir)
         self.full_docs = _MiniFullDocs()
         self.doc_status = _MiniDocStatus()
+        self.tokenizer = Tokenizer(model_name="char", tokenizer=_CharTokenizer())
 
     def _resolve_source_file_for_parser(self, file_path):
         return file_path
@@ -247,6 +259,62 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
         tables = json.loads(tables_path.read_text(encoding="utf-8"))
         table_entry = tables["tables"]["tb-doc-table-0001"]
         assert table_entry["caption"] == ""
+        assert table_entry["surrounding"] == {
+            "leading": "before\n",
+            "trailing": "\nafter",
+        }
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_native_parse_backfills_surrounding_for_all_sidecars(tmp_path, monkeypatch):
+    """Parse-stage sidecars should be self-contained before VLM analysis."""
+
+    async def _run():
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+        source_path = input_dir / "all_modalities.docx"
+        source_path.write_bytes(b"fake")
+
+        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+            assert drawing_context is not None
+            assert drawing_context.export_dir_path is not None
+            (drawing_context.export_dir_path / "pic.png").write_bytes(b"PNG")
+            return [
+                _block(
+                    'alpha <drawing id="1" format="png" '
+                    'path="all_modalities.blocks.assets/pic.png" /> beta\n'
+                    '<table>[["A"]]</table> gamma\n'
+                    "<equation>E=mc^2</equation>\n"
+                    "delta"
+                )
+            ]
+
+        monkeypatch.setattr(
+            "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
+            _stub_extract,
+        )
+
+        rag = _MiniRag(tmp_path / "work")
+        result = await LightRAG.parse_native(
+            rag,
+            "doc-mm",
+            str(source_path),
+            {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+        )
+
+        blocks_path = Path(result["blocks_path"])
+        base = str(blocks_path)[: -len(".blocks.jsonl")]
+        for root in ("drawings", "tables", "equations"):
+            payload = json.loads(Path(base + f".{root}.json").read_text("utf-8"))
+            items = payload[root]
+            assert items
+            for item in items.values():
+                assert "surrounding" in item
+                assert set(item["surrounding"]) == {"leading", "trailing"}
 
     asyncio.run(_run())
 
