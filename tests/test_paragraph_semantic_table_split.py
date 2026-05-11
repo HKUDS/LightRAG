@@ -342,7 +342,10 @@ def test_split_html_rows_extracts_tr_elements():
     rows = _split_html_rows(body)
     assert rows is not None
     assert len(rows) == 3
-    assert all(r.startswith("<tr") and r.endswith("</tr>") for r in rows)
+    # Each row carries its parent wrapper so the chunk serialiser can
+    # rebuild <thead>/<tbody> instead of dropping them silently.
+    assert [w for w, _ in rows] == ["thead", "tbody", "tbody"]
+    assert all(tr.startswith("<tr") and tr.endswith("</tr>") for _, tr in rows)
 
 
 @pytest.mark.offline
@@ -423,6 +426,51 @@ def test_split_table_text_html_table_split_by_tr():
     # rows individually exceeds target_max, so no character fallback).
     assert all(p.startswith("<table ") and p.endswith("</table>") for p in pieces)
     assert all(_count_tokens(tokenizer, p) <= 500 for p in pieces)
+
+
+@pytest.mark.offline
+def test_split_table_text_html_preserves_thead_tbody_wrappers():
+    # When an HTML table mixes <thead> and <tbody>, the row splitter
+    # used to drop the wrappers entirely — the chunked output came back
+    # as bare <tr> sequences. The fix re-emits each wrapper around its
+    # rows in every chunk so the table structure survives splitting.
+    tokenizer = _make_tokenizer()
+    head_row = "<tr><th>" + ("h" * 80) + "</th></tr>"
+    body_rows = "".join(f"<tr><td>{'b' * 80}{i}</td></tr>" for i in range(4))
+    body = f"<thead>{head_row}</thead><tbody>{body_rows}</tbody>"
+    table_text = f'<table id="tb-mixed" format="html">{body}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=400,
+        target_ideal=280,
+        last_min=64,
+    )
+
+    # Multiple chunks expected and every chunk must remain a legal
+    # <table>-wrapped fragment.
+    assert len(pieces) >= 2
+    assert all(p.startswith("<table ") and p.endswith("</table>") for p in pieces)
+    # Every chunk that contains the header row must still wrap it in
+    # <thead>...</thead>; every chunk with body rows must wrap them in
+    # <tbody>...</tbody>. Before the fix, both wrappers vanished.
+    for piece in pieces:
+        if "<th>" in piece:
+            assert "<thead>" in piece and "</thead>" in piece, piece
+        if "<td>" in piece:
+            assert "<tbody>" in piece and "</tbody>" in piece, piece
+    # Round-trip: concatenating just the row payloads from every chunk
+    # recovers the original row sequence in order.
+    extracted_rows: list[str] = []
+    import re
+
+    for piece in pieces:
+        extracted_rows.extend(
+            re.findall(r"<tr\b[^>]*>.*?</tr>", piece, re.DOTALL | re.IGNORECASE)
+        )
+    expected_rows = re.findall(r"<tr\b[^>]*>.*?</tr>", body, re.DOTALL | re.IGNORECASE)
+    assert extracted_rows == expected_rows
 
 
 @pytest.mark.offline
