@@ -41,9 +41,9 @@ def _tokenizer() -> Tokenizer:
 @pytest.mark.offline
 def test_find_target_span_drawing_in_mixed_content():
     content = (
-        'leading text. '
+        "leading text. "
         '<drawing id="dr-doc-0001" format="png" path="img.png" src="img" /> '
-        'trailing text.'
+        "trailing text."
     )
     span = find_target_span("drawings", "dr-doc-0001", content)
     assert span is not None
@@ -55,9 +55,7 @@ def test_find_target_span_drawing_in_mixed_content():
 @pytest.mark.offline
 def test_find_target_span_table_with_id_anywhere_in_attrs():
     # id is not first attribute — locator must still find it.
-    content = (
-        'before <table format="json" id="tb-doc-0007">[[1,2],[3,4]]</table> after'
-    )
+    content = 'before <table format="json" id="tb-doc-0007">[[1,2],[3,4]]</table> after'
     span = find_target_span("tables", "tb-doc-0007", content)
     assert span is not None
     snippet = content[span[0] : span[1]]
@@ -174,7 +172,7 @@ def test_chunk_r_separators_env_drives_segment_boundary(monkeypatch):
     tok = _tokenizer()
     # 3 segments separated by '|'; budget = 12 chars/tokens; each seg is
     # 10 chars including the trailing '|', so 1 whole segment fits, 2 do not.
-    block = "aaaaaaaaa|bbbbbbbbb|<drawing id=\"d\" />|ccccccccc|ddddddddd"
+    block = 'aaaaaaaaa|bbbbbbbbb|<drawing id="d" />|ccccccccc|ddddddddd'
     span = find_target_span("drawings", "d", block)
     surr = build_surrounding(
         kind="drawings",
@@ -245,9 +243,7 @@ def test_drawing_surrounding_row_trims_oversized_json_table():
     tok = _tokenizer()
     # 10 rows of repeating cells; whole table is ~> budget.
     rows = [[f"r{i}c0", f"r{i}c1"] for i in range(10)]
-    big_table = (
-        '<table id="tb-big" format="json">' + json.dumps(rows) + "</table>"
-    )
+    big_table = '<table id="tb-big" format="json">' + json.dumps(rows) + "</table>"
     block = big_table + ' <drawing id="d" />'
     span = find_target_span("drawings", "d", block)
     # Budget chosen so only a few rows of the JSON table fit.
@@ -263,9 +259,11 @@ def test_drawing_surrounding_row_trims_oversized_json_table():
     # closing tag, and fit within budget.
     leading = surr["leading"]
     assert "<table " in leading
-    assert leading.rstrip().endswith("</table>") or leading.rstrip().endswith(
-        "</table> "
-    ) or "</table>" in leading
+    assert (
+        leading.rstrip().endswith("</table>")
+        or leading.rstrip().endswith("</table> ")
+        or "</table>" in leading
+    )
     assert len(tok.encode(leading)) <= 80
     # Should keep tail rows (closest to target — last rows by index)
     assert "r9c0" in leading
@@ -276,9 +274,7 @@ def test_drawing_surrounding_row_trims_oversized_json_table():
 @pytest.mark.offline
 def test_drawing_surrounding_row_trims_oversized_html_table():
     tok = _tokenizer()
-    rows_html = "".join(
-        f"<tr><td>r{i}c0</td><td>r{i}c1</td></tr>" for i in range(10)
-    )
+    rows_html = "".join(f"<tr><td>r{i}c0</td><td>r{i}c1</td></tr>" for i in range(10))
     body = f"<tbody>{rows_html}</tbody>"
     big_table = f'<table id="tb-h" format="html">{body}</table>'
     block = f'<drawing id="d" /> {big_table}'
@@ -300,6 +296,65 @@ def test_drawing_surrounding_row_trims_oversized_html_table():
     # For trailing we keep head rows.
     assert "r0c0" in trailing
     assert "r9c0" not in trailing
+
+
+@pytest.mark.offline
+def test_drawing_surrounding_char_trims_oversized_single_json_row():
+    tok = _tokenizer()
+    row_text = "A" * 200 + "TAIL"
+    big_table = (
+        '<table id="tb-big" format="json">'
+        + json.dumps([[row_text]], ensure_ascii=False)
+        + "</table>"
+    )
+    block = big_table + '<drawing id="d" />'
+    span = find_target_span("drawings", "d", block)
+    surr = build_surrounding(
+        kind="drawings",
+        block_content=block,
+        span=span,
+        tokenizer=tok,
+        max_tokens=90,
+        separators=load_chunk_separators(),
+    )
+
+    leading = surr["leading"]
+    assert leading.startswith("<table ")
+    assert leading.endswith("</table>")
+    assert "TAIL" in leading
+    assert len(tok.encode(leading)) <= 90
+
+    body = leading[leading.index(">") + 1 : -len("</table>")]
+    parsed = json.loads(body)
+    assert isinstance(parsed, list)
+
+
+@pytest.mark.offline
+def test_drawing_surrounding_char_trims_oversized_single_html_row():
+    tok = _tokenizer()
+    row_text = "HEAD" + "B" * 200
+    big_table = (
+        '<table id="tb-h" format="html">'
+        f"<tbody><tr><td>{row_text}</td></tr></tbody>"
+        "</table>"
+    )
+    block = f'<drawing id="d" />{big_table}'
+    span = find_target_span("drawings", "d", block)
+    surr = build_surrounding(
+        kind="drawings",
+        block_content=block,
+        span=span,
+        tokenizer=tok,
+        max_tokens=100,
+        separators=load_chunk_separators(),
+    )
+
+    trailing = surr["trailing"]
+    assert trailing.startswith("<table ")
+    assert trailing.endswith("</table>")
+    assert "<tr><td>" in trailing
+    assert "HEAD" in trailing
+    assert len(tok.encode(trailing)) <= 100
 
 
 # ---------------------------------------------------------------------------
@@ -332,13 +387,13 @@ def test_enrich_only_updates_enabled_modalities(tmp_path):
     base = "doc"
     blockid = "b1"
     content = (
-        'intro. '
+        "intro. "
         '<drawing id="dr-1" path="a.png" src="a" />'
-        ' middle '
+        " middle "
         '<table id="tb-1" format="json">[["a"]]</table>'
-        ' tail '
+        " tail "
         '<equation id="eq-1" format="latex">e</equation>'
-        ' end.'
+        " end."
     )
     _write_blocks(
         tmp_path,
@@ -388,9 +443,7 @@ def test_enrich_only_updates_enabled_modalities(tmp_path):
     tables = json.loads(tables_path.read_text(encoding="utf-8"))
     equations = json.loads(equations_path.read_text(encoding="utf-8"))
     assert "surrounding" in drawings["drawings"]["dr-1"]
-    assert drawings["drawings"]["dr-1"]["surrounding"]["leading"].startswith(
-        "intro."
-    )
+    assert drawings["drawings"]["dr-1"]["surrounding"]["leading"].startswith("intro.")
     assert "surrounding" not in tables["tables"]["tb-1"]
     assert "surrounding" not in equations["equations"]["eq-1"]
 
@@ -426,7 +479,11 @@ def test_enrich_runs_even_when_llm_analyze_result_present(tmp_path):
                 "id": "dr-1",
                 "blockid": blockid,
                 "heading": "h",
-                "llm_analyze_result": {"name": "x", "summary": "", "detail_description": ""},
+                "llm_analyze_result": {
+                    "name": "x",
+                    "summary": "",
+                    "detail_description": "",
+                },
             }
         },
     )

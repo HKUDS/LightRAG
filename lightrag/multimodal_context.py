@@ -44,6 +44,8 @@ import json
 import logging
 import os
 import re
+from html import escape as html_escape
+from html import unescape as html_unescape
 from pathlib import Path
 from lightrag.constants import DEFAULT_R_SEPARATORS
 from lightrag.table_markup import (
@@ -156,9 +158,7 @@ def find_target_span(
 # ---------------------------------------------------------------------------
 
 
-def _split_text_segment(
-    text: str, separators: list[str]
-) -> tuple[list[str], int]:
+def _split_text_segment(text: str, separators: list[str]) -> tuple[list[str], int]:
     """Split ``text`` using the first separator that produces >1 pieces.
 
     Returns ``(segments, sep_index)`` where ``segments`` reproduces
@@ -196,9 +196,7 @@ def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
     return len(tokenizer.encode(text))
 
 
-def _char_trim_leading(
-    text: str, max_tokens: int, tokenizer: Tokenizer
-) -> str:
+def _char_trim_leading(text: str, max_tokens: int, tokenizer: Tokenizer) -> str:
     """Drop characters from the head until the token count fits.
 
     Used as the final char-level fallback for the ``leading`` half — we
@@ -216,9 +214,7 @@ def _char_trim_leading(
     return text[lo:]
 
 
-def _char_trim_trailing(
-    text: str, max_tokens: int, tokenizer: Tokenizer
-) -> str:
+def _char_trim_trailing(text: str, max_tokens: int, tokenizer: Tokenizer) -> str:
     """Drop characters from the tail until the token count fits.
 
     Used as the final char-level fallback for the ``trailing`` half — we
@@ -270,7 +266,13 @@ def _row_trim_table_leading(
             )
             if _count_tokens(tokenizer, candidate) <= max_tokens:
                 return candidate
-        return None
+        return _char_fallback_json_table(
+            attrs_str,
+            json.dumps(rows[-1], ensure_ascii=False) if rows else body,
+            max_tokens,
+            tokenizer,
+            keep_tail=True,
+        )
     if fmt == "html":
         rows = split_html_rows(body)
         if not rows:
@@ -280,7 +282,13 @@ def _row_trim_table_leading(
             candidate = f"<table {attrs}>{inner}</table>"
             if _count_tokens(tokenizer, candidate) <= max_tokens:
                 return candidate
-        return None
+        return _char_fallback_html_table(
+            attrs,
+            rows[-1][1] if rows else body,
+            max_tokens,
+            tokenizer,
+            keep_tail=True,
+        )
     return None
 
 
@@ -307,7 +315,13 @@ def _row_trim_table_trailing(
             )
             if _count_tokens(tokenizer, candidate) <= max_tokens:
                 return candidate
-        return None
+        return _char_fallback_json_table(
+            attrs_str,
+            json.dumps(rows[0], ensure_ascii=False) if rows else body,
+            max_tokens,
+            tokenizer,
+            keep_tail=False,
+        )
     if fmt == "html":
         rows = split_html_rows(body)
         if not rows:
@@ -317,8 +331,90 @@ def _row_trim_table_trailing(
             candidate = f"<table {attrs}>{inner}</table>"
             if _count_tokens(tokenizer, candidate) <= max_tokens:
                 return candidate
-        return None
+        return _char_fallback_html_table(
+            attrs,
+            rows[0][1] if rows else body,
+            max_tokens,
+            tokenizer,
+            keep_tail=False,
+        )
     return None
+
+
+def _empty_table(attrs: str) -> str:
+    return f"<table {attrs}></table>"
+
+
+def _char_fallback_json_table(
+    attrs: str,
+    source_text: str,
+    max_tokens: int,
+    tokenizer: Tokenizer,
+    *,
+    keep_tail: bool,
+) -> str | None:
+    """Fit one oversized JSON table row while keeping a valid table tag.
+
+    The fallback stores the truncated serialized row text as a JSON string
+    inside a one-row table.  That preserves JSON validity and keeps the
+    closest side of the oversized row when no complete row can fit.
+    """
+    empty = _empty_table(attrs)
+    if _count_tokens(tokenizer, empty) > max_tokens:
+        return None
+
+    def candidate(chars: int) -> str:
+        snippet = source_text[-chars:] if keep_tail and chars else source_text[:chars]
+        if not chars:
+            return empty
+        body = json.dumps([[snippet]], ensure_ascii=False)
+        return f"<table {attrs}>{body}</table>"
+
+    if _count_tokens(tokenizer, candidate(len(source_text))) <= max_tokens:
+        return candidate(len(source_text))
+
+    lo, hi = 0, len(source_text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _count_tokens(tokenizer, candidate(mid)) <= max_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    return candidate(lo)
+
+
+def _char_fallback_html_table(
+    attrs: str,
+    row_html: str,
+    max_tokens: int,
+    tokenizer: Tokenizer,
+    *,
+    keep_tail: bool,
+) -> str | None:
+    """Fit one oversized HTML row without emitting broken table markup."""
+    empty = _empty_table(attrs)
+    if _count_tokens(tokenizer, empty) > max_tokens:
+        return None
+
+    text = html_unescape(re.sub(r"<[^>]+>", "", row_html or ""))
+
+    def candidate(chars: int) -> str:
+        snippet = text[-chars:] if keep_tail and chars else text[:chars]
+        if not chars:
+            return empty
+        return f"<table {attrs}><tr><td>{html_escape(snippet)}</td></tr></table>"
+
+    if _count_tokens(tokenizer, candidate(len(text))) <= max_tokens:
+        return candidate(len(text))
+
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _count_tokens(tokenizer, candidate(mid)) <= max_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    return candidate(lo)
 
 
 def remove_table_tags(text: str) -> str:
@@ -373,9 +469,7 @@ def _build_leading(
                 continue
             remaining = max_tokens - _count_tokens(tokenizer, accumulated)
             if remaining > 0:
-                trimmed = _row_trim_table_leading(
-                    atom_text, remaining, tokenizer
-                )
+                trimmed = _row_trim_table_leading(atom_text, remaining, tokenizer)
                 if trimmed is not None:
                     accumulated = trimmed + accumulated
             break
@@ -483,9 +577,7 @@ def _build_trailing(
                 continue
             remaining = max_tokens - _count_tokens(tokenizer, accumulated)
             if remaining > 0:
-                trimmed = _row_trim_table_trailing(
-                    atom_text, remaining, tokenizer
-                )
+                trimmed = _row_trim_table_trailing(atom_text, remaining, tokenizer)
                 if trimmed is not None:
                     accumulated = accumulated + trimmed
             break
@@ -558,9 +650,7 @@ def load_chunk_separators() -> list[str]:
     if raw:
         try:
             parsed = json.loads(raw)
-            if isinstance(parsed, list) and all(
-                isinstance(s, str) for s in parsed
-            ):
+            if isinstance(parsed, list) and all(isinstance(s, str) for s in parsed):
                 separators = parsed
             else:
                 separators = list(DEFAULT_R_SEPARATORS)
