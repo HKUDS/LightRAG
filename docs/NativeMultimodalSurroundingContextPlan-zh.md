@@ -2,7 +2,7 @@
 
 ## 目标
 
-在 native 内容提取链路启用 `i` / `t` / `e` 选项时，为 `drawings.json`、`tables.json`、`equations.json` 中对应条目补充同一 `blocks.jsonl` content 行内的前后文：
+在 native / LightRAG Document 内容提取链路生成 sidecar 文件时，为 `drawings.json`、`tables.json`、`equations.json` 中对应条目补充同一 `blocks.jsonl` content 行内的前后文：
 
 ```json
 "surrounding": {
@@ -16,26 +16,28 @@
 ## 当前代码入口
 
 - DOCX native 解析和 sidecar 生成集中在 `lightrag/native_parser/docx/lightrag_adapter.py`。
+- 通用 parser content-list 到 LightRAG Document 的 sidecar 生成集中在 `lightrag/pipeline.py::_write_lightrag_document_from_content_list`。
 - `blocks.jsonl` 的 content 行保存同一章节段落内容，sidecar 条目通过 `blockid` 指回该行。
-- `i` / `t` / `e` 开关在 `lightrag/pipeline.py::analyze_multimodal` 中生效，当前只控制是否写入 `llm_analyze_result`。
+- `i` / `t` / `e` 开关在 `lightrag/pipeline.py::analyze_multimodal` 中生效，只控制是否写入 `llm_analyze_result`；`surrounding` 不再受这些开关控制。
 - recursive character 的分隔符配置来自 `CHUNK_R_SEPARATORS`，默认值在 `lightrag/constants.py::DEFAULT_R_SEPARATORS`。
 - 表格 JSON / HTML 按行切分已有参考实现位于 `lightrag/chunker/paragraph_semantic.py`。
 
 ## 总体方案
 
-把 surrounding context 作为 multimodal analysis 前置补写步骤实现，而不是在 DOCX parser 内直接计算：
+把 surrounding context 作为 parse-stage sidecar enrichment 实现，而不是作为 multimodal analysis 前置步骤：
 
-1. 在 `analyze_multimodal` 确认 `i` / `t` / `e` 开关后，先调用新的 sidecar enrichment helper。
-2. helper 读取 `blocks.jsonl` content 行和启用 modality 的 sidecar 文件。
+1. DOCX native parser 或通用 content-list writer 写出 `.blocks.jsonl` 和 sidecar JSON 后，立即调用 sidecar enrichment helper。
+2. helper 读取 `blocks.jsonl` content 行和所有已存在的 `drawings` / `tables` / `equations` sidecar 文件。
 3. 通过 sidecar 条目的 `blockid` 定位同一 content 行，再通过条目 `id` 定位该行中的目标 `<drawing ... />`、`<table ...>...</table>` 或 `<equation ...>...</equation>` 标签。
 4. 仅在目标标签前后的同一 content 字符串内抽取 `leading` / `trailing`，不跨 content 行。
-5. 将结果写回 sidecar，之后 VLM 分析继续读取同一 sidecar。
+5. 将结果写回 sidecar，随后再持久化 `full_docs` 并进入后续 VLM / chunking / KG 流程。
 
 选择该入口的原因：
 
-- 只有这里能准确知道本次是否启用了 `i` / `t` / `e`。
-- 可以使用 `self.tokenizer` 精确计算 2000 token 上限，而不是 parser 里的估算 token。
+- sidecar 文件在内容抽取后即保持稳定，不会因为是否启用 VLM 分析而变化。
+- 可以使用 `self.tokenizer` 精确计算 2000 token 上限，而不是 DOCX parser 里的估算 token。
 - sidecar 已经完成 id 重写，目标对象定位稳定。
+- `i` / `t` / `e` 只决定后续是否生成 `llm_analyze_result`，不影响 parse artifacts 的完整性。
 
 ## 新增模块建议
 
@@ -47,7 +49,7 @@
 def enrich_sidecars_with_surrounding(
     *,
     blocks_path: str,
-    enabled_modalities: set[str],  # {"drawings", "tables", "equations"}
+    enabled_modalities: set[str],  # parse-stage 调用传入 {"drawings", "tables", "equations"}
     tokenizer: Tokenizer,
     max_tokens: int = 2000,
     separators: list[str] | None = None,
@@ -70,7 +72,7 @@ def enrich_sidecars_with_surrounding(
 按 sidecar root key 映射目标标签：
 
 - `drawings`：匹配完整自闭合标签 `<drawing ... id="dr-..." ... />`
-- `tables`：匹配完整标签 `<table ... id="tb-..." ...>...</table>`
+- `tables`：匹配完整标签 `<table ... id="tb-..." ...>...</table>`；通用 parser writer 产生的 `<cite type="table" refid="tb-...">...</cite>` 也应作为 table marker 处理。
 - `equations`：匹配完整标签 `<equation ... id="eq-..." ...>...</equation>`
 
 实现细节：
@@ -89,7 +91,7 @@ def enrich_sidecars_with_surrounding(
 然后按 modality 处理：
 
 - 图片 / 公式：保留候选文本中的 `<drawing />`、`<equation>...</equation>` 和 `<table>...</table>`，但切分时保护完整标签。
-- 表格：在 token 计算前，从候选文本中删除所有其它 `<table ...>...</table>`，删除后的文本再参与分段和 token 预算。
+- 表格：在 token 计算前，从候选文本中删除所有其它 `<table ...>...</table>` 和 table `<cite ...>` marker，删除后的文本再参与分段和 token 预算。
 
 所有抽取都限制在当前 `block_content` 内，不读取前一个或后一个 blocks 行。
 
@@ -162,21 +164,22 @@ def enrich_sidecars_with_surrounding(
 
 ## pipeline 集成点
 
-在 `lightrag/pipeline.py::analyze_multimodal` 中：
+在 parse-stage writer 完成 `.blocks.jsonl` 和 sidecar JSON 写出后调用：
 
-1. 解析 `process_options` 后得到启用集合。
-2. 在 VLM 任务创建前调用：
+1. `parse_native` 的 DOCX pending-parse 分支：`parse_docx_to_lightrag_document(...)` 返回后、`_persist_parsed_full_docs(...)` 前调用。
+2. `_write_lightrag_document_from_content_list(...)`：写出 `.blocks.jsonl`、`.drawings.json`、`.tables.json`、`.equations.json` 后、`_persist_parsed_full_docs(...)` 前调用。
+3. 调用时传入全部 modality；helper 会自动跳过不存在的 sidecar：
 
 ```python
 enrich_sidecars_with_surrounding(
-    blocks_path=str(block_file),
-    enabled_modalities=enabled_sidecar_roots,
+    blocks_path=str(blocks_path),
+    enabled_modalities={"drawings", "tables", "equations"},
     tokenizer=self.tokenizer,
 )
 ```
 
-3. 记录 debug/info 日志，例如每类 modality 更新数量。
-4. 不改变 `llm_analyze_result` 的幂等逻辑。即使某条已有 `llm_analyze_result`，也可以补写缺失的 `surrounding`。
+4. 记录 debug/info 日志，例如每类 modality 更新数量。
+5. `analyze_multimodal` 不再负责补写 `surrounding`，只按 `i` / `t` / `e` 决定是否生成或跳过 `llm_analyze_result`。
 
 可选增强：VLM prompt 中加入 `surrounding.leading` / `surrounding.trailing`，让模型分析图片、表格、公式时能利用同一章节段落上下文。该增强不影响本次 sidecar schema 目标，但建议同一 PR 内完成。
 
@@ -213,12 +216,13 @@ enrich_sidecars_with_surrounding(
 5. 超长最近句子：最近 segment 超 2000 tokens 时按字符截断，最终 token 数不超过 2000。
 6. 图片 / 公式 surrounding 含 JSON 表格：超预算时按 rows 从靠近目标的一侧裁剪并重包 `<table>`。
 7. 图片 / 公式 surrounding 含 HTML 表格：超预算时优先按 `<tr>` 裁剪，保留 row wrapper。
-8. 幂等性：已有 `llm_analyze_result` 的 sidecar 条目也能补写缺失的 `surrounding`，已有 valid `surrounding` 可被重算或保留，行为固定。
+8. 幂等性：parse-stage 重跑时已有 valid `surrounding` 可被重算或保留，行为固定；`llm_analyze_result` 不应影响 `surrounding` 补写。
+9. 通用 parser writer 的 table `<cite type="table" refid="...">` marker 可定位并生成 `tables.json` surrounding。
 
 集成测试建议放在 `tests/test_parse_native_lightrag_e2e.py` 或新增 `tests/test_multimodal_surrounding_context.py`：
 
-- 构造临时 `.blocks.jsonl` + 三类 sidecar，调用 `analyze_multimodal(process_options="ite")` 并 mock VLM，断言 sidecar 已补写 surrounding。
-- 构造只启用 `i` 的场景，断言只更新 `drawings.json`，不更新未启用的 `tables.json` / `equations.json`。
+- stub DOCX native parser 输出包含 drawing / table / equation 的 block，调用 `parse_native(...)`，断言三类 sidecar 在 parse 完成后已经补写 `surrounding`，无需启用 `i` / `t` / `e`。
+- 构造 `_write_lightrag_document_from_content_list(...)` content-list，断言通用 writer 的 sidecar 在写出后已经补写 `surrounding`。
 
 ## 实施顺序
 
@@ -226,14 +230,16 @@ enrich_sidecars_with_surrounding(
 2. 实现表格对象的预删除逻辑，并先覆盖 `tables.json` surrounding。
 3. 实现图片 / 公式的 tag atom 保护和基本 leading/trailing 截断。
 4. 增加 JSON / HTML 表格 row-aware 裁剪，必要时抽共享表格 helper。
-5. 集成到 `analyze_multimodal`，确保在 VLM prompt 构建前完成 sidecar 补写。
-6. 增加单元测试和最小集成测试。
-7. 如选择让 VLM 使用 surrounding，再更新 prompt 并补一条 prompt 输入断言测试。
+5. 集成到 parse-stage sidecar writer，确保 `full_docs` 持久化前完成 sidecar 补写。
+6. 从 `analyze_multimodal` 移除 `surrounding` 补写职责，保持 VLM 阶段只处理 `llm_analyze_result`。
+7. 增加单元测试和最小集成测试。
+8. 如选择让 VLM 使用 surrounding，再更新 prompt 并补一条 prompt 输入断言测试。
 
 ## 风险与注意点
 
-- 不要在 DOCX parser 阶段用估算 token 做最终限制，否则无法保证 2000 tokens 上限。
+- 不要在 DOCX parser 内部用估算 token 做最终限制；parse-stage enrichment 必须使用 `self.tokenizer` 保证 2000 tokens 上限。
 - 不要用简单字符串切片直接截断包含标签的文本，必须先保护 tag atom。
 - 表格对象 surrounding 必须先删除表格再计 token，不能先算 token 后删除。
 - HTML 表格用 regex 行扫描只能覆盖常规 `<tr>` 结构；异常 HTML 需要降级但不能破坏外层 `<table>` 标签完整性。
 - sidecar 写回应保持 UTF-8、`ensure_ascii=False`、`indent=2`，与现有文件风格一致。
+- parse artifacts 应在内容抽取后保持稳定，不应依赖后续 `i` / `t` / `e` VLM 开关才补写 `surrounding`。
