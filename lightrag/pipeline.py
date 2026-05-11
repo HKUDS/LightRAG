@@ -3199,6 +3199,44 @@ class _PipelineMixin:
                 f"for those modalities."
             )
 
+        # Backfill ``surrounding`` on enabled-modality sidecars *before*
+        # VLM analysis so the VLM-side prompt builder can read the new
+        # field and so re-running with a different ``i``/``t``/``e`` mix
+        # picks up missing surroundings without re-parsing.  Idempotency
+        # of the VLM step is preserved — only the optional
+        # ``surrounding`` field is rewritten.
+        enabled_modalities: set[str] = set()
+        if process_opts.images:
+            enabled_modalities.add("drawings")
+        if process_opts.tables:
+            enabled_modalities.add("tables")
+        if process_opts.equations:
+            enabled_modalities.add("equations")
+        if enabled_modalities:
+            try:
+                from lightrag.multimodal_context import (
+                    enrich_sidecars_with_surrounding,
+                )
+
+                counts = enrich_sidecars_with_surrounding(
+                    blocks_path=str(block_file),
+                    enabled_modalities=enabled_modalities,
+                    tokenizer=self.tokenizer,
+                )
+                if any(counts.values()):
+                    logger.info(
+                        f"[analyze_multimodal] surrounding backfilled for "
+                        f"d-id: {doc_id}: "
+                        + ", ".join(
+                            f"{k}={v}" for k, v in counts.items() if v
+                        )
+                    )
+            except Exception as enrich_err:
+                logger.warning(
+                    f"[analyze_multimodal] surrounding enrichment failed "
+                    f"for d-id: {doc_id}: {enrich_err}"
+                )
+
         try:
             lines = block_file.read_text(encoding="utf-8").splitlines()
             if not lines:

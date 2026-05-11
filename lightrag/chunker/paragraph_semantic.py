@@ -46,6 +46,12 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+from lightrag.table_markup import (
+    TABLE_TAG_RE as _TABLE_TAG_RE,
+    detect_table_format as _detect_table_format,
+    serialize_html_rows as _serialize_rows_with_wrappers,
+    split_html_rows as _split_html_rows,
+)
 from lightrag.utils import Tokenizer, logger
 
 
@@ -75,32 +81,10 @@ _SMALL_TAIL_RATIO = 0.125
 # Anchor candidate length is a UI/readability constraint — keep absolute.
 _MAX_ANCHOR_CANDIDATE_LENGTH = 100  # characters
 
-# Strict regex for a post-rewrite table tag emitted by ``lightrag_adapter``:
-#   <table id="tb-…" format="json"[ caption="…"]>{rows_json}</table>
-# blocks.jsonl invariants guarantee the tag has no embedded newlines.
-_TABLE_TAG_RE = re.compile(
-    r"<table\s+(?P<attrs>[^>]*)>(?P<body>.*?)</table>",
-    re.DOTALL,
-)
-
-# Format detection regex inside the attrs string, e.g. format="json".
-_TABLE_FORMAT_RE = re.compile(r"""format\s*=\s*["'](?P<fmt>[^"']+)["']""")
-
-# HTML <tr>...</tr> row extractor. Standard HTML disallows nested <tr>,
-# so a non-greedy match is sufficient for well-formed input.
-_HTML_TR_RE = re.compile(r"<tr\b[^>]*>.*?</tr>", re.DOTALL | re.IGNORECASE)
-
-# Combined scanner for row-grouping wrappers and rows themselves. Used
-# to attribute each <tr> to its surrounding <thead>/<tbody>/<tfoot> so
-# the wrapper can be reconstructed around chunk boundaries instead of
-# being silently dropped during row-level table splitting.
-_HTML_ROW_PARTS_RE = re.compile(
-    r"(?P<wrap></?(?:thead|tbody|tfoot)\b[^>]*>)" r"|(?P<tr><tr\b[^>]*>.*?</tr>)",
-    re.DOTALL | re.IGNORECASE,
-)
-_HTML_WRAPPER_TAG_RE = re.compile(
-    r"<(?P<slash>/?)(?P<name>thead|tbody|tfoot)\b", re.IGNORECASE
-)
+# Table tag regex (``_TABLE_TAG_RE``) plus the ``_detect_table_format``,
+# ``_split_html_rows`` and ``_serialize_rows_with_wrappers`` helpers are
+# imported from :mod:`lightrag.table_markup` so the surrounding-context
+# extractor can reuse the same primitives.
 
 _LEGACY_TABLE_CHUNK_SUFFIX_RE = re.compile(r"\s*\[表格片段\d+\]\s*$")
 _PART_SUFFIX_RE = re.compile(r"\s*\[part\s+\d+\]\s*$", re.IGNORECASE)
@@ -189,94 +173,6 @@ def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _detect_table_format(attrs: str, body: str) -> str | None:
-    """Return ``"json"``, ``"html"`` or ``None`` for a parsed ``<table>`` tag.
-
-    Prefers an explicit ``format="…"`` attribute. When silent, sniffs the
-    body: a leading ``[`` / ``{`` (after whitespace) implies JSON; the
-    presence of any ``<tr`` tag implies HTML. Anything else is unknown
-    and falls back to character splitting at the call site.
-    """
-    match = _TABLE_FORMAT_RE.search(attrs or "")
-    if match:
-        fmt = match.group("fmt").strip().lower()
-        if fmt in {"json", "html"}:
-            return fmt
-        return None
-    stripped = (body or "").lstrip()
-    if stripped.startswith(("[", "{")):
-        return "json"
-    if "<tr" in stripped.lower():
-        return "html"
-    return None
-
-
-def _split_html_rows(body: str) -> list[tuple[str, str]] | None:
-    """Extract ``<tr>...</tr>`` rows tagged with their wrapper context.
-
-    Returns a list of ``(wrapper_name, tr_str)`` tuples where
-    ``wrapper_name`` is ``"thead"`` / ``"tbody"`` / ``"tfoot"`` (lower-
-    cased) for rows that sit inside the corresponding wrapper, or ``""``
-    for rows outside any of those wrappers. ``None`` signals "no row
-    found" so the caller falls through to character splitting.
-
-    The wrapper attribution exists so :func:`_serialize_rows_with_wrappers`
-    can rebuild ``<thead>`` / ``<tbody>`` / ``<tfoot>`` around row groups
-    in each chunk — without it, oversized HTML tables would emerge from
-    Stage B with their structural wrappers silently stripped.
-
-    Whitespace, captions, comments, ``<colgroup>`` and any other text
-    outside the recognised row-wrappers is still dropped — this is a
-    regex extractor, not a full DOM parser. Wrapper attributes (e.g.
-    ``<thead class="…">``) are also dropped on re-emission; chunked
-    output uses bare wrapper tags.
-    """
-    rows: list[tuple[str, str]] = []
-    current_wrapper = ""
-    for match in _HTML_ROW_PARTS_RE.finditer(body or ""):
-        wrap = match.group("wrap")
-        tr = match.group("tr")
-        if wrap is not None:
-            tag = _HTML_WRAPPER_TAG_RE.match(wrap)
-            if tag:
-                slash = tag.group("slash")
-                name = tag.group("name").lower()
-                if slash == "/":
-                    if current_wrapper == name:
-                        current_wrapper = ""
-                else:
-                    current_wrapper = name
-        elif tr is not None:
-            rows.append((current_wrapper, tr))
-    if not rows:
-        return None
-    return rows
-
-
-def _serialize_rows_with_wrappers(rows: list[tuple[str, str]]) -> str:
-    """Re-emit rows grouped under their original ``<thead>`` / ``<tbody>`` /
-    ``<tfoot>`` wrappers.
-
-    Consecutive rows sharing the same wrapper name collapse into a
-    single wrapper block; transitions emit a closing tag for the
-    previous wrapper and an opening tag for the next. Rows tagged with
-    ``""`` (no wrapper) emit bare ``<tr>...</tr>``.
-    """
-    parts: list[str] = []
-    current_wrapper = ""
-    for wrapper, tr in rows:
-        if wrapper != current_wrapper:
-            if current_wrapper:
-                parts.append(f"</{current_wrapper}>")
-            if wrapper:
-                parts.append(f"<{wrapper}>")
-            current_wrapper = wrapper
-        parts.append(tr)
-    if current_wrapper:
-        parts.append(f"</{current_wrapper}>")
-    return "".join(parts)
-
-
 def _split_html_rows_by_tokens(
     rows: list[tuple[str, str]],
     tokenizer: Tokenizer,
@@ -353,21 +249,6 @@ def _new_block(
 # ---------------------------------------------------------------------------
 # Stage B — oversized-table re-split with first/middle/last gluing.
 # ---------------------------------------------------------------------------
-
-
-def _parse_table_tag(text: str) -> tuple[str, list[Any]] | None:
-    """Return ``(attrs_str, rows)`` for a ``<table …>{rows_json}</table>``."""
-    match = _TABLE_TAG_RE.match(text.strip())
-    if not match:
-        return None
-    body = match.group("body")
-    try:
-        rows = json.loads(body)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(rows, list):
-        return None
-    return match.group("attrs"), rows
 
 
 def _split_rows_by_tokens(
