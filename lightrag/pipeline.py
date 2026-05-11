@@ -2284,6 +2284,11 @@ class _PipelineMixin:
                 )
 
                 blocks_path = Path(parsed_data["blocks_path"])
+                self._enrich_parsed_sidecars_with_surrounding(
+                    str(blocks_path),
+                    doc_id=doc_id,
+                    file_path=file_path,
+                )
                 stored_blocks_path = str(blocks_path)
                 try:
                     stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
@@ -2687,6 +2692,49 @@ class _PipelineMixin:
                 return str(candidate)
         return file_path
 
+    def _enrich_parsed_sidecars_with_surrounding(
+        self,
+        blocks_path: str | None,
+        *,
+        doc_id: str,
+        file_path: str,
+    ) -> dict[str, int]:
+        """Backfill parse-stage sidecar ``surrounding`` fields.
+
+        This runs immediately after a LightRAG Document writer emits
+        ``.blocks.jsonl`` and sidecars, before ``full_docs`` is updated and
+        before the VLM analysis stage.  Keeping the enrichment here makes
+        the parse artifacts stable regardless of later ``process_options``
+        choices.
+        """
+        path = str(blocks_path or "").strip()
+        tokenizer = getattr(self, "tokenizer", None)
+        if not path or tokenizer is None:
+            return {"drawings": 0, "tables": 0, "equations": 0}
+        try:
+            from lightrag.multimodal_context import (
+                enrich_sidecars_with_surrounding,
+            )
+
+            counts = enrich_sidecars_with_surrounding(
+                blocks_path=path,
+                enabled_modalities={"drawings", "tables", "equations"},
+                tokenizer=tokenizer,
+            )
+            if any(counts.values()):
+                logger.info(
+                    f"[parse_native] surrounding backfilled for d-id: {doc_id}, "
+                    f"file: {file_path}: "
+                    + ", ".join(f"{k}={v}" for k, v in counts.items() if v)
+                )
+            return counts
+        except Exception as enrich_err:
+            logger.warning(
+                f"[parse_native] surrounding enrichment failed for "
+                f"d-id: {doc_id}, file: {file_path}: {enrich_err}"
+            )
+            return {"drawings": 0, "tables": 0, "equations": 0}
+
     async def _write_lightrag_document_from_content_list(
         self,
         doc_id: str,
@@ -3079,6 +3127,12 @@ class _PipelineMixin:
                 encoding="utf-8",
             )
 
+        self._enrich_parsed_sidecars_with_surrounding(
+            str(blocks_path),
+            doc_id=doc_id,
+            file_path=file_path,
+        )
+
         # Keep full_docs in sync so restart/reprocess can directly use LightRAG Document.
         stored_blocks_path = str(blocks_path)
         try:
@@ -3198,42 +3252,6 @@ class _PipelineMixin:
                 f"but the parser produced no such sidecar; VLM analysis skipped "
                 f"for those modalities."
             )
-
-        # Backfill ``surrounding`` on enabled-modality sidecars *before*
-        # VLM analysis so the VLM-side prompt builder can read the new
-        # field and so re-running with a different ``i``/``t``/``e`` mix
-        # picks up missing surroundings without re-parsing.  Idempotency
-        # of the VLM step is preserved — only the optional
-        # ``surrounding`` field is rewritten.
-        enabled_modalities: set[str] = set()
-        if process_opts.images:
-            enabled_modalities.add("drawings")
-        if process_opts.tables:
-            enabled_modalities.add("tables")
-        if process_opts.equations:
-            enabled_modalities.add("equations")
-        if enabled_modalities:
-            try:
-                from lightrag.multimodal_context import (
-                    enrich_sidecars_with_surrounding,
-                )
-
-                counts = enrich_sidecars_with_surrounding(
-                    blocks_path=str(block_file),
-                    enabled_modalities=enabled_modalities,
-                    tokenizer=self.tokenizer,
-                )
-                if any(counts.values()):
-                    logger.info(
-                        f"[analyze_multimodal] surrounding backfilled for "
-                        f"d-id: {doc_id}: "
-                        + ", ".join(f"{k}={v}" for k, v in counts.items() if v)
-                    )
-            except Exception as enrich_err:
-                logger.warning(
-                    f"[analyze_multimodal] surrounding enrichment failed "
-                    f"for d-id: {doc_id}: {enrich_err}"
-                )
 
         try:
             lines = block_file.read_text(encoding="utf-8").splitlines()

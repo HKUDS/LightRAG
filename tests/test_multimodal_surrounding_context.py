@@ -64,6 +64,14 @@ def test_find_target_span_table_with_id_anywhere_in_attrs():
 
 
 @pytest.mark.offline
+def test_find_target_span_table_cite_marker():
+    content = 'before <cite type="table" refid="tb-doc-0007">表1</cite> after'
+    span = find_target_span("tables", "tb-doc-0007", content)
+    assert span is not None
+    assert content[span[0] : span[1]].startswith("<cite")
+
+
+@pytest.mark.offline
 def test_find_target_span_equation():
     content = 'A <equation id="eq-doc-0002" format="latex">x^2</equation> B'
     span = find_target_span("equations", "eq-doc-0002", content)
@@ -156,6 +164,28 @@ def test_table_surrounding_strips_other_tables_before_counting():
     assert "<table" not in surr["trailing"]
     assert "narrative text" in surr["leading"]
     assert "concluding remarks" in surr["trailing"]
+
+
+@pytest.mark.offline
+def test_table_surrounding_supports_cite_marker_and_strips_sibling_cites():
+    tok = _tokenizer()
+    block = (
+        'prefix <cite type="table" refid="tb-other">表0</cite> '
+        'narrative <cite type="table" refid="tb-target">表1</cite> suffix'
+    )
+    span = find_target_span("tables", "tb-target", block)
+    surr = build_surrounding(
+        kind="tables",
+        block_content=block,
+        span=span,
+        tokenizer=tok,
+        max_tokens=2000,
+        separators=load_chunk_separators(),
+    )
+    assert "tb-other" not in surr["leading"]
+    assert "表0" not in surr["leading"]
+    assert "narrative " in surr["leading"]
+    assert surr["trailing"] == " suffix"
 
 
 # ---------------------------------------------------------------------------

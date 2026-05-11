@@ -2,13 +2,13 @@
 
 See ``docs/NativeMultimodalSurroundingContextPlan-zh.md``.
 
-For each entry in ``drawings.json`` / ``tables.json`` / ``equations.json``
-whose modality is enabled via ``process_options`` (``i`` / ``t`` / ``e``),
+For each entry in ``drawings.json`` / ``tables.json`` / ``equations.json``,
 this module locates the matching ``<drawing … id="…" … />``,
-``<table … id="…" …>…</table>`` or ``<equation … id="…" …>…</equation>``
-inside the *single* ``blocks.jsonl`` content row referenced by the
-entry's ``blockid``, then extracts up to ``max_tokens`` of leading and
-trailing text from the same row (without crossing block rows).
+``<table … id="…" …>…</table>`` / table ``<cite refid="…">`` or
+``<equation … id="…" …>…</equation>`` inside the *single*
+``blocks.jsonl`` content row referenced by the entry's ``blockid``, then
+extracts up to ``max_tokens`` of leading and trailing text from the same
+row (without crossing block rows).
 
 Sidecar entries gain an optional ``surrounding`` field:
 
@@ -73,6 +73,11 @@ _MM_TAG_RE = re.compile(
     re.DOTALL,
 )
 
+_TABLE_CITE_RE = re.compile(
+    r'<cite\b(?=[^>]*\btype\s*=\s*"table")[^>]*>.*?</cite>',
+    re.DOTALL,
+)
+
 
 def _atomize(text: str) -> list[tuple[str, str]]:
     """Split ``text`` into ``(kind, content)`` atoms.
@@ -116,7 +121,9 @@ def _drawing_pattern(item_id: str) -> re.Pattern[str]:
 def _table_pattern(item_id: str) -> re.Pattern[str]:
     esc = re.escape(item_id)
     return re.compile(
-        rf'<table\b[^>]*?\bid\s*=\s*"{esc}"[^>]*?>.*?</table>',
+        rf'<table\b[^>]*?\bid\s*=\s*"{esc}"[^>]*?>.*?</table>'
+        rf'|<cite\b(?=[^>]*\btype\s*=\s*"table")'
+        rf'(?=[^>]*\brefid\s*=\s*"{esc}")[^>]*>.*?</cite>',
         re.DOTALL,
     )
 
@@ -132,8 +139,8 @@ def _equation_pattern(item_id: str) -> re.Pattern[str]:
 def find_target_span(
     kind: str, item_id: str, block_content: str
 ) -> tuple[int, int] | None:
-    """Locate the ``<drawing/>`` / ``<table>…</table>`` / ``<equation>…
-    </equation>`` tag with the given ``id`` inside ``block_content``.
+    """Locate the target multimodal marker with the given ``id`` inside
+    ``block_content``.
 
     Returns ``(start, end)`` byte offsets, or ``None`` if not found.
     ``kind`` is the sidecar root key — ``"drawings"`` / ``"tables"`` /
@@ -418,14 +425,14 @@ def _char_fallback_html_table(
 
 
 def remove_table_tags(text: str) -> str:
-    """Strip every ``<table …>…</table>`` tag from ``text``.
+    """Strip every table marker from ``text``.
 
     Used to pre-clean candidate text for ``tables.json`` surroundings:
     we never include sibling tables, so they must be dropped *before*
     token counting and segmentation so the budget matches the persisted
     string exactly.
     """
-    return TABLE_TAG_RE.sub("", text)
+    return _TABLE_CITE_RE.sub("", TABLE_TAG_RE.sub("", text))
 
 
 # ---------------------------------------------------------------------------
