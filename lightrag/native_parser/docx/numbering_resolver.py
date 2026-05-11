@@ -47,9 +47,6 @@ class NumberingResolver:
         self.style_numpr: Dict[
             str, dict
         ] = {}  # styleId -> {numId, ilvl} from styles.xml
-        self.style_numpr_overrides: Dict[
-            str, dict
-        ] = {}  # Runtime overrides when direct numPr + pStyle
         self.style_based_on: Dict[str, str] = {}  # styleId -> basedOn styleId
         # Smart numbering merge state (Word's rendering behavior)
         self.last_numId: str = None  # Previous paragraph's numId
@@ -230,9 +227,10 @@ class NumberingResolver:
         """
         Get rendered numbering label for a paragraph.
 
-        Checks both direct numPr and style-inherited numbering.
-        When a paragraph has both pStyle and direct numPr, the direct numPr
-        becomes the runtime default for that style (overriding styles.xml).
+        Checks both direct numPr and style-inherited numbering. Direct numPr
+        is a paragraph-local override and applies only to the current
+        paragraph; subsequent paragraphs that carry only pStyle fall back to
+        the style's numPr declared in styles.xml.
 
         Args:
             para_element: lxml Element for <w:p>
@@ -268,26 +266,16 @@ class NumberingResolver:
                         else 0
                     )
 
-                    # If paragraph has both pStyle and direct numPr, record the override
-                    if style_id:
-                        self.style_numpr_overrides[style_id] = {
-                            "numId": num_id,
-                            "ilvl": ilvl,
-                        }
-
-            # If no direct numPr, check style-inherited numbering
+            # If no direct numPr, fall back to style-inherited numbering.
+            # Direct numPr is a paragraph-local override in Word; it must not
+            # persist as a runtime default for the style, otherwise subsequent
+            # paragraphs that only carry pStyle will keep following the local
+            # override instead of the style's declared numPr.
             if num_id is None and style_id:
-                # First check runtime overrides (from previous direct numPr)
-                if style_id in self.style_numpr_overrides:
-                    override = self.style_numpr_overrides[style_id]
-                    num_id = override["numId"]
-                    ilvl = override["ilvl"]
-                else:
-                    # Fall back to original style definition from styles.xml
-                    style_num = self._get_numbering_from_style(style_id)
-                    if style_num:
-                        num_id = style_num["numId"]
-                        ilvl = style_num["ilvl"]
+                style_num = self._get_numbering_from_style(style_id)
+                if style_num:
+                    num_id = style_num["numId"]
+                    ilvl = style_num["ilvl"]
 
             # If still no numbering found, clear state and return empty
             if num_id is None:
