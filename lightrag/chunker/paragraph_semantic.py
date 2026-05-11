@@ -90,6 +90,18 @@ _TABLE_FORMAT_RE = re.compile(r"""format\s*=\s*["'](?P<fmt>[^"']+)["']""")
 # so a non-greedy match is sufficient for well-formed input.
 _HTML_TR_RE = re.compile(r"<tr\b[^>]*>.*?</tr>", re.DOTALL | re.IGNORECASE)
 
+# Combined scanner for row-grouping wrappers and rows themselves. Used
+# to attribute each <tr> to its surrounding <thead>/<tbody>/<tfoot> so
+# the wrapper can be reconstructed around chunk boundaries instead of
+# being silently dropped during row-level table splitting.
+_HTML_ROW_PARTS_RE = re.compile(
+    r"(?P<wrap></?(?:thead|tbody|tfoot)\b[^>]*>)" r"|(?P<tr><tr\b[^>]*>.*?</tr>)",
+    re.DOTALL | re.IGNORECASE,
+)
+_HTML_WRAPPER_TAG_RE = re.compile(
+    r"<(?P<slash>/?)(?P<name>thead|tbody|tfoot)\b", re.IGNORECASE
+)
+
 _LEGACY_TABLE_CHUNK_SUFFIX_RE = re.compile(r"\s*\[表格片段\d+\]\s*$")
 _PART_SUFFIX_RE = re.compile(r"\s*\[part\s+\d+\]\s*$", re.IGNORECASE)
 
@@ -199,39 +211,88 @@ def _detect_table_format(attrs: str, body: str) -> str | None:
     return None
 
 
-def _split_html_rows(body: str) -> list[str] | None:
-    """Extract ``<tr>...</tr>`` rows from an HTML table body.
+def _split_html_rows(body: str) -> list[tuple[str, str]] | None:
+    """Extract ``<tr>...</tr>`` rows tagged with their wrapper context.
 
-    Returns the list of row strings (each preserved with its ``<tr>``
-    wrapper) or ``None`` if no row was found — the latter is the signal
-    for the caller to fall through to character splitting.
+    Returns a list of ``(wrapper_name, tr_str)`` tuples where
+    ``wrapper_name`` is ``"thead"`` / ``"tbody"`` / ``"tfoot"`` (lower-
+    cased) for rows that sit inside the corresponding wrapper, or ``""``
+    for rows outside any of those wrappers. ``None`` signals "no row
+    found" so the caller falls through to character splitting.
 
-    Text between rows (``<thead>`` / ``<tbody>`` wrappers, whitespace,
-    captions outside ``<tr>``) is dropped: each output string is a
-    self-contained row. This is a pragmatic simplification — full DOM
-    parsing would require ``lxml`` / ``beautifulsoup4``, an unjustified
-    dependency for a fallback path.
+    The wrapper attribution exists so :func:`_serialize_rows_with_wrappers`
+    can rebuild ``<thead>`` / ``<tbody>`` / ``<tfoot>`` around row groups
+    in each chunk — without it, oversized HTML tables would emerge from
+    Stage B with their structural wrappers silently stripped.
+
+    Whitespace, captions, comments, ``<colgroup>`` and any other text
+    outside the recognised row-wrappers is still dropped — this is a
+    regex extractor, not a full DOM parser. Wrapper attributes (e.g.
+    ``<thead class="…">``) are also dropped on re-emission; chunked
+    output uses bare wrapper tags.
     """
-    rows = _HTML_TR_RE.findall(body or "")
+    rows: list[tuple[str, str]] = []
+    current_wrapper = ""
+    for match in _HTML_ROW_PARTS_RE.finditer(body or ""):
+        wrap = match.group("wrap")
+        tr = match.group("tr")
+        if wrap is not None:
+            tag = _HTML_WRAPPER_TAG_RE.match(wrap)
+            if tag:
+                slash = tag.group("slash")
+                name = tag.group("name").lower()
+                if slash == "/":
+                    if current_wrapper == name:
+                        current_wrapper = ""
+                else:
+                    current_wrapper = name
+        elif tr is not None:
+            rows.append((current_wrapper, tr))
     if not rows:
         return None
     return rows
 
 
+def _serialize_rows_with_wrappers(rows: list[tuple[str, str]]) -> str:
+    """Re-emit rows grouped under their original ``<thead>`` / ``<tbody>`` /
+    ``<tfoot>`` wrappers.
+
+    Consecutive rows sharing the same wrapper name collapse into a
+    single wrapper block; transitions emit a closing tag for the
+    previous wrapper and an opening tag for the next. Rows tagged with
+    ``""`` (no wrapper) emit bare ``<tr>...</tr>``.
+    """
+    parts: list[str] = []
+    current_wrapper = ""
+    for wrapper, tr in rows:
+        if wrapper != current_wrapper:
+            if current_wrapper:
+                parts.append(f"</{current_wrapper}>")
+            if wrapper:
+                parts.append(f"<{wrapper}>")
+            current_wrapper = wrapper
+        parts.append(tr)
+    if current_wrapper:
+        parts.append(f"</{current_wrapper}>")
+    return "".join(parts)
+
+
 def _split_html_rows_by_tokens(
-    rows: list[str],
+    rows: list[tuple[str, str]],
     tokenizer: Tokenizer,
     *,
     target_max: int,
     target_ideal: int,
     last_min: int,
-) -> list[list[str]]:
-    """HTML-string analog of :func:`_split_rows_by_tokens`.
+) -> list[list[tuple[str, str]]]:
+    """HTML-tuple analog of :func:`_split_rows_by_tokens`.
 
-    Same balanced-split + tail-merge algorithm; rows are concatenated
-    with ``""`` (rather than serialised as JSON) for token measurement.
+    Same balanced-split + tail-merge algorithm; tokens are measured on
+    the row payloads (``tr_str``) only — wrapper overhead is amortised
+    later by the per-chunk serialiser plus the re-split-on-overflow
+    safety net in :func:`_split_table_text`.
     """
-    total = _count_tokens(tokenizer, "".join(rows))
+    total = _count_tokens(tokenizer, "".join(tr for _, tr in rows))
     if total <= target_max or len(rows) <= 1:
         return [rows]
 
@@ -242,7 +303,7 @@ def _split_html_rows_by_tokens(
     target_chunks = min(target_chunks, len(rows))
     target_rows = len(rows) / target_chunks
 
-    chunks: list[list[str]] = []
+    chunks: list[list[tuple[str, str]]] = []
     start = 0
     for i in range(target_chunks):
         if i == target_chunks - 1:
@@ -258,10 +319,10 @@ def _split_html_rows_by_tokens(
             break
 
     if len(chunks) >= 2:
-        last_text = "".join(chunks[-1])
+        last_text = "".join(tr for _, tr in chunks[-1])
         if _count_tokens(tokenizer, last_text) < last_min:
             merged = chunks[-2] + chunks[-1]
-            merged_tokens = _count_tokens(tokenizer, "".join(merged))
+            merged_tokens = _count_tokens(tokenizer, "".join(tr for _, tr in merged))
             if merged_tokens <= target_max:
                 chunks[-2] = merged
                 chunks.pop()
@@ -475,8 +536,12 @@ def _split_table_text(
                 last_min=body_last_min,
             )
 
-            def serialize(chunk_rows: list[str]) -> str:
-                return f"<table {attrs}>{''.join(chunk_rows)}</table>"
+            def serialize(chunk_rows: list[tuple[str, str]]) -> str:
+                return (
+                    f"<table {attrs}>"
+                    f"{_serialize_rows_with_wrappers(chunk_rows)}"
+                    f"</table>"
+                )
 
     if row_chunks is None or serialize is None:
         # No row boundary available (single-row table, parse failure,
