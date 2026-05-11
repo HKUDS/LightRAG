@@ -5168,6 +5168,19 @@ class PGGraphStorage(BaseGraphStorage):
         # The only reliable way to write edge properties in AGE is to inline them
         # directly in a CREATE clause. We use OPTIONAL MATCH to delete any existing
         # edge first so the operation remains idempotent.
+        #
+        # Concurrency: OPTIONAL MATCH + DELETE + CREATE is not atomic against other
+        # writers — two transactions upserting the same pair could both observe no
+        # existing edge and both CREATE one, leaving duplicate DIRECTED rows that
+        # inflate degree counts and duplicate relations. We serialise per logical
+        # edge with a transaction-scoped advisory lock keyed on the ordered
+        # (src_id, tgt_id) pair (so {A,B} and {B,A} collide — the OPTIONAL MATCH is
+        # undirected). AGE refuses to plan a join against a cypher() call that
+        # contains a CREATE clause ("cypher create clause cannot be rescanned"),
+        # so we cannot use a CTE for the lock. Instead we open an explicit
+        # transaction and run two statements on the same connection: the lock
+        # acquisition first, then the cypher upsert. The lock is released when
+        # the transaction commits.
         props_literal = self._format_properties(edge_data) if edge_data else "{}"
         cypher_query = f"""MATCH (source:base {{entity_id: $src_id}})
                      WITH source
@@ -5179,21 +5192,24 @@ class PGGraphStorage(BaseGraphStorage):
                      CREATE (source)-[r:DIRECTED {props_literal}]->(target)
                      RETURN r"""
 
-        query = (
-            f"SELECT * FROM cypher("
+        lock_sql = (
+            "SELECT pg_advisory_xact_lock("
+            "  hashtextextended("
+            "    LEAST($1::text, $2::text) || E'\\x01' || GREATEST($1::text, $2::text),"
+            "    0"
+            "  )"
+            ")"
+        )
+        cypher_sql = (
+            f"SELECT r FROM cypher("
             f"{_dollar_quote(self.graph_name)}::name, "
             f"{_dollar_quote(cypher_query)}::cstring, "
             f"$1::agtype) AS (r agtype)"
         )
-        pg_params = {
-            "params": json.dumps(
-                {
-                    "src_id": source_node_id,
-                    "tgt_id": target_node_id,
-                },
-                ensure_ascii=False,
-            )
-        }
+        params_json = json.dumps(
+            {"src_id": source_node_id, "tgt_id": target_node_id},
+            ensure_ascii=False,
+        )
         timing_label = f"{self.workspace} PGGraphStorage.upsert_edge"
         total_start = time.perf_counter()
         performance_timing_log(
@@ -5203,12 +5219,16 @@ class PGGraphStorage(BaseGraphStorage):
             target_node_id,
         )
 
+        async def _operation(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                await connection.execute(lock_sql, source_node_id, target_node_id)
+                await connection.execute(cypher_sql, params_json)
+
         try:
-            await self._query(
-                query,
-                readonly=False,
-                upsert=True,
-                params=pg_params,
+            await self.db._run_with_retry(
+                _operation,
+                with_age=True,
+                graph_name=self.graph_name,
                 timing_label=timing_label,
             )
             performance_timing_log(

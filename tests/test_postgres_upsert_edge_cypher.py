@@ -9,7 +9,7 @@ SET r.key = value all silently fail for DIRECTED edges).
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from lightrag.kg.postgres_impl import PGGraphStorage
 
@@ -20,13 +20,47 @@ from lightrag.kg.postgres_impl import PGGraphStorage
 
 
 def make_graph_storage() -> PGGraphStorage:
-    """Construct a PGGraphStorage instance with a mocked _query method."""
+    """Construct a PGGraphStorage instance with a mocked db."""
     storage = PGGraphStorage.__new__(PGGraphStorage)
     storage.workspace = "test_ws"
     storage.namespace = "test_graph"
     storage.graph_name = "test_graph"
     storage.db = MagicMock()
     return storage
+
+
+class _FakeConnection:
+    """Captures statements + args passed to a fake asyncpg connection."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def transaction(self):
+        return _FakeTransaction()
+
+    async def execute(self, sql, *args):
+        self.calls.append({"sql": sql, "args": args})
+        return ""
+
+
+class _FakeTransaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+async def _capture_upsert_edge(storage: PGGraphStorage, src: str, tgt: str, edge_data):
+    """Invoke upsert_edge against a fake connection and return the captured calls."""
+    conn = _FakeConnection()
+
+    async def fake_run_with_retry(operation, **_kwargs):
+        return await operation(conn)
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+    await storage.upsert_edge(src, tgt, edge_data)
+    return conn.calls
 
 
 # ---------------------------------------------------------------------------
@@ -43,84 +77,95 @@ async def test_upsert_edge_uses_delete_create_not_set():
     is to delete any existing edge and CREATE a new one with inline props.
     """
     storage = make_graph_storage()
-    captured_sql: list[str] = []
+    calls = await _capture_upsert_edge(
+        storage, "NodeA", "NodeB", {"weight": "1.0", "description": "test edge"}
+    )
 
-    async def fake_query(sql, **kwargs):
-        captured_sql.append(sql)
-        return []
-
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge(
-            "NodeA", "NodeB", {"weight": "1.0", "description": "test edge"}
-        )
-
-    assert len(captured_sql) == 1
-    sql = captured_sql[0]
+    # The cypher statement is the second one (after the lock acquisition).
+    cypher_sql = calls[1]["sql"]
 
     # The new query must not contain any SET-based edge update — those silently
     # fail against AGE. All edge props live inline in the CREATE clause.
-    assert "SET r" not in sql, f"Edge SET clauses are silently dropped by AGE: {sql}"
-    assert "ON CREATE SET" not in sql
-    assert "ON MATCH SET" not in sql
+    assert (
+        "SET r" not in cypher_sql
+    ), f"Edge SET clauses are silently dropped by AGE: {cypher_sql}"
+    assert "ON CREATE SET" not in cypher_sql
+    assert "ON MATCH SET" not in cypher_sql
 
 
 @pytest.mark.asyncio
 async def test_upsert_edge_contains_optional_match_delete_create():
     """The Cypher query must use OPTIONAL MATCH + DELETE + CREATE with inline props."""
     storage = make_graph_storage()
-    captured_sql: list[str] = []
+    calls = await _capture_upsert_edge(storage, "Alice", "Bob", {"weight": "0.5"})
 
-    async def fake_query(sql, **kwargs):
-        captured_sql.append(sql)
-        return []
-
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge("Alice", "Bob", {"weight": "0.5"})
-
-    sql = captured_sql[0]
-    assert "OPTIONAL MATCH (source)-[old:DIRECTED]-(target)" in sql
-    assert "DELETE old" in sql
-    assert "CREATE (source)-[r:DIRECTED" in sql
-    assert "]->(target)" in sql
+    cypher_sql = calls[1]["sql"]
+    assert "OPTIONAL MATCH (source)-[old:DIRECTED]-(target)" in cypher_sql
+    assert "DELETE old" in cypher_sql
+    assert "CREATE (source)-[r:DIRECTED" in cypher_sql
+    assert "]->(target)" in cypher_sql
     # Edge properties must be inlined into the CREATE clause as a literal map.
-    assert '`weight`: "0.5"' in sql
-    assert "RETURN r" in sql
+    assert '`weight`: "0.5"' in cypher_sql
+    assert "RETURN r" in cypher_sql
 
 
 @pytest.mark.asyncio
 async def test_upsert_edge_handles_empty_props():
     """Empty edge_data must inline an empty literal map, not crash."""
     storage = make_graph_storage()
-    captured_sql: list[str] = []
+    calls = await _capture_upsert_edge(storage, "Alice", "Bob", {})
 
-    async def fake_query(sql, **kwargs):
-        captured_sql.append(sql)
-        return []
-
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge("Alice", "Bob", {})
-
-    sql = captured_sql[0]
-    assert "CREATE (source)-[r:DIRECTED {}]->(target)" in sql
+    cypher_sql = calls[1]["sql"]
+    assert "CREATE (source)-[r:DIRECTED {}]->(target)" in cypher_sql
 
 
 @pytest.mark.asyncio
 async def test_upsert_edge_uses_parameterized_match_ids():
-    """Source and target IDs must flow through Cypher parameters."""
+    """Source and target IDs must flow through Cypher parameters as agtype JSON."""
     storage = make_graph_storage()
-    captured_calls: list[dict] = []
+    calls = await _capture_upsert_edge(storage, "Node A", "Node B", {"weight": "1.0"})
 
-    async def fake_query(sql, **kwargs):
-        captured_calls.append({"sql": sql, **kwargs})
-        return []
-
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge("Node A", "Node B", {"weight": "1.0"})
-
-    call = captured_calls[0]
-    sql = call["sql"]
-    assert "entity_id: $src_id" in sql
-    assert "entity_id: $tgt_id" in sql
-    params = json.loads(call["params"]["params"])
+    cypher_call = calls[1]
+    cypher_sql = cypher_call["sql"]
+    assert "entity_id: $src_id" in cypher_sql
+    assert "entity_id: $tgt_id" in cypher_sql
+    # Cypher params arrive as a single positional agtype JSON arg.
+    params_json = cypher_call["args"][0]
+    params = json.loads(params_json)
     assert params["src_id"] == "Node A"
     assert params["tgt_id"] == "Node B"
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_serialises_with_advisory_lock():
+    """Concurrent upserts on the same edge must be serialised via pg_advisory_xact_lock.
+
+    OPTIONAL MATCH + DELETE + CREATE is not atomic on its own: two transactions
+    could both pass the OPTIONAL MATCH and both run CREATE, leaving duplicate
+    DIRECTED rows. We open a transaction and acquire a transaction-scoped
+    advisory lock keyed on the ordered (src_id, tgt_id) pair before running the
+    cypher upsert, so concurrent upserts of the same logical edge run serially.
+
+    AGE refuses to plan a join against a cypher() call that contains a CREATE
+    clause, so the lock cannot live in a CTE — it must be a separate statement
+    on the same connection inside an explicit transaction.
+    """
+    storage = make_graph_storage()
+    calls = await _capture_upsert_edge(storage, "Alice", "Bob", {"weight": "0.5"})
+
+    # Two statements: lock first, then cypher upsert.
+    assert len(calls) == 2
+
+    lock_sql = calls[0]["sql"]
+    assert "pg_advisory_xact_lock" in lock_sql
+    # Key must be order-independent so {A, B} and {B, A} collide on the same lock
+    # (the OPTIONAL MATCH is undirected).
+    assert "LEAST(" in lock_sql and "GREATEST(" in lock_sql
+    # Raw node IDs are passed as positional params, not interpolated into the SQL.
+    assert "Alice" not in lock_sql and "Bob" not in lock_sql
+    assert calls[0]["args"] == ("Alice", "Bob")
+
+    # The cypher statement must not contain the lock — that would cause AGE to
+    # reject the plan with "cypher create clause cannot be rescanned".
+    cypher_sql = calls[1]["sql"]
+    assert "pg_advisory_xact_lock" not in cypher_sql
