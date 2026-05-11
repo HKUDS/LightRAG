@@ -239,8 +239,19 @@ class _ParseDocStatus:
         return None
 
 
+class _ParseTokenizer(_utils.TokenizerInterface):
+    def encode(self, content: str):
+        return [ord(ch) for ch in content]
+
+    def decode(self, tokens):
+        return "".join(chr(t) for t in tokens)
+
+
 class _ParseRag:
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
+    _enrich_parsed_sidecars_with_surrounding = (
+        LightRAG._enrich_parsed_sidecars_with_surrounding
+    )
     # parse_native now delegates to the LightRAG Document writer, which the
     # tests need to exercise to validate archive + full_docs side effects.
     _write_lightrag_document_from_content_list = (
@@ -251,6 +262,9 @@ class _ParseRag:
         self.working_dir = str(working_dir)
         self.full_docs = _ParseFullDocs(source_path)
         self.doc_status = _ParseDocStatus()
+        self.tokenizer = _utils.Tokenizer(
+            model_name="char", tokenizer=_ParseTokenizer()
+        )
 
     def _resolve_source_file_for_parser(self, file_path):
         return file_path
