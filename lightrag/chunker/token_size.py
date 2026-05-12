@@ -18,7 +18,7 @@ Two entry points are exported:
     the **new file-chunker contract** (standard prefix
     ``(tokenizer, content, chunk_token_size)`` plus keyword-only
     knobs). Used by the file-based chunking dispatcher in
-    ``_process_single_document`` for ``doc_process_opts.chunking == "F"``.
+    ``process_single_document`` for ``doc_process_opts.chunking == "F"``.
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ def chunking_by_fixed_token(
     :func:`chunking_by_token_size`, exposed under the standard
     file-chunker signature ``(tokenizer, content, chunk_token_size, *,
     <strategy kwargs>)`` so the file-based chunking dispatcher in
-    ``_process_single_document`` can call every strategy uniformly.
+    ``process_single_document`` can call every strategy uniformly.
     """
     return chunking_by_token_size(
         tokenizer,

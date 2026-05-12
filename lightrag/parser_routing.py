@@ -88,7 +88,7 @@ class ProcessOptions:
         from "no chunking selector supplied — pipeline used the default".
         ``chunking`` itself is unreliable for this question because it
         falls back to :data:`PROCESS_OPTION_CHUNK_FIXED` in both cases.
-        Used by ``_process_single_document`` to decide whether to
+        Used by ``process_single_document`` to decide whether to
         dispatch via the new file-chunker contract or to honor the
         legacy externally-supplied :attr:`LightRAG.chunking_func`.
         """

@@ -17,7 +17,7 @@ Two contracts coexist intentionally:
 
   - **File-chunker contract** — for documents whose ``process_options``
     explicitly selects a chunking strategy, the file-based dispatcher in
-    ``_PipelineMixin._process_single_document`` reads
+    ``_PipelineMixin.process_single_document`` reads
     ``doc_process_opts.chunking`` and routes to a chunker following the
     standardized signature
 

@@ -224,7 +224,7 @@ class _PipelineMixin:
                 :func:`lightrag.parser_routing.resolve_chunk_options`
                 from ``self.addon_params['chunker']``.  Persisted to
                 ``full_docs[doc_id]['chunk_options']`` and consumed by
-                :meth:`_process_single_document` to drive the file
+                :meth:`process_single_document` to drive the file
                 chunkers (F / R / V / P).  Callers that need to bake
                 F-strategy runtime args (``split_by_character`` /
                 ``split_by_character_only``) into the snapshot — e.g.
@@ -1484,7 +1484,7 @@ class _PipelineMixin:
             item = await ctx.q_process.get()
             try:
                 doc_id_w, status_doc_w, parsed_data_w = item
-                await self._process_single_document(
+                await self.process_single_document(
                     doc_id=doc_id_w,
                     status_doc=status_doc_w,
                     parsed_data=parsed_data_w,
@@ -1497,7 +1497,7 @@ class _PipelineMixin:
     # Single-document state machine
     # ============================================================
 
-    async def _process_single_document(
+    async def process_single_document(
         self,
         *,
         doc_id: str,

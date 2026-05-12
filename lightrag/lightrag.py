@@ -308,7 +308,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     Legacy chunking-function customization point. Synchronous or async.
 
     **When this function is actually invoked.** The chunker dispatch in
-    ``_PipelineMixin._process_single_document`` is driven by the
+    ``_PipelineMixin.process_single_document`` is driven by the
     document's ``process_options``:
 
       - If ``process_options`` explicitly contains a chunking selector
@@ -646,7 +646,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         resolved values for every slot the pipeline needs, and the
         legacy ``self.chunk_token_size`` / ``self.chunk_overlap_token_size``
         instance fields are back-filled to ``int`` so downstream readers
-        (e.g. ``_process_single_document``'s
+        (e.g. ``process_single_document``'s
         ``chunk_opts.get("chunk_token_size") or self.chunk_token_size``
         fallback) keep working.
         """
