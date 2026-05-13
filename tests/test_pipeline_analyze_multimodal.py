@@ -215,3 +215,127 @@ async def test_vlm_cache_hit_on_second_run(tmp_path):
         assert len(call_log) == 1
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_image_path_resolved_relative_to_sidecar_dir(tmp_path):
+    """The native docx parser writes sidecar paths relative to parsed_dir
+    (see commit d8efbf7f). The pipeline must resolve them against the
+    sidecar's own directory before considering them missing.
+    """
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+
+        # Image lives inside the parsed_dir under a relative subfolder.
+        assets_dir = parsed_dir / "doc.blocks.assets"
+        assets_dir.mkdir()
+        (assets_dir / "image1.png").write_bytes(PNG_BYTES)
+
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+            encoding="utf-8",
+        )
+        sidecar_path = parsed_dir / "doc.drawings.json"
+        sidecar_path.write_text(
+            json.dumps(
+                {
+                    "drawings": {
+                        "dr-001": {
+                            "caption": "Figure 1",
+                            # Parsed_dir-relative path, not absolute.
+                            "path": "doc.blocks.assets/image1.png",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        await rag.analyze_multimodal(
+            doc_id="doc-1",
+            file_path="fixture.pdf",
+            parsed_data={"blocks_path": str(blocks_path)},
+            process_options="i",
+        )
+
+        # The VLM was invoked with image_inputs (path resolved successfully)
+        # — not short-circuited to missing_image.
+        assert len(call_log) == 1
+        assert call_log[0]["kwargs"].get("image_inputs") is not None
+
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        # Grounded result, not the conservative missing_image fallback.
+        assert result["grounded"] is True
+        assert result["grounding_reason"] != "missing_image"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_unsupported_vector_format_falls_back_with_warning(
+    tmp_path, caplog, _propagate_lightrag_logger
+):
+    """WMF/EMF/SVG cannot be sent to vision providers; the pipeline must
+    skip the image with a warning rather than trying to base64-encode and
+    failing mid-call.
+    """
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+
+        wmf_path = parsed_dir / "image1.wmf"
+        wmf_path.write_bytes(b"WMF\x00fake-content-bytes")
+
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+            encoding="utf-8",
+        )
+        sidecar_path = parsed_dir / "doc.drawings.json"
+        sidecar_path.write_text(
+            json.dumps(
+                {
+                    "drawings": {
+                        "dr-001": {
+                            "caption": "vector diagram",
+                            "path": str(wmf_path),
+                            "format": "wmf",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level("WARNING"):
+            await rag.analyze_multimodal(
+                doc_id="doc-1",
+                file_path="fixture.docx",
+                parsed_data={"blocks_path": str(blocks_path)},
+                process_options="i",
+            )
+
+        # Warning emitted, VLM still called (no visual evidence, no textual
+        # evidence for drawings) — and result lands in conservative branch.
+        assert any(
+            "unsupported image format" in rec.message for rec in caplog.records
+        )
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        assert result["grounded"] is False
+        assert result["grounding_reason"] == "missing_image"
+    finally:
+        await rag.finalize_storages()

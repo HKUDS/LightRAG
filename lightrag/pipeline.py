@@ -3306,8 +3306,17 @@ class _PipelineMixin:
                         pass
                 return {}
 
+            # Raster image formats that vision-capable providers accept.
+            # WMF/EMF/SVG and other vector formats are rejected with a
+            # warning: the parser does not transcode them and feeding them to
+            # OpenAI/Anthropic/Bedrock/Gemini would only fail mid-call.
+            _VLM_RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
             async def _analyze_item(
-                root_key: str, item_id: str, item: dict[str, Any]
+                root_key: str,
+                item_id: str,
+                item: dict[str, Any],
+                sidecar_dir: Path,
             ) -> dict[str, Any]:
                 def _conservative_result(reason: str) -> dict[str, Any]:
                     base_name = item.get("caption") or item_id
@@ -3339,11 +3348,28 @@ class _PipelineMixin:
                 ) -> dict[str, Any] | None:
                     if not path_str:
                         return None
-                    p = Path(path_str)
-                    if not p.exists() or not p.is_file():
+                    # Sidecar entries write parser-relative paths (see
+                    # `lightrag/native_parser/docx/lightrag_adapter.py`).
+                    # Resolve them against the sidecar's own directory before
+                    # falling back to a plain cwd-relative interpretation.
+                    candidate = Path(path_str)
+                    if not candidate.is_absolute():
+                        sidecar_candidate = sidecar_dir / path_str
+                        if sidecar_candidate.exists() and sidecar_candidate.is_file():
+                            candidate = sidecar_candidate
+                    if not candidate.exists() or not candidate.is_file():
+                        return None
+                    ext = candidate.suffix.lower()
+                    if ext not in _VLM_RASTER_EXTS:
+                        logger.warning(
+                            f"[analyze_multimodal] unsupported image format "
+                            f"'{ext}' for {root_key}/{item_id}; vision providers "
+                            "only accept raster formats (png/jpeg/gif/webp). "
+                            "Skipping image input."
+                        )
                         return None
                     try:
-                        raw = p.read_bytes()
+                        raw = candidate.read_bytes()
                     except Exception:
                         return None
                     if not raw:
@@ -3353,7 +3379,7 @@ class _PipelineMixin:
                             f"[analyze_multimodal] image too large ({len(raw)} bytes) for {root_key}/{item_id}, skip image input"
                         )
                         return None
-                    mime, _ = mimetypes.guess_type(str(p))
+                    mime, _ = mimetypes.guess_type(str(candidate))
                     if not mime:
                         mime = "image/png"
                     modality = (
@@ -3367,7 +3393,7 @@ class _PipelineMixin:
                         "base64": base64.b64encode(raw).decode("ascii"),
                         "mime_type": mime,
                         "source_id": item_id,
-                        "source_file": str(p),
+                        "source_file": str(candidate),
                         "modality": modality,
                         "doc_id": doc_id,
                     }
@@ -3604,7 +3630,14 @@ class _PipelineMixin:
                                 skipped_existing += 1
                                 continue
                             valid_keys.append(item_id)
-                            analyze_tasks.append(_analyze_item(root_key, item_id, item))
+                            analyze_tasks.append(
+                                _analyze_item(
+                                    root_key,
+                                    item_id,
+                                    item,
+                                    sidecar_dir=sidecar_path.parent,
+                                )
+                            )
                         if skipped_existing:
                             logger.debug(
                                 f"[analyze_multimodal] {root_key}: "
