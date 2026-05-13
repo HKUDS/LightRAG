@@ -330,9 +330,7 @@ async def test_unsupported_vector_format_falls_back_with_warning(
 
         # Warning emitted, VLM still called (no visual evidence, no textual
         # evidence for drawings) — and result lands in conservative branch.
-        assert any(
-            "unsupported image format" in rec.message for rec in caplog.records
-        )
+        assert any("unsupported image format" in rec.message for rec in caplog.records)
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         result = payload["drawings"]["dr-001"]["llm_analyze_result"]
         assert result["grounded"] is False
