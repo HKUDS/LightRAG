@@ -1853,9 +1853,7 @@ class _PipelineMixin:
                         file_path=file_path,
                         blocks_path=blocks_path,
                         base_order_index=max_order + 1,
-                        process_options=(content_data or {}).get(
-                            "process_options"
-                        )
+                        process_options=(content_data or {}).get("process_options")
                         or "",
                     )
                     if mm_chunks:
