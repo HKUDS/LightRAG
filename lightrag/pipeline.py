@@ -52,12 +52,19 @@ from lightrag.parser_routing import (
     resolve_stored_document_parser_engine,
 )
 from lightrag.utils import (
+    CacheData,
+    _serialize_cache_variant,
+    compute_args_hash,
     compute_mdhash_id,
     enforce_chunk_token_limit_before_embedding,
     generate_track_id,
     get_content_summary,
+    get_llm_cache_identity,
+    handle_cache,
     logger,
     sanitize_text_for_encoding,
+    save_to_cache,
+    serialize_llm_cache_identity,
 )
 from lightrag.utils_pipeline import (
     archive_docx_source_after_full_docs_sync,
@@ -3265,10 +3272,20 @@ class _PipelineMixin:
             use_vlm_func = self.role_llm_funcs["vlm"]
             effective_vlm_max_async = self._get_effective_role_llm_max_async("vlm")
             sem = asyncio.Semaphore(max(1, effective_vlm_max_async))
-            analyze_retries = max(0, int(os.getenv("VLM_ANALYZE_RETRIES", "2")))
             max_image_bytes = max(
                 256 * 1024, int(os.getenv("VLM_MAX_IMAGE_BYTES", str(5 * 1024 * 1024)))
             )
+            vlm_global_config = self._build_global_config()
+            vlm_process_enable = bool(
+                vlm_global_config.get("vlm_process_enable", False)
+            )
+            from lightrag.llm._vision_utils import (
+                image_audit_metadata,
+                image_cache_metadata,
+                normalize_image_inputs,
+            )
+
+            vlm_cache_identity = get_llm_cache_identity(vlm_global_config, role="vlm")
 
             def _extract_json_obj(text: str) -> dict[str, Any]:
                 if not text:
@@ -3289,9 +3306,18 @@ class _PipelineMixin:
                         pass
                 return {}
 
+            # Raster image formats that vision-capable providers accept.
+            # WMF/EMF/SVG and other vector formats are rejected with a
+            # warning: the parser does not transcode them and feeding them to
+            # OpenAI/Anthropic/Bedrock/Gemini would only fail mid-call.
+            _VLM_RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
             async def _analyze_item(
-                root_key: str, item_id: str, item: dict[str, Any]
-            ) -> dict[str, Any]:
+                root_key: str,
+                item_id: str,
+                item: dict[str, Any],
+                sidecar_dir: Path,
+            ) -> dict[str, Any] | None:
                 def _conservative_result(reason: str) -> dict[str, Any]:
                     base_name = item.get("caption") or item_id
                     modality = (
@@ -3317,14 +3343,33 @@ class _PipelineMixin:
                         conservative["image_type"] = ""
                     return conservative
 
-                def _build_image_data_url(path_str: str | None) -> str | None:
+                def _build_image_payload(
+                    path_str: str | None,
+                ) -> dict[str, Any] | None:
                     if not path_str:
                         return None
-                    p = Path(path_str)
-                    if not p.exists() or not p.is_file():
+                    # Sidecar entries write parser-relative paths (see
+                    # `lightrag/native_parser/docx/lightrag_adapter.py`).
+                    # Resolve them against the sidecar's own directory before
+                    # falling back to a plain cwd-relative interpretation.
+                    candidate = Path(path_str)
+                    if not candidate.is_absolute():
+                        sidecar_candidate = sidecar_dir / path_str
+                        if sidecar_candidate.exists() and sidecar_candidate.is_file():
+                            candidate = sidecar_candidate
+                    if not candidate.exists() or not candidate.is_file():
+                        return None
+                    ext = candidate.suffix.lower()
+                    if ext not in _VLM_RASTER_EXTS:
+                        logger.warning(
+                            f"[analyze_multimodal] unsupported image format "
+                            f"'{ext}' for {root_key}/{item_id}; vision providers "
+                            "only accept raster formats (png/jpeg/gif/webp). "
+                            "Skipping image input."
+                        )
                         return None
                     try:
-                        raw = p.read_bytes()
+                        raw = candidate.read_bytes()
                     except Exception:
                         return None
                     if not raw:
@@ -3334,11 +3379,24 @@ class _PipelineMixin:
                             f"[analyze_multimodal] image too large ({len(raw)} bytes) for {root_key}/{item_id}, skip image input"
                         )
                         return None
-                    mime, _ = mimetypes.guess_type(str(p))
+                    mime, _ = mimetypes.guess_type(str(candidate))
                     if not mime:
                         mime = "image/png"
-                    b64 = base64.b64encode(raw).decode("ascii")
-                    return f"data:{mime};base64,{b64}"
+                    modality = (
+                        "image"
+                        if root_key == "drawings"
+                        else "table"
+                        if root_key == "tables"
+                        else "equation"
+                    )
+                    return {
+                        "base64": base64.b64encode(raw).decode("ascii"),
+                        "mime_type": mime,
+                        "source_id": item_id,
+                        "source_file": str(candidate),
+                        "modality": modality,
+                        "doc_id": doc_id,
+                    }
 
                 def _normalize_text(value: Any) -> str:
                     if value is None:
@@ -3376,10 +3434,21 @@ class _PipelineMixin:
                     if root_key != "drawings"
                     else '{"name":"string","image_type":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
                 )
-                image_data_url = _build_image_data_url(
+                if not vlm_process_enable:
+                    # Do NOT write back a conservative result here: persisting
+                    # llm_analyze_result would let the idempotency guard in the
+                    # outer dispatch skip this item forever, even after the
+                    # operator enables VLM and re-runs analysis.
+                    logger.warning(
+                        f"[analyze_multimodal] VLM_PROCESS_ENABLE=false, skipping "
+                        f"{root_key}/{item_id} for d-id: {doc_id}"
+                    )
+                    return None
+
+                img_payload = _build_image_payload(
                     item.get("path") or item.get("img_path") or item.get("image_path")
                 )
-                has_visual_evidence = bool(image_data_url)
+                has_visual_evidence = img_payload is not None
                 caption_text = _normalize_text(item.get("caption"))
                 footnotes_text = _normalize_text(item.get("footnotes"))
                 content_text = _normalize_text(item.get("content"))
@@ -3394,114 +3463,146 @@ class _PipelineMixin:
                     if has_textual_evidence
                     else "none"
                 )
-                for attempt in range(analyze_retries + 1):
-                    prompt = (
-                        "You are a multimodal analyzer.\n"
-                        "Return ONLY one JSON object. No markdown. No explanation.\n"
-                        "Grounding policy:\n"
-                        "- Do NOT invent unseen objects, domains, diseases, or scenarios.\n"
-                        "- Prefer the strongest available evidence source.\n"
-                        "- For tables/equations without image evidence, analyze from content/caption/footnotes first.\n"
-                        "- In textual-only mode, do not invent appearance/layout details that are not supported by the provided content.\n"
-                        "- If evidence is missing/weak/uncertain, set grounded=false and keep summary/detail conservative.\n"
-                        "- If grounded=false, avoid rich semantic claims; keep to metadata-level statements only.\n"
-                        f"JSON schema example: {schema_hint}\n"
-                        f"modality={root_key}\n"
-                        f"item_id={item_id}\n"
-                        f"caption={caption_text}\n"
-                        f"footnotes={footnotes_text}\n"
-                        f"content={content_text}\n"
-                        f"has_visual_evidence={has_visual_evidence}\n"
-                        f"has_textual_evidence={has_textual_evidence}\n"
-                        f"evidence_mode={evidence_mode}\n"
-                        "Constraints:\n"
-                        "- summary: <= 120 words\n"
-                        "- detail_description: <= 500 words\n"
-                    )
-                    messages = None
-                    if image_data_url:
-                        messages = [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {"url": image_data_url},
-                                    },
-                                ],
-                            }
-                        ]
+                prompt = (
+                    "You are a multimodal analyzer.\n"
+                    "Return ONLY one JSON object. No markdown. No explanation.\n"
+                    "Grounding policy:\n"
+                    "- Do NOT invent unseen objects, domains, diseases, or scenarios.\n"
+                    "- Prefer the strongest available evidence source.\n"
+                    "- For tables/equations without image evidence, analyze from content/caption/footnotes first.\n"
+                    "- In textual-only mode, do not invent appearance/layout details that are not supported by the provided content.\n"
+                    "- If evidence is missing/weak/uncertain, set grounded=false and keep summary/detail conservative.\n"
+                    "- If grounded=false, avoid rich semantic claims; keep to metadata-level statements only.\n"
+                    f"JSON schema example: {schema_hint}\n"
+                    f"modality={root_key}\n"
+                    f"item_id={item_id}\n"
+                    f"caption={caption_text}\n"
+                    f"footnotes={footnotes_text}\n"
+                    f"content={content_text}\n"
+                    f"has_visual_evidence={has_visual_evidence}\n"
+                    f"has_textual_evidence={has_textual_evidence}\n"
+                    f"evidence_mode={evidence_mode}\n"
+                    "Constraints:\n"
+                    "- summary: <= 120 words\n"
+                    "- detail_description: <= 500 words\n"
+                )
+
+                image_inputs_arg = [img_payload] if img_payload else None
+                normalized_images = (
+                    normalize_image_inputs(image_inputs_arg) if image_inputs_arg else []
+                )
+                args_hash = compute_args_hash(
+                    prompt,
+                    "",
+                    "",
+                    serialize_llm_cache_identity(vlm_cache_identity),
+                    _serialize_cache_variant({"type": "json_object"}),
+                    _serialize_cache_variant(image_cache_metadata(normalized_images)),
+                )
+                cached = await handle_cache(
+                    self.llm_response_cache,
+                    args_hash,
+                    prompt,
+                    mode="default",
+                    cache_type="analysis",
+                )
+                fresh_response = False
+                if cached is not None:
+                    result_text = cached[0]
+                else:
                     async with sem:
-                        if messages:
-                            try:
-                                result_text = await use_vlm_func(
-                                    prompt, stream=False, messages=messages
-                                )
-                            except TypeError:
-                                # Backward compatibility for providers that don't accept messages.
-                                result_text = await use_vlm_func(prompt, stream=False)
-                            except Exception as msg_err:
-                                logger.warning(
-                                    f"[analyze_multimodal] visual call failed for {root_key}/{item_id}: {msg_err}"
-                                )
-                                return _conservative_result("visual_call_failed")
-                        else:
-                            result_text = await use_vlm_func(prompt, stream=False)
-                    parsed = _extract_json_obj(str(result_text))
-                    if (
-                        parsed
-                        and isinstance(parsed.get("name"), str)
-                        and isinstance(parsed.get("summary"), str)
-                        and isinstance(parsed.get("detail_description"), str)
-                    ):
-                        if "grounded" in parsed:
-                            parsed["grounded"] = _normalize_grounded_value(
-                                parsed.get("grounded")
+                        try:
+                            result_text = await use_vlm_func(
+                                prompt,
+                                stream=False,
+                                image_inputs=image_inputs_arg,
                             )
-                        default_result.update(
-                            {
-                                k: v
-                                for k, v in parsed.items()
-                                if k
-                                in {
-                                    "name",
-                                    "summary",
-                                    "detail_description",
-                                    "image_type",
-                                    "grounded",
-                                    "grounding_reason",
-                                }
-                            }
-                        )
-                        if evidence_mode == "none":
-                            return _conservative_result("missing_image")
-                        if parsed.get("grounded") is False:
-                            reason = str(
-                                parsed.get("grounding_reason")
-                                or (
-                                    "weak_visual_evidence"
-                                    if evidence_mode == "visual"
-                                    else "weak_textual_evidence"
-                                )
+                        except Exception as msg_err:
+                            logger.warning(
+                                f"[analyze_multimodal] visual call failed for "
+                                f"{root_key}/{item_id}: {msg_err}"
                             )
-                            return _conservative_result(reason)
-                        if "grounded" not in default_result:
-                            default_result["grounded"] = True
-                        if not default_result.get("grounding_reason"):
-                            default_result["grounding_reason"] = (
-                                "visual_evidence"
-                                if evidence_mode == "visual"
-                                else "textual_content_only"
-                            )
-                        return default_result
-                    if attempt < analyze_retries:
-                        logger.warning(
-                            f"[analyze_multimodal] invalid JSON, retry {attempt + 1}/{analyze_retries} for {root_key}/{item_id}"
-                        )
+                            return _conservative_result("visual_call_failed")
+                    fresh_response = True
+
+                parsed = _extract_json_obj(str(result_text))
+                if not (
+                    parsed
+                    and isinstance(parsed.get("name"), str)
+                    and isinstance(parsed.get("summary"), str)
+                    and isinstance(parsed.get("detail_description"), str)
+                ):
+                    # Do NOT cache invalid responses: caching here would lock
+                    # the item into invalid_json_schema on every future run
+                    # until the cache is manually cleared.
+                    logger.warning(
+                        f"[analyze_multimodal] invalid VLM JSON for "
+                        f"{root_key}/{item_id}, skipping"
+                    )
+                    if evidence_mode == "none":
+                        return _conservative_result("missing_image")
+                    return _conservative_result("invalid_json_schema")
+
+                if fresh_response:
+                    audit_blob = image_audit_metadata(normalized_images)
+                    original_prompt = (
+                        prompt
+                        + f"\n<vlm_images>{json.dumps(audit_blob, ensure_ascii=False)}</vlm_images>"
+                        if audit_blob
+                        else prompt
+                    )
+                    await save_to_cache(
+                        self.llm_response_cache,
+                        CacheData(
+                            args_hash=args_hash,
+                            content=str(result_text),
+                            prompt=original_prompt,
+                            mode="default",
+                            cache_type="analysis",
+                            chunk_id=None,
+                        ),
+                    )
+
+                if "grounded" in parsed:
+                    parsed["grounded"] = _normalize_grounded_value(
+                        parsed.get("grounded")
+                    )
+                default_result.update(
+                    {
+                        k: v
+                        for k, v in parsed.items()
+                        if k
+                        in {
+                            "name",
+                            "summary",
+                            "detail_description",
+                            "image_type",
+                            "grounded",
+                            "grounding_reason",
+                        }
+                    }
+                )
                 if evidence_mode == "none":
                     return _conservative_result("missing_image")
-                return _conservative_result("analysis_failed")
+                if parsed.get("grounded") is False:
+                    reason = str(
+                        parsed.get("grounding_reason")
+                        or (
+                            "weak_visual_evidence"
+                            if evidence_mode == "visual"
+                            else "weak_textual_evidence"
+                        )
+                    )
+                    return _conservative_result(reason)
+                if "grounded" not in default_result:
+                    default_result["grounded"] = True
+                if not default_result.get("grounding_reason"):
+                    default_result["grounding_reason"] = (
+                        "visual_evidence"
+                        if evidence_mode == "visual"
+                        else "textual_content_only"
+                    )
+                return default_result
 
             # Write back llm_analyze_result to multimodal sidecar files.
             base_name = str(block_file)
@@ -3539,7 +3640,14 @@ class _PipelineMixin:
                                 skipped_existing += 1
                                 continue
                             valid_keys.append(item_id)
-                            analyze_tasks.append(_analyze_item(root_key, item_id, item))
+                            analyze_tasks.append(
+                                _analyze_item(
+                                    root_key,
+                                    item_id,
+                                    item,
+                                    sidecar_dir=sidecar_path.parent,
+                                )
+                            )
                         if skipped_existing:
                             logger.debug(
                                 f"[analyze_multimodal] {root_key}: "
@@ -3559,6 +3667,11 @@ class _PipelineMixin:
                                 logger.warning(
                                     f"[analyze_multimodal] item analyze failed: {root_key}/{item_id}: {result_obj}"
                                 )
+                                continue
+                            if result_obj is None:
+                                # Skip signal (e.g. VLM_PROCESS_ENABLE=false):
+                                # do not persist anything so re-runs after the
+                                # operator enables VLM will re-process the item.
                                 continue
                             item["llm_analyze_result"] = result_obj
                     sidecar_path.write_text(

@@ -57,6 +57,7 @@ async def anthropic_complete_if_cache(
     enable_cot: bool = False,
     base_url: str | None = None,
     api_key: str | None = None,
+    image_inputs: list[Any] | None = None,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Anthropic Messages API with LightRAG-compatible shims.
@@ -120,7 +121,26 @@ async def anthropic_complete_if_cache(
 
     messages: list[dict[str, Any]] = []
     messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
+    if image_inputs:
+        from lightrag.llm._vision_utils import normalize_image_inputs
+
+        normalized_images = normalize_image_inputs(image_inputs)
+        user_content: list[dict[str, Any]] = []
+        for img in normalized_images:
+            user_content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.mime_type,
+                        "data": img.base64_str,
+                    },
+                }
+            )
+        user_content.append({"type": "text", "text": prompt})
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": prompt})
 
     logger.debug("===== Sending Query to Anthropic LLM =====")
     logger.debug(f"Model: {model}   Base URL: {base_url}")

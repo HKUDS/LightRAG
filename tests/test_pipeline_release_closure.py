@@ -65,6 +65,10 @@ def _new_rag(tmp_path: Path, **kwargs) -> LightRAG:
     if role_configs:
         kwargs["role_llm_configs"] = role_configs
 
+    # analyze_multimodal short-circuits when vlm_process_enable is False; this
+    # helper drives several VLM-specific tests, so default the switch ON.
+    kwargs.setdefault("vlm_process_enable", True)
+
     return LightRAG(
         working_dir=str(tmp_path),
         workspace=f"test-release-closure-{tmp_path.name}",
@@ -1161,6 +1165,7 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
             )
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
+        await rag.initialize_storages()
 
         # Minimal blocks file with valid meta.
         blocks = tmp_path / "demo.blocks.jsonl"
@@ -1945,17 +1950,20 @@ def test_three_phase_status_flow(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
-def test_analyze_multimodal_json_retry_and_writeback(tmp_path):
+def test_analyze_multimodal_invalid_json_skips_without_retry(tmp_path):
+    """The business-level JSON-schema retry was deliberately removed; an
+    invalid VLM response must produce a conservative writeback after exactly
+    one VLM call (network-level retries remain inside the provider)."""
+
     async def _run():
         calls = {"n": 0}
 
-        async def _retry_vlm(prompt, **kwargs):
+        async def _broken_vlm(prompt, **kwargs):
             calls["n"] += 1
-            if calls["n"] == 1:
-                return "not-json"
-            return '{"name":"Figure A","image_type":"Chart","summary":"ok","detail_description":"details"}'
+            return "not-json"
 
-        rag = _new_rag(tmp_path, vlm_llm_model_func=_retry_vlm)
+        rag = _new_rag(tmp_path, vlm_llm_model_func=_broken_vlm)
+        await rag.initialize_storages()
         # 1x1 transparent PNG for grounded image-path flow
         img_path = tmp_path / "img1.png"
         img_path.write_bytes(
@@ -2005,10 +2013,11 @@ def test_analyze_multimodal_json_retry_and_writeback(tmp_path):
 
         drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
-        assert result["name"] == "Figure A"
-        assert result["summary"] == "ok"
-        assert result["detail_description"] == "details"
-        assert calls["n"] >= 2
+        # No retry: VLM mock called exactly once.
+        assert calls["n"] == 1
+        # Conservative writeback under invalid_json_schema reason.
+        assert result["grounded"] is False
+        assert result["grounding_reason"] == "invalid_json_schema"
 
     asyncio.run(_run())
 
@@ -2095,6 +2104,7 @@ def test_analyze_multimodal_normalizes_string_grounded_to_bool(tmp_path):
             )
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
+        await rag.initialize_storages()
         img_path = tmp_path / "img1.png"
         img_path.write_bytes(
             b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -2156,6 +2166,7 @@ def test_analyze_multimodal_without_image_uses_conservative_output(tmp_path):
             return '{"name":"X","summary":"hallucinated rich details","detail_description":"very specific claims","grounded":false}'
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
+        await rag.initialize_storages()
 
         blocks = tmp_path / "demo.blocks.jsonl"
         blocks.write_text(
@@ -2342,6 +2353,7 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
             )
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
+        await rag.initialize_storages()
 
         blocks = tmp_path / "demo.blocks.jsonl"
         blocks.write_text(

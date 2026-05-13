@@ -553,6 +553,7 @@ def _make_args(tmp_path) -> SimpleNamespace:
         cosine_threshold=0.2,
         enable_llm_cache_for_extract=True,
         enable_llm_cache=True,
+        vlm_process_enable=False,
         max_parallel_insert=2,
         max_graph_nodes=1000,
         simulated_model_name="lightrag",

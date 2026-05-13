@@ -53,7 +53,7 @@ QUERY_LLM_MODEL=gpt-5
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_query_api_key
 QUERY_MAX_ASYNC_LLM=2
-LLM_TIMEOUT_QUERY_LLM=240
+QUERY_LLM_TIMEOUT=240
 ```
 
 Variable format:
@@ -65,7 +65,7 @@ Variable format:
 | `{ROLE}_LLM_BINDING_HOST` | Overrides the role endpoint. |
 | `{ROLE}_LLM_BINDING_API_KEY` | Overrides the role API key. Bedrock does not support it. |
 | `{ROLE}_MAX_ASYNC_LLM` | Overrides the role maximum concurrency. Inherits `MAX_ASYNC` when unset. |
-| `LLM_TIMEOUT_{ROLE}_LLM` | Overrides the role timeout. Inherits `LLM_TIMEOUT` when unset. |
+| `{ROLE}_LLM_TIMEOUT` | Overrides the role timeout. Inherits `LLM_TIMEOUT` when unset. |
 
 ## Provider Option Overrides
 
@@ -109,7 +109,7 @@ If a role does not set `{ROLE}_LLM_BINDING`, or sets it to the same value as the
 - Inherits `LLM_MODEL` when `{ROLE}_LLM_MODEL` is not set.
 - Inherits `LLM_BINDING_HOST` when `{ROLE}_LLM_BINDING_HOST` is not set.
 - Inherits `LLM_BINDING_API_KEY` when `{ROLE}_LLM_BINDING_API_KEY` is not set.
-- Inherits `LLM_TIMEOUT` when `LLM_TIMEOUT_{ROLE}_LLM` is not set.
+- Inherits `LLM_TIMEOUT` when `{ROLE}_LLM_TIMEOUT` is not set.
 - Inherits `MAX_ASYNC` when `{ROLE}_MAX_ASYNC_LLM` is not set.
 - Provider options first inherit the base provider options, then apply role-specific provider options.
 
@@ -224,7 +224,7 @@ OPENAI_LLM_MAX_COMPLETION_TOKENS=4096
 QUERY_LLM_MODEL=gpt-5
 QUERY_OPENAI_LLM_REASONING_EFFORT=medium
 QUERY_OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
-LLM_TIMEOUT_QUERY_LLM=240
+QUERY_LLM_TIMEOUT=240
 ```
 
 ### 3. Same Provider with Different Endpoints and API Keys
@@ -265,7 +265,7 @@ EXTRACT_LLM_BINDING_API_KEY=your_extract_openai_api_key
 EXTRACT_OPENAI_LLM_REASONING_EFFORT=low
 EXTRACT_OPENAI_LLM_MAX_COMPLETION_TOKENS=4096
 EXTRACT_MAX_ASYNC_LLM=4
-LLM_TIMEOUT_EXTRACT_LLM=180
+EXTRACT_LLM_TIMEOUT=180
 
 ###########################################################################
 # QUERY: OpenAI official API, gpt-5.4, separate API key
@@ -277,7 +277,7 @@ QUERY_LLM_BINDING_API_KEY=your_query_openai_api_key
 QUERY_OPENAI_LLM_REASONING_EFFORT=medium
 QUERY_OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 QUERY_MAX_ASYNC_LLM=2
-LLM_TIMEOUT_QUERY_LLM=240
+QUERY_LLM_TIMEOUT=240
 
 ###########################################################################
 # KEYWORD: local vLLM OpenAI-compatible endpoint, Qwen3.5-35B-A3B
@@ -293,7 +293,7 @@ KEYWORD_OPENAI_LLM_MAX_TOKENS=2048
 # Optional for Qwen-style models served by vLLM when you want to disable thinking.
 KEYWORD_OPENAI_LLM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'
 KEYWORD_MAX_ASYNC_LLM=4
-LLM_TIMEOUT_KEYWORD_LLM=180
+KEYWORD_LLM_TIMEOUT=180
 ```
 
 This pattern is not cross-provider because all three roles use the `openai` binding. LightRAG passes each role's `*_LLM_BINDING_HOST` and `*_LLM_BINDING_API_KEY` to the OpenAI-compatible client separately.
@@ -325,6 +325,8 @@ For cross-provider configurations, Ollama options do not inherit OpenAI options.
 Suitable when text tasks use a cheaper model and multimodal analysis uses a vision-language model:
 
 ```env
+VLM_PROCESS_ENABLE=true
+
 LLM_BINDING=openai
 LLM_MODEL=gpt-5-mini
 LLM_BINDING_HOST=https://api.openai.com/v1
@@ -334,10 +336,12 @@ VLM_LLM_BINDING=openai
 VLM_LLM_MODEL=gpt-4o
 VLM_OPENAI_LLM_MAX_TOKENS=4096
 VLM_MAX_ASYNC_LLM=2
-LLM_TIMEOUT_VLM_LLM=240
+VLM_LLM_TIMEOUT=240
 ```
 
 If VLM uses the same provider and key, `VLM_LLM_BINDING_HOST` and `VLM_LLM_BINDING_API_KEY` can be omitted.
+
+`VLM_PROCESS_ENABLE` is the master switch for multimodal analysis. When `false`, the pipeline emits a warning and skips every multimodal item without invoking the VLM. When `true`, the effective VLM binding (`VLM_LLM_BINDING` if set, otherwise `LLM_BINDING`) must support image inputs. The following providers are vision-capable: `openai`, `azure_openai`, `gemini`, `bedrock`, `ollama`, `anthropic`. `lollms` is rejected at startup because it cannot accept image inputs.
 
 ### 6. Bedrock Role-Level SigV4 Credentials
 

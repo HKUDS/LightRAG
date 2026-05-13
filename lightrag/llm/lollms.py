@@ -24,7 +24,7 @@ from lightrag.exceptions import (
     APITimeoutError,
 )
 
-from typing import Union, List
+from typing import Any, List, Union
 import numpy as np
 
 from lightrag.utils import (
@@ -46,6 +46,7 @@ async def lollms_model_if_cache(
     history_messages=[],
     enable_cot: bool = False,
     base_url="http://localhost:9600",
+    image_inputs: list[Any] | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Client implementation for lollms generation.
@@ -55,7 +56,18 @@ async def lollms_model_if_cache(
     - If callers pass ``response_format``, it is stripped before the request.
     - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
       accepted only as compatibility shims; they emit warnings and are ignored.
+
+    Vision note:
+    - lollms does not support image inputs. Passing a non-empty
+      ``image_inputs`` raises :class:`NotImplementedError`.
     """
+    if image_inputs:
+        raise NotImplementedError(
+            "lollms binding does not support image_inputs; configure a "
+            "vision-capable VLM provider (openai/azure_openai/gemini/bedrock/"
+            "ollama/anthropic) for VLM_LLM_BINDING."
+        )
+
     if enable_cot:
         from lightrag.utils import logger
 

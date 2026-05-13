@@ -296,6 +296,7 @@ async def gemini_complete_if_cache(
     entity_extraction: bool = False,
     generation_config: dict[str, Any] | None = None,
     timeout: int | None = None,
+    image_inputs: list[Any] | None = None,
     **_: Any,
 ) -> str | AsyncIterator[str]:
     """
@@ -392,9 +393,22 @@ async def gemini_complete_if_cache(
         response_format=response_format,
     )
 
+    if image_inputs:
+        from lightrag.llm._vision_utils import normalize_image_inputs
+
+        normalized_images = normalize_image_inputs(image_inputs)
+        parts: list[Any] = [combined_prompt]
+        parts.extend(
+            types.Part.from_bytes(data=img.raw_bytes, mime_type=img.mime_type)
+            for img in normalized_images
+        )
+        contents: list[Any] = [parts]
+    else:
+        contents = [combined_prompt]
+
     request_kwargs: dict[str, Any] = {
         "model": model,
-        "contents": [combined_prompt],
+        "contents": contents,
     }
     if config_obj is not None:
         request_kwargs["config"] = config_obj

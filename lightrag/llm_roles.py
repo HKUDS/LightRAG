@@ -43,7 +43,7 @@ class RoleSpec:
 
     env_prefix: str
     """Uppercase prefix used by the API env-var layer, e.g. ``"EXTRACT"`` for
-    ``EXTRACT_LLM_BINDING`` / ``EXTRACT_MAX_ASYNC_LLM`` / ``LLM_TIMEOUT_EXTRACT_LLM``."""
+    ``EXTRACT_LLM_BINDING`` / ``EXTRACT_MAX_ASYNC_LLM`` / ``EXTRACT_LLM_TIMEOUT``."""
 
     queue_name: str
     """Display name passed to ``priority_limit_async_func_call`` for log lines."""

@@ -176,6 +176,7 @@ async def bedrock_complete_if_cache(
     aws_region: str | None = None,
     api_key: str | None = None,
     endpoint_url: str | None = None,
+    image_inputs: list[Any] | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Amazon Bedrock Converse API with LightRAG-compatible shims.
@@ -203,8 +204,6 @@ async def bedrock_complete_if_cache(
       to let the AWS SDK select its default endpoint.
     """
     if enable_cot:
-        import logging
-
         logging.debug(
             "enable_cot=True is not supported for Bedrock and will be ignored."
         )
@@ -264,7 +263,26 @@ async def bedrock_complete_if_cache(
         messages.append(message)
 
     # Add user prompt
-    messages.append({"role": "user", "content": [{"text": prompt}]})
+    if image_inputs:
+        from lightrag.llm._vision_utils import normalize_image_inputs
+
+        normalized_images = normalize_image_inputs(image_inputs)
+        user_content: list[dict[str, Any]] = [{"text": prompt}]
+        for img in normalized_images:
+            fmt = img.mime_type.split("/", 1)[1] if "/" in img.mime_type else "png"
+            user_content.append(
+                {"image": {"format": fmt, "source": {"bytes": img.raw_bytes}}}
+            )
+        messages.append({"role": "user", "content": user_content})
+
+        if stream:
+            logging.getLogger(__name__).debug(
+                "[bedrock] image_inputs provided; forcing non-stream Converse "
+                "(stream + image combination has SDK limitations)"
+            )
+            stream = False
+    else:
+        messages.append({"role": "user", "content": [{"text": prompt}]})
 
     # Initialize Converse API arguments
     args = {"modelId": model, "messages": messages}
@@ -296,9 +314,6 @@ async def bedrock_complete_if_cache(
     extra_fields = kwargs.pop("extra_fields", None)
     if extra_fields:
         args["additionalModelRequestFields"] = extra_fields
-
-    # Import logging for error handling
-    import logging
 
     # For streaming responses, we need a different approach to keep the connection open
     if stream:
