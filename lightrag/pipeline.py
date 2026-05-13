@@ -43,7 +43,7 @@ from lightrag.constants import (
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
 )
-from lightrag.exceptions import PipelineCancelledException
+from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser_routing import (
@@ -57,6 +57,7 @@ from lightrag.utils import (
     compute_args_hash,
     compute_mdhash_id,
     enforce_chunk_token_limit_before_embedding,
+    generate_cache_key,
     generate_track_id,
     get_content_summary,
     get_llm_cache_identity,
@@ -69,7 +70,6 @@ from lightrag.utils import (
 from lightrag.utils_pipeline import (
     archive_docx_source_after_full_docs_sync,
     archive_source_after_full_docs_sync,
-    augment_chunk_results_with_mm_entities,
     build_chunks_dict_from_chunking_result,
     chunk_fields_from_status_doc,
     compute_file_content_hash,
@@ -1817,7 +1817,6 @@ class _PipelineMixin:
                     extraction_meta=extraction_meta,
                 )
 
-                mm_specs: list[dict[str, Any]] = []
                 blocks_path = str(parsed_data.get("blocks_path") or "").strip()
                 if blocks_path:
                     max_order = -1
@@ -1826,7 +1825,7 @@ class _PipelineMixin:
                             ch.get("chunk_order_index"), int
                         ):
                             max_order = max(max_order, int(ch["chunk_order_index"]))
-                    mm_chunks, mm_specs = self._build_mm_chunks_from_sidecars(
+                    mm_chunks = self._build_mm_chunks_from_sidecars(
                         doc_id=doc_id,
                         file_path=file_path,
                         blocks_path=blocks_path,
@@ -1923,11 +1922,6 @@ class _PipelineMixin:
                         )
                     )
                     chunk_results = await entity_relation_task
-                    chunk_results = augment_chunk_results_with_mm_entities(
-                        chunk_results=chunk_results,
-                        mm_specs=mm_specs,
-                        file_path=file_path,
-                    )
                 file_extraction_stage_ok = True
 
             except Exception as e:
@@ -3268,35 +3262,72 @@ class _PipelineMixin:
             if not isinstance(meta, dict) or meta.get("type") != "meta":
                 return parsed_data
 
-            # Analyze sidecar multimodal items by VLM model role.
-            use_vlm_func = self.role_llm_funcs["vlm"]
-            effective_vlm_max_async = self._get_effective_role_llm_max_async("vlm")
-            sem = asyncio.Semaphore(max(1, effective_vlm_max_async))
-            max_image_bytes = max(
-                256 * 1024, int(os.getenv("VLM_MAX_IMAGE_BYTES", str(5 * 1024 * 1024)))
-            )
-            vlm_global_config = self._build_global_config()
-            vlm_process_enable = bool(
-                vlm_global_config.get("vlm_process_enable", False)
-            )
             from lightrag.llm._vision_utils import (
                 image_audit_metadata,
                 image_cache_metadata,
                 normalize_image_inputs,
+                read_image_dimensions,
+            )
+            from lightrag.prompt_multimodal import (
+                IMAGE_TYPE_ENUM,
+                IMAGE_TYPE_FALLBACK,
+                MULTIMODAL_PROMPTS,
+            )
+            from lightrag.constants import (
+                DEFAULT_MM_ANALYSIS_PRIORITY,
+                DEFAULT_MM_IMAGE_MIN_PIXEL,
+                DEFAULT_SUMMARY_LANGUAGE,
             )
 
-            vlm_cache_identity = get_llm_cache_identity(vlm_global_config, role="vlm")
+            global_config = self._build_global_config()
+            addon_params = global_config.get("addon_params") or {}
+            language = (
+                global_config.get("_resolved_summary_language")
+                or addon_params.get("language")
+                or DEFAULT_SUMMARY_LANGUAGE
+            )
+            vlm_process_enable = bool(global_config.get("vlm_process_enable", False))
+            max_image_bytes = max(
+                256 * 1024,
+                int(os.getenv("VLM_MAX_IMAGE_BYTES", str(5 * 1024 * 1024))),
+            )
+            min_image_pixel = max(
+                1,
+                int(
+                    os.getenv("VLM_MIN_IMAGE_PIXEL", str(DEFAULT_MM_IMAGE_MIN_PIXEL))
+                ),
+            )
 
-            def _extract_json_obj(text: str) -> dict[str, Any]:
+            use_vlm_func = self.role_llm_funcs.get("vlm")
+            use_extract_func = self.role_llm_funcs.get("extract")
+            vlm_cache_identity = get_llm_cache_identity(global_config, role="vlm")
+            extract_cache_identity = get_llm_cache_identity(
+                global_config, role="extract"
+            )
+
+            _IMAGE_TYPE_VALUES = set(IMAGE_TYPE_ENUM)
+            _VLM_RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+            def _json_extract(text: str) -> dict[str, Any]:
                 if not text:
                     return {}
+                candidate = text.strip()
+                # Tolerate ```json …``` fenced output and stray prose around the
+                # JSON object; mirror _process_json_extraction_result's recovery.
+                fence_match = re.match(
+                    r"^```(?:json)?\s*\n(.*?)\n```$",
+                    candidate,
+                    re.DOTALL | re.IGNORECASE,
+                )
+                if fence_match:
+                    candidate = fence_match.group(1).strip()
                 try:
-                    obj = json.loads(text)
+                    obj = json.loads(candidate)
                     if isinstance(obj, dict):
                         return obj
                 except Exception:
                     pass
-                m = re.search(r"\{[\s\S]*\}", text)
+                m = re.search(r"\{[\s\S]*\}", candidate)
                 if m:
                     try:
                         obj = json.loads(m.group(0))
@@ -3306,190 +3337,142 @@ class _PipelineMixin:
                         pass
                 return {}
 
-            # Raster image formats that vision-capable providers accept.
-            # WMF/EMF/SVG and other vector formats are rejected with a
-            # warning: the parser does not transcode them and feeding them to
-            # OpenAI/Anthropic/Bedrock/Gemini would only fail mid-call.
-            _VLM_RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-
-            async def _analyze_item(
-                root_key: str,
-                item_id: str,
-                item: dict[str, Any],
-                sidecar_dir: Path,
-            ) -> dict[str, Any] | None:
-                def _conservative_result(reason: str) -> dict[str, Any]:
-                    base_name = item.get("caption") or item_id
-                    modality = (
-                        "image"
-                        if root_key == "drawings"
-                        else "table"
-                        if root_key == "tables"
-                        else "equation"
+            def _normalize_text(value: Any) -> str:
+                if value is None:
+                    return ""
+                if isinstance(value, str):
+                    return value.strip()
+                if isinstance(value, (list, tuple)):
+                    return "\n".join(
+                        str(v).strip() for v in value if str(v).strip()
                     )
-                    conservative = {
-                        "name": base_name,
-                        "summary": (
-                            f"Conservative summary only: unavailable or weak visual evidence for {modality}."
-                        ),
-                        "detail_description": (
-                            f"No grounded visual evidence. Reason: {reason}. "
-                            "Only metadata-level description is retained."
-                        ),
-                        "grounded": False,
-                        "grounding_reason": reason,
-                    }
-                    if root_key == "drawings":
-                        conservative["image_type"] = ""
-                    return conservative
+                return str(value).strip()
 
-                def _build_image_payload(
-                    path_str: str | None,
-                ) -> dict[str, Any] | None:
-                    if not path_str:
-                        return None
-                    # Sidecar entries write parser-relative paths (see
-                    # `lightrag/native_parser/docx/lightrag_adapter.py`).
-                    # Resolve them against the sidecar's own directory before
-                    # falling back to a plain cwd-relative interpretation.
-                    candidate = Path(path_str)
-                    if not candidate.is_absolute():
-                        sidecar_candidate = sidecar_dir / path_str
-                        if sidecar_candidate.exists() and sidecar_candidate.is_file():
-                            candidate = sidecar_candidate
-                    if not candidate.exists() or not candidate.is_file():
-                        return None
-                    ext = candidate.suffix.lower()
-                    if ext not in _VLM_RASTER_EXTS:
-                        logger.warning(
-                            f"[analyze_multimodal] unsupported image format "
-                            f"'{ext}' for {root_key}/{item_id}; vision providers "
-                            "only accept raster formats (png/jpeg/gif/webp). "
-                            "Skipping image input."
-                        )
-                        return None
-                    try:
-                        raw = candidate.read_bytes()
-                    except Exception:
-                        return None
-                    if not raw:
-                        return None
-                    if len(raw) > max_image_bytes:
-                        logger.warning(
-                            f"[analyze_multimodal] image too large ({len(raw)} bytes) for {root_key}/{item_id}, skip image input"
-                        )
-                        return None
-                    mime, _ = mimetypes.guess_type(str(candidate))
-                    if not mime:
-                        mime = "image/png"
-                    modality = (
-                        "image"
-                        if root_key == "drawings"
-                        else "table"
-                        if root_key == "tables"
-                        else "equation"
+            def _captions_value(item_obj: dict[str, Any]) -> str:
+                return _normalize_text(item_obj.get("caption")) or "n/a"
+
+            def _footnotes_value(item_obj: dict[str, Any]) -> str:
+                raw = item_obj.get("footnotes")
+                if isinstance(raw, (list, tuple)):
+                    joined = "; ".join(
+                        str(v).strip() for v in raw if str(v).strip()
                     )
-                    return {
-                        "base64": base64.b64encode(raw).decode("ascii"),
-                        "mime_type": mime,
-                        "source_id": item_id,
-                        "source_file": str(candidate),
-                        "modality": modality,
-                        "doc_id": doc_id,
-                    }
+                    return joined or "n/a"
+                text = _normalize_text(raw)
+                return text or "n/a"
 
-                def _normalize_text(value: Any) -> str:
-                    if value is None:
-                        return ""
-                    if isinstance(value, str):
-                        return value.strip()
-                    if isinstance(value, (list, tuple)):
-                        return "\n".join(
-                            str(v).strip() for v in value if str(v).strip()
-                        )
-                    return str(value).strip()
+            def _surrounding_value(item_obj: dict[str, Any], key: str) -> str:
+                surrounding = item_obj.get("surrounding") or {}
+                if not isinstance(surrounding, dict):
+                    return "n/a"
+                value = _normalize_text(surrounding.get(key))
+                return value or "n/a"
 
-                def _normalize_grounded_value(value: Any) -> Any:
-                    if isinstance(value, bool) or value is None:
-                        return value
-                    if isinstance(value, str):
-                        lowered = value.strip().lower()
-                        if lowered == "true":
-                            return True
-                        if lowered == "false":
-                            return False
-                    if isinstance(value, (int, float)) and value in {0, 1}:
-                        return bool(value)
-                    return value
-
-                default_result = {
-                    "name": item.get("caption") or item_id,
-                    "summary": "",
-                    "detail_description": "",
-                }
-                if root_key == "drawings":
-                    default_result["image_type"] = ""
-                schema_hint = (
-                    '{"name":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
-                    if root_key != "drawings"
-                    else '{"name":"string","image_type":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
-                )
-                if not vlm_process_enable:
-                    # Do NOT write back a conservative result here: persisting
-                    # llm_analyze_result would let the idempotency guard in the
-                    # outer dispatch skip this item forever, even after the
-                    # operator enables VLM and re-runs analysis.
-                    logger.warning(
-                        f"[analyze_multimodal] VLM_PROCESS_ENABLE=false, skipping "
-                        f"{root_key}/{item_id} for d-id: {doc_id}"
-                    )
+            def _resolve_image_path(
+                path_str: str | None, sidecar_dir: Path
+            ) -> Path | None:
+                if not path_str:
                     return None
+                candidate = Path(path_str)
+                if not candidate.is_absolute():
+                    sidecar_candidate = sidecar_dir / path_str
+                    if sidecar_candidate.exists() and sidecar_candidate.is_file():
+                        candidate = sidecar_candidate
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+                return None
 
-                img_payload = _build_image_payload(
-                    item.get("path") or item.get("img_path") or item.get("image_path")
-                )
-                has_visual_evidence = img_payload is not None
-                caption_text = _normalize_text(item.get("caption"))
-                footnotes_text = _normalize_text(item.get("footnotes"))
-                content_text = _normalize_text(item.get("content"))
-                has_textual_evidence = root_key in {
-                    "tables",
-                    "equations",
-                } and any((caption_text, footnotes_text, content_text))
-                evidence_mode = (
-                    "visual"
-                    if has_visual_evidence
-                    else "textual"
-                    if has_textual_evidence
-                    else "none"
-                )
-                prompt = (
-                    "You are a multimodal analyzer.\n"
-                    "Return ONLY one JSON object. No markdown. No explanation.\n"
-                    "Grounding policy:\n"
-                    "- Do NOT invent unseen objects, domains, diseases, or scenarios.\n"
-                    "- Prefer the strongest available evidence source.\n"
-                    "- For tables/equations without image evidence, analyze from content/caption/footnotes first.\n"
-                    "- In textual-only mode, do not invent appearance/layout details that are not supported by the provided content.\n"
-                    "- If evidence is missing/weak/uncertain, set grounded=false and keep summary/detail conservative.\n"
-                    "- If grounded=false, avoid rich semantic claims; keep to metadata-level statements only.\n"
-                    f"JSON schema example: {schema_hint}\n"
-                    f"modality={root_key}\n"
-                    f"item_id={item_id}\n"
-                    f"caption={caption_text}\n"
-                    f"footnotes={footnotes_text}\n"
-                    f"content={content_text}\n"
-                    f"has_visual_evidence={has_visual_evidence}\n"
-                    f"has_textual_evidence={has_textual_evidence}\n"
-                    f"evidence_mode={evidence_mode}\n"
-                    "Constraints:\n"
-                    "- summary: <= 120 words\n"
-                    "- detail_description: <= 500 words\n"
-                )
+            def _failure_result(message: str) -> dict[str, Any]:
+                return {
+                    "analyze_time": int(time.time()),
+                    "status": "failure",
+                    "message": message,
+                }
 
-                image_inputs_arg = [img_payload] if img_payload else None
-                normalized_images = (
-                    normalize_image_inputs(image_inputs_arg) if image_inputs_arg else []
+            def _skipped_result(message: str) -> dict[str, Any]:
+                return {
+                    "analyze_time": int(time.time()),
+                    "status": "skipped",
+                    "message": message,
+                }
+
+            async def _analyze_drawing(
+                item_id: str, item: dict[str, Any], sidecar_dir: Path
+            ) -> tuple[dict[str, Any], str | None]:
+                path_str = (
+                    item.get("path")
+                    or item.get("img_path")
+                    or item.get("image_path")
+                )
+                candidate = _resolve_image_path(path_str, sidecar_dir)
+                if candidate is None:
+                    return (
+                        _skipped_result(
+                            f"image file not found: {path_str or 'n/a'}"
+                        ),
+                        None,
+                    )
+                ext = candidate.suffix.lower()
+                if ext not in _VLM_RASTER_EXTS:
+                    return (
+                        _skipped_result(f"unsupported image format: {ext}"),
+                        None,
+                    )
+                dims = read_image_dimensions(candidate)
+                if dims is not None and (
+                    dims[0] < min_image_pixel or dims[1] < min_image_pixel
+                ):
+                    return (
+                        _skipped_result(
+                            f"image width or height is smaller than "
+                            f"{min_image_pixel}px"
+                        ),
+                        None,
+                    )
+                if not vlm_process_enable or use_vlm_func is None:
+                    raise MultimodalAnalysisError(
+                        f"drawings/{item_id}: VLM analysis required but "
+                        "VLM role is not available "
+                        "(VLM_PROCESS_ENABLE or vlm role config)"
+                    )
+                try:
+                    raw = candidate.read_bytes()
+                except OSError as exc:
+                    raise MultimodalAnalysisError(
+                        f"drawings/{item_id}: cannot read image {candidate}: {exc}"
+                    ) from exc
+                if not raw:
+                    raise MultimodalAnalysisError(
+                        f"drawings/{item_id}: image file is empty"
+                    )
+                if len(raw) > max_image_bytes:
+                    return (
+                        _skipped_result(
+                            f"image too large: {len(raw)} bytes "
+                            f"(limit {max_image_bytes})"
+                        ),
+                        None,
+                    )
+                mime, _ = mimetypes.guess_type(str(candidate))
+                mime = mime or "image/png"
+                img_payload = {
+                    "base64": base64.b64encode(raw).decode("ascii"),
+                    "mime_type": mime,
+                    "source_id": item_id,
+                    "source_file": str(candidate),
+                    "modality": "image",
+                    "doc_id": doc_id,
+                }
+                normalized_images = normalize_image_inputs([img_payload])
+                prompt = MULTIMODAL_PROMPTS["image_analysis"].format(
+                    language=language,
+                    content="",
+                    captions=_captions_value(item),
+                    footnotes=_footnotes_value(item),
+                    leading=_surrounding_value(item, "leading"),
+                    trailing=_surrounding_value(item, "trailing"),
+                    item_id=item_id,
+                    file_path=file_path,
                 )
                 args_hash = compute_args_hash(
                     prompt,
@@ -3497,8 +3480,12 @@ class _PipelineMixin:
                     "",
                     serialize_llm_cache_identity(vlm_cache_identity),
                     _serialize_cache_variant({"type": "json_object"}),
-                    _serialize_cache_variant(image_cache_metadata(normalized_images)),
+                    _serialize_cache_variant(
+                        image_cache_metadata(normalized_images)
+                    ),
+                    "drawing",
                 )
+                cache_id = generate_cache_key("default", "analysis", args_hash)
                 cached = await handle_cache(
                     self.llm_response_cache,
                     args_hash,
@@ -3506,50 +3493,48 @@ class _PipelineMixin:
                     mode="default",
                     cache_type="analysis",
                 )
-                fresh_response = False
                 if cached is not None:
                     result_text = cached[0]
+                    fresh = False
                 else:
-                    async with sem:
-                        try:
-                            result_text = await use_vlm_func(
-                                prompt,
-                                stream=False,
-                                image_inputs=image_inputs_arg,
-                            )
-                        except Exception as msg_err:
-                            logger.warning(
-                                f"[analyze_multimodal] visual call failed for "
-                                f"{root_key}/{item_id}: {msg_err}"
-                            )
-                            return _conservative_result("visual_call_failed")
-                    fresh_response = True
-
-                parsed = _extract_json_obj(str(result_text))
-                if not (
-                    parsed
-                    and isinstance(parsed.get("name"), str)
-                    and isinstance(parsed.get("summary"), str)
-                    and isinstance(parsed.get("detail_description"), str)
-                ):
-                    # Do NOT cache invalid responses: caching here would lock
-                    # the item into invalid_json_schema on every future run
-                    # until the cache is manually cleared.
-                    logger.warning(
-                        f"[analyze_multimodal] invalid VLM JSON for "
-                        f"{root_key}/{item_id}, skipping"
+                    try:
+                        result_text = await use_vlm_func(
+                            prompt,
+                            stream=False,
+                            image_inputs=[img_payload],
+                            _priority=DEFAULT_MM_ANALYSIS_PRIORITY,
+                        )
+                    except Exception as exc:
+                        raise MultimodalAnalysisError(
+                            f"drawings/{item_id}: VLM call failed: {exc}"
+                        ) from exc
+                    fresh = True
+                parsed = _json_extract(str(result_text))
+                name = parsed.get("name")
+                type_value = parsed.get("type")
+                description = parsed.get("description")
+                if not isinstance(name, str) or not name.strip():
+                    raise MultimodalAnalysisError(
+                        f"drawings/{item_id}: missing or invalid field 'name'"
                     )
-                    if evidence_mode == "none":
-                        return _conservative_result("missing_image")
-                    return _conservative_result("invalid_json_schema")
-
-                if fresh_response:
+                if not isinstance(description, str) or not description.strip():
+                    raise MultimodalAnalysisError(
+                        f"drawings/{item_id}: missing or invalid field 'description'"
+                    )
+                if not isinstance(type_value, str) or not type_value.strip():
+                    raise MultimodalAnalysisError(
+                        f"drawings/{item_id}: missing or invalid field 'type'"
+                    )
+                if type_value not in _IMAGE_TYPE_VALUES:
+                    type_value = IMAGE_TYPE_FALLBACK
+                if fresh:
                     audit_blob = image_audit_metadata(normalized_images)
-                    original_prompt = (
-                        prompt
-                        + f"\n<vlm_images>{json.dumps(audit_blob, ensure_ascii=False)}</vlm_images>"
+                    original_prompt = prompt + (
+                        f"\n<vlm_images>"
+                        f"{json.dumps(audit_blob, ensure_ascii=False)}"
+                        "</vlm_images>"
                         if audit_blob
-                        else prompt
+                        else ""
                     )
                     await save_to_cache(
                         self.llm_response_cache,
@@ -3562,131 +3547,242 @@ class _PipelineMixin:
                             chunk_id=None,
                         ),
                     )
-
-                if "grounded" in parsed:
-                    parsed["grounded"] = _normalize_grounded_value(
-                        parsed.get("grounded")
-                    )
-                default_result.update(
+                return (
                     {
-                        k: v
-                        for k, v in parsed.items()
-                        if k
-                        in {
-                            "name",
-                            "summary",
-                            "detail_description",
-                            "image_type",
-                            "grounded",
-                            "grounding_reason",
-                        }
-                    }
+                        "name": name.strip(),
+                        "type": type_value,
+                        "description": description.strip(),
+                        "analyze_time": int(time.time()),
+                        "status": "success",
+                        "message": "",
+                    },
+                    cache_id,
                 )
-                if evidence_mode == "none":
-                    return _conservative_result("missing_image")
-                if parsed.get("grounded") is False:
-                    reason = str(
-                        parsed.get("grounding_reason")
-                        or (
-                            "weak_visual_evidence"
-                            if evidence_mode == "visual"
-                            else "weak_textual_evidence"
-                        )
-                    )
-                    return _conservative_result(reason)
-                if "grounded" not in default_result:
-                    default_result["grounded"] = True
-                if not default_result.get("grounding_reason"):
-                    default_result["grounding_reason"] = (
-                        "visual_evidence"
-                        if evidence_mode == "visual"
-                        else "textual_content_only"
-                    )
-                return default_result
 
-            # Write back llm_analyze_result to multimodal sidecar files.
+            async def _analyze_text_modality(
+                kind: str, item_id: str, item: dict[str, Any]
+            ) -> tuple[dict[str, Any], str | None]:
+                if use_extract_func is None:
+                    raise MultimodalAnalysisError(
+                        f"{kind}/{item_id}: EXTRACT role is required but not configured"
+                    )
+                content_text = _normalize_text(item.get("content"))
+                if not content_text:
+                    raise MultimodalAnalysisError(
+                        f"{kind}/{item_id}: missing {kind} content"
+                    )
+                template = MULTIMODAL_PROMPTS[f"{kind}_analysis"]
+                prompt = template.format(
+                    language=language,
+                    content=content_text,
+                    captions=_captions_value(item),
+                    footnotes=_footnotes_value(item),
+                    leading=_surrounding_value(item, "leading"),
+                    trailing=_surrounding_value(item, "trailing"),
+                    item_id=item_id,
+                    file_path=file_path,
+                )
+                args_hash = compute_args_hash(
+                    prompt,
+                    "",
+                    "",
+                    serialize_llm_cache_identity(extract_cache_identity),
+                    _serialize_cache_variant({"type": "json_object"}),
+                    _serialize_cache_variant([]),
+                    kind,
+                )
+                cache_id = generate_cache_key("default", "analysis", args_hash)
+                cached = await handle_cache(
+                    self.llm_response_cache,
+                    args_hash,
+                    prompt,
+                    mode="default",
+                    cache_type="analysis",
+                )
+                if cached is not None:
+                    result_text = cached[0]
+                    fresh = False
+                else:
+                    try:
+                        result_text = await use_extract_func(
+                            prompt,
+                            stream=False,
+                            response_format={"type": "json_object"},
+                            _priority=DEFAULT_MM_ANALYSIS_PRIORITY,
+                        )
+                    except Exception as exc:
+                        raise MultimodalAnalysisError(
+                            f"{kind}/{item_id}: EXTRACT call failed: {exc}"
+                        ) from exc
+                    fresh = True
+                parsed = _json_extract(str(result_text))
+                name = parsed.get("name")
+                description = parsed.get("description")
+                if not isinstance(name, str) or not name.strip():
+                    raise MultimodalAnalysisError(
+                        f"{kind}/{item_id}: missing or invalid field 'name'"
+                    )
+                if not isinstance(description, str) or not description.strip():
+                    raise MultimodalAnalysisError(
+                        f"{kind}/{item_id}: missing or invalid field 'description'"
+                    )
+                result_obj: dict[str, Any] = {
+                    "name": name.strip(),
+                    "description": description.strip(),
+                    "analyze_time": int(time.time()),
+                    "status": "success",
+                    "message": "",
+                }
+                if kind == "equation":
+                    equation_value = parsed.get("equation")
+                    if (
+                        not isinstance(equation_value, str)
+                        or not equation_value.strip()
+                    ):
+                        raise MultimodalAnalysisError(
+                            f"equation/{item_id}: missing or invalid field 'equation'"
+                        )
+                    result_obj["equation"] = equation_value.strip()
+                if fresh:
+                    await save_to_cache(
+                        self.llm_response_cache,
+                        CacheData(
+                            args_hash=args_hash,
+                            content=str(result_text),
+                            prompt=prompt,
+                            mode="default",
+                            cache_type="analysis",
+                            chunk_id=None,
+                        ),
+                    )
+                return (result_obj, cache_id)
+
+            def _attach_cache_id(item_obj: dict[str, Any], cache_id: str | None) -> None:
+                if not cache_id:
+                    return
+                existing = item_obj.get("llm_cache_list")
+                if not isinstance(existing, list):
+                    existing = []
+                if cache_id not in existing:
+                    existing.append(cache_id)
+                item_obj["llm_cache_list"] = existing
+
             base_name = str(block_file)
             if base_name.endswith(".blocks.jsonl"):
                 base_name = base_name[: -len(".blocks.jsonl")]
             sidecars = [
-                (Path(base_name + ".drawings.json"), "drawings", process_opts.images),
-                (Path(base_name + ".tables.json"), "tables", process_opts.tables),
+                (
+                    Path(base_name + ".drawings.json"),
+                    "drawings",
+                    "drawing",
+                    process_opts.images,
+                ),
+                (
+                    Path(base_name + ".tables.json"),
+                    "tables",
+                    "table",
+                    process_opts.tables,
+                ),
                 (
                     Path(base_name + ".equations.json"),
                     "equations",
+                    "equation",
                     process_opts.equations,
                 ),
             ]
-            for sidecar_path, root_key, enabled in sidecars:
-                if not enabled:
-                    continue
-                if not sidecar_path.exists():
+            for sidecar_path, root_key, kind, enabled in sidecars:
+                if not enabled or not sidecar_path.exists():
                     continue
                 try:
                     payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-                    items = payload.get(root_key, {})
-                    if isinstance(items, dict):
-                        analyze_tasks = []
-                        valid_keys = []
-                        skipped_existing = 0
-                        for item_id, item in items.items():
-                            if not isinstance(item, dict):
-                                continue
-                            # Idempotency: skip items that already have a VLM
-                            # result from a prior pass.  A user re-enabling
-                            # additional modalities should not re-spend tokens
-                            # on items that were already analyzed.
-                            if isinstance(item.get("llm_analyze_result"), dict):
-                                skipped_existing += 1
-                                continue
-                            valid_keys.append(item_id)
-                            analyze_tasks.append(
-                                _analyze_item(
-                                    root_key,
-                                    item_id,
-                                    item,
-                                    sidecar_dir=sidecar_path.parent,
-                                )
+                except Exception as exc:
+                    raise MultimodalAnalysisError(
+                        f"failed to read sidecar {sidecar_path}: {exc}"
+                    ) from exc
+                items = payload.get(root_key, {})
+                if not isinstance(items, dict):
+                    continue
+
+                valid_keys: list[str] = []
+                analyze_tasks: list[Any] = []
+                skipped_existing = 0
+                for item_id, item in items.items():
+                    if not isinstance(item, dict):
+                        continue
+                    existing = item.get("llm_analyze_result")
+                    if isinstance(existing, dict):
+                        existing_status = existing.get("status")
+                        if existing_status in ("success", "skipped"):
+                            skipped_existing += 1
+                            continue
+                        if existing_status == "failure":
+                            raise MultimodalAnalysisError(
+                                f"{root_key}/{item_id}: prior llm_analyze_result "
+                                f"is failure ({existing.get('message') or 'no message'})"
                             )
-                        if skipped_existing:
-                            logger.debug(
-                                f"[analyze_multimodal] {root_key}: "
-                                f"{skipped_existing} item(s) already have "
-                                f"llm_analyze_result, skipping; "
-                                f"{len(analyze_tasks)} item(s) to analyze"
-                            )
-                        analyzed_results = await asyncio.gather(
-                            *analyze_tasks, return_exceptions=True
+                        # Unknown legacy status falls through to re-analysis.
+                    valid_keys.append(item_id)
+                    if kind == "drawing":
+                        analyze_tasks.append(
+                            _analyze_drawing(item_id, item, sidecar_path.parent)
                         )
-                        for idx, item_id in enumerate(valid_keys):
-                            item = items.get(item_id)
-                            if not isinstance(item, dict):
-                                continue
-                            result_obj = analyzed_results[idx]
-                            if isinstance(result_obj, Exception):
-                                logger.warning(
-                                    f"[analyze_multimodal] item analyze failed: {root_key}/{item_id}: {result_obj}"
-                                )
-                                continue
-                            if result_obj is None:
-                                # Skip signal (e.g. VLM_PROCESS_ENABLE=false):
-                                # do not persist anything so re-runs after the
-                                # operator enables VLM will re-process the item.
-                                continue
-                            item["llm_analyze_result"] = result_obj
+                    else:
+                        analyze_tasks.append(
+                            _analyze_text_modality(kind, item_id, item)
+                        )
+                if skipped_existing:
+                    logger.debug(
+                        f"[analyze_multimodal] {root_key}: "
+                        f"{skipped_existing} item(s) already analyzed, skipping; "
+                        f"{len(analyze_tasks)} item(s) to analyze"
+                    )
+
+                analyzed = await asyncio.gather(
+                    *analyze_tasks, return_exceptions=True
+                )
+
+                failure_to_raise: MultimodalAnalysisError | None = None
+                for idx, item_id in enumerate(valid_keys):
+                    item = items.get(item_id)
+                    if not isinstance(item, dict):
+                        continue
+                    outcome = analyzed[idx]
+                    if isinstance(outcome, MultimodalAnalysisError):
+                        item["llm_analyze_result"] = _failure_result(str(outcome))
+                        if failure_to_raise is None:
+                            failure_to_raise = outcome
+                        continue
+                    if isinstance(outcome, Exception):
+                        item["llm_analyze_result"] = _failure_result(
+                            f"unexpected error: {outcome}"
+                        )
+                        if failure_to_raise is None:
+                            failure_to_raise = MultimodalAnalysisError(
+                                f"{root_key}/{item_id}: unexpected error: {outcome}"
+                            )
+                        continue
+                    result_obj, cache_id = outcome
+                    item["llm_analyze_result"] = result_obj
+                    _attach_cache_id(item, cache_id)
+                try:
                     sidecar_path.write_text(
                         json.dumps(payload, ensure_ascii=False, indent=2),
                         encoding="utf-8",
                     )
-                except Exception as sidecar_error:
+                except OSError as exc:
                     logger.warning(
-                        f"[analyze_multimodal] failed to write sidecar {sidecar_path}: {sidecar_error}"
+                        f"[analyze_multimodal] failed to write sidecar "
+                        f"{sidecar_path}: {exc}"
                     )
+                if failure_to_raise is not None:
+                    raise failure_to_raise
 
             parsed_data["multimodal_processed"] = True
             logger.info(
                 f"[analyze_multimodal] completed for d-id: {doc_id}, file: {file_path}"
             )
+        except MultimodalAnalysisError:
+            raise
         except Exception as e:
             logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
         return parsed_data
@@ -3758,11 +3854,35 @@ class _PipelineMixin:
         file_path: str,
         blocks_path: str,
         base_order_index: int,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Build multimodal chunks and modality descriptors from sidecars."""
+    ) -> list[dict[str, Any]]:
+        """Build multimodal chunks from sidecars carrying analysis results.
+
+        Only items whose ``llm_analyze_result.status == "success"`` produce
+        chunks.  ``"skipped"`` items are silently ignored; ``"failure"``
+        items raise :class:`MultimodalAnalysisError` so the document is
+        marked failed (a failure should already have aborted the analyze
+        phase — this is a defensive recheck).
+
+        Each chunk follows the new schema: nested ``heading`` and
+        ``sidecar`` dicts, no flat ``parent_headings`` / ``level`` /
+        ``content_type`` fields.  ``llm_cache_list`` is merged from the
+        underlying sidecar item so document deletion can clean up the
+        ``cache_type="analysis"`` entries it created.
+
+        Raises:
+            MultimodalAnalysisError: when an item carries ``status="failure"``,
+                or when the multimodal chunk cannot be fit under the
+                extraction token budget even after truncating description
+                to :data:`DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS`.
+        """
+        from lightrag.constants import (
+            DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
+            DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS,
+        )
+
         block_file = Path(blocks_path)
         if not block_file.exists():
-            return [], []
+            return []
 
         base = str(block_file)
         if base.endswith(".blocks.jsonl"):
@@ -3775,10 +3895,9 @@ class _PipelineMixin:
         ]
 
         mm_chunks: list[dict[str, Any]] = []
-        mm_specs: list[dict[str, Any]] = []
         order = base_order_index
 
-        def _norm_list(v: Any) -> list[str]:
+        def _norm_str_list(v: Any) -> list[str]:
             if v is None:
                 return []
             if isinstance(v, list):
@@ -3786,10 +3905,88 @@ class _PipelineMixin:
             s = str(v).strip()
             return [s] if s else []
 
-        def _mm_entity_name(kind: str, raw_payload: dict[str, Any]) -> str:
-            payload = json.dumps(raw_payload, ensure_ascii=False, sort_keys=True)
-            digest = hashlib.md5(payload.encode("utf-8")).hexdigest()
-            return f"{kind}-{digest}"
+        def _norm_parent_headings(value: Any) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            return [str(p).strip() for p in value if str(p or "").strip()]
+
+        def _build_heading_dict(item: dict[str, Any]) -> dict[str, Any] | None:
+            heading_raw = item.get("heading")
+            if isinstance(heading_raw, dict):
+                heading_text = str(heading_raw.get("heading") or "").strip()
+                parents = _norm_parent_headings(heading_raw.get("parent_headings"))
+                try:
+                    level = int(heading_raw.get("level") or 0)
+                except (TypeError, ValueError):
+                    level = 0
+            else:
+                heading_text = str(heading_raw or "").strip()
+                parents = _norm_parent_headings(item.get("parent_headings"))
+                try:
+                    level = int(item.get("level") or 0)
+                except (TypeError, ValueError):
+                    level = 0
+            if not heading_text and not parents and level == 0:
+                return None
+            return {
+                "level": level,
+                "heading": heading_text,
+                "parent_headings": parents,
+            }
+
+        def _render(
+            kind: str,
+            name: str,
+            description: str,
+            footnotes_joined: str,
+            equation_body: str,
+        ) -> str:
+            sections: list[str] = []
+            if kind == "drawing":
+                sections.append(f"- Image Name:\n{name}")
+                # type field comes from caller via name interpolation: omit
+                # when blank because the prompt enforces it as required so a
+                # missing type should already have raised.
+                # The image type was inserted at call-site by the caller via a
+                # secondary call to this helper if needed.
+                if description:
+                    sections.append(f"- Image Description:\n{description}")
+                if footnotes_joined:
+                    sections.append(f"- Image Footnotes:\n{footnotes_joined}")
+            elif kind == "table":
+                sections.append(f"- Table Name:\n{name}")
+                if description:
+                    sections.append(f"- Table Description:\n{description}")
+                if footnotes_joined:
+                    sections.append(f"- Table Footnotes:\n{footnotes_joined}")
+            else:
+                sections.append(f"- Equation Name:\n{name}")
+                if equation_body:
+                    sections.append(f"- Equation Body:\n{equation_body}")
+                if description:
+                    sections.append(f"- Equation Description:\n{description}")
+                if footnotes_joined:
+                    sections.append(f"- Equation Footnotes:\n{footnotes_joined}")
+            return "\n\n".join(sections).strip()
+
+        def _render_image(
+            name: str,
+            image_type: str,
+            description: str,
+            footnotes_joined: str,
+        ) -> str:
+            sections = [
+                f"- Image Name:\n{name}",
+                f"- Image Type:\n{image_type}",
+            ]
+            if description:
+                sections.append(f"- Image Description:\n{description}")
+            if footnotes_joined:
+                sections.append(f"- Image Footnotes:\n{footnotes_joined}")
+            return "\n\n".join(sections).strip()
+
+        max_tokens = DEFAULT_MAX_EXTRACT_INPUT_TOKENS
+        min_desc_tokens = DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS
 
         for root_key, sidecar_path, kind in sidecar_defs:
             if not sidecar_path.exists():
@@ -3806,124 +4003,109 @@ class _PipelineMixin:
                 if not isinstance(item, dict):
                     continue
 
-                # mm_chunks are VLM-output containers: without llm_analyze_result
-                # there is nothing meaningful to index. analyze_multimodal only
-                # writes this field for modalities opted into via i/t/e in
-                # process_options, so unopted modalities (and VLM failures)
-                # naturally produce no chunks here.
                 analysis = item.get("llm_analyze_result")
-                if not isinstance(analysis, dict) or not analysis:
+                if not isinstance(analysis, dict):
                     continue
-                name = str(analysis.get("name") or item.get("caption") or item_id)
-                summary = str(analysis.get("summary") or "").strip()
-                detail = str(analysis.get("detail_description") or "").strip()
-                heading = str(item.get("heading") or "").strip()
-                captions = _norm_list(item.get("caption"))
-                footnotes = _norm_list(item.get("footnotes"))
-                image_type = str(analysis.get("image_type") or "").strip()
-
-                raw_for_hash: dict[str, Any] = {
-                    "kind": kind,
-                    "name": name,
-                    "summary": summary,
-                    "detail": detail,
-                    "content": item.get("content"),
-                    "path": item.get("path"),
-                    "src": item.get("src"),
-                    "caption": item.get("caption"),
-                }
-                entity_name = _mm_entity_name(kind, raw_for_hash)
-                chunk_id = f"{doc_id}-mm-{kind}-{local_idx:03d}"
-
-                if kind == "drawing":
-                    lines = [
-                        f"Image_Name: {name}",
-                    ]
-                    if image_type:
-                        lines.append(f"Image_Type: {image_type}")
-                    lines.extend(
-                        [
-                            "Image_Location:",
-                            f"  - Document_Name: {Path(file_path).name}",
-                        ]
+                status = analysis.get("status")
+                if status == "skipped":
+                    continue
+                if status == "failure":
+                    raise MultimodalAnalysisError(
+                        f"{root_key}/{item_id}: llm_analyze_result.status='failure' "
+                        f"({analysis.get('message') or 'no message'})"
                     )
-                    if heading:
-                        lines.append(f"  - Session_Heading: {heading}")
-                    if captions:
-                        lines.append("Image_Captions:")
-                        lines.extend([f"  - {x}" for x in captions])
-                    if footnotes:
-                        lines.append("Image_Footnotes:")
-                        lines.extend([f"  - {x}" for x in footnotes])
-                    if summary:
-                        lines.append(f'Image_Summary: "{summary}"')
-                    if detail:
-                        lines.append(f'Image_Detail_Description: "{detail}"')
-                elif kind == "table":
-                    lines = [
-                        f"Table_Name: {name}",
-                        "Table_Location:",
-                        f"  - Document_Name: {Path(file_path).name}",
-                    ]
-                    if heading:
-                        lines.append(f"  - Session_Heading: {heading}")
-                    if captions:
-                        lines.append("Table_Captions:")
-                        lines.extend([f"  - {x}" for x in captions])
-                    if footnotes:
-                        lines.append("Table_Footnotes:")
-                        lines.extend([f"  - {x}" for x in footnotes])
-                    if summary:
-                        lines.append(f'Table_Summary: "{summary}"')
-                    if detail:
-                        lines.append(f'Table_Detail_Description: "{detail}"')
-                else:
-                    lines = [
-                        f"Equation_Name: {name}",
-                        "Equation_Location:",
-                        f"  - Document_Name: {Path(file_path).name}",
-                    ]
-                    if heading:
-                        lines.append(f"  - Session_Heading: {heading}")
-                    if captions:
-                        lines.append("Equation_Captions:")
-                        lines.extend([f"  - {x}" for x in captions])
-                    if footnotes:
-                        lines.append("Equation_Footnotes:")
-                        lines.extend([f"  - {x}" for x in footnotes])
-                    if summary:
-                        lines.append(f'Equation_Summary: "{summary}"')
-                    if detail:
-                        lines.append(f'Equation_Detail_Description: "{detail}"')
+                if status != "success":
+                    # Treat unknown / legacy status as missing — no chunk.
+                    continue
 
-                chunk_content = "\n".join(lines).strip()
+                name = str(analysis.get("name") or "").strip()
+                description = str(analysis.get("description") or "").strip()
+                equation_body = str(analysis.get("equation") or "").strip()
+                image_type = str(analysis.get("type") or "").strip()
+                if not name:
+                    raise MultimodalAnalysisError(
+                        f"{root_key}/{item_id}: success result missing 'name'"
+                    )
+                if not description:
+                    raise MultimodalAnalysisError(
+                        f"{root_key}/{item_id}: success result missing 'description'"
+                    )
+                if kind == "drawing" and not image_type:
+                    raise MultimodalAnalysisError(
+                        f"drawings/{item_id}: success result missing 'type'"
+                    )
+                if kind == "equation" and not equation_body:
+                    raise MultimodalAnalysisError(
+                        f"equations/{item_id}: success result missing 'equation'"
+                    )
+
+                footnotes_list = _norm_str_list(item.get("footnotes"))
+                footnotes_joined = "; ".join(footnotes_list)
+
+                def _compose(desc: str) -> str:
+                    if kind == "drawing":
+                        return _render_image(
+                            name=name,
+                            image_type=image_type,
+                            description=desc,
+                            footnotes_joined=footnotes_joined,
+                        )
+                    return _render(
+                        kind=kind,
+                        name=name,
+                        description=desc,
+                        footnotes_joined=footnotes_joined,
+                        equation_body=equation_body,
+                    )
+
+                chunk_content = _compose(description)
+                tokens = len(self.tokenizer.encode(chunk_content))
+                if tokens > max_tokens:
+                    # Truncate only the description, never name/type/equation.
+                    desc_tokens = self.tokenizer.encode(description)
+                    overflow = tokens - max_tokens
+                    keep = max(min_desc_tokens, len(desc_tokens) - overflow)
+                    while True:
+                        truncated_desc = self.tokenizer.decode(desc_tokens[:keep])
+                        chunk_content = _compose(truncated_desc)
+                        tokens = len(self.tokenizer.encode(chunk_content))
+                        if tokens <= max_tokens or keep <= min_desc_tokens:
+                            break
+                        keep = max(min_desc_tokens, keep - (tokens - max_tokens))
+                    if tokens > max_tokens:
+                        raise MultimodalAnalysisError(
+                            f"{root_key}/{item_id}: multimodal chunk exceeds "
+                            f"{max_tokens} tokens even after truncating description "
+                            f"to {min_desc_tokens} tokens"
+                        )
+
                 if not chunk_content:
                     continue
 
-                mm_chunks.append(
-                    {
-                        "chunk_id": chunk_id,
-                        "chunk_order_index": order,
-                        "content": chunk_content,
-                        "tokens": len(self.tokenizer.encode(chunk_content)),
-                        "content_type": kind,
-                        "heading": heading,
-                        "parent_headings": [],
-                        "level": 0,
-                    }
+                heading_dict = _build_heading_dict(item)
+                sidecar_block = {
+                    "type": kind,
+                    "id": str(item_id),
+                    "refs": [{"type": kind, "id": str(item_id)}],
+                }
+                cache_list = item.get("llm_cache_list")
+                cache_list = (
+                    [str(c) for c in cache_list if str(c).strip()]
+                    if isinstance(cache_list, list)
+                    else []
                 )
-                mm_specs.append(
-                    {
-                        "kind": kind,
-                        "chunk_id": chunk_id,
-                        "entity_name": entity_name,
-                        "entity_type": kind,
-                        "name": name,
-                        "caption_text": "; ".join(captions),
-                        "heading": heading,
-                        "summary": summary,
-                    }
-                )
+
+                chunk_dict: dict[str, Any] = {
+                    "chunk_id": f"{doc_id}-mm-{kind}-{local_idx:03d}",
+                    "chunk_order_index": order,
+                    "content": chunk_content,
+                    "tokens": tokens,
+                    "sidecar": sidecar_block,
+                    "llm_cache_list": cache_list,
+                }
+                if heading_dict is not None:
+                    chunk_dict["heading"] = heading_dict
+                mm_chunks.append(chunk_dict)
                 order += 1
 
-        return mm_chunks, mm_specs
+        return mm_chunks

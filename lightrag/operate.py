@@ -4,6 +4,7 @@ from pathlib import Path
 
 import asyncio
 import json
+import hashlib
 import re
 import warnings
 import json_repair
@@ -54,6 +55,7 @@ from lightrag.base import (
     QueryResult,
     QueryContextResult,
 )
+from lightrag.chunk_schema import strip_internal_multimodal_markup_for_extraction
 from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
@@ -3289,7 +3291,12 @@ async def extract_entities(
         nonlocal processed_chunks
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
-        content = chunk_dp["content"]
+        # Strip parser-internal markup (<cite refid>, <drawing id/path/src>,
+        # <equation id>) before building the extraction prompt. The stored
+        # chunk content is left intact so query-time citations still resolve.
+        content = strip_internal_multimodal_markup_for_extraction(
+            chunk_dp["content"]
+        )
         # Get file path from chunk data or use default
         file_path = chunk_dp.get("file_path", "unknown_source")
 
@@ -3426,6 +3433,85 @@ async def extract_entities(
                     # New edge from gleaning stage
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
+
+        # Inject multimodal entity + associations for drawing/table/equation
+        # chunks. Placed before update_chunk_cache_list so the per-chunk
+        # cache write still happens after; placed inside the chunk's
+        # concurrency slot (rather than the centralized post-pass that used
+        # to live in utils_pipeline.augment_chunk_results_with_mm_entities)
+        # so each multimodal chunk benefits from the chunk-level concurrency
+        # already enforced by extract_entities.
+        sidecar_block = chunk_dp.get("sidecar")
+        if isinstance(sidecar_block, dict):
+            sidecar_type = sidecar_block.get("type")
+            sidecar_id = sidecar_block.get("id")
+            if (
+                sidecar_type in {"drawing", "table", "equation"}
+                and isinstance(sidecar_id, str)
+                and sidecar_id
+            ):
+                full_doc_id = str(chunk_dp.get("full_doc_id") or "")
+                mm_entity_digest = hashlib.md5(
+                    f"{full_doc_id}:{sidecar_type}:{sidecar_id}".encode("utf-8")
+                ).hexdigest()
+                mm_entity_name = f"{sidecar_type}-{mm_entity_digest}"
+                now_ts = int(time.time())
+                mm_nodes_list = maybe_nodes.setdefault(mm_entity_name, [])
+                mm_nodes_list.append(
+                    {
+                        "entity_name": mm_entity_name,
+                        "entity_type": sidecar_type,
+                        # description == the full multimodal chunk content so
+                        # the extracted entity carries the same grounding
+                        # surface the prompt produced; analyze_multimodal's
+                        # description/name field is already inlined there.
+                        "description": chunk_dp.get("content", "") or "",
+                        "source_id": chunk_key,
+                        "file_path": file_path,
+                        "timestamp": now_ts,
+                    }
+                )
+                heading_block = chunk_dp.get("heading")
+                heading_label = "unknown"
+                if isinstance(heading_block, dict):
+                    heading_label = (
+                        str(heading_block.get("heading") or "").strip() or "unknown"
+                    )
+                # Friendly name for the relation description: parse the
+                # leading "- {Image|Table|Equation} Name:\n<name>" section
+                # from the chunk content; fall back to sidecar id.
+                mm_display_name = sidecar_id
+                content_for_name = chunk_dp.get("content", "") or ""
+                first_name_match = re.search(
+                    r"^- (?:Image|Table|Equation) Name:\n(.+)$",
+                    content_for_name,
+                    flags=re.MULTILINE,
+                )
+                if first_name_match:
+                    candidate = first_name_match.group(1).strip()
+                    if candidate:
+                        mm_display_name = candidate
+                for tgt in list(maybe_nodes.keys()):
+                    if tgt == mm_entity_name:
+                        continue
+                    edge_key = (mm_entity_name, tgt)
+                    edge_list = maybe_edges.setdefault(edge_key, [])
+                    edge_list.append(
+                        {
+                            "src_id": mm_entity_name,
+                            "tgt_id": tgt,
+                            "weight": 1.0,
+                            "description": (
+                                f"{tgt} is associated with {sidecar_type} "
+                                f"{mm_display_name} in section {heading_label} "
+                                f'of document "{file_path}"'
+                            ),
+                            "keywords": "associated with, contained in",
+                            "source_id": chunk_key,
+                            "file_path": file_path,
+                            "timestamp": now_ts,
+                        }
+                    )
 
         # Batch update chunk's llm_cache_list with all collected cache keys
         if cache_keys_collector and text_chunks_storage:

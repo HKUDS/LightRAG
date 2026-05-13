@@ -22,7 +22,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import struct
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 DATA_URL_RE = re.compile(
@@ -151,3 +153,124 @@ def image_audit_metadata(images: list[NormalizedImage]) -> list[dict[str, Any]]:
         }
         for img in images
     ]
+
+
+def _read_png_dimensions(data: bytes) -> tuple[int, int] | None:
+    # IHDR is the first chunk; width/height are big-endian uint32 at offsets
+    # 16/20 (8-byte signature + 4 length + 4 "IHDR" + 4 width + 4 height).
+    if len(data) < 24 or not data.startswith(_PNG_SIGNATURE):
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    return width, height
+
+
+def _read_gif_dimensions(data: bytes) -> tuple[int, int] | None:
+    # Logical screen descriptor: width/height are little-endian uint16 at
+    # offsets 6/8.
+    if len(data) < 10 or not any(data.startswith(sig) for sig in _GIF_SIGNATURES):
+        return None
+    width, height = struct.unpack("<HH", data[6:10])
+    return width, height
+
+
+def _read_jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    # Scan for a Start-Of-Frame marker (SOF0 / SOF2 / etc.). Skip segments by
+    # their length field. We deliberately accept any SOF variant the codec
+    # might emit rather than enumerating each one.
+    if len(data) < 4 or not data.startswith(_JPEG_SIGNATURE):
+        return None
+    i = 2
+    n = len(data)
+    while i < n:
+        if data[i] != 0xFF:
+            return None
+        # Skip fill bytes.
+        while i < n and data[i] == 0xFF:
+            i += 1
+        if i >= n:
+            return None
+        marker = data[i]
+        i += 1
+        # Standalone markers without a length field.
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            continue
+        if i + 2 > n:
+            return None
+        segment_len = struct.unpack(">H", data[i : i + 2])[0]
+        if segment_len < 2 or i + segment_len > n:
+            return None
+        # SOF0..SOF15 except 0xC4 (DHT), 0xC8 (JPG reserved), 0xCC (DAC).
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            # SOF payload: precision(1) + height(2) + width(2) + …
+            if i + 7 > n:
+                return None
+            height, width = struct.unpack(">HH", data[i + 3 : i + 7])
+            return width, height
+        i += segment_len
+    return None
+
+
+def _read_webp_dimensions(data: bytes) -> tuple[int, int] | None:
+    if (
+        len(data) < 30
+        or data[0:4] != _WEBP_RIFF
+        or data[8:12] != _WEBP_TAG
+    ):
+        return None
+    chunk_type = data[12:16]
+    if chunk_type == b"VP8 ":
+        # Lossy: 3-byte tag + 3-byte sync code at offset 23, then 4 bytes
+        # holding 14-bit width / 14-bit height in little-endian halves.
+        if len(data) < 30:
+            return None
+        width = struct.unpack("<H", data[26:28])[0] & 0x3FFF
+        height = struct.unpack("<H", data[28:30])[0] & 0x3FFF
+        return width, height
+    if chunk_type == b"VP8L":
+        # Lossless: signature(0x2F) + 4 bytes encoding 14-bit width-1 / 14-bit
+        # height-1 starting at offset 21.
+        if len(data) < 25 or data[20] != 0x2F:
+            return None
+        b0, b1, b2, b3 = data[21], data[22], data[23], data[24]
+        width = ((b1 & 0x3F) << 8 | b0) + 1
+        height = ((b3 & 0x0F) << 10 | b2 << 2 | (b1 & 0xC0) >> 6) + 1
+        return width, height
+    if chunk_type == b"VP8X":
+        # Extended: 3 bytes width-1 / 3 bytes height-1, little-endian, at
+        # offsets 24/27.
+        if len(data) < 30:
+            return None
+        width = (data[24] | data[25] << 8 | data[26] << 16) + 1
+        height = (data[27] | data[28] << 8 | data[29] << 16) + 1
+        return width, height
+    return None
+
+
+def read_image_dimensions(path: Path) -> tuple[int, int] | None:
+    """Return ``(width, height)`` for a raster image, or ``None`` if unknown.
+
+    Reads only the file header — no Pillow dependency. Supports PNG, JPEG,
+    GIF and WebP (VP8 / VP8L / VP8X). Returns ``None`` for unsupported
+    formats and on any I/O or parse error so callers can fall back to a
+    skipped/failure decision without raising.
+    """
+    try:
+        with open(path, "rb") as fh:
+            header = fh.read(64 * 1024)
+    except OSError:
+        return None
+    if not header:
+        return None
+    for reader in (
+        _read_png_dimensions,
+        _read_gif_dimensions,
+        _read_jpeg_dimensions,
+        _read_webp_dimensions,
+    ):
+        try:
+            dims = reader(header)
+        except (struct.error, IndexError, ValueError):
+            continue
+        if dims:
+            return dims
+    return None
