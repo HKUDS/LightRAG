@@ -630,7 +630,7 @@ def parse_args() -> argparse.Namespace:
                 f"VLM_PROCESS_ENABLE=true but the effective VLM binding "
                 f"'{effective_vlm_binding}' does not support image inputs. "
                 "Configure VLM_LLM_BINDING (or LLM_BINDING) to one of: "
-                "openai, azure_openai, gemini, bedrock, ollama, anthropic."
+                "openai, azure_openai, gemini, bedrock, ollama."
             )
 
     # Add environment variables that were previously read directly
