@@ -133,6 +133,16 @@ _EQUATION_RE = re.compile(
     flags=re.IGNORECASE | re.DOTALL,
 )
 
+# Container `<table id="tb-..." format="json" caption="...">rows</table>`.
+# Native parser emits the internal ``tb-<doc>-NNNN`` identifier here, which
+# would otherwise leak into the entity-extraction prompt and become a noisy
+# entity. Strip ``id``; keep ``format`` / ``caption`` (and the body verbatim)
+# so the extractor still recognizes the element as a structured table.
+_TABLE_RE = re.compile(
+    r"<table\b([^>]*)>(.*?)</table>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
 # Match attribute pairs like ``caption="text with \"escapes\""``.  We treat
 # only the safe identifier-style attributes; complex quoting is rare in
 # parser output.
@@ -173,6 +183,19 @@ def _replace_equation(match: re.Match[str]) -> str:
     return f"<equation{_format_attrs(keep)}>{body}</equation>"
 
 
+def _replace_table(match: re.Match[str]) -> str:
+    attrs = _attrs_to_dict(match.group(1))
+    body = match.group(2)
+    keep: list[tuple[str, str]] = []
+    fmt = attrs.get("format", "")
+    if fmt:
+        keep.append(("format", fmt))
+    caption = attrs.get("caption", "")
+    if caption.strip():
+        keep.append(("caption", caption))
+    return f"<table{_format_attrs(keep)}>{body}</table>"
+
+
 def strip_internal_multimodal_markup_for_extraction(content: str) -> str:
     """Strip parser-internal identifiers from a chunk content string.
 
@@ -186,6 +209,8 @@ def strip_internal_multimodal_markup_for_extraction(content: str) -> str:
     - ``<drawing id="dr-…" path="…" src="…" caption="Fig 1" />``
         → ``<drawing caption="Fig 1" />``
         (drops the entire tag when no caption is present)
+    - ``<table id="tb-…" format="json" caption="…">rows</table>``
+        → ``<table format="json" caption="…">rows</table>``
     - ``<equation id="eq-…" format="latex">…</equation>``
         → ``<equation format="latex">…</equation>``
     """
@@ -193,6 +218,7 @@ def strip_internal_multimodal_markup_for_extraction(content: str) -> str:
         return content
     cleaned = _CITE_RE.sub(lambda m: m.group(1), content)
     cleaned = _DRAWING_RE.sub(_replace_drawing, cleaned)
+    cleaned = _TABLE_RE.sub(_replace_table, cleaned)
     cleaned = _EQUATION_RE.sub(_replace_equation, cleaned)
     return cleaned
 

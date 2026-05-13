@@ -2850,3 +2850,26 @@ def test_build_mm_chunks_respects_process_options_filter(tmp_path):
         await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_strip_internal_multimodal_markup_cleans_table_id():
+    """Regression: parser-emitted ``<table id="tb-...">`` tags must have
+    their internal id stripped before the entity-extraction prompt sees
+    them. ``format`` / ``caption`` and the row body stay verbatim so the
+    extractor still recognizes the structured element."""
+    from lightrag.chunk_schema import (
+        strip_internal_multimodal_markup_for_extraction,
+    )
+
+    source = (
+        '<table id="tb-doc-1-0001" format="json" caption="Indicator metrics">'
+        '[[\"a\",\"b\"],[\"1\",\"2\"]]'
+        "</table>"
+    )
+    cleaned = strip_internal_multimodal_markup_for_extraction(source)
+    assert "tb-doc-1-0001" not in cleaned
+    assert 'format="json"' in cleaned
+    assert 'caption="Indicator metrics"' in cleaned
+    # Row body preserved.
+    assert '[["a","b"],["1","2"]]' in cleaned

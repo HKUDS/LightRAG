@@ -3317,6 +3317,17 @@ class _PipelineMixin:
                 1,
                 int(os.getenv("VLM_MIN_IMAGE_PIXEL", str(DEFAULT_MM_IMAGE_MIN_PIXEL))),
             )
+            # Multimodal analysis shares the entity-extraction cache flag
+            # (both run with mode="default" — see handle_cache short-circuit
+            # in lightrag.utils).  When the flag is off we must NOT save the
+            # response either, otherwise stale cache entries would still
+            # accumulate while reads are blocked.  cache_id attachment to
+            # the sidecar item.llm_cache_list is likewise gated so a
+            # disabled cache does not seed cache-cleanup metadata that
+            # corresponds to entries that were never persisted.
+            analysis_cache_enabled = bool(
+                global_config.get("enable_llm_cache_for_entity_extract")
+            )
 
             use_vlm_func = self.role_llm_funcs.get("vlm")
             use_extract_func = self.role_llm_funcs.get("extract")
@@ -3549,7 +3560,8 @@ class _PipelineMixin:
                     )
                 if type_value not in _IMAGE_TYPE_VALUES:
                     type_value = IMAGE_TYPE_FALLBACK
-                if fresh:
+                cache_id_to_attach: str | None = None
+                if fresh and analysis_cache_enabled:
                     audit_blob = image_audit_metadata(normalized_images)
                     original_prompt = prompt + (
                         f"\n<vlm_images>"
@@ -3569,6 +3581,11 @@ class _PipelineMixin:
                             chunk_id=None,
                         ),
                     )
+                    cache_id_to_attach = cache_id
+                elif not fresh:
+                    # Cache hit: the entry exists, so attaching its id is
+                    # safe (and necessary for document-delete cleanup).
+                    cache_id_to_attach = cache_id
                 return (
                     {
                         "name": name.strip(),
@@ -3578,7 +3595,7 @@ class _PipelineMixin:
                         "status": "success",
                         "message": "",
                     },
-                    cache_id,
+                    cache_id_to_attach,
                 )
 
             async def _analyze_text_modality(
@@ -3665,7 +3682,8 @@ class _PipelineMixin:
                             f"equation/{item_id}: missing or invalid field 'equation'"
                         )
                     result_obj["equation"] = equation_value.strip()
-                if fresh:
+                cache_id_to_attach: str | None = None
+                if fresh and analysis_cache_enabled:
                     await save_to_cache(
                         self.llm_response_cache,
                         CacheData(
@@ -3677,7 +3695,12 @@ class _PipelineMixin:
                             chunk_id=None,
                         ),
                     )
-                return (result_obj, cache_id)
+                    cache_id_to_attach = cache_id
+                elif not fresh:
+                    # Cache hit path (handle_cache already gated by flag):
+                    # safe to surface the existing cache_id for cleanup.
+                    cache_id_to_attach = cache_id
+                return (result_obj, cache_id_to_attach)
 
             def _attach_cache_id(
                 item_obj: dict[str, Any], cache_id: str | None

@@ -696,3 +696,60 @@ async def test_analyze_worker_marks_doc_failed_on_multimodal_error(tmp_path):
         assert ctx.q_process.empty()
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_analysis_cache_respects_disabled_flag(tmp_path):
+    """When enable_llm_cache_for_entity_extract is False, analyze_multimodal
+    must NOT persist the analysis response and MUST NOT attach a cache id
+    to sidecar item.llm_cache_list — otherwise document deletion would try
+    to clean up cache entries that were never written."""
+    call_log: list[dict] = []
+    rag = LightRAG(
+        working_dir=str(tmp_path),
+        workspace=f"vlm-pipeline-cache-{tmp_path.name}",
+        llm_model_func=_make_vlm_mock(call_log),
+        embedding_func=EmbeddingFunc(
+            embedding_dim=8,
+            max_token_size=1024,
+            func=_mock_embedding,
+        ),
+        tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
+        vlm_process_enable=True,
+        # Disable the analysis cache (same flag handle_cache uses for mode="default").
+        enable_llm_cache_for_entity_extract=False,
+        role_llm_configs={
+            spec.name: (
+                RoleLLMConfig(func=_make_vlm_mock(call_log))
+                if spec.name == "vlm"
+                else RoleLLMConfig()
+            )
+            for spec in ROLES
+        },
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        await rag.llm_response_cache.index_done_callback()
+        cache_file = (
+            Path(rag.working_dir) / rag.workspace / "kv_store_llm_response_cache.json"
+        )
+        if cache_file.exists():
+            cache_blob = json.loads(cache_file.read_text(encoding="utf-8"))
+            assert not any(
+                k.startswith("default:analysis:") for k in cache_blob.keys()
+            ), "analysis cache must not be written when the flag is off"
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        item = payload["drawings"]["dr-001"]
+        # Analysis still succeeded — only the cache side-effects are gated.
+        assert item["llm_analyze_result"]["status"] == "success"
+        # No cache id may be attached when nothing was written.
+        assert item.get("llm_cache_list", []) == []
+    finally:
+        await rag.finalize_storages()

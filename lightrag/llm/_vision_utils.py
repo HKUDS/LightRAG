@@ -49,6 +49,10 @@ class NormalizedImage:
     source_file: str | None
     modality: str | None
     doc_id: str | None
+    # Pixel dimensions parsed from the raster header (None when the format
+    # is recognized but dimensions could not be extracted).
+    width: int | None = None
+    height: int | None = None
 
 
 def _detect_mime(raw: bytes) -> str:
@@ -106,6 +110,8 @@ def normalize_image_inputs(
         mime_type = item.get("mime_type") or _detect_mime(raw_bytes)
         sha = hashlib.sha256(raw_bytes).hexdigest()
         clean_b64 = base64.b64encode(raw_bytes).decode("ascii")
+        dims = _dimensions_from_bytes(raw_bytes)
+        width, height = (dims[0], dims[1]) if dims else (None, None)
         result.append(
             NormalizedImage(
                 index=idx,
@@ -117,19 +123,30 @@ def normalize_image_inputs(
                 source_file=item.get("source_file"),
                 modality=item.get("modality"),
                 doc_id=item.get("doc_id"),
+                width=width,
+                height=height,
             )
         )
     return result
 
 
 def image_cache_metadata(images: list[NormalizedImage]) -> list[dict[str, Any]]:
-    """Return cache-key-safe image metadata (no source identifiers)."""
+    """Return cache-key-safe image metadata (no source identifiers).
+
+    Includes ``width`` / ``height`` so the cache key reflects the full
+    image digest the design contract specifies (mime, sha256, bytes,
+    width, height).  The sha256 alone is sufficient for identity, but
+    surfacing dimensions matches the documented audit shape and gives
+    diagnostics a one-line "what was sent" without re-decoding.
+    """
     return [
         {
             "index": img.index,
             "mime_type": img.mime_type,
             "sha256": img.sha256,
             "bytes": len(img.raw_bytes),
+            "width": img.width,
+            "height": img.height,
         }
         for img in images
     ]
@@ -146,6 +163,8 @@ def image_audit_metadata(images: list[NormalizedImage]) -> list[dict[str, Any]]:
             "mime_type": img.mime_type,
             "sha256": img.sha256,
             "bytes": len(img.raw_bytes),
+            "width": img.width,
+            "height": img.height,
             "source_id": img.source_id,
             "source_file": img.source_file,
             "modality": img.modality,
@@ -255,7 +274,17 @@ def read_image_dimensions(path: Path) -> tuple[int, int] | None:
             header = fh.read(64 * 1024)
     except OSError:
         return None
-    if not header:
+    return _dimensions_from_bytes(header)
+
+
+def _dimensions_from_bytes(data: bytes) -> tuple[int, int] | None:
+    """Run the four header readers against a byte buffer.
+
+    Shared between the file-path entry point (:func:`read_image_dimensions`)
+    and :func:`normalize_image_inputs`, which receives raster payloads
+    decoded from the unified ``image_inputs`` parameter.
+    """
+    if not data:
         return None
     for reader in (
         _read_png_dimensions,
@@ -264,7 +293,7 @@ def read_image_dimensions(path: Path) -> tuple[int, int] | None:
         _read_webp_dimensions,
     ):
         try:
-            dims = reader(header)
+            dims = reader(data)
         except (struct.error, IndexError, ValueError):
             continue
         if dims:
