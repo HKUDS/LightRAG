@@ -2864,7 +2864,7 @@ def test_strip_internal_multimodal_markup_cleans_table_id():
 
     source = (
         '<table id="tb-doc-1-0001" format="json" caption="Indicator metrics">'
-        '[[\"a\",\"b\"],[\"1\",\"2\"]]'
+        '[["a","b"],["1","2"]]'
         "</table>"
     )
     cleaned = strip_internal_multimodal_markup_for_extraction(source)

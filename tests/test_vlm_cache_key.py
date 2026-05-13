@@ -172,10 +172,7 @@ def test_image_dimensions_change_changes_cache_key():
     idat_compressed = zlib.compress(idat_payload)
     idat_crc = zlib.crc32(b"IDAT" + idat_compressed).to_bytes(4, "big")
     idat = (
-        struct.pack(">I", len(idat_compressed))
-        + b"IDAT"
-        + idat_compressed
-        + idat_crc
+        struct.pack(">I", len(idat_compressed)) + b"IDAT" + idat_compressed + idat_crc
     )
     iend = b"\x00\x00\x00\x00IEND\xaeB`\x82"
     big_png = sig + ihdr + idat + iend

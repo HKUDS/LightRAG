@@ -1494,9 +1494,7 @@ class _PipelineMixin:
                         doc_id=doc_id_w,
                         status=DocStatus.FAILED,
                         status_doc=status_doc_w,
-                        file_path=getattr(
-                            status_doc_w, "file_path", "unknown_source"
-                        ),
+                        file_path=getattr(status_doc_w, "file_path", "unknown_source"),
                         extra_fields={"error_msg": str(e)},
                     )
                 except Exception:
@@ -1849,9 +1847,7 @@ class _PipelineMixin:
                         file_path=file_path,
                         blocks_path=blocks_path,
                         base_order_index=max_order + 1,
-                        process_options=(content_data or {}).get(
-                            "process_options"
-                        ),
+                        process_options=(content_data or {}).get("process_options"),
                     )
                     if mm_chunks:
                         chunking_result = list(chunking_result) + mm_chunks

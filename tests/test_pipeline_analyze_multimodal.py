@@ -596,10 +596,7 @@ async def test_invalid_json_with_trailing_comma_is_repaired(tmp_path):
     async def vlm_func(prompt, **kwargs):
         call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
         # Trailing comma after "description" — strict json.loads would reject.
-        return (
-            '{"name": "fig-1", "type": "Chart", '
-            '"description": "ok",}'
-        )
+        return '{"name": "fig-1", "type": "Chart", ' '"description": "ok",}'
 
     rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
     await rag.initialize_storages()
