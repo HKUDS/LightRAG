@@ -3294,9 +3294,7 @@ async def extract_entities(
         # Strip parser-internal markup (<cite refid>, <drawing id/path/src>,
         # <equation id>) before building the extraction prompt. The stored
         # chunk content is left intact so query-time citations still resolve.
-        content = strip_internal_multimodal_markup_for_extraction(
-            chunk_dp["content"]
-        )
+        content = strip_internal_multimodal_markup_for_extraction(chunk_dp["content"])
         # Get file path from chunk data or use default
         file_path = chunk_dp.get("file_path", "unknown_source")
 

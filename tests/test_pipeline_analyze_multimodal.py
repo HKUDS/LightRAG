@@ -223,9 +223,7 @@ async def test_vlm_disabled_then_enabled_reprocesses_item(tmp_path):
     # Operator clears the failure marker before the second run.
     payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
     payload["drawings"]["dr-001"].pop("llm_analyze_result", None)
-    sidecar_path.write_text(
-        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-    )
+    sidecar_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     rag_on = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
     await rag_on.initialize_storages()

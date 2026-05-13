@@ -3293,9 +3293,7 @@ class _PipelineMixin:
             )
             min_image_pixel = max(
                 1,
-                int(
-                    os.getenv("VLM_MIN_IMAGE_PIXEL", str(DEFAULT_MM_IMAGE_MIN_PIXEL))
-                ),
+                int(os.getenv("VLM_MIN_IMAGE_PIXEL", str(DEFAULT_MM_IMAGE_MIN_PIXEL))),
             )
 
             use_vlm_func = self.role_llm_funcs.get("vlm")
@@ -3343,9 +3341,7 @@ class _PipelineMixin:
                 if isinstance(value, str):
                     return value.strip()
                 if isinstance(value, (list, tuple)):
-                    return "\n".join(
-                        str(v).strip() for v in value if str(v).strip()
-                    )
+                    return "\n".join(str(v).strip() for v in value if str(v).strip())
                 return str(value).strip()
 
             def _captions_value(item_obj: dict[str, Any]) -> str:
@@ -3354,9 +3350,7 @@ class _PipelineMixin:
             def _footnotes_value(item_obj: dict[str, Any]) -> str:
                 raw = item_obj.get("footnotes")
                 if isinstance(raw, (list, tuple)):
-                    joined = "; ".join(
-                        str(v).strip() for v in raw if str(v).strip()
-                    )
+                    joined = "; ".join(str(v).strip() for v in raw if str(v).strip())
                     return joined or "n/a"
                 text = _normalize_text(raw)
                 return text or "n/a"
@@ -3400,16 +3394,12 @@ class _PipelineMixin:
                 item_id: str, item: dict[str, Any], sidecar_dir: Path
             ) -> tuple[dict[str, Any], str | None]:
                 path_str = (
-                    item.get("path")
-                    or item.get("img_path")
-                    or item.get("image_path")
+                    item.get("path") or item.get("img_path") or item.get("image_path")
                 )
                 candidate = _resolve_image_path(path_str, sidecar_dir)
                 if candidate is None:
                     return (
-                        _skipped_result(
-                            f"image file not found: {path_str or 'n/a'}"
-                        ),
+                        _skipped_result(f"image file not found: {path_str or 'n/a'}"),
                         None,
                     )
                 ext = candidate.suffix.lower()
@@ -3480,9 +3470,7 @@ class _PipelineMixin:
                     "",
                     serialize_llm_cache_identity(vlm_cache_identity),
                     _serialize_cache_variant({"type": "json_object"}),
-                    _serialize_cache_variant(
-                        image_cache_metadata(normalized_images)
-                    ),
+                    _serialize_cache_variant(image_cache_metadata(normalized_images)),
                     "drawing",
                 )
                 cache_id = generate_cache_key("default", "analysis", args_hash)
@@ -3657,7 +3645,9 @@ class _PipelineMixin:
                     )
                 return (result_obj, cache_id)
 
-            def _attach_cache_id(item_obj: dict[str, Any], cache_id: str | None) -> None:
+            def _attach_cache_id(
+                item_obj: dict[str, Any], cache_id: str | None
+            ) -> None:
                 if not cache_id:
                     return
                 existing = item_obj.get("llm_cache_list")
@@ -3737,9 +3727,7 @@ class _PipelineMixin:
                         f"{len(analyze_tasks)} item(s) to analyze"
                     )
 
-                analyzed = await asyncio.gather(
-                    *analyze_tasks, return_exceptions=True
-                )
+                analyzed = await asyncio.gather(*analyze_tasks, return_exceptions=True)
 
                 failure_to_raise: MultimodalAnalysisError | None = None
                 for idx, item_id in enumerate(valid_keys):

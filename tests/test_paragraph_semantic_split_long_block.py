@@ -258,10 +258,7 @@ def test_public_chunking_adds_part_suffixes_for_anchor_split(tmp_path):
         "Mid anchor. [part 2]",
     ]
     assert all(
-        all(
-            "[part " not in parent
-            for parent in chunk["heading"]["parent_headings"]
-        )
+        all("[part " not in parent for parent in chunk["heading"]["parent_headings"])
         for chunk in chunks
     )
 

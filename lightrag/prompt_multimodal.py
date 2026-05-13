@@ -52,7 +52,9 @@ IMAGE_TYPE_FALLBACK = "Other"
 MULTIMODAL_PROMPTS: dict[str, str] = {}
 
 
-MULTIMODAL_PROMPTS["image_analysis"] = """You are an expert image analyzer. Analyze the provided image and return a single JSON object describing its content.
+MULTIMODAL_PROMPTS[
+    "image_analysis"
+] = """You are an expert image analyzer. Analyze the provided image and return a single JSON object describing its content.
 
 ================ INSTRUCTIONS ================
 
@@ -129,7 +131,9 @@ Output:
 """
 
 
-MULTIMODAL_PROMPTS["table_analysis"] = """You are an expert table analyzer. The provided content contains table content in JSON or HTML format. Analyze it and return a single JSON object describing its structure and content.
+MULTIMODAL_PROMPTS[
+    "table_analysis"
+] = """You are an expert table analyzer. The provided content contains table content in JSON or HTML format. Analyze it and return a single JSON object describing its structure and content.
 
 ================ INSTRUCTIONS ================
 
@@ -210,7 +214,9 @@ Output:
 """
 
 
-MULTIMODAL_PROMPTS["equation_analysis"] = """You are an expert analyzer of mathematical and chemical equations. The input is a TEXT-form equation written in LaTeX or Markdown. Analyze it and return a single JSON object describing its meaning and role.
+MULTIMODAL_PROMPTS[
+    "equation_analysis"
+] = """You are an expert analyzer of mathematical and chemical equations. The input is a TEXT-form equation written in LaTeX or Markdown. Analyze it and return a single JSON object describing its meaning and role.
 
 ================ INSTRUCTIONS ================
 

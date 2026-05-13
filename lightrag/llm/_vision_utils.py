@@ -211,11 +211,7 @@ def _read_jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
 
 
 def _read_webp_dimensions(data: bytes) -> tuple[int, int] | None:
-    if (
-        len(data) < 30
-        or data[0:4] != _WEBP_RIFF
-        or data[8:12] != _WEBP_TAG
-    ):
+    if len(data) < 30 or data[0:4] != _WEBP_RIFF or data[8:12] != _WEBP_TAG:
         return None
     chunk_type = data[12:16]
     if chunk_type == b"VP8 ":

@@ -1242,9 +1242,7 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal(
-            "doc-1", "demo.pdf", parsed, process_options="it"
-        )
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="it")
 
         drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
         existing = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
@@ -2187,9 +2185,7 @@ def test_analyze_multimodal_unknown_image_type_folds_to_other(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal(
-            "doc-1", "demo.pdf", parsed, process_options="i"
-        )
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="i")
 
         payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = payload["drawings"]["id1"]["llm_analyze_result"]
@@ -2258,9 +2254,7 @@ def test_analyze_multimodal_skips_tiny_image_without_vlm_call(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal(
-            "doc-1", "demo.pdf", parsed, process_options="i"
-        )
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="i")
 
         payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = payload["drawings"]["id1"]["llm_analyze_result"]
@@ -2457,9 +2451,7 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal(
-            "doc-1", "demo.pdf", parsed, process_options="t"
-        )
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="t")
 
         payload = json.loads(tables.read_text(encoding="utf-8"))
         result = payload["tables"]["id1"]["llm_analyze_result"]

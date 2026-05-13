@@ -142,7 +142,10 @@ _ATTR_RE = re.compile(
 
 
 def _attrs_to_dict(attr_string: str) -> dict[str, str]:
-    return {match.group(1).lower(): match.group(2) for match in _ATTR_RE.finditer(attr_string)}
+    return {
+        match.group(1).lower(): match.group(2)
+        for match in _ATTR_RE.finditer(attr_string)
+    }
 
 
 def _format_attrs(pairs: list[tuple[str, str]]) -> str:
