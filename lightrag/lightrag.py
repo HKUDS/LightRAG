@@ -489,6 +489,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     enable_llm_cache_for_entity_extract: bool = field(default=True)
     """If True, enables caching for entity extraction steps to reduce LLM costs."""
 
+    vlm_process_enable: bool = field(
+        default_factory=lambda: get_env_value("VLM_PROCESS_ENABLE", False, bool)
+    )
+    """Master switch for VLM multimodal analysis (i/t/e items).
+
+    When False, the pipeline emits a warning and skips every multimodal item
+    without invoking the VLM. When True, the configured VLM binding must
+    support image inputs.
+    """
+
     # Extensions
     # ---
 

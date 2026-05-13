@@ -1,0 +1,217 @@
+"""End-to-end offline tests for the VLM analyze_multimodal pipeline.
+
+Covers the three behaviours unique to the unified image_inputs rewrite:
+
+1. ``VLM_PROCESS_ENABLE=False`` short-circuits every multimodal item with a
+   warning and never invokes the VLM mock.
+2. ``VLM_PROCESS_ENABLE=True`` writes a ``default:analysis:*`` cache entry on
+   the first call and serves the second call from cache without calling the
+   VLM mock again.
+3. The cache entry's ``original_prompt`` carries the ``<vlm_images>`` audit
+   block but never embeds the raw base64 payload.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from lightrag import LightRAG, ROLES, RoleLLMConfig
+from lightrag.utils import EmbeddingFunc, Tokenizer
+
+
+@pytest.fixture
+def _propagate_lightrag_logger(monkeypatch):
+    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
+
+
+pytestmark = pytest.mark.offline
+
+
+PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8"
+    b"\xcf\xc0\x00\x00\x00\x03\x00\x01\x5c\xcc\xd9\x9e\x00\x00\x00\x00"
+    b"IEND\xaeB`\x82"
+)
+
+
+class _SimpleTokenizerImpl:
+    def encode(self, content: str) -> list[int]:
+        return [ord(ch) for ch in content]
+
+    def decode(self, tokens: list[int]) -> str:
+        return "".join(chr(t) for t in tokens)
+
+
+async def _mock_embedding(texts: list[str]) -> np.ndarray:
+    return np.random.rand(len(texts), 8)
+
+
+def _make_vlm_mock(call_log: list[dict]):
+    async def vlm_func(prompt, **kwargs):
+        call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        return json.dumps(
+            {
+                "name": "fig-1",
+                "summary": "short summary",
+                "detail_description": "detail",
+                "grounded": True,
+                "grounding_reason": "visual_evidence",
+            }
+        )
+
+    return vlm_func
+
+
+def _build_rag(tmp_path: Path, *, vlm_process_enable: bool, vlm_func) -> LightRAG:
+    role_configs = {
+        spec.name: RoleLLMConfig(func=vlm_func)
+        if spec.name == "vlm"
+        else RoleLLMConfig()
+        for spec in ROLES
+    }
+    return LightRAG(
+        working_dir=str(tmp_path),
+        workspace=f"vlm-pipeline-{tmp_path.name}",
+        llm_model_func=vlm_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=8,
+            max_token_size=1024,
+            func=_mock_embedding,
+        ),
+        tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
+        vlm_process_enable=vlm_process_enable,
+        role_llm_configs=role_configs,
+    )
+
+
+def _write_sidecar_fixtures(tmp_path: Path) -> tuple[str, dict, Path]:
+    parsed_dir = tmp_path / "parsed"
+    parsed_dir.mkdir()
+
+    image_path = parsed_dir / "fig1.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    blocks_path = parsed_dir / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+        encoding="utf-8",
+    )
+
+    sidecar_path = parsed_dir / "doc.drawings.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "drawings": {
+                    "dr-001": {
+                        "caption": "Figure 1",
+                        "path": str(image_path),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parsed_data = {"blocks_path": str(blocks_path)}
+    return "doc-1", parsed_data, sidecar_path
+
+
+@pytest.mark.asyncio
+async def test_vlm_process_enable_false_skips_with_warning(
+    tmp_path, caplog, _propagate_lightrag_logger
+):
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=False, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        with caplog.at_level("WARNING"):
+            await rag.analyze_multimodal(
+                doc_id=doc_id,
+                file_path="fixture.pdf",
+                parsed_data=parsed_data,
+                process_options="i",
+            )
+
+        # VLM mock must not be invoked when the master switch is off.
+        assert call_log == []
+        assert any("VLM_PROCESS_ENABLE=false" in rec.message for rec in caplog.records)
+
+        # Conservative result still written back.
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        item = payload["drawings"]["dr-001"]
+        assert item["llm_analyze_result"]["grounded"] is False
+        assert item["llm_analyze_result"]["grounding_reason"] == "vlm_disabled"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_vlm_cache_hit_on_second_run(tmp_path):
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path, vlm_process_enable=True, vlm_func=_make_vlm_mock(call_log)
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+
+        # First run: should invoke VLM and persist a cache entry.
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 1
+        first_call_kwargs = call_log[0]["kwargs"]
+        assert first_call_kwargs.get("stream") is False
+        # The pipeline must pass image_inputs (not the legacy `messages`).
+        assert first_call_kwargs.get("image_inputs") is not None
+        assert "messages" not in first_call_kwargs
+
+        # Cache entry exists under default:analysis:*
+        await rag.llm_response_cache.index_done_callback()
+        cache_file = (
+            Path(rag.working_dir) / rag.workspace / "kv_store_llm_response_cache.json"
+        )
+        cache_blob = json.loads(cache_file.read_text(encoding="utf-8"))
+        analysis_keys = [
+            k for k in cache_blob.keys() if k.startswith("default:analysis:")
+        ]
+        assert len(analysis_keys) == 1
+        entry = cache_blob[analysis_keys[0]]
+        original_prompt = entry["original_prompt"]
+        assert "<vlm_images>" in original_prompt
+        # Raw base64 must NOT be embedded in the audit block.
+        raw_b64 = base64.b64encode(PNG_BYTES).decode("ascii")
+        assert raw_b64 not in original_prompt
+
+        # Second run with idempotency-tracked sidecar removed: hit cache.
+        await asyncio.sleep(0)
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        payload["drawings"]["dr-001"].pop("llm_analyze_result", None)
+        sidecar_path.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        # VLM mock must not be invoked again — cache hit.
+        assert len(call_log) == 1
+    finally:
+        await rag.finalize_storages()

@@ -233,6 +233,7 @@ async def openai_complete_if_cache(
     use_azure: bool = False,
     azure_deployment: str | None = None,
     api_version: str | None = None,
+    image_inputs: list[Any] | None = None,
     **kwargs: Any,
 ) -> str:
     """Complete a prompt using OpenAI's API with caching support and Chain of Thought (COT) integration.
@@ -367,7 +368,23 @@ async def openai_complete_if_cache(
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
+    if image_inputs:
+        from lightrag.llm._vision_utils import normalize_image_inputs
+
+        normalized_images = normalize_image_inputs(image_inputs)
+        user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for img in normalized_images:
+            user_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{img.mime_type};base64,{img.base64_str}"
+                    },
+                }
+            )
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": prompt})
 
     logger.debug("===== Entering func of LLM =====")
     logger.debug(f"Model: {model}   Base URL: {base_url}")

@@ -558,7 +558,7 @@ def parse_args() -> argparse.Namespace:
         host_key = f"{prefix}_LLM_BINDING_HOST"
         apikey_key = f"{prefix}_LLM_BINDING_API_KEY"
         max_async_key = f"{prefix}_MAX_ASYNC_LLM"
-        timeout_key = f"LLM_TIMEOUT_{prefix}_LLM"
+        timeout_key = f"{prefix}_LLM_TIMEOUT"
 
         role_binding = normalize_binding_name(
             get_env_value(binding_key, None, special_none=True)
@@ -615,6 +615,23 @@ def parse_args() -> argparse.Namespace:
                     f"binding={role_binding} differs from base={args.llm_binding}, "
                     f"but required env vars are missing: {', '.join(missing)}"
                 )
+
+    # VLM multimodal master switch — when off, the pipeline emits a warning
+    # and skips every i/t/e item without touching the VLM. When on, the
+    # effective VLM binding must support image inputs.
+    args.vlm_process_enable = get_env_value("VLM_PROCESS_ENABLE", False, bool)
+    if args.vlm_process_enable:
+        effective_vlm_binding = (
+            getattr(args, "vlm_llm_binding", None) or args.llm_binding
+        )
+        vlm_incompatible = {"lollms"}
+        if effective_vlm_binding in vlm_incompatible:
+            raise SystemExit(
+                f"VLM_PROCESS_ENABLE=true but the effective VLM binding "
+                f"'{effective_vlm_binding}' does not support image inputs. "
+                "Configure VLM_LLM_BINDING (or LLM_BINDING) to one of: "
+                "openai, azure_openai, gemini, bedrock, ollama, anthropic."
+            )
 
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
