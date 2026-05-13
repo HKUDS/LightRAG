@@ -2702,3 +2702,151 @@ def test_parse_docling_empty_service_result_raises_without_fallback(
         await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_build_chunks_dict_preserves_existing_llm_cache_list():
+    """Regression: build_chunks_dict_from_chunking_result must not overwrite
+    a chunk's pre-existing llm_cache_list — multimodal chunks arrive with
+    analysis cache ids already attached so document deletion can clean
+    them up via the per-chunk llm_cache_list."""
+    from lightrag.utils_pipeline import build_chunks_dict_from_chunking_result
+
+    chunking_result = [
+        {
+            "chunk_order_index": 0,
+            "content": "first chunk",
+            "tokens": 4,
+        },
+        {
+            "chunk_id": "doc-1-mm-drawing-000",
+            "chunk_order_index": 1,
+            "content": "second chunk",
+            "tokens": 6,
+            "llm_cache_list": [
+                "default:analysis:abc",
+                "default:analysis:abc",  # dedup verification
+                "default:analysis:def",
+            ],
+        },
+    ]
+
+    chunks = build_chunks_dict_from_chunking_result(
+        chunking_result, doc_id="doc-1", file_path="demo.pdf"
+    )
+    # Order is chunking_result order; locate by chunk_id.
+    mm_chunk = next(
+        v for v in chunks.values() if v.get("chunk_id") == "doc-1-mm-drawing-000"
+    )
+    text_chunk = next(
+        v for v in chunks.values() if v.get("chunk_id") != "doc-1-mm-drawing-000"
+    )
+    assert mm_chunk["llm_cache_list"] == [
+        "default:analysis:abc",
+        "default:analysis:def",
+    ]
+    # Plain text chunks still start with an empty list (no pre-existing ids).
+    assert text_chunk["llm_cache_list"] == []
+
+
+@pytest.mark.offline
+def test_build_mm_chunks_respects_process_options_filter(tmp_path):
+    """Regression: _build_mm_chunks_from_sidecars must gate sidecar reads
+    by the active process_options.  A document re-processed after opting
+    out of i/t/e MUST NOT pick up stale success results from a prior pass.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "meta", "format_version": "1.0"}),
+                    json.dumps({"type": "content", "content": "body"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        # Both modalities carry a stale ``success`` from a prior pass.
+        drawings = tmp_path / "demo.drawings.json"
+        drawings.write_text(
+            json.dumps(
+                {
+                    "drawings": {
+                        "d1": {
+                            "id": "d1",
+                            "llm_analyze_result": {
+                                "name": "old",
+                                "type": "Chart",
+                                "description": "stale drawing",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        tables = tmp_path / "demo.tables.json"
+        tables.write_text(
+            json.dumps(
+                {
+                    "tables": {
+                        "t1": {
+                            "id": "t1",
+                            "llm_analyze_result": {
+                                "name": "old",
+                                "description": "stale table",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # process_options="t" → only tables are considered; the drawing
+        # success entry must NOT generate a chunk.
+        only_tables = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+            process_options="t",
+        )
+        assert len(only_tables) == 1
+        assert only_tables[0]["sidecar"]["type"] == "table"
+
+        # Empty/None process_options → no modalities active → no chunks.
+        none_active = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+            process_options="",
+        )
+        assert none_active == []
+
+        # Backwards-compat: callers that pass process_options=None see
+        # every modality (legacy behaviour for ad-hoc unit tests).
+        legacy = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+        )
+        assert {ch["sidecar"]["type"] for ch in legacy} == {"drawing", "table"}
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())

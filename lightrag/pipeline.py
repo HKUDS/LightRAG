@@ -16,6 +16,8 @@ import base64
 import hashlib
 import inspect
 import json
+
+import json_repair
 import mimetypes
 import os
 from copy import deepcopy
@@ -1481,7 +1483,24 @@ class _PipelineMixin:
                 )
                 await ctx.q_process.put((doc_id_w, status_doc_w, analyzed))
             except Exception as e:
+                # Mirror _parse_worker: failures here must transition the
+                # document to FAILED with a diagnostic ``error_msg``, otherwise
+                # MultimodalAnalysisError (raised by analyze_multimodal under
+                # the new hard-failure contract) would leave the doc stuck in
+                # ANALYZING forever.
                 logger.error(f"Analyze worker failed: {e}")
+                try:
+                    await self._upsert_doc_status_transition(
+                        doc_id=doc_id_w,
+                        status=DocStatus.FAILED,
+                        status_doc=status_doc_w,
+                        file_path=getattr(
+                            status_doc_w, "file_path", "unknown_source"
+                        ),
+                        extra_fields={"error_msg": str(e)},
+                    )
+                except Exception:
+                    pass
             finally:
                 ctx.q_analyze.task_done()
 
@@ -1830,6 +1849,9 @@ class _PipelineMixin:
                         file_path=file_path,
                         blocks_path=blocks_path,
                         base_order_index=max_order + 1,
+                        process_options=(content_data or {}).get(
+                            "process_options"
+                        ),
                     )
                     if mm_chunks:
                         chunking_result = list(chunking_result) + mm_chunks
@@ -3307,11 +3329,23 @@ class _PipelineMixin:
             _VLM_RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
             def _json_extract(text: str) -> dict[str, Any]:
+                """Tolerant JSON object recovery.
+
+                Mirrors :func:`lightrag.operate._process_json_extraction_result`
+                so weaker models that emit ```json ... ``` fenced output,
+                trailing commas, or unquoted keys are still salvageable.
+                The order of attempts is:
+
+                1. Strip a leading ```json fence if present.
+                2. Hand the cleaned string to ``json_repair.loads`` (handles
+                   minor structural slips like trailing commas).
+                3. Fall back to a greedy ``{...}`` regex slice for outputs
+                   that wrap the JSON object in prose, then re-run
+                   ``json_repair.loads`` on the slice.
+                """
                 if not text:
                     return {}
                 candidate = text.strip()
-                # Tolerate ```json …``` fenced output and stray prose around the
-                # JSON object; mirror _process_json_extraction_result's recovery.
                 fence_match = re.match(
                     r"^```(?:json)?\s*\n(.*?)\n```$",
                     candidate,
@@ -3320,7 +3354,7 @@ class _PipelineMixin:
                 if fence_match:
                     candidate = fence_match.group(1).strip()
                 try:
-                    obj = json.loads(candidate)
+                    obj = json_repair.loads(candidate)
                     if isinstance(obj, dict):
                         return obj
                 except Exception:
@@ -3328,7 +3362,7 @@ class _PipelineMixin:
                 m = re.search(r"\{[\s\S]*\}", candidate)
                 if m:
                     try:
-                        obj = json.loads(m.group(0))
+                        obj = json_repair.loads(m.group(0))
                         if isinstance(obj, dict):
                             return obj
                     except Exception:
@@ -3842,6 +3876,7 @@ class _PipelineMixin:
         file_path: str,
         blocks_path: str,
         base_order_index: int,
+        process_options: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build multimodal chunks from sidecars carrying analysis results.
 
@@ -3857,6 +3892,11 @@ class _PipelineMixin:
         underlying sidecar item so document deletion can clean up the
         ``cache_type="analysis"`` entries it created.
 
+        ``process_options`` gates which modality sidecars are read: a
+        document re-processed after opting out of ``i`` / ``t`` / ``e``
+        must NOT pick up stale success results from a prior pass.  When
+        ``None`` (e.g. ad-hoc unit tests), every modality is considered.
+
         Raises:
             MultimodalAnalysisError: when an item carries ``status="failure"``,
                 or when the multimodal chunk cannot be fit under the
@@ -3867,6 +3907,7 @@ class _PipelineMixin:
             DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
             DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS,
         )
+        from lightrag.parser_routing import parse_process_options
 
         block_file = Path(blocks_path)
         if not block_file.exists():
@@ -3876,10 +3917,26 @@ class _PipelineMixin:
         if base.endswith(".blocks.jsonl"):
             base = base[: -len(".blocks.jsonl")]
 
+        if process_options is None:
+            allowed = {"drawing", "table", "equation"}
+        else:
+            opts = parse_process_options(process_options)
+            allowed = set()
+            if opts.images:
+                allowed.add("drawing")
+            if opts.tables:
+                allowed.add("table")
+            if opts.equations:
+                allowed.add("equation")
+
         sidecar_defs = [
-            ("drawings", Path(base + ".drawings.json"), "drawing"),
-            ("tables", Path(base + ".tables.json"), "table"),
-            ("equations", Path(base + ".equations.json"), "equation"),
+            (root, Path(base + suffix), kind)
+            for root, suffix, kind in (
+                ("drawings", ".drawings.json", "drawing"),
+                ("tables", ".tables.json", "table"),
+                ("equations", ".equations.json", "equation"),
+            )
+            if kind in allowed
         ]
 
         mm_chunks: list[dict[str, Any]] = []

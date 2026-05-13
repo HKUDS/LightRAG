@@ -583,3 +583,116 @@ async def test_table_routes_to_extract_role_not_vlm(tmp_path):
         assert "default:analysis:" in payload["tables"]["tb-001"]["llm_cache_list"][0]
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_invalid_json_with_trailing_comma_is_repaired(tmp_path):
+    """Slightly malformed VLM JSON (trailing comma) must be repaired via
+    ``json_repair`` instead of hard-failing the document — mirrors the
+    extraction-side repair contract in operate._process_json_extraction_result.
+    """
+    call_log: list[dict] = []
+
+    async def vlm_func(prompt, **kwargs):
+        call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        # Trailing comma after "description" — strict json.loads would reject.
+        return (
+            '{"name": "fig-1", "type": "Chart", '
+            '"description": "ok",}'
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 1
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "fig-1"
+        assert result["type"] == "Chart"
+        assert result["description"] == "ok"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_analyze_worker_marks_doc_failed_on_multimodal_error(tmp_path):
+    """When analyze_multimodal raises MultimodalAnalysisError, the worker
+    must upsert DocStatus.FAILED with a diagnostic error_msg instead of
+    letting the document stay stuck in ANALYZING."""
+    import asyncio
+    from dataclasses import asdict
+    from lightrag.base import DocProcessingStatus, DocStatus
+    from lightrag.pipeline import _BatchRunContext
+
+    async def vlm_func(prompt, **kwargs):
+        return ""
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag.initialize_storages()
+    try:
+        doc_id = "doc-fail-1"
+        file_path = "demo.pdf"
+        status_doc = DocProcessingStatus(
+            content_summary="",
+            content_length=0,
+            file_path=file_path,
+            status=DocStatus.PENDING,
+            created_at="2026-05-14T00:00:00Z",
+            updated_at="2026-05-14T00:00:00Z",
+            track_id="t",
+            content_hash="h",
+        )
+        await rag.doc_status.upsert({doc_id: asdict(status_doc)})
+
+        async def _raise_mm_error(**_kwargs):
+            from lightrag.exceptions import MultimodalAnalysisError
+
+            raise MultimodalAnalysisError("forced failure for test")
+
+        # Patch instance method so the worker's call site picks the mock.
+        rag.analyze_multimodal = _raise_mm_error  # type: ignore[assignment]
+
+        ctx = _BatchRunContext(
+            pipeline_status={
+                "latest_message": "",
+                "history_messages": [],
+                "cancellation_requested": False,
+            },
+            pipeline_status_lock=asyncio.Lock(),
+            semaphore=asyncio.Semaphore(1),
+            total_files=1,
+            q_native=asyncio.Queue(),
+            q_mineru=asyncio.Queue(),
+            q_docling=asyncio.Queue(),
+            q_analyze=asyncio.Queue(),
+            q_process=asyncio.Queue(),
+        )
+        worker = asyncio.create_task(rag._analyze_worker(ctx))
+        await ctx.q_analyze.put((doc_id, status_doc, {"content": "body"}))
+        await ctx.q_analyze.join()
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+        refreshed = await rag.doc_status.get_by_id(doc_id)
+        # doc_status backends return either a dict or a dataclass-style obj.
+        if not isinstance(refreshed, dict):
+            refreshed = asdict(refreshed)
+        assert refreshed["status"] == DocStatus.FAILED
+        assert "forced failure for test" in (refreshed.get("error_msg") or "")
+        # The worker must NOT advance to q_process when the analyze step
+        # raises — otherwise process_single_document would run on a
+        # half-baked document.
+        assert ctx.q_process.empty()
+    finally:
+        await rag.finalize_storages()

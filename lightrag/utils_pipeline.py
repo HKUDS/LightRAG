@@ -71,11 +71,23 @@ def build_chunks_dict_from_chunking_result(
                 f"{doc_id}:{order}:{chunk_content}",
                 prefix="chunk-",
             )
+        # Preserve any pre-populated cache ids on dp (multimodal chunks
+        # arrive with analysis cache ids already attached so document
+        # deletion can find them via the per-chunk llm_cache_list).
+        existing_cache_list = dp.get("llm_cache_list")
+        seed_cache_list: list[str] = []
+        if isinstance(existing_cache_list, list):
+            seen: set[str] = set()
+            for entry in existing_cache_list:
+                key = str(entry or "").strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    seed_cache_list.append(key)
         chunks[chunk_key] = {
             **dp,
             "full_doc_id": doc_id,
             "file_path": file_path,
-            "llm_cache_list": [],
+            "llm_cache_list": seed_cache_list,
         }
     return chunks
 
