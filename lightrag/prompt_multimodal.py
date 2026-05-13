@@ -97,7 +97,7 @@ MULTIMODAL_PROMPTS[
    - Quantitative findings if the image is a chart/diagram (cite specific values when visible).
    - Visible text content that carries meaning (labels, annotations, axis titles).
    - Use specific proper nouns rather than pronouns whenever possible.
-   - If the image clearly supports the Leading/Trailing Text, briefly note that relationship at the end. Otherwise omit.
+   - If the image clearly supports the surrounding context(eading or trailing text), briefly note that relationship at the end. Otherwise omit.
 
 6. OUTPUT RULES
    - Return ONE valid JSON object only.
@@ -175,7 +175,7 @@ MULTIMODAL_PROMPTS[
    - The most important patterns, trends, comparisons, or outliers — cite specific values from the table to support each observation (e.g. "revenue grew from $1.2M in Q1 to $3.8M in Q4").
    - Any totals, subtotals, averages, or computed columns and what they reveal.
    - Use specific proper nouns (entity names, column names) instead of pronouns.
-   - If the table clearly illustrates or supports the Leading/Trailing Text, briefly note that relationship at the end. Otherwise omit.
+   - If the table clearly illustrates or supports the surrounding context(eading or trailing text), briefly note that relationship at the end. Otherwise omit.
    - Do not restate the table cell by cell or row by row; focus on interpretation.
 
 5. OUTPUT RULES
@@ -274,7 +274,7 @@ MULTIMODAL_PROMPTS[
    - The named formula it corresponds to, if any, and where it is commonly used.
    - Briefly clarify only those symbols whose meaning is non-obvious or domain-specific, OR whose meaning is fixed by the Leading/Trailing Text. Do NOT enumerate every symbol mechanically.
    - Use specific proper nouns (variable names, entity names) instead of pronouns.
-   - If the equation clearly illustrates or supports the Leading/Trailing Text, briefly note that relationship at the end. Otherwise omit.
+   - If the equation clearly illustrates or supports the surrounding context(eading or trailing text), briefly note that relationship at the end. Otherwise omit.
 
 6. OUTPUT RULES
    - Return ONE valid JSON object only.
