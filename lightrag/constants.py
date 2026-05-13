@@ -241,6 +241,21 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
 
 DEFAULT_MAX_PARALLEL_ANALYZE = 2  # Multimodal analysis (VLM) concurrency
 
+# Multimodal analysis / chunk thresholds
+# Minimum token count retained when truncating a multimodal chunk's
+# description to fit within DEFAULT_MAX_EXTRACT_INPUT_TOKENS.  Falling below
+# this floor leaves the description too thin to ground a useful entity
+# description, so the pipeline raises instead of producing a stub.
+DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS = 100
+# Minimum image side (width or height) in pixels accepted for VLM analysis.
+# Anything smaller is treated as decorative (icons, separators, etc.) and
+# written as status="skipped".
+DEFAULT_MM_IMAGE_MIN_PIXEL = 32
+# Priority used for all multimodal analysis LLM calls.  Higher numbers run
+# behind entity extraction (priority 10) so a busy ingestion queue still
+# prefers KG-building work.
+DEFAULT_MM_ANALYSIS_PRIORITY = 12
+
 # Embedding configuration defaults
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations

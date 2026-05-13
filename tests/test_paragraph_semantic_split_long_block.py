@@ -225,7 +225,7 @@ def test_public_chunking_keeps_unsplit_heading_without_part_suffix(tmp_path):
     )
 
     assert len(chunks) == 1
-    assert chunks[0]["heading"] == "Heading"
+    assert chunks[0]["heading"]["heading"] == "Heading"
 
 
 @pytest.mark.offline
@@ -253,12 +253,12 @@ def test_public_chunking_adds_part_suffixes_for_anchor_split(tmp_path):
         chunk_overlap_token_size=0,
     )
 
-    assert [chunk["heading"] for chunk in chunks] == [
+    assert [chunk["heading"]["heading"] for chunk in chunks] == [
         "Heading [part 1]",
         "Mid anchor. [part 2]",
     ]
     assert all(
-        all("[part " not in parent for parent in chunk["parent_headings"])
+        all("[part " not in parent for parent in chunk["heading"]["parent_headings"])
         for chunk in chunks
     )
 
@@ -316,7 +316,7 @@ def test_public_chunking_adds_part_suffixes_for_long_text_fallback(
         chunk_overlap_token_size=0,
     )
 
-    assert [chunk["heading"] for chunk in chunks] == [
+    assert [chunk["heading"]["heading"] for chunk in chunks] == [
         "Heading [part 1]",
         "Heading [part 2]",
         "Heading [part 3]",

@@ -71,11 +71,23 @@ def build_chunks_dict_from_chunking_result(
                 f"{doc_id}:{order}:{chunk_content}",
                 prefix="chunk-",
             )
+        # Preserve any pre-populated cache ids on dp (multimodal chunks
+        # arrive with analysis cache ids already attached so document
+        # deletion can find them via the per-chunk llm_cache_list).
+        existing_cache_list = dp.get("llm_cache_list")
+        seed_cache_list: list[str] = []
+        if isinstance(existing_cache_list, list):
+            seen: set[str] = set()
+            for entry in existing_cache_list:
+                key = str(entry or "").strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    seed_cache_list.append(key)
         chunks[chunk_key] = {
             **dp,
             "full_doc_id": doc_id,
             "file_path": file_path,
-            "llm_cache_list": [],
+            "llm_cache_list": seed_cache_list,
         }
     return chunks
 
@@ -588,82 +600,9 @@ def normalize_parser_result_to_content_list(
         return None
 
 
-# ---------------------------------------------------------------------------
-# Multimodal entity augmentation
-# ---------------------------------------------------------------------------
-
-
-def augment_chunk_results_with_mm_entities(
-    chunk_results: list,
-    mm_specs: list[dict[str, Any]],
-    file_path: str,
-) -> list:
-    """Inject modality object entities and relations into merge inputs."""
-    if not mm_specs:
-        return chunk_results
-
-    extracted_by_chunk: dict[str, set[str]] = {}
-    for maybe_nodes, _ in chunk_results:
-        if not isinstance(maybe_nodes, dict):
-            continue
-        for entity_name, entity_records in maybe_nodes.items():
-            if not isinstance(entity_records, list):
-                continue
-            for rec in entity_records:
-                if not isinstance(rec, dict):
-                    continue
-                source_id = str(rec.get("source_id") or "")
-                if not source_id:
-                    continue
-                extracted_by_chunk.setdefault(source_id, set()).add(str(entity_name))
-
-    now_ts = int(time.time())
-    mm_nodes: dict[str, list[dict[str, Any]]] = {}
-    mm_edges: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for spec in mm_specs:
-        src = str(spec["entity_name"])
-        chunk_id = str(spec["chunk_id"])
-        kind = str(spec["kind"])
-        title = str(spec.get("name") or src)
-        caption_text = str(spec.get("caption_text") or "").strip()
-        heading = str(spec.get("heading") or "").strip()
-        summary = str(spec.get("summary") or "").strip()
-
-        mm_nodes.setdefault(src, []).append(
-            {
-                "entity_name": src,
-                "entity_type": kind,
-                "description": summary or f"{kind} object: {title}",
-                "source_id": chunk_id,
-                "file_path": file_path,
-                "timestamp": now_ts,
-            }
-        )
-
-        targets = extracted_by_chunk.get(chunk_id, set())
-        for tgt in sorted(targets):
-            if tgt == src:
-                continue
-            desc = (
-                f"Entity `{tgt}` is associated with {kind} `{title}` "
-                f"in section `{heading or 'unknown'}`."
-            )
-            if caption_text:
-                desc += f" Captions: {caption_text}."
-            edge_key = tuple(sorted((src, tgt)))
-            mm_edges.setdefault(edge_key, []).append(
-                {
-                    "src_id": src,
-                    "tgt_id": tgt,
-                    "weight": 1.0,
-                    "description": desc,
-                    "keywords": "belongs to,part of,contained in",
-                    "source_id": chunk_id,
-                    "file_path": file_path,
-                    "timestamp": now_ts,
-                }
-            )
-
-    if mm_nodes or mm_edges:
-        chunk_results = list(chunk_results) + [(mm_nodes, mm_edges)]
-    return chunk_results
+# Multimodal entity injection used to live here as a centralized post-pass
+# over all chunk_results. It has been moved into
+# :func:`lightrag.operate.extract_entities._process_single_content` so each
+# multimodal chunk injects its own entity/relation records while still under
+# its concurrency slot.  The chunk's ``sidecar.type`` (drawing/table/equation)
+# is the dispatch key; see operate.py for the new logic.

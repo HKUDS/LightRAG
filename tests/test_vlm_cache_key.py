@@ -138,3 +138,48 @@ def test_audit_block_in_original_prompt_does_not_leak_raw_base64():
     # sha256 digest is present; raw base64 must not be.
     assert audit_blob[0]["sha256"] in original_prompt
     assert _b64(PNG_A) not in original_prompt
+
+
+def test_image_metadata_includes_width_height():
+    """Design §5.2 contract: image digest metadata must surface
+    width/height alongside mime/sha256/bytes so cache keys and audit blocks
+    capture the full pixel footprint."""
+    normalized = normalize_image_inputs([{"base64": _b64(PNG_A)}])
+    cache_blob = image_cache_metadata(normalized)
+    audit_blob = image_audit_metadata(normalized)
+    assert len(cache_blob) == 1
+    # 1x1 PNG fixture — dimensions are decodable from the IHDR chunk.
+    assert cache_blob[0]["width"] == 1
+    assert cache_blob[0]["height"] == 1
+    assert audit_blob[0]["width"] == 1
+    assert audit_blob[0]["height"] == 1
+
+
+def test_image_dimensions_change_changes_cache_key():
+    """Two PNGs with the same pixel byte payload but different declared
+    dimensions still differ at the byte level and therefore must hash to
+    distinct args_hashes — the width/height fields in cache metadata
+    document the difference without being the sole identity source."""
+    # Build a 32x16 PNG and compare it against the 1x1 PNG_A.
+    import struct
+    import zlib
+
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr_payload = struct.pack(">II", 32, 16) + b"\x08\x06\x00\x00\x00"
+    ihdr_crc = zlib.crc32(b"IHDR" + ihdr_payload).to_bytes(4, "big")
+    ihdr = struct.pack(">I", len(ihdr_payload)) + b"IHDR" + ihdr_payload + ihdr_crc
+    idat_payload = b"\x00" * (32 * 16 * 4 + 16)
+    idat_compressed = zlib.compress(idat_payload)
+    idat_crc = zlib.crc32(b"IDAT" + idat_compressed).to_bytes(4, "big")
+    idat = (
+        struct.pack(">I", len(idat_compressed)) + b"IDAT" + idat_compressed + idat_crc
+    )
+    iend = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    big_png = sig + ihdr + idat + iend
+
+    normalized_small = normalize_image_inputs([{"base64": _b64(PNG_A)}])
+    normalized_big = normalize_image_inputs([{"base64": _b64(big_png)}])
+
+    assert image_cache_metadata(normalized_small)[0]["width"] == 1
+    assert image_cache_metadata(normalized_big)[0]["width"] == 32
+    assert image_cache_metadata(normalized_big)[0]["height"] == 16

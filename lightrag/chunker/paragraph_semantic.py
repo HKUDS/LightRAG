@@ -225,6 +225,16 @@ def _split_html_rows_by_tokens(
     return chunks
 
 
+def _dedup_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in values:
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
 def _new_block(
     *,
     heading: str,
@@ -233,6 +243,7 @@ def _new_block(
     paragraphs: list[dict[str, Any]],
     table_chunk_role: str,
     tokenizer: Tokenizer,
+    blockids: list[str] | None = None,
 ) -> dict[str, Any]:
     content = "\n".join(p["text"] for p in paragraphs)
     return {
@@ -243,6 +254,9 @@ def _new_block(
         "content": content,
         "tokens": _count_tokens(tokenizer, content),
         "table_chunk_role": table_chunk_role,
+        # Ordered list of source blockids (deduped). Empty when the input
+        # blocks.jsonl row did not carry a blockid (raw/legacy input).
+        "blockids": _dedup_preserving_order(list(blockids or [])),
     }
 
 
@@ -550,6 +564,7 @@ def _expand_block_with_table_splits(
                 paragraphs=cur_paras,
                 table_chunk_role=cur_role,
                 tokenizer=tokenizer,
+                blockids=block.get("blockids"),
             )
         )
         cur_paras.clear()
@@ -569,6 +584,7 @@ def _expand_block_with_table_splits(
                 paragraphs=paragraphs,
                 table_chunk_role=table_chunk_role,
                 tokenizer=tokenizer,
+                blockids=block.get("blockids"),
             )
         )
 
@@ -726,6 +742,7 @@ def _expand_block_with_table_splits(
                         paragraphs=[chunk_para],
                         table_chunk_role="middle",
                         tokenizer=tokenizer,
+                        blockids=block.get("blockids"),
                     )
                 )
 
@@ -749,6 +766,7 @@ def _split_long_block(
     target_max: int,
     target_ideal: int,
     chunk_overlap_token_size: int = 100,
+    blockids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Split an oversized block into balanced sub-blocks at short-paragraph anchors.
 
@@ -776,6 +794,7 @@ def _split_long_block(
                 paragraphs=paragraphs,
                 table_chunk_role=table_chunk_role,
                 tokenizer=tokenizer,
+                blockids=blockids,
             )
         ]
 
@@ -900,6 +919,7 @@ def _split_long_block(
                     paragraphs=paragraphs,
                     table_chunk_role=table_chunk_role,
                     tokenizer=tokenizer,
+                    blockids=blockids,
                 )
             ]
 
@@ -920,6 +940,7 @@ def _split_long_block(
                     # construction (mirrors the anchor-split path below).
                     table_chunk_role=table_chunk_role if i == 0 else "none",
                     tokenizer=tokenizer,
+                    blockids=blockids,
                 )
             )
         return sub_blocks
@@ -956,6 +977,7 @@ def _split_long_block(
                     paragraphs=slice_paras,
                     table_chunk_role=cur_role,
                     tokenizer=tokenizer,
+                    blockids=blockids,
                 )
             )
         # Anchor becomes the first paragraph (and heading) of the next sub-block.
@@ -978,6 +1000,7 @@ def _split_long_block(
                 paragraphs=tail,
                 table_chunk_role=cur_role,
                 tokenizer=tokenizer,
+                blockids=blockids,
             )
         )
 
@@ -999,6 +1022,7 @@ def _split_long_block(
                     target_max=target_max,
                     target_ideal=target_ideal,
                     chunk_overlap_token_size=chunk_overlap_token_size,
+                    blockids=sub.get("blockids") or blockids,
                 )
             )
         else:
@@ -1031,6 +1055,9 @@ def _merged_pair(
     base = left if keep == "left" else right
     paragraphs = list(left["paragraphs"]) + list(right["paragraphs"])
     content = left["content"] + "\n\n" + right["content"]
+    merged_blockids = _dedup_preserving_order(
+        list(left.get("blockids") or []) + list(right.get("blockids") or [])
+    )
     return {
         "heading": base["heading"],
         "parent_headings": list(base["parent_headings"]),
@@ -1039,6 +1066,7 @@ def _merged_pair(
         "content": content,
         "tokens": _count_tokens(tokenizer, content),
         "table_chunk_role": "none",
+        "blockids": merged_blockids,
     }
 
 
@@ -1390,6 +1418,7 @@ def chunking_by_paragraph_semantic(
         paragraphs = _block_to_paragraphs(text)
         if not paragraphs:
             continue
+        row_blockid = str(row.get("blockid") or "").strip()
         initial.append(
             _new_block(
                 heading=row.get("heading", "") or "",
@@ -1398,6 +1427,7 @@ def chunking_by_paragraph_semantic(
                 paragraphs=paragraphs,
                 table_chunk_role="none",
                 tokenizer=tokenizer,
+                blockids=[row_blockid] if row_blockid else None,
             )
         )
 
@@ -1429,6 +1459,7 @@ def chunking_by_paragraph_semantic(
                     target_max=target_max,
                     target_ideal=target_ideal,
                     chunk_overlap_token_size=overlap,
+                    blockids=split_blk.get("blockids") or blk.get("blockids"),
                 )
             )
         after_c.extend(_apply_part_suffixes(block_after_c))
@@ -1442,22 +1473,31 @@ def chunking_by_paragraph_semantic(
         small_tail_threshold=small_tail_threshold,
     )
 
-    # Convert internal block dicts to the chunking_by_token_size schema,
-    # enriched with heading metadata so KG extraction has access to the
-    # document hierarchy.
+    # Convert internal block dicts to the new chunk schema: nested heading
+    # dict + sidecar block carrying source blockid refs so the multimodal
+    # pipeline (and document-delete cache cleanup) can trace each chunk
+    # back to its blocks.jsonl row(s).
     chunks: list[dict[str, Any]] = []
     for idx, blk in enumerate(final):
         body = blk["content"].strip()
         if not body:
             continue
-        chunks.append(
-            {
-                "tokens": blk["tokens"],
-                "content": body,
-                "chunk_order_index": idx,
-                "heading": blk["heading"],
-                "parent_headings": list(blk["parent_headings"]),
-                "level": blk["level"],
+        chunk_dict: dict[str, Any] = {
+            "tokens": blk["tokens"],
+            "content": body,
+            "chunk_order_index": idx,
+            "heading": {
+                "level": int(blk.get("level") or 0),
+                "heading": str(blk.get("heading") or ""),
+                "parent_headings": list(blk.get("parent_headings") or []),
+            },
+        }
+        blockids = blk.get("blockids") or []
+        if blockids:
+            chunk_dict["sidecar"] = {
+                "type": "block",
+                "id": blockids[0],
+                "refs": [{"type": "block", "id": bid} for bid in blockids],
             }
-        )
+        chunks.append(chunk_dict)
     return chunks

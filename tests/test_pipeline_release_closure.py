@@ -1150,21 +1150,33 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
     """
 
     async def _run():
-        call_count = {"n": 0}
+        vlm_calls = {"n": 0}
+        extract_calls = {"n": 0}
 
         async def _vlm(_prompt, **_kwargs):
-            call_count["n"] += 1
+            vlm_calls["n"] += 1
             return json.dumps(
                 {
-                    "name": "Item",
-                    "summary": "ok",
-                    "detail_description": "details",
-                    "grounded": True,
-                    "grounding_reason": "visual_evidence",
+                    "name": "Image",
+                    "type": "Chart",
+                    "description": "details",
                 }
             )
 
-        rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
+        async def _extract(_prompt, **_kwargs):
+            extract_calls["n"] += 1
+            return json.dumps(
+                {
+                    "name": "Item",
+                    "description": "table content summary",
+                }
+            )
+
+        rag = _new_rag(
+            tmp_path,
+            vlm_llm_model_func=_vlm,
+            extract_llm_model_func=_extract,
+        )
         await rag.initialize_storages()
 
         # Minimal blocks file with valid meta.
@@ -1180,8 +1192,7 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
             encoding="utf-8",
         )
 
-        # Drawings sidecar with ONE item that already has llm_analyze_result
-        # (simulates a prior pass).
+        # Drawings sidecar with ONE item already analyzed (status=success).
         drawings = tmp_path / "demo.drawings.json"
         drawings.write_text(
             json.dumps(
@@ -1191,11 +1202,14 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
                         "id1": {
                             "id": "id1",
                             "caption": "fig1",
+                            "path": "missing.png",
                             "llm_analyze_result": {
                                 "name": "Existing",
-                                "summary": "from prior run",
-                                "detail_description": "kept as-is",
-                                "grounded": True,
+                                "type": "Photo",
+                                "description": "kept as-is",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
                             },
                         }
                     },
@@ -1228,26 +1242,23 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        # Second pass enables BOTH images and tables; drawings should be
-        # skipped (already analyzed) and only tables should hit the VLM.
         await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="it")
 
         drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
         existing = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
         # Existing result preserved verbatim — VLM was NOT called for this item.
         assert existing["name"] == "Existing"
-        assert existing["summary"] == "from prior run"
+        assert existing["status"] == "success"
 
         tables_payload = json.loads(tables.read_text(encoding="utf-8"))
         new_result = tables_payload["tables"]["tbl1"]["llm_analyze_result"]
-        # The newly-enabled modality was analyzed.
         assert new_result["name"] == "Item"
-        assert new_result["summary"] == "ok"
+        assert new_result["status"] == "success"
 
-        # Exactly ONE VLM call total (for the table).  Per-item
-        # ``llm_analyze_result`` already-present is the idempotency guard:
-        # the count would be 2 if it were missing.
-        assert call_count["n"] == 1
+        # Drawings were idempotently skipped (VLM never called); tables took
+        # the EXTRACT role (per design §3.1), not VLM.
+        assert vlm_calls["n"] == 0
+        assert extract_calls["n"] == 1
 
     asyncio.run(_run())
 
@@ -1950,10 +1961,10 @@ def test_three_phase_status_flow(tmp_path, monkeypatch):
 
 
 @pytest.mark.offline
-def test_analyze_multimodal_invalid_json_skips_without_retry(tmp_path):
-    """The business-level JSON-schema retry was deliberately removed; an
-    invalid VLM response must produce a conservative writeback after exactly
-    one VLM call (network-level retries remain inside the provider)."""
+def test_analyze_multimodal_invalid_json_hard_fails(tmp_path):
+    """An invalid VLM response is a hard failure under the new contract:
+    the sidecar item gets status='failure' and MultimodalAnalysisError
+    bubbles up so the document fails (no silent conservative fallback)."""
 
     async def _run():
         calls = {"n": 0}
@@ -1964,13 +1975,27 @@ def test_analyze_multimodal_invalid_json_skips_without_retry(tmp_path):
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_broken_vlm)
         await rag.initialize_storages()
-        # 1x1 transparent PNG for grounded image-path flow
+        # 64x64 PNG so the image-pixel skip guard does NOT short-circuit
+        # before the VLM call.
         img_path = tmp_path / "img1.png"
-        img_path.write_bytes(
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00"
-            b"\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
-        )
+        import struct
+        import zlib
+
+        def _png_bytes(w: int, h: int) -> bytes:
+            sig = b"\x89PNG\r\n\x1a\n"
+            ihdr = struct.pack(">II", w, h) + b"\x08\x06\x00\x00\x00"
+            crc = zlib.crc32(b"IHDR" + ihdr).to_bytes(4, "big")
+            ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + crc
+            idat_payload = b"\x00" * (w * h * 4 + h)
+            compressed = zlib.compress(idat_payload)
+            crc_idat = zlib.crc32(b"IDAT" + compressed).to_bytes(4, "big")
+            idat_chunk = (
+                struct.pack(">I", len(compressed)) + b"IDAT" + compressed + crc_idat
+            )
+            iend_chunk = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+            return sig + ihdr_chunk + idat_chunk + iend_chunk
+
+        img_path.write_bytes(_png_bytes(64, 64))
 
         blocks = tmp_path / "demo.blocks.jsonl"
         blocks.write_text(
@@ -2009,15 +2034,21 @@ def test_analyze_multimodal_invalid_json_skips_without_retry(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="ite")
+        from lightrag.exceptions import MultimodalAnalysisError
+
+        with pytest.raises(MultimodalAnalysisError):
+            await rag.analyze_multimodal(
+                "doc-1", "demo.pdf", parsed, process_options="i"
+            )
 
         drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
         # No retry: VLM mock called exactly once.
         assert calls["n"] == 1
-        # Conservative writeback under invalid_json_schema reason.
-        assert result["grounded"] is False
-        assert result["grounding_reason"] == "invalid_json_schema"
+        # Sidecar carries a failure marker so a re-run sees the prior failure
+        # and does not silently consume it.
+        assert result["status"] == "failure"
+        assert "missing or invalid field" in result["message"]
 
     asyncio.run(_run())
 
@@ -2088,29 +2119,34 @@ def test_relationship_vdb_timeout_has_120s_floor():
 
 
 @pytest.mark.offline
-def test_analyze_multimodal_normalizes_string_grounded_to_bool(tmp_path):
+def test_analyze_multimodal_unknown_image_type_folds_to_other(tmp_path):
+    """Model output with an out-of-enum ``type`` is folded to ``Other``
+    instead of failing the document (per design §3.4)."""
+
     async def _run():
         async def _vlm(_prompt, **_kwargs):
             return json.dumps(
                 {
                     "name": "Figure A",
-                    "image_type": "diagram",
-                    "summary": "ok",
-                    "detail_description": "details",
-                    "grounded": "true",
-                    "grounding_reason": "visual_evidence",
+                    "type": "diagram",  # not in IMAGE_TYPE_ENUM
+                    "description": "details",
                 },
                 ensure_ascii=False,
             )
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
         await rag.initialize_storages()
+        import struct
+        import zlib
+
+        def _png(w, h):
+            sig = b"\x89PNG\r\n\x1a\n"
+            ihdr = struct.pack(">II", w, h) + b"\x08\x06\x00\x00\x00"
+            crc = zlib.crc32(b"IHDR" + ihdr).to_bytes(4, "big")
+            return sig + struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + crc
+
         img_path = tmp_path / "img1.png"
-        img_path.write_bytes(
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00"
-            b"\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
-        )
+        img_path.write_bytes(_png(64, 64))
 
         blocks = tmp_path / "demo.blocks.jsonl"
         blocks.write_text(
@@ -2149,24 +2185,39 @@ def test_analyze_multimodal_normalizes_string_grounded_to_bool(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="ite")
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="i")
 
         payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = payload["drawings"]["id1"]["llm_analyze_result"]
-        assert result["grounded"] is True
-        assert isinstance(result["grounded"], bool)
+        assert result["status"] == "success"
+        assert result["type"] == "Other"
+        assert result["description"] == "details"
+        assert "analyze_time" in result
 
     asyncio.run(_run())
 
 
 @pytest.mark.offline
-def test_analyze_multimodal_without_image_uses_conservative_output(tmp_path):
+def test_analyze_multimodal_skips_tiny_image_without_vlm_call(tmp_path):
+    """Images smaller than VLM_MIN_IMAGE_PIXEL (default 32px) are flagged
+    status=skipped without invoking the VLM."""
+
     async def _run():
+        calls = {"n": 0}
+
         async def _vlm(_prompt, **_kwargs):
-            return '{"name":"X","summary":"hallucinated rich details","detail_description":"very specific claims","grounded":false}'
+            calls["n"] += 1
+            return "{}"
 
         rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
         await rag.initialize_storages()
+        # 1x1 PNG.
+        img_path = tmp_path / "tiny.png"
+        img_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00"
+            b"\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
 
         blocks = tmp_path / "demo.blocks.jsonl"
         blocks.write_text(
@@ -2186,10 +2237,13 @@ def test_analyze_multimodal_without_image_uses_conservative_output(tmp_path):
                 {
                     "version": "1.0",
                     "drawings": {
-                        "id1": {"id": "id1", "caption": "图1 测试图", "footnotes": []}
+                        "id1": {
+                            "id": "id1",
+                            "caption": "tiny",
+                            "path": str(img_path),
+                        }
                     },
-                },
-                ensure_ascii=False,
+                }
             ),
             encoding="utf-8",
         )
@@ -2200,13 +2254,13 @@ def test_analyze_multimodal_without_image_uses_conservative_output(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="ite")
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="i")
 
         payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = payload["drawings"]["id1"]["llm_analyze_result"]
-        assert result["grounded"] is False
-        assert "Conservative summary only" in result["summary"]
-        assert "missing_image" in result["detail_description"]
+        assert result["status"] == "skipped"
+        assert "smaller than" in result["message"]
+        assert calls["n"] == 0
 
     asyncio.run(_run())
 
@@ -2340,19 +2394,24 @@ def test_write_lightrag_document_strips_parser_hint_from_artifact_names(
 @pytest.mark.offline
 def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
     async def _run():
-        async def _vlm(_prompt, **_kwargs):
+        # Tables now route to the EXTRACT role, not VLM (per design §3.1).
+        async def _extract(_prompt, **_kwargs):
             return json.dumps(
                 {
-                    "name": "指标表",
-                    "summary": "该表展示符号、代表意义和单位的对应关系。",
-                    "detail_description": "表格包含三列，分别为符号、代表意义和单位，列出了 A、F、e 等符号。",
-                    "grounded": True,
-                    "grounding_reason": "textual_content_only",
+                    "name": "model_benchmark_metrics",
+                    "description": "表格包含三列，分别为符号、代表意义和单位，列出了 A、F、e 等符号。",
                 },
                 ensure_ascii=False,
             )
 
-        rag = _new_rag(tmp_path, vlm_llm_model_func=_vlm)
+        async def _vlm_unused(_prompt, **_kwargs):
+            raise AssertionError("VLM must not be called for tables")
+
+        rag = _new_rag(
+            tmp_path,
+            vlm_llm_model_func=_vlm_unused,
+            extract_llm_model_func=_extract,
+        )
         await rag.initialize_storages()
 
         blocks = tmp_path / "demo.blocks.jsonl"
@@ -2392,14 +2451,18 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
             "blocks_path": str(blocks),
             "content": "body",
         }
-        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="ite")
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="t")
 
         payload = json.loads(tables.read_text(encoding="utf-8"))
         result = payload["tables"]["id1"]["llm_analyze_result"]
-        assert result["grounded"] is True
-        assert result["grounding_reason"] == "textual_content_only"
-        assert "Conservative summary only" not in result["summary"]
-        assert "符号、代表意义和单位" in result["summary"]
+        assert result["status"] == "success"
+        assert result["name"] == "model_benchmark_metrics"
+        assert "符号、代表意义和单位" in result["description"]
+        # Cache id was written back so document delete can clean it up.
+        assert any(
+            cid.startswith("default:analysis:")
+            for cid in payload["tables"]["id1"].get("llm_cache_list", [])
+        )
 
     asyncio.run(_run())
 
@@ -2533,11 +2596,16 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
                             "id": "d1",
                             "heading": "章节A",
                             "caption": "图1 架构",
+                            "llm_cache_list": [
+                                "default:analysis:abc123",
+                            ],
                             "llm_analyze_result": {
                                 "name": "系统架构图",
-                                "image_type": "Chart",
-                                "summary": "展示系统模块",
-                                "detail_description": "模块交互关系",
+                                "type": "Chart",
+                                "description": "模块交互关系",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
                             },
                         }
                     },
@@ -2547,47 +2615,31 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
             encoding="utf-8",
         )
 
-        mm_chunks, mm_specs = rag._build_mm_chunks_from_sidecars(
+        mm_chunks = rag._build_mm_chunks_from_sidecars(
             doc_id="doc-1",
             file_path="demo.pdf",
             blocks_path=str(blocks),
             base_order_index=2,
         )
         assert len(mm_chunks) == 1
-        assert mm_chunks[0]["content"].startswith("Image_Name:")
-        assert len(mm_specs) == 1
-        assert mm_specs[0]["entity_name"].startswith("drawing-")
-
-        # Simulate extracted entities from same mm chunk
-        chunk_id = mm_specs[0]["chunk_id"]
-        chunk_results = [
-            (
-                {
-                    "系统模块": [
-                        {
-                            "entity_name": "系统模块",
-                            "entity_type": "concept",
-                            "description": "模块",
-                            "source_id": chunk_id,
-                            "file_path": "demo.pdf",
-                            "timestamp": 1,
-                        }
-                    ]
-                },
-                {},
-            )
-        ]
-        from lightrag.utils_pipeline import augment_chunk_results_with_mm_entities
-
-        augmented = augment_chunk_results_with_mm_entities(
-            chunk_results=chunk_results,
-            mm_specs=mm_specs,
-            file_path="demo.pdf",
-        )
-        assert len(augmented) == 2
-        mm_nodes, mm_edges = augmented[-1]
-        assert any(k.startswith("drawing-") for k in mm_nodes.keys())
-        assert mm_edges  # has relation from modality object to extracted entity
+        chunk = mm_chunks[0]
+        # New nested schema: heading + sidecar + llm_cache_list merge.
+        assert chunk["content"].startswith("- Image Name:")
+        assert "- Image Type:\nChart" in chunk["content"]
+        assert chunk["sidecar"] == {
+            "type": "drawing",
+            "id": "d1",
+            "refs": [{"type": "drawing", "id": "d1"}],
+        }
+        assert chunk["heading"] == {
+            "level": 0,
+            "heading": "章节A",
+            "parent_headings": [],
+        }
+        assert chunk["llm_cache_list"] == ["default:analysis:abc123"]
+        # Multimodal entity injection now lives in
+        # operate.extract_entities._process_single_content; this test only
+        # covers chunk assembly.
 
         await rag.finalize_storages()
 
@@ -2646,6 +2698,253 @@ def test_parse_docling_empty_service_result_raises_without_fallback(
                 file_path=str(src_file),
                 content_data={"content": "native fallback content"},
             )
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_build_chunks_dict_preserves_existing_llm_cache_list():
+    """Regression: build_chunks_dict_from_chunking_result must not overwrite
+    a chunk's pre-existing llm_cache_list — multimodal chunks arrive with
+    analysis cache ids already attached so document deletion can clean
+    them up via the per-chunk llm_cache_list."""
+    from lightrag.utils_pipeline import build_chunks_dict_from_chunking_result
+
+    chunking_result = [
+        {
+            "chunk_order_index": 0,
+            "content": "first chunk",
+            "tokens": 4,
+        },
+        {
+            "chunk_id": "doc-1-mm-drawing-000",
+            "chunk_order_index": 1,
+            "content": "second chunk",
+            "tokens": 6,
+            "llm_cache_list": [
+                "default:analysis:abc",
+                "default:analysis:abc",  # dedup verification
+                "default:analysis:def",
+            ],
+        },
+    ]
+
+    chunks = build_chunks_dict_from_chunking_result(
+        chunking_result, doc_id="doc-1", file_path="demo.pdf"
+    )
+    # Order is chunking_result order; locate by chunk_id.
+    mm_chunk = next(
+        v for v in chunks.values() if v.get("chunk_id") == "doc-1-mm-drawing-000"
+    )
+    text_chunk = next(
+        v for v in chunks.values() if v.get("chunk_id") != "doc-1-mm-drawing-000"
+    )
+    assert mm_chunk["llm_cache_list"] == [
+        "default:analysis:abc",
+        "default:analysis:def",
+    ]
+    # Plain text chunks still start with an empty list (no pre-existing ids).
+    assert text_chunk["llm_cache_list"] == []
+
+
+@pytest.mark.offline
+def test_build_mm_chunks_respects_process_options_filter(tmp_path):
+    """Regression: _build_mm_chunks_from_sidecars must gate sidecar reads
+    by the active process_options.  A document re-processed after opting
+    out of i/t/e MUST NOT pick up stale success results from a prior pass.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "meta", "format_version": "1.0"}),
+                    json.dumps({"type": "content", "content": "body"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        # Both modalities carry a stale ``success`` from a prior pass.
+        drawings = tmp_path / "demo.drawings.json"
+        drawings.write_text(
+            json.dumps(
+                {
+                    "drawings": {
+                        "d1": {
+                            "id": "d1",
+                            "llm_analyze_result": {
+                                "name": "old",
+                                "type": "Chart",
+                                "description": "stale drawing",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        tables = tmp_path / "demo.tables.json"
+        tables.write_text(
+            json.dumps(
+                {
+                    "tables": {
+                        "t1": {
+                            "id": "t1",
+                            "llm_analyze_result": {
+                                "name": "old",
+                                "description": "stale table",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # process_options="t" → only tables are considered; the drawing
+        # success entry must NOT generate a chunk.
+        only_tables = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+            process_options="t",
+        )
+        assert len(only_tables) == 1
+        assert only_tables[0]["sidecar"]["type"] == "table"
+
+        # Empty/None process_options → no modalities active → no chunks.
+        none_active = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+            process_options="",
+        )
+        assert none_active == []
+
+        # Backwards-compat: callers that pass process_options=None see
+        # every modality (legacy behaviour for ad-hoc unit tests).
+        legacy = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+        )
+        assert {ch["sidecar"]["type"] for ch in legacy} == {"drawing", "table"}
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_strip_internal_multimodal_markup_cleans_table_id():
+    """Regression: parser-emitted ``<table id="tb-...">`` tags must have
+    their internal id stripped before the entity-extraction prompt sees
+    them. ``format`` / ``caption`` and the row body stay verbatim so the
+    extractor still recognizes the structured element."""
+    from lightrag.chunk_schema import (
+        strip_internal_multimodal_markup_for_extraction,
+    )
+
+    source = (
+        '<table id="tb-doc-1-0001" format="json" caption="Indicator metrics">'
+        '[["a","b"],["1","2"]]'
+        "</table>"
+    )
+    cleaned = strip_internal_multimodal_markup_for_extraction(source)
+    assert "tb-doc-1-0001" not in cleaned
+    assert 'format="json"' in cleaned
+    assert 'caption="Indicator metrics"' in cleaned
+    # Row body preserved.
+    assert '[["a","b"],["1","2"]]' in cleaned
+
+
+@pytest.mark.offline
+def test_reinsert_without_process_options_skips_stale_mm_chunks(tmp_path):
+    """Regression for the call-site fallback in process_single_document.
+
+    A document re-inserted without ``process_options`` is signalled by a
+    missing / falsy ``content_data["process_options"]`` field.  The
+    pipeline must pass ``""`` (not ``None``) to
+    ``_build_mm_chunks_from_sidecars`` so the builder honors the
+    "no modalities" contract: stale ``status="success"`` sidecar entries
+    from an earlier i/t/e pass MUST NOT be re-indexed.
+
+    The new builder happens to handle ``None`` by enabling every
+    modality for ad-hoc callers (unit tests), so this test pins the
+    call-site behaviour rather than the helper's default — passing the
+    same falsy value via ``or ""`` makes the intent explicit.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "meta", "format_version": "1.0"}),
+                    json.dumps({"type": "content", "content": "body"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        # Stale success from an earlier multimodal run.
+        drawings = tmp_path / "demo.drawings.json"
+        drawings.write_text(
+            json.dumps(
+                {
+                    "drawings": {
+                        "d1": {
+                            "id": "d1",
+                            "llm_analyze_result": {
+                                "name": "old",
+                                "type": "Chart",
+                                "description": "stale drawing",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # Simulate the call-site contract: ``content_data`` has no
+        # ``process_options`` key, so ``.get(...) or ""`` yields "".
+        content_data: dict[str, str] = {}
+        effective = (content_data or {}).get("process_options") or ""
+        assert effective == ""
+
+        mm_chunks = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+            process_options=effective,
+        )
+        assert mm_chunks == []
 
         await rag.finalize_storages()
 
