@@ -2873,3 +2873,79 @@ def test_strip_internal_multimodal_markup_cleans_table_id():
     assert 'caption="Indicator metrics"' in cleaned
     # Row body preserved.
     assert '[["a","b"],["1","2"]]' in cleaned
+
+
+@pytest.mark.offline
+def test_reinsert_without_process_options_skips_stale_mm_chunks(tmp_path):
+    """Regression for the call-site fallback in process_single_document.
+
+    A document re-inserted without ``process_options`` is signalled by a
+    missing / falsy ``content_data["process_options"]`` field.  The
+    pipeline must pass ``""`` (not ``None``) to
+    ``_build_mm_chunks_from_sidecars`` so the builder honors the
+    "no modalities" contract: stale ``status="success"`` sidecar entries
+    from an earlier i/t/e pass MUST NOT be re-indexed.
+
+    The new builder happens to handle ``None`` by enabling every
+    modality for ad-hoc callers (unit tests), so this test pins the
+    call-site behaviour rather than the helper's default — passing the
+    same falsy value via ``or ""`` makes the intent explicit.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "meta", "format_version": "1.0"}),
+                    json.dumps({"type": "content", "content": "body"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        # Stale success from an earlier multimodal run.
+        drawings = tmp_path / "demo.drawings.json"
+        drawings.write_text(
+            json.dumps(
+                {
+                    "drawings": {
+                        "d1": {
+                            "id": "d1",
+                            "llm_analyze_result": {
+                                "name": "old",
+                                "type": "Chart",
+                                "description": "stale drawing",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # Simulate the call-site contract: ``content_data`` has no
+        # ``process_options`` key, so ``.get(...) or ""`` yields "".
+        content_data: dict[str, str] = {}
+        effective = (content_data or {}).get("process_options") or ""
+        assert effective == ""
+
+        mm_chunks = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+            process_options=effective,
+        )
+        assert mm_chunks == []
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())

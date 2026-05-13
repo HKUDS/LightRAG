@@ -1842,12 +1842,21 @@ class _PipelineMixin:
                             ch.get("chunk_order_index"), int
                         ):
                             max_order = max(max_order, int(ch["chunk_order_index"]))
+                    # Default to "" (no modalities) when full_docs has no
+                    # ``process_options`` key for this doc: a reinsert that
+                    # omits i/t/e must NOT re-index stale successful sidecars
+                    # left over from an earlier multimodal run. The builder's
+                    # None branch is reserved for ad-hoc callers (unit tests)
+                    # that intentionally want every modality considered.
                     mm_chunks = self._build_mm_chunks_from_sidecars(
                         doc_id=doc_id,
                         file_path=file_path,
                         blocks_path=blocks_path,
                         base_order_index=max_order + 1,
-                        process_options=(content_data or {}).get("process_options"),
+                        process_options=(content_data or {}).get(
+                            "process_options"
+                        )
+                        or "",
                     )
                     if mm_chunks:
                         chunking_result = list(chunking_result) + mm_chunks
