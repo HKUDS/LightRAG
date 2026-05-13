@@ -3317,7 +3317,7 @@ class _PipelineMixin:
                 item_id: str,
                 item: dict[str, Any],
                 sidecar_dir: Path,
-            ) -> dict[str, Any]:
+            ) -> dict[str, Any] | None:
                 def _conservative_result(reason: str) -> dict[str, Any]:
                     base_name = item.get("caption") or item_id
                     modality = (
@@ -3435,11 +3435,15 @@ class _PipelineMixin:
                     else '{"name":"string","image_type":"string","summary":"string","detail_description":"string","grounded":"boolean","grounding_reason":"string"}'
                 )
                 if not vlm_process_enable:
+                    # Do NOT write back a conservative result here: persisting
+                    # llm_analyze_result would let the idempotency guard in the
+                    # outer dispatch skip this item forever, even after the
+                    # operator enables VLM and re-runs analysis.
                     logger.warning(
                         f"[analyze_multimodal] VLM_PROCESS_ENABLE=false, skipping "
                         f"{root_key}/{item_id} for d-id: {doc_id}"
                     )
-                    return _conservative_result("vlm_disabled")
+                    return None
 
                 img_payload = _build_image_payload(
                     item.get("path") or item.get("img_path") or item.get("image_path")
@@ -3502,6 +3506,7 @@ class _PipelineMixin:
                     mode="default",
                     cache_type="analysis",
                 )
+                fresh_response = False
                 if cached is not None:
                     result_text = cached[0]
                 else:
@@ -3518,7 +3523,27 @@ class _PipelineMixin:
                                 f"{root_key}/{item_id}: {msg_err}"
                             )
                             return _conservative_result("visual_call_failed")
+                    fresh_response = True
 
+                parsed = _extract_json_obj(str(result_text))
+                if not (
+                    parsed
+                    and isinstance(parsed.get("name"), str)
+                    and isinstance(parsed.get("summary"), str)
+                    and isinstance(parsed.get("detail_description"), str)
+                ):
+                    # Do NOT cache invalid responses: caching here would lock
+                    # the item into invalid_json_schema on every future run
+                    # until the cache is manually cleared.
+                    logger.warning(
+                        f"[analyze_multimodal] invalid VLM JSON for "
+                        f"{root_key}/{item_id}, skipping"
+                    )
+                    if evidence_mode == "none":
+                        return _conservative_result("missing_image")
+                    return _conservative_result("invalid_json_schema")
+
+                if fresh_response:
                     audit_blob = image_audit_metadata(normalized_images)
                     original_prompt = (
                         prompt
@@ -3537,21 +3562,6 @@ class _PipelineMixin:
                             chunk_id=None,
                         ),
                     )
-
-                parsed = _extract_json_obj(str(result_text))
-                if not (
-                    parsed
-                    and isinstance(parsed.get("name"), str)
-                    and isinstance(parsed.get("summary"), str)
-                    and isinstance(parsed.get("detail_description"), str)
-                ):
-                    logger.warning(
-                        f"[analyze_multimodal] invalid VLM JSON for "
-                        f"{root_key}/{item_id}, skipping"
-                    )
-                    if evidence_mode == "none":
-                        return _conservative_result("missing_image")
-                    return _conservative_result("invalid_json_schema")
 
                 if "grounded" in parsed:
                     parsed["grounded"] = _normalize_grounded_value(
@@ -3657,6 +3667,11 @@ class _PipelineMixin:
                                 logger.warning(
                                     f"[analyze_multimodal] item analyze failed: {root_key}/{item_id}: {result_obj}"
                                 )
+                                continue
+                            if result_obj is None:
+                                # Skip signal (e.g. VLM_PROCESS_ENABLE=false):
+                                # do not persist anything so re-runs after the
+                                # operator enables VLM will re-process the item.
                                 continue
                             item["llm_analyze_result"] = result_obj
                     sidecar_path.write_text(

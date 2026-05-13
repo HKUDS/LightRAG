@@ -128,6 +128,8 @@ def _write_sidecar_fixtures(tmp_path: Path) -> tuple[str, dict, Path]:
 async def test_vlm_process_enable_false_skips_with_warning(
     tmp_path, caplog, _propagate_lightrag_logger
 ):
+    """Disabled-VLM items must NOT be persisted: otherwise the idempotency
+    guard would lock the item out forever once the operator enables VLM."""
     call_log: list[dict] = []
     rag = _build_rag(
         tmp_path, vlm_process_enable=False, vlm_func=_make_vlm_mock(call_log)
@@ -147,13 +149,52 @@ async def test_vlm_process_enable_false_skips_with_warning(
         assert call_log == []
         assert any("VLM_PROCESS_ENABLE=false" in rec.message for rec in caplog.records)
 
-        # Conservative result still written back.
+        # No llm_analyze_result is persisted — re-running after enabling VLM
+        # must be able to re-process this item.
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         item = payload["drawings"]["dr-001"]
-        assert item["llm_analyze_result"]["grounded"] is False
-        assert item["llm_analyze_result"]["grounding_reason"] == "vlm_disabled"
+        assert "llm_analyze_result" not in item
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_vlm_disabled_then_enabled_reprocesses_item(tmp_path):
+    """Re-running analyze_multimodal after flipping VLM_PROCESS_ENABLE from
+    false to true must actually call the VLM and persist a real result."""
+    call_log: list[dict] = []
+    vlm_func = _make_vlm_mock(call_log)
+
+    rag_off = _build_rag(tmp_path, vlm_process_enable=False, vlm_func=vlm_func)
+    await rag_off.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        await rag_off.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert call_log == []
+    finally:
+        await rag_off.finalize_storages()
+
+    # Flip the master switch; reuse the same on-disk workspace.
+    rag_on = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag_on.initialize_storages()
+    try:
+        await rag_on.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 1
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        assert result["grounded"] is True
+    finally:
+        await rag_on.finalize_storages()
 
 
 @pytest.mark.asyncio
@@ -335,5 +376,82 @@ async def test_unsupported_vector_format_falls_back_with_warning(
         result = payload["drawings"]["dr-001"]["llm_analyze_result"]
         assert result["grounded"] is False
         assert result["grounding_reason"] == "missing_image"
+    finally:
+        await rag.finalize_storages()
+
+
+def _make_invalid_then_valid_vlm(call_log: list[dict]):
+    """Returns garbage on the first call, valid JSON on the second."""
+
+    async def vlm_func(prompt, **kwargs):
+        call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        if len(call_log) == 1:
+            return "this is not JSON at all"
+        return json.dumps(
+            {
+                "name": "fig-1",
+                "summary": "recovered",
+                "detail_description": "recovered detail",
+                "grounded": True,
+                "grounding_reason": "visual_evidence",
+            }
+        )
+
+    return vlm_func
+
+
+@pytest.mark.asyncio
+async def test_invalid_vlm_response_is_not_cached(tmp_path):
+    """Invalid VLM responses must NOT poison the analysis cache; the next
+    run for the same prompt+image must re-invoke the VLM."""
+    call_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=True,
+        vlm_func=_make_invalid_then_valid_vlm(call_log),
+    )
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+
+        # First run: VLM returns garbage -> conservative writeback, NO cache.
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 1
+
+        await rag.llm_response_cache.index_done_callback()
+        cache_file = (
+            Path(rag.working_dir) / rag.workspace / "kv_store_llm_response_cache.json"
+        )
+        if cache_file.exists():
+            cache_blob = json.loads(cache_file.read_text(encoding="utf-8"))
+            analysis_keys = [
+                k for k in cache_blob.keys() if k.startswith("default:analysis:")
+            ]
+            assert analysis_keys == [], (
+                f"invalid VLM response was cached: {analysis_keys}"
+            )
+
+        # Clear the conservative writeback so idempotency does not skip us,
+        # then re-run. The VLM must be invoked a second time (no cache hit).
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        payload["drawings"]["dr-001"].pop("llm_analyze_result", None)
+        sidecar_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 2
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        assert result["grounded"] is True
+        assert result["summary"] == "recovered"
     finally:
         await rag.finalize_storages()
