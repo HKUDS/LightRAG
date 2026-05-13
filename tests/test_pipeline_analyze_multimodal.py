@@ -432,15 +432,17 @@ async def test_invalid_vlm_response_is_not_cached(tmp_path):
             analysis_keys = [
                 k for k in cache_blob.keys() if k.startswith("default:analysis:")
             ]
-            assert analysis_keys == [], (
-                f"invalid VLM response was cached: {analysis_keys}"
-            )
+            assert (
+                analysis_keys == []
+            ), f"invalid VLM response was cached: {analysis_keys}"
 
         # Clear the conservative writeback so idempotency does not skip us,
         # then re-run. The VLM must be invoked a second time (no cache hit).
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         payload["drawings"]["dr-001"].pop("llm_analyze_result", None)
-        sidecar_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        sidecar_path.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
 
         await rag.analyze_multimodal(
             doc_id=doc_id,
