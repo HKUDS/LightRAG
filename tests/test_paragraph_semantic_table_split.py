@@ -306,10 +306,10 @@ def test_public_chunking_adds_part_suffixes_to_all_table_split_fragments(tmp_pat
     )
 
     assert len(chunks) > 1
-    assert [chunk["heading"] for chunk in chunks] == [
+    assert [chunk["heading"]["heading"] for chunk in chunks] == [
         f"Section [part {idx}]" for idx in range(1, len(chunks) + 1)
     ]
-    assert all("表格片段" not in chunk["heading"] for chunk in chunks)
+    assert all("表格片段" not in chunk["heading"]["heading"] for chunk in chunks)
 
 
 # ---------------------------------------------------------------------------

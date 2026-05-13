@@ -1871,7 +1871,9 @@ def enforce_chunk_token_limit_before_embedding(
             except Exception:
                 new_dp["tokens"] = max(1, int(len(piece) * 0.5))
 
-            # Keep heading/parent_headings/level unchanged; only split payload.
+            # Shallow-copy preserves the nested heading dict and sidecar
+            # block from the source chunk; only the payload (content/tokens
+            # /chunk_id) is rewritten per split slice.
             if isinstance(base_chunk_id, str) and base_chunk_id.strip():
                 new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
 
