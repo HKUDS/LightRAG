@@ -314,11 +314,18 @@ def _parse_docx_sync(
                 "caption": caption,
                 "footnotes": [],
             }
+            # Strip the "<base>.blocks.assets/" prefix from the path embedded in
+            # the rewritten <drawing /> tag for blocks.jsonl. The sidecar entry
+            # keeps the parsed_dir-relative path used by VLM image loading.
+            block_path_val = path_val
+            asset_prefix = f"{asset_dir.name}/"
+            if block_path_val.startswith(asset_prefix):
+                block_path_val = block_path_val[len(asset_prefix) :]
             return (
                 f'<drawing id="{_xml_attr_escape(dr_id)}" '
                 f'format="{_xml_attr_escape(fmt)}"'
                 f"{_caption_attr(caption)} "
-                f'path="{_xml_attr_escape(path_val)}" '
+                f'path="{_xml_attr_escape(block_path_val)}" '
                 f'src="{_xml_attr_escape(src_val)}" />'
             )
 
