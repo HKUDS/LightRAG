@@ -4074,53 +4074,33 @@ class _PipelineMixin:
         def _render(
             kind: str,
             name: str,
+            image_type: str,
             description: str,
             footnotes_joined: str,
             equation_body: str,
         ) -> str:
-            sections: list[str] = []
+            # NOTE: the `[Image Name]` / `[Table Name]` / `[Equation Name]`
+            # leading labels below are a contract consumed by
+            # ``lightrag.operate._parse_mm_display_name`` (regex
+            # ``_MM_DISPLAY_NAME_PATTERN``). If you rename or restructure
+            # these labels, update that regex too, or relation descriptions
+            # will silently fall back to sidecar ids. The
+            # ``test_parse_mm_display_name_on_real_builder_output``
+            # regression pins this contract end-to-end.
             if kind == "drawing":
-                sections.append(f"- Image Name:\n{name}")
-                # type field comes from caller via name interpolation: omit
-                # when blank because the prompt enforces it as required so a
-                # missing type should already have raised.
-                # The image type was inserted at call-site by the caller via a
-                # secondary call to this helper if needed.
-                if description:
-                    sections.append(f"- Image Description:\n{description}")
-                if footnotes_joined:
-                    sections.append(f"- Image Footnotes:\n{footnotes_joined}")
+                head = f"[Image Name]{name}\n[Image Type]{image_type}"
+                footnote_label = "Image Footnotes"
             elif kind == "table":
-                sections.append(f"- Table Name:\n{name}")
-                if description:
-                    sections.append(f"- Table Description:\n{description}")
-                if footnotes_joined:
-                    sections.append(f"- Table Footnotes:\n{footnotes_joined}")
-            else:
-                sections.append(f"- Equation Name:\n{name}")
-                if equation_body:
-                    sections.append(f"- Equation Body:\n{equation_body}")
-                if description:
-                    sections.append(f"- Equation Description:\n{description}")
-                if footnotes_joined:
-                    sections.append(f"- Equation Footnotes:\n{footnotes_joined}")
-            return "\n\n".join(sections).strip()
+                head = f"[Table Name]{name}"
+                footnote_label = "Table Footnotes"
+            else:  # equation
+                head = f"{equation_body}\n[Equation Name]{name}"
+                footnote_label = "Equation Footnotes"
 
-        def _render_image(
-            name: str,
-            image_type: str,
-            description: str,
-            footnotes_joined: str,
-        ) -> str:
-            sections = [
-                f"- Image Name:\n{name}",
-                f"- Image Type:\n{image_type}",
-            ]
-            if description:
-                sections.append(f"- Image Description:\n{description}")
+            sections = [head, description]
             if footnotes_joined:
-                sections.append(f"- Image Footnotes:\n{footnotes_joined}")
-            return "\n\n".join(sections).strip()
+                sections.append(f"[{footnote_label}]{footnotes_joined}")
+            return "\n\n".join(s for s in sections if s).strip()
 
         max_tokens = DEFAULT_MAX_EXTRACT_INPUT_TOKENS
         min_desc_tokens = DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS
@@ -4180,16 +4160,10 @@ class _PipelineMixin:
                 footnotes_joined = "; ".join(footnotes_list)
 
                 def _compose(desc: str) -> str:
-                    if kind == "drawing":
-                        return _render_image(
-                            name=name,
-                            image_type=image_type,
-                            description=desc,
-                            footnotes_joined=footnotes_joined,
-                        )
                     return _render(
                         kind=kind,
                         name=name,
+                        image_type=image_type,
                         description=desc,
                         footnotes_joined=footnotes_joined,
                         equation_body=equation_body,

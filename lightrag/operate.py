@@ -170,6 +170,31 @@ def _truncate_vdb_content(content: str, global_config: dict, content_label: str)
     return truncated_content
 
 
+_MM_DISPLAY_NAME_PATTERN = re.compile(
+    r"^\[(?:Image|Table|Equation) Name\](.+)$",
+    flags=re.MULTILINE,
+)
+
+
+def _parse_mm_display_name(content: str, fallback: str) -> str:
+    """Return the friendly name embedded in a multimodal chunk.
+
+    Matches the leading ``[Image Name]…`` / ``[Table Name]…`` /
+    ``[Equation Name]…`` segment produced by
+    ``LightRAG._build_mm_chunks_from_sidecars`` — the producer-side
+    contract is documented in that function's ``_render`` helper. Falls
+    back to the sidecar id when the segment is missing or empty so
+    callers never end up with a blank label.
+    """
+    if content:
+        match = _MM_DISPLAY_NAME_PATTERN.search(content)
+        if match:
+            candidate = match.group(1).strip()
+            if candidate:
+                return candidate
+    return fallback
+
+
 async def _handle_entity_relation_summary(
     description_type: str,
     entity_or_relation_name: str,
@@ -3512,20 +3537,9 @@ async def extract_entities(
                     heading_label = (
                         str(heading_block.get("heading") or "").strip() or "unknown"
                     )
-                # Friendly name for the relation description: parse the
-                # leading "- {Image|Table|Equation} Name:\n<name>" section
-                # from the chunk content; fall back to sidecar id.
-                mm_display_name = sidecar_id
-                content_for_name = chunk_dp.get("content", "") or ""
-                first_name_match = re.search(
-                    r"^- (?:Image|Table|Equation) Name:\n(.+)$",
-                    content_for_name,
-                    flags=re.MULTILINE,
+                mm_display_name = _parse_mm_display_name(
+                    chunk_dp.get("content", "") or "", sidecar_id
                 )
-                if first_name_match:
-                    candidate = first_name_match.group(1).strip()
-                    if candidate:
-                        mm_display_name = candidate
                 for tgt in list(maybe_nodes.keys()):
                     if tgt == mm_entity_name:
                         continue
