@@ -4,7 +4,6 @@ from pathlib import Path
 
 import asyncio
 import json
-import hashlib
 import re
 import warnings
 import json_repair
@@ -3490,11 +3489,7 @@ async def extract_entities(
                 and isinstance(sidecar_id, str)
                 and sidecar_id
             ):
-                full_doc_id = str(chunk_dp.get("full_doc_id") or "")
-                mm_entity_digest = hashlib.md5(
-                    f"{full_doc_id}:{sidecar_type}:{sidecar_id}".encode("utf-8")
-                ).hexdigest()
-                mm_entity_name = f"{sidecar_type}-{mm_entity_digest}"
+                mm_entity_name = sidecar_id
                 now_ts = int(time.time())
                 mm_nodes_list = maybe_nodes.setdefault(mm_entity_name, [])
                 mm_nodes_list.append(
