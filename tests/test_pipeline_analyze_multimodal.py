@@ -153,7 +153,7 @@ def _write_sidecar_fixtures(tmp_path: Path) -> tuple[str, dict, Path]:
         json.dumps(
             {
                 "drawings": {
-                    "dr-001": {
+                    "im-001": {
                         "caption": "Figure 1",
                         "path": str(image_path),
                     }
@@ -190,7 +190,7 @@ async def test_vlm_process_enable_false_hard_fails_for_images(
         # VLM mock must not be invoked when the master switch is off.
         assert call_log == []
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        item = payload["drawings"]["dr-001"]
+        item = payload["drawings"]["im-001"]
         assert item["llm_analyze_result"]["status"] == "failure"
         assert "VLM" in item["llm_analyze_result"]["message"]
     finally:
@@ -222,7 +222,7 @@ async def test_vlm_disabled_then_enabled_reprocesses_item(tmp_path):
 
     # Operator clears the failure marker before the second run.
     payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    payload["drawings"]["dr-001"].pop("llm_analyze_result", None)
+    payload["drawings"]["im-001"].pop("llm_analyze_result", None)
     sidecar_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     rag_on = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
@@ -236,7 +236,7 @@ async def test_vlm_disabled_then_enabled_reprocesses_item(tmp_path):
         )
         assert len(call_log) == 1
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
         assert result["status"] == "success"
         assert result["type"] == "Chart"
         assert result["description"] == "concise figure description"
@@ -312,11 +312,11 @@ async def test_vlm_cache_hit_on_second_run(tmp_path):
 
         # Cache id was written back to the sidecar item for delete-time cleanup.
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        assert cache_id in payload["drawings"]["dr-001"]["llm_cache_list"]
+        assert cache_id in payload["drawings"]["im-001"]["llm_cache_list"]
 
         # Clear the analysis result and re-run: should hit the cache and not
         # call the VLM again.
-        payload["drawings"]["dr-001"].pop("llm_analyze_result", None)
+        payload["drawings"]["im-001"].pop("llm_analyze_result", None)
         sidecar_path.write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8"
         )
@@ -359,7 +359,7 @@ async def test_image_path_resolved_relative_to_sidecar_dir(tmp_path):
             json.dumps(
                 {
                     "drawings": {
-                        "dr-001": {
+                        "im-001": {
                             "caption": "Figure 1",
                             "path": "doc.blocks.assets/image1.png",
                         }
@@ -380,7 +380,7 @@ async def test_image_path_resolved_relative_to_sidecar_dir(tmp_path):
         assert call_log[0]["kwargs"].get("image_inputs") is not None
 
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
         assert result["status"] == "success"
     finally:
         await rag.finalize_storages()
@@ -412,7 +412,7 @@ async def test_unsupported_vector_format_writes_skipped(tmp_path):
             json.dumps(
                 {
                     "drawings": {
-                        "dr-001": {
+                        "im-001": {
                             "caption": "vector diagram",
                             "path": str(wmf_path),
                             "format": "wmf",
@@ -432,7 +432,7 @@ async def test_unsupported_vector_format_writes_skipped(tmp_path):
 
         assert call_log == []
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
         assert result["status"] == "skipped"
         assert "unsupported image format" in result["message"]
     finally:
@@ -464,7 +464,7 @@ async def test_tiny_image_writes_skipped_without_vlm_call(tmp_path):
             json.dumps(
                 {
                     "drawings": {
-                        "dr-001": {
+                        "im-001": {
                             "caption": "tiny icon",
                             "path": str(img_path),
                         }
@@ -482,7 +482,7 @@ async def test_tiny_image_writes_skipped_without_vlm_call(tmp_path):
         )
         assert call_log == []
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
         assert result["status"] == "skipped"
         assert "smaller than" in result["message"]
     finally:
@@ -525,7 +525,7 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
                 analysis_keys == []
             ), f"invalid VLM response was cached: {analysis_keys}"
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        item = payload["drawings"]["dr-001"]
+        item = payload["drawings"]["im-001"]
         assert item["llm_analyze_result"]["status"] == "failure"
     finally:
         await rag.finalize_storages()
@@ -610,7 +610,7 @@ async def test_invalid_json_with_trailing_comma_is_repaired(tmp_path):
         )
         assert len(call_log) == 1
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        result = payload["drawings"]["dr-001"]["llm_analyze_result"]
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
         assert result["status"] == "success"
         assert result["name"] == "fig-1"
         assert result["type"] == "Chart"
@@ -743,7 +743,7 @@ async def test_analysis_cache_respects_disabled_flag(tmp_path):
                 k.startswith("default:analysis:") for k in cache_blob.keys()
             ), "analysis cache must not be written when the flag is off"
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        item = payload["drawings"]["dr-001"]
+        item = payload["drawings"]["im-001"]
         # Analysis still succeeded — only the cache side-effects are gated.
         assert item["llm_analyze_result"]["status"] == "success"
         # No cache id may be attached when nothing was written.

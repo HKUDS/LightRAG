@@ -314,7 +314,7 @@ def _parse_docx_sync(
             idx = drawing_idx + local_drawing_count
             placeholder = match.group(0)
             attrs = parse_drawing_attributes(placeholder)
-            dr_id = f"dr-{doc_id.removeprefix('doc-')}-{idx:04d}"
+            dr_id = f"im-{doc_id.removeprefix('doc-')}-{idx:04d}"
             caption = ""
             path_val = attrs.get("path", "") or ""
             src_val = attrs.get("src", "") or ""

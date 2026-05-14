@@ -42,13 +42,13 @@ def _tokenizer() -> Tokenizer:
 def test_find_target_span_drawing_in_mixed_content():
     content = (
         "leading text. "
-        '<drawing id="dr-abcd-0001" format="png" path="img.png" src="img" /> '
+        '<drawing id="im-abcd-0001" format="png" path="img.png" src="img" /> '
         "trailing text."
     )
-    span = find_target_span("drawings", "dr-abcd-0001", content)
+    span = find_target_span("drawings", "im-abcd-0001", content)
     assert span is not None
     start, end = span
-    assert content[start:end].startswith('<drawing id="dr-abcd-0001"')
+    assert content[start:end].startswith('<drawing id="im-abcd-0001"')
     assert content[start:end].endswith("/>")
 
 
@@ -83,8 +83,8 @@ def test_find_target_span_equation():
 
 @pytest.mark.offline
 def test_find_target_span_unknown_id_returns_none():
-    content = '<drawing id="dr-1" />'
-    assert find_target_span("drawings", "dr-other", content) is None
+    content = '<drawing id="im-1" />'
+    assert find_target_span("drawings", "im-other", content) is None
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +97,10 @@ def test_drawing_surrounding_kept_within_block_only():
     tok = _tokenizer()
     block = (
         "paragraph one ends. paragraph two. "
-        '<drawing id="dr-1" path="a.png" src="a" /> '
+        '<drawing id="im-1" path="a.png" src="a" /> '
         "paragraph three. paragraph four."
     )
-    span = find_target_span("drawings", "dr-1", block)
+    span = find_target_span("drawings", "im-1", block)
     surr = build_surrounding(
         kind="drawings",
         block_content=block,
@@ -118,7 +118,7 @@ def test_drawing_surrounding_kept_within_block_only():
 def test_equation_surrounding_protects_drawing_atom():
     tok = _tokenizer()
     block = (
-        '<drawing id="dr-prev" path="a.png" src="a" caption="Fig 1" />'
+        '<drawing id="im-prev" path="a.png" src="a" caption="Fig 1" />'
         " intro text. "
         '<equation id="eq-1" format="latex">a+b=c</equation>'
         " conclusion text."
@@ -433,7 +433,7 @@ def test_enrich_only_updates_enabled_modalities(tmp_path):
     blockid = "b1"
     content = (
         "intro. "
-        '<drawing id="dr-1" path="a.png" src="a" />'
+        '<drawing id="im-1" path="a.png" src="a" />'
         " middle "
         '<table id="tb-1" format="json">[["a"]]</table>'
         " tail "
@@ -461,7 +461,7 @@ def test_enrich_only_updates_enabled_modalities(tmp_path):
     _write_sidecar(
         drawings_path,
         "drawings",
-        {"dr-1": {"id": "dr-1", "blockid": blockid, "heading": "h"}},
+        {"im-1": {"id": "im-1", "blockid": blockid, "heading": "h"}},
     )
     _write_sidecar(
         tables_path,
@@ -488,8 +488,8 @@ def test_enrich_only_updates_enabled_modalities(tmp_path):
     drawings = json.loads(drawings_path.read_text(encoding="utf-8"))
     tables = json.loads(tables_path.read_text(encoding="utf-8"))
     equations = json.loads(equations_path.read_text(encoding="utf-8"))
-    assert "surrounding" in drawings["drawings"]["dr-1"]
-    assert drawings["drawings"]["dr-1"]["surrounding"]["leading"].startswith("intro.")
+    assert "surrounding" in drawings["drawings"]["im-1"]
+    assert drawings["drawings"]["im-1"]["surrounding"]["leading"].startswith("intro.")
     assert "surrounding" not in tables["tables"]["tb-1"]
     assert "surrounding" not in equations["equations"]["eq-1"]
 
@@ -500,7 +500,7 @@ def test_enrich_runs_even_when_llm_analyze_result_present(tmp_path):
     surrounding backfill — we treat the two fields as independent."""
     base = "doc"
     blockid = "b1"
-    content = 'prefix. <drawing id="dr-1" path="a.png" src="a" /> suffix.'
+    content = 'prefix. <drawing id="im-1" path="a.png" src="a" /> suffix.'
     _write_blocks(
         tmp_path,
         base,
@@ -521,8 +521,8 @@ def test_enrich_runs_even_when_llm_analyze_result_present(tmp_path):
         drawings_path,
         "drawings",
         {
-            "dr-1": {
-                "id": "dr-1",
+            "im-1": {
+                "id": "im-1",
                 "blockid": blockid,
                 "heading": "h",
                 "llm_analyze_result": {
@@ -543,7 +543,7 @@ def test_enrich_runs_even_when_llm_analyze_result_present(tmp_path):
     )
     assert counts["drawings"] == 1
     payload = json.loads(drawings_path.read_text(encoding="utf-8"))
-    item = payload["drawings"]["dr-1"]
+    item = payload["drawings"]["im-1"]
     assert item["llm_analyze_result"]["name"] == "x"  # untouched
     assert item["surrounding"]["leading"].startswith("prefix.")
     assert item["surrounding"]["trailing"].startswith(" suffix.")
@@ -553,7 +553,7 @@ def test_enrich_runs_even_when_llm_analyze_result_present(tmp_path):
 def test_enrich_does_not_cross_block_boundaries(tmp_path):
     base = "doc"
     block_a = "earlier block content."
-    block_b = 'later block. <drawing id="dr-1" path="a.png" src="a" /> tail.'
+    block_b = 'later block. <drawing id="im-1" path="a.png" src="a" /> tail.'
     _write_blocks(
         tmp_path,
         base,
@@ -582,7 +582,7 @@ def test_enrich_does_not_cross_block_boundaries(tmp_path):
     _write_sidecar(
         drawings_path,
         "drawings",
-        {"dr-1": {"id": "dr-1", "blockid": "bB", "heading": "h2"}},
+        {"im-1": {"id": "im-1", "blockid": "bB", "heading": "h2"}},
     )
 
     enrich_sidecars_with_surrounding(
@@ -593,7 +593,7 @@ def test_enrich_does_not_cross_block_boundaries(tmp_path):
         trailing_max_tokens=2000,
     )
     payload = json.loads(drawings_path.read_text(encoding="utf-8"))
-    surr = payload["drawings"]["dr-1"]["surrounding"]
+    surr = payload["drawings"]["im-1"]["surrounding"]
     # Must come from block B only — content of block A absent.
     assert "earlier block content" not in surr["leading"]
     assert surr["leading"].startswith("later block.")
@@ -614,7 +614,7 @@ def test_env_var_leading_and_trailing_budgets_apply_independently(
 
     base = "doc"
     blockid = "b1"
-    content = "X" * 200 + '<drawing id="dr-1" path="a.png" src="a" />' + "Y" * 200
+    content = "X" * 200 + '<drawing id="im-1" path="a.png" src="a" />' + "Y" * 200
     _write_blocks(
         tmp_path,
         base,
@@ -634,7 +634,7 @@ def test_env_var_leading_and_trailing_budgets_apply_independently(
     _write_sidecar(
         drawings_path,
         "drawings",
-        {"dr-1": {"id": "dr-1", "blockid": blockid, "heading": "h"}},
+        {"im-1": {"id": "im-1", "blockid": blockid, "heading": "h"}},
     )
 
     tok = _tokenizer()
@@ -644,7 +644,7 @@ def test_env_var_leading_and_trailing_budgets_apply_independently(
         tokenizer=tok,
     )
 
-    surr = json.loads(drawings_path.read_text(encoding="utf-8"))["drawings"]["dr-1"][
+    surr = json.loads(drawings_path.read_text(encoding="utf-8"))["drawings"]["im-1"][
         "surrounding"
     ]
     assert len(tok.encode(surr["leading"])) <= 5
@@ -669,7 +669,7 @@ def test_surrounding_strips_drawing_id_path_src():
     tok = _tokenizer()
     block = (
         "leading prose. "
-        '<drawing id="dr-x" path="figs/a.png" src="raw/a.png" caption="Fig 1" />'
+        '<drawing id="im-x" path="figs/a.png" src="raw/a.png" caption="Fig 1" />'
         " between. "
         '<equation id="eq-target" format="latex">x=1</equation>'
         " trailing prose."
@@ -686,7 +686,7 @@ def test_surrounding_strips_drawing_id_path_src():
     )
     leading = surr["leading"]
     assert '<drawing caption="Fig 1" />' in leading
-    assert 'id="dr-x"' not in leading
+    assert 'id="im-x"' not in leading
     assert "path=" not in leading
     assert "src=" not in leading
 
@@ -698,10 +698,10 @@ def test_surrounding_strips_table_internal_id():
         "prefix. "
         '<table id="tb-x" format="json" caption="Sales">[[1,2],[3,4]]</table>'
         " between. "
-        '<drawing id="dr-target" caption="Fig 2" />'
+        '<drawing id="im-target" caption="Fig 2" />'
         " suffix."
     )
-    span = find_target_span("drawings", "dr-target", block)
+    span = find_target_span("drawings", "im-target", block)
     surr = build_surrounding(
         kind="drawings",
         block_content=block,
@@ -723,10 +723,10 @@ def test_surrounding_strips_cite_refid_keeping_visible_text():
         "see "
         '<cite type="table" refid="tb-x">Table 1</cite>'
         " for details. "
-        '<drawing id="dr-target" caption="Fig 3" />'
+        '<drawing id="im-target" caption="Fig 3" />'
         " end."
     )
-    span = find_target_span("drawings", "dr-target", block)
+    span = find_target_span("drawings", "im-target", block)
     surr = build_surrounding(
         kind="drawings",
         block_content=block,
@@ -757,10 +757,10 @@ def test_surrounding_keeps_equation_cite_tag_and_strips_refid():
         "see "
         '<cite type="equation" refid="eq-y">公式 2</cite>'
         " above. "
-        '<drawing id="dr-target" caption="Fig 4" />'
+        '<drawing id="im-target" caption="Fig 4" />'
         " end."
     )
-    span = find_target_span("drawings", "dr-target", block)
+    span = find_target_span("drawings", "im-target", block)
     surr = build_surrounding(
         kind="drawings",
         block_content=block,
@@ -791,7 +791,7 @@ def test_strip_happens_before_budget_truncation():
     # just '<drawing caption="C" />' (~24 chars).  Budget at 30 sits
     # between the two — raw is too big, stripped fits.
     block = (
-        '<drawing id="dr-prev" path="some/long/path.png" src="raw/long/path.png"'
+        '<drawing id="im-prev" path="some/long/path.png" src="raw/long/path.png"'
         ' caption="C" />'
         '<equation id="eq-1" format="latex">y</equation>'
         " tail."
@@ -823,7 +823,7 @@ def test_enrich_overwrites_surrounding_when_budget_changes(tmp_path):
     changes propagate without needing to clear sidecars first."""
     base = "doc"
     blockid = "b1"
-    content = "L" * 500 + '<drawing id="dr-1" caption="C" />' + "T" * 500
+    content = "L" * 500 + '<drawing id="im-1" caption="C" />' + "T" * 500
     _write_blocks(
         tmp_path,
         base,
@@ -843,7 +843,7 @@ def test_enrich_overwrites_surrounding_when_budget_changes(tmp_path):
     _write_sidecar(
         drawings_path,
         "drawings",
-        {"dr-1": {"id": "dr-1", "blockid": blockid, "heading": "h"}},
+        {"im-1": {"id": "im-1", "blockid": blockid, "heading": "h"}},
     )
 
     tok = _tokenizer()
@@ -854,7 +854,7 @@ def test_enrich_overwrites_surrounding_when_budget_changes(tmp_path):
         leading_max_tokens=300,
         trailing_max_tokens=300,
     )
-    first = json.loads(drawings_path.read_text(encoding="utf-8"))["drawings"]["dr-1"][
+    first = json.loads(drawings_path.read_text(encoding="utf-8"))["drawings"]["im-1"][
         "surrounding"
     ]
     first_leading_len = len(first["leading"])
@@ -867,7 +867,7 @@ def test_enrich_overwrites_surrounding_when_budget_changes(tmp_path):
         leading_max_tokens=50,
         trailing_max_tokens=50,
     )
-    second = json.loads(drawings_path.read_text(encoding="utf-8"))["drawings"]["dr-1"][
+    second = json.loads(drawings_path.read_text(encoding="utf-8"))["drawings"]["im-1"][
         "surrounding"
     ]
     # New budget is smaller, so saved surrounding must shrink — proving

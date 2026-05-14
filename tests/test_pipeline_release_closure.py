@@ -2323,7 +2323,7 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(
             x for x in content_blocks if 'refid="tb-1-0001"' in x["content"]
         )
         image_block = next(
-            x for x in content_blocks if 'id="dr-1-0001"' in x["content"]
+            x for x in content_blocks if 'id="im-1-0001"' in x["content"]
         )
 
         assert body_block["heading"] == "1.1 研究背景"
@@ -2343,7 +2343,7 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(
         ]
 
         drawings = json.loads(Path(base + ".drawings.json").read_text(encoding="utf-8"))
-        assert drawings["drawings"]["dr-1-0001"]["heading"] == "1.1 研究背景"
+        assert drawings["drawings"]["im-1-0001"]["heading"] == "1.1 研究背景"
 
         full_doc = await rag.full_docs.get_by_id("doc-1")
         assert full_doc["lightrag_document_path"] == (
@@ -2917,7 +2917,7 @@ def test_strip_internal_multimodal_markup_cite_keep_tag_strips_refid_only():
 
     source = (
         'see <cite type="table" refid="tb-1-0001">表 1</cite>; '
-        '<drawing id="dr-1" path="a.png" src="a" caption="Fig" />'
+        '<drawing id="im-1" path="a.png" src="a" caption="Fig" />'
     )
     cleaned = strip_internal_multimodal_markup_for_extraction(
         source, keep_cite_tag=True
@@ -2927,7 +2927,7 @@ def test_strip_internal_multimodal_markup_cite_keep_tag_strips_refid_only():
     assert "tb-1-0001" not in cleaned
     # Non-cite cleaning still applies in this mode.
     assert '<drawing caption="Fig" />' in cleaned
-    assert 'id="dr-1"' not in cleaned
+    assert 'id="im-1"' not in cleaned
     assert "path=" not in cleaned
 
 

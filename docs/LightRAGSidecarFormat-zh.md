@@ -74,7 +74,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `asset_dir` | `bool` | 是否存在`blocks.assets`资源目录 |
 | `split_option` | `object` | 文件提取时的分块参数。此字段留给文件提取引擎自己记录和使用 |
 | `blocks` | `int` | content 行数（不含 meta） |
-| `doc_id` | `"doc-<md5>"` | 文档全局 id。sidecar item id（`dr-/tb-/eq-`）使用 `doc_id` 去掉 `doc-` 前缀后的哈希部分，以缩短嵌入正文中的占位标签 |
+| `doc_id` | `"doc-<md5>"` | 文档全局 id。sidecar item id（`im-/tb-/eq-`）使用 `doc_id` 去掉 `doc-` 前缀后的哈希部分，以缩短嵌入正文中的占位标签 |
 | `parse_engine` | `str` | 解析引擎`native/mineru/docling/legacy` |
 | `parse_time` | `str` | 解析完成时间; 格式：ISO-8601 UTC |
 | `doc_title` | `str` | 文档标题（通常为首个 H1）；可选 |
@@ -132,7 +132,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | 标签 | 含义 | 标签属性 |
 |---|---|---|
 | `<table id="tb-…" format="json">…</table>` | 表格占位，包体是表格原始 JSON / HTML | `id` 指向 `tables.json` 里对应 item；`format` ∈ `json` / `html` |
-| `<drawing id="dr-…" format="png" path="..." src="..." caption="..." />` | 自闭合图形占位 | `id` 指向 `drawings.json`；`path` 相对 `*.parsed/` 目录；`src` 是原文档里的引用名 |
+| `<drawing id="im-…" format="png" path="..." src="..." caption="..." />` | 自闭合图形占位 | `id` 指向 `drawings.json`；`path` 相对 `*.parsed/` 目录；`src` 是原文档里的引用名 |
 | `<equation id="eq-…" format="latex">…</equation>` | 公式占位 | 行内公式同样用 `<equation format="latex">` 但**不**带 `id`，不会进 sidecar； 仅块公式（独占一行或多行）时携带 `id` |
 
 在实体关系抽取的时候喂给大模型的文本会把 `id / path / src` 等内部属性剥掉，但为保留键属性（`format / caption`）。目的是避免抽取出文章不可见的实体，给抽取结果注入过多的噪声。
@@ -153,7 +153,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 
 ```json
 {
-  "id": "dr-f1bee60173d067d88595c00e7d9b0ce5-0004",
+  "id": "im-f1bee60173d067d88595c00e7d9b0ce5-0004",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 结构尺寸及重量",
   "format": "png",
@@ -178,7 +178,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 
 | 字段 | 说明 |
 |---|---|
-| `id` | `dr-<doc_hash>-<NNNN>` 形式（`doc_hash` 为 `doc_id` 去掉 `doc-` 前缀后的 32 位 md5） |
+| `id` | `im-<doc_hash>-<NNNN>` 形式（`doc_hash` 为 `doc_id` 去掉 `doc-` 前缀后的 32 位 md5） |
 | `blockid` | 指向产生该图形的 content 行 |
 | `heading` | 所在章节标题 |
 | `format` | 原始扩展名（去点）：`png` / `jpeg` / `gif` / `webp` / `wmf` / `emf` / … |
@@ -278,7 +278,7 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 - 取自同一 `blockid` 对应的 content 行文本，以多模态占位标签的位置为切分点；
 - 每一侧的 token 上限由环境变量 `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` 控制（缺省 `2000`，可独立调整）；按 tokenizer 截断，倾向保留靠近目标的句子；
 - 文本中保留**同行其他**多模态对象的占位标签，这让模型能感知"图 1 之后还有公式 1"这种上下文；但解析器内部标识符（`id` / `path` / `src` / `refid`）已被 `strip_internal_multimodal_markup_for_extraction` 剥离 —— 与 chunk content 实体抽取前的清理一致，避免噪声进入 VLM/LLM prompt。具体清理规则：
-  - `<drawing id="dr-…" path="…" src="…" caption="Fig 1" />` → `<drawing caption="Fig 1" />`；**没有 caption 的 drawing 整段移除**（标签不再携带任何对模型可见的信息）；
+  - `<drawing id="im-…" path="…" src="…" caption="Fig 1" />` → `<drawing caption="Fig 1" />`；**没有 caption 的 drawing 整段移除**（标签不再携带任何对模型可见的信息）；
   - `<table id="tb-…" format="json" caption="…">rows</table>` → `<table format="json" caption="…">rows</table>`；
   - `<equation id="eq-…" format="latex">body</equation>` → `<equation format="latex">body</equation>`；
   - `<cite type="table" refid="tb-…">表 1</cite>` → `<cite type="table">表 1</cite>`；`<cite type="equation" refid="eq-…">公式 2</cite>` → `<cite type="equation">公式 2</cite>`。仅删 `refid` 属性，保留 `<cite type="…">…</cite>` 包装 —— 让 VLM/LLM 能识别"这是对其他表/公式的引用"而非普通的文本，同时屏蔽 LLM 看不到的解析器内部 id；

@@ -3010,7 +3010,7 @@ class _PipelineMixin:
                 drawing_idx += 1
                 drawing_id = str(
                     item.get("id")
-                    or f"dr-{doc_id.removeprefix('doc-')}-{drawing_idx:04d}"
+                    or f"im-{doc_id.removeprefix('doc-')}-{drawing_idx:04d}"
                 )
                 image_caption = _to_list_str(
                     item.get("image_caption") or item.get("captions")

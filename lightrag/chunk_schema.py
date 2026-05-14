@@ -216,7 +216,7 @@ def strip_internal_multimodal_markup_for_extraction(
 
     Transformations always applied:
 
-    - ``<drawing id="dr-…" path="…" src="…" caption="Fig 1" />``
+    - ``<drawing id="im-…" path="…" src="…" caption="Fig 1" />``
         → ``<drawing caption="Fig 1" />``
         (drops the entire tag when no caption is present)
     - ``<table id="tb-…" format="json" caption="…">rows</table>``
