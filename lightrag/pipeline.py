@@ -2926,7 +2926,10 @@ class _PipelineMixin:
 
             if item_type == "equation":
                 equation_idx += 1
-                eq_id = str(item.get("id") or f"eq-{doc_id}-{equation_idx:04d}")
+                eq_id = str(
+                    item.get("id")
+                    or f"eq-{doc_id.removeprefix('doc-')}-{equation_idx:04d}"
+                )
                 caption = str(item.get("caption") or f"公式{equation_idx}")
                 footnotes = _to_list_str(
                     item.get("equation_footnote") or item.get("footnotes")
@@ -2956,7 +2959,10 @@ class _PipelineMixin:
 
             if item_type == "table":
                 table_idx += 1
-                table_id = str(item.get("id") or f"tb-{doc_id}-{table_idx:04d}")
+                table_id = str(
+                    item.get("id")
+                    or f"tb-{doc_id.removeprefix('doc-')}-{table_idx:04d}"
+                )
                 caption = str(item.get("caption") or f"表格{table_idx}")
                 table_caption = _to_list_str(item.get("table_caption"))
                 if table_caption and not item.get("caption"):
@@ -3001,7 +3007,10 @@ class _PipelineMixin:
 
             if item_type in {"image", "picture", "drawing"}:
                 drawing_idx += 1
-                drawing_id = str(item.get("id") or f"dr-{doc_id}-{drawing_idx:04d}")
+                drawing_id = str(
+                    item.get("id")
+                    or f"dr-{doc_id.removeprefix('doc-')}-{drawing_idx:04d}"
+                )
                 image_caption = _to_list_str(
                     item.get("image_caption") or item.get("captions")
                 )

@@ -254,7 +254,7 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
 
         tables_path = blocks_path.with_suffix("").with_suffix(".tables.json")
         tables = json.loads(tables_path.read_text(encoding="utf-8"))
-        table_entry = tables["tables"]["tb-doc-table-0001"]
+        table_entry = tables["tables"]["tb-table-0001"]
         assert table_entry["caption"] == ""
 
         # Surrounding is now backfilled at analyze_multimodal entry, not in
@@ -267,7 +267,7 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
             tokenizer=rag.tokenizer,
         )
         tables = json.loads(tables_path.read_text(encoding="utf-8"))
-        table_entry = tables["tables"]["tb-doc-table-0001"]
+        table_entry = tables["tables"]["tb-table-0001"]
         assert table_entry["surrounding"] == {
             "leading": "before\n",
             "trailing": "\nafter",

@@ -42,39 +42,41 @@ def _tokenizer() -> Tokenizer:
 def test_find_target_span_drawing_in_mixed_content():
     content = (
         "leading text. "
-        '<drawing id="dr-doc-0001" format="png" path="img.png" src="img" /> '
+        '<drawing id="dr-abcd-0001" format="png" path="img.png" src="img" /> '
         "trailing text."
     )
-    span = find_target_span("drawings", "dr-doc-0001", content)
+    span = find_target_span("drawings", "dr-abcd-0001", content)
     assert span is not None
     start, end = span
-    assert content[start:end].startswith('<drawing id="dr-doc-0001"')
+    assert content[start:end].startswith('<drawing id="dr-abcd-0001"')
     assert content[start:end].endswith("/>")
 
 
 @pytest.mark.offline
 def test_find_target_span_table_with_id_anywhere_in_attrs():
     # id is not first attribute — locator must still find it.
-    content = 'before <table format="json" id="tb-doc-0007">[[1,2],[3,4]]</table> after'
-    span = find_target_span("tables", "tb-doc-0007", content)
+    content = (
+        'before <table format="json" id="tb-abcd-0007">[[1,2],[3,4]]</table> after'
+    )
+    span = find_target_span("tables", "tb-abcd-0007", content)
     assert span is not None
     snippet = content[span[0] : span[1]]
     assert snippet.endswith("</table>")
-    assert 'id="tb-doc-0007"' in snippet
+    assert 'id="tb-abcd-0007"' in snippet
 
 
 @pytest.mark.offline
 def test_find_target_span_table_cite_marker():
-    content = 'before <cite type="table" refid="tb-doc-0007">表1</cite> after'
-    span = find_target_span("tables", "tb-doc-0007", content)
+    content = 'before <cite type="table" refid="tb-abcd-0007">表1</cite> after'
+    span = find_target_span("tables", "tb-abcd-0007", content)
     assert span is not None
     assert content[span[0] : span[1]].startswith("<cite")
 
 
 @pytest.mark.offline
 def test_find_target_span_equation():
-    content = 'A <equation id="eq-doc-0002" format="latex">x^2</equation> B'
-    span = find_target_span("equations", "eq-doc-0002", content)
+    content = 'A <equation id="eq-abcd-0002" format="latex">x^2</equation> B'
+    span = find_target_span("equations", "eq-abcd-0002", content)
     assert span is not None
     assert content[span[0] : span[1]].endswith("</equation>")
 
