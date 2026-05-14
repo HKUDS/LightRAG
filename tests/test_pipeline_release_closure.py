@@ -12,7 +12,10 @@ from lightrag.constants import (
     PARSED_DIR_NAME,
     PARSER_ENGINE_NATIVE,
 )
-from lightrag.operate import _get_relationship_vdb_timeout_seconds
+from lightrag.operate import (
+    _get_relationship_vdb_timeout_seconds,
+    _parse_mm_display_name,
+)
 from lightrag.parser_routing import (
     ParserRoutingConfigError,
     canonicalize_parser_hinted_basename,
@@ -2624,8 +2627,8 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
         assert len(mm_chunks) == 1
         chunk = mm_chunks[0]
         # New nested schema: heading + sidecar + llm_cache_list merge.
-        assert chunk["content"].startswith("- Image Name:")
-        assert "- Image Type:\nChart" in chunk["content"]
+        assert chunk["content"].startswith("[Image Name]")
+        assert "[Image Type]Chart" in chunk["content"]
         assert chunk["sidecar"] == {
             "type": "drawing",
             "id": "d1",
@@ -2639,7 +2642,155 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
         assert chunk["llm_cache_list"] == ["default:analysis:abc123"]
         # Multimodal entity injection now lives in
         # operate.extract_entities._process_single_content; this test only
-        # covers chunk assembly.
+        # covers chunk assembly. The companion regression below
+        # (test_parse_mm_display_name_matches_chunk_format) pins the
+        # builder/consumer format contract.
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_parse_mm_display_name_matches_chunk_format():
+    """Pin the builder/consumer contract: the chunk content emitted by
+    ``_build_mm_chunks_from_sidecars`` must parse cleanly via
+    ``operate._parse_mm_display_name`` for all three modalities.
+    Regression for the case where the renderer's label format diverged
+    from the consumer's regex and display names silently fell back to
+    sidecar ids.
+    """
+
+    drawing_content = (
+        "[Image Name]系统架构图\n[Image Type]Chart\n\n模块交互关系\n\n"
+        "[Image Footnotes]脚注1; 脚注2"
+    )
+    assert _parse_mm_display_name(drawing_content, "d1") == "系统架构图"
+
+    table_content = "[Table Name]性能对比表\n\n各方法的指标对比"
+    assert _parse_mm_display_name(table_content, "t1") == "性能对比表"
+
+    equation_content = "E = mc^2\n[Equation Name]质能方程\n\n爱因斯坦的质能等效公式"
+    assert _parse_mm_display_name(equation_content, "e1") == "质能方程"
+
+    # Fallbacks: missing marker, empty content, marker with blank name.
+    assert _parse_mm_display_name("no marker here", "fallback-id") == "fallback-id"
+    assert _parse_mm_display_name("", "fallback-id") == "fallback-id"
+    assert _parse_mm_display_name("[Image Name]   ", "fallback-id") == "fallback-id"
+
+
+@pytest.mark.offline
+def test_parse_mm_display_name_on_real_builder_output(tmp_path):
+    """End-to-end pin: feed actual chunks from
+    ``_build_mm_chunks_from_sidecars`` for all three modalities straight
+    into the consumer's parser, and require the analysis ``name`` field
+    to come back. This locks the bidirectional builder/consumer contract
+    so that renaming the ``[Image|Table|Equation] Name`` label without
+    updating the regex in ``operate._parse_mm_display_name`` immediately
+    breaks here instead of silently degrading relation descriptions.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        blocks = tmp_path / "demo.pdf.blocks.jsonl"
+        blocks.write_text("", encoding="utf-8")
+
+        heading = {"level": 1, "heading": "章节A", "parent_headings": []}
+
+        (tmp_path / "demo.pdf.drawings.json").write_text(
+            json.dumps(
+                {
+                    "drawings": {
+                        "d1": {
+                            "heading": heading,
+                            "footnotes": [],
+                            "llm_cache_list": [],
+                            "llm_analyze_result": {
+                                "name": "系统架构图",
+                                "type": "Chart",
+                                "description": "模块交互关系",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "demo.pdf.tables.json").write_text(
+            json.dumps(
+                {
+                    "tables": {
+                        "t1": {
+                            "heading": heading,
+                            "footnotes": [],
+                            "llm_cache_list": [],
+                            "llm_analyze_result": {
+                                "name": "性能对比表",
+                                "description": "各方法的指标对比",
+                                "analyze_time": 1700000001,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "demo.pdf.equations.json").write_text(
+            json.dumps(
+                {
+                    "equations": {
+                        "e1": {
+                            "heading": heading,
+                            "footnotes": [],
+                            "llm_cache_list": [],
+                            "llm_analyze_result": {
+                                "name": "质能方程",
+                                "equation": "E = mc^2",
+                                "description": "爱因斯坦的质能等效公式",
+                                "analyze_time": 1700000002,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        mm_chunks = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+            process_options="ite",
+        )
+        # Index by sidecar type for stable assertions independent of
+        # iteration order in the builder.
+        by_type = {chunk["sidecar"]["type"]: chunk for chunk in mm_chunks}
+        assert set(by_type.keys()) == {"drawing", "table", "equation"}
+
+        expected = {
+            "drawing": ("d1", "系统架构图"),
+            "table": ("t1", "性能对比表"),
+            "equation": ("e1", "质能方程"),
+        }
+        for kind, (sidecar_id, name) in expected.items():
+            display = _parse_mm_display_name(by_type[kind]["content"], sidecar_id)
+            assert display == name, (
+                f"{kind}: parser failed to extract '{name}' from builder "
+                f"output, got '{display}' (content: {by_type[kind]['content']!r})"
+            )
 
         await rag.finalize_storages()
 
