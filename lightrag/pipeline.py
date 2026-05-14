@@ -62,6 +62,7 @@ from lightrag.utils import (
     generate_cache_key,
     generate_track_id,
     get_content_summary,
+    get_env_value,
     get_llm_cache_identity,
     handle_cache,
     logger,
@@ -3605,16 +3606,90 @@ class _PipelineMixin:
                         f"{kind}/{item_id}: missing {kind} content"
                     )
                 template = MULTIMODAL_PROMPTS[f"{kind}_analysis"]
-                prompt = template.format(
-                    language=language,
-                    content=content_text,
-                    captions=_captions_value(item),
-                    footnotes=_footnotes_value(item),
-                    leading=_surrounding_value(item, "leading"),
-                    trailing=_surrounding_value(item, "trailing"),
-                    item_id=item_id,
-                    file_path=file_path,
-                )
+
+                def _render(content_value: str) -> str:
+                    return template.format(
+                        language=language,
+                        content=content_value,
+                        captions=_captions_value(item),
+                        footnotes=_footnotes_value(item),
+                        leading=_surrounding_value(item, "leading"),
+                        trailing=_surrounding_value(item, "trailing"),
+                        item_id=item_id,
+                        file_path=file_path,
+                    )
+
+                prompt = _render(content_text)
+
+                # Cap the EXTRACT prompt at MAX_EXTRACT_INPUT_TOKENS by
+                # trimming the (typically huge) sidecar `content` field — the
+                # other slots (surrounding/captions/footnotes) already have
+                # their own per-field caps upstream.  The cap is resolved
+                # from the env var (falling back to
+                # DEFAULT_MAX_EXTRACT_INPUT_TOKENS) so deployments can tune
+                # it for their model's context window.
+                tokenizer = getattr(self, "tokenizer", None)
+                if tokenizer is not None:
+                    from lightrag.constants import DEFAULT_MAX_EXTRACT_INPUT_TOKENS
+                    from lightrag.multimodal_context import trim_content_to_budget
+
+                    SAFETY_BUFFER = 256
+                    max_extract_tokens = get_env_value(
+                        "MAX_EXTRACT_INPUT_TOKENS",
+                        DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
+                        int,
+                    )
+                    total_tokens = len(tokenizer.encode(prompt))
+                    if max_extract_tokens > 0 and total_tokens > max_extract_tokens:
+                        frame_tokens = len(tokenizer.encode(_render("")))
+                        content_budget = (
+                            max_extract_tokens - frame_tokens - SAFETY_BUFFER
+                        )
+                        if content_budget <= 0:
+                            # The prompt template alone (with empty content)
+                            # already exceeds the cap — no content trim can
+                            # bring the request under the limit.  Fail this
+                            # item rather than handing the LLM a payload we
+                            # know will trigger ``context_length_exceeded``.
+                            # Operators must raise MAX_EXTRACT_INPUT_TOKENS
+                            # above the template frame for analysis to
+                            # succeed; the document is reprocessable
+                            # idempotently once the cap is widened.
+                            raise MultimodalAnalysisError(
+                                f"{kind}/{item_id}: prompt frame "
+                                f"({frame_tokens} tokens) exceeds "
+                                f"MAX_EXTRACT_INPUT_TOKENS "
+                                f"({max_extract_tokens}); raise the cap"
+                            )
+                        trimmed, was_trimmed = trim_content_to_budget(
+                            content_text,
+                            kind=f"{kind}s",
+                            max_tokens=content_budget,
+                            tokenizer=tokenizer,
+                        )
+                        if was_trimmed:
+                            prompt = _render(trimmed)
+                            logger.warning(
+                                f"[analyze_multimodal] {kind}/{item_id} "
+                                f"content trimmed (prompt {total_tokens} "
+                                f"→ fit {max_extract_tokens}, "
+                                f"content_budget={content_budget})"
+                            )
+                        # Post-trim hard guard: ``trim_content_to_budget``
+                        # is constrained by ``content_budget`` so the final
+                        # prompt should fit within ``max_extract_tokens``;
+                        # defend against tokenizer rounding / future template
+                        # changes that could push it over.  Refuse the call
+                        # rather than send an over-cap prompt to the LLM.
+                        final_tokens = len(tokenizer.encode(prompt))
+                        if final_tokens > max_extract_tokens:
+                            raise MultimodalAnalysisError(
+                                f"{kind}/{item_id}: trimmed prompt "
+                                f"({final_tokens} tokens) still exceeds "
+                                f"MAX_EXTRACT_INPUT_TOKENS "
+                                f"({max_extract_tokens})"
+                            )
+
                 args_hash = compute_args_hash(
                     prompt,
                     "",

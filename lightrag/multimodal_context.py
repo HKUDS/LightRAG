@@ -789,6 +789,70 @@ def _resolve_surrounding_budget(
     return leading, trailing
 
 
+_CONTENT_TRUNCATION_MARKER = (
+    "\n<!-- content truncated from {original} to {final} tokens, head preserved -->"
+)
+
+
+def trim_content_to_budget(
+    content: str,
+    *,
+    kind: str,
+    max_tokens: int,
+    tokenizer: Tokenizer | None,
+) -> tuple[str, bool]:
+    """Trim sidecar ``content`` to fit within ``max_tokens``, preserving the head.
+
+    Used by ``analyze_multimodal`` to keep the EXTRACT-role prompt within
+    :data:`lightrag.constants.DEFAULT_MAX_EXTRACT_INPUT_TOKENS`.  Only ``content``
+    is compressed — surrounding/captions/footnotes already have their own caps
+    and the prompt template is fixed.
+
+    Strategy:
+      - ``tables`` (``<table>…</table>`` wrapped): row-aware trim via
+        :func:`_row_trim_table_trailing` (keep head rows / first k <tr>);
+        falls back to ``_char_fallback_*`` (still ``<table>``-wrapped) when
+        no single row fits.  Non-``<table>`` content falls through to char
+        trim from the tail.
+      - ``equations`` / other: :func:`_char_trim_trailing` (keep head chars).
+
+    A trailing HTML-comment marker is appended *outside* the ``<table>``
+    wrapper (when trimmed) so the LLM knows the body is incomplete.  The
+    marker is included in the token budget.
+
+    Returns ``(possibly_trimmed_content, was_trimmed)``.  When
+    ``max_tokens <= 0`` or ``tokenizer is None`` the input is returned
+    unchanged with ``was_trimmed=False``.
+    """
+    if not content or tokenizer is None or max_tokens <= 0:
+        return content, False
+    original_tokens = _count_tokens(tokenizer, content)
+    if original_tokens <= max_tokens:
+        return content, False
+
+    # Reserve token room for the truncation marker before trimming.
+    marker_probe = _CONTENT_TRUNCATION_MARKER.format(
+        original=original_tokens, final=max_tokens
+    )
+    marker_tokens = _count_tokens(tokenizer, marker_probe)
+    inner_budget = max(0, max_tokens - marker_tokens)
+
+    trimmed_inner: str | None = None
+    if kind == "tables" and TABLE_TAG_RE.match(content.strip()):
+        # _row_trim_table_trailing keeps head rows and internally falls back
+        # to char-level fits while preserving the <table> wrapper.  Only
+        # malformed / unrecognized-format markup returns None.
+        trimmed_inner = _row_trim_table_trailing(content, inner_budget, tokenizer)
+    if trimmed_inner is None:
+        trimmed_inner = _char_trim_trailing(content, inner_budget, tokenizer)
+
+    final_tokens = _count_tokens(tokenizer, trimmed_inner)
+    marker = _CONTENT_TRUNCATION_MARKER.format(
+        original=original_tokens, final=final_tokens
+    )
+    return trimmed_inner + marker, True
+
+
 def build_surrounding(
     *,
     kind: str,
@@ -960,4 +1024,5 @@ __all__ = [
     "load_chunk_separators",
     "load_content_rows_by_blockid",
     "remove_table_tags",
+    "trim_content_to_budget",
 ]

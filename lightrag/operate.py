@@ -28,6 +28,7 @@ from lightrag.utils import (
     save_to_cache,
     CacheData,
     use_llm_func_with_cache,
+    get_env_value,
     get_llm_cache_identity,
     serialize_llm_cache_identity,
     update_chunk_cache_list,
@@ -60,6 +61,7 @@ from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
@@ -3221,6 +3223,17 @@ async def extract_entities(
 
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
+    # Cap on the gleaning LLM call's combined input (system + history user
+    # prompt + history assistant response + continue prompt).  Pulled from
+    # the same env knob that gates ``analyze_multimodal``'s sidecar trimming
+    # so both EXTRACT-role consumers share one source of truth.  ``0``
+    # disables the gleaning guard (gleaning always runs regardless of size).
+    max_extract_input_tokens = get_env_value(
+        "MAX_EXTRACT_INPUT_TOKENS",
+        DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
+        int,
+    )
+    extract_tokenizer: Tokenizer | None = global_config.get("tokenizer")
 
     # Check if JSON structured output mode is enabled
     use_json_extraction = global_config.get("entity_extraction_use_json", False)
@@ -3359,7 +3372,36 @@ async def extract_entities(
             )
 
         # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
-        if entity_extract_max_gleaning > 0:
+        run_gleaning = entity_extract_max_gleaning > 0
+        if (
+            run_gleaning
+            and extract_tokenizer is not None
+            and max_extract_input_tokens > 0
+        ):
+            # Gleaning replays the initial extraction's user/assistant pair
+            # via ``history_messages`` and appends a "continue" instruction.
+            # When the initial response was large (many entities/edges) or
+            # the chunk content is itself near the budget, that combined
+            # payload can blow past MAX_EXTRACT_INPUT_TOKENS and yield a
+            # provider ``context_length_exceeded`` error.  Pre-check here
+            # and skip rather than fail.
+            gleaning_token_count = (
+                len(extract_tokenizer.encode(entity_extraction_system_prompt))
+                + sum(
+                    len(extract_tokenizer.encode(msg.get("content", "") or ""))
+                    for msg in history
+                )
+                + len(extract_tokenizer.encode(entity_continue_extraction_user_prompt))
+            )
+            if gleaning_token_count > max_extract_input_tokens:
+                logger.warning(
+                    f"Gleaning stopped for chunk {chunk_key}: "
+                    f"Input tokens ({gleaning_token_count}) exceeded limit "
+                    f"({max_extract_input_tokens})."
+                )
+                run_gleaning = False
+
+        if run_gleaning:
             glean_result, timestamp = await use_llm_func_with_cache(
                 entity_continue_extraction_user_prompt,
                 use_llm_func,
