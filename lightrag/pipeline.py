@@ -4074,6 +4074,7 @@ class _PipelineMixin:
         def _render(
             kind: str,
             name: str,
+            image_type: str,
             description: str,
             footnotes_joined: str,
             equation_body: str,
@@ -4081,11 +4082,7 @@ class _PipelineMixin:
             sections: list[str] = []
             if kind == "drawing":
                 sections.append(f"- Image Name:\n{name}")
-                # type field comes from caller via name interpolation: omit
-                # when blank because the prompt enforces it as required so a
-                # missing type should already have raised.
-                # The image type was inserted at call-site by the caller via a
-                # secondary call to this helper if needed.
+                sections.append(f"- Image Type:\n{image_type}")
                 if description:
                     sections.append(f"- Image Description:\n{description}")
                 if footnotes_joined:
@@ -4104,22 +4101,6 @@ class _PipelineMixin:
                     sections.append(f"- Equation Description:\n{description}")
                 if footnotes_joined:
                     sections.append(f"- Equation Footnotes:\n{footnotes_joined}")
-            return "\n\n".join(sections).strip()
-
-        def _render_image(
-            name: str,
-            image_type: str,
-            description: str,
-            footnotes_joined: str,
-        ) -> str:
-            sections = [
-                f"- Image Name:\n{name}",
-                f"- Image Type:\n{image_type}",
-            ]
-            if description:
-                sections.append(f"- Image Description:\n{description}")
-            if footnotes_joined:
-                sections.append(f"- Image Footnotes:\n{footnotes_joined}")
             return "\n\n".join(sections).strip()
 
         max_tokens = DEFAULT_MAX_EXTRACT_INPUT_TOKENS
@@ -4180,16 +4161,10 @@ class _PipelineMixin:
                 footnotes_joined = "; ".join(footnotes_list)
 
                 def _compose(desc: str) -> str:
-                    if kind == "drawing":
-                        return _render_image(
-                            name=name,
-                            image_type=image_type,
-                            description=desc,
-                            footnotes_joined=footnotes_joined,
-                        )
                     return _render(
                         kind=kind,
                         name=name,
+                        image_type=image_type,
                         description=desc,
                         footnotes_joined=footnotes_joined,
                         equation_body=equation_body,
