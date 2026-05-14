@@ -74,7 +74,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `asset_dir` | `bool` | 是否存在`blocks.assets`资源目录 |
 | `split_option` | `object` | 文件提取时的分块参数。此字段留给文件提取引擎自己记录和使用 |
 | `blocks` | `int` | content 行数（不含 meta） |
-| `doc_id` | `"doc-<md5>"` | 文档全局 id，作为 sidecar item id 的前缀 |
+| `doc_id` | `"doc-<md5>"` | 文档全局 id。sidecar item id（`dr-/tb-/eq-`）使用 `doc_id` 去掉 `doc-` 前缀后的哈希部分，以缩短嵌入正文中的占位标签 |
 | `parse_engine` | `str` | 解析引擎`native/mineru/docling/legacy` |
 | `parse_time` | `str` | 解析完成时间; 格式：ISO-8601 UTC |
 | `doc_title` | `str` | 文档标题（通常为首个 H1）；可选 |
@@ -153,7 +153,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 
 ```json
 {
-  "id": "dr-doc-f1bee60173d067d88595c00e7d9b0ce5-0004",
+  "id": "dr-f1bee60173d067d88595c00e7d9b0ce5-0004",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 结构尺寸及重量",
   "format": "png",
@@ -178,7 +178,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 
 | 字段 | 说明 |
 |---|---|
-| `id` | `dr-<doc_id>-<NNNN>` 形式 |
+| `id` | `dr-<doc_hash>-<NNNN>` 形式（`doc_hash` 为 `doc_id` 去掉 `doc-` 前缀后的 32 位 md5） |
 | `blockid` | 指向产生该图形的 content 行 |
 | `heading` | 所在章节标题 |
 | `format` | 原始扩展名（去点）：`png` / `jpeg` / `gif` / `webp` / `wmf` / `emf` / … |
@@ -197,7 +197,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 
 ```json
 {
-  "id": "tb-doc-f1bee60173d067d88595c00e7d9b0ce5-0007",
+  "id": "tb-f1bee60173d067d88595c00e7d9b0ce5-0007",
   "blockid": "3f33897b5e105d254addc655f1efbf8c",
   "heading": "2.4.4 温度-湿度-高度（随系统进行）",
   "dimension": [16, 8],
@@ -224,7 +224,7 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
 
 | 字段 | 说明 |
 |---|---|
-| `id` | `tb-<doc_id>-<NNNN>` 形式 |
+| `id` | `tb-<doc_hash>-<NNNN>` 形式（`doc_hash` 为 `doc_id` 去掉 `doc-` 前缀后的 32 位 md5） |
 | `dimension` | 整数数组：`[num_rows, num_cols]`，包含表头行 |
 | `format` | `"json"` (二维数组) 或 `"html"` (负载 `<table>…</table>` 片段，含起止标签) |
 | `content` | 字符串：表格正文，按 `format` 决定结构；这是后续多模态 chunk 真正使用的字符串。 |
@@ -238,7 +238,7 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
 
 ```json
 {
-  "id": "eq-doc-f1bee60173d067d88595c00e7d9b0ce5-0001",
+  "id": "eq-f1bee60173d067d88595c00e7d9b0ce5-0001",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 结构尺寸及重量",
   "format": "latex",
@@ -264,9 +264,8 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 
 | 字段 | 说明 |
 |---|---|
-| `id` | `tb-<doc_id>-<NNNN>` 形式 |
-| `dimension` | 整数数组：`[num_rows, num_cols]`，包含表头行 |
-| `format` | `"json"` (二维数组) 或 `"html"` (负载 `<table>…</table>` 片段，含起止标签) |
+| `id` | `eq-<doc_hash>-<NNNN>` 形式（`doc_hash` 为 `doc_id` 去掉 `doc-` 前缀后的 32 位 md5） |
+| `format` | 固定为 `"latex"` |
 | `content` | 字符串：是**原始** LaTeX（可能包含 Unicode 运算符、外层 `\[ \]`），不包含两头的`$`分割符；模态分析阶段直接读这里 |
 | `llm_analyze_result.equation` | 字符串：是大模型输出的**规范化**后的 LaTeX公式（外层 `$ / \[ \] / equation` 环境，Unicode 转 LaTeX，不包含联投的`$`分割符），这是后续多模态 chunk 真正使用的字符串； |
 

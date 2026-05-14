@@ -2320,10 +2320,10 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(
         content_blocks = blocks[1:]
         body_block = next(x for x in content_blocks if x["content"] == "这是正文段落。")
         table_block = next(
-            x for x in content_blocks if 'refid="tb-doc-1-0001"' in x["content"]
+            x for x in content_blocks if 'refid="tb-1-0001"' in x["content"]
         )
         image_block = next(
-            x for x in content_blocks if 'id="dr-doc-1-0001"' in x["content"]
+            x for x in content_blocks if 'id="dr-1-0001"' in x["content"]
         )
 
         assert body_block["heading"] == "1.1 研究背景"
@@ -2333,7 +2333,7 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(
 
         base = str(blocks_path)[: -len(".blocks.jsonl")]
         tables = json.loads(Path(base + ".tables.json").read_text(encoding="utf-8"))
-        table_entry = tables["tables"]["tb-doc-1-0001"]
+        table_entry = tables["tables"]["tb-1-0001"]
         assert table_entry["heading"] == "1.1 研究背景"
         assert table_entry["dimension"] == [2, 3]
         assert table_entry["format"] == "json"
@@ -2343,7 +2343,7 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(
         ]
 
         drawings = json.loads(Path(base + ".drawings.json").read_text(encoding="utf-8"))
-        assert drawings["drawings"]["dr-doc-1-0001"]["heading"] == "1.1 研究背景"
+        assert drawings["drawings"]["dr-1-0001"]["heading"] == "1.1 研究背景"
 
         full_doc = await rag.full_docs.get_by_id("doc-1")
         assert full_doc["lightrag_document_path"] == (
@@ -2863,12 +2863,12 @@ def test_strip_internal_multimodal_markup_cleans_table_id():
     )
 
     source = (
-        '<table id="tb-doc-1-0001" format="json" caption="Indicator metrics">'
+        '<table id="tb-1-0001" format="json" caption="Indicator metrics">'
         '[["a","b"],["1","2"]]'
         "</table>"
     )
     cleaned = strip_internal_multimodal_markup_for_extraction(source)
-    assert "tb-doc-1-0001" not in cleaned
+    assert "tb-1-0001" not in cleaned
     assert 'format="json"' in cleaned
     assert 'caption="Indicator metrics"' in cleaned
     # Row body preserved.

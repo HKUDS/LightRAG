@@ -238,7 +238,7 @@ def _parse_docx_sync(
             nonlocal local_table_count
             local_table_count += 1
             idx = table_idx + local_table_count
-            tb_id = f"tb-{doc_id}-{idx:04d}"
+            tb_id = f"tb-{doc_id.removeprefix('doc-')}-{idx:04d}"
             caption = ""
             table_json = match.group(1)
             try:
@@ -292,7 +292,7 @@ def _parse_docx_sync(
 
             local_equation_count += 1
             idx = equation_idx + local_equation_count
-            eq_id = f"eq-{doc_id}-{idx:04d}"
+            eq_id = f"eq-{doc_id.removeprefix('doc-')}-{idx:04d}"
             caption = ""
             pending_equations[eq_id] = {
                 "id": eq_id,
@@ -314,7 +314,7 @@ def _parse_docx_sync(
             idx = drawing_idx + local_drawing_count
             placeholder = match.group(0)
             attrs = parse_drawing_attributes(placeholder)
-            dr_id = f"dr-{doc_id}-{idx:04d}"
+            dr_id = f"dr-{doc_id.removeprefix('doc-')}-{idx:04d}"
             caption = ""
             path_val = attrs.get("path", "") or ""
             src_val = attrs.get("src", "") or ""
