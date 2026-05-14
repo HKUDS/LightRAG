@@ -2307,8 +2307,25 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     @staticmethod
     def _escape_ppl(value: str) -> str:
-        """Escape a string for safe inclusion in a PPL single-quoted literal."""
-        return value.replace("\\", "\\\\").replace("'", "\\'")
+        """Escape a string for safe inclusion in a PPL single-quoted literal.
+
+        Escapes backslashes, single quotes, and control characters that could
+        interfere with PPL query parsing.
+        """
+        value = value.replace("\\", "\\\\").replace("'", "\\'")
+        # Strip control characters that could break the PPL string literal
+        value = value.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+        return value
+
+    @staticmethod
+    def _escape_wildcard(value: str) -> str:
+        """Escape OpenSearch wildcard special characters in user input.
+
+        Escapes \\, *, and ? so they are treated as literal characters
+        rather than wildcard operators, preventing DoS via expensive patterns.
+        """
+        # Escape backslash first, then wildcard metacharacters
+        return value.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
 
     async def _bfs_subgraph(
         self, start_label: str, max_depth: int, max_nodes: int
@@ -2532,7 +2549,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                             {
                                 "wildcard": {
                                     "entity_id": {
-                                        "value": f"*{query.lower()}*",
+                                        "value": f"*{self._escape_wildcard(query.lower())}*",
                                         "case_insensitive": True,
                                         "boost": 2,
                                     }

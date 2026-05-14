@@ -1439,9 +1439,9 @@ export default function DocumentManager() {
             <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
 
-          <CardContent className="flex-1 relative p-0" ref={cardContentRef}>
+          <CardContent className="min-h-0 flex-1 relative p-0" ref={cardContentRef}>
             {!docs && (
-              <div className="absolute inset-0 p-0">
+              <div className="absolute inset-0 min-h-0 p-0">
                 <EmptyCard
                   title={t('documentPanel.documentManager.emptyTitle')}
                   description={t('documentPanel.documentManager.emptyDescription')}
@@ -1449,7 +1449,7 @@ export default function DocumentManager() {
               </div>
             )}
             {docs && (
-              <div className="absolute inset-0 flex flex-col p-0">
+              <div className="absolute inset-0 flex min-h-0 flex-col p-0">
                 <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
                   <TooltipProvider>
                     <Table className="w-full">

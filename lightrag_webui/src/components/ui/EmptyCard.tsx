@@ -20,7 +20,7 @@ export default function EmptyCard({
   return (
     <Card
       className={cn(
-        'flex w-full flex-col items-center justify-center space-y-6 bg-transparent p-16',
+        'flex h-full min-h-0 w-full flex-col items-center justify-center space-y-6 rounded-none bg-transparent p-16',
         className
       )}
       {...props}
