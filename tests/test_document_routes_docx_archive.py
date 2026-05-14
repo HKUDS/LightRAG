@@ -249,9 +249,6 @@ class _ParseTokenizer(_utils.TokenizerInterface):
 
 class _ParseRag:
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-    _enrich_parsed_sidecars_with_surrounding = (
-        LightRAG._enrich_parsed_sidecars_with_surrounding
-    )
     # parse_native now delegates to the LightRAG Document writer, which the
     # tests need to exercise to validate archive + full_docs side effects.
     _write_lightrag_document_from_content_list = (

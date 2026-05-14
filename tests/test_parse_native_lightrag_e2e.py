@@ -74,9 +74,6 @@ class _MiniRag:
     """Just enough surface for parse_native + native_parser/docx adapter."""
 
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-    _enrich_parsed_sidecars_with_surrounding = (
-        LightRAG._enrich_parsed_sidecars_with_surrounding
-    )
 
     def __init__(self, working_dir):
         self.working_dir = str(working_dir)
@@ -259,6 +256,18 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
         tables = json.loads(tables_path.read_text(encoding="utf-8"))
         table_entry = tables["tables"]["tb-doc-table-0001"]
         assert table_entry["caption"] == ""
+
+        # Surrounding is now backfilled at analyze_multimodal entry, not in
+        # parse_native — invoke the same routine directly to mirror that.
+        from lightrag.multimodal_context import enrich_sidecars_with_surrounding
+
+        enrich_sidecars_with_surrounding(
+            blocks_path=str(blocks_path),
+            enabled_modalities={"tables"},
+            tokenizer=rag.tokenizer,
+        )
+        tables = json.loads(tables_path.read_text(encoding="utf-8"))
+        table_entry = tables["tables"]["tb-doc-table-0001"]
         assert table_entry["surrounding"] == {
             "leading": "before\n",
             "trailing": "\nafter",
@@ -268,8 +277,11 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
 
 
 @pytest.mark.offline
-def test_native_parse_backfills_surrounding_for_all_sidecars(tmp_path, monkeypatch):
-    """Parse-stage sidecars should be self-contained before VLM analysis."""
+def test_analyze_entrypoint_backfills_surrounding_for_all_sidecars(
+    tmp_path, monkeypatch
+):
+    """Surrounding is backfilled at analyze_multimodal entry, covering native
+    parse output as well as any other sidecar-producing engine."""
 
     async def _run():
         input_dir = tmp_path / "input"
@@ -308,6 +320,23 @@ def test_native_parse_backfills_surrounding_for_all_sidecars(tmp_path, monkeypat
 
         blocks_path = Path(result["blocks_path"])
         base = str(blocks_path)[: -len(".blocks.jsonl")]
+
+        # Parse-time sidecars must NOT contain surrounding — that field is
+        # now produced at analyze_multimodal entry.
+        for root in ("drawings", "tables", "equations"):
+            payload = json.loads(Path(base + f".{root}.json").read_text("utf-8"))
+            for item in payload[root].values():
+                assert "surrounding" not in item
+
+        # Now invoke the same routine analyze_multimodal calls and verify
+        # all modalities get populated.
+        from lightrag.multimodal_context import enrich_sidecars_with_surrounding
+
+        enrich_sidecars_with_surrounding(
+            blocks_path=str(blocks_path),
+            enabled_modalities={"drawings", "tables", "equations"},
+            tokenizer=rag.tokenizer,
+        )
         for root in ("drawings", "tables", "equations"):
             payload = json.loads(Path(base + f".{root}.json").read_text("utf-8"))
             items = payload[root]

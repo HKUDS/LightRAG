@@ -702,16 +702,65 @@ def load_content_rows_by_blockid(blocks_path: str) -> dict[str, str]:
     return rows
 
 
+DEFAULT_SURROUNDING_MAX_TOKENS = 2000
+
+
+def _resolve_surrounding_budget(
+    leading_max_tokens: int | None,
+    trailing_max_tokens: int | None,
+) -> tuple[int, int]:
+    """Resolve per-half token budgets, defaulting to env vars then 2000.
+
+    Reads ``SURROUNDING_LEADING_MAX_TOKENS`` / ``SURROUNDING_TRAILING_MAX_TOKENS``
+    when the caller passes ``None``.  Invalid env values fall back to
+    :data:`DEFAULT_SURROUNDING_MAX_TOKENS`.
+    """
+
+    def _from_env(env_var: str) -> int:
+        raw = os.getenv(env_var)
+        if raw is None or not raw.strip():
+            return DEFAULT_SURROUNDING_MAX_TOKENS
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning(
+                "[multimodal_context] invalid %s=%r; falling back to %d",
+                env_var,
+                raw,
+                DEFAULT_SURROUNDING_MAX_TOKENS,
+            )
+            return DEFAULT_SURROUNDING_MAX_TOKENS
+        return max(0, value)
+
+    leading = (
+        leading_max_tokens
+        if leading_max_tokens is not None
+        else _from_env("SURROUNDING_LEADING_MAX_TOKENS")
+    )
+    trailing = (
+        trailing_max_tokens
+        if trailing_max_tokens is not None
+        else _from_env("SURROUNDING_TRAILING_MAX_TOKENS")
+    )
+    return leading, trailing
+
+
 def build_surrounding(
     *,
     kind: str,
     block_content: str,
     span: tuple[int, int],
     tokenizer: Tokenizer,
-    max_tokens: int,
+    leading_max_tokens: int,
+    trailing_max_tokens: int,
     separators: list[str],
 ) -> dict[str, str]:
-    """Compute ``{"leading": …, "trailing": …}`` for one sidecar entry."""
+    """Compute ``{"leading": …, "trailing": …}`` for one sidecar entry.
+
+    ``leading_max_tokens`` and ``trailing_max_tokens`` are independent
+    per-half caps so deployments can tune the two contexts separately
+    via ``SURROUNDING_LEADING_MAX_TOKENS`` / ``SURROUNDING_TRAILING_MAX_TOKENS``.
+    """
     start, end = span
     leading_src = block_content[:start]
     trailing_src = block_content[end:]
@@ -719,14 +768,14 @@ def build_surrounding(
         leading_src,
         kind=kind,
         tokenizer=tokenizer,
-        max_tokens=max_tokens,
+        max_tokens=leading_max_tokens,
         separators=separators,
     )
     trailing = _build_trailing(
         trailing_src,
         kind=kind,
         tokenizer=tokenizer,
-        max_tokens=max_tokens,
+        max_tokens=trailing_max_tokens,
         separators=separators,
     )
     return {"leading": leading, "trailing": trailing}
@@ -737,7 +786,8 @@ def enrich_sidecars_with_surrounding(
     blocks_path: str,
     enabled_modalities: set[str],
     tokenizer: Tokenizer,
-    max_tokens: int = 2000,
+    leading_max_tokens: int | None = None,
+    trailing_max_tokens: int | None = None,
     separators: list[str] | None = None,
 ) -> dict[str, int]:
     """Backfill ``surrounding`` on enabled-modality sidecars.
@@ -747,7 +797,10 @@ def enrich_sidecars_with_surrounding(
         enabled_modalities: subset of ``{"drawings", "tables",
             "equations"}`` reflecting the document's ``process_options``.
         tokenizer: tokenizer used to enforce the per-half token budget.
-        max_tokens: per-half cap (default 2000).
+        leading_max_tokens: leading-half cap.  ``None`` reads
+            ``SURROUNDING_LEADING_MAX_TOKENS`` (default 2000).
+        trailing_max_tokens: trailing-half cap.  ``None`` reads
+            ``SURROUNDING_TRAILING_MAX_TOKENS`` (default 2000).
         separators: explicit separator cascade.  Defaults to the cascade
             resolved from ``CHUNK_R_SEPARATORS`` (or
             ``DEFAULT_R_SEPARATORS``).
@@ -768,6 +821,10 @@ def enrich_sidecars_with_surrounding(
     content_by_blockid = load_content_rows_by_blockid(blocks_path)
     if separators is None:
         separators = load_chunk_separators()
+
+    leading_tokens, trailing_tokens = _resolve_surrounding_budget(
+        leading_max_tokens, trailing_max_tokens
+    )
 
     base = str(blocks_file)
     if base.endswith(".blocks.jsonl"):
@@ -816,7 +873,8 @@ def enrich_sidecars_with_surrounding(
                 block_content=block_content,
                 span=span,
                 tokenizer=tokenizer,
-                max_tokens=max_tokens,
+                leading_max_tokens=leading_tokens,
+                trailing_max_tokens=trailing_tokens,
                 separators=separators,
             )
             item["surrounding"] = surrounding
@@ -845,6 +903,7 @@ def enrich_sidecars_with_surrounding(
 
 
 __all__ = [
+    "DEFAULT_SURROUNDING_MAX_TOKENS",
     "build_surrounding",
     "enrich_sidecars_with_surrounding",
     "find_target_span",
