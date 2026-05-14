@@ -2997,7 +2997,6 @@ class _PipelineMixin:
                     "heading": current_heading,
                     "format": "latex",
                     "content": eq_text,
-                    "index": equation_idx - 1,
                     "caption": caption,
                     "footnotes": footnotes,
                 }
@@ -3042,7 +3041,6 @@ class _PipelineMixin:
                     ],
                     "format": fmt,
                     "content": table_content,
-                    "index": table_idx - 1,
                     "caption": caption,
                     "footnotes": footnotes,
                     "image": item.get("img_path") or item.get("image"),
