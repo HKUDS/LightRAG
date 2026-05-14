@@ -2876,6 +2876,62 @@ def test_strip_internal_multimodal_markup_cleans_table_id():
 
 
 @pytest.mark.offline
+def test_strip_internal_multimodal_markup_cite_default_unwraps():
+    """Default (keep_cite_tag=False) is the entity-extraction path: the
+    ``<cite>`` wrapper is stripped so the extractor does not surface it
+    as a structural entity — only the visible label survives.
+
+    The surrounding-context path overrides this via keep_cite_tag=True
+    (verified in tests/test_multimodal_surrounding_context.py); this
+    test pins the default to prevent regressions on the extraction
+    path when callers refactor the function signature.
+    """
+    from lightrag.chunk_schema import (
+        strip_internal_multimodal_markup_for_extraction,
+    )
+
+    source = (
+        'see <cite type="table" refid="tb-1-0001">表 1</cite> and '
+        '<cite type="equation" refid="eq-1-0002">公式 2</cite> for details.'
+    )
+    cleaned = strip_internal_multimodal_markup_for_extraction(source)
+    # Wrappers and ids both gone; visible labels survive as plain text.
+    assert "<cite" not in cleaned
+    assert "refid=" not in cleaned
+    assert "tb-1-0001" not in cleaned
+    assert "eq-1-0002" not in cleaned
+    assert "表 1" in cleaned
+    assert "公式 2" in cleaned
+
+
+@pytest.mark.offline
+def test_strip_internal_multimodal_markup_cite_keep_tag_strips_refid_only():
+    """keep_cite_tag=True (surrounding-context path): preserve the
+    ``<cite type="…">label</cite>`` wrapper but drop the parser-
+    internal ``refid``.  Other identifier transformations
+    (``<table id=…>`` / ``<drawing id=…/>`` / ``<equation id=…>``) are
+    unaffected by the flag and still apply."""
+    from lightrag.chunk_schema import (
+        strip_internal_multimodal_markup_for_extraction,
+    )
+
+    source = (
+        'see <cite type="table" refid="tb-1-0001">表 1</cite>; '
+        '<drawing id="dr-1" path="a.png" src="a" caption="Fig" />'
+    )
+    cleaned = strip_internal_multimodal_markup_for_extraction(
+        source, keep_cite_tag=True
+    )
+    assert '<cite type="table">表 1</cite>' in cleaned
+    assert "refid=" not in cleaned
+    assert "tb-1-0001" not in cleaned
+    # Non-cite cleaning still applies in this mode.
+    assert '<drawing caption="Fig" />' in cleaned
+    assert 'id="dr-1"' not in cleaned
+    assert "path=" not in cleaned
+
+
+@pytest.mark.offline
 def test_reinsert_without_process_options_skips_stale_mm_chunks(tmp_path):
     """Regression for the call-site fallback in process_single_document.
 

@@ -118,7 +118,8 @@ def test_drawing_surrounding_kept_within_block_only():
 def test_equation_surrounding_protects_drawing_atom():
     tok = _tokenizer()
     block = (
-        '<drawing id="dr-prev" path="a.png" src="a" /> intro text. '
+        '<drawing id="dr-prev" path="a.png" src="a" caption="Fig 1" />'
+        " intro text. "
         '<equation id="eq-1" format="latex">a+b=c</equation>'
         " conclusion text."
     )
@@ -132,8 +133,9 @@ def test_equation_surrounding_protects_drawing_atom():
         trailing_max_tokens=2000,
         separators=load_chunk_separators(),
     )
-    # The drawing atom must appear in full, not half-cut.
-    assert '<drawing id="dr-prev"' in surr["leading"]
+    # Parser-internal id/path/src are stripped, but caption survives and
+    # the drawing tag stays atomic (not cut in half).
+    assert '<drawing caption="Fig 1" />' in surr["leading"]
     assert "/>" in surr["leading"]
     # No half-open drawing/equation tags
     assert surr["leading"].count("<drawing") == surr["leading"].count("/>")
@@ -650,6 +652,230 @@ def test_env_var_leading_and_trailing_budgets_apply_independently(
     # Trailing is allowed to use its larger budget, so it must be strictly
     # longer than leading here.
     assert len(surr["trailing"]) > len(surr["leading"])
+
+
+# ---------------------------------------------------------------------------
+# Parser-internal markup stripping inside surrounding (mirrors what
+# ``strip_internal_multimodal_markup_for_extraction`` does for chunk
+# content before entity extraction).  The cleaning happens *before*
+# token-budgeted truncation, so the saved budget reflects what the
+# LLM actually receives and a truncation point can never land inside
+# an unprocessed ``id="…"`` attribute.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_surrounding_strips_drawing_id_path_src():
+    tok = _tokenizer()
+    block = (
+        "leading prose. "
+        '<drawing id="dr-x" path="figs/a.png" src="raw/a.png" caption="Fig 1" />'
+        " between. "
+        '<equation id="eq-target" format="latex">x=1</equation>'
+        " trailing prose."
+    )
+    span = find_target_span("equations", "eq-target", block)
+    surr = build_surrounding(
+        kind="equations",
+        block_content=block,
+        span=span,
+        tokenizer=tok,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
+        separators=load_chunk_separators(),
+    )
+    leading = surr["leading"]
+    assert '<drawing caption="Fig 1" />' in leading
+    assert 'id="dr-x"' not in leading
+    assert "path=" not in leading
+    assert "src=" not in leading
+
+
+@pytest.mark.offline
+def test_surrounding_strips_table_internal_id():
+    tok = _tokenizer()
+    block = (
+        "prefix. "
+        '<table id="tb-x" format="json" caption="Sales">[[1,2],[3,4]]</table>'
+        " between. "
+        '<drawing id="dr-target" caption="Fig 2" />'
+        " suffix."
+    )
+    span = find_target_span("drawings", "dr-target", block)
+    surr = build_surrounding(
+        kind="drawings",
+        block_content=block,
+        span=span,
+        tokenizer=tok,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
+        separators=load_chunk_separators(),
+    )
+    leading = surr["leading"]
+    assert '<table format="json" caption="Sales">[[1,2],[3,4]]</table>' in leading
+    assert 'id="tb-x"' not in leading
+
+
+@pytest.mark.offline
+def test_surrounding_strips_cite_refid_keeping_visible_text():
+    tok = _tokenizer()
+    block = (
+        "see "
+        '<cite type="table" refid="tb-x">Table 1</cite>'
+        " for details. "
+        '<drawing id="dr-target" caption="Fig 3" />'
+        " end."
+    )
+    span = find_target_span("drawings", "dr-target", block)
+    surr = build_surrounding(
+        kind="drawings",
+        block_content=block,
+        span=span,
+        tokenizer=tok,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
+        separators=load_chunk_separators(),
+    )
+    leading = surr["leading"]
+    # Surrounding path uses keep_cite_tag=True: the cite wrapper survives
+    # (so the VLM/LLM can tell "Table 1" is a reference to an external
+    # table, not inline prose) but the parser-internal refid is gone.
+    assert '<cite type="table">Table 1</cite>' in leading
+    assert "refid=" not in leading
+    assert "tb-x" not in leading
+
+
+@pytest.mark.offline
+def test_surrounding_keeps_equation_cite_tag_and_strips_refid():
+    """In production, equations without LaTeX content emit as
+    ``<cite type="equation" refid="eq-…">公式 N</cite>`` rather than a
+    full ``<equation>`` tag.  Surrounding must keep the wrapper so the
+    multimodal analyzer can recognize the visible label as an external
+    referent, not inline prose."""
+    tok = _tokenizer()
+    block = (
+        "see "
+        '<cite type="equation" refid="eq-y">公式 2</cite>'
+        " above. "
+        '<drawing id="dr-target" caption="Fig 4" />'
+        " end."
+    )
+    span = find_target_span("drawings", "dr-target", block)
+    surr = build_surrounding(
+        kind="drawings",
+        block_content=block,
+        span=span,
+        tokenizer=tok,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
+        separators=load_chunk_separators(),
+    )
+    leading = surr["leading"]
+    assert '<cite type="equation">公式 2</cite>' in leading
+    assert "refid=" not in leading
+    assert "eq-y" not in leading
+
+
+@pytest.mark.offline
+def test_strip_happens_before_budget_truncation():
+    """Regression guard for the strip-before-truncate ordering.
+
+    Constructs a leading source whose raw form (with id/path/src) exceeds
+    the budget while its stripped form fits.  If strip ran *after*
+    truncation, the budget would be measured against the bloated raw
+    string and the saved surrounding would be cut early (possibly mid-
+    attribute, leaving ``id="…`` residue).
+    """
+    tok = _tokenizer()
+    # Raw drawing tag including attrs (~67 chars), stripped form is
+    # just '<drawing caption="C" />' (~24 chars).  Budget at 30 sits
+    # between the two — raw is too big, stripped fits.
+    block = (
+        '<drawing id="dr-prev" path="some/long/path.png" src="raw/long/path.png"'
+        ' caption="C" />'
+        '<equation id="eq-1" format="latex">y</equation>'
+        " tail."
+    )
+    span = find_target_span("equations", "eq-1", block)
+    surr = build_surrounding(
+        kind="equations",
+        block_content=block,
+        span=span,
+        tokenizer=tok,
+        leading_max_tokens=30,
+        trailing_max_tokens=2000,
+        separators=load_chunk_separators(),
+    )
+    leading = surr["leading"]
+    # Whole stripped tag must be present — proves strip ran before
+    # the budget gate.
+    assert leading == '<drawing caption="C" />'
+    # And no parser-internal markers leaked through.
+    assert "id=" not in leading
+    assert "path=" not in leading
+    assert "src=" not in leading
+
+
+@pytest.mark.offline
+def test_enrich_overwrites_surrounding_when_budget_changes(tmp_path):
+    """Idempotency: rerunning with a smaller budget overwrites the prior
+    surrounding, demonstrating that ``SURROUNDING_LEADING_MAX_TOKENS``
+    changes propagate without needing to clear sidecars first."""
+    base = "doc"
+    blockid = "b1"
+    content = "L" * 500 + '<drawing id="dr-1" caption="C" />' + "T" * 500
+    _write_blocks(
+        tmp_path,
+        base,
+        [
+            {
+                "type": "content",
+                "blockid": blockid,
+                "format": "plain_text",
+                "content": content,
+                "heading": "h",
+                "parent_headings": [],
+                "level": 1,
+            }
+        ],
+    )
+    drawings_path = tmp_path / f"{base}.drawings.json"
+    _write_sidecar(
+        drawings_path,
+        "drawings",
+        {"dr-1": {"id": "dr-1", "blockid": blockid, "heading": "h"}},
+    )
+
+    tok = _tokenizer()
+    enrich_sidecars_with_surrounding(
+        blocks_path=str(tmp_path / f"{base}.blocks.jsonl"),
+        enabled_modalities={"drawings"},
+        tokenizer=tok,
+        leading_max_tokens=300,
+        trailing_max_tokens=300,
+    )
+    first = json.loads(drawings_path.read_text(encoding="utf-8"))["drawings"]["dr-1"][
+        "surrounding"
+    ]
+    first_leading_len = len(first["leading"])
+    first_trailing_len = len(first["trailing"])
+
+    enrich_sidecars_with_surrounding(
+        blocks_path=str(tmp_path / f"{base}.blocks.jsonl"),
+        enabled_modalities={"drawings"},
+        tokenizer=tok,
+        leading_max_tokens=50,
+        trailing_max_tokens=50,
+    )
+    second = json.loads(drawings_path.read_text(encoding="utf-8"))["drawings"]["dr-1"][
+        "surrounding"
+    ]
+    # New budget is smaller, so saved surrounding must shrink — proving
+    # the previous value was overwritten, not preserved.
+    assert len(second["leading"]) < first_leading_len
+    assert len(second["trailing"]) < first_trailing_len
+    assert len(tok.encode(second["leading"])) <= 50
+    assert len(tok.encode(second["trailing"])) <= 50
 
 
 @pytest.mark.offline

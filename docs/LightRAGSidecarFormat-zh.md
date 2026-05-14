@@ -273,12 +273,19 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 
 ## 七、surrounding
 
-`surrounding.leading` 和 `surrounding.trailing` 是 sidecar item 的可分析上下文窗口，目的是提供图片、表格和公式所在段落的上下文信息，提高多模态分析的质量。
+`surrounding.leading` 和 `surrounding.trailing` 是 sidecar item 的可分析上下文窗口，目的是提供图片、表格和公式所在段落的上下文信息，提高多模态分析的质量。**surrounding内容有LightRAG在分析阶段自动注入，不需要在文档解析引擎中主动写入sidecar文件中**。以下是surrounding内容的生成逻辑：
 
 - 取自同一 `blockid` 对应的 content 行文本，以多模态占位标签的位置为切分点；
-- 每一侧不超过 `2000` tokens（按 tokenizer 截断，倾向保留靠近目标的句子）；
-- 文本中保留**同行其他**多模态对象的占位标签，这让模型能感知"图 1 之后还有公式 1"这种上下文；
-- 当目标对象本身位于 block 起点 / 终点时，对应一侧为 `""` 而不是 `"n/a"`（提示词组装时再把空字符串显示为 `n/a`）。
+- 每一侧的 token 上限由环境变量 `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` 控制（缺省 `2000`，可独立调整）；按 tokenizer 截断，倾向保留靠近目标的句子；
+- 文本中保留**同行其他**多模态对象的占位标签，这让模型能感知"图 1 之后还有公式 1"这种上下文；但解析器内部标识符（`id` / `path` / `src` / `refid`）已被 `strip_internal_multimodal_markup_for_extraction` 剥离 —— 与 chunk content 实体抽取前的清理一致，避免噪声进入 VLM/LLM prompt。具体清理规则：
+  - `<drawing id="dr-…" path="…" src="…" caption="Fig 1" />` → `<drawing caption="Fig 1" />`；**没有 caption 的 drawing 整段移除**（标签不再携带任何对模型可见的信息）；
+  - `<table id="tb-…" format="json" caption="…">rows</table>` → `<table format="json" caption="…">rows</table>`；
+  - `<equation id="eq-…" format="latex">body</equation>` → `<equation format="latex">body</equation>`；
+  - `<cite type="table" refid="tb-…">表 1</cite>` → `<cite type="table">表 1</cite>`；`<cite type="equation" refid="eq-…">公式 2</cite>` → `<cite type="equation">公式 2</cite>`。仅删 `refid` 属性，保留 `<cite type="…">…</cite>` 包装 —— 让 VLM/LLM 能识别"这是对其他表/公式的引用"而非普通的文本，同时屏蔽 LLM 看不到的解析器内部 id；
+    - 例外：`tables.json` 类型的 surrounding 在 strip 之前先走 `remove_table_tags`，把所有 `<cite type="table">` 整段移除（分析目标表时不希望被对其他表的悬挂引用干扰）；
+- 清理发生在 token 预算截断**之前**：token 数按"LLM 实际看到的内容"统计，且截断点不会落到未清理的 `id="…"` 属性中间，避免标签结构残缺；
+- 当目标对象本身位于 block 起点 / 终点时，对应一侧为 `""` 而不是 `"n/a"`（提示词组装时再把空字符串显示为 `n/a`）；
+- `enrich_sidecars_with_surrounding` 是幂等的：每次 `analyze_multimodal` 入口都会重新计算并覆盖 `surrounding`，因此修改 `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` 后无需手动清理 sidecar，重新执行多模态分析即可按新预算重写。
 
 ## 八、positions
 

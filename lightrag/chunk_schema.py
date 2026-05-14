@@ -117,6 +117,15 @@ _CITE_RE = re.compile(
     flags=re.IGNORECASE | re.DOTALL,
 )
 
+# Inner attribute stripper used when the caller wants to *preserve* the
+# `<cite type="…">…</cite>` wrapper but drop the parser-internal `refid`.
+# Matches ` refid="…"` (leading whitespace + quoted value) so the
+# surrounding attribute layout (e.g. `type="table"`) stays intact.
+_CITE_REFID_ATTR_RE = re.compile(
+    r'\s+refid\s*=\s*"[^"]*"',
+    flags=re.IGNORECASE,
+)
+
 # Self-closing `<drawing ...>` placeholder.  We keep `caption` (visible) and
 # drop `id`, `path`, `src`, `format`, etc.  Tags without any caption are
 # removed entirely so they don't pollute extraction input.
@@ -196,16 +205,17 @@ def _replace_table(match: re.Match[str]) -> str:
     return f"<table{_format_attrs(keep)}>{body}</table>"
 
 
-def strip_internal_multimodal_markup_for_extraction(content: str) -> str:
+def strip_internal_multimodal_markup_for_extraction(
+    content: str, *, keep_cite_tag: bool = False
+) -> str:
     """Strip parser-internal identifiers from a chunk content string.
 
     Only the entity-extraction prompt should receive the cleaned form;
     callers must NOT mutate the stored chunk ``content`` so query-time
     citations still resolve back to the original parser output.
 
-    Transformations:
+    Transformations always applied:
 
-    - ``<cite type="…" refid="…">Table 1</cite>`` → ``Table 1``
     - ``<drawing id="dr-…" path="…" src="…" caption="Fig 1" />``
         → ``<drawing caption="Fig 1" />``
         (drops the entire tag when no caption is present)
@@ -213,10 +223,26 @@ def strip_internal_multimodal_markup_for_extraction(content: str) -> str:
         → ``<table format="json" caption="…">rows</table>``
     - ``<equation id="eq-…" format="latex">…</equation>``
         → ``<equation format="latex">…</equation>``
+
+    Cite-tag handling depends on ``keep_cite_tag``:
+
+    - ``keep_cite_tag=False`` (default — entity-extraction path):
+      ``<cite type="…" refid="…">Table 1</cite>`` → ``Table 1``.  The
+      cite wrapper is dropped so the extractor does not surface it as
+      a noisy structural entity.
+    - ``keep_cite_tag=True`` (multimodal-analysis surrounding path):
+      ``<cite type="table" refid="…">Table 1</cite>`` →
+      ``<cite type="table">Table 1</cite>``.  Only the internal
+      ``refid`` is removed; the wrapper survives so the VLM/LLM can
+      tell visible reference labels (e.g. "Table 1") apart from inline
+      prose.
     """
     if not content:
         return content
-    cleaned = _CITE_RE.sub(lambda m: m.group(1), content)
+    if keep_cite_tag:
+        cleaned = _CITE_REFID_ATTR_RE.sub("", content)
+    else:
+        cleaned = _CITE_RE.sub(lambda m: m.group(1), content)
     cleaned = _DRAWING_RE.sub(_replace_drawing, cleaned)
     cleaned = _TABLE_RE.sub(_replace_table, cleaned)
     cleaned = _EQUATION_RE.sub(_replace_equation, cleaned)

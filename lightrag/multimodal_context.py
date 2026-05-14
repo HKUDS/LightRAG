@@ -36,6 +36,29 @@ entries the table tags are preserved when they fit; oversized JSON or
 HTML tables are row-trimmed (tail rows for leading, head rows for
 trailing) so the surrounding keeps the rows physically closest to the
 target.
+
+Parser-internal identifiers (``id`` / ``path`` / ``src`` / ``refid``) are
+stripped from the candidate text via
+:func:`lightrag.chunk_schema.strip_internal_multimodal_markup_for_extraction`
+**before** atomization and token-budgeted truncation.  This mirrors the
+treatment given to chunk content prior to entity extraction (see
+``lightrag.operate._process_single_content``) and ensures the
+multimodal analysis prompt never sees those internal markers.  Cleaning
+before truncation also guarantees the truncation point can never land
+inside an ``id="…"`` attribute and leave a malformed tag the strip
+regex would no longer recognize.
+
+Unlike the entity-extraction call site, the surrounding path invokes
+the cleaner with ``keep_cite_tag=True``: parser-internal ``refid`` is
+removed but the ``<cite type="…">…</cite>`` wrapper is preserved so the
+VLM/LLM can still tell a reference label apart from inline prose
+(e.g. ``<cite type="table">表1</cite>`` makes it obvious the visible
+text "表1" denotes another table elsewhere in the document, rather
+than appearing as an ordinary noun phrase).  Note this only affects
+``drawings.json`` / ``equations.json`` surroundings — ``tables.json``
+surroundings still drop all cite tags via :func:`remove_table_tags`
+because the target-table analysis should not be steered by dangling
+references to other tables.
 """
 
 from __future__ import annotations
@@ -47,6 +70,7 @@ import re
 from html import escape as html_escape
 from html import unescape as html_unescape
 from pathlib import Path
+from lightrag.chunk_schema import strip_internal_multimodal_markup_for_extraction
 from lightrag.constants import DEFAULT_R_SEPARATORS
 from lightrag.table_markup import (
     TABLE_TAG_RE,
@@ -448,13 +472,26 @@ def _build_leading(
     max_tokens: int,
     separators: list[str],
 ) -> str:
-    """Build the ``leading`` half: suffix of ``source`` within budget."""
+    """Build the ``leading`` half: suffix of ``source`` within budget.
+
+    ``source`` is cleaned via
+    :func:`lightrag.chunk_schema.strip_internal_multimodal_markup_for_extraction`
+    *before* atomization and token-budgeted accumulation, so parser-internal
+    identifiers (``id`` / ``path`` / ``src`` / ``refid``) never reach the
+    accumulated output and the token budget reflects what the LLM actually
+    sees.  Cleaning before truncation also prevents a truncation point from
+    landing inside an ``id="…"`` attribute and producing a malformed tag
+    that the strip regex would no longer recognize.
+    """
     if not source or max_tokens <= 0:
         return ""
     if kind == "tables":
         source = remove_table_tags(source)
         if not source:
             return ""
+    source = strip_internal_multimodal_markup_for_extraction(source, keep_cite_tag=True)
+    if not source:
+        return ""
     accumulated = ""
     atoms = _atomize(source)
     for atom_idx in range(len(atoms) - 1, -1, -1):
@@ -559,13 +596,20 @@ def _build_trailing(
     max_tokens: int,
     separators: list[str],
 ) -> str:
-    """Build the ``trailing`` half: prefix of ``source`` within budget."""
+    """Build the ``trailing`` half: prefix of ``source`` within budget.
+
+    See :func:`_build_leading` for the rationale behind stripping
+    parser-internal markers *before* atomization and truncation.
+    """
     if not source or max_tokens <= 0:
         return ""
     if kind == "tables":
         source = remove_table_tags(source)
         if not source:
             return ""
+    source = strip_internal_multimodal_markup_for_extraction(source, keep_cite_tag=True)
+    if not source:
+        return ""
     accumulated = ""
     atoms = _atomize(source)
     for atom_kind, atom_text in atoms:
@@ -760,6 +804,12 @@ def build_surrounding(
     ``leading_max_tokens`` and ``trailing_max_tokens`` are independent
     per-half caps so deployments can tune the two contexts separately
     via ``SURROUNDING_LEADING_MAX_TOKENS`` / ``SURROUNDING_TRAILING_MAX_TOKENS``.
+
+    The returned strings have parser-internal markers (``id`` / ``path``
+    / ``src`` / ``refid``) stripped — the cleaning happens before
+    token-budgeted truncation inside :func:`_build_leading` /
+    :func:`_build_trailing`, so the budget reflects the LLM-visible
+    content and truncation cannot leave malformed tags behind.
     """
     start, end = span
     leading_src = block_content[:start]
