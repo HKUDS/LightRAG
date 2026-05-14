@@ -158,6 +158,7 @@ def _parse_docx_sync(
         temp_docx = Path(tmp.name)
 
     parse_warnings: dict[str, Any] = {}
+    parse_metadata: dict[str, Any] = {}
 
     try:
         asset_dir.mkdir(parents=True, exist_ok=True)
@@ -175,6 +176,7 @@ def _parse_docx_sync(
             fixlevel=0,
             drawing_context=ctx,
             parse_warnings=parse_warnings,
+            parse_metadata=parse_metadata,
         )
     finally:
         try:
@@ -227,6 +229,10 @@ def _parse_docx_sync(
         local_table_count = 0
         local_equation_count = 0
         local_drawing_count = 0
+        # Cross-page repeating header rows for each <table> in this block, in
+        # placeholder order. Each entry is either a list of header rows or
+        # None when the table has no repeating header.
+        block_table_headers: list = list(block.get("table_headers") or [])
 
         def _replace_table(match: re.Match) -> str:
             nonlocal local_table_count
@@ -241,17 +247,29 @@ def _parse_docx_sync(
                 rows = []
             num_rows, num_cols = _normalize_dimension(rows)
             content = json.dumps(rows, ensure_ascii=False) if rows else table_json
-            pending_tables[tb_id] = {
+            header_pos = local_table_count - 1
+            header_rows = (
+                block_table_headers[header_pos]
+                if header_pos < len(block_table_headers)
+                else None
+            )
+            sidecar_entry: dict[str, Any] = {
                 "id": tb_id,
                 "blockid": "",
                 "heading": heading,
                 "dimension": [num_rows, num_cols],
                 "format": "json",
                 "content": content,
-                "index": idx - 1,
                 "caption": caption,
                 "footnotes": [],
             }
+            if header_rows:
+                # Sidecar format stores the header as a JSON string (see
+                # docs/LightRAGSidecarFormat-zh.md §5).
+                sidecar_entry["table_header"] = json.dumps(
+                    header_rows, ensure_ascii=False
+                )
+            pending_tables[tb_id] = sidecar_entry
             return (
                 f'<table id="{_xml_attr_escape(tb_id)}" format="json"'
                 f"{_caption_attr(caption)}>{table_json}</table>"
@@ -282,7 +300,6 @@ def _parse_docx_sync(
                 "heading": heading,
                 "format": "latex",
                 "content": latex,
-                "index": idx - 1,
                 "caption": caption,
                 "footnotes": [],
             }
@@ -393,6 +410,12 @@ def _parse_docx_sync(
 
     asset_dir_present = bool(asset_dir.exists() and any(asset_dir.iterdir()))
 
+    # doc_title prefers the document's first heading (captured by
+    # extract_docx_blocks regardless of level); fall back to the file stem
+    # when the document has no headings at all.
+    first_heading = parse_metadata.get("first_heading") or ""
+    doc_title = first_heading or (Path(canonical_basename).stem or canonical_basename)
+
     meta = {
         "type": "meta",
         "format": "lightrag",
@@ -409,7 +432,7 @@ def _parse_docx_sync(
         "doc_id": doc_id,
         "parse_engine": PARSER_ENGINE_NATIVE,
         "parse_time": parse_time,
-        "doc_title": Path(canonical_basename).stem or canonical_basename,
+        "doc_title": doc_title,
     }
 
     blocks_path.write_text(

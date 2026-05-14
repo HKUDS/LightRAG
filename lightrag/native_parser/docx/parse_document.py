@@ -205,8 +205,10 @@ def split_table(
     Output Strategy:
     - First chunk: Merges with preceding content, uses original heading
     - Middle chunks: Standalone blocks with heading suffix [1], [2], etc.
-    - Last chunk: Merges with following content, includes table_header if present
-    - Non-first chunks include table_header field (extracted from w:tblHeader attribute)
+    - Last chunk: Merges with following content, carries the cross-page
+      ``_table_header`` so the host block can surface it via ``table_headers``
+    - The cross-page repeating header rows (extracted from ``w:tblHeader``)
+      flow per-table into each containing block's ``table_headers`` list
 
     Args:
         table_rows: 2D array of table content
@@ -498,14 +500,11 @@ def merge_small_blocks(blocks: list, debug: bool = False) -> tuple:
                                     "table_chunk_role": "none",
                                 }
 
-                                if "table_header" in current_block:
-                                    merged_block["table_header"] = current_block[
-                                        "table_header"
-                                    ]
-                                elif "table_header" in next_block:
-                                    merged_block["table_header"] = next_block[
-                                        "table_header"
-                                    ]
+                                combined_headers = current_block.get(
+                                    "table_headers", []
+                                ) + next_block.get("table_headers", [])
+                                if combined_headers:
+                                    merged_block["table_headers"] = combined_headers
 
                                 new_result.append(merged_block)
                                 merged = True
@@ -550,14 +549,11 @@ def merge_small_blocks(blocks: list, debug: bool = False) -> tuple:
                                     "table_chunk_role": "none",
                                 }
 
-                                if "table_header" in prev_block:
-                                    merged_block["table_header"] = prev_block[
-                                        "table_header"
-                                    ]
-                                elif "table_header" in current_block:
-                                    merged_block["table_header"] = current_block[
-                                        "table_header"
-                                    ]
+                                combined_headers = prev_block.get(
+                                    "table_headers", []
+                                ) + current_block.get("table_headers", [])
+                                if combined_headers:
+                                    merged_block["table_headers"] = combined_headers
 
                                 new_result[-1] = merged_block
                                 merged = True
@@ -616,8 +612,9 @@ def merge_small_blocks(blocks: list, debug: bool = False) -> tuple:
                                 last_uuid_end = current_block.get(
                                     "uuid_end", current_block["uuid"]
                                 )
-                                has_table_header = "table_header" in current_block
-                                table_header_value = current_block.get("table_header")
+                                combined_headers = list(
+                                    current_block.get("table_headers", [])
+                                )
 
                                 for j in range(i + 1, remaining_end_idx):
                                     next_block = result[j]
@@ -625,13 +622,9 @@ def merge_small_blocks(blocks: list, debug: bool = False) -> tuple:
                                     last_uuid_end = next_block.get(
                                         "uuid_end", next_block["uuid"]
                                     )
-
-                                    if (
-                                        not has_table_header
-                                        and "table_header" in next_block
-                                    ):
-                                        has_table_header = True
-                                        table_header_value = next_block["table_header"]
+                                    combined_headers.extend(
+                                        next_block.get("table_headers", [])
+                                    )
 
                                 # Create merged block
                                 merged_block = {
@@ -645,8 +638,8 @@ def merge_small_blocks(blocks: list, debug: bool = False) -> tuple:
                                     "table_chunk_role": "none",
                                 }
 
-                                if has_table_header:
-                                    merged_block["table_header"] = table_header_value
+                                if combined_headers:
+                                    merged_block["table_headers"] = combined_headers
 
                                 new_result.append(merged_block)
                                 merged_count += remaining_end_idx - i - 1
@@ -731,14 +724,11 @@ def merge_small_blocks(blocks: list, debug: bool = False) -> tuple:
                                     "table_chunk_role": "none",
                                 }
 
-                                if "table_header" in current_block:
-                                    merged_block["table_header"] = current_block[
-                                        "table_header"
-                                    ]
-                                elif "table_header" in next_block:
-                                    merged_block["table_header"] = next_block[
-                                        "table_header"
-                                    ]
+                                combined_headers = current_block.get(
+                                    "table_headers", []
+                                ) + next_block.get("table_headers", [])
+                                if combined_headers:
+                                    merged_block["table_headers"] = combined_headers
 
                                 new_result.append(merged_block)
                                 merged = True
@@ -783,14 +773,11 @@ def merge_small_blocks(blocks: list, debug: bool = False) -> tuple:
                                     "table_chunk_role": "none",
                                 }
 
-                                if "table_header" in prev_block:
-                                    merged_block["table_header"] = prev_block[
-                                        "table_header"
-                                    ]
-                                elif "table_header" in current_block:
-                                    merged_block["table_header"] = current_block[
-                                        "table_header"
-                                    ]
+                                combined_headers = prev_block.get(
+                                    "table_headers", []
+                                ) + current_block.get("table_headers", [])
+                                if combined_headers:
+                                    merged_block["table_headers"] = combined_headers
 
                                 new_result[-1] = merged_block
                                 merged = True
@@ -831,7 +818,7 @@ def merge_small_blocks(blocks: list, debug: bool = False) -> tuple:
                         "heading": block.get("heading", "(no heading)"),
                         "level": block.get("level", "N/A"),
                         "tokens": block_tokens,
-                        "has_table_header": "table_header" in block,
+                        "has_table_header": bool(block.get("table_headers")),
                         "content_preview": block["content"][:200],
                     }
                 )
@@ -892,11 +879,9 @@ def split_long_block(
     # Check if this block starts with a split table chunk (has _chunk_heading metadata)
     # If so, use that heading instead of block_heading
     effective_heading = block_heading
-    table_header = None
 
     if paragraphs and paragraphs[0].get("_chunk_heading"):
         effective_heading = paragraphs[0]["_chunk_heading"]
-        table_header = paragraphs[0].get("_table_header")
 
     # Calculate total content token count
     total_content = "\n".join(p["text"] for p in paragraphs)
@@ -919,9 +904,10 @@ def split_long_block(
             "level": block_level,  # Add level to block
         }
 
-        # Add table_header if present
-        if table_header:
-            block["table_header"] = table_header
+        # Collect per-table cross-page headers (aligned with <table> tag order)
+        table_headers = _collect_table_headers(paragraphs)
+        if table_headers:
+            block["table_headers"] = table_headers
 
         return [block]
 
@@ -1012,19 +998,21 @@ def split_long_block(
             # For uuid_end: use para_id_end if last element is a table, otherwise para_id
             last_para = block_paragraphs[-1]
             block_uuid_end = last_para.get("para_id_end") or last_para.get("para_id")
-            result_blocks.append(
-                {
-                    "uuid": block_paragraphs[0][
-                        "para_id"
-                    ],  # UUID from first paragraph in content
-                    "uuid_end": block_uuid_end,  # UUID_end from last paragraph (or table's last cell)
-                    "heading": current_block_heading,
-                    "content": block_content,
-                    "type": "text",
-                    "parent_headings": current_parent_headings,
-                    "_paragraphs": block_paragraphs,  # Keep original paragraphs for potential re-splitting
-                }
-            )
+            new_block = {
+                "uuid": block_paragraphs[0][
+                    "para_id"
+                ],  # UUID from first paragraph in content
+                "uuid_end": block_uuid_end,  # UUID_end from last paragraph (or table's last cell)
+                "heading": current_block_heading,
+                "content": block_content,
+                "type": "text",
+                "parent_headings": current_parent_headings,
+                "_paragraphs": block_paragraphs,  # Keep original paragraphs for potential re-splitting
+            }
+            new_table_headers = _collect_table_headers(block_paragraphs)
+            if new_table_headers:
+                new_block["table_headers"] = new_table_headers
+            result_blocks.append(new_block)
 
         # Validate anchor as new heading
         validate_heading_length(anchor["text"], anchor["para_id"])
@@ -1048,19 +1036,21 @@ def split_long_block(
         final_uuid_end = last_final_para.get("para_id_end") or last_final_para.get(
             "para_id"
         )
-        result_blocks.append(
-            {
-                "uuid": final_paragraphs[0][
-                    "para_id"
-                ],  # UUID from first paragraph in content
-                "uuid_end": final_uuid_end,  # UUID_end from last paragraph (or table's last cell)
-                "heading": current_block_heading,
-                "content": final_content,
-                "type": "text",
-                "parent_headings": current_parent_headings,
-                "_paragraphs": final_paragraphs,  # Keep original paragraphs for potential re-splitting
-            }
-        )
+        final_block = {
+            "uuid": final_paragraphs[0][
+                "para_id"
+            ],  # UUID from first paragraph in content
+            "uuid_end": final_uuid_end,  # UUID_end from last paragraph (or table's last cell)
+            "heading": current_block_heading,
+            "content": final_content,
+            "type": "text",
+            "parent_headings": current_parent_headings,
+            "_paragraphs": final_paragraphs,  # Keep original paragraphs for potential re-splitting
+        }
+        final_table_headers = _collect_table_headers(final_paragraphs)
+        if final_table_headers:
+            final_block["table_headers"] = final_table_headers
+        result_blocks.append(final_block)
 
     # Post-split validation: Check if any block still exceeds MAX_BLOCK_CONTENT_TOKENS
     # If so, recursively split that block (handles sparse anchor scenarios)
@@ -1404,12 +1394,23 @@ def extract_paragraph_content(
     return "".join(parts)
 
 
+def _collect_table_headers(paragraphs: list) -> list:
+    """Collect per-table cross-page header rows from ``is_table`` paragraphs.
+
+    The returned list is aligned 1:1 with the order of ``<table>`` placeholder
+    tags emitted into the block's content; entries are either the list of
+    header rows captured from ``w:tblHeader`` or ``None`` when the table has
+    no cross-page repeating header.
+    """
+    return [p.get("_table_header") for p in paragraphs if p.get("is_table")]
+
+
 def _build_unsplit_block(
     heading: str, paragraphs: list, parent_headings: list, level: int
 ) -> dict:
     """Build a single block from paragraphs without size-based splitting."""
     last_para = paragraphs[-1]
-    return {
+    block = {
         "uuid": paragraphs[0]["para_id"],
         "uuid_end": last_para.get("para_id_end") or last_para.get("para_id"),
         "heading": heading,
@@ -1418,6 +1419,10 @@ def _build_unsplit_block(
         "parent_headings": parent_headings,
         "level": level,
     }
+    table_headers = _collect_table_headers(paragraphs)
+    if table_headers:
+        block["table_headers"] = table_headers
+    return block
 
 
 def _flush_current_block(
@@ -1463,6 +1468,7 @@ def extract_docx_blocks(
     fixlevel: int = None,
     drawing_context: DrawingExtractionContext = None,
     parse_warnings: dict | None = None,
+    parse_metadata: dict | None = None,
 ) -> list:
     """
     Extract text blocks (chunks) from a DOCX file for chunking later.
@@ -1487,6 +1493,11 @@ def extract_docx_blocks(
             per table whose every cell lacks one. Callers (the LightRAG
             adapter / debug CLI) read this to surface a one-line warning per
             document instead of crashing.
+        parse_metadata: Optional out-dict that this function mutates with
+            document-level metadata derived during parsing. Currently used
+            for ``first_heading`` — the text of the first heading encountered
+            in document order (regardless of level). Used by the LightRAG
+            adapter to populate ``meta.doc_title`` in ``.blocks.jsonl``.
 
     Returns:
         List of block dictionaries with heading, content, type, and metadata
@@ -1507,6 +1518,9 @@ def extract_docx_blocks(
     matched_fixlevel_heading = False  # Track whether --fixlevel matched any heading
     table_split_counter = (
         0  # Track cumulative table split suffix numbers within current block
+    )
+    first_heading_recorded = (
+        False  # Track whether the document's first heading has been captured
     )
 
     # Iterate through document body elements (paragraphs and tables)
@@ -1567,6 +1581,12 @@ def extract_docx_blocks(
 
                 # Truncate heading if needed before storing
                 truncated_text = truncate_heading(full_text, heading_para_id)
+
+                # Record the document's first heading (any level) for meta.doc_title.
+                if not first_heading_recorded:
+                    if parse_metadata is not None:
+                        parse_metadata["first_heading"] = truncated_text
+                    first_heading_recorded = True
 
                 if should_split:
                     if fixlevel is not None and fixlevel > 0:
@@ -1694,6 +1714,16 @@ def extract_docx_blocks(
             table_json = json.dumps(table_rows, ensure_ascii=False)
             table_tokens = estimate_tokens(table_json)
 
+            # Extract cross-page repeating header rows (w:tblHeader) once per
+            # table so both split and unsplit branches can surface them to the
+            # sidecar via the block-level ``table_headers`` list.
+            header_rows = []
+            if header_indices:
+                header_rows = [
+                    table_rows[idx] for idx in header_indices if idx < len(table_rows)
+                ]
+            header_rows_or_none = header_rows if header_rows else None
+
             # Check if table needs splitting (disabled in fixlevel mode)
             if fixlevel is None and table_tokens > TABLE_MAX_TOKENS:
                 # Table exceeds limit - split it
@@ -1708,15 +1738,6 @@ def extract_docx_blocks(
                     debug,
                 )
 
-                # Extract header rows if any
-                header_rows = []
-                if header_indices:
-                    header_rows = [
-                        table_rows[idx]
-                        for idx in header_indices
-                        if idx < len(table_rows)
-                    ]
-
                 for chunk_idx, chunk in enumerate(table_chunks):
                     chunk_json = json.dumps(chunk["rows"], ensure_ascii=False)
                     # Get uuid_end from last valid paraId in chunk (use para_ids_end for last cell's last paragraph)
@@ -1730,6 +1751,7 @@ def extract_docx_blocks(
                                 "para_id": chunk["uuid"],
                                 "para_id_end": chunk_para_id_end,  # Store end paraId for uuid_end calculation
                                 "is_table": True,
+                                "_table_header": header_rows_or_none,
                             }
                         )
                         has_body_content = True
@@ -1779,9 +1801,11 @@ def extract_docx_blocks(
                             "table_chunk_role": table_chunk_role,
                         }
 
-                        # Add table_header field if headers exist and this isn't the first chunk
-                        if header_rows:
-                            chunk_block["table_header"] = header_rows
+                        # Always emit a per-table headers list (aligned with the
+                        # single <table> placeholder in this standalone block);
+                        # the entry is None when the table has no cross-page
+                        # repeating header so downstream counters stay aligned.
+                        chunk_block["table_headers"] = [header_rows_or_none]
 
                         if chunk["is_last"]:
                             # Last chunk: add to current_paragraphs for merging with following content
@@ -1792,9 +1816,7 @@ def extract_docx_blocks(
                                     "para_id_end": chunk_para_id_end,  # Store end paraId for uuid_end calculation
                                     "is_table": True,
                                     "_chunk_heading": chunk_heading,
-                                    "_table_header": header_rows
-                                    if header_rows
-                                    else None,
+                                    "_table_header": header_rows_or_none,
                                 }
                             )
                             has_body_content = True
@@ -1817,6 +1839,7 @@ def extract_docx_blocks(
                         "para_id": table_para_id,
                         "para_id_end": table_para_id_end,  # Store end paraId for uuid_end calculation
                         "is_table": True,
+                        "_table_header": header_rows_or_none,
                     }
                 )
 

@@ -203,7 +203,6 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   "dimension": [16, 8],
   "format": "json",
   "content": "[[\"试验步骤\", \"温度(℃)\", \"高度(m)\", \"相对湿度\", \"时间(min)\", \"辅助冷却\", \"系统电源\", \"功能、性能检查\"],…",
-  "index": 6,
   "caption": "",
   "footnotes": [],
   "table_header": "[[\"试验步骤\", \"温度(℃)\", \"高度(m)\", \"相对湿度\", \"时间(min)\", \"辅助冷却\", \"系统电源\", \"功能、性能检查\"]]"
@@ -244,7 +243,6 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
   "heading": "2.3 结构尺寸及重量",
   "format": "latex",
   "content": "C=2∗\\frac{P∗T}{\\left( {V}_{H}^{2}−{V}_{L}^{2} \\right)∗η}",
-  "index": 0,
   "caption": "",
   "footnotes": [],
   "surrounding": {
@@ -358,4 +356,3 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 - 已经 `status="success"` 或 `status="skipped"` 的 item，下一次 `analyze_multimodal` 默认**跳过**重新分析（幂等）。`status="failure"` 在下一次仍会被视为失败抛错，避免静默吞掉错误。
 
 图形 `type` 受 12 项枚举约束（见 [`IMAGE_TYPE_ENUM`](../lightrag/prompt_multimodal.py)：`Photo / Illustration / Screenshot / Icon / Chart / Table / Infographic / Flowchart / Chat Log / Wireframe / Texture / Other`）；模型若返回枚举外的值，会被规整成 `Other` 而不是失败。
-
