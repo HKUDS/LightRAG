@@ -750,3 +750,246 @@ async def test_analysis_cache_respects_disabled_flag(tmp_path):
         assert item.get("llm_cache_list", []) == []
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_oversized_table_content_truncated_to_extract_budget(tmp_path):
+    """A sidecar table whose ``content`` alone exceeds the EXTRACT input
+    cap must be trimmed before reaching the LLM.  The captured prompt
+    must (a) fit within ``DEFAULT_MAX_EXTRACT_INPUT_TOKENS``, (b) still
+    wrap the trimmed body in a ``<table>`` tag, and (c) include the
+    truncation marker so the LLM is told the body is incomplete.
+    """
+    from lightrag.constants import DEFAULT_MAX_EXTRACT_INPUT_TOKENS
+
+    extract_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=False,
+        extract_func=_make_extract_mock(extract_log),
+    )
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-big"}) + "\n",
+            encoding="utf-8",
+        )
+
+        # Build a JSON-format table whose total token count is well above
+        # DEFAULT_MAX_EXTRACT_INPUT_TOKENS so the trim path must engage.
+        # Each row is small; the row count is the lever.
+        rows = [[f"r{i}c0", f"r{i}c1"] for i in range(8000)]
+        big_table = '<table id="tb-big" format="json">' + json.dumps(rows) + "</table>"
+        original_tokens = len(rag.tokenizer.encode(big_table))
+        assert original_tokens > DEFAULT_MAX_EXTRACT_INPUT_TOKENS
+
+        tables_path = parsed_dir / "doc.tables.json"
+        tables_path.write_text(
+            json.dumps(
+                {
+                    "tables": {
+                        "tb-big": {
+                            "caption": "huge table",
+                            "content": big_table,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        await rag.analyze_multimodal(
+            doc_id="doc-big",
+            file_path="fixture.pdf",
+            parsed_data={"blocks_path": str(blocks_path)},
+            process_options="t",
+        )
+        assert len(extract_log) == 1
+        sent_prompt = extract_log[0]["prompt"]
+        prompt_tokens = len(rag.tokenizer.encode(sent_prompt))
+
+        # Whole prompt fits within the EXTRACT input cap.
+        assert prompt_tokens <= DEFAULT_MAX_EXTRACT_INPUT_TOKENS, (
+            f"prompt of {prompt_tokens} tokens exceeds "
+            f"{DEFAULT_MAX_EXTRACT_INPUT_TOKENS}"
+        )
+
+        # Truncation marker present, <table> tag still closed inside the
+        # CONTENT section.
+        assert (
+            "<!-- content truncated from " in sent_prompt
+            and "head preserved -->" in sent_prompt
+        )
+        # Head rows preserved, last rows dropped.
+        assert "r0c0" in sent_prompt
+        assert "r7999c0" not in sent_prompt
+
+        # Analysis still succeeded — trimming is transparent to status.
+        payload = json.loads(tables_path.read_text(encoding="utf-8"))
+        assert payload["tables"]["tb-big"]["llm_analyze_result"]["status"] == "success"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_max_extract_input_tokens_env_var_lowers_cap_and_logs_warning(
+    tmp_path, caplog, _propagate_lightrag_logger, monkeypatch
+):
+    """``MAX_EXTRACT_INPUT_TOKENS`` env var overrides the compile-time
+    default, and any truncation emits a WARNING-level log line so
+    operators see when sidecar bodies are being cut for the EXTRACT call.
+    """
+    # Cap well below the default 20480 so a modest table triggers trimming,
+    # but still comfortably above the ~3980-char prompt template frame so
+    # `content_budget` stays positive.
+    monkeypatch.setenv("MAX_EXTRACT_INPUT_TOKENS", "8000")
+
+    extract_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=False,
+        extract_func=_make_extract_mock(extract_log),
+    )
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-mid"}) + "\n",
+            encoding="utf-8",
+        )
+
+        # Table sized comfortably between the env cap (8000) and the
+        # compile-time default (20480) — would NOT trim under the default,
+        # MUST trim under the env override.
+        rows = [[f"r{i}c0", f"r{i}c1"] for i in range(800)]
+        mid_table = '<table id="tb-mid" format="json">' + json.dumps(rows) + "</table>"
+        original_tokens = len(rag.tokenizer.encode(mid_table))
+        assert 8000 < original_tokens < 20480
+
+        tables_path = parsed_dir / "doc.tables.json"
+        tables_path.write_text(
+            json.dumps(
+                {
+                    "tables": {
+                        "tb-mid": {
+                            "caption": "mid table",
+                            "content": mid_table,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="lightrag.pipeline"):
+            await rag.analyze_multimodal(
+                doc_id="doc-mid",
+                file_path="fixture.pdf",
+                parsed_data={"blocks_path": str(blocks_path)},
+                process_options="t",
+            )
+        assert len(extract_log) == 1
+        sent_prompt = extract_log[0]["prompt"]
+        # Env cap honored.
+        assert len(rag.tokenizer.encode(sent_prompt)) <= 8000
+        assert "<!-- content truncated from " in sent_prompt
+
+        # WARNING-level log line was emitted naming this item.
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING"
+            and "[analyze_multimodal]" in r.getMessage()
+            and "tb-mid" in r.getMessage()
+            and "content trimmed" in r.getMessage()
+        ]
+        assert (
+            warning_records
+        ), "expected a WARNING-level log line announcing content truncation"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_extract_cap_below_prompt_frame_fails_item_without_llm_call(
+    tmp_path, monkeypatch
+):
+    """When ``MAX_EXTRACT_INPUT_TOKENS`` sits below the prompt template's
+    own ``frame_tokens + SAFETY_BUFFER``, ``content_budget`` goes
+    non-positive — no content trim can bring the request under the cap
+    because the frame itself overflows.  The pipeline must refuse to
+    invoke the LLM and fail this item via :class:`MultimodalAnalysisError`,
+    so the sidecar records ``status="failure"`` and operators get a clear
+    actionable signal (raise the cap).  Guards the P1 regression where
+    marker-replacement merely shrank ``content`` while leaving the
+    over-cap frame intact."""
+    # The table_analysis prompt frame is ~3980 chars; pick a cap small
+    # enough that the frame alone overflows.
+    monkeypatch.setenv("MAX_EXTRACT_INPUT_TOKENS", "1000")
+
+    extract_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=False,
+        extract_func=_make_extract_mock(extract_log),
+    )
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-tight"}) + "\n",
+            encoding="utf-8",
+        )
+        tables_path = parsed_dir / "doc.tables.json"
+        tables_path.write_text(
+            json.dumps(
+                {
+                    "tables": {
+                        "tb-tight": {
+                            "content": (
+                                '<table id="tb-tight" format="json">'
+                                '[["A","B"]]</table>'
+                            )
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(MultimodalAnalysisError) as excinfo:
+            await rag.analyze_multimodal(
+                doc_id="doc-tight",
+                file_path="fixture.pdf",
+                parsed_data={"blocks_path": str(blocks_path)},
+                process_options="t",
+            )
+
+        # Critical: the LLM mock must NOT have been invoked — we refused
+        # to send an over-cap prompt rather than letting the provider
+        # reject it with context_length_exceeded.
+        assert extract_log == [], (
+            f"EXTRACT must not be called when frame exceeds cap; "
+            f"got {len(extract_log)} call(s)"
+        )
+
+        msg = str(excinfo.value)
+        assert "table/tb-tight" in msg
+        assert "MAX_EXTRACT_INPUT_TOKENS" in msg
+        assert "1000" in msg
+
+        # Sidecar records status=failure for the item, so operators can
+        # spot it and re-run after raising the cap.
+        payload = json.loads(tables_path.read_text(encoding="utf-8"))
+        item = payload["tables"]["tb-tight"]
+        assert item["llm_analyze_result"]["status"] == "failure"
+        assert "MAX_EXTRACT_INPUT_TOKENS" in item["llm_analyze_result"]["message"]
+    finally:
+        await rag.finalize_storages()
