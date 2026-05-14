@@ -3253,9 +3253,7 @@ class _PipelineMixin:
                     logger.info(
                         f"[analyze_multimodal] surrounding backfilled for "
                         f"d-id: {doc_id}, file: {file_path}: "
-                        + ", ".join(
-                            f"{k}={v}" for k, v in enrich_counts.items() if v
-                        )
+                        + ", ".join(f"{k}={v}" for k, v in enrich_counts.items() if v)
                     )
             except Exception as enrich_err:
                 logger.warning(

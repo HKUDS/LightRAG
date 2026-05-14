@@ -104,7 +104,8 @@ def test_drawing_surrounding_kept_within_block_only():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=2000, trailing_max_tokens=2000,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
         separators=load_chunk_separators(),
     )
     assert surr["leading"].endswith("paragraph two. ")
@@ -125,7 +126,8 @@ def test_equation_surrounding_protects_drawing_atom():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=2000, trailing_max_tokens=2000,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
         separators=load_chunk_separators(),
     )
     # The drawing atom must appear in full, not half-cut.
@@ -155,7 +157,8 @@ def test_table_surrounding_strips_other_tables_before_counting():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=2000, trailing_max_tokens=2000,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
         separators=load_chunk_separators(),
     )
     # Sibling table must NOT appear in surrounding.
@@ -179,7 +182,8 @@ def test_table_surrounding_supports_cite_marker_and_strips_sibling_cites():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=2000, trailing_max_tokens=2000,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
         separators=load_chunk_separators(),
     )
     assert "tb-other" not in surr["leading"]
@@ -209,7 +213,8 @@ def test_chunk_r_separators_env_drives_segment_boundary(monkeypatch):
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=12, trailing_max_tokens=12,
+        leading_max_tokens=12,
+        trailing_max_tokens=12,
         separators=seps,
     )
     # Leading should end at a '|' boundary (one whole segment), not be
@@ -236,7 +241,8 @@ def test_oversized_closest_segment_char_truncated():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=200, trailing_max_tokens=200,
+        leading_max_tokens=200,
+        trailing_max_tokens=200,
         separators=load_chunk_separators(),
     )
     assert len(tok.encode(surr["leading"])) <= 200
@@ -256,7 +262,8 @@ def test_oversized_trailing_char_truncated_at_head():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=200, trailing_max_tokens=200,
+        leading_max_tokens=200,
+        trailing_max_tokens=200,
         separators=load_chunk_separators(),
     )
     assert len(tok.encode(surr["trailing"])) <= 200
@@ -282,7 +289,8 @@ def test_drawing_surrounding_row_trims_oversized_json_table():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=80, trailing_max_tokens=80,
+        leading_max_tokens=80,
+        trailing_max_tokens=80,
         separators=load_chunk_separators(),
     )
     # Result must be a complete (smaller) <table>...</table>, contain
@@ -314,7 +322,8 @@ def test_drawing_surrounding_row_trims_oversized_html_table():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=120, trailing_max_tokens=120,
+        leading_max_tokens=120,
+        trailing_max_tokens=120,
         separators=load_chunk_separators(),
     )
     trailing = surr["trailing"]
@@ -344,7 +353,8 @@ def test_drawing_surrounding_char_trims_oversized_single_json_row():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=90, trailing_max_tokens=90,
+        leading_max_tokens=90,
+        trailing_max_tokens=90,
         separators=load_chunk_separators(),
     )
 
@@ -375,7 +385,8 @@ def test_drawing_surrounding_char_trims_oversized_single_html_row():
         block_content=block,
         span=span,
         tokenizer=tok,
-        leading_max_tokens=100, trailing_max_tokens=100,
+        leading_max_tokens=100,
+        trailing_max_tokens=100,
         separators=load_chunk_separators(),
     )
 
@@ -463,7 +474,8 @@ def test_enrich_only_updates_enabled_modalities(tmp_path):
         blocks_path=str(tmp_path / f"{base}.blocks.jsonl"),
         enabled_modalities={"drawings"},
         tokenizer=_tokenizer(),
-        leading_max_tokens=2000, trailing_max_tokens=2000,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
     )
     assert counts["drawings"] == 1
     assert counts["tables"] == 0
@@ -522,7 +534,8 @@ def test_enrich_runs_even_when_llm_analyze_result_present(tmp_path):
         blocks_path=str(tmp_path / f"{base}.blocks.jsonl"),
         enabled_modalities={"drawings"},
         tokenizer=_tokenizer(),
-        leading_max_tokens=2000, trailing_max_tokens=2000,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
     )
     assert counts["drawings"] == 1
     payload = json.loads(drawings_path.read_text(encoding="utf-8"))
@@ -572,7 +585,8 @@ def test_enrich_does_not_cross_block_boundaries(tmp_path):
         blocks_path=str(tmp_path / f"{base}.blocks.jsonl"),
         enabled_modalities={"drawings"},
         tokenizer=_tokenizer(),
-        leading_max_tokens=2000, trailing_max_tokens=2000,
+        leading_max_tokens=2000,
+        trailing_max_tokens=2000,
     )
     payload = json.loads(drawings_path.read_text(encoding="utf-8"))
     surr = payload["drawings"]["dr-1"]["surrounding"]
@@ -626,9 +640,9 @@ def test_env_var_leading_and_trailing_budgets_apply_independently(
         tokenizer=tok,
     )
 
-    surr = json.loads(drawings_path.read_text(encoding="utf-8"))[
-        "drawings"
-    ]["dr-1"]["surrounding"]
+    surr = json.loads(drawings_path.read_text(encoding="utf-8"))["drawings"]["dr-1"][
+        "surrounding"
+    ]
     assert len(tok.encode(surr["leading"])) <= 5
     assert len(tok.encode(surr["trailing"])) <= 20
     # Trailing is allowed to use its larger budget, so it must be strictly
