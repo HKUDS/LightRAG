@@ -390,7 +390,8 @@ async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru,*:legacy")
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
     def _fail_pdf_extract(*args, **kwargs):
         raise AssertionError("parser-routed PDF should not be extracted before enqueue")
