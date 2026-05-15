@@ -3072,6 +3072,99 @@ def test_protocol_parse_service_extracts_docling_result_markdown(tmp_path, monke
 
 
 @pytest.mark.offline
+def test_protocol_parse_service_falls_back_to_raw_json_when_field_missing(
+    tmp_path, monkeypatch
+):
+    """When content_field is absent from the result JSON, the raw envelope must
+    still be returned so normalize_parser_result_to_content_list() can recover
+    a MinerU/Docling-style block list from alternative keys."""
+
+    envelope = {
+        "document": {"filename": "demo.pdf"},
+        "content_list": [
+            {"type": "text", "text": "block-a"},
+            {"type": "text", "text": "block-b"},
+        ],
+    }
+
+    class FakeTimeout:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.status_code = 200
+            self.text = json.dumps(payload)
+
+        def json(self):
+            return json.loads(self.text)
+
+        def raise_for_status(self):
+            pass
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, files=None, json=None):
+            del url, files, json
+            return FakeResponse({"task_id": "task-1", "task_status": "queued"})
+
+        async def get(self, url, params=None):
+            del params
+            if url.endswith("/v1/status/poll/task-1"):
+                return FakeResponse({"task_id": "task-1", "task_status": "success"})
+            return FakeResponse(envelope)
+
+    class FakeHttpx:
+        Timeout = FakeTimeout
+        AsyncClient = FakeAsyncClient
+
+    async def _fake_sleep(delay):
+        del delay
+
+    async def _run():
+        import lightrag.pipeline as pipeline_module
+
+        monkeypatch.setattr(pipeline_module, "httpx", FakeHttpx)
+        monkeypatch.setattr(pipeline_module.asyncio, "sleep", _fake_sleep)
+
+        src_file = tmp_path / "demo.pdf"
+        src_file.write_bytes(b"fake-pdf")
+        rag = _new_rag(tmp_path / "work")
+
+        result = await rag._call_protocol_parse_service(
+            {
+                "upload_url": "http://localhost:5001/v1/convert/file/async",
+                "poll_url_template": "http://localhost:5001/v1/status/poll/{task_id}",
+                "result_url_template": "http://localhost:5001/v1/result/{task_id}",
+                "id_field": "task_id",
+                "status_field": "task_status",
+                "content_field": "document.md_content",
+                "file_field": "files",
+                "success_values": "success",
+                "poll_interval_seconds": 0,
+                "max_polls": 1,
+            },
+            str(src_file),
+        )
+
+        assert result == json.dumps(envelope)
+        from lightrag.utils_pipeline import normalize_parser_result_to_content_list
+
+        content_list = normalize_parser_result_to_content_list(result)
+        assert content_list and len(content_list) == 2
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_build_chunks_dict_preserves_existing_llm_cache_list():
     """Regression: build_chunks_dict_from_chunking_result must not overwrite
     a chunk's pre-existing llm_cache_list — multimodal chunks arrive with
