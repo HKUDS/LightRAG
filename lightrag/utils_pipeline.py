@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -262,9 +263,38 @@ def doc_status_value(doc: Any) -> str:
     return str(status or "")
 
 
+# Sidecar item ids embed ``doc_hash`` (= doc_id without the ``doc-`` prefix),
+# and for pending_parse uploads doc_id derives from the filename — so the
+# same content under two filenames renders with different ids in
+# ``merged_text``. Strip those surfaces before hashing so cross-filename
+# content_hash dedup actually fires.
+_SIDECAR_ID_PATTERN = re.compile(r"\b(tb|im|eq)-[0-9a-f]{32}-(\d{4})\b")
+_ASSET_PATH_PATTERN = re.compile(r'(?<=path=")[^"]*\.blocks\.assets/')
+
+
+def normalize_merged_text_for_hash(content: str) -> str:
+    """Strip filename-derived prefixes from sidecar ids and asset paths.
+
+    Idempotent and safe on plain text (matches the doc_hash literal only —
+    32 lowercase hex digits between the modality prefix and a 4-digit
+    sequence). RAW text bodies without sidecar markup pass through
+    unchanged.
+    """
+    if not content:
+        return content
+    content = _SIDECAR_ID_PATTERN.sub(r"\1-<DOC>-\2", content)
+    content = _ASSET_PATH_PATTERN.sub("<ASSETS>/", content)
+    return content
+
+
 def compute_text_content_hash(content: str) -> str:
-    """MD5 hex digest of text content used for cross-filename dedup."""
-    return compute_mdhash_id(content, prefix="")
+    """MD5 hex digest of text content used for cross-filename dedup.
+
+    Input is normalized via :func:`normalize_merged_text_for_hash` first so
+    sidecar-rendered bodies dedupe across filenames despite carrying
+    filename-derived item ids and asset paths.
+    """
+    return compute_mdhash_id(normalize_merged_text_for_hash(content), prefix="")
 
 
 def compute_file_content_hash(path_str: str) -> str | None:
