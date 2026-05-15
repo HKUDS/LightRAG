@@ -116,6 +116,18 @@ def write_sidecar(
     equations_path = parsed_dir / f"{base_name}.equations.json"
     assets_dir = parsed_dir / f"{base_name}.blocks.assets"
 
+    # ``clean_parsed_dir=False`` is reserved for callers that pre-populate
+    # the directory with artifacts that must survive (e.g. the native docx
+    # adapter pre-extracts assets). If a stale ``blocks.jsonl`` is sitting
+    # there, the caller forgot to pre-clean — warn so the leftover doesn't
+    # get silently overwritten with partially-stale neighbors.
+    if not clean_parsed_dir and blocks_path.exists():
+        logger.warning(
+            "[sidecar] clean_parsed_dir=False but %s already exists; "
+            "caller is expected to pre-clean before invoking write_sidecar",
+            blocks_path,
+        )
+
     # Stage 1: realize assets first so drawings can carry resolved paths.
     asset_paths = _materialize_assets(ir.assets, assets_dir)
 

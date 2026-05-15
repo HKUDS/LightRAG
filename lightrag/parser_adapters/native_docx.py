@@ -29,8 +29,10 @@ vs "both missing".
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -61,15 +63,10 @@ def _normalize_dimension(rows_value: Any) -> tuple[int, int]:
     return num_rows, num_cols
 
 
-def _placeholder_keyspace() -> Any:
-    """Return a fresh counter generator producing ``{prefix}{N}`` keys."""
-    counter = {"n": 0}
-
-    def _next(prefix: str) -> str:
-        counter["n"] += 1
-        return f"{prefix}{counter['n']}"
-
-    return _next
+def _placeholder_keyspace() -> Callable[[str], str]:
+    """Return a fresh counter producing ``{prefix}{N}`` keys (1-indexed)."""
+    counter = itertools.count(1)
+    return lambda prefix: f"{prefix}{next(counter)}"
 
 
 class NativeDocxAdapter:
@@ -224,7 +221,13 @@ class NativeDocxAdapter:
                     path_override: str | None = None
                 else:
                     asset_ref = ""
-                    path_override = path_val
+                    # Only mark as an external/linked reference when the
+                    # upstream parser actually emitted a path. An empty
+                    # ``path=""`` should fall back to the regular asset-
+                    # resolution path (which will also produce ``path=""``
+                    # downstream) rather than masquerading as an explicit
+                    # adapter override.
+                    path_override = path_val or None
 
                 placeholder = next_key("im")
                 drawings.append(

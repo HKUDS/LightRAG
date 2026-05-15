@@ -267,7 +267,12 @@ def main() -> None:
     parser.add_argument(
         "--doc-id",
         default="doc-cli0000000000000000000000000000",
-        help="Override doc id (defaults to a CLI placeholder)",
+        help=(
+            "Override doc id (defaults to a CLI placeholder). The default "
+            "shares its ``<doc_hash>`` prefix across invocations, so when "
+            "inspecting multiple docx files in one session pass distinct "
+            "values to keep sidecar ids unique."
+        ),
     )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument(
