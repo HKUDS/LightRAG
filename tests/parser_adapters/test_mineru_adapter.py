@@ -211,3 +211,61 @@ def test_adapter_drawing_asset_source_only_when_file_exists(
     by_ref = {a.ref: a for a in ir.assets}
     assert by_ref["images/exists.png"].source is not None
     assert by_ref["images/missing.png"].source is None
+
+
+@pytest.mark.offline
+def test_adapter_refuses_path_traversal_img_path(tmp_path: Path) -> None:
+    """Untrusted img_path with ``..`` or absolute filesystem segments must
+    not be allowed to point ``AssetSpec.source`` outside ``raw_dir``.
+
+    Otherwise the writer would copy attacker-named files from the host into
+    the sidecar's ``*.blocks.assets/`` directory (file-disclosure path).
+    """
+    # Place a "secret" file outside the raw bundle that should never be
+    # selectable as an asset source.
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"private")
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "image", "img_path": "../secret.txt"},
+            {"type": "image", "img_path": str(secret)},  # absolute path
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="x.pdf")
+    by_ref = {a.ref: a for a in ir.assets}
+
+    # Relative ``..`` escape is rejected outright.
+    assert by_ref["../secret.txt"].source is None
+
+    # Absolute filesystem path is reinterpreted as ``images/<basename>``
+    # inside raw_dir. Since no such file exists, source must remain None
+    # (and crucially must not point at the original secret file).
+    abs_asset = by_ref[str(secret)]
+    assert abs_asset.source is None
+
+
+@pytest.mark.offline
+def test_adapter_absolute_url_img_path_resolves_to_images_basename(
+    tmp_path: Path,
+) -> None:
+    """When MinerU emits an absolute URL in img_path, the downloader saves
+    it as ``images/<basename>``; the adapter must look there too."""
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "image",
+                "img_path": "https://cdn.example.com/imgs/figure_42.png",
+            },
+        ],
+    )
+    (raw / "images").mkdir()
+    (raw / "images" / "figure_42.png").write_bytes(b"\x89PNGfake")
+
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="u.pdf")
+    asset = ir.assets[0]
+    assert asset.ref == "https://cdn.example.com/imgs/figure_42.png"
+    assert asset.suggested_name == "figure_42.png"
+    assert asset.source is not None
+    assert asset.source.read_bytes() == b"\x89PNGfake"

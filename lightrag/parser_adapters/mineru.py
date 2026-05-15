@@ -37,6 +37,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from lightrag.sidecar.ir import (
     AssetSpec,
@@ -414,19 +415,19 @@ class MinerUAdapter:
                 # Already declared by a previous block; reuse name.
                 pass
             else:
-                # Asset source: file on disk inside raw_dir (the standard
-                # MinerU bundle layout). When the file is missing we still
-                # declare the asset spec so the drawing tag can be written;
-                # the writer will warn and skip the copy.
-                local_path = (raw_dir / img_path).resolve()
-                suggested_name = (
-                    Path(img_path).name
-                    or f"image-{len(seen)+1}{('.'+fmt) if fmt else ''}"
-                )
+                # Asset source: file on disk inside raw_dir. ``img_path`` is
+                # untrusted (it comes from MinerU's content_list.json or a
+                # downloaded zip), so we go through a safe resolver that
+                # refuses to escape ``raw_dir`` and mirrors the downloader's
+                # storage layout for absolute-URL / templated references.
+                local_path = _safe_local_asset_path(raw_dir, img_path)
+                suggested_name = _suggested_asset_name(img_path, fmt, len(seen))
                 asset = AssetSpec(
                     ref=ref,
                     suggested_name=suggested_name,
-                    source=local_path if local_path.exists() else None,
+                    source=local_path
+                    if local_path is not None and local_path.is_file()
+                    else None,
                 )
                 seen[ref] = suggested_name
 
@@ -522,6 +523,63 @@ def _extract_position(item: dict) -> IRPosition | None:
         anchor = None
 
     return IRPosition(type="bbox", anchor=anchor, range=coords)
+
+
+def _safe_local_asset_path(raw_dir: Path, img_path: str) -> Path | None:
+    """Resolve ``img_path`` to a concrete file location inside ``raw_dir``.
+
+    ``img_path`` comes from MinerU's ``content_list.json`` and is therefore
+    untrusted. This resolver:
+
+    - mirrors :meth:`MinerURawClient._image_dest_rel` for absolute http(s)
+      URLs and absolute filesystem paths: the downloader saves them under
+      ``images/<basename>`` inside ``raw_dir`` (``MINERU_IMAGE_URL_TEMPLATE``
+      uses the same destination), so we look there too;
+    - for relative paths, refuses any ``..`` traversal or absolute segment
+      and verifies the resolved path stays under ``raw_dir``.
+
+    Returns ``None`` when the candidate is unsafe or cannot be expressed
+    inside ``raw_dir``. The caller treats ``None`` the same as "file missing"
+    — the drawing tag still gets written, but no bytes are copied.
+    """
+    if not img_path:
+        return None
+
+    if img_path.startswith(("http://", "https://")):
+        name = Path(urlparse(img_path).path).name
+        return raw_dir / "images" / name if name else None
+
+    if os.path.isabs(img_path):
+        # Absolute filesystem path in img_path is never trusted to point
+        # outside raw_dir; mirror the downloader's basename rule.
+        name = Path(img_path).name
+        return raw_dir / "images" / name if name else None
+
+    normalized = os.path.normpath(img_path)
+    if normalized.startswith("..") or os.path.isabs(normalized):
+        return None
+    candidate = (raw_dir / normalized).resolve()
+    try:
+        candidate.relative_to(raw_dir.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
+def _suggested_asset_name(img_path: str, fmt: str, seen_count: int) -> str:
+    """Pick an in-assets-dir filename for an asset.
+
+    For URL refs, use the URL path's basename so we get a useful filename
+    (``foo.png`` rather than the whole URL). For local refs, the regular
+    basename. Falls back to ``image-<n>[.fmt]`` when nothing usable.
+    """
+    if img_path.startswith(("http://", "https://")):
+        name = Path(urlparse(img_path).path).name
+    else:
+        name = Path(img_path).name
+    if name:
+        return name
+    return f"image-{seen_count + 1}{('.' + fmt) if fmt else ''}"
 
 
 __all__ = ["MinerUAdapter"]
