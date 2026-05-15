@@ -1,0 +1,410 @@
+"""Spec-compliance tests for :func:`lightrag.sidecar.write_sidecar`.
+
+These assertions are deliberately structural: they encode the contract in
+``docs/LightRAGSidecarFormat-zh.md`` so accidental regressions in
+``writer.py`` show up before downstream chunker / multimodal consumers see
+malformed sidecars.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from lightrag.sidecar import (
+    AssetSpec,
+    IRBlock,
+    IRDoc,
+    IRDrawing,
+    IREquation,
+    IRPosition,
+    IRTable,
+    write_sidecar,
+)
+
+
+def _load_jsonl(path: Path) -> tuple[dict, list[dict]]:
+    rows: list[dict] = []
+    meta: dict = {}
+    with path.open("r", encoding="utf-8") as fh:
+        for i, line in enumerate(fh):
+            obj = json.loads(line)
+            if i == 0:
+                meta = obj
+            else:
+                rows.append(obj)
+    return meta, rows
+
+
+@pytest.mark.offline
+def test_writer_empty_doc_emits_only_blocks_jsonl(tmp_path: Path) -> None:
+    """Document with no blocks: only the meta line, no per-modality JSONs,
+    no assets dir."""
+    parsed = tmp_path / "empty.parsed"
+    ir = IRDoc(
+        document_name="empty.docx",
+        document_format="docx",
+        doc_title="empty",
+        split_option={},
+        blocks=[],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-0001", engine="native")
+
+    files = {p.name for p in parsed.iterdir()}
+    assert files == {"empty.blocks.jsonl"}
+
+    meta, rows = _load_jsonl(parsed / "empty.blocks.jsonl")
+    assert meta["type"] == "meta"
+    assert meta["blocks"] == 0
+    assert meta["asset_dir"] is False
+    assert meta["table_file"] is False
+    assert meta["drawing_file"] is False
+    assert meta["equation_file"] is False
+    assert rows == []
+
+
+@pytest.mark.offline
+def test_writer_renders_table_with_inline_body(tmp_path: Path) -> None:
+    """Spec §3.3 / fix 1: <table id="..." format="json">rows</table>; NOT
+    <cite type="table">. Also verifies the table's JSON content appears in
+    blocks.jsonl content so doc_hash and F/R/V chunkers see it."""
+    parsed = tmp_path / "t.parsed"
+    ir = IRDoc(
+        document_name="t.pdf",
+        document_format="pdf",
+        doc_title="t",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="prefix {{TBL:t1}} suffix",
+                tables=[
+                    IRTable(
+                        placeholder_key="t1",
+                        rows=[["a", "b"], ["1", "2"]],
+                        num_rows=2,
+                        num_cols=2,
+                        caption="cap",
+                    )
+                ],
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-cafebabe", engine="mineru")
+
+    _, rows = _load_jsonl(parsed / "t.blocks.jsonl")
+    assert len(rows) == 1
+    body = rows[0]["content"]
+    assert '<table id="tb-cafebabe-0001" format="json">' in body
+    assert '[["a", "b"], ["1", "2"]]' in body
+    assert "</table>" in body
+    # Negative: no <cite type="table"> placeholder anywhere.
+    assert "<cite" not in body
+
+
+@pytest.mark.offline
+def test_writer_drawing_path_points_into_assets_dir(tmp_path: Path) -> None:
+    """Spec §四 / fix 5: drawing path always points inside *.blocks.assets/.
+
+    Asset must be materialized on disk; meta.asset_dir must reflect it.
+    """
+    parsed = tmp_path / "d.parsed"
+    ir = IRDoc(
+        document_name="d.pdf",
+        document_format="pdf",
+        doc_title="d",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="see {{IMG:i1}}",
+                drawings=[
+                    IRDrawing(
+                        placeholder_key="i1",
+                        asset_ref="img1",
+                        fmt="png",
+                        caption="figure 1",
+                    )
+                ],
+            )
+        ],
+        assets=[AssetSpec(ref="img1", suggested_name="x.png", source=b"\x89PNG")],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-cafebabe", engine="mineru")
+
+    meta, rows = _load_jsonl(parsed / "d.blocks.jsonl")
+    assert meta["asset_dir"] is True
+    assert meta["drawing_file"] is True
+
+    body = rows[0]["content"]
+    assert 'path="d.blocks.assets/x.png"' in body
+    assert (parsed / "d.blocks.assets" / "x.png").read_bytes() == b"\x89PNG"
+
+    drawings = json.loads((parsed / "d.drawings.json").read_text())["drawings"]
+    item = drawings["im-cafebabe-0001"]
+    assert item["path"] == "d.blocks.assets/x.png"
+    assert item["caption"] == "figure 1"
+    assert item["format"] == "png"
+
+
+@pytest.mark.offline
+def test_writer_equation_caption_preserved_block_and_inline(
+    tmp_path: Path,
+) -> None:
+    """Fix 3 + design decision: <equation caption="..."> on both block and
+    inline forms; inline does NOT receive an id and does NOT enter
+    equations.json (spec §6 / §3.3)."""
+    parsed = tmp_path / "e.parsed"
+    ir = IRDoc(
+        document_name="e.pdf",
+        document_format="pdf",
+        doc_title="e",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="block {{EQ:b1}} inline {{EQI:i1}}",
+                equations=[
+                    IREquation(
+                        placeholder_key="b1",
+                        latex="x^2",
+                        is_block=True,
+                        caption="Eq 1",
+                    ),
+                    IREquation(
+                        placeholder_key="i1",
+                        latex="y_n",
+                        is_block=False,
+                        caption="Inline",
+                    ),
+                ],
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-cafebabe", engine="mineru")
+    body = _load_jsonl(parsed / "e.blocks.jsonl")[1][0]["content"]
+
+    assert (
+        '<equation id="eq-cafebabe-0001" format="latex" caption="Eq 1">x^2</equation>'
+        in body
+    )
+    # Inline: no id; caption preserved.
+    assert '<equation format="latex" caption="Inline">y_n</equation>' in body
+
+    equations = json.loads((parsed / "e.equations.json").read_text())["equations"]
+    # Inline equation should NOT have produced a sidecar entry.
+    assert list(equations.keys()) == ["eq-cafebabe-0001"]
+    assert equations["eq-cafebabe-0001"]["caption"] == "Eq 1"
+
+
+@pytest.mark.offline
+def test_writer_positions_round_trip_bbox(tmp_path: Path) -> None:
+    """Fix 4: positions go through unchanged. bbox type is the mineru path."""
+    parsed = tmp_path / "p.parsed"
+    ir = IRDoc(
+        document_name="p.pdf",
+        document_format="pdf",
+        doc_title="p",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="text",
+                positions=[
+                    IRPosition(
+                        type="bbox", anchor=2, range=[10.0, 20.0, 100.0, 200.0]
+                    )
+                ],
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-aaaa", engine="mineru")
+    rows = _load_jsonl(parsed / "p.blocks.jsonl")[1]
+    assert rows[0]["positions"] == [
+        {"type": "bbox", "anchor": 2, "range": [10.0, 20.0, 100.0, 200.0]}
+    ]
+
+
+@pytest.mark.offline
+def test_writer_id_sequence_is_global_per_kind(tmp_path: Path) -> None:
+    """IDs increment across blocks within their own kind: tables ↑,
+    drawings ↑, equations ↑ — three independent sequences."""
+    parsed = tmp_path / "s.parsed"
+    blocks = [
+        IRBlock(
+            content_template="a {{TBL:t}} b {{IMG:i}} c",
+            tables=[IRTable(placeholder_key="t", rows=[["x"]], num_rows=1, num_cols=1)],
+            drawings=[IRDrawing(placeholder_key="i", asset_ref="a1", fmt="png")],
+        ),
+        IRBlock(
+            content_template="d {{EQ:e}} {{TBL:t}}",
+            tables=[IRTable(placeholder_key="t", rows=[["y"]], num_rows=1, num_cols=1)],
+            equations=[
+                IREquation(placeholder_key="e", latex="z", is_block=True)
+            ],
+        ),
+    ]
+    ir = IRDoc(
+        document_name="s.pdf",
+        document_format="pdf",
+        doc_title="s",
+        split_option={},
+        blocks=blocks,
+        assets=[AssetSpec(ref="a1", suggested_name="img.png", source=b"x")],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-bbbb", engine="mineru")
+    tables = json.loads((parsed / "s.tables.json").read_text())["tables"]
+    assert sorted(tables.keys()) == ["tb-bbbb-0001", "tb-bbbb-0002"]
+    drawings = json.loads((parsed / "s.drawings.json").read_text())["drawings"]
+    assert list(drawings.keys()) == ["im-bbbb-0001"]
+    equations = json.loads((parsed / "s.equations.json").read_text())["equations"]
+    assert list(equations.keys()) == ["eq-bbbb-0001"]
+
+
+@pytest.mark.offline
+def test_writer_empty_block_dropped(tmp_path: Path) -> None:
+    """An IRBlock that strips to empty after placeholder expansion produces
+    no blocks.jsonl row AND no sidecar items (its in-flight placeholders
+    are stillborn)."""
+    parsed = tmp_path / "empty_block.parsed"
+    ir = IRDoc(
+        document_name="x.pdf",
+        document_format="pdf",
+        doc_title="x",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="   \n  ",
+                tables=[
+                    IRTable(
+                        placeholder_key="orphan",
+                        rows=[["a"]],
+                        num_rows=1,
+                        num_cols=1,
+                    )
+                ],
+            ),
+            IRBlock(content_template="real content"),
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-eee", engine="mineru")
+    meta, rows = _load_jsonl(parsed / "x.blocks.jsonl")
+    assert meta["blocks"] == 1
+    assert len(rows) == 1
+    assert rows[0]["content"] == "real content"
+    # No tables.json because the orphan placeholder is dropped.
+    assert not (parsed / "x.tables.json").exists()
+
+
+@pytest.mark.offline
+def test_writer_asset_name_collision_suffixed(tmp_path: Path) -> None:
+    """Two assets with identical suggested_name → second gets ``-2`` stem
+    suffix; drawings.json paths reflect the actual on-disk names."""
+    parsed = tmp_path / "c.parsed"
+    ir = IRDoc(
+        document_name="c.pdf",
+        document_format="pdf",
+        doc_title="c",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="{{IMG:a}} and {{IMG:b}}",
+                drawings=[
+                    IRDrawing(placeholder_key="a", asset_ref="r1", fmt="png"),
+                    IRDrawing(placeholder_key="b", asset_ref="r2", fmt="png"),
+                ],
+            )
+        ],
+        assets=[
+            AssetSpec(ref="r1", suggested_name="img.png", source=b"a"),
+            AssetSpec(ref="r2", suggested_name="img.png", source=b"b"),
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-1111", engine="mineru")
+    assets = sorted(p.name for p in (parsed / "c.blocks.assets").iterdir())
+    assert assets == ["img-2.png", "img.png"]
+    body = _load_jsonl(parsed / "c.blocks.jsonl")[1][0]["content"]
+    assert 'path="c.blocks.assets/img.png"' in body
+    assert 'path="c.blocks.assets/img-2.png"' in body
+
+
+@pytest.mark.offline
+def test_writer_meta_has_required_spec_fields(tmp_path: Path) -> None:
+    """Spec §3.1: meta line contains every required field at fixed names."""
+    parsed = tmp_path / "m.parsed"
+    ir = IRDoc(
+        document_name="m.pdf",
+        document_format="pdf",
+        doc_title="title",
+        split_option={"engine_version": "magic-pdf 1.5.4"},
+        blocks=[IRBlock(content_template="hello")],
+        bbox_attributes={"origin": "LEFTTOP", "max": 1000},
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-deadbeef", engine="mineru")
+    meta, _ = _load_jsonl(parsed / "m.blocks.jsonl")
+    for k in (
+        "type",
+        "format",
+        "version",
+        "document_name",
+        "document_format",
+        "document_hash",
+        "table_file",
+        "equation_file",
+        "drawing_file",
+        "asset_dir",
+        "split_option",
+        "blocks",
+        "doc_id",
+        "parse_engine",
+        "parse_time",
+        "doc_title",
+    ):
+        assert k in meta, f"meta missing field: {k}"
+    assert meta["document_hash"].startswith("sha256:")
+    assert meta["parse_engine"] == "mineru"
+    assert meta["bbox_attributes"] == {"origin": "LEFTTOP", "max": 1000}
+    assert meta["split_option"] == {"engine_version": "magic-pdf 1.5.4"}
+
+
+@pytest.mark.offline
+def test_writer_sidecar_files_only_when_nonempty(tmp_path: Path) -> None:
+    """tables.json / drawings.json / equations.json are NOT written when
+    the corresponding maps are empty (spec §一 table)."""
+    parsed = tmp_path / "n.parsed"
+    ir = IRDoc(
+        document_name="n.docx",
+        document_format="docx",
+        doc_title="n",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="{{IMG:i}}",
+                drawings=[IRDrawing(placeholder_key="i", asset_ref="r", fmt="png")],
+            )
+        ],
+        assets=[AssetSpec(ref="r", suggested_name="i.png", source=b"x")],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-aaaa", engine="native")
+    files = {p.name for p in parsed.iterdir() if p.is_file()}
+    assert "n.drawings.json" in files
+    assert "n.tables.json" not in files
+    assert "n.equations.json" not in files
+
+
+@pytest.mark.offline
+def test_writer_blockid_formula_stable(tmp_path: Path) -> None:
+    """blockid = md5(doc_id:block_index:heading:content). Same content +
+    metadata → same blockid."""
+    parsed_a = tmp_path / "a.parsed"
+    parsed_b = tmp_path / "b.parsed"
+    ir = IRDoc(
+        document_name="x.pdf",
+        document_format="pdf",
+        doc_title="x",
+        split_option={},
+        blocks=[IRBlock(content_template="abc", heading="H", level=1)],
+    )
+    write_sidecar(ir, parsed_dir=parsed_a, doc_id="doc-fixed", engine="mineru")
+    write_sidecar(ir, parsed_dir=parsed_b, doc_id="doc-fixed", engine="mineru")
+    rows_a = _load_jsonl(parsed_a / "x.blocks.jsonl")[1]
+    rows_b = _load_jsonl(parsed_b / "x.blocks.jsonl")[1]
+    assert rows_a[0]["blockid"] == rows_b[0]["blockid"]
