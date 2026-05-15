@@ -1757,7 +1757,7 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
         ]
 
     monkeypatch.setattr(
-        "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
+        "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
         _fake_extract,
     )
 
@@ -1826,7 +1826,7 @@ async def test_parse_native_docx_content_list_failure_raises_without_fallback(
         raise AssertionError("plain text fallback should not run")
 
     monkeypatch.setattr(
-        "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
+        "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
         _raise_parser,
     )
     monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
@@ -1854,7 +1854,7 @@ async def test_parse_native_docx_empty_content_list_result_raises_without_fallba
         raise AssertionError("plain text fallback should not run")
 
     monkeypatch.setattr(
-        "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
+        "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
         lambda *args, **kwargs: [],
     )
     monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)

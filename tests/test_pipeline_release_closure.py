@@ -1813,7 +1813,7 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
                 "table_chunk_role": "none",
             }
             monkeypatch.setattr(
-                "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
+                "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
                 lambda *args, **kwargs: [dict(stable_block)],
             )
 

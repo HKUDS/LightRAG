@@ -587,7 +587,7 @@ def test_pending_parse_lightrag_summary_populated_after_processed(
             ]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.lightrag_adapter.extract_docx_blocks",
+            "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
             _stub_extract,
         )
 

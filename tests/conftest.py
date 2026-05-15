@@ -7,6 +7,34 @@ This file provides command-line options and fixtures for test configuration.
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_mineru_env(monkeypatch):
+    """Make every test start with MinerU env vars in their unset state.
+
+    ``lightrag/api/{auth,config}.py`` call ``load_dotenv(override=False)``
+    at import time, leaking the developer's local ``.env`` into the test
+    process. The MinerU test fixtures assume ``MINERU_API_MODE`` is unset
+    (so it defaults to ``"local"`` per ``MinerURawClient.__init__`` /
+    ``parser_engine_endpoint_requirement``):
+
+    - A leaked ``MINERU_API_MODE=offical`` typo (or any invalid value)
+      makes ``MinerURawClient()`` raise at construction.
+    - A leaked ``MINERU_API_MODE=official`` flips
+      ``parser_engine_endpoint_requirement`` to return
+      ``"MINERU_API_TOKEN"`` instead of ``"MINERU_LOCAL_ENDPOINT"``,
+      breaking the validation-error string match.
+
+    Strip the variable globally; tests that need a specific mode can
+    still ``monkeypatch.setenv("MINERU_API_MODE", "official")``
+    themselves and monkeypatch will restore the inherited value at
+    teardown.
+    """
+    monkeypatch.delenv("MINERU_API_MODE", raising=False)
+    monkeypatch.delenv("MINERU_API_TOKEN", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
+    monkeypatch.delenv("MINERU_OFFICIAL_ENDPOINT", raising=False)
+
+
 def pytest_configure(config):
     """Register custom markers for LightRAG tests."""
     config.addinivalue_line(

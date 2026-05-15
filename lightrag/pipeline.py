@@ -2296,45 +2296,154 @@ class _PipelineMixin:
                 str(content_data.get("source_path") or file_path)
             )
             p = Path(source_path)
-            if p.exists() and p.is_file() and p.suffix.lower() == ".docx":
-                from lightrag.native_parser.docx import (
-                    parse_docx_to_lightrag_document,
+            if not (p.exists() and p.is_file() and p.suffix.lower() == ".docx"):
+                raise ValueError(
+                    f"Native parser does not support pending file: {file_path}"
                 )
 
-                file_bytes = await asyncio.to_thread(p.read_bytes)
-                parsed_data = await parse_docx_to_lightrag_document(
-                    file_bytes=file_bytes,
-                    file_path=file_path,
-                    doc_id=doc_id,
-                    source_path=str(p),
-                )
-
-                blocks_path = Path(parsed_data["blocks_path"])
-                stored_blocks_path = str(blocks_path)
-                try:
-                    stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
-                except ValueError:
-                    pass
-                await self._persist_parsed_full_docs(
-                    doc_id,
-                    {
-                        "content": make_lightrag_doc_content(parsed_data["content"]),
-                        "file_path": file_path,
-                        "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                        "lightrag_document_path": stored_blocks_path,
-                        "parse_engine": PARSER_ENGINE_NATIVE,
-                        "update_time": int(time.time()),
-                    },
-                )
-                await archive_docx_source_after_full_docs_sync(str(p))
-                logger.info(
-                    f"[parse_native] pending_parse completed for {file_path} "
-                    f"via native_parser/docx"
-                )
-                return parsed_data
-            raise ValueError(
-                f"Native parser does not support pending file: {file_path}"
+            # Lazy imports keep this module import-cheap and avoid pulling
+            # the docx parser into call paths that never touch the native
+            # engine (mirrors parse_mineru).
+            from lightrag.native_parser.docx.drawing_image_extractor import (
+                DrawingExtractionContext,
+                load_relationships,
             )
+            from lightrag.native_parser.docx.parse_document import (
+                extract_docx_blocks,
+            )
+            from lightrag.parser_adapters import NativeDocxAdapter
+            from lightrag.sidecar import write_sidecar
+
+            canonical_basename = (
+                canonicalize_parser_hinted_basename(file_path)
+                or p.name
+                or f"{doc_id}.bin"
+            )
+            base_name = Path(canonical_basename).stem or canonical_basename
+            parsed_dir = parsed_artifact_dir_for_source(str(p), file_path)
+            asset_dir = parsed_dir / f"{base_name}.blocks.assets"
+
+            def _extract_blocks_sync() -> (
+                tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]
+            ):
+                # Pre-clean parsed_dir and pre-create the asset dir so the
+                # drawing extractor can write image bytes BEFORE write_sidecar
+                # runs (which is then called with clean_parsed_dir=False to
+                # keep those bytes). ``parsed_artifact_dir_for_source`` returns
+                # a unique dir per source (with ``_001``/``_002`` suffixes on
+                # collision), so the rmtree here only ever clobbers stale
+                # artifacts from a previous attempt at the same doc_id.
+                if parsed_dir.exists():
+                    shutil.rmtree(parsed_dir)
+                parsed_dir.mkdir(parents=True, exist_ok=True)
+                asset_dir.mkdir(parents=True, exist_ok=True)
+                ctx = DrawingExtractionContext(
+                    docx_path=p,
+                    blocks_output_path=parsed_dir / f"{base_name}.blocks.jsonl",
+                    export_dir_name=asset_dir.name,
+                    export_dir_path=asset_dir,
+                )
+                load_relationships(ctx)
+                warnings: dict[str, Any] = {}
+                metadata: dict[str, Any] = {}
+                extracted = extract_docx_blocks(
+                    str(p),
+                    debug=False,
+                    fixlevel=0,
+                    drawing_context=ctx,
+                    parse_warnings=warnings,
+                    parse_metadata=metadata,
+                )
+                return extracted, warnings, metadata
+
+            try:
+                blocks, parse_warnings, parse_metadata = await asyncio.to_thread(
+                    _extract_blocks_sync
+                )
+            except BaseException:
+                # ``_extract_blocks_sync`` pre-creates ``parsed_dir`` and
+                # ``asset_dir`` before invoking the extractor; if extraction
+                # raises, those (possibly partially-populated) dirs would be
+                # left on disk. Roll them back so the next attempt starts clean.
+                if parsed_dir.exists():
+                    shutil.rmtree(parsed_dir, ignore_errors=True)
+                raise
+            if not blocks:
+                # Same cleanup path for the "extractor returned []" case —
+                # ``write_sidecar`` would never run, so without this the
+                # pre-created (empty) dirs would persist.
+                if parsed_dir.exists():
+                    shutil.rmtree(parsed_dir, ignore_errors=True)
+                raise ValueError(f"DOCX parser returned empty content for {file_path}")
+
+            missing_paraid_count = int(
+                parse_warnings.get("missing_paraid_count", 0) or 0
+            )
+            if missing_paraid_count > 0:
+                # Surface once per document — the parser may encounter many
+                # missing paraIds (legacy / non-Word authors omit
+                # ``w14:paraId``), but a single warning with the count is
+                # enough. Affected blocks emit
+                # ``positions: [{"type": "paraid", "range": null}]``.
+                logger.warning(
+                    "[parse_native] %s: %d paragraphs lack paraId; "
+                    "Re-saving file in Word 2013+ to regenerate ids.",
+                    p.name,
+                    missing_paraid_count,
+                )
+
+            ir = NativeDocxAdapter().normalize(
+                blocks,
+                document_name=canonical_basename,
+                asset_dir_name=asset_dir.name,
+                parse_metadata=parse_metadata,
+            )
+            parsed_data = write_sidecar(
+                ir,
+                parsed_dir=parsed_dir,
+                doc_id=doc_id,
+                engine=PARSER_ENGINE_NATIVE,
+                clean_parsed_dir=False,  # we pre-populated the asset dir
+                block_drawing_path_style="basename_only",  # legacy native shape
+            )
+
+            blocks_path = Path(parsed_data["blocks_path"])
+            stored_blocks_path = str(blocks_path)
+            try:
+                stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
+            except ValueError:
+                pass
+            await self._persist_parsed_full_docs(
+                doc_id,
+                {
+                    "content": make_lightrag_doc_content(parsed_data["content"]),
+                    "file_path": file_path,
+                    "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                    "lightrag_document_path": stored_blocks_path,
+                    "parse_engine": PARSER_ENGINE_NATIVE,
+                    "update_time": int(time.time()),
+                },
+            )
+            await archive_docx_source_after_full_docs_sync(str(p))
+            logger.info(
+                f"[parse_native] pending_parse completed for {file_path} "
+                f"via native_parser/docx"
+            )
+            result: dict[str, Any] = {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                "content": parsed_data["content"],
+                "blocks_path": parsed_data["blocks_path"],
+            }
+            if missing_paraid_count > 0:
+                # Pipeline reads this from the parsed_data dict and writes it
+                # to ``doc_status.metadata.parse_warnings`` so admin/list APIs
+                # can surface the issue alongside the document record.
+                result["parse_warnings"] = {
+                    "missing_paraid_count": missing_paraid_count
+                }
+            return result
 
         return {
             "doc_id": doc_id,
