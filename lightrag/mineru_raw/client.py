@@ -24,7 +24,7 @@ import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from lightrag.mineru_raw.cache import (
@@ -37,10 +37,13 @@ from lightrag.mineru_raw.manifest import (
 )
 from lightrag.utils import logger
 
-try:
-    import httpx  # type: ignore
-except ImportError:  # pragma: no cover
-    httpx = None  # type: ignore
+if TYPE_CHECKING:
+    import httpx
+else:
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover
+        httpx = None
 
 CONTENT_LIST_FILENAME = "content_list.json"
 DEFAULT_MINERU_API_MODE = "local"
@@ -278,8 +281,12 @@ class MinerURawClient:
                 f"MinerU official upload URL response had an empty upload URL: "
                 f"{payload}"
             )
-        with source_file_path.open("rb") as f:
-            upload_resp = await client.put(upload_url, data=f)
+        # Use ``content=bytes`` rather than ``data=file_object``: httpx 0.28+
+        # wraps a sync file-like into an ``IteratorByteStream`` (a SyncByteStream),
+        # which ``AsyncClient._send_single_request`` rejects with
+        # "Attempted to send an sync request with an AsyncClient instance."
+        file_bytes = await asyncio.to_thread(source_file_path.read_bytes)
+        upload_resp = await client.put(upload_url, content=file_bytes)
         upload_resp.raise_for_status()
 
         result_url = await self._poll_official_batch(client, batch_id, source_file_path)
