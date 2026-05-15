@@ -2356,10 +2356,24 @@ class _PipelineMixin:
                 )
                 return extracted, warnings, metadata
 
-            blocks, parse_warnings, parse_metadata = await asyncio.to_thread(
-                _extract_blocks_sync
-            )
+            try:
+                blocks, parse_warnings, parse_metadata = await asyncio.to_thread(
+                    _extract_blocks_sync
+                )
+            except BaseException:
+                # ``_extract_blocks_sync`` pre-creates ``parsed_dir`` and
+                # ``asset_dir`` before invoking the extractor; if extraction
+                # raises, those (possibly partially-populated) dirs would be
+                # left on disk. Roll them back so the next attempt starts clean.
+                if parsed_dir.exists():
+                    shutil.rmtree(parsed_dir, ignore_errors=True)
+                raise
             if not blocks:
+                # Same cleanup path for the "extractor returned []" case —
+                # ``write_sidecar`` would never run, so without this the
+                # pre-created (empty) dirs would persist.
+                if parsed_dir.exists():
+                    shutil.rmtree(parsed_dir, ignore_errors=True)
                 raise ValueError(f"DOCX parser returned empty content for {file_path}")
 
             missing_paraid_count = int(

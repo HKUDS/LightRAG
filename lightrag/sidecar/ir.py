@@ -80,10 +80,19 @@ class IRTable:
     # in ``blocks.jsonl``. When set, the writer uses this string in the block
     # text instead of re-encoding ``rows`` via ``json.dumps`` — preserving
     # the parser's original whitespace/escaping when byte-equivalence with a
-    # pre-existing output is required (currently: the native docx adapter
-    # which keeps the docx-extracted JSON string verbatim). The
-    # ``tables.json`` ``content`` field is unaffected and remains the
-    # canonical ``json.dumps(rows, ensure_ascii=False)`` encoding.
+    # pre-existing output is required. The ``tables.json`` ``content`` field
+    # is unaffected and remains the canonical
+    # ``json.dumps(rows, ensure_ascii=False)`` encoding.
+    #
+    # Coexistence with ``rows`` / ``html``: ``body_override`` does NOT replace
+    # the structured body. ``rows`` (or ``html``) must still be populated for
+    # the sidecar's ``content`` / ``dimension`` / ``format`` fields and for
+    # the writer's ``"json" vs "html"`` format selection. Adapters typically
+    # set BOTH (e.g. native docx sets ``rows`` from the parsed JSON AND sets
+    # ``body_override`` to the raw verbatim string). When JSON parsing fails
+    # in the adapter (``rows`` is None), ``html`` is used as the structured
+    # fallback and the writer renders ``format="html"`` with the body_override
+    # string verbatim — keeping the original (unparseable) bytes intact.
     body_override: str | None = None
 
 

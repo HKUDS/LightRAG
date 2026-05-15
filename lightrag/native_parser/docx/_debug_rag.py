@@ -48,6 +48,26 @@ def build_debug_rag():
     it avoids a circular import when this helper is loaded during package
     init (``__main__`` invocations resolve ``lightrag.native_parser.docx``
     before ``lightrag`` is fully bound).
+
+    LightRAG-side attributes ``parse_native`` (the bound code below) currently
+    reads off ``self`` — every entry MUST be provided by this stand-in, or the
+    debug CLI / golden tests / regen script will all break in sync:
+
+    - **methods** (rebound from :class:`LightRAG`):
+        - ``_persist_parsed_full_docs(doc_id, payload)`` — async; touches
+          ``self.full_docs``.
+        - ``_resolve_source_file_for_parser(file_path)`` — returns the
+          on-disk source path. Stubbed to identity here since the CLI / tests
+          feed an already-resolved path.
+    - **storages**:
+        - ``self.full_docs.upsert(...)`` / ``.get_by_id(...)`` /
+          ``.index_done_callback()`` — :class:`DebugFullDocs` covers all three.
+        - ``self.doc_status.get_by_id(...)`` / ``.upsert(...)`` —
+          :class:`DebugDocStatus` covers both.
+
+    When ``LightRAG.parse_native`` grows new dependencies on ``self``,
+    extend this stand-in (and update the list above) rather than copy-pasting
+    a parallel stub into the three call sites.
     """
     from lightrag import LightRAG
 
