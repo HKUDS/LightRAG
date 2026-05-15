@@ -28,7 +28,6 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from lightrag.mineru_raw.cache import (
-    clear_dir_contents,
     compute_size_and_hash,
 )
 from lightrag.mineru_raw.manifest import (

@@ -15,17 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-from lightrag import LightRAG, ROLES, RoleLLMConfig
+from lightrag import LightRAG
 from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
-    PARSED_DIR_NAME,
 )
 from lightrag.mineru_raw import compute_size_and_hash
 from lightrag.mineru_raw.manifest import (

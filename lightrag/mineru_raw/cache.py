@@ -29,7 +29,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from lightrag.mineru_raw.manifest import Manifest, load_manifest
+from lightrag.mineru_raw.manifest import load_manifest
 
 MINERU_RAW_DIR_SUFFIX = ".mineru_raw"
 
