@@ -8,7 +8,7 @@ Apache AGE because ``SET ... += $props`` is not supported.
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from lightrag.kg.postgres_impl import PGGraphStorage
 
@@ -19,13 +19,47 @@ from lightrag.kg.postgres_impl import PGGraphStorage
 
 
 def make_graph_storage() -> PGGraphStorage:
-    """Construct a PGGraphStorage instance with a mocked _query method."""
+    """Construct a PGGraphStorage instance with a mocked db."""
     storage = PGGraphStorage.__new__(PGGraphStorage)
     storage.workspace = "test_ws"
     storage.namespace = "test_graph"
     storage.graph_name = "test_graph"
     storage.db = MagicMock()
     return storage
+
+
+class _FakeConnection:
+    """Captures statements + args passed to a fake asyncpg connection."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def transaction(self):
+        return _FakeTransaction()
+
+    async def execute(self, sql, *args):
+        self.calls.append({"sql": sql, "args": args})
+        return ""
+
+
+class _FakeTransaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+async def _capture_upsert_edge(storage: PGGraphStorage, src: str, tgt: str, edge_data):
+    """Invoke upsert_edge against a fake connection and return the captured calls."""
+    conn = _FakeConnection()
+
+    async def fake_run_with_retry(operation, **_kwargs):
+        return await operation(conn)
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+    await storage.upsert_edge(src, tgt, edge_data)
+    return conn.calls
 
 
 # ---------------------------------------------------------------------------
@@ -192,28 +226,31 @@ async def test_upsert_node_requires_entity_id():
 async def test_upsert_edge_uses_parameterized_cypher():
     """upsert_edge must pass entity IDs as Cypher parameters."""
     storage = make_graph_storage()
-    captured_calls: list[dict] = []
+    calls = await _capture_upsert_edge(
+        storage, "Alice", "Bob", {"weight": "1.0", "description": "knows"}
+    )
 
-    async def fake_query(sql, **kwargs):
-        captured_calls.append({"sql": sql, **kwargs})
-        return []
+    # Two statements run on the connection: advisory lock first, then cypher.
+    assert len(calls) == 2
 
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge(
-            "Alice", "Bob", {"weight": "1.0", "description": "knows"}
-        )
+    lock_sql = calls[0]["sql"]
+    # Raw node IDs are positional params on the lock, never interpolated.
+    assert "Alice" not in lock_sql
+    assert "Bob" not in lock_sql
+    assert calls[0]["args"] == ("Alice", "Bob")
 
-    assert len(captured_calls) == 1
-    call = captured_calls[0]
-    assert "$1::agtype" in call["sql"]
-    assert '"Alice"' not in call["sql"].replace("$1::agtype", "")
-    assert '"Bob"' not in call["sql"].replace("$1::agtype", "")
-    params = json.loads(call["params"]["params"])
+    cypher_call = calls[1]
+    cypher_sql = cypher_call["sql"]
+    assert "$1::agtype" in cypher_sql
+    assert '"Alice"' not in cypher_sql.replace("$1::agtype", "")
+    assert '"Bob"' not in cypher_sql.replace("$1::agtype", "")
+    # Cypher params arrive as a single positional agtype JSON arg.
+    params = json.loads(cypher_call["args"][0])
     assert params["src_id"] == "Alice"
     assert params["tgt_id"] == "Bob"
     assert "props" not in params
-    assert '`weight`: "1.0"' in call["sql"]
-    assert '`description`: "knows"' in call["sql"]
+    assert '`weight`: "1.0"' in cypher_sql
+    assert '`description`: "knows"' in cypher_sql
 
 
 @pytest.mark.asyncio
@@ -222,19 +259,23 @@ async def test_upsert_edge_injection_payload():
     storage = make_graph_storage()
     injection_src = 'src"}) MATCH (x) DETACH DELETE x; //'
     injection_tgt = 'tgt"})-[r]-() DELETE r; //'
-    captured_calls: list[dict] = []
+    calls = await _capture_upsert_edge(
+        storage, injection_src, injection_tgt, {"description": "edge"}
+    )
 
-    async def fake_query(sql, **kwargs):
-        captured_calls.append({"sql": sql, **kwargs})
-        return []
+    # Injection payloads must never appear in either SQL template — they only
+    # flow through positional params.
+    for call in calls:
+        assert "DETACH DELETE" not in call["sql"]
+        assert "DELETE r" not in call["sql"]
+        assert injection_src not in call["sql"]
+        assert injection_tgt not in call["sql"]
 
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge(injection_src, injection_tgt, {"description": "edge"})
+    # Lock statement passes raw IDs as positional params.
+    assert calls[0]["args"] == (injection_src, injection_tgt)
 
-    call = captured_calls[0]
-    assert "DETACH DELETE" not in call["sql"]
-    assert "DELETE r" not in call["sql"]
-    params = json.loads(call["params"]["params"])
+    # Cypher params arrive as a single positional agtype JSON arg.
+    params = json.loads(calls[1]["args"][0])
     assert params["src_id"] == injection_src
     assert params["tgt_id"] == injection_tgt
 
@@ -243,22 +284,23 @@ async def test_upsert_edge_injection_payload():
 async def test_upsert_edge_unicode_entity_ids():
     """Unicode entity IDs in edges are safely parameterized."""
     storage = make_graph_storage()
-    captured_calls: list[dict] = []
+    src = "\u5317\u4eac"
+    tgt = "\u4e0a\u6d77"
+    calls = await _capture_upsert_edge(
+        storage, src, tgt, {"description": "\u8def\u7ebf"}
+    )
 
-    async def fake_query(sql, **kwargs):
-        captured_calls.append({"sql": sql, **kwargs})
-        return []
+    # Lock statement carries the raw IDs as positional params, not interpolated.
+    assert calls[0]["args"] == (src, tgt)
+    assert src not in calls[0]["sql"]
+    assert tgt not in calls[0]["sql"]
 
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_edge(
-            "\u5317\u4eac", "\u4e0a\u6d77", {"description": "\u8def\u7ebf"}
-        )
-
-    call = captured_calls[0]
-    params = json.loads(call["params"]["params"])
-    assert params["src_id"] == "\u5317\u4eac"
-    assert params["tgt_id"] == "\u4e0a\u6d77"
-    assert '`description`: "路线"' in call["sql"]
+    # Cypher params parsed from the positional agtype JSON arg.
+    cypher_sql = calls[1]["sql"]
+    params = json.loads(calls[1]["args"][0])
+    assert params["src_id"] == src
+    assert params["tgt_id"] == tgt
+    assert '`description`: "路线"' in cypher_sql
 
 
 # ---------------------------------------------------------------------------
