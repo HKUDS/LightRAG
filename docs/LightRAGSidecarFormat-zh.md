@@ -132,14 +132,14 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | 标签 | 含义 | 标签属性 |
 |---|---|---|
 | `<table id="tb-…" format="json">…</table>` | 表格占位，包体是表格原始 JSON / HTML | `id` 指向 `tables.json` 里对应 item；`format` ∈ `json` / `html` |
-| `<drawing id="im-…" format="png" path="..." src="..." caption="..." />` | 自闭合图形占位 | `id` 指向 `drawings.json`；`path` 相对 `*.parsed/` 目录；`src` 是原文档里的引用名 |
-| `<equation id="eq-…" format="latex">…</equation>` | 公式占位 | 行内公式同样用 `<equation format="latex">` 但**不**带 `id`，不会进 sidecar； 仅块公式（独占一行或多行）时携带 `id` |
+| `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | 自闭合图形占位 | `id` 指向 `drawings.json`；`path` 相对 `*.parsed/` 目录；`src` 是原文档里的引用名 |
+| `<equation id="eq-…" format="latex" caption="…">…</equation>` | 公式占位 | 行内公式同样用 `<equation format="latex">` 但**不**带 `id`，不会进 sidecar； 仅块公式（独占一行或多行）时携带 `id` |
 
 在实体关系抽取的时候喂给大模型的文本会把 `id / path / src` 等内部属性剥掉，但为保留键属性（`format / caption`）。目的是避免抽取出文章不可见的实体，给抽取结果注入过多的噪声。
 
 ### 3.4 blockid 与 chunk sidecar.refs 的对应
 
-葛总分块策略在sidecar文件存在时，会在其输出的每个 chunk 都会带上 `sidecar = {"type": "block", "id": <主来源 blockid>, "refs": [{"type": "block", "id": <blockid>}, ...]}`，其中：
+葛总分块策略在sidecar文件存在时，会在其输出的每个 chunk 都会带上 `sidecar = {"type": "block", "id": <主来源 blockid>, "refs": [{"type": "block", "id": <blockid>}, …]}`，其中：
 
 - 未合并的 chunk → `sidecar.refs` 只有一个元素，等于该 chunk 来自的 blocks.jsonl 行的 `blockid`；
 - Stage D 合并后的 chunk → `refs` 顺序保留所有来源 `blockid`（去重）；
@@ -149,7 +149,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 
 ## 四、drawings.json
 
-顶层是 `{"version": "1.0", "drawings": { <id>: <item>, ... }}` 形态的 dict 容器，**键 = `id` 字段**，便于按 id 查找。每个 item 形如：
+顶层是 `{"version": "1.0", "drawings": { <id>: <item>, … }}` 形态的 dict 容器，**键 = `id` 字段**，便于按 id 查找。每个 item 形如：
 
 ```json
 {
