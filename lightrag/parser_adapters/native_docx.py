@@ -201,25 +201,34 @@ class NativeDocxAdapter:
                 if not fmt and path_val:
                     fmt = Path(path_val).suffix.lower().lstrip(".")
 
-                # ref/suggested_name derive from the basename so two
-                # drawings pointing at the same on-disk file dedupe to one
-                # AssetSpec (matches legacy native behaviour).
-                if path_val.startswith(asset_prefix):
+                # Two flavours of <drawing path="…">:
+                #   1. Local asset under <base>.blocks.assets/ — already
+                #      extracted to disk by DrawingExtractionContext;
+                #      register as AssetSpec(source=None) and let the
+                #      writer resolve the path via asset_paths.
+                #   2. External/linked path (URL, or any path that does
+                #      not live under asset_prefix) — pass through
+                #      verbatim via IRDrawing.path_override; do NOT emit
+                #      an AssetSpec (no on-disk bytes to materialize).
+                if asset_prefix and path_val.startswith(asset_prefix):
                     rel_inside_assets = path_val[len(asset_prefix) :]
-                else:
-                    rel_inside_assets = Path(path_val).name or path_val
-                asset_ref = rel_inside_assets
-                suggested_name = Path(rel_inside_assets).name or rel_inside_assets
-
-                if asset_ref and asset_ref not in seen_asset_refs:
-                    assets.append(
-                        AssetSpec(
-                            ref=asset_ref,
-                            suggested_name=suggested_name,
-                            source=None,  # already extracted to disk
-                        )
+                    asset_ref = rel_inside_assets
+                    suggested_name = (
+                        Path(rel_inside_assets).name or rel_inside_assets
                     )
-                    seen_asset_refs.add(asset_ref)
+                    if asset_ref and asset_ref not in seen_asset_refs:
+                        assets.append(
+                            AssetSpec(
+                                ref=asset_ref,
+                                suggested_name=suggested_name,
+                                source=None,  # already extracted to disk
+                            )
+                        )
+                        seen_asset_refs.add(asset_ref)
+                    path_override: str | None = None
+                else:
+                    asset_ref = ""
+                    path_override = path_val
 
                 placeholder = next_key("im")
                 drawings.append(
@@ -230,6 +239,7 @@ class NativeDocxAdapter:
                         caption="",
                         footnotes=[],
                         src=src_val,
+                        path_override=path_override,
                     )
                 )
                 return f"{{{{IMG:{placeholder}}}}}"

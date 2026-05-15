@@ -98,6 +98,14 @@ class IRDrawing:
     footnotes: list[str] = field(default_factory=list)
     src: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
+    # Optional verbatim path. When set, the writer emits this string in
+    # both the ``blocks.jsonl`` ``<drawing path>`` attribute and the
+    # ``drawings.json`` ``path`` field as-is — bypassing
+    # ``asset_paths`` resolution and the ``block_drawing_path_style``
+    # transformation. Used for linked / external image references (e.g.
+    # ``<drawing path="https://…/img.png" />``) that point at bytes not
+    # materialized into ``<base>.blocks.assets/``.
+    path_override: str | None = None
 
 
 @dataclass

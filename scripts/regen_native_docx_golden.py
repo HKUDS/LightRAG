@@ -86,7 +86,12 @@ async def _regen() -> None:
 
         with mock.patch.object(
             lightrag_adapter, "extract_docx_blocks", _stub_extract
-        ), mock.patch.object(lightrag_adapter, "datetime", _FrozenDateTime):
+        ), mock.patch(
+            # ``parse_time`` is stamped inside ``write_sidecar``; freezing
+            # ``datetime`` there is what keeps regen output deterministic.
+            "lightrag.sidecar.writer.datetime",
+            _FrozenDateTime,
+        ):
             await lightrag_adapter.parse_docx_to_lightrag_document(
                 file_bytes=b"fake-docx",
                 file_path=scenario.file_path,

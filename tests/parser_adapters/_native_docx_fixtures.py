@@ -263,7 +263,45 @@ SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
-    # --- 7: missing paraid ---------------------------------------------
+    # --- 7: external / linked image references ------------------------
+    # DOCX can carry ``<a:blip r:link="rId…"/>`` references to image
+    # targets that live outside the package — the upstream extractor
+    # then emits ``<drawing path="<external URL or unresolved path>" />``
+    # WITHOUT writing bytes into ``<base>.blocks.assets/``. The adapter
+    # must pass those paths through verbatim (both in ``blocks.jsonl``
+    # and ``drawings.json``); turning them into AssetSpecs with
+    # ``source=None`` would make the writer warn-and-skip → ``path=""``,
+    # losing the only reference downstream consumers have.
+    Scenario(
+        name="external_image_link",
+        doc_id="doc-1111aaaa2222bbbb1111aaaa2222bbbb",
+        file_path="linked.docx",
+        parse_metadata={"first_heading": "Linked"},
+        # No on-disk assets — the path points elsewhere.
+        assets={},
+        blocks=[
+            _block(
+                "Linked",
+                heading="Linked",
+                level=1,
+                uuid="h1",
+            ),
+            _block(
+                "See the diagram online:\n"
+                '<drawing id="z" format="png" '
+                'path="https://example.com/diagrams/architecture.png" '
+                'src="docx://external" />\n'
+                "And a relative-but-not-asset path:\n"
+                '<drawing id="z2" format="gif" '
+                'path="../images/legacy.gif" '
+                'src="docx://legacy" />',
+                heading="Linked",
+                level=1,
+                uuid="p1",
+            ),
+        ],
+    ),
+    # --- 8: missing paraid ---------------------------------------------
     Scenario(
         name="missing_paraid",
         doc_id="doc-99990000111122229999000011112222",
