@@ -39,9 +39,9 @@ from copy import deepcopy
 
 _PARSER_RULE_SPLIT_RE = re.compile(r"[;,]")
 _PARSER_ENGINE_ENDPOINT_ENV = {
-    PARSER_ENGINE_MINERU: "MINERU_ENDPOINT",
     PARSER_ENGINE_DOCLING: "DOCLING_ENDPOINT",
 }
+_VALID_MINERU_API_MODES = {"official", "local"}
 
 # Trailing parser-hint pattern: matches ``.[engine].ext`` at end of basename.
 # Group 1 captures the raw engine token (still needs normalize_parser_engine
@@ -370,10 +370,29 @@ def parser_engine_supports_suffix(engine: str, suffix: str) -> bool:
 
 
 def parser_engine_endpoint_configured(engine: str) -> bool:
+    if engine == PARSER_ENGINE_MINERU:
+        mode = os.getenv("MINERU_API_MODE", "local").strip().lower()
+        if mode == "official":
+            return bool(os.getenv("MINERU_API_TOKEN", "").strip())
+        if mode == "local":
+            return bool(os.getenv("MINERU_LOCAL_ENDPOINT", "").strip())
+        return False
     endpoint_env = _PARSER_ENGINE_ENDPOINT_ENV.get(engine)
     if endpoint_env:
         return bool(os.getenv(endpoint_env, "").strip())
     return True
+
+
+def parser_engine_endpoint_requirement(engine: str) -> str | None:
+    if engine == PARSER_ENGINE_MINERU:
+        mode = os.getenv("MINERU_API_MODE", "local").strip().lower()
+        if mode == "official":
+            return "MINERU_API_TOKEN"
+        if mode == "local":
+            return "MINERU_LOCAL_ENDPOINT"
+        allowed = ", ".join(sorted(_VALID_MINERU_API_MODES))
+        return f"valid MINERU_API_MODE ({allowed})"
+    return _PARSER_ENGINE_ENDPOINT_ENV.get(engine)
 
 
 def _engine_is_usable(
@@ -539,9 +558,9 @@ def validate_parser_routing_config(parser_rules: str | None = None) -> None:
                 f"{label} does not match any suffix supported by {engine}; "
                 f"supported suffixes: {supported_suffixes}"
             )
-        endpoint_env = _PARSER_ENGINE_ENDPOINT_ENV.get(engine)
-        if endpoint_env and not parser_engine_endpoint_configured(engine):
-            errors.append(f"{label} requires {endpoint_env} to be configured")
+        endpoint_req = parser_engine_endpoint_requirement(engine)
+        if endpoint_req and not parser_engine_endpoint_configured(engine):
+            errors.append(f"{label} requires {endpoint_req} to be configured")
         if options_str:
             errors.extend(
                 f"{label}: {msg}"

@@ -19,7 +19,8 @@ Configure parser routing and external parser service endpoints in `.env`:
 
 ```bash
 LIGHTRAG_PARSER=pdf:mineru,docx:docling,pptx:docling,xlsx:docling,*:legacy
-MINERU_ENDPOINT=http://localhost:8000/api/v1/task
+MINERU_API_MODE=local
+MINERU_LOCAL_ENDPOINT=http://localhost:8000
 DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
 ```
 

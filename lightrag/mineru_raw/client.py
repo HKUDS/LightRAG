@@ -1,18 +1,17 @@
 """MinerU raw bundle downloader.
 
-Wraps the existing protocol semantics (``MINERU_*`` env vars) and lands the
-bundle on disk under ``raw_dir/``. Decides between three handling modes for
-``result_url``:
+Supports MinerU's official cloud and self-hosted API protocols and lands the
+final parser bundle on disk under ``raw_dir/``:
 
-- ``zip`` — response is binary / ``Content-Type: application/zip`` or URL ends
-  in ``.zip``. Streamed to ``_bundle.zip`` then extracted; zip deleted.
-- ``flat_json`` — response is a JSON content_list. Saved as
-  ``content_list.json``; ``img_path`` references are de-duplicated and
-  fetched relative to ``result_url``'s base (or
-  ``MINERU_IMAGE_URL_TEMPLATE``).
-- ``single_json`` — same as flat_json but no image references.
+- ``official`` — MinerU precision API v4: apply for signed upload URL, PUT the
+  local file, poll batch results, download ``full_zip_url``.
+- ``local`` — self-hosted ``mineru-api`` / ``mineru-router``: submit
+  ``POST /tasks``, poll ``GET /tasks/{task_id}``, download
+  ``GET /tasks/{task_id}/result``.
 
-Mode is auto-detected unless ``MINERU_RESULT_MODE`` overrides.
+Both protocols request a zip result bundle. Archives are extracted under
+``raw_dir/`` and normalized so the adapter can read a root-level
+``content_list.json``.
 """
 
 from __future__ import annotations
@@ -21,11 +20,12 @@ import asyncio
 import io
 import json
 import os
+import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from lightrag.mineru_raw.cache import (
     compute_size_and_hash,
@@ -43,6 +43,13 @@ except ImportError:  # pragma: no cover
     httpx = None  # type: ignore
 
 CONTENT_LIST_FILENAME = "content_list.json"
+DEFAULT_MINERU_API_MODE = "local"
+DEFAULT_MINERU_OFFICIAL_ENDPOINT = "https://mineru.net"
+VALID_MINERU_API_MODES = {"official", "local"}
+OFFICIAL_DONE_STATES = {"done"}
+OFFICIAL_FAILED_STATES = {"failed"}
+LOCAL_DONE_STATES = {"completed"}
+LOCAL_FAILED_STATES = {"failed"}
 
 
 def _get_by_path(payload: Any, path: str) -> Any:
@@ -59,27 +66,42 @@ def _get_by_path(payload: Any, path: str) -> Any:
     return cur
 
 
-def _looks_like_zip_url(url: str) -> bool:
-    return url.lower().split("?", 1)[0].endswith(".zip")
-
-
-def _content_type_is_zip(headers: dict[str, str] | Any) -> bool:
-    if not headers:
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
         return False
-    ct = ""
+    return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
     try:
-        ct = str(headers.get("content-type") or headers.get("Content-Type") or "")
-    except Exception:
-        ct = ""
-    ct = ct.lower()
-    return "zip" in ct or "octet-stream" in ct
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "[mineru_raw] %s=%r is not an integer; using %s", name, raw, default
+        )
+        return default
 
 
-def _detect_mode_override() -> str | None:
-    raw = os.getenv("MINERU_RESULT_MODE", "auto").strip().lower()
-    if raw in {"zip", "flat_json", "single_json"}:
-        return raw
-    return None  # "auto" or unset
+def _strip_trailing_slash(url: str) -> str:
+    return url.rstrip("/")
+
+
+def _validate_base_url(
+    name: str, endpoint: str, forbidden_segments: tuple[str, ...]
+) -> None:
+    parsed = urlparse(endpoint)
+    path = (parsed.path or "").rstrip("/")
+    for segment in forbidden_segments:
+        if path.endswith(segment) or f"{segment}/" in path:
+            raise ValueError(
+                f"{name} must be a base URL, not an API path: {endpoint!r}"
+            )
 
 
 class MinerURawClient:
@@ -97,37 +119,70 @@ class MinerURawClient:
     """
 
     def __init__(self) -> None:
-        self.endpoint = os.getenv("MINERU_ENDPOINT", "").strip()
-        if not self.endpoint:
-            raise ValueError("MINERU_ENDPOINT is required for MinerU parsing")
-        self.poll_url_template = os.getenv(
-            "MINERU_POLL_ENDPOINT",
-            self.endpoint + "/{trace_id}",
+        self.api_mode = (
+            os.getenv("MINERU_API_MODE", DEFAULT_MINERU_API_MODE).strip().lower()
         )
-        self.poll_method = os.getenv("MINERU_POLL_METHOD", "GET").upper()
-        self.id_field = os.getenv("MINERU_ID_FIELD", "trace_id")
-        self.status_field = os.getenv("MINERU_STATUS_FIELD", "status")
-        self.result_url_field = os.getenv("MINERU_RESULT_URL_FIELD", "result_url")
-        self.content_field = os.getenv("MINERU_CONTENT_FIELD", "content")
-        self.file_field = os.getenv("MINERU_FILE_FIELD", "file")
-        self.success_values = {
-            x.strip().lower()
-            for x in os.getenv(
-                "MINERU_SUCCESS_VALUES",
-                "done,success,succeeded,completed,finished",
-            ).split(",")
-            if x.strip()
-        }
-        self.failed_values = {
-            x.strip().lower()
-            for x in os.getenv("MINERU_FAILED_VALUES", "failed,error").split(",")
-            if x.strip()
-        }
+        if self.api_mode not in VALID_MINERU_API_MODES:
+            allowed = ", ".join(sorted(VALID_MINERU_API_MODES))
+            raise ValueError(
+                f"MINERU_API_MODE must be one of {allowed}, got {self.api_mode!r}"
+            )
+
+        self.official_endpoint = _strip_trailing_slash(
+            os.getenv(
+                "MINERU_OFFICIAL_ENDPOINT", DEFAULT_MINERU_OFFICIAL_ENDPOINT
+            ).strip()
+            or DEFAULT_MINERU_OFFICIAL_ENDPOINT
+        )
+        self.local_endpoint = _strip_trailing_slash(
+            os.getenv("MINERU_LOCAL_ENDPOINT", "").strip()
+        )
+        self.api_token = os.getenv("MINERU_API_TOKEN", "").strip()
+        if self.api_mode == "official":
+            if not self.api_token:
+                raise ValueError(
+                    "MINERU_API_TOKEN is required when MINERU_API_MODE=official"
+                )
+            _validate_base_url(
+                "MINERU_OFFICIAL_ENDPOINT",
+                self.official_endpoint,
+                ("/api/v4", "/api/v4/file-urls/batch", "/api/v4/extract/task"),
+            )
+            self.endpoint = self.official_endpoint
+        elif self.api_mode == "local":
+            if not self.local_endpoint:
+                raise ValueError(
+                    "MINERU_LOCAL_ENDPOINT is required when MINERU_API_MODE=local"
+                )
+            _validate_base_url(
+                "MINERU_LOCAL_ENDPOINT",
+                self.local_endpoint,
+                ("/tasks", "/file_parse", "/health"),
+            )
+            self.endpoint = self.local_endpoint
         self.poll_interval = float(os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2"))
         self.max_polls = int(os.getenv("MINERU_MAX_POLLS", "180"))
         self.engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
-        self.image_url_template = os.getenv("MINERU_IMAGE_URL_TEMPLATE", "").strip()
-        self.result_mode = _detect_mode_override()  # None ⇒ auto
+
+        self.model_version = os.getenv("MINERU_MODEL_VERSION", "vlm").strip() or "vlm"
+        self.language = os.getenv("MINERU_LANGUAGE", "ch").strip() or "ch"
+        self.enable_table = _env_bool("MINERU_ENABLE_TABLE", True)
+        self.enable_formula = _env_bool("MINERU_ENABLE_FORMULA", True)
+        self.is_ocr = _env_bool("MINERU_IS_OCR", False)
+        self.page_ranges = os.getenv("MINERU_PAGE_RANGES", "").strip()
+        self.local_backend = (
+            os.getenv("MINERU_LOCAL_BACKEND", "pipeline").strip() or "pipeline"
+        )
+        self.local_parse_method = (
+            os.getenv("MINERU_LOCAL_PARSE_METHOD", "auto").strip() or "auto"
+        )
+        self.local_image_analysis = _env_bool("MINERU_LOCAL_IMAGE_ANALYSIS", True)
+        self.local_start_page_id = _env_int("MINERU_LOCAL_START_PAGE_ID", 0)
+        self.local_end_page_id = _env_int("MINERU_LOCAL_END_PAGE_ID", 99999)
+        if self.api_mode == "local" and self.page_ranges:
+            self.local_start_page_id, self.local_end_page_id = _local_page_bounds(
+                self.page_ranges
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -153,141 +208,201 @@ class MinerURawClient:
 
         timeout = httpx.Timeout(120.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            task_id, poll_payload, embedded_content = await self._upload_and_poll(
-                client, source_file_path
-            )
-
-            result_url = _get_by_path(poll_payload, self.result_url_field)
-            result_url_str = str(result_url) if result_url else ""
-
-            if embedded_content is not None and not result_url_str:
-                # Pre-modern MinerU deployment that returns content_list
-                # directly in the poll payload. No images possible.
-                self._write_content_list(raw_dir, embedded_content)
-            elif result_url_str:
-                await self._download_result(client, result_url_str, raw_dir)
-            else:
-                raise RuntimeError(
-                    f"MinerU returned neither result_url nor embedded content "
-                    f"for task {task_id}"
+            if self.api_mode == "official":
+                task_id = await self._download_official(
+                    client, source_file_path, raw_dir
                 )
+            else:
+                task_id = await self._download_local(client, source_file_path, raw_dir)
 
+        self._normalize_raw_bundle(raw_dir, source_file_path)
         return self._build_and_write_manifest(raw_dir, source_file_path, task_id)
 
     # ------------------------------------------------------------------
     # Upload + poll (mirrors _call_protocol_parse_service)
     # ------------------------------------------------------------------
 
-    async def _upload_and_poll(
+    def _official_headers(self) -> dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_token}",
+        }
+
+    def _official_payload(self, source_file_path: Path) -> dict[str, Any]:
+        file_entry: dict[str, Any] = {"name": source_file_path.name}
+        if self.is_ocr:
+            file_entry["is_ocr"] = True
+        if self.page_ranges:
+            file_entry["page_ranges"] = self.page_ranges
+        return {
+            "files": [file_entry],
+            "model_version": self.model_version,
+            "language": self.language,
+            "enable_table": self.enable_table,
+            "enable_formula": self.enable_formula,
+        }
+
+    async def _download_official(
         self,
         client: "httpx.AsyncClient",
         source_file_path: Path,
-    ) -> tuple[str, dict, Any]:
-        """Returns ``(task_id, last_poll_payload, embedded_content_or_None)``.
-
-        ``embedded_content`` is populated only when the *upload response*
-        directly carries the parsed content (some MinerU dev deployments do
-        this for small inputs).
-        """
-        with source_file_path.open("rb") as f:
-            resp = await client.post(
-                self.endpoint,
-                files={self.file_field: (source_file_path.name, f)},
-            )
-        if resp.status_code >= 400:
-            raise RuntimeError(
-                f"MinerU upload failed: {resp.status_code} {resp.text[:400]}"
-            )
-        upload_payload = resp.json() if resp.text else {}
-
-        task_id_raw = _get_by_path(upload_payload, self.id_field)
-        if not task_id_raw:
-            # Embedded mode on upload; treat as terminal "done" with
-            # embedded content. Manifest will record an empty task_id.
-            embedded = _get_by_path(upload_payload, self.content_field)
-            if embedded is None:
-                raise RuntimeError(
-                    "MinerU upload payload had neither id field "
-                    f"({self.id_field!r}) nor content field "
-                    f"({self.content_field!r})"
-                )
-            return "", upload_payload, embedded
-        task_id = str(task_id_raw)
-
-        poll_url = self.poll_url_template.format(
-            task_id=task_id, trace_id=task_id, id=task_id
+        raw_dir: Path,
+    ) -> str:
+        apply_url = f"{self.official_endpoint}/api/v4/file-urls/batch"
+        resp = await client.post(
+            apply_url,
+            headers=self._official_headers(),
+            json=self._official_payload(source_file_path),
         )
-        poll_params = {"task_id": task_id, "trace_id": task_id, "id": task_id}
+        resp.raise_for_status()
+        payload = resp.json() if resp.text else {}
+        self._raise_if_official_error(payload, "MinerU official upload URL request")
+        data = payload.get("data") if isinstance(payload, dict) else {}
+        batch_id = str((data or {}).get("batch_id") or "")
+        file_urls = (data or {}).get("file_urls") or []
+        if not batch_id or not isinstance(file_urls, list) or not file_urls:
+            raise RuntimeError(
+                f"MinerU official upload URL response missing batch_id/file_urls: "
+                f"{payload}"
+            )
 
-        for _ in range(self.max_polls):
-            await asyncio.sleep(self.poll_interval)
-            if self.poll_method == "POST":
-                poll_resp = await client.post(poll_url, json=poll_params)
-            else:
-                poll_resp = await client.get(poll_url, params=poll_params)
-            poll_payload = poll_resp.json() if poll_resp.text else {}
-            status_raw = _get_by_path(poll_payload, self.status_field)
-            status_val = str(status_raw).lower() if status_raw is not None else ""
-            if status_val in self.success_values:
-                # Some MinerU deployments embed the content_list in the
-                # poll payload itself rather than at result_url. Forward
-                # both to the caller; download_into prefers result_url
-                # when present.
-                embedded = _get_by_path(poll_payload, self.content_field)
-                return task_id, poll_payload, embedded
-            if status_val in self.failed_values:
-                raise RuntimeError(
-                    f"MinerU parse failed for task {task_id}: {poll_payload}"
-                )
+        first_file_url = file_urls[0]
+        if isinstance(first_file_url, dict):
+            upload_url = str(
+                first_file_url.get("url") or first_file_url.get("file_url") or ""
+            )
+        else:
+            upload_url = str(first_file_url)
+        if not upload_url:
+            raise RuntimeError(
+                f"MinerU official upload URL response had an empty upload URL: "
+                f"{payload}"
+            )
+        with source_file_path.open("rb") as f:
+            upload_resp = await client.put(upload_url, data=f)
+        upload_resp.raise_for_status()
 
-        raise TimeoutError(f"MinerU parse polling timeout for task: {task_id}")
+        result_url = await self._poll_official_batch(client, batch_id, source_file_path)
+        await self._download_zip(client, result_url, raw_dir)
+        return batch_id
 
-    # ------------------------------------------------------------------
-    # Result download
-    # ------------------------------------------------------------------
-
-    async def _download_result(
+    async def _poll_official_batch(
         self,
         client: "httpx.AsyncClient",
-        result_url: str,
+        batch_id: str,
+        source_file_path: Path,
+    ) -> str:
+        poll_url = f"{self.official_endpoint}/api/v4/extract-results/batch/{batch_id}"
+        for _ in range(self.max_polls):
+            await asyncio.sleep(self.poll_interval)
+            resp = await client.get(poll_url, headers=self._official_headers())
+            resp.raise_for_status()
+            payload = resp.json() if resp.text else {}
+            self._raise_if_official_error(payload, "MinerU official batch poll")
+            results = _get_by_path(payload, "data.extract_result")
+            if isinstance(results, dict):
+                results = [results]
+            if not isinstance(results, list):
+                continue
+
+            selected = _select_official_extract_result(results, source_file_path.name)
+            if selected is None:
+                continue
+            state = str(selected.get("state") or "").lower()
+            if state in OFFICIAL_DONE_STATES:
+                full_zip_url = str(selected.get("full_zip_url") or "")
+                if not full_zip_url:
+                    raise RuntimeError(
+                        f"MinerU official batch {batch_id} is done but has no "
+                        f"full_zip_url: {selected}"
+                    )
+                return full_zip_url
+            if state in OFFICIAL_FAILED_STATES:
+                err = selected.get("err_msg") or selected.get("error") or selected
+                raise RuntimeError(
+                    f"MinerU official parse failed for batch {batch_id}: {err}"
+                )
+
+        raise TimeoutError(f"MinerU official batch polling timeout: {batch_id}")
+
+    def _raise_if_official_error(self, payload: Any, operation: str) -> None:
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{operation} returned non-object payload: {payload!r}")
+        code = payload.get("code", 0)
+        if code not in (0, "0", None):
+            raise RuntimeError(
+                f"{operation} failed: code={code} msg={payload.get('msg')!r}"
+            )
+
+    def _local_form_data(self) -> dict[str, str]:
+        return {
+            "lang_list": self.language,
+            "backend": self.local_backend,
+            "parse_method": self.local_parse_method,
+            "formula_enable": _bool_form(self.enable_formula),
+            "table_enable": _bool_form(self.enable_table),
+            "image_analysis": _bool_form(self.local_image_analysis),
+            "return_md": "true",
+            "return_middle_json": "true",
+            "return_model_output": "true",
+            "return_content_list": "true",
+            "return_images": "true",
+            "response_format_zip": "true",
+            "return_original_file": "true",
+            "start_page_id": str(self.local_start_page_id),
+            "end_page_id": str(self.local_end_page_id),
+        }
+
+    async def _download_local(
+        self,
+        client: "httpx.AsyncClient",
+        source_file_path: Path,
         raw_dir: Path,
-    ) -> None:
-        """Fetch ``result_url`` and lay out its contents inside ``raw_dir``."""
-        mode = self.result_mode or self._auto_detect_mode_pre(result_url)
-
-        if mode == "zip":
-            await self._download_zip(client, result_url, raw_dir)
-            return
-
-        # JSON path (flat_json / single_json indistinguishable until parsed)
-        resp = await client.get(result_url)
+    ) -> str:
+        submit_url = f"{self.local_endpoint}/tasks"
+        with source_file_path.open("rb") as f:
+            resp = await client.post(
+                submit_url,
+                files={"files": (source_file_path.name, f)},
+                data=self._local_form_data(),
+            )
         resp.raise_for_status()
-        text = resp.text
+        payload = resp.json() if resp.text else {}
+        task_id = str(payload.get("task_id") or "")
+        if not task_id:
+            raise RuntimeError(
+                f"MinerU local /tasks response missing task_id: {payload}"
+            )
 
-        if self.result_mode is None and _content_type_is_zip(resp.headers):
-            # Detected as zip after fetch; re-download as bytes.
-            await self._download_zip(client, result_url, raw_dir, resp=resp)
-            return
-
-        # Try to extract content_list from JSON (envelope-aware via
-        # MINERU_CONTENT_FIELD).
-        content_list = self._extract_content_list(text)
-        if content_list is None:
-            # As a last resort, save the raw text as content_list.json.
-            # Adapter will fail gracefully if it isn't a content_list.
-            (raw_dir / CONTENT_LIST_FILENAME).write_text(text, encoding="utf-8")
-            return
-
-        self._write_content_list(raw_dir, content_list)
-        await self._fetch_image_assets(
-            client, content_list, base_url=result_url, raw_dir=raw_dir
+        await self._poll_local_task(client, task_id)
+        await self._download_zip(
+            client,
+            f"{self.local_endpoint}/tasks/{task_id}/result",
+            raw_dir,
         )
+        return task_id
 
-    def _auto_detect_mode_pre(self, result_url: str) -> str:
-        """Pre-fetch mode hint from URL alone."""
-        if _looks_like_zip_url(result_url):
-            return "zip"
-        return "flat_json"  # final decision deferred to response headers
+    async def _poll_local_task(
+        self,
+        client: "httpx.AsyncClient",
+        task_id: str,
+    ) -> None:
+        poll_url = f"{self.local_endpoint}/tasks/{task_id}"
+        for _ in range(self.max_polls):
+            await asyncio.sleep(self.poll_interval)
+            resp = await client.get(poll_url)
+            resp.raise_for_status()
+            payload = resp.json() if resp.text else {}
+            status = str(payload.get("status") or "").lower()
+            if status in LOCAL_DONE_STATES:
+                return
+            if status in LOCAL_FAILED_STATES:
+                err = payload.get("error") or payload.get("message") or payload
+                raise RuntimeError(
+                    f"MinerU local parse failed for task {task_id}: {err}"
+                )
+
+        raise TimeoutError(f"MinerU local task polling timeout: {task_id}")
 
     async def _download_zip(
         self,
@@ -326,98 +441,52 @@ class MinerURawClient:
         except OSError:
             pass
 
-    def _extract_content_list(self, text: str) -> list[dict] | None:
-        """Decode ``text`` and dig out the content_list array."""
-        if not text:
-            return None
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            return None
-        return _find_content_list(payload, self.content_field)
+    def _normalize_raw_bundle(self, raw_dir: Path, source_file_path: Path) -> None:
+        """Ensure a downloaded bundle has root-level ``content_list.json``.
 
-    def _write_content_list(
-        self,
-        raw_dir: Path,
-        content_list: Any,
-    ) -> None:
-        (raw_dir / CONTENT_LIST_FILENAME).write_text(
-            json.dumps(content_list, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        Official and local MinerU zip archives commonly place parser outputs at
+        ``<doc>/<parse_method>/<doc>_content_list.json``. The adapter consumes a
+        canonical root ``content_list.json`` plus optional root ``images/``.
 
-    async def _fetch_image_assets(
-        self,
-        client: "httpx.AsyncClient",
-        content_list: list[dict],
-        *,
-        base_url: str,
-        raw_dir: Path,
-    ) -> None:
-        """Download every ``img_path`` referenced by image / table items.
-
-        Resolution rules:
-
-        - Absolute http(s) URL → fetched as-is.
-        - Relative path → resolved against ``base_url`` (the result_url) or
-          ``MINERU_IMAGE_URL_TEMPLATE`` if set.
-
-        Missing images are logged but do not abort the parse — the
-        sidecar's drawing item will still exist but its asset will be
-        flagged via the adapter.
+        After hoisting we delete the nested originals so the manifest does not
+        bookkeep two copies (and disk usage doesn't double for big bundles).
+        Sibling artifacts of the parse subdir (``*.md``, ``middle.json`` etc.)
+        are also hoisted to ``raw_dir`` root for easier diagnostics.
         """
-        img_refs: set[str] = set()
-        for item in content_list:
-            if not isinstance(item, dict):
+        if (raw_dir / CONTENT_LIST_FILENAME).is_file():
+            return
+
+        candidate = _select_content_list_candidate(raw_dir, source_file_path)
+        if candidate is None:
+            return
+
+        source_dir = candidate.parent
+        target_root = raw_dir.resolve()
+        # Guard: never hoist from above raw_dir (defensive — candidate already
+        # comes from rglob inside raw_dir, but cheap to verify).
+        try:
+            source_dir.resolve().relative_to(target_root)
+        except ValueError:
+            shutil.copy2(candidate, raw_dir / CONTENT_LIST_FILENAME)
+            return
+
+        # Move the critical file first; then hoist sibling files/dirs that
+        # don't already exist at raw_dir root.
+        shutil.move(str(candidate), str(raw_dir / CONTENT_LIST_FILENAME))
+        for entry in list(source_dir.iterdir()):
+            target = raw_dir / entry.name
+            if target.exists():
                 continue
-            for key in ("img_path", "image", "image_path"):
-                val = item.get(key)
-                if isinstance(val, str) and val.strip():
-                    img_refs.add(val.strip())
+            shutil.move(str(entry), str(target))
 
-        for ref in sorted(img_refs):
+        # Best-effort cleanup of the now-empty parse subtree.
+        cursor = source_dir
+        while cursor != raw_dir and cursor.is_dir():
             try:
-                await self._fetch_one_image(client, ref, base_url, raw_dir)
-            except Exception as e:  # pragma: no cover - tolerate per-image
-                logger.warning("[mineru_raw] image fetch failed for %s: %s", ref, e)
-
-    async def _fetch_one_image(
-        self,
-        client: "httpx.AsyncClient",
-        ref: str,
-        base_url: str,
-        raw_dir: Path,
-    ) -> None:
-        if ref.startswith(("http://", "https://")):
-            url = ref
-            target_rel = self._image_dest_rel(ref)
-        elif self.image_url_template:
-            url = self.image_url_template.format(name=ref, path=ref)
-            target_rel = self._image_dest_rel(ref)
-        else:
-            url = urljoin(base_url, ref)
-            target_rel = ref
-        # Hash-safe: refuse path traversal.
-        norm = os.path.normpath(target_rel)
-        if norm.startswith("..") or os.path.isabs(norm):
-            logger.warning("[mineru_raw] refusing unsafe image path: %s", ref)
-            return
-
-        target = raw_dir / norm
-        if target.exists():
-            return
-        target.parent.mkdir(parents=True, exist_ok=True)
-
-        resp = await client.get(url)
-        resp.raise_for_status()
-        target.write_bytes(resp.content)
-
-    def _image_dest_rel(self, ref: str) -> str:
-        """Map an absolute / templated URL back to a deterministic relative
-        path inside ``raw_dir``. Default: ``images/<basename>``."""
-        parsed = urlparse(ref)
-        name = Path(parsed.path).name or "image"
-        return f"images/{name}"
+                cursor.rmdir()
+            except OSError:
+                break
+            cursor = cursor.parent
 
     # ------------------------------------------------------------------
     # Manifest construction
@@ -467,6 +536,7 @@ class MinerURawClient:
             files=others,
             total_size_bytes=total,
             task_id=task_id,
+            api_mode=self.api_mode,
             engine_version=self.engine_version,
             endpoint_signature=self.endpoint,
             downloaded_at=datetime.now(timezone.utc).isoformat(),
@@ -480,8 +550,7 @@ def _find_content_list(payload: Any, content_field: str) -> list[dict] | None:
 
     Tries (in order):
 
-    1. The configured ``MINERU_CONTENT_FIELD`` dotted path if it lands on a
-       list of dicts.
+    1. The provided dotted path if it lands on a list of dicts.
     2. Direct ``content_list`` / ``content`` / ``items`` / ``result`` keys.
     3. Recursive descent.
     """
@@ -508,6 +577,102 @@ def _find_content_list(payload: Any, content_field: str) -> list[dict] | None:
         if candidate is not None:
             return candidate
     return None
+
+
+def _bool_form(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _local_page_bounds(page_ranges: str) -> tuple[int, int]:
+    raw = page_ranges.strip()
+    if not raw:
+        return 0, 99999
+    if "," in raw:
+        raise ValueError(
+            "MINERU_PAGE_RANGES with MINERU_API_MODE=local supports only a "
+            "single page or simple range such as '1-10'"
+        )
+    if raw.isdigit():
+        page = max(int(raw), 1)
+        return page - 1, page - 1
+    if "-" in raw:
+        left, _, right = raw.partition("-")
+        if left.isdigit() and right.isdigit():
+            start = max(int(left), 1)
+            end = max(int(right), start)
+            return start - 1, end - 1
+    raise ValueError(
+        "MINERU_PAGE_RANGES with MINERU_API_MODE=local must be a single "
+        "positive page number or simple range such as '1-10'"
+    )
+
+
+def _select_official_extract_result(
+    results: list[Any],
+    source_filename: str,
+) -> dict[str, Any] | None:
+    """Pick the extract_result entry that matches the file we uploaded.
+
+    Invariant: :meth:`MinerURawClient._download_official` always submits a
+    single-file batch, so a non-matching ``file_name`` from the API would
+    indicate either a server response we don't understand or a future
+    multi-file extension. We fall back to ``dict_results[0]`` to remain
+    forward-compatible but log a warning so the mismatch is visible.
+    """
+    dict_results = [item for item in results if isinstance(item, dict)]
+    if not dict_results:
+        return None
+    source_name = Path(source_filename).name
+    source_stem = Path(source_filename).stem
+    for item in dict_results:
+        file_name = str(item.get("file_name") or item.get("name") or "")
+        if Path(file_name).name == source_name or Path(file_name).stem == source_stem:
+            return item
+    logger.warning(
+        "[mineru_raw] official extract_result did not contain a match for "
+        "%r; falling back to the first entry (%r). This is unexpected for "
+        "a single-file batch.",
+        source_name,
+        str(dict_results[0].get("file_name") or dict_results[0].get("name") or ""),
+    )
+    return dict_results[0]
+
+
+def _select_content_list_candidate(
+    raw_dir: Path,
+    source_file_path: Path,
+) -> Path | None:
+    source_stem = source_file_path.stem
+    candidates: list[tuple[int, int, str, Path]] = []
+    for path in raw_dir.rglob("*.json"):
+        if not path.is_file():
+            continue
+        if path.name != CONTENT_LIST_FILENAME and not path.name.endswith(
+            "_content_list.json"
+        ):
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        content_list = _find_content_list(payload, "content")
+        if content_list is None:
+            continue
+
+        score = 10
+        if path.name == CONTENT_LIST_FILENAME:
+            score = 0
+        elif path.name == f"{source_stem}_content_list.json":
+            score = 1
+        elif path.stem.endswith("_content_list"):
+            score = 2
+        depth = len(path.relative_to(raw_dir).parts)
+        candidates.append((score, depth, path.as_posix(), path))
+
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][3]
 
 
 __all__ = ["MinerURawClient", "CONTENT_LIST_FILENAME"]

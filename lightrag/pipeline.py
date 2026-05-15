@@ -2372,9 +2372,6 @@ class _PipelineMixin:
         from lightrag.parser_adapters import MinerUAdapter
         from lightrag.sidecar import write_sidecar
 
-        if not os.getenv("MINERU_ENDPOINT", "").strip():
-            raise ValueError("MINERU_ENDPOINT is required for MinerU parsing")
-
         source_file_path = Path(
             self._resolve_source_file_for_parser(
                 str(content_data.get("source_path") or file_path)
@@ -2399,6 +2396,10 @@ class _PipelineMixin:
         }
 
         if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
+            # Cache hit: keep the path purely local so a re-parse still
+            # succeeds if MinerU credentials/endpoint are temporarily
+            # unavailable (key rotation, debugging, etc.). Network config
+            # is only required on cache miss below.
             logger.info(
                 "[parse_mineru] raw cache hit doc_id=%s raw_dir=%s",
                 doc_id,

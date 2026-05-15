@@ -62,9 +62,7 @@ class MinerUAdapter:
         # Mirror MinerURawClient.__init__: when this is set, the downloader
         # stores ALL referenced images (including relative ones) under
         # ``images/<basename>``. The adapter has to look in the same place.
-        self.image_url_template = os.getenv(
-            "MINERU_IMAGE_URL_TEMPLATE", ""
-        ).strip()
+        self.image_url_template = os.getenv("MINERU_IMAGE_URL_TEMPLATE", "").strip()
         self.bbox_attributes = self._load_bbox_attributes_env()
 
     def _load_bbox_attributes_env(self) -> dict[str, Any]:

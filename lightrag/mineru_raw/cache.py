@@ -9,14 +9,16 @@ Validation policy (settled in design discussion; see
 3. **Source content_hash**: full sha256 of the current source file matches
    manifest. The size+hash pair is computed by a single-read helper so the
    stored manifest is internally self-consistent.
-4. **Engine version**: if ``MINERU_ENGINE_VERSION`` is set and the manifest
+4. **API mode**: if the manifest recorded ``api_mode`` and it differs from
+   current ``MINERU_API_MODE``, miss.
+5. **Engine version**: if ``MINERU_ENGINE_VERSION`` is set and the manifest
    recorded a non-empty one, they must match.
-5. **Endpoint signature**: if ``MINERU_ENDPOINT`` is set and the manifest
-   recorded a non-empty one, they must match.
-6. **Critical file**: ``content_list.json`` must exist with matching size
+6. **Endpoint signature**: if the active MinerU endpoint is set and the
+   manifest recorded a non-empty one, they must match.
+7. **Critical file**: ``content_list.json`` must exist with matching size
    **and** sha256 — sha256 here is the final tie-breaker against silent
    corruption affecting the file the adapter depends on.
-7. **Other files**: size-only verification (cheap; covers most corruption
+8. **Other files**: size-only verification (cheap; covers most corruption
    modes for image / middle.json / layout.pdf).
 
 Any failed step ⇒ cache miss; the caller wipes the directory contents
@@ -32,6 +34,8 @@ from pathlib import Path
 from lightrag.mineru_raw.manifest import load_manifest
 
 MINERU_RAW_DIR_SUFFIX = ".mineru_raw"
+DEFAULT_MINERU_API_MODE = "local"
+DEFAULT_MINERU_OFFICIAL_ENDPOINT = "https://mineru.net"
 
 
 def raw_dir_for_parsed_dir(parsed_dir: Path) -> Path:
@@ -83,6 +87,24 @@ def compute_size_and_hash(path: Path) -> tuple[int, str]:
     return size, f"sha256:{h.hexdigest()}"
 
 
+def _current_api_mode() -> str:
+    mode = os.getenv("MINERU_API_MODE", DEFAULT_MINERU_API_MODE).strip().lower()
+    return mode if mode in {"official", "local"} else DEFAULT_MINERU_API_MODE
+
+
+def _current_endpoint_signature() -> str:
+    mode = _current_api_mode()
+    if mode == "official":
+        return (
+            os.getenv("MINERU_OFFICIAL_ENDPOINT", DEFAULT_MINERU_OFFICIAL_ENDPOINT)
+            .strip()
+            .rstrip("/")
+        )
+    if mode == "local":
+        return os.getenv("MINERU_LOCAL_ENDPOINT", "").strip().rstrip("/")
+    return ""
+
+
 def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     """Return True iff the bundle is intact and matches the current source.
 
@@ -111,7 +133,12 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     if cur_hash != manifest.source_content_hash:
         return False
 
-    # 3. Engine version (only when current env exposes one AND manifest had one)
+    # 3. API mode (only when manifest had one; old manifests remain compatible)
+    cur_api_mode = _current_api_mode()
+    if manifest.api_mode and cur_api_mode != manifest.api_mode:
+        return False
+
+    # 4. Engine version (only when current env exposes one AND manifest had one)
     cur_engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
     if (
         cur_engine_version
@@ -120,8 +147,8 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     ):
         return False
 
-    # 4. Endpoint signature
-    cur_endpoint = os.getenv("MINERU_ENDPOINT", "").strip()
+    # 5. Endpoint signature
+    cur_endpoint = _current_endpoint_signature()
     if (
         cur_endpoint
         and manifest.endpoint_signature
@@ -129,7 +156,7 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     ):
         return False
 
-    # 5. Critical file: size + sha256
+    # 6. Critical file: size + sha256
     crit = manifest.critical_file
     crit_path = raw_dir / crit.path
     try:
@@ -142,7 +169,7 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
         if crit_actual != crit.sha256:
             return False
 
-    # 6. Other files: size only
+    # 7. Other files: size only
     for entry in manifest.files:
         ep = raw_dir / entry.path
         try:

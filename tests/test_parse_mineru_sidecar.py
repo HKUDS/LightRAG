@@ -140,7 +140,7 @@ def test_parse_mineru_emits_compliant_sidecar(
     blocks.jsonl + per-modality JSONs + assets dir; *.mineru_raw/ kept."""
 
     async def _run() -> None:
-        monkeypatch.setenv("MINERU_ENDPOINT", "http://mineru.example/api/v1/task")
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://mineru.example")
         counters = _install_fake_download(monkeypatch)
 
         # Don't move the source out from under the cache validator between
@@ -267,7 +267,7 @@ def test_parse_mineru_cache_hit_skips_download(
     """A pre-existing valid bundle short-circuits the network call entirely."""
 
     async def _run() -> None:
-        monkeypatch.setenv("MINERU_ENDPOINT", "http://mineru.example/api/v1/task")
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://mineru.example")
         counters = _install_fake_download(monkeypatch)
 
         # Don't move the source out from under the cache validator between
@@ -353,7 +353,7 @@ def test_parse_mineru_cache_invalidates_on_source_change(
     """Source file content swapped (same/different size) → cache miss."""
 
     async def _run() -> None:
-        monkeypatch.setenv("MINERU_ENDPOINT", "http://mineru.example/api/v1/task")
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://mineru.example")
         counters = _install_fake_download(monkeypatch)
 
         # Don't move the source out from under the cache validator between

@@ -51,6 +51,7 @@ class Manifest:
     files: list[ManifestFile]  # other files; size only
     total_size_bytes: int
     task_id: str = ""
+    api_mode: str = ""
     engine_version: str = ""
     endpoint_signature: str = ""
     downloaded_at: str = ""
@@ -61,6 +62,7 @@ class Manifest:
         return {
             "version": self.version,
             "engine": self.engine,
+            "api_mode": self.api_mode,
             "engine_version": self.engine_version,
             "endpoint_signature": self.endpoint_signature,
             "source_content_hash": self.source_content_hash,
@@ -80,6 +82,7 @@ class Manifest:
         return cls(
             version=str(payload.get("version") or MANIFEST_VERSION),
             engine=str(payload.get("engine") or MANIFEST_ENGINE),
+            api_mode=str(payload.get("api_mode") or ""),
             engine_version=str(payload.get("engine_version") or ""),
             endpoint_signature=str(payload.get("endpoint_signature") or ""),
             source_content_hash=str(payload.get("source_content_hash") or ""),

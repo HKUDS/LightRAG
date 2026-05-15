@@ -93,7 +93,7 @@ def test_parse_engine_routing_by_filename_and_env(monkeypatch):
         resolve_stored_document_parser_engine("a.[docling-iet].docx", {}) == "docling"
     )
 
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru-iet,*:native")
     assert resolve_stored_document_parser_engine("paper.pdf", {}) == "mineru"
     assert (
@@ -112,7 +112,7 @@ def test_parse_engine_rule_fallback_and_default_legacy(monkeypatch):
     assert resolve_stored_document_parser_engine("slides.pptx", {}) == "legacy"
 
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
-    monkeypatch.setenv("MINERU_ENDPOINT", "")
+    monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
     assert resolve_stored_document_parser_engine("slides.pptx", {}) == "legacy"
 
 
@@ -227,7 +227,7 @@ def test_validate_process_options_rejects_invalid_combos():
 
 @pytest.mark.offline
 def test_lightrag_parser_rule_supports_options_suffix(monkeypatch):
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
     # Valid options suffix passes validation.
     validate_parser_routing_config("docx:native-iet,*:legacy")
@@ -244,7 +244,7 @@ def test_lightrag_parser_rule_supports_options_suffix(monkeypatch):
 def test_resolve_file_parser_directives_priority(monkeypatch):
     from lightrag.parser_routing import resolve_file_parser_directives
 
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native-iet,*:legacy")
 
     # Filename hint takes precedence for engine and options.
@@ -1870,7 +1870,7 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
 
 @pytest.mark.offline
 def test_parser_routing_accepts_semicolon_rules(monkeypatch):
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
 
     rules = "*:mineru;html:docling"
@@ -1882,21 +1882,40 @@ def test_parser_routing_accepts_semicolon_rules(monkeypatch):
 
 @pytest.mark.offline
 def test_parser_routing_validation_requires_external_endpoints(monkeypatch):
-    monkeypatch.delenv("MINERU_ENDPOINT", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
     monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
 
-    with pytest.raises(ParserRoutingConfigError, match="MINERU_ENDPOINT"):
+    with pytest.raises(ParserRoutingConfigError, match="MINERU_LOCAL_ENDPOINT"):
         validate_parser_routing_config("*:mineru;html:docling")
 
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
     with pytest.raises(ParserRoutingConfigError, match="DOCLING_ENDPOINT"):
         validate_parser_routing_config("*:mineru;html:docling")
 
 
 @pytest.mark.offline
+def test_parser_routing_validation_honors_mineru_api_mode(monkeypatch):
+    monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
+
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+    monkeypatch.delenv("MINERU_API_TOKEN", raising=False)
+    with pytest.raises(ParserRoutingConfigError, match="MINERU_API_TOKEN"):
+        validate_parser_routing_config("pdf:mineru")
+    monkeypatch.setenv("MINERU_API_TOKEN", "token")
+    validate_parser_routing_config("pdf:mineru")
+
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
+    with pytest.raises(ParserRoutingConfigError, match="MINERU_LOCAL_ENDPOINT"):
+        validate_parser_routing_config("pdf:mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-local")
+    validate_parser_routing_config("pdf:mineru")
+
+
+@pytest.mark.offline
 def test_parser_routing_validation_rejects_invalid_rules(monkeypatch):
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
     with pytest.raises(ParserRoutingConfigError, match=r"\*\.pdf"):
         validate_parser_routing_config("*.pdf:mineru")
@@ -2546,7 +2565,7 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
             return manifest
 
         monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
-        monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
         parsed = await rag.parse_mineru(
             doc_id="doc-1",
@@ -2859,7 +2878,7 @@ def test_parse_mineru_empty_service_result_raises_without_fallback(
             raw_dir.mkdir(parents=True, exist_ok=True)
 
         monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
-        monkeypatch.setenv("MINERU_ENDPOINT", "http://fake")
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake")
 
         with pytest.raises(FileNotFoundError, match="content_list.json"):
             await rag.parse_mineru(

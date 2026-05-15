@@ -198,6 +198,21 @@ def test_engine_version_skip_when_either_side_blank(
 
 
 @pytest.mark.offline
+def test_invalid_when_api_mode_mismatch(
+    fresh_bundle: tuple[Path, Manifest],
+    source_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw, _ = fresh_bundle
+    payload = json.loads((raw / "_manifest.json").read_text())
+    payload["api_mode"] = "local"
+    (raw / "_manifest.json").write_text(json.dumps(payload))
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+    monkeypatch.setenv("MINERU_API_TOKEN", "token")
+    assert is_bundle_valid(raw, source_file) is False
+
+
+@pytest.mark.offline
 def test_invalid_when_endpoint_signature_mismatch(
     fresh_bundle: tuple[Path, Manifest],
     source_file: Path,
@@ -205,10 +220,44 @@ def test_invalid_when_endpoint_signature_mismatch(
 ) -> None:
     raw, _ = fresh_bundle
     payload = json.loads((raw / "_manifest.json").read_text())
-    payload["endpoint_signature"] = "http://old.example/api"
+    payload["api_mode"] = "local"
+    payload["endpoint_signature"] = "http://old.example"
     (raw / "_manifest.json").write_text(json.dumps(payload))
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://new.example/api")
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://new.example")
     assert is_bundle_valid(raw, source_file) is False
+
+
+@pytest.mark.offline
+def test_endpoint_signature_uses_mode_specific_endpoint(
+    fresh_bundle: tuple[Path, Manifest],
+    source_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw, _ = fresh_bundle
+    payload = json.loads((raw / "_manifest.json").read_text())
+    payload["api_mode"] = "local"
+    payload["endpoint_signature"] = "http://old.example"
+    (raw / "_manifest.json").write_text(json.dumps(payload))
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://new.example")
+    assert is_bundle_valid(raw, source_file) is False
+
+
+@pytest.mark.offline
+def test_endpoint_signature_ignores_trailing_slash(
+    fresh_bundle: tuple[Path, Manifest],
+    source_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw, _ = fresh_bundle
+    payload = json.loads((raw / "_manifest.json").read_text())
+    payload["api_mode"] = "local"
+    payload["endpoint_signature"] = "http://old.example"
+    (raw / "_manifest.json").write_text(json.dumps(payload))
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://old.example/")
+    assert is_bundle_valid(raw, source_file) is True
 
 
 @pytest.mark.offline
