@@ -59,6 +59,12 @@ class MinerUAdapter:
 
     def __init__(self) -> None:
         self.engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
+        # Mirror MinerURawClient.__init__: when this is set, the downloader
+        # stores ALL referenced images (including relative ones) under
+        # ``images/<basename>``. The adapter has to look in the same place.
+        self.image_url_template = os.getenv(
+            "MINERU_IMAGE_URL_TEMPLATE", ""
+        ).strip()
         self.bbox_attributes = self._load_bbox_attributes_env()
 
     def _load_bbox_attributes_env(self) -> dict[str, Any]:
@@ -420,7 +426,11 @@ class MinerUAdapter:
                 # downloaded zip), so we go through a safe resolver that
                 # refuses to escape ``raw_dir`` and mirrors the downloader's
                 # storage layout for absolute-URL / templated references.
-                local_path = _safe_local_asset_path(raw_dir, img_path)
+                local_path = _safe_local_asset_path(
+                    raw_dir,
+                    img_path,
+                    image_url_template=self.image_url_template,
+                )
                 suggested_name = _suggested_asset_name(img_path, fmt, len(seen))
                 asset = AssetSpec(
                     ref=ref,
@@ -525,18 +535,26 @@ def _extract_position(item: dict) -> IRPosition | None:
     return IRPosition(type="bbox", anchor=anchor, range=coords)
 
 
-def _safe_local_asset_path(raw_dir: Path, img_path: str) -> Path | None:
+def _safe_local_asset_path(
+    raw_dir: Path,
+    img_path: str,
+    *,
+    image_url_template: str = "",
+) -> Path | None:
     """Resolve ``img_path`` to a concrete file location inside ``raw_dir``.
 
     ``img_path`` comes from MinerU's ``content_list.json`` and is therefore
-    untrusted. This resolver:
+    untrusted. This resolver mirrors :meth:`MinerURawClient._fetch_one_image`
+    storage rules so the adapter always looks where the downloader wrote
+    the file:
 
-    - mirrors :meth:`MinerURawClient._image_dest_rel` for absolute http(s)
-      URLs and absolute filesystem paths: the downloader saves them under
-      ``images/<basename>`` inside ``raw_dir`` (``MINERU_IMAGE_URL_TEMPLATE``
-      uses the same destination), so we look there too;
-    - for relative paths, refuses any ``..`` traversal or absolute segment
-      and verifies the resolved path stays under ``raw_dir``.
+    - absolute http(s) URLs and absolute filesystem paths
+      → ``raw_dir/images/<basename>``;
+    - any ref when ``MINERU_IMAGE_URL_TEMPLATE`` is configured (the
+      downloader routes ALL refs — including relative ones — through
+      :meth:`_image_dest_rel`) → ``raw_dir/images/<basename>``;
+    - otherwise relative paths resolve under ``raw_dir`` with ``..``
+      traversal refused and a final ``Path.relative_to`` check.
 
     Returns ``None`` when the candidate is unsafe or cannot be expressed
     inside ``raw_dir``. The caller treats ``None`` the same as "file missing"
@@ -552,6 +570,12 @@ def _safe_local_asset_path(raw_dir: Path, img_path: str) -> Path | None:
     if os.path.isabs(img_path):
         # Absolute filesystem path in img_path is never trusted to point
         # outside raw_dir; mirror the downloader's basename rule.
+        name = Path(img_path).name
+        return raw_dir / "images" / name if name else None
+
+    if image_url_template:
+        # Templated mode: downloader stored every ref (incl. relative) at
+        # images/<basename>, so we must look there too.
         name = Path(img_path).name
         return raw_dir / "images" / name if name else None
 

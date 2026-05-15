@@ -269,3 +269,56 @@ def test_adapter_absolute_url_img_path_resolves_to_images_basename(
     assert asset.suggested_name == "figure_42.png"
     assert asset.source is not None
     assert asset.source.read_bytes() == b"\x89PNGfake"
+
+
+@pytest.mark.offline
+def test_adapter_image_url_template_mode_maps_relative_to_images_basename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When MINERU_IMAGE_URL_TEMPLATE is set, MinerURawClient stores every
+    image reference — including relative ones — at ``images/<basename>``.
+    The adapter must mirror that lookup so the asset is wired up, otherwise
+    the downloaded bytes are silently dropped from the sidecar."""
+    monkeypatch.setenv(
+        "MINERU_IMAGE_URL_TEMPLATE",
+        "http://mineru.internal/assets/{name}",
+    )
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "image", "img_path": "page/img.png"},
+        ],
+    )
+    # Downloader's actual landing spot in template mode.
+    (raw / "images").mkdir()
+    (raw / "images" / "img.png").write_bytes(b"\x89PNGtemplate")
+    # The "naive" location (raw_dir/page/img.png) does NOT exist; in
+    # template mode the downloader does not write there.
+    assert not (raw / "page" / "img.png").exists()
+
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="t.pdf")
+    asset = ir.assets[0]
+    assert asset.source is not None
+    assert asset.source.read_bytes() == b"\x89PNGtemplate"
+
+
+@pytest.mark.offline
+def test_adapter_no_template_keeps_relative_path_lookup(
+    tmp_path: Path,
+) -> None:
+    """Sanity: without MINERU_IMAGE_URL_TEMPLATE, a relative img_path still
+    resolves under raw_dir at its original location (regression guard for
+    the template-mode change above)."""
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "image", "img_path": "page/img.png"},
+        ],
+    )
+    (raw / "page").mkdir()
+    (raw / "page" / "img.png").write_bytes(b"\x89PNGrel")
+
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="r.pdf")
+    asset = ir.assets[0]
+    assert asset.source is not None
+    assert asset.source.read_bytes() == b"\x89PNGrel"
