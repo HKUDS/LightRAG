@@ -93,7 +93,7 @@ def test_parse_engine_routing_by_filename_and_env(monkeypatch):
         resolve_stored_document_parser_engine("a.[docling-iet].docx", {}) == "docling"
     )
 
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru-iet,*:native")
     assert resolve_stored_document_parser_engine("paper.pdf", {}) == "mineru"
     assert (
@@ -112,7 +112,7 @@ def test_parse_engine_rule_fallback_and_default_legacy(monkeypatch):
     assert resolve_stored_document_parser_engine("slides.pptx", {}) == "legacy"
 
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
-    monkeypatch.setenv("MINERU_ENDPOINT", "")
+    monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
     assert resolve_stored_document_parser_engine("slides.pptx", {}) == "legacy"
 
 
@@ -227,7 +227,7 @@ def test_validate_process_options_rejects_invalid_combos():
 
 @pytest.mark.offline
 def test_lightrag_parser_rule_supports_options_suffix(monkeypatch):
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
     # Valid options suffix passes validation.
     validate_parser_routing_config("docx:native-iet,*:legacy")
@@ -244,7 +244,7 @@ def test_lightrag_parser_rule_supports_options_suffix(monkeypatch):
 def test_resolve_file_parser_directives_priority(monkeypatch):
     from lightrag.parser_routing import resolve_file_parser_directives
 
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native-iet,*:legacy")
 
     # Filename hint takes precedence for engine and options.
@@ -1870,7 +1870,7 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
 
 @pytest.mark.offline
 def test_parser_routing_accepts_semicolon_rules(monkeypatch):
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
 
     rules = "*:mineru;html:docling"
@@ -1882,21 +1882,40 @@ def test_parser_routing_accepts_semicolon_rules(monkeypatch):
 
 @pytest.mark.offline
 def test_parser_routing_validation_requires_external_endpoints(monkeypatch):
-    monkeypatch.delenv("MINERU_ENDPOINT", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
     monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
 
-    with pytest.raises(ParserRoutingConfigError, match="MINERU_ENDPOINT"):
+    with pytest.raises(ParserRoutingConfigError, match="MINERU_LOCAL_ENDPOINT"):
         validate_parser_routing_config("*:mineru;html:docling")
 
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
     with pytest.raises(ParserRoutingConfigError, match="DOCLING_ENDPOINT"):
         validate_parser_routing_config("*:mineru;html:docling")
 
 
 @pytest.mark.offline
+def test_parser_routing_validation_honors_mineru_api_mode(monkeypatch):
+    monkeypatch.setenv("DOCLING_ENDPOINT", "http://fake-docling")
+
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+    monkeypatch.delenv("MINERU_API_TOKEN", raising=False)
+    with pytest.raises(ParserRoutingConfigError, match="MINERU_API_TOKEN"):
+        validate_parser_routing_config("pdf:mineru")
+    monkeypatch.setenv("MINERU_API_TOKEN", "token")
+    validate_parser_routing_config("pdf:mineru")
+
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
+    with pytest.raises(ParserRoutingConfigError, match="MINERU_LOCAL_ENDPOINT"):
+        validate_parser_routing_config("pdf:mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-local")
+    validate_parser_routing_config("pdf:mineru")
+
+
+@pytest.mark.offline
 def test_parser_routing_validation_rejects_invalid_rules(monkeypatch):
-    monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
     with pytest.raises(ParserRoutingConfigError, match=r"\*\.pdf"):
         validate_parser_routing_config("*.pdf:mineru")
@@ -2472,6 +2491,22 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
 
 @pytest.mark.offline
 def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
+    """End-to-end: parse_mineru routes through MinerURawClient + sidecar
+    writer and produces spec-compliant *.parsed/ + *.mineru_raw/ artifacts.
+
+    With the unified pipeline (introduced alongside the MinerU raw bundle
+    cache), the MinerU download choreography happens inside
+    :meth:`MinerURawClient.download_into`. We stub that method instead of
+    the legacy ``_call_protocol_parse_service`` helper.
+    """
+    from lightrag.mineru_raw import compute_size_and_hash
+    from lightrag.mineru_raw.client import MinerURawClient
+    from lightrag.mineru_raw.manifest import (
+        Manifest,
+        ManifestFile,
+        write_manifest,
+    )
+
     async def _run():
         input_dir = tmp_path / "input"
         input_dir.mkdir()
@@ -2483,35 +2518,54 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         src_file = input_dir / "demo.pdf"
         src_file.write_bytes(b"fake-pdf")
 
-        async def _fake_service(protocol, file_path):
-            assert file_path == str(src_file)
-            return json.dumps(
+        async def _fake_download(self, raw_dir, source_file_path):
+            assert source_file_path == src_file
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            content_list = [
+                {"type": "text", "text": "第一段正文"},
                 {
-                    "content": [
-                        {"type": "text", "text": "第一段正文"},
-                        {
-                            "type": "image",
-                            "img_path": "assets/img1.png",
-                            "image_caption": ["图1 架构图"],
-                            "image_footnote": ["示意图"],
-                        },
-                        {
-                            "type": "table",
-                            "table_body": "<table><tr><td>A</td></tr></table>",
-                            "table_caption": ["表1 指标"],
-                            "table_footnote": ["单位：%"],
-                        },
-                        {
-                            "type": "equation",
-                            "text": "$$E=mc^2$$",
-                        },
-                    ]
+                    "type": "image",
+                    "img_path": "assets/img1.png",
+                    "image_caption": ["图1 架构图"],
+                    "image_footnote": ["示意图"],
                 },
-                ensure_ascii=False,
+                {
+                    "type": "table",
+                    "table_body": "<table><tr><td>A</td></tr></table>",
+                    "table_caption": ["表1 指标"],
+                    "table_footnote": ["单位：%"],
+                },
+                {"type": "equation", "text": "$$E=mc^2$$"},
+            ]
+            (raw_dir / "content_list.json").write_text(
+                json.dumps(content_list, ensure_ascii=False),
+                encoding="utf-8",
             )
+            (raw_dir / "assets").mkdir()
+            (raw_dir / "assets" / "img1.png").write_bytes(b"\x89PNGfake")
+            src_size, src_hash = compute_size_and_hash(source_file_path)
+            crit_size, crit_hash = compute_size_and_hash(raw_dir / "content_list.json")
+            manifest = Manifest(
+                source_content_hash=src_hash,
+                source_size_bytes=src_size,
+                source_filename_at_parse=source_file_path.name,
+                critical_file=ManifestFile(
+                    path="content_list.json", size=crit_size, sha256=crit_hash
+                ),
+                files=[
+                    ManifestFile(
+                        path="assets/img1.png",
+                        size=(raw_dir / "assets" / "img1.png").stat().st_size,
+                    )
+                ],
+                total_size_bytes=crit_size,
+                task_id="fake-task",
+            )
+            write_manifest(raw_dir, manifest)
+            return manifest
 
-        monkeypatch.setattr(rag, "_call_protocol_parse_service", _fake_service)
-        monkeypatch.setenv("MINERU_ENDPOINT", "http://fake-mineru")
+        monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
         parsed = await rag.parse_mineru(
             doc_id="doc-1",
@@ -2801,6 +2855,16 @@ def test_parse_mm_display_name_on_real_builder_output(tmp_path):
 def test_parse_mineru_empty_service_result_raises_without_fallback(
     tmp_path, monkeypatch
 ):
+    """When MinerU produces no content_list.json the adapter raises and the
+    pipeline propagates the error — no silent fallback to raw text.
+
+    With the unified pipeline, an "empty result" surfaces as a missing
+    critical file inside ``*.mineru_raw/``; the adapter's
+    ``normalize_from_workdir`` raises :class:`FileNotFoundError` and the
+    parse fails fast.
+    """
+    from lightrag.mineru_raw.client import MinerURawClient
+
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
@@ -2808,13 +2872,15 @@ def test_parse_mineru_empty_service_result_raises_without_fallback(
         src_file = tmp_path / "demo.pdf"
         src_file.write_bytes(b"fake-pdf")
 
-        async def _fake_service(protocol, file_path):
-            return None
+        async def _fake_download(self, raw_dir, source_file_path):
+            # Simulate a "MinerU returned nothing useful" bundle: dir is
+            # touched but no content_list.json is produced.
+            raw_dir.mkdir(parents=True, exist_ok=True)
 
-        monkeypatch.setattr(rag, "_call_protocol_parse_service", _fake_service)
-        monkeypatch.setenv("MINERU_ENDPOINT", "http://fake")
+        monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake")
 
-        with pytest.raises(ValueError, match="empty content"):
+        with pytest.raises(FileNotFoundError, match="content_list.json"):
             await rag.parse_mineru(
                 doc_id="doc-local-1",
                 file_path=str(src_file),

@@ -177,7 +177,24 @@ PARSER_ENGINE_SUFFIX_CAPABILITIES = {
         }
     ),
     PARSER_ENGINE_NATIVE: frozenset({"docx"}),
-    PARSER_ENGINE_MINERU: frozenset({"pdf", "docx", "pptx", "xlsx"}),
+    PARSER_ENGINE_MINERU: frozenset(
+        {
+            "pdf",
+            "doc",
+            "docx",
+            "ppt",
+            "pptx",
+            "xls",
+            "xlsx",
+            "png",
+            "jpg",
+            "jpeg",
+            "jp2",
+            "webp",
+            "gif",
+            "bmp",
+        }
+    ),
     PARSER_ENGINE_DOCLING: frozenset(
         {
             "pdf",

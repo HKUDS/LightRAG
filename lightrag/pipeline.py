@@ -2347,66 +2347,111 @@ class _PipelineMixin:
     async def parse_mineru(
         self, doc_id: str, file_path: str, content_data: dict[str, Any]
     ) -> dict[str, Any]:
-        endpoint = os.getenv("MINERU_ENDPOINT", "").strip()
-        if not endpoint:
-            raise ValueError("MINERU_ENDPOINT is required for MinerU parsing")
-        protocol = {
-            "upload_url": endpoint,
-            "poll_url_template": os.getenv(
-                "MINERU_POLL_ENDPOINT",
-                endpoint + "/{trace_id}",
-            ),
-            "poll_method": os.getenv("MINERU_POLL_METHOD", "GET"),
-            "id_field": os.getenv("MINERU_ID_FIELD", "trace_id"),
-            "status_field": os.getenv("MINERU_STATUS_FIELD", "status"),
-            "result_url_field": os.getenv("MINERU_RESULT_URL_FIELD", "result_url"),
-            "content_field": os.getenv("MINERU_CONTENT_FIELD", "content"),
-            "success_values": os.getenv(
-                "MINERU_SUCCESS_VALUES",
-                "done,success,succeeded,completed,finished",
-            ),
-            "failed_values": os.getenv("MINERU_FAILED_VALUES", "failed,error"),
-            "poll_interval_seconds": float(
-                os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2")
-            ),
-            "max_polls": int(os.getenv("MINERU_MAX_POLLS", "180")),
-        }
-        source_file_path = self._resolve_source_file_for_parser(
-            str(content_data.get("source_path") or file_path)
-        )
-        result_text = await self._call_protocol_parse_service(
-            protocol=protocol,
-            file_path=source_file_path,
-        )
-        content_list = normalize_parser_result_to_content_list(result_text)
-        if content_list:
-            return await self._write_lightrag_document_from_content_list(
-                doc_id=doc_id,
-                file_path=file_path,
-                content_list=content_list,
-                engine=PARSER_ENGINE_MINERU,
-                source_path=source_file_path,
-            )
-        if not result_text:
-            raise ValueError(f"MinerU parser returned empty content for {file_path}")
+        """Parse a document through MinerU and emit a spec-compliant sidecar.
 
+        Layout produced under ``inputs/<space>/__parsed__/``:
+
+        - ``<base>.parsed/``       — sidecar (blocks.jsonl + per-modality JSONs + assets)
+        - ``<base>.mineru_raw/``   — preserved MinerU bundle (content_list.json,
+          full.md, middle.json, images/, ...) plus ``_manifest.json``
+
+        The raw bundle is kept on disk so subsequent re-parses with the same
+        source content can skip the upload+poll+download round trip. It is
+        cleaned only when the user explicitly deletes the document with the
+        "also delete original file" option; see
+        :func:`lightrag.api.routers.document_routes.delete_file_variants_by_canonical_basename`.
+        """
+        # Lazy imports keep this module import-cheap and avoid pulling httpx
+        # into call paths that never touch the MinerU engine.
+        from lightrag.mineru_raw import (
+            MinerURawClient,
+            clear_dir_contents,
+            is_bundle_valid,
+            raw_dir_for_parsed_dir,
+        )
+        from lightrag.parser_adapters import MinerUAdapter
+        from lightrag.sidecar import write_sidecar
+
+        source_file_path = Path(
+            self._resolve_source_file_for_parser(
+                str(content_data.get("source_path") or file_path)
+            )
+        )
+        if not source_file_path.is_file():
+            raise FileNotFoundError(f"MinerU source file not found: {source_file_path}")
+
+        document_name = (
+            canonicalize_parser_hinted_basename(file_path)
+            or source_file_path.name
+            or f"{doc_id}.bin"
+        )
+        parsed_dir = parsed_artifact_dir_for_source(str(source_file_path), file_path)
+        raw_dir = raw_dir_for_parsed_dir(parsed_dir)
+
+        force_reparse = os.getenv("LIGHTRAG_FORCE_REPARSE_MINERU", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+        if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
+            # Cache hit: keep the path purely local so a re-parse still
+            # succeeds if MinerU credentials/endpoint are temporarily
+            # unavailable (key rotation, debugging, etc.). Network config
+            # is only required on cache miss below.
+            logger.info(
+                "[parse_mineru] raw cache hit doc_id=%s raw_dir=%s",
+                doc_id,
+                raw_dir,
+            )
+        else:
+            if force_reparse and raw_dir.exists():
+                logger.info(
+                    "[parse_mineru] LIGHTRAG_FORCE_REPARSE_MINERU set; "
+                    "discarding bundle at %s",
+                    raw_dir,
+                )
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            clear_dir_contents(raw_dir)
+            client = MinerURawClient()
+            await client.download_into(raw_dir, source_file_path)
+
+        adapter = MinerUAdapter()
+        ir = adapter.normalize_from_workdir(raw_dir, document_name=document_name)
+        parsed_data = write_sidecar(
+            ir,
+            parsed_dir=parsed_dir,
+            doc_id=doc_id,
+            engine=PARSER_ENGINE_MINERU,
+        )
+
+        # Keep full_docs in sync so restart/reprocess can directly use the
+        # sidecar (matches the native_docx and content_list paths).
+        blocks_path = Path(parsed_data["blocks_path"])
+        stored_blocks_path = str(blocks_path)
+        try:
+            stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
+        except ValueError:
+            pass
         await self._persist_parsed_full_docs(
             doc_id,
             {
-                "content": str(result_text),
+                "content": make_lightrag_doc_content(parsed_data["content"]),
                 "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_RAW,
+                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                "lightrag_document_path": stored_blocks_path,
                 "parse_engine": PARSER_ENGINE_MINERU,
                 "update_time": int(time.time()),
             },
         )
-        await archive_docx_source_after_full_docs_sync(source_file_path)
+        await archive_docx_source_after_full_docs_sync(str(source_file_path))
         return {
             "doc_id": doc_id,
             "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_RAW,
-            "content": str(result_text),
-            "blocks_path": "",
+            "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+            "content": parsed_data["content"],
+            "blocks_path": str(blocks_path),
         }
 
     async def parse_docling(

@@ -1211,15 +1211,36 @@ def canonicalize_archived_file_variant_basename(
     return normalize_file_path(f"{stem}{path.suffix}")
 
 
+# Directory-suffix patterns we treat as parser artifact subdirectories under
+# __parsed__/. Anything matching gets the basename extracted; the delete
+# path then rmtree's the whole dir.
+#
+# - ".parsed"      : spec sidecar layout (blocks.jsonl + per-modality JSONs +
+#                    assets dir). Written by every engine.
+# - ".mineru_raw"  : MinerU raw bundle (content_list.json + images/ +
+#                    _manifest.json + optional middle.json / full.md /
+#                    layout.pdf). Preserved across re-parses for cache reuse
+#                    and on-demand diagnostics; cleaned only when the user
+#                    deletes the document with delete_file=True so the raw
+#                    artifacts and source file go away together.
+_PARSED_ARTIFACT_DIR_SUFFIXES: tuple[str, ...] = (".parsed", ".mineru_raw")
+
+
 def _canonical_basename_for_parsed_artifact_dir(dir_name: str) -> str | None:
-    """Return the canonical source basename for a `<basename>.parsed[_NNN]` dir."""
+    """Return the canonical source basename for a parser artifact dir.
+
+    Recognized layouts:
+
+    - ``<basename>.parsed[_NNN]/``       — sidecar output
+    - ``<basename>.mineru_raw[_NNN]/``   — MinerU preserved raw bundle
+    """
     stripped = ARCHIVED_FILE_SUFFIX_RE.sub("", dir_name)
-    if not stripped.endswith(".parsed"):
-        return None
-    basename = stripped[: -len(".parsed")]
-    if not basename:
-        return None
-    return normalize_file_path(basename)
+    for suffix in _PARSED_ARTIFACT_DIR_SUFFIXES:
+        if stripped.endswith(suffix):
+            basename = stripped[: -len(suffix)]
+            if basename:
+                return normalize_file_path(basename)
+    return None
 
 
 def delete_file_variants_by_canonical_basename(
