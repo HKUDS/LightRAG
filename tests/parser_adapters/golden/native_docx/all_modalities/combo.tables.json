@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "tables": {
+    "tb-eeee555566667777eeee555566667777-0001": {
+      "id": "tb-eeee555566667777eeee555566667777-0001",
+      "blockid": "8caba9870df85b9357e9521a70d82225",
+      "heading": "Combined",
+      "dimension": [
+        2,
+        2
+      ],
+      "format": "json",
+      "content": "[[\"α\", \"β\"], [\"γ\", \"δ\"]]",
+      "caption": "",
+      "footnotes": []
+    }
+  }
+}

@@ -76,6 +76,15 @@ class IRTable:
     footnotes: list[str] = field(default_factory=list)
     table_header: list[list[str]] | None = None
     extras: dict[str, Any] = field(default_factory=dict)
+    # Optional verbatim body to render inside the ``<table …>…</table>`` tag
+    # in ``blocks.jsonl``. When set, the writer uses this string in the block
+    # text instead of re-encoding ``rows`` via ``json.dumps`` — preserving
+    # the parser's original whitespace/escaping when byte-equivalence with a
+    # pre-existing output is required (currently: the native docx adapter
+    # which keeps the docx-extracted JSON string verbatim). The
+    # ``tables.json`` ``content`` field is unaffected and remains the
+    # canonical ``json.dumps(rows, ensure_ascii=False)`` encoding.
+    body_override: str | None = None
 
 
 @dataclass

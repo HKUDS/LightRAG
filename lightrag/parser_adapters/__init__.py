@@ -6,5 +6,6 @@ the spec-compliant writer (``lightrag.sidecar.writer``) consumes.
 """
 
 from lightrag.parser_adapters.mineru import MinerUAdapter
+from lightrag.parser_adapters.native_docx import NativeDocxAdapter
 
-__all__ = ["MinerUAdapter"]
+__all__ = ["MinerUAdapter", "NativeDocxAdapter"]

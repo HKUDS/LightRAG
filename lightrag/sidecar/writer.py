@@ -52,23 +52,45 @@ from lightrag.utils import logger
 # ---------------------------------------------------------------------------
 
 
+_VALID_BLOCK_DRAWING_PATH_STYLES = {"with_prefix", "basename_only"}
+
+
 def write_sidecar(
     ir: IRDoc,
     *,
     parsed_dir: Path,
     doc_id: str,
     engine: str,
+    clean_parsed_dir: bool = True,
+    block_drawing_path_style: str = "with_prefix",
 ) -> dict[str, Any]:
     """Emit a spec-compliant ``*.parsed/`` directory from an IR.
 
     Args:
         ir: Document IR produced by an engine adapter.
-        parsed_dir: Output directory. Cleared and recreated; caller is
-            responsible for placing it under ``__parsed__/<base>.parsed/``.
+        parsed_dir: Output directory. By default cleared and recreated; the
+            caller is responsible for placing it under
+            ``__parsed__/<base>.parsed/``.
         doc_id: ``doc-<md5>``; ``doc_hash`` for sidecar ids is the 32-char
             tail after stripping the ``doc-`` prefix.
         engine: One of ``native`` / ``mineru`` / ``docling`` / ``legacy``;
             written verbatim to ``meta.parse_engine``.
+        clean_parsed_dir: When True (default) the writer ``rmtree``s
+            ``parsed_dir`` before writing. Set to False when the caller has
+            already pre-populated the directory with side artifacts that
+            must survive — e.g. the native docx adapter pre-extracts image
+            bytes into ``<base>.blocks.assets/`` before the writer runs,
+            and passing ``AssetSpec.source=None`` lets the writer record
+            them without copying.
+        block_drawing_path_style: How ``<drawing path="...">`` in
+            ``blocks.jsonl`` resolves the asset path. ``"with_prefix"``
+            (default) renders ``<base>.blocks.assets/<filename>`` — matches
+            the path stored in ``drawings.json``. ``"basename_only"``
+            renders just ``<filename>``; legacy native docx convention
+            (downstream consumers read the file path from ``drawings.json``,
+            not from this attribute, so the basename-only form is purely
+            cosmetic but kept for byte-equivalence with the original
+            adapter).
 
     Returns:
         Dict shaped like the pipeline's existing ``parsed_data`` payload:
@@ -76,7 +98,14 @@ def write_sidecar(
         ``file_path`` is ``ir.document_name``; the caller resolves it to the
         actual on-disk path it wants persisted.
     """
-    if parsed_dir.exists():
+    if block_drawing_path_style not in _VALID_BLOCK_DRAWING_PATH_STYLES:
+        allowed = ", ".join(sorted(_VALID_BLOCK_DRAWING_PATH_STYLES))
+        raise ValueError(
+            f"block_drawing_path_style must be one of {allowed}, "
+            f"got {block_drawing_path_style!r}"
+        )
+
+    if clean_parsed_dir and parsed_dir.exists():
         shutil.rmtree(parsed_dir)
     parsed_dir.mkdir(parents=True, exist_ok=True)
 
@@ -102,11 +131,15 @@ def write_sidecar(
     table_seq = 0
     drawing_seq = 0
     equation_seq = 0
-    block_index = 0
 
     asset_prefix = f"{assets_dir.name}/"
 
-    for block in ir.blocks:
+    # ``block_index`` in the blockid hash refers to the position in the
+    # SOURCE block list (``enumerate`` over ``ir.blocks``), not the emitted
+    # position. Otherwise an editor turning a previously-non-empty block
+    # into an empty one — which then gets dropped — would shift the
+    # blockids of every block after it; we want stable ids across edits.
+    for block_index, block in enumerate(ir.blocks):
         # Allocate ids for items declared on this block. Order: tables ->
         # drawings -> equations (per-block deterministic; the global
         # sequence advances across blocks).
@@ -138,6 +171,7 @@ def write_sidecar(
             equation_id_by_key=equation_id_by_key,
             asset_paths=asset_paths,
             asset_prefix=asset_prefix,
+            block_drawing_path_style=block_drawing_path_style,
         )
 
         rendered = rendered.strip()
@@ -222,7 +256,6 @@ def write_sidecar(
             row["table_header"] = block.table_header
         blocks_lines.append(json.dumps(row, ensure_ascii=False))
         merged_parts.append(rendered)
-        block_index += 1
 
     # Stage 3: doc-level metadata.
     merged_text = "\n\n".join(p for p in merged_parts if p.strip())
@@ -397,6 +430,7 @@ def _render_block_content(
     equation_id_by_key: dict[str, str],
     asset_paths: dict[str, str],
     asset_prefix: str,
+    block_drawing_path_style: str = "with_prefix",
 ) -> str:
     """Expand placeholder tokens in ``block.content_template``."""
 
@@ -409,6 +443,14 @@ def _render_block_content(
         if table is None:
             return ""
         tb_id = table_id_by_key.get(key, "")
+        if table.body_override is not None:
+            # Verbatim block-text body — used by adapters that need to
+            # preserve the parser's original whitespace/escaping (native
+            # docx). Sidecar entry's ``content`` field still gets the
+            # canonical ``table_body_for_rows`` encoding via
+            # ``_table_item_dict``.
+            fmt = "json" if table.rows is not None else "html"
+            return render_table_tag(tb_id, fmt, table.body_override)
         if table.rows is not None:
             return render_table_tag(tb_id, "json", table_body_for_rows(table.rows))
         return render_table_tag(tb_id, "html", table.html or "")
@@ -419,7 +461,12 @@ def _render_block_content(
             return ""
         im_id = drawing_id_by_key.get(key, "")
         filename = asset_paths.get(drawing.asset_ref, "")
-        path = f"{asset_prefix}{filename}" if filename else ""
+        if not filename:
+            path = ""
+        elif block_drawing_path_style == "basename_only":
+            path = filename
+        else:
+            path = f"{asset_prefix}{filename}"
         return render_drawing_tag(
             im_id,
             drawing.fmt,
