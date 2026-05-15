@@ -148,9 +148,7 @@ class MinerURawClient:
         Returns the :class:`Manifest` describing the bundle.
         """
         if httpx is None:
-            raise RuntimeError(
-                "httpx is required for MinerU parsing but not installed"
-            )
+            raise RuntimeError("httpx is required for MinerU parsing but not installed")
         raw_dir.mkdir(parents=True, exist_ok=True)
 
         timeout = httpx.Timeout(120.0, connect=30.0)
@@ -308,9 +306,7 @@ class MinerURawClient:
             for name in zf.namelist():
                 norm = os.path.normpath(name)
                 if norm.startswith("..") or os.path.isabs(norm):
-                    raise RuntimeError(
-                        f"Refusing zip entry with unsafe path: {name!r}"
-                    )
+                    raise RuntimeError(f"Refusing zip entry with unsafe path: {name!r}")
             zf.extractall(raw_dir)
 
         # Normalize: if the zip nested everything under a single top-level

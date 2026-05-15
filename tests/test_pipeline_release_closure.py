@@ -2525,9 +2525,7 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
             (raw_dir / "assets").mkdir()
             (raw_dir / "assets" / "img1.png").write_bytes(b"\x89PNGfake")
             src_size, src_hash = compute_size_and_hash(source_file_path)
-            crit_size, crit_hash = compute_size_and_hash(
-                raw_dir / "content_list.json"
-            )
+            crit_size, crit_hash = compute_size_and_hash(raw_dir / "content_list.json")
             manifest = Manifest(
                 source_content_hash=src_hash,
                 source_size_bytes=src_size,

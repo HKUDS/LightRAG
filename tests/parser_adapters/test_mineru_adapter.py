@@ -14,9 +14,7 @@ def _write_bundle(tmp_path: Path, content_list: list[dict]) -> Path:
     """Build a minimal *.mineru_raw/ directory."""
     raw = tmp_path / "doc.mineru_raw"
     raw.mkdir()
-    (raw / "content_list.json").write_text(
-        json.dumps(content_list, ensure_ascii=False)
-    )
+    (raw / "content_list.json").write_text(json.dumps(content_list, ensure_ascii=False))
     return raw
 
 

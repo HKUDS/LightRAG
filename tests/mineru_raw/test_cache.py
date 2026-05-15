@@ -46,7 +46,7 @@ def fresh_bundle(tmp_path: Path, source_file: Path) -> tuple[Path, Manifest]:
     ``(raw_dir, manifest)``."""
     raw = tmp_path / "src.mineru_raw"
     raw.mkdir()
-    content_list = (raw / "content_list.json")
+    content_list = raw / "content_list.json"
     content_list.write_text('[{"type":"text","text":"hi"}]', encoding="utf-8")
     images = raw / "images"
     images.mkdir()
@@ -300,7 +300,9 @@ def test_manifest_round_trip_via_disk(tmp_path: Path) -> None:
         source_content_hash="sha256:abc",
         source_size_bytes=10,
         source_filename_at_parse="x.pdf",
-        critical_file=ManifestFile(path="content_list.json", size=5, sha256="sha256:cl"),
+        critical_file=ManifestFile(
+            path="content_list.json", size=5, sha256="sha256:cl"
+        ),
         files=[ManifestFile(path="images/i.png", size=3)],
         total_size_bytes=8,
         task_id="t1",

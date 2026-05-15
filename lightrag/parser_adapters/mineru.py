@@ -47,6 +47,7 @@ from lightrag.sidecar.ir import (
     IRPosition,
     IRTable,
 )
+from lightrag.utils import logger
 
 
 _LATEX_DOLLAR_RE = re.compile(r"^\s*\$\$?(.+?)\$\$?\s*$", re.DOTALL)
@@ -60,16 +61,29 @@ class MinerUAdapter:
         self.bbox_attributes = self._load_bbox_attributes_env()
 
     def _load_bbox_attributes_env(self) -> dict[str, Any]:
+        default = {"origin": "LEFTTOP", "max": 1000}
         raw = os.getenv("MINERU_BBOX_ATTRIBUTES", "").strip()
         if not raw:
-            return {"origin": "LEFTTOP", "max": 1000}
+            return default
         try:
             parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            pass
-        return {"origin": "LEFTTOP", "max": 1000}
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "[mineru_adapter] MINERU_BBOX_ATTRIBUTES is not valid JSON "
+                "(%s); falling back to default %s",
+                exc,
+                default,
+            )
+            return default
+        if not isinstance(parsed, dict):
+            logger.warning(
+                "[mineru_adapter] MINERU_BBOX_ATTRIBUTES must decode to a JSON "
+                "object, got %s; falling back to default %s",
+                type(parsed).__name__,
+                default,
+            )
+            return default
+        return parsed
 
     # ------------------------------------------------------------------
     # Entry point
@@ -92,9 +106,7 @@ class MinerUAdapter:
             raise FileNotFoundError(
                 f"MinerU raw bundle missing content_list.json at {raw_dir}"
             )
-        content_list = json.loads(
-            content_list_path.read_text(encoding="utf-8")
-        )
+        content_list = json.loads(content_list_path.read_text(encoding="utf-8"))
         if not isinstance(content_list, list):
             raise ValueError(
                 f"MinerU content_list.json malformed (not a JSON array) at {raw_dir}"
@@ -154,8 +166,8 @@ class MinerUAdapter:
                     continue
                 inferred_level = int(item.get("text_level") or 0)
                 if inferred_level > 0:
-                    current_heading, current_level, current_parents = (
-                        _update_heading(text, inferred_level)
+                    current_heading, current_level, current_parents = _update_heading(
+                        text, inferred_level
                     )
                     if not doc_title and inferred_level == 1:
                         doc_title = current_heading
@@ -174,9 +186,7 @@ class MinerUAdapter:
                 text = _coerce_text(item)
                 if not text:
                     continue
-                inferred_level = int(
-                    item.get("text_level") or item.get("level") or 1
-                )
+                inferred_level = int(item.get("text_level") or item.get("level") or 1)
                 current_heading, current_level, current_parents = _update_heading(
                     text, inferred_level
                 )
@@ -375,9 +385,7 @@ class MinerUAdapter:
             num_rows=num_rows,
             num_cols=num_cols,
             caption=caption,
-            footnotes=_as_str_list(
-                item.get("table_footnote") or item.get("footnotes")
-            ),
+            footnotes=_as_str_list(item.get("table_footnote") or item.get("footnotes")),
             table_header=table_header,
         )
 
@@ -411,7 +419,10 @@ class MinerUAdapter:
                 # declare the asset spec so the drawing tag can be written;
                 # the writer will warn and skip the copy.
                 local_path = (raw_dir / img_path).resolve()
-                suggested_name = Path(img_path).name or f"image-{len(seen)+1}{('.'+fmt) if fmt else ''}"
+                suggested_name = (
+                    Path(img_path).name
+                    or f"image-{len(seen)+1}{('.'+fmt) if fmt else ''}"
+                )
                 asset = AssetSpec(
                     ref=ref,
                     suggested_name=suggested_name,

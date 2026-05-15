@@ -104,14 +104,10 @@ def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
             encoding="utf-8",
         )
         (raw_dir / "images").mkdir(exist_ok=True)
-        (raw_dir / "images" / "img_001.jpg").write_bytes(
-            b"\xff\xd8\xff\xe0fakeJPEG"
-        )
+        (raw_dir / "images" / "img_001.jpg").write_bytes(b"\xff\xd8\xff\xe0fakeJPEG")
 
         src_size, src_hash = compute_size_and_hash(source_file_path)
-        crit_size, crit_hash = compute_size_and_hash(
-            raw_dir / "content_list.json"
-        )
+        crit_size, crit_hash = compute_size_and_hash(raw_dir / "content_list.json")
         files = [
             ManifestFile(
                 path="images/img_001.jpg",
@@ -132,34 +128,8 @@ def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         write_manifest(raw_dir, manifest)
         return manifest
 
-    monkeypatch.setattr(
-        client_mod.MinerURawClient, "download_into", _fake_download
-    )
+    monkeypatch.setattr(client_mod.MinerURawClient, "download_into", _fake_download)
     return counters
-
-
-def _prepare_doc_status_row(rag: LightRAG, doc_id: str, file_path: str) -> None:
-    """Insert a minimum doc_status row so _persist_parsed_full_docs has a
-    base to update."""
-    asyncio.get_event_loop().run_until_complete(
-        rag.doc_status.upsert(
-            {
-                doc_id: {
-                    "status": "PARSING",
-                    "content_summary": "",
-                    "content_length": 0,
-                    "chunks_count": 0,
-                    "chunks_list": [],
-                    "created_at": "2026-05-15T00:00:00+00:00",
-                    "updated_at": "2026-05-15T00:00:00+00:00",
-                    "file_path": file_path,
-                    "track_id": "trk",
-                    "content_hash": "",
-                    "metadata": {},
-                }
-            }
-        )
-    )
 
 
 @pytest.mark.offline
@@ -172,6 +142,7 @@ def test_parse_mineru_emits_compliant_sidecar(
     async def _run() -> None:
         monkeypatch.setenv("MINERU_ENDPOINT", "http://mineru.example/api/v1/task")
         counters = _install_fake_download(monkeypatch)
+
         # Don't move the source out from under the cache validator between
         # repeated parse_mineru calls.
         async def _noop_archive(_p: str) -> None:
@@ -266,9 +237,9 @@ def test_parse_mineru_emits_compliant_sidecar(
             )
 
             # Drawing path points inside *.blocks.assets/
-            drawings = json.loads(
-                (parsed_dir / "demo.drawings.json").read_text()
-            )["drawings"]
+            drawings = json.loads((parsed_dir / "demo.drawings.json").read_text())[
+                "drawings"
+            ]
             (drawing_id, drawing_item) = next(iter(drawings.items()))
             assert drawing_id.startswith("im-")
             assert drawing_item["path"] == "demo.blocks.assets/img_001.jpg"
@@ -280,9 +251,7 @@ def test_parse_mineru_emits_compliant_sidecar(
             assert (raw_dir / "images" / "img_001.jpg").is_file()
 
             # No legacy non-spec image field on tables
-            tables = json.loads((parsed_dir / "demo.tables.json").read_text())[
-                "tables"
-            ]
+            tables = json.loads((parsed_dir / "demo.tables.json").read_text())["tables"]
             (_, table_item) = next(iter(tables.items()))
             assert "image" not in table_item
         finally:
@@ -300,6 +269,7 @@ def test_parse_mineru_cache_hit_skips_download(
     async def _run() -> None:
         monkeypatch.setenv("MINERU_ENDPOINT", "http://mineru.example/api/v1/task")
         counters = _install_fake_download(monkeypatch)
+
         # Don't move the source out from under the cache validator between
         # repeated parse_mineru calls.
         async def _noop_archive(_p: str) -> None:
@@ -385,6 +355,7 @@ def test_parse_mineru_cache_invalidates_on_source_change(
     async def _run() -> None:
         monkeypatch.setenv("MINERU_ENDPOINT", "http://mineru.example/api/v1/task")
         counters = _install_fake_download(monkeypatch)
+
         # Don't move the source out from under the cache validator between
         # repeated parse_mineru calls.
         async def _noop_archive(_p: str) -> None:

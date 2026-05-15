@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 MANIFEST_FILENAME = "_manifest.json"
@@ -84,18 +84,14 @@ class Manifest:
             endpoint_signature=str(payload.get("endpoint_signature") or ""),
             source_content_hash=str(payload.get("source_content_hash") or ""),
             source_size_bytes=int(payload.get("source_size_bytes") or 0),
-            source_filename_at_parse=str(
-                payload.get("source_filename_at_parse") or ""
-            ),
+            source_filename_at_parse=str(payload.get("source_filename_at_parse") or ""),
             task_id=str(payload.get("task_id") or ""),
             downloaded_at=str(payload.get("downloaded_at") or ""),
             critical_file=ManifestFile(
                 path=str(critical_raw.get("path") or ""),
                 size=int(critical_raw.get("size") or 0),
                 sha256=(
-                    str(critical_raw["sha256"])
-                    if critical_raw.get("sha256")
-                    else None
+                    str(critical_raw["sha256"]) if critical_raw.get("sha256") else None
                 ),
             ),
             files=[
@@ -156,7 +152,6 @@ __all__ = [
     "MANIFEST_ENGINE",
     "Manifest",
     "ManifestFile",
-    "field",  # kept exported for downstream that may augment dataclasses
     "load_manifest",
     "manifest_path",
     "write_manifest",

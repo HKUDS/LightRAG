@@ -2381,24 +2381,22 @@ class _PipelineMixin:
             )
         )
         if not source_file_path.is_file():
-            raise FileNotFoundError(
-                f"MinerU source file not found: {source_file_path}"
-            )
+            raise FileNotFoundError(f"MinerU source file not found: {source_file_path}")
 
         document_name = (
             canonicalize_parser_hinted_basename(file_path)
             or source_file_path.name
             or f"{doc_id}.bin"
         )
-        parsed_dir = parsed_artifact_dir_for_source(
-            str(source_file_path), file_path
-        )
+        parsed_dir = parsed_artifact_dir_for_source(str(source_file_path), file_path)
         raw_dir = raw_dir_for_parsed_dir(parsed_dir)
 
-        force_reparse = (
-            os.getenv("LIGHTRAG_FORCE_REPARSE_MINERU", "").lower()
-            in {"1", "true", "yes", "on"}
-        )
+        force_reparse = os.getenv("LIGHTRAG_FORCE_REPARSE_MINERU", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
         if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
             logger.info(

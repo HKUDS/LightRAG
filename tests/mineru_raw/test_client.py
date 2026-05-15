@@ -63,7 +63,9 @@ class _FakeAsyncClient:
     async def __aexit__(self, *_: Any) -> None:
         pass
 
-    async def post(self, url: str, files: Any = None, json: Any = None) -> _FakeResponse:
+    async def post(
+        self, url: str, files: Any = None, json: Any = None
+    ) -> _FakeResponse:
         self.posts.append({"url": url, "files": files, "json": json})
         return _CURRENT.dispatcher.post(url, files=files, json=json)
 
@@ -116,7 +118,9 @@ def fake_httpx(monkeypatch: pytest.MonkeyPatch) -> type:
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MINERU_ENDPOINT", "http://mineru.example/api/v1/task")
-    monkeypatch.setenv("MINERU_POLL_ENDPOINT", "http://mineru.example/api/v1/task/{task_id}")
+    monkeypatch.setenv(
+        "MINERU_POLL_ENDPOINT", "http://mineru.example/api/v1/task/{task_id}"
+    )
     monkeypatch.setenv("MINERU_POLL_METHOD", "GET")
     monkeypatch.setenv("MINERU_ID_FIELD", "task_id")
     monkeypatch.setenv("MINERU_STATUS_FIELD", "status")

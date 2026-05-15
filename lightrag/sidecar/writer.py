@@ -153,11 +153,38 @@ def write_sidecar(
         ).hexdigest()
 
         # Realize per-block sidecar item dicts now that blockid is known.
+        # Defensive: an adapter that declares an item on block.tables /
+        # drawings / equations but omits the matching ``{{TBL/IMG/EQ:k}}``
+        # token from ``content_template`` would leave the rendered text
+        # without the corresponding tag. We detect that by checking whether
+        # the allocated id (which is doc-unique) appears in the rendered
+        # output, warn, and skip the sidecar entry — otherwise the per-
+        # modality JSON would reference a blockid whose body never names it.
         for table in block.tables:
             tb_id = table_id_by_key[table.placeholder_key]
+            if tb_id not in rendered:
+                logger.warning(
+                    "[sidecar] orphan table id=%s on block %d "
+                    "(placeholder %r not referenced in content_template); "
+                    "skipping sidecar entry",
+                    tb_id,
+                    block_index,
+                    table.placeholder_key,
+                )
+                continue
             tables[tb_id] = _table_item_dict(tb_id, blockid, block.heading, table)
         for drawing in block.drawings:
             im_id = drawing_id_by_key[drawing.placeholder_key]
+            if im_id not in rendered:
+                logger.warning(
+                    "[sidecar] orphan drawing id=%s on block %d "
+                    "(placeholder %r not referenced in content_template); "
+                    "skipping sidecar entry",
+                    im_id,
+                    block_index,
+                    drawing.placeholder_key,
+                )
+                continue
             drawings[im_id] = _drawing_item_dict(
                 im_id, blockid, block.heading, drawing, asset_paths, asset_prefix
             )
@@ -165,6 +192,16 @@ def write_sidecar(
             if not equation.is_block:
                 continue
             eq_id = equation_id_by_key[equation.placeholder_key]
+            if eq_id not in rendered:
+                logger.warning(
+                    "[sidecar] orphan equation id=%s on block %d "
+                    "(placeholder %r not referenced in content_template); "
+                    "skipping sidecar entry",
+                    eq_id,
+                    block_index,
+                    equation.placeholder_key,
+                )
+                continue
             equations[eq_id] = _equation_item_dict(
                 eq_id, blockid, block.heading, equation
             )
@@ -305,8 +342,7 @@ def _materialize_assets(
             src_path = Path(spec.source)
             if not src_path.exists():
                 logger.warning(
-                    "[sidecar] asset source missing for ref=%s (%s); "
-                    "skipping copy",
+                    "[sidecar] asset source missing for ref=%s (%s); " "skipping copy",
                     spec.ref,
                     src_path,
                 )
@@ -321,8 +357,7 @@ def _materialize_assets(
             # missing.
             if not target_path.exists():
                 logger.warning(
-                    "[sidecar] asset ref=%s declared in place but %s "
-                    "is absent",
+                    "[sidecar] asset ref=%s declared in place but %s " "is absent",
                     spec.ref,
                     target_path,
                 )

@@ -209,9 +209,7 @@ def test_writer_positions_round_trip_bbox(tmp_path: Path) -> None:
             IRBlock(
                 content_template="text",
                 positions=[
-                    IRPosition(
-                        type="bbox", anchor=2, range=[10.0, 20.0, 100.0, 200.0]
-                    )
+                    IRPosition(type="bbox", anchor=2, range=[10.0, 20.0, 100.0, 200.0])
                 ],
             )
         ],
@@ -237,9 +235,7 @@ def test_writer_id_sequence_is_global_per_kind(tmp_path: Path) -> None:
         IRBlock(
             content_template="d {{EQ:e}} {{TBL:t}}",
             tables=[IRTable(placeholder_key="t", rows=[["y"]], num_rows=1, num_cols=1)],
-            equations=[
-                IREquation(placeholder_key="e", latex="z", is_block=True)
-            ],
+            equations=[IREquation(placeholder_key="e", latex="z", is_block=True)],
         ),
     ]
     ir = IRDoc(
