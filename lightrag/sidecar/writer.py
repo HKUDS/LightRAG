@@ -295,13 +295,17 @@ def write_sidecar(
         encoding="utf-8",
     )
 
+    # Sidecar JSONs end with a trailing newline (POSIX text-file convention;
+    # also keeps end-of-file linters / pre-commit hooks happy and matches the
+    # ``blocks.jsonl`` convention above).
     if tables:
         tables_path.write_text(
             json.dumps(
                 {"version": "1.0", "tables": tables},
                 ensure_ascii=False,
                 indent=2,
-            ),
+            )
+            + "\n",
             encoding="utf-8",
         )
     if drawings:
@@ -310,7 +314,8 @@ def write_sidecar(
                 {"version": "1.0", "drawings": drawings},
                 ensure_ascii=False,
                 indent=2,
-            ),
+            )
+            + "\n",
             encoding="utf-8",
         )
     if equations:
@@ -319,7 +324,8 @@ def write_sidecar(
                 {"version": "1.0", "equations": equations},
                 ensure_ascii=False,
                 indent=2,
-            ),
+            )
+            + "\n",
             encoding="utf-8",
         )
 
