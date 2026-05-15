@@ -75,7 +75,6 @@ from lightrag.utils_pipeline import (
     archive_source_after_full_docs_sync,
     build_chunks_dict_from_chunking_result,
     chunk_fields_from_status_doc,
-    compute_file_content_hash,
     compute_text_content_hash,
     doc_status_field,
     doc_status_transition_metadata,
@@ -429,12 +428,13 @@ class _PipelineMixin:
             body_length = len(strip_lightrag_doc_prefix(content, doc_format))
 
             # Compute content hash: skip for pending_parse (content extracted later).
+            # RAW and LIGHTRAG both hash the bare merged text so the same body
+            # carried by different envelopes (raw text vs sidecar) dedupes
+            # against itself across formats.
             content_hash: str | None = None
-            if doc_format == FULL_DOCS_FORMAT_RAW:
-                content_hash = compute_text_content_hash(content or "")
-            elif doc_format == FULL_DOCS_FORMAT_LIGHTRAG and lightrag_document_path:
-                content_hash = compute_file_content_hash(
-                    resolve_lightrag_document_path(lightrag_document_path)
+            if doc_format in (FULL_DOCS_FORMAT_RAW, FULL_DOCS_FORMAT_LIGHTRAG):
+                content_hash = compute_text_content_hash(
+                    strip_lightrag_doc_prefix(content or "", doc_format)
                 )
 
             known_source = has_known_document_source(canonical_key)
@@ -2768,14 +2768,14 @@ class _PipelineMixin:
         """
         fmt = record.get("parse_format")
         content_hash: str | None = None
-        if fmt == FULL_DOCS_FORMAT_RAW:
-            content_hash = compute_text_content_hash(record.get("content") or "")
-        elif fmt == FULL_DOCS_FORMAT_LIGHTRAG:
-            blocks_path = record.get("lightrag_document_path") or ""
-            if blocks_path:
-                content_hash = compute_file_content_hash(
-                    resolve_lightrag_document_path(blocks_path)
-                )
+        # Hash the bare merged text (after stripping the ``{{LRdoc}}`` marker
+        # for lightrag-format) so cross-filename dedup fires regardless of
+        # whether the same body was ingested as raw text or via a sidecar.
+        # ``strip_lightrag_doc_prefix`` is a no-op for non-lightrag formats.
+        if fmt in (FULL_DOCS_FORMAT_RAW, FULL_DOCS_FORMAT_LIGHTRAG):
+            content_hash = compute_text_content_hash(
+                strip_lightrag_doc_prefix(record.get("content") or "", fmt)
+            )
 
         existing = await self.full_docs.get_by_id(doc_id)
         if isinstance(existing, dict):

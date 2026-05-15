@@ -69,7 +69,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `version` | `str` | sidecar schema 版本 |
 | `document_name` | `str` | 规范文件名（含后缀，不含处理指示） |
 | `document_format` | `str` | 文件格式（目前以文件后缀表示） |
-| `document_hash` | `"sha256:<hex>"` | 原始文件内容哈希，用于跨次解析去重 |
+| `document_hash` | `"sha256:<hex>"` | sidecar 正文指纹，定义为 `SHA-256(merged_text)`，其中 `merged_text` 是所有非空 content 行的 `content` 字段按 `"\n\n"` 拼接后的字符串。供外部消费者快速判断两份 `.parsed/` 是否同源（不必逐行比对 body），并作为 sidecar 文件的自描述内容校验位。注意：LightRAG 入库流水线本身不读此字段，跨文档去重由 `doc_status.content_hash` 单独承担 |
 | `table_file` / `equation_file` / `drawing_file` | `bool` | 是否存在对应 sidecar 文件（为真时对应文件必然存在） |
 | `asset_dir` | `bool` | 是否存在`blocks.assets`资源目录 |
 | `split_option` | `object` | 文件提取时的分块参数。此字段留给文件提取引擎自己记录和使用 |

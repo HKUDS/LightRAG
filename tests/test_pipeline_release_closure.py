@@ -1757,27 +1757,15 @@ def test_state_machine_upsert_preserves_content_hash(tmp_path):
 
 
 @pytest.mark.offline
-@pytest.mark.xfail(
-    reason=(
-        "Native parsing now produces LIGHTRAG-format full_docs and "
-        "content_hash is the MD5 of the .blocks.jsonl file. The writer "
-        "embeds doc_id into every block's blockid (md5 of "
-        "doc_id:idx:heading:content), so two distinct docx filenames "
-        "deterministically produce different .blocks.jsonl bytes even when "
-        "their underlying content is identical. Cross-document content_hash "
-        "dedup for native docx is therefore architecturally impossible "
-        "without changing the blockid scheme; tracked separately."
-    ),
-    strict=True,
-)
 def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkeypatch):
-    """Two PENDING_PARSE docx files producing identical .blocks.jsonl content
-    must be detected as content_hash duplicates and the loser archived.
+    """Two PENDING_PARSE docx files with identical extracted bodies must be
+    detected as content_hash duplicates and the loser archived.
 
-    See xfail reason above for why this is currently impossible to satisfy
-    without a blockid scheme change. Test body retained so that a future
-    refactor of the blockid algorithm (e.g., dropping doc_id from the hash
-    inputs) can flip this back to passing.
+    ``content_hash`` for LIGHTRAG-format docs is the MD5 of the normalized
+    ``merged_text`` (sidecar item ids and ``<base>.blocks.assets/`` prefixes
+    stripped via :func:`normalize_merged_text_for_hash`), so identical
+    bodies under different filenames produce the same hash and
+    ``_mark_duplicate_after_parse`` fires.
     """
 
     async def _run():
