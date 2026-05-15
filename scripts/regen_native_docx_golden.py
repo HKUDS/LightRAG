@@ -53,11 +53,7 @@ async def _regen() -> None:
     from parser_adapters._native_docx_fixtures import SCENARIOS
 
     fixtures_root = (
-        PROJECT_ROOT
-        / "tests"
-        / "parser_adapters"
-        / "golden"
-        / "native_docx"
+        PROJECT_ROOT / "tests" / "parser_adapters" / "golden" / "native_docx"
     )
     fixtures_root.mkdir(parents=True, exist_ok=True)
 
@@ -84,13 +80,14 @@ async def _regen() -> None:
                 parse_metadata.update(scenario.parse_metadata)
             return [dict(b) for b in scenario.blocks]
 
-        with mock.patch.object(
-            lightrag_adapter, "extract_docx_blocks", _stub_extract
-        ), mock.patch(
-            # ``parse_time`` is stamped inside ``write_sidecar``; freezing
-            # ``datetime`` there is what keeps regen output deterministic.
-            "lightrag.sidecar.writer.datetime",
-            _FrozenDateTime,
+        with (
+            mock.patch.object(lightrag_adapter, "extract_docx_blocks", _stub_extract),
+            mock.patch(
+                # ``parse_time`` is stamped inside ``write_sidecar``; freezing
+                # ``datetime`` there is what keeps regen output deterministic.
+                "lightrag.sidecar.writer.datetime",
+                _FrozenDateTime,
+            ),
         ):
             await lightrag_adapter.parse_docx_to_lightrag_document(
                 file_bytes=b"fake-docx",

@@ -188,9 +188,7 @@ class NativeDocxAdapter:
                 token = "EQ" if is_block else "EQI"
                 return f"{{{{{token}:{placeholder}}}}}"
 
-            content_template = _EQUATION_TAG_RE.sub(
-                _replace_equation, content_template
-            )
+            content_template = _EQUATION_TAG_RE.sub(_replace_equation, content_template)
 
             # --- Drawings -----------------------------------------------
             def _replace_drawing(match: "re.Match[str]") -> str:
@@ -213,9 +211,7 @@ class NativeDocxAdapter:
                 if asset_prefix and path_val.startswith(asset_prefix):
                     rel_inside_assets = path_val[len(asset_prefix) :]
                     asset_ref = rel_inside_assets
-                    suggested_name = (
-                        Path(rel_inside_assets).name or rel_inside_assets
-                    )
+                    suggested_name = Path(rel_inside_assets).name or rel_inside_assets
                     if asset_ref and asset_ref not in seen_asset_refs:
                         assets.append(
                             AssetSpec(
@@ -271,9 +267,7 @@ class NativeDocxAdapter:
         first_heading = ""
         if isinstance(parse_metadata, dict):
             first_heading = str(parse_metadata.get("first_heading") or "")
-        doc_title = first_heading or (
-            Path(document_name).stem or document_name
-        )
+        doc_title = first_heading or (Path(document_name).stem or document_name)
 
         return IRDoc(
             document_name=document_name,

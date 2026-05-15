@@ -68,10 +68,9 @@ def _run_new_path(scenario: Scenario, out_dir: Path) -> None:
             parse_metadata.update(scenario.parse_metadata)
         return [dict(b) for b in scenario.blocks]
 
-    with mock.patch.object(
-        lightrag_adapter, "extract_docx_blocks", _stub_extract
-    ), mock.patch(
-        "lightrag.sidecar.writer.datetime", _FrozenDateTime
+    with (
+        mock.patch.object(lightrag_adapter, "extract_docx_blocks", _stub_extract),
+        mock.patch("lightrag.sidecar.writer.datetime", _FrozenDateTime),
     ):
 
         async def _go():
@@ -114,9 +113,7 @@ def test_native_docx_migration_is_byte_equivalent(
 
     # Collect both file sets relative to their roots, then compare.
     expected_files = {
-        p.relative_to(expected_root): p
-        for p in expected_root.rglob("*")
-        if p.is_file()
+        p.relative_to(expected_root): p for p in expected_root.rglob("*") if p.is_file()
     }
     produced_files = {
         p.relative_to(out_dir): p for p in out_dir.rglob("*") if p.is_file()
@@ -132,6 +129,6 @@ def test_native_docx_migration_is_byte_equivalent(
         produced_path = produced_files[rel]
         if _read_bytes(produced_path) != _read_bytes(expected_path):
             mismatches.append(str(rel))
-    assert not mismatches, (
-        f"byte mismatch in scenario {scenario.name!r} for files: {mismatches}"
-    )
+    assert (
+        not mismatches
+    ), f"byte mismatch in scenario {scenario.name!r} for files: {mismatches}"
