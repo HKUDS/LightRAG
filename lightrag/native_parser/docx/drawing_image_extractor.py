@@ -187,11 +187,11 @@ def create_drawing_context(
         ctx.export_dir_name = export_dir_name
         ctx.export_dir_path = export_dir_path
 
-    _load_relationships(ctx)
+    load_relationships(ctx)
     return ctx
 
 
-def _load_relationships(ctx: DrawingExtractionContext) -> None:
+def load_relationships(ctx: DrawingExtractionContext) -> None:
     rels_xml = "word/_rels/document.xml.rels"
     content_types_xml = "[Content_Types].xml"
 

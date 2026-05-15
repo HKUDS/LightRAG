@@ -20,8 +20,8 @@ import json
 import re
 from typing import Any
 
-# Strict regex for a post-rewrite table tag emitted by
-# ``lightrag_adapter``:
+# Strict regex for a post-rewrite table tag emitted by the sidecar
+# writer (``lightrag.sidecar.writer``):
 #   <table id="tb-…" format="json"[ caption="…"]>{rows_json}</table>
 # blocks.jsonl invariants guarantee the tag has no embedded newlines.
 TABLE_TAG_RE = re.compile(

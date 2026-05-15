@@ -14,9 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 from unittest import mock
 
 import pytest
@@ -28,57 +26,12 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from _native_docx_fixtures import SCENARIOS, Scenario  # noqa: E402
+from lightrag.native_parser.docx._debug_rag import (  # noqa: E402
+    FrozenDateTime,
+    build_debug_rag,
+)
 
 GOLDEN_ROOT = HERE / "golden" / "native_docx"
-
-
-_FROZEN_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-
-class _FrozenDateTime(datetime):
-    @classmethod
-    def now(cls, tz=None):  # noqa: D401
-        return _FROZEN_NOW if tz is None else _FROZEN_NOW.astimezone(tz)
-
-
-class _DebugFullDocs:
-    def __init__(self) -> None:
-        self.data: dict[str, Any] = {}
-
-    async def upsert(self, payload: dict[str, Any]) -> None:
-        self.data.update(payload)
-
-    async def get_by_id(self, doc_id: str) -> Any:
-        return self.data.get(doc_id)
-
-    async def index_done_callback(self) -> None:
-        return None
-
-
-class _DebugDocStatus:
-    async def get_by_id(self, doc_id: str) -> Any:
-        return None
-
-    async def upsert(self, data: dict[str, Any]) -> None:
-        return None
-
-
-def _build_debug_rag():
-    """Minimal LightRAG stand-in exposing what parse_native reads."""
-    from lightrag import LightRAG
-
-    class _DebugRag:
-        _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-        parse_native = LightRAG.parse_native
-
-        def __init__(self) -> None:
-            self.full_docs = _DebugFullDocs()
-            self.doc_status = _DebugDocStatus()
-
-        def _resolve_source_file_for_parser(self, file_path: str) -> str:
-            return file_path
-
-    return _DebugRag()
 
 
 def _run_new_path(
@@ -132,14 +85,14 @@ def _run_new_path(
             parse_metadata.update(scenario.parse_metadata)
         return [dict(b) for b in scenario.blocks]
 
-    rag = _build_debug_rag()
+    rag = build_debug_rag()
 
     with (
         mock.patch(
             "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
             _stub_extract,
         ),
-        mock.patch("lightrag.sidecar.writer.datetime", _FrozenDateTime),
+        mock.patch("lightrag.sidecar.writer.datetime", FrozenDateTime),
     ):
 
         async def _go() -> None:

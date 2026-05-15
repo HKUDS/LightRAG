@@ -17,51 +17,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
-
-class _DebugFullDocs:
-    def __init__(self) -> None:
-        self.data: dict[str, Any] = {}
-
-    async def upsert(self, payload: dict[str, Any]) -> None:
-        self.data.update(payload)
-
-    async def get_by_id(self, doc_id: str) -> Any:
-        return self.data.get(doc_id)
-
-    async def index_done_callback(self) -> None:
-        return None
-
-
-class _DebugDocStatus:
-    async def get_by_id(self, doc_id: str) -> Any:
-        return None
-
-    async def upsert(self, data: dict[str, Any]) -> None:
-        return None
-
-
-class _DebugRag:
-    """Minimal LightRAG-shaped object exposing what ``parse_native`` reads."""
-
-    # Bind the real method off LightRAG so we exercise the production path.
-    from lightrag import LightRAG  # noqa: E402  (deferred to avoid circular)
-
-    _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-    parse_native = LightRAG.parse_native
-
-    def __init__(self) -> None:
-        self.full_docs = _DebugFullDocs()
-        self.doc_status = _DebugDocStatus()
-
-    def _resolve_source_file_for_parser(self, file_path: str) -> str:
-        return file_path
+from ._debug_rag import build_debug_rag
 
 
 def _print_summary(blocks_path: Path, preview: int) -> None:
@@ -138,11 +101,10 @@ def main() -> int:
     # with the temp tree.
     from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
 
-    rag = _DebugRag()
+    rag = build_debug_rag()
     with tempfile.TemporaryDirectory(prefix="native_docx_cli_") as tmp_root:
         input_dir = Path(tmp_root) / "inputs"
         input_dir.mkdir()
-        os.environ["INPUT_DIR"] = str(input_dir)
         scratch_docx = input_dir / args.docx.name
         shutil.copyfile(args.docx, scratch_docx)
 
@@ -157,7 +119,10 @@ def main() -> int:
                 },
             )
 
-        result = asyncio.run(_run())
+        # Scope the INPUT_DIR override to the CLI invocation so we don't
+        # leak it into the parent shell environment.
+        with mock.patch.dict("os.environ", {"INPUT_DIR": str(input_dir)}):
+            result = asyncio.run(_run())
         produced_dir = Path(result["blocks_path"]).parent
         target_dir = output_dir / produced_dir.name
         if target_dir.exists():

@@ -2306,7 +2306,7 @@ class _PipelineMixin:
             # engine (mirrors parse_mineru).
             from lightrag.native_parser.docx.drawing_image_extractor import (
                 DrawingExtractionContext,
-                _load_relationships,
+                load_relationships,
             )
             from lightrag.native_parser.docx.parse_document import (
                 extract_docx_blocks,
@@ -2329,7 +2329,10 @@ class _PipelineMixin:
                 # Pre-clean parsed_dir and pre-create the asset dir so the
                 # drawing extractor can write image bytes BEFORE write_sidecar
                 # runs (which is then called with clean_parsed_dir=False to
-                # keep those bytes).
+                # keep those bytes). ``parsed_artifact_dir_for_source`` returns
+                # a unique dir per source (with ``_001``/``_002`` suffixes on
+                # collision), so the rmtree here only ever clobbers stale
+                # artifacts from a previous attempt at the same doc_id.
                 if parsed_dir.exists():
                     shutil.rmtree(parsed_dir)
                 parsed_dir.mkdir(parents=True, exist_ok=True)
@@ -2340,7 +2343,7 @@ class _PipelineMixin:
                     export_dir_name=asset_dir.name,
                     export_dir_path=asset_dir,
                 )
-                _load_relationships(ctx)
+                load_relationships(ctx)
                 warnings: dict[str, Any] = {}
                 metadata: dict[str, Any] = {}
                 extracted = extract_docx_blocks(
