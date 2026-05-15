@@ -229,8 +229,11 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
 | `format` | `"json"` (二维数组) 或 `"html"` (负载 `<table>…</table>` 片段，含起止标签) |
 | `content` | 字符串：表格正文，按 `format` 决定结构；这是后续多模态 chunk 真正使用的字符串。 |
 | `table_header` | 字符串：可选；识别出来的作为表格头的行内容 |
+| `extras` | 对象：可选；引擎专属的旁路字段（行/列合并、OCR 置信度等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
 
 在模态分析阶段，如果`content`字段长度超过大模型的上下文长度时，表格内容会被机械地截断后在喂给模型。
+
+> tables item 表中所列以外的引擎专属字段，统一放进 `extras` 对象；不要在 item 顶层引入未声明的字段（比如 `image` / `img_path` 等），下游对未声明字段不做兼容承诺。drawings / equations 也遵循同样的 `extras` 约定。
 
 ## 六、equations.json
 
