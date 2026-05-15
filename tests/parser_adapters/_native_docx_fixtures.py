@@ -13,11 +13,10 @@ Each scenario describes:
 - ``file_path``   — used for canonical basename / doc_title fallback.
 
 The captured outputs (``blocks.jsonl`` + per-modality JSONs + assets) live
-under ``tests/parser_adapters/golden/native_docx/<scenario>/``. Two paths
-must produce byte-identical bytes vs those fixtures:
-
-- The legacy ``parse_docx_to_lightrag_document`` (captured baseline).
-- The new ``NativeDocxAdapter`` + ``write_sidecar`` flow (under test).
+under ``tests/parser_adapters/golden/native_docx/<scenario>/``. The
+production path (``LightRAG.parse_native``) must produce byte-identical
+bytes vs those fixtures; the regen script under ``scripts/`` rewrites
+them when the format intentionally changes.
 """
 
 from __future__ import annotations
