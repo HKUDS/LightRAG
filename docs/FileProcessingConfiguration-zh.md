@@ -141,11 +141,53 @@ notes.[R].md
 | `mineru` | 外部 MinerU 内容提取引擎 | `pdf` `doc` `docx` `ppt` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
 | `docling` | 外部 Docling 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
 
-`mineru` 和 `docling` 是外部内容提取引擎。启用相关规则时，必须在服务启动前配置对应 endpoint/token，例如：
+`mineru` 和 `docling` 是外部内容提取引擎，启用相关规则前必须先把服务跑起来，再在 LightRAG 配置对应 endpoint/token。
+
+#### MinerU 部署与配置
+
+MinerU 客户端支持两种模式，二选一：
+
+- `local`：自建 MinerU 服务（推荐用官方 Docker Compose 部署），LightRAG 通过 HTTP 调用本地容器。
+- `official`：直连 MinerU 官方精准 API v4，需要在 [mineru.net](https://mineru.net) 申请 token。
+
+**本地化部署（Docker Compose）**
+
+从 [opendatalab/MinerU](https://github.com/opendatalab/MinerU) 克隆官方仓库到本地，进入仓库内的 docker 部署目录后，先构建镜像：
+
+```bash
+docker compose -f compose.yaml build
+```
+
+然后启动 API 服务（带 `--profile api` 才会启用 HTTP API 容器，默认监听 8000 端口）：
+
+```bash
+docker compose -f compose.yaml --profile api up -d
+```
+
+镜像构建细节、GPU 驱动准备、模型权重位置等请参考官方 README：<https://github.com/opendatalab/MinerU>。
+
+**LightRAG 侧 env 配置**
+
+Local 模式（自建 mineru-api）：
 
 ```bash
 MINERU_API_MODE=local
 MINERU_LOCAL_ENDPOINT=http://localhost:8000
+```
+
+Official 模式（MinerU 云端 API）：
+
+```bash
+MINERU_API_MODE=official
+MINERU_API_TOKEN=<your_token>
+# MINERU_OFFICIAL_ENDPOINT=https://mineru.net   # 默认值，通常无需修改
+```
+
+其余高级开关（`MINERU_MODEL_VERSION`、`MINERU_LANGUAGE`、`MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`、`MINERU_PAGE_RANGES`、`MINERU_LOCAL_BACKEND` / `MINERU_LOCAL_PARSE_METHOD`、`MINERU_POLL_INTERVAL_SECONDS` / `MINERU_MAX_POLLS`、`MINERU_ENGINE_VERSION`、`LIGHTRAG_FORCE_REPARSE_MINERU` 等）请参考仓库根目录 `.env` 模板的 MinerU 小节。需要特别注意 `MINERU_PAGE_RANGES` 在两种模式下语义不同：`official` 支持完整列表（如 `1-3,5,7-9`），`local` 仅支持单页（`3`）或简单范围（`1-10`），不接受逗号列表。
+
+#### Docling 部署与配置
+
+```bash
 DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
 ```
 
