@@ -177,15 +177,11 @@ class MinerUAdapter:
             """Emit the in-flight block if it carries any content."""
             nonlocal cb_lines, cb_tables, cb_drawings, cb_equations, cb_positions
             nonlocal cb_has_body
-            has_payload = bool(
-                cb_lines or cb_tables or cb_drawings or cb_equations
-            )
+            has_payload = bool(cb_lines or cb_tables or cb_drawings or cb_equations)
             if not has_payload:
                 return
             content = "\n".join(line for line in cb_lines if line)
-            if not content.strip() and not (
-                cb_tables or cb_drawings or cb_equations
-            ):
+            if not content.strip() and not (cb_tables or cb_drawings or cb_equations):
                 # Reset and skip — nothing meaningful to emit.
                 cb_lines = []
                 cb_positions = []
@@ -269,11 +265,7 @@ class MinerUAdapter:
                 # body yet AND the new heading is strictly deeper — append
                 # this heading as body to the existing block instead of
                 # flushing. (Preface, level=0, is never merged into.)
-                if (
-                    cb_level > 0
-                    and not cb_has_body
-                    and heading_level > cb_level
-                ):
+                if cb_level > 0 and not cb_has_body and heading_level > cb_level:
                     _merge_heading_as_body(heading_text, heading_level, position)
                     if not doc_title and heading_level == 1:
                         doc_title = heading_text
