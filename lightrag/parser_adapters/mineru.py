@@ -7,11 +7,19 @@ only reads the content list and image asset bytes.
 
 Conversion rules (informed by spec §3-§六):
 
-- ``text`` / ``list`` / ``code`` → IRBlock; list items joined with ``\n``;
-  ``code`` body taken from ``code_body`` if present.
-- ``title`` / ``section_header`` → updates the heading stack AND emits its
-  own block whose content equals the heading (consistent with the native
-  adapter so "first H1" can serve as ``doc_title``).
+- ``text`` items with ``text_level>0`` and ``title`` / ``section_header``
+  start a NEW block. The heading text is rendered with a markdown ``#``
+  prefix matching the level (``# foo``, ``## bar`` …) as the first line of
+  the new block's content.
+- All other items (``text``, ``list``, ``code``, ``table``, ``image``,
+  ``equation``) are MERGED into the current block — their text / placeholder
+  is appended (newline-separated) to the heading's block. This mirrors the
+  native docx parser's "split-by-heading, merge-everything-under-heading"
+  behavior (see ``native_parser/docx/parse_document.py``).
+- Content emitted before the first heading lands in a synthetic
+  ``Preface/Uncategorized`` block at level 0.
+- ``list`` items joined with ``\n``; ``code`` body taken from ``code_body``
+  if present.
 - ``table`` → IRTable + ``{{TBL:k}}`` placeholder. ``table_body`` (HTML) or
   the ``rows`` field (2D array) become ``html`` / ``rows`` on IRTable.
   ``num_rows`` / ``num_cols`` are taken from MinerU if present, otherwise
@@ -20,10 +28,12 @@ Conversion rules (informed by spec §3-§六):
   Asset bytes are referenced via ``img_path`` relative to the raw dir.
 - ``equation`` → IREquation. ``is_block`` is decided by whether
   ``text_format=="block"`` (MinerU explicit flag) OR ``text_level==0`` with
-  no inline neighbours; otherwise inline. A bare ``$..$`` wrapper on
-  ``text`` is stripped before being treated as LaTeX.
+  no inline neighbours; otherwise inline. The latex string is preserved
+  verbatim (including any ``$$``/``$`` wrappers) so ``blocks.jsonl``'s
+  ``<equation>`` body matches MinerU's raw output; the writer strips the
+  wrappers when persisting ``equations.json`` content.
 - ``page_idx`` + ``bbox`` → ``IRPosition(type="bbox", anchor=page, range=[x0,y0,x1,y1])``.
-  Empty/missing bbox is acceptable.
+  Empty/missing bbox is acceptable; positions accumulate on the merged block.
 - ``IRDoc.split_option`` records the MinerU engine version when available.
 - ``IRDoc.bbox_attributes`` defaults to ``{"origin":"LEFTTOP","max":1000}``
   reflecting MinerU's PDF coordinate convention. Operators may override
@@ -34,7 +44,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -51,7 +60,7 @@ from lightrag.sidecar.ir import (
 from lightrag.utils import logger
 
 
-_LATEX_DOLLAR_RE = re.compile(r"^\s*\$\$?(.+?)\$\$?\s*$", re.DOTALL)
+PREFACE_HEADING = "Preface/Uncategorized"
 
 
 class MinerUAdapter:
@@ -133,12 +142,10 @@ class MinerUAdapter:
     ) -> IRDoc:
         document_format = Path(document_name).suffix.lower().lstrip(".")
 
-        heading_stack: list[str] = []
         blocks: list[IRBlock] = []
         assets: list[AssetSpec] = []
         seen_assets: dict[str, str] = {}  # ref → suggested_name
         doc_title = ""
-
         placeholder_counter = 0
 
         def _next_key(prefix: str) -> str:
@@ -146,18 +153,98 @@ class MinerUAdapter:
             placeholder_counter += 1
             return f"{prefix}{placeholder_counter}"
 
-        def _update_heading(text: str, level: int) -> tuple[str, int, list[str]]:
-            clean = (text or "").strip()
-            lv = max(int(level or 1), 1)
-            nonlocal heading_stack
-            heading_stack = heading_stack[: max(lv - 1, 0)]
-            parents = [h for h in heading_stack if h]
-            heading_stack.append(clean)
-            return clean, lv, parents
+        # Heading hierarchy stack — index = level-1 (level 1 lives at [0]).
+        heading_stack: list[str] = []
 
-        current_heading = ""
-        current_level = 0
-        current_parents: list[str] = []
+        # Current-block accumulator. The block is materialized when the next
+        # heading arrives (or at end-of-document). The initial block is the
+        # synthetic "Preface/Uncategorized" container at level 0.
+        cb_lines: list[str] = []
+        cb_tables: list[IRTable] = []
+        cb_drawings: list[IRDrawing] = []
+        cb_equations: list[IREquation] = []
+        cb_positions: list[IRPosition] = []
+        cb_heading = PREFACE_HEADING
+        cb_level = 0
+        cb_parents: list[str] = []
+        # ``cb_has_body`` flips True the moment we accumulate any non-heading
+        # payload into the current block. While it stays False, an adjacent
+        # deeper heading is folded into this block as a body line (aligning
+        # with the native docx parser's behaviour for back-to-back headings).
+        cb_has_body = False
+
+        def _flush_block() -> None:
+            """Emit the in-flight block if it carries any content."""
+            nonlocal cb_lines, cb_tables, cb_drawings, cb_equations, cb_positions
+            nonlocal cb_has_body
+            has_payload = bool(cb_lines or cb_tables or cb_drawings or cb_equations)
+            if not has_payload:
+                return
+            content = "\n".join(line for line in cb_lines if line)
+            if not content.strip() and not (cb_tables or cb_drawings or cb_equations):
+                # Reset and skip — nothing meaningful to emit.
+                cb_lines = []
+                cb_positions = []
+                cb_has_body = False
+                return
+            blocks.append(
+                IRBlock(
+                    content_template=content,
+                    heading=cb_heading,
+                    level=cb_level,
+                    parent_headings=list(cb_parents),
+                    positions=list(cb_positions),
+                    tables=list(cb_tables),
+                    drawings=list(cb_drawings),
+                    equations=list(cb_equations),
+                )
+            )
+            cb_lines = []
+            cb_tables = []
+            cb_drawings = []
+            cb_equations = []
+            cb_positions = []
+            cb_has_body = False
+
+        def _open_block(
+            heading: str,
+            level: int,
+            parents: list[str],
+            position: IRPosition | None,
+        ) -> None:
+            nonlocal cb_heading, cb_level, cb_parents
+            cb_heading = heading
+            cb_level = level
+            cb_parents = parents
+            # Render the heading line into the block body so the merged
+            # text reads like markdown (``# Foo`` / ``## Bar`` / …).
+            md_prefix = "#" * max(level, 1)
+            cb_lines.append(f"{md_prefix} {heading}")
+            if position is not None:
+                cb_positions.append(position)
+
+        def _append_text(text: str, position: IRPosition | None) -> None:
+            nonlocal cb_has_body
+            if text:
+                cb_lines.append(text)
+                cb_has_body = True
+            if position is not None:
+                cb_positions.append(position)
+
+        def _merge_heading_as_body(
+            heading: str, level: int, position: IRPosition | None
+        ) -> None:
+            """Fold an adjacent deeper heading into the current block.
+
+            The line keeps its markdown ``#`` prefix so the rendered block
+            still reads as ``# Section\n## Subsection``. Does NOT flip
+            ``cb_has_body`` — successive headings can keep folding until a
+            real body item lands.
+            """
+            md_prefix = "#" * max(level, 1)
+            cb_lines.append(f"{md_prefix} {heading}")
+            if position is not None:
+                cb_positions.append(position)
 
         for item in content_list:
             if not isinstance(item, dict):
@@ -165,81 +252,47 @@ class MinerUAdapter:
             item_type = str(item.get("type") or item.get("label") or "").lower()
             position = _extract_position(item)
 
-            if item_type in {"text"}:
-                text = _coerce_text(item)
-                if not text:
+            heading_text, heading_level = _detect_heading(item, item_type)
+            if heading_text:
+                # Heading hierarchy is updated unconditionally so deeper
+                # parents resolve correctly once the next real body item
+                # opens a fresh block.
+                heading_stack = heading_stack[: max(heading_level - 1, 0)]
+                parents = [h for h in heading_stack if h]
+                heading_stack.append(heading_text)
+
+                # Adjacency merge: previous block is a real heading with no
+                # body yet AND the new heading is strictly deeper — append
+                # this heading as body to the existing block instead of
+                # flushing. (Preface, level=0, is never merged into.)
+                if cb_level > 0 and not cb_has_body and heading_level > cb_level:
+                    _merge_heading_as_body(heading_text, heading_level, position)
+                    if not doc_title and heading_level == 1:
+                        doc_title = heading_text
                     continue
-                inferred_level = int(item.get("text_level") or 0)
-                if inferred_level > 0:
-                    current_heading, current_level, current_parents = _update_heading(
-                        text, inferred_level
-                    )
-                    if not doc_title and inferred_level == 1:
-                        doc_title = current_heading
-                blocks.append(
-                    IRBlock(
-                        content_template=text,
-                        heading=current_heading,
-                        level=current_level if inferred_level > 0 else current_level,
-                        parent_headings=list(current_parents),
-                        positions=[position] if position else [],
-                    )
-                )
+
+                _flush_block()
+                _open_block(heading_text, heading_level, parents, position)
+
+                if not doc_title and heading_level == 1:
+                    doc_title = heading_text
                 continue
 
-            if item_type in {"title", "section_header"}:
-                text = _coerce_text(item)
-                if not text:
-                    continue
-                inferred_level = int(item.get("text_level") or item.get("level") or 1)
-                current_heading, current_level, current_parents = _update_heading(
-                    text, inferred_level
-                )
-                if not doc_title and inferred_level == 1:
-                    doc_title = current_heading
-                blocks.append(
-                    IRBlock(
-                        content_template=text,
-                        heading=current_heading,
-                        level=current_level,
-                        parent_headings=list(current_parents),
-                        positions=[position] if position else [],
-                    )
-                )
+            if item_type == "text":
+                _append_text(_coerce_text(item), position)
                 continue
 
-            if item_type in {"list"}:
+            if item_type == "list":
                 items = item.get("list_items")
                 if isinstance(items, list):
                     text = "\n".join(str(x) for x in items if str(x).strip())
                 else:
                     text = _coerce_text(item)
-                if not text:
-                    continue
-                blocks.append(
-                    IRBlock(
-                        content_template=text,
-                        heading=current_heading,
-                        level=current_level,
-                        parent_headings=list(current_parents),
-                        positions=[position] if position else [],
-                    )
-                )
+                _append_text(text, position)
                 continue
 
-            if item_type in {"code"}:
-                text = item.get("code_body") or _coerce_text(item)
-                if not text:
-                    continue
-                blocks.append(
-                    IRBlock(
-                        content_template=text,
-                        heading=current_heading,
-                        level=current_level,
-                        parent_headings=list(current_parents),
-                        positions=[position] if position else [],
-                    )
-                )
+            if item_type == "code":
+                _append_text(item.get("code_body") or _coerce_text(item), position)
                 continue
 
             if item_type == "equation":
@@ -247,46 +300,39 @@ class MinerUAdapter:
                 if not latex_raw:
                     # Spec compliance fix: empty equation must not enter sidecar.
                     continue
-                m = _LATEX_DOLLAR_RE.match(latex_raw)
-                latex = m.group(1).strip() if m else latex_raw.strip()
+                # Preserve MinerU's raw latex (including any ``$$``/``$``
+                # wrappers); the writer strips them when emitting
+                # equations.json so blocks.jsonl shows the raw form while
+                # the per-equation sidecar holds clean latex.
+                latex = latex_raw.strip()
                 is_block = _is_block_equation(item)
                 caption = str(item.get("caption") or "")
                 placeholder = _next_key("eq")
                 token = "EQ" if is_block else "EQI"
-                blocks.append(
-                    IRBlock(
-                        content_template=f"{{{{{token}:{placeholder}}}}}",
-                        heading=current_heading,
-                        level=current_level,
-                        parent_headings=list(current_parents),
-                        equations=[
-                            IREquation(
-                                placeholder_key=placeholder,
-                                latex=latex,
-                                is_block=is_block,
-                                caption=caption,
-                                footnotes=_as_str_list(item.get("footnotes")),
-                            )
-                        ],
-                        positions=[position] if position else [],
+                cb_equations.append(
+                    IREquation(
+                        placeholder_key=placeholder,
+                        latex=latex,
+                        is_block=is_block,
+                        caption=caption,
+                        footnotes=_as_str_list(item.get("footnotes")),
                     )
                 )
+                cb_lines.append(f"{{{{{token}:{placeholder}}}}}")
+                cb_has_body = True
+                if position is not None:
+                    cb_positions.append(position)
                 continue
 
             if item_type == "table":
                 table = self._build_ir_table(item)
                 placeholder = _next_key("tb")
                 table.placeholder_key = placeholder
-                blocks.append(
-                    IRBlock(
-                        content_template=f"{{{{TBL:{placeholder}}}}}",
-                        heading=current_heading,
-                        level=current_level,
-                        parent_headings=list(current_parents),
-                        tables=[table],
-                        positions=[position] if position else [],
-                    )
-                )
+                cb_tables.append(table)
+                cb_lines.append(f"{{{{TBL:{placeholder}}}}}")
+                cb_has_body = True
+                if position is not None:
+                    cb_positions.append(position)
                 continue
 
             if item_type in {"image", "picture", "drawing"}:
@@ -295,31 +341,18 @@ class MinerUAdapter:
                 drawing.placeholder_key = placeholder
                 if asset is not None and asset.ref not in {a.ref for a in assets}:
                     assets.append(asset)
-                blocks.append(
-                    IRBlock(
-                        content_template=f"{{{{IMG:{placeholder}}}}}",
-                        heading=current_heading,
-                        level=current_level,
-                        parent_headings=list(current_parents),
-                        drawings=[drawing],
-                        positions=[position] if position else [],
-                    )
-                )
+                cb_drawings.append(drawing)
+                cb_lines.append(f"{{{{IMG:{placeholder}}}}}")
+                cb_has_body = True
+                if position is not None:
+                    cb_positions.append(position)
                 continue
 
             # Fallback: serialize unknown items as plain text so we don't
             # silently drop information.
-            text = _coerce_text(item)
-            if text:
-                blocks.append(
-                    IRBlock(
-                        content_template=text,
-                        heading=current_heading,
-                        level=current_level,
-                        parent_headings=list(current_parents),
-                        positions=[position] if position else [],
-                    )
-                )
+            _append_text(_coerce_text(item), position)
+
+        _flush_block()
 
         if not doc_title:
             doc_title = Path(document_name).stem or document_name
@@ -453,6 +486,26 @@ class MinerUAdapter:
 # ----------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------
+
+
+def _detect_heading(item: dict, item_type: str) -> tuple[str, int]:
+    """Return ``(heading_text, level)`` if ``item`` is a heading, else ``("", 0)``.
+
+    A heading is either an explicit ``title``/``section_header`` block, or a
+    ``text`` block whose ``text_level`` is positive (MinerU's convention).
+    """
+    if item_type in {"title", "section_header"}:
+        text = _coerce_text(item).strip()
+        level = max(int(item.get("text_level") or item.get("level") or 1), 1)
+        return text, level
+    if item_type == "text":
+        try:
+            tl = int(item.get("text_level") or 0)
+        except (TypeError, ValueError):
+            tl = 0
+        if tl > 0:
+            return _coerce_text(item).strip(), tl
+    return "", 0
 
 
 def _coerce_text(item: dict) -> str:

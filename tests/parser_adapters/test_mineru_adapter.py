@@ -33,16 +33,85 @@ def test_adapter_simple_text_and_heading(tmp_path: Path) -> None:
 
     assert ir.doc_title == "1 Introduction"
     assert ir.document_format == "pdf"
-    assert len(ir.blocks) == 4
+    # Heading + body merge into a single block per heading.
+    assert len(ir.blocks) == 2
     assert ir.blocks[0].heading == "1 Introduction"
     assert ir.blocks[0].level == 1
-    # Body inherits the current heading + level.
-    assert ir.blocks[1].heading == "1 Introduction"
-    assert ir.blocks[1].level == 1
+    # Heading line is rendered with markdown ``#`` prefix matching the level.
+    assert ir.blocks[0].content_template == "# 1 Introduction\nBody paragraph."
     # Sub-heading updates stack and records parent.
-    assert ir.blocks[2].heading == "1.1 Sub"
-    assert ir.blocks[2].level == 2
-    assert ir.blocks[2].parent_headings == ["1 Introduction"]
+    assert ir.blocks[1].heading == "1.1 Sub"
+    assert ir.blocks[1].level == 2
+    assert ir.blocks[1].parent_headings == ["1 Introduction"]
+    assert ir.blocks[1].content_template == "## 1.1 Sub\nSub body."
+
+
+@pytest.mark.offline
+def test_adapter_preface_block_for_pre_heading_content(tmp_path: Path) -> None:
+    """Items emitted before the first heading land in a synthetic
+    ``Preface/Uncategorized`` block at level 0."""
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Floating intro line."},
+            {"type": "list", "list_items": ["a", "b"]},
+            {"type": "text", "text": "Section A", "text_level": 1},
+            {"type": "text", "text": "A body."},
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="p.pdf")
+
+    assert len(ir.blocks) == 2
+    preface = ir.blocks[0]
+    assert preface.heading == "Preface/Uncategorized"
+    assert preface.level == 0
+    assert preface.parent_headings == []
+    assert preface.content_template == "Floating intro line.\na\nb"
+
+    section = ir.blocks[1]
+    assert section.heading == "Section A"
+    assert section.level == 1
+    assert section.content_template == "# Section A\nA body."
+
+
+@pytest.mark.offline
+def test_adapter_merges_mixed_payloads_under_heading(tmp_path: Path) -> None:
+    """Tables / images / equations / code under the same heading merge into
+    one block; their placeholders appear in document order."""
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Methods", "text_level": 1},
+            {"type": "text", "text": "We did stuff."},
+            {
+                "type": "table",
+                "table_body": [["a", "b"], ["1", "2"]],
+                "num_rows": 2,
+                "num_cols": 2,
+            },
+            {"type": "image", "img_path": "images/fig1.png"},
+            {"type": "equation", "text": "$$E = mc^2$$"},
+            {"type": "code", "code_body": "print('ok')"},
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+    assert len(ir.blocks) == 1
+    block = ir.blocks[0]
+    assert block.heading == "Methods"
+    assert block.level == 1
+    assert len(block.tables) == 1
+    assert len(block.drawings) == 1
+    assert len(block.equations) == 1
+    # Lines are joined in source order; the heading carries its ``#`` prefix.
+    expected_lines = [
+        "# Methods",
+        "We did stuff.",
+        f"{{{{TBL:{block.tables[0].placeholder_key}}}}}",
+        f"{{{{IMG:{block.drawings[0].placeholder_key}}}}}",
+        f"{{{{EQ:{block.equations[0].placeholder_key}}}}}",
+        "print('ok')",
+    ]
+    assert block.content_template == "\n".join(expected_lines)
 
 
 @pytest.mark.offline
@@ -93,9 +162,126 @@ def test_adapter_table_and_drawing_and_equation(tmp_path: Path) -> None:
 
     equation_block = next(b for b in ir.blocks if b.equations)
     eq = equation_block.equations[0]
-    assert eq.latex == "E = mc^2"  # $..$ stripped
+    # IREquation.latex preserves MinerU's raw form so blocks.jsonl shows it
+    # verbatim; equations.json strips the ``$`` wrappers downstream (writer).
+    assert eq.latex == "$E = mc^2$"
     assert eq.is_block is True
     assert eq.caption == "Eq 1"
+
+
+@pytest.mark.offline
+def test_adapter_adjacent_deeper_heading_merged_as_body(tmp_path: Path) -> None:
+    """Two headings in a row with no body between them: when the second is
+    strictly deeper (level number larger), it folds into the first heading's
+    block as a body line. Mirrors the native docx parser's behaviour.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "1 Top", "text_level": 1},
+            {"type": "text", "text": "1.1 Mid", "text_level": 2},
+            {"type": "text", "text": "1.1.1 Deep", "text_level": 3},
+            {"type": "text", "text": "Body for deep."},
+            {"type": "text", "text": "2 Top Again", "text_level": 1},
+            {"type": "text", "text": "More body."},
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+
+    # First "1 Top" absorbs the immediately-following deeper headings;
+    # body lands inside the same block. Then a new top-level heading
+    # opens a fresh block.
+    assert len(ir.blocks) == 2
+
+    merged = ir.blocks[0]
+    assert merged.heading == "1 Top"
+    assert merged.level == 1
+    assert merged.parent_headings == []
+    assert merged.content_template == (
+        "# 1 Top\n## 1.1 Mid\n### 1.1.1 Deep\nBody for deep."
+    )
+
+    fresh = ir.blocks[1]
+    assert fresh.heading == "2 Top Again"
+    assert fresh.level == 1
+    # Heading stack reset cleanly — no stale deep parents leak.
+    assert fresh.parent_headings == []
+    assert fresh.content_template == "# 2 Top Again\nMore body."
+
+
+@pytest.mark.offline
+def test_adapter_adjacent_shallower_heading_starts_new_block(
+    tmp_path: Path,
+) -> None:
+    """Inverse case: when the second adjacent heading is shallower (level
+    number smaller or equal), it must NOT merge — it starts a new block.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "1.1 Mid first", "text_level": 2},
+            {"type": "text", "text": "2 Top after", "text_level": 1},
+            {"type": "text", "text": "body"},
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+
+    # The first block is heading-only; the writer downstream will keep it
+    # (the merged-heading rule only forwards DEEPER headings).
+    assert len(ir.blocks) == 2
+    assert ir.blocks[0].heading == "1.1 Mid first"
+    assert ir.blocks[0].level == 2
+    assert ir.blocks[0].content_template == "## 1.1 Mid first"
+
+    assert ir.blocks[1].heading == "2 Top after"
+    assert ir.blocks[1].level == 1
+    assert ir.blocks[1].content_template == "# 2 Top after\nbody"
+
+
+@pytest.mark.offline
+def test_adapter_body_breaks_adjacent_heading_merge(tmp_path: Path) -> None:
+    """Once any body content lands in the current block, the next heading —
+    even a deeper one — must flush and open a fresh block (no merge)."""
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "1 Top", "text_level": 1},
+            {"type": "text", "text": "Intro line under 1."},
+            {"type": "text", "text": "1.1 Mid", "text_level": 2},
+            {"type": "text", "text": "Mid body."},
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+
+    assert len(ir.blocks) == 2
+    assert ir.blocks[0].content_template == "# 1 Top\nIntro line under 1."
+    assert ir.blocks[1].heading == "1.1 Mid"
+    assert ir.blocks[1].parent_headings == ["1 Top"]
+    assert ir.blocks[1].content_template == "## 1.1 Mid\nMid body."
+
+
+@pytest.mark.offline
+def test_adapter_block_equation_preserves_dollar_wrappers(tmp_path: Path) -> None:
+    """Block equations keep the ``$$`` markers verbatim on IREquation.latex
+    so the writer renders blocks.jsonl's ``<equation>`` body byte-identical
+    to MinerU's source. The downstream writer is responsible for stripping
+    them when generating equations.json."""
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "equation",
+                "text": "$$\n\\int_0^1 x dx = \\tfrac{1}{2}\n$$",
+                "text_format": "block",
+                "caption": "Eq A",
+            },
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="b.pdf")
+    eq = ir.blocks[0].equations[0]
+    assert eq.is_block is True
+    # No stripping in the adapter; whitespace.strip() only.
+    assert eq.latex == "$$\n\\int_0^1 x dx = \\tfrac{1}{2}\n$$"
 
 
 @pytest.mark.offline
