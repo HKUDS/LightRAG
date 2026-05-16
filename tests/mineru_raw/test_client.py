@@ -79,9 +79,15 @@ class _FakeAsyncClient:
         )
 
     async def put(
-        self, url: str, data: Any = None, headers: Any = None
+        self,
+        url: str,
+        data: Any = None,
+        content: Any = None,
+        headers: Any = None,
     ) -> _FakeResponse:
-        return _CURRENT.dispatcher.put(url, data=data, headers=headers)
+        # ``content=`` was added to match production ``client.put(url, content=bytes)``
+        # introduced for httpx 0.28+ compatibility (see lightrag/mineru_raw/client.py).
+        return _CURRENT.dispatcher.put(url, data=data, content=content, headers=headers)
 
     async def get(
         self, url: str, params: Any = None, headers: Any = None
