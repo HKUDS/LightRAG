@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _hermetic_mineru_env(monkeypatch):
-    """Make every test start with MinerU env vars in their unset state.
+    """Make every test start with parser-routing env vars in their unset state.
 
     ``lightrag/api/{auth,config}.py`` call ``load_dotenv(override=False)``
     at import time, leaking the developer's local ``.env`` into the test
@@ -24,15 +24,24 @@ def _hermetic_mineru_env(monkeypatch):
       ``"MINERU_API_TOKEN"`` instead of ``"MINERU_LOCAL_ENDPOINT"``,
       breaking the validation-error string match.
 
-    Strip the variable globally; tests that need a specific mode can
-    still ``monkeypatch.setenv("MINERU_API_MODE", "official")``
-    themselves and monkeypatch will restore the inherited value at
-    teardown.
+    ``LIGHTRAG_PARSER`` is cleared for the same reason: a routing rule
+    like ``docx:mineru-iet`` in the developer's ``.env`` forces
+    ``parser_routing.validate_parser_routing_config`` to require the
+    corresponding endpoint (``MINERU_LOCAL_ENDPOINT`` /
+    ``DOCLING_ENDPOINT``) at every ``create_app`` call, which then trips
+    unrelated API/FastAPI tests (``test_bedrock_llm.py``,
+    ``test_path_prefixes.py``).
+
+    Strip these variables globally; tests that need a specific mode can
+    still ``monkeypatch.setenv(...)`` themselves and monkeypatch will
+    restore the inherited value at teardown.
     """
     monkeypatch.delenv("MINERU_API_MODE", raising=False)
     monkeypatch.delenv("MINERU_API_TOKEN", raising=False)
     monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
     monkeypatch.delenv("MINERU_OFFICIAL_ENDPOINT", raising=False)
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
+    monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
 
 
 def pytest_configure(config):
