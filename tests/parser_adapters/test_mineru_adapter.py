@@ -152,9 +152,15 @@ def test_adapter_table_and_drawing_and_equation(tmp_path: Path) -> None:
     drawing = drawing_block.drawings[0]
     assert drawing.fmt == "jpg"
     assert drawing.caption == "Fig 1"
-    # Position carried through.
+    # Position carried through. The bbox-bearing item produces exactly one
+    # fine-grained position (anchor + range) and is NOT also rolled into the
+    # page-only summary channel — so the block has a single position entry,
+    # not a duplicate summary + bbox pair.
+    assert len(drawing_block.positions) == 1
     assert drawing_block.positions[0].type == "bbox"
-    assert drawing_block.positions[0].anchor == 2  # page_idx+1
+    # Anchor is always serialized as a string (uniform on-disk format,
+    # accommodates book pagination labels like Roman "ii").
+    assert drawing_block.positions[0].anchor == "2"  # page_idx+1
     assert drawing_block.positions[0].range == [10.0, 20.0, 30.0, 40.0]
 
     # Asset is declared with the relative path as ref.
@@ -167,6 +173,151 @@ def test_adapter_table_and_drawing_and_equation(tmp_path: Path) -> None:
     assert eq.latex == "$E = mc^2$"
     assert eq.is_block is True
     assert eq.caption == "Eq 1"
+
+
+@pytest.mark.offline
+def test_adapter_page_idx_aggregated_and_deduped_when_no_bbox(
+    tmp_path: Path,
+) -> None:
+    """Real MinerU output carries ``page_idx`` on every item but rarely a
+    ``bbox``. Each unique page contributing to a merged block must surface as
+    one anchor-only ``{type:"bbox", anchor:<page+1>}`` entry, sorted, no
+    duplicates, no ``range``.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Section", "text_level": 1, "page_idx": 0},
+            {"type": "text", "text": "line A", "page_idx": 0},
+            {"type": "text", "text": "line B", "page_idx": 1},
+            {"type": "text", "text": "line C", "page_idx": 1},
+            {"type": "text", "text": "line D", "page_idx": 2},
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="p.pdf")
+
+    assert len(ir.blocks) == 1
+    block = ir.blocks[0]
+    # Pages 0, 1, 2 → anchors "1", "2", "3" — one entry per unique page.
+    # Anchors are persisted as strings for on-disk uniformity.
+    assert len(block.positions) == 3
+    anchors = [p.anchor for p in block.positions]
+    assert anchors == ["1", "2", "3"]
+    for pos in block.positions:
+        assert pos.type == "bbox"
+        # Page-only summary entries have no range; ``to_jsonable`` must omit
+        # the key entirely.
+        assert pos.range is None
+        assert "range" not in pos.to_jsonable()
+
+
+@pytest.mark.offline
+def test_adapter_bbox_items_and_page_only_items_coexist(tmp_path: Path) -> None:
+    """When a block merges both bbox-bearing and bbox-less items, the bbox
+    items are emitted per-item (no dedupe, with ``range``) and only the
+    bbox-less items contribute to the page-only summary. Ordering: summary
+    first (sorted by anchor), bbox entries after (source order).
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Mixed", "text_level": 1, "page_idx": 1},
+            {
+                "type": "image",
+                "img_path": "images/fig.png",
+                "page_idx": 1,
+                "bbox": [10, 20, 30, 40],
+            },
+            {"type": "text", "text": "tail line", "page_idx": 2},
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+
+    assert len(ir.blocks) == 1
+    positions = ir.blocks[0].positions
+    # One page-only summary for page 3 (the bbox-less tail line) and one
+    # bbox entry for page 2 (the image). The heading item has page_idx=1
+    # but no bbox, so it adds anchor 2 to the page set — combined with the
+    # tail item's anchor 3 the summary section has TWO anchors (1+1, 2+1).
+    assert [(p.anchor, p.range) for p in positions] == [
+        ("2", None),
+        ("3", None),
+        ("2", [10.0, 20.0, 30.0, 40.0]),
+    ]
+
+
+@pytest.mark.offline
+def test_adapter_page_sort_books_convention_with_mixed_anchors(
+    tmp_path: Path,
+) -> None:
+    """Block merges items with Roman preface labels and Arabic numerals.
+
+    Two guarantees:
+
+    1. The adapter must not crash when sorting heterogeneous anchors — a
+       previous bug surfaced ``TypeError: '<' not supported between
+       instances of 'str' and 'int'`` whenever ``page_idx`` mixed types.
+    2. Output order follows book pagination convention: Roman / letter
+       labels first (lexical), then numeric pages by integer value, so
+       ``"2"`` precedes ``"10"`` (not ``"10"`` before ``"2"`` as a naive
+       lexical sort would do).
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "text",
+                "text": "Mixed Pagination",
+                "text_level": 1,
+                "page_idx": "i",
+            },
+            {"type": "text", "text": "preface intro", "page_idx": "i"},
+            {"type": "text", "text": "preface tail", "page_idx": "ii"},
+            {"type": "text", "text": "chapter line A", "page_idx": 1},  # → "2"
+            {"type": "text", "text": "chapter line B", "page_idx": 9},  # → "10"
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="mix.pdf")
+
+    assert len(ir.blocks) == 1
+    anchors = [p.anchor for p in ir.blocks[0].positions]
+    # Roman labels first (lex order), then numerics by int value.
+    assert anchors == ["i", "ii", "2", "10"]
+
+
+@pytest.mark.offline
+def test_adapter_empty_text_item_does_not_leak_page_to_block(
+    tmp_path: Path,
+) -> None:
+    """An item whose body is empty must NOT contribute its ``page_idx`` to
+    the current block's positions — otherwise spurious pages from
+    content-less items poison provenance.
+
+    Regression: empty text on page 99 sits between two real headings; its
+    page must not appear under either block.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "Section A", "text_level": 1, "page_idx": 0},
+            {"type": "text", "text": "real body", "page_idx": 0},
+            # Empty body — should be silently dropped, page_idx not recorded.
+            {"type": "text", "text": "", "page_idx": 98},
+            {"type": "text", "text": "Section B", "text_level": 1, "page_idx": 1},
+            {"type": "text", "text": "next body", "page_idx": 1},
+        ],
+    )
+    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="leak.pdf")
+
+    assert len(ir.blocks) == 2
+    a_anchors = [p.anchor for p in ir.blocks[0].positions]
+    b_anchors = [p.anchor for p in ir.blocks[1].positions]
+    # Section A only mentions page 1 (page_idx 0 + 1) — NOT 99 from the
+    # dropped empty item.
+    assert a_anchors == ["1"]
+    assert "99" not in a_anchors and "99" not in b_anchors
+    # Section B only mentions page 2 (page_idx 1 + 1).
+    assert b_anchors == ["2"]
 
 
 @pytest.mark.offline

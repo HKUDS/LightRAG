@@ -163,7 +163,14 @@ class MinerUAdapter:
         cb_tables: list[IRTable] = []
         cb_drawings: list[IRDrawing] = []
         cb_equations: list[IREquation] = []
-        cb_positions: list[IRPosition] = []
+        # Positions are split into two channels:
+        # - ``cb_page_set`` collects ``page_idx`` of bbox-less items; at flush
+        #   each unique page becomes one anchor-only summary ``IRPosition``.
+        # - ``cb_bbox_positions`` keeps one fine-grained position per item that
+        #   carried a parseable bbox (anchor + range), in source order, with
+        #   no deduplication.
+        cb_page_set: set[str] = set()
+        cb_bbox_positions: list[IRPosition] = []
         cb_heading = PREFACE_HEADING
         cb_level = 0
         cb_parents: list[str] = []
@@ -173,10 +180,26 @@ class MinerUAdapter:
         # with the native docx parser's behaviour for back-to-back headings).
         cb_has_body = False
 
+        def _record_position(item: dict) -> None:
+            """Route an item's positional info into the right channel.
+
+            Items with a parseable ``bbox`` produce one fine-grained
+            IRPosition appended to ``cb_bbox_positions`` (no dedupe).
+            Otherwise, ``page_idx`` (if any) is added to ``cb_page_set``
+            and emitted as a single anchor-only summary entry at flush.
+            """
+            bbox_pos = _extract_bbox_position(item)
+            if bbox_pos is not None:
+                cb_bbox_positions.append(bbox_pos)
+                return
+            page = _extract_page_anchor(item)
+            if page is not None:
+                cb_page_set.add(page)
+
         def _flush_block() -> None:
             """Emit the in-flight block if it carries any content."""
-            nonlocal cb_lines, cb_tables, cb_drawings, cb_equations, cb_positions
-            nonlocal cb_has_body
+            nonlocal cb_lines, cb_tables, cb_drawings, cb_equations
+            nonlocal cb_page_set, cb_bbox_positions, cb_has_body
             has_payload = bool(cb_lines or cb_tables or cb_drawings or cb_equations)
             if not has_payload:
                 return
@@ -184,16 +207,21 @@ class MinerUAdapter:
             if not content.strip() and not (cb_tables or cb_drawings or cb_equations):
                 # Reset and skip — nothing meaningful to emit.
                 cb_lines = []
-                cb_positions = []
+                cb_page_set = set()
+                cb_bbox_positions = []
                 cb_has_body = False
                 return
+            positions = [
+                IRPosition(type="bbox", anchor=p)
+                for p in _sort_page_anchors(cb_page_set)
+            ] + list(cb_bbox_positions)
             blocks.append(
                 IRBlock(
                     content_template=content,
                     heading=cb_heading,
                     level=cb_level,
                     parent_headings=list(cb_parents),
-                    positions=list(cb_positions),
+                    positions=positions,
                     tables=list(cb_tables),
                     drawings=list(cb_drawings),
                     equations=list(cb_equations),
@@ -203,15 +231,11 @@ class MinerUAdapter:
             cb_tables = []
             cb_drawings = []
             cb_equations = []
-            cb_positions = []
+            cb_page_set = set()
+            cb_bbox_positions = []
             cb_has_body = False
 
-        def _open_block(
-            heading: str,
-            level: int,
-            parents: list[str],
-            position: IRPosition | None,
-        ) -> None:
+        def _open_block(heading: str, level: int, parents: list[str]) -> None:
             nonlocal cb_heading, cb_level, cb_parents
             cb_heading = heading
             cb_level = level
@@ -220,20 +244,21 @@ class MinerUAdapter:
             # text reads like markdown (``# Foo`` / ``## Bar`` / …).
             md_prefix = "#" * max(level, 1)
             cb_lines.append(f"{md_prefix} {heading}")
-            if position is not None:
-                cb_positions.append(position)
 
-        def _append_text(text: str, position: IRPosition | None) -> None:
+        def _append_text(text: str) -> bool:
+            """Append ``text`` to the current block body and return whether
+            anything was actually written. Callers use the return value to
+            decide whether to also record the item's source position — an
+            empty text item must NOT leak its ``page_idx`` to the block.
+            """
             nonlocal cb_has_body
-            if text:
-                cb_lines.append(text)
-                cb_has_body = True
-            if position is not None:
-                cb_positions.append(position)
+            if not text:
+                return False
+            cb_lines.append(text)
+            cb_has_body = True
+            return True
 
-        def _merge_heading_as_body(
-            heading: str, level: int, position: IRPosition | None
-        ) -> None:
+        def _merge_heading_as_body(heading: str, level: int) -> None:
             """Fold an adjacent deeper heading into the current block.
 
             The line keeps its markdown ``#`` prefix so the rendered block
@@ -243,14 +268,11 @@ class MinerUAdapter:
             """
             md_prefix = "#" * max(level, 1)
             cb_lines.append(f"{md_prefix} {heading}")
-            if position is not None:
-                cb_positions.append(position)
 
         for item in content_list:
             if not isinstance(item, dict):
                 continue
             item_type = str(item.get("type") or item.get("label") or "").lower()
-            position = _extract_position(item)
 
             heading_text, heading_level = _detect_heading(item, item_type)
             if heading_text:
@@ -266,20 +288,23 @@ class MinerUAdapter:
                 # this heading as body to the existing block instead of
                 # flushing. (Preface, level=0, is never merged into.)
                 if cb_level > 0 and not cb_has_body and heading_level > cb_level:
-                    _merge_heading_as_body(heading_text, heading_level, position)
+                    _merge_heading_as_body(heading_text, heading_level)
+                    _record_position(item)
                     if not doc_title and heading_level == 1:
                         doc_title = heading_text
                     continue
 
                 _flush_block()
-                _open_block(heading_text, heading_level, parents, position)
+                _open_block(heading_text, heading_level, parents)
+                _record_position(item)
 
                 if not doc_title and heading_level == 1:
                     doc_title = heading_text
                 continue
 
             if item_type == "text":
-                _append_text(_coerce_text(item), position)
+                if _append_text(_coerce_text(item)):
+                    _record_position(item)
                 continue
 
             if item_type == "list":
@@ -288,11 +313,13 @@ class MinerUAdapter:
                     text = "\n".join(str(x) for x in items if str(x).strip())
                 else:
                     text = _coerce_text(item)
-                _append_text(text, position)
+                if _append_text(text):
+                    _record_position(item)
                 continue
 
             if item_type == "code":
-                _append_text(item.get("code_body") or _coerce_text(item), position)
+                if _append_text(item.get("code_body") or _coerce_text(item)):
+                    _record_position(item)
                 continue
 
             if item_type == "equation":
@@ -320,8 +347,7 @@ class MinerUAdapter:
                 )
                 cb_lines.append(f"{{{{{token}:{placeholder}}}}}")
                 cb_has_body = True
-                if position is not None:
-                    cb_positions.append(position)
+                _record_position(item)
                 continue
 
             if item_type == "table":
@@ -331,8 +357,7 @@ class MinerUAdapter:
                 cb_tables.append(table)
                 cb_lines.append(f"{{{{TBL:{placeholder}}}}}")
                 cb_has_body = True
-                if position is not None:
-                    cb_positions.append(position)
+                _record_position(item)
                 continue
 
             if item_type in {"image", "picture", "drawing"}:
@@ -344,13 +369,15 @@ class MinerUAdapter:
                 cb_drawings.append(drawing)
                 cb_lines.append(f"{{{{IMG:{placeholder}}}}}")
                 cb_has_body = True
-                if position is not None:
-                    cb_positions.append(position)
+                _record_position(item)
                 continue
 
             # Fallback: serialize unknown items as plain text so we don't
-            # silently drop information.
-            _append_text(_coerce_text(item), position)
+            # silently drop information. Position only recorded when the
+            # fallback actually contributed text — empty unknown items must
+            # not leak their page_idx into the current block.
+            if _append_text(_coerce_text(item)):
+                _record_position(item)
 
         _flush_block()
 
@@ -558,11 +585,46 @@ def _is_block_equation(item: dict) -> bool:
     return True
 
 
-def _extract_position(item: dict) -> IRPosition | None:
-    """Build an ``IRPosition`` from MinerU page_idx + bbox if available.
+def _extract_page_anchor(item: dict) -> str | None:
+    """Return a 1-based page anchor from MinerU's ``page_idx`` / ``page``.
 
-    Returns ``None`` when no positional information is present, so blocks
-    that legitimately lack a bbox don't get an empty position object.
+    Always returns a string so ``blocks.jsonl`` carries a uniform anchor
+    type across Roman / letter / numeric page labels. Integers are bumped
+    to 1-based (``page_idx=0`` → ``"1"``); strings are stripped and passed
+    through verbatim. Returns ``None`` when no usable page info is present.
+    """
+    page_raw = item.get("page_idx")
+    if page_raw is None:
+        page_raw = item.get("page")
+    if isinstance(page_raw, bool):
+        # bool is a subclass of int — guard so True/False don't sneak in.
+        return None
+    if isinstance(page_raw, int):
+        return str(page_raw + 1 if page_raw >= 0 else page_raw)
+    if isinstance(page_raw, str) and page_raw.strip():
+        return page_raw.strip()
+    return None
+
+
+def _sort_page_anchors(pages: set[str]) -> list[str]:
+    """Order page anchors using book pagination convention.
+
+    Non-numeric labels (Roman preface pages ``i``/``ii``/``iv``…, letter
+    pages like ``A``, ``B-1``) come first in lexical order; numeric labels
+    follow, sorted by their integer value so ``"2"`` precedes ``"10"``.
+    Mixing both kinds is safe — the bucketed key avoids the ``TypeError``
+    that ``sorted({"ii", "1"})`` raises when ints and strings mix.
+    """
+    non_numeric = sorted(p for p in pages if not p.isdigit())
+    numeric = sorted((p for p in pages if p.isdigit()), key=int)
+    return non_numeric + numeric
+
+
+def _extract_bbox_position(item: dict) -> IRPosition | None:
+    """Build a fine-grained ``IRPosition`` when ``bbox`` is parseable.
+
+    Returns ``None`` when ``bbox`` is missing or malformed; the caller then
+    falls back to page-only tracking via :func:`_extract_page_anchor`.
     """
     bbox = item.get("bbox")
     if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
@@ -571,19 +633,7 @@ def _extract_position(item: dict) -> IRPosition | None:
         coords = [float(x) for x in bbox[:4]]
     except (TypeError, ValueError):
         return None
-
-    page_raw = item.get("page_idx")
-    if page_raw is None:
-        page_raw = item.get("page")
-    anchor: Any
-    if isinstance(page_raw, int):
-        anchor = page_raw + 1 if page_raw >= 0 else page_raw
-    elif isinstance(page_raw, str) and page_raw.strip():
-        anchor = page_raw
-    else:
-        anchor = None
-
-    return IRPosition(type="bbox", anchor=anchor, range=coords)
+    return IRPosition(type="bbox", anchor=_extract_page_anchor(item), range=coords)
 
 
 def _safe_local_asset_path(
