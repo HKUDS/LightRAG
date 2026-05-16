@@ -173,6 +173,9 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
     "status": "success",
     "message": ""
   },
+  "llm_cache_list": [
+    "default:analysis:fcf4c4f88227ee1c1bf0ed4394039e37"
+  ]  
 }
 ```
 
@@ -187,7 +190,8 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `caption` | 可见标题（解析器可能留空） |
 | `footnotes` | 脚注字符串列表 |
 | `surrounding` | 上下文对象：参见[§七](#七、surrounding) |
-| `llm_analyze_result` | 模态分析结果对象：详见 [§八](#七、surrounding) |
+| `llm_analyze_result` | 模态分析结果对象：详见 [§九](#九、`llm_analyze_result`) （后续会注入到多模态文本块） |
+| `llm_cache_list` | 模态分析LLM缓存数组（后续会注入到多模态文本块） |
 
 **只有图形支持的 raster 格式（png / jpeg / gif / webp）才会进入 VLM 分析**；其他格式（wmf / emf / svg 等）写 `llm_analyze_result.status="skipped"`，下游不生成多模态 chunk，文档继续处理。图片大小超过环境变量`VLM_MAX_IMAGE_BYTES`规定的大小后，图片同样不会进入VLM分析。
 
@@ -217,6 +221,9 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
     "status": "success",
     "message": ""
   },
+  "llm_cache_list": [
+    "default:analysis:b316aacd40fdca0cb56430870bb89a62"
+  ]  
 }
 ```
 
@@ -259,7 +266,10 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
     "status": "success",
     "message": "",
     "equation": "C=2\\cdot\\frac{P\\cdot T}{(V_{H}^{2}-V_{L}^{2})\\cdot\\eta}"
-  }
+  },
+  "llm_cache_list": [
+    "default:analysis:fcf4c4f88227ee1c1bf0ed4394039e37"
+  ]    
 }
 ```
 
@@ -350,7 +360,7 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 }]
 ```
 
-## 八、`llm_analyze_result` 状态机
+## 九、`llm_analyze_result`
 
 | `status` | 触发场景 | 字段说明 |
 |---|---|---|
