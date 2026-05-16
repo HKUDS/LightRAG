@@ -175,7 +175,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   },
   "llm_cache_list": [
     "default:analysis:fcf4c4f88227ee1c1bf0ed4394039e37"
-  ]  
+  ]
 }
 ```
 
@@ -223,7 +223,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   },
   "llm_cache_list": [
     "default:analysis:b316aacd40fdca0cb56430870bb89a62"
-  ]  
+  ]
 }
 ```
 
@@ -269,7 +269,7 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
   },
   "llm_cache_list": [
     "default:analysis:fcf4c4f88227ee1c1bf0ed4394039e37"
-  ]    
+  ]
 }
 ```
 
