@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 from dataclasses import dataclass
 from typing import final
 
@@ -35,7 +37,22 @@ class NetworkXStorage(BaseGraphStorage):
         logger.info(
             f"[{workspace}] Writing graph with {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges"
         )
-        nx.write_graphml(graph, file_name)
+        # Atomic write: stream to a per-writer .tmp, then rename. POSIX
+        # rename(2) is atomic on the same filesystem, so a crash, kill, or
+        # OOM mid-write leaves the on-disk graph as either the prior
+        # snapshot or the new one — never a truncated XML that fails to
+        # parse on reload.
+        #
+        # The .tmp name embeds PID, thread id, and ns timestamp so multiple
+        # writers (separate processes sharing the same working dir, or
+        # multiple threads inside one process) cannot trample each other's
+        # in-flight write and leave a no-such-file rename error.
+        tmp = (
+            f"{file_name}.tmp.{os.getpid()}"
+            f".{threading.get_ident()}.{time.time_ns()}"
+        )
+        nx.write_graphml(graph, tmp)
+        os.replace(tmp, file_name)
 
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
