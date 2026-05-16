@@ -148,6 +148,47 @@ def test_writer_drawing_path_points_into_assets_dir(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_writer_equation_strips_dollar_wrappers_for_equations_json(
+    tmp_path: Path,
+) -> None:
+    """When IREquation.latex carries MinerU's raw ``$$...$$``/``$..$``
+    wrappers (preserved so blocks.jsonl shows the source verbatim), the
+    writer must strip them when persisting equations.json content — that
+    file holds clean latex by contract."""
+    parsed = tmp_path / "d.parsed"
+    ir = IRDoc(
+        document_name="d.pdf",
+        document_format="pdf",
+        doc_title="d",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="see {{EQ:b1}}",
+                equations=[
+                    IREquation(
+                        placeholder_key="b1",
+                        latex="$$\nE = mc^2\n$$",
+                        is_block=True,
+                    ),
+                ],
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-deadbeef", engine="mineru")
+
+    # blocks.jsonl: <equation> body preserves the parser's raw form.
+    body = _load_jsonl(parsed / "d.blocks.jsonl")[1][0]["content"]
+    assert (
+        '<equation id="eq-deadbeef-0001" format="latex">$$\nE = mc^2\n$$</equation>'
+        in body
+    )
+
+    # equations.json: dollar wrappers removed.
+    equations = json.loads((parsed / "d.equations.json").read_text())["equations"]
+    assert equations["eq-deadbeef-0001"]["content"] == "E = mc^2"
+
+
+@pytest.mark.offline
 def test_writer_equation_caption_preserved_block_and_inline(
     tmp_path: Path,
 ) -> None:

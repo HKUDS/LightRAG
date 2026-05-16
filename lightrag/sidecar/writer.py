@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -582,6 +583,24 @@ def _drawing_item_dict(
     return item
 
 
+_LATEX_DOLLAR_RE = re.compile(r"^\s*\$\$?(.+?)\$\$?\s*$", re.DOTALL)
+
+
+def _strip_latex_dollar_wrappers(latex: str) -> str:
+    """Strip leading/trailing ``$``/``$$`` wrappers from a latex string.
+
+    ``equations.json`` stores clean latex (per the MinerU adapter contract:
+    ``blocks.jsonl`` keeps the parser's raw form so the rendered
+    ``<equation>`` body is byte-identical to the source, while the
+    per-equation sidecar carries delimiter-free latex). Leaves strings
+    without wrappers untouched.
+    """
+    if not latex:
+        return latex
+    m = _LATEX_DOLLAR_RE.match(latex)
+    return m.group(1).strip() if m else latex.strip()
+
+
 def _equation_item_dict(
     eq_id: str,
     blockid: str,
@@ -593,7 +612,7 @@ def _equation_item_dict(
         "blockid": blockid,
         "heading": heading,
         "format": "latex",
-        "content": equation.latex,
+        "content": _strip_latex_dollar_wrappers(equation.latex),
         "caption": equation.caption,
         "footnotes": list(equation.footnotes),
     }
