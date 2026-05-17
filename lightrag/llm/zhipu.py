@@ -103,7 +103,7 @@ async def zhipu_complete_if_cache(
         kwargs["thinking"] = thinking
 
     response = client.chat.completions.create(model=model, messages=messages, **kwargs)
-    if not response.choices:
+    if not response.choices or response.choices[0].message is None:
         return ""
     message = response.choices[0].message
     content = message.content or ""
