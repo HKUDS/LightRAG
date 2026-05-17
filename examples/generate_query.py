@@ -17,6 +17,8 @@ def openai_complete_if_cache(
     response = openai_client.chat.completions.create(
         model=model, messages=messages, **kwargs
     )
+    if not response.choices:
+        return ""
     return response.choices[0].message.content
 
 

@@ -52,6 +52,8 @@ async def llm_model_func(
         top_p=kwargs.get("top_p", 1),
         n=kwargs.get("n", 1),
     )
+    if not chat_completion.choices:
+        return ""
     return chat_completion.choices[0].message.content
 
 
