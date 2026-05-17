@@ -54,7 +54,7 @@ LIGHTRAG_PARSER=docx:native-ietV
 LIGHTRAG_PARSER=md:legacy-R,docx:native-R,*:mineru-R,*:docling-R,*:legacy-R
 MINERU_API_MODE=local
 MINERU_LOCAL_ENDPOINT=http://localhost:8000
-DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
+DOCLING_ENDPOINT=http://localhost:5001
 ```
 
 ## 二、内容抽取与处理选项配置
@@ -86,7 +86,7 @@ filename.[OPTIONS].ext
 LIGHTRAG_PARSER=pdf:mineru-R,docx:native-ietP,*:legacy-R
 MINERU_API_MODE=local
 MINERU_LOCAL_ENDPOINT=http://localhost:8000
-DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
+DOCLING_ENDPOINT=http://localhost:5001
 ```
 
 ```text
@@ -187,9 +187,51 @@ MINERU_API_TOKEN=<your_token>
 
 #### Docling 部署与配置
 
+`docling` 内容提取引擎需要外部的 [docling-serve](https://github.com/DS4SD/docling-serve) 服务（v1 异步 API）。最少配置：
+
 ```bash
-DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
+DOCLING_ENDPOINT=http://localhost:5001
 ```
+
+`DOCLING_ENDPOINT` 只填 base URL（**不**带 `/v1/convert/file/async`）；客户端会自己拼接 `/v1/convert/file/async`、`/v1/status/poll/{task_id}?wait=5`、`/v1/result/{task_id}` 三个子路径。multipart pipeline 形态（`pipeline=standard`、`target_type=zip`、`to_formats=[json,md]`、`image_export_mode=referenced`）已在代码里固化，sidecar 流程依赖这些值，因此不暴露为 env。
+
+OCR / 公式增强 6 个可调 env（默认值已写在 `env.example`，按需修改）：
+
+| Env | 默认 | 含义 |
+| --- | --- | --- |
+| `DOCLING_DO_OCR` | `true` | OCR 总开关 |
+| `DOCLING_FORCE_OCR` | `false` | 强制对每页 OCR（适用于扫描件） |
+| `DOCLING_OCR_ENGINE` | `auto` | OCR 引擎选择（OpenAPI 已 DEPRECATED 但仍兼容） |
+| `DOCLING_OCR_PRESET` | `auto` | OCR 引擎 preset（推荐替代 `DOCLING_OCR_ENGINE`） |
+| `DOCLING_OCR_LANG` | （空） | JSON 数组 `["en","zh"]` 或逗号串 `en,zh`；空时让引擎用默认 |
+| `DOCLING_DO_FORMULA_ENRICHMENT` | `false` | 启用后 `formula` 项目带 LaTeX；关闭时公式以普通文本进入正文 |
+
+Bundle 缓存 3 个 env：
+
+| Env | 默认 | 含义 |
+| --- | --- | --- |
+| `DOCLING_ENGINE_VERSION` | （空） | 写入 `<base>.docling_raw/_manifest.json`，下次解析时比对，不一致触发 cache miss |
+| `LIGHTRAG_FORCE_REPARSE_DOCLING` | `false` | 设为 `true`/`1` 时无条件丢弃 raw bundle 重新下载 |
+| `DOCLING_BBOX_ATTRIBUTES` | `{"origin":"LEFTBOTTOM"}` | 覆盖写入 `blocks.jsonl` meta 行的 `bbox_attributes`；docling 默认坐标系是 LEFTBOTTOM，与 mineru 的 LEFTTOP 不同 |
+
+解析后磁盘布局（同 mineru）：
+
+```text
+inputs/<workspace>/__parsed__/
+├── <base>.parsed/            # LightRAG sidecar
+│   ├── <base>.blocks.jsonl   # 主块文件
+│   ├── <base>.tables.json    # 表格内容（含 self_ref 回指 raw JSON）
+│   ├── <base>.drawings.json  # 图片元数据 + 路径
+│   ├── <base>.equations.json # LaTeX（仅 enrichment 启用时）
+│   └── <base>.blocks.assets/ # 图片资源
+└── <base>.docling_raw/       # docling 原始 bundle（被缓存复用）
+    ├── _manifest.json
+    ├── <base>.json           # DoclingDocument JSON（含 pages[].image base64）
+    ├── <base>.md
+    └── artifacts/image_*.png
+```
+
+`<base>.docling_raw/` 是缓存源；同一文件二次解析时只读 manifest 校验，跳过上传/轮询/下载。三种情况下会重新下载：源文件内容变化、`DOCLING_ENDPOINT` 改变、任一可调 env 改变（通过 `options_signature` 比对）。
 
 `legacy` 内容提取引擎抽取的内容为 `raw` 格式，即仅保存在 `full_docs` 存储的 `content` 字段。`native` / `mineru` / `docling` 内容提取引擎抽取的内容格式为 `raw` + `lightrag` 双格式，完整的内容以文件形式保存在 sidecar 目录，纯文本内容同时保存在 `content` 字段。
 
