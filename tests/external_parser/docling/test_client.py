@@ -120,9 +120,7 @@ class _FakeAsyncClient:
             }
             if recorder.terminal_status != "success":
                 payload["error_message"] = "synthetic-failure"
-            return _FakeResponse(
-                status_code=200, text=json_dump(payload)
-            )
+            return _FakeResponse(status_code=200, text=json_dump(payload))
         if RESULT_PATH.format(task_id=recorder.task_id) in url:
             recorder.result_calls += 1
             return _FakeResponse(

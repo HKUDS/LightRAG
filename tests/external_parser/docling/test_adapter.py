@@ -27,9 +27,7 @@ from lightrag.external_parser.docling.adapter import DoclingAdapter
 def _write_doc(tmp_path: Path, payload: dict, *, stem: str = "demo") -> Path:
     raw_dir = tmp_path / f"{stem}.docling_raw"
     raw_dir.mkdir()
-    (raw_dir / f"{stem}.json").write_text(
-        json.dumps(payload), encoding="utf-8"
-    )
+    (raw_dir / f"{stem}.json").write_text(json.dumps(payload), encoding="utf-8")
     return raw_dir
 
 
@@ -194,10 +192,17 @@ def test_docling_adapter_preserves_docling_heading_level(tmp_path: Path) -> None
     """When Docling reports all section_headers at level=1, the adapter
     preserves that (no numbering-based level inference)."""
     texts = [
-        _text_item(label="section_header", text="1 Purpose", level=1, self_ref="#/texts/0"),
-        _text_item(label="section_header", text="2.1 Electrical", level=1, self_ref="#/texts/1"),
         _text_item(
-            label="section_header", text="2.4.5 Temperature", level=1, self_ref="#/texts/2"
+            label="section_header", text="1 Purpose", level=1, self_ref="#/texts/0"
+        ),
+        _text_item(
+            label="section_header", text="2.1 Electrical", level=1, self_ref="#/texts/1"
+        ),
+        _text_item(
+            label="section_header",
+            text="2.4.5 Temperature",
+            level=1,
+            self_ref="#/texts/2",
         ),
     ]
     raw_dir = _write_doc(
@@ -219,7 +224,9 @@ def test_docling_adapter_preserves_docling_heading_level(tmp_path: Path) -> None
 
 def test_docling_adapter_merges_payloads_under_heading(tmp_path: Path) -> None:
     texts = [
-        _text_item(label="section_header", text="Section", level=1, self_ref="#/texts/0"),
+        _text_item(
+            label="section_header", text="Section", level=1, self_ref="#/texts/0"
+        ),
         _text_item(label="text", text="Inline body line.", self_ref="#/texts/1"),
     ]
     tables = [
@@ -326,8 +333,16 @@ def test_docling_adapter_table_grid_and_header(tmp_path: Path) -> None:
                 "num_cols": 2,
                 "grid": [
                     [
-                        {"text": "h1", "column_header": True, "start_row_offset_idx": 0},
-                        {"text": "h2", "column_header": True, "start_row_offset_idx": 0},
+                        {
+                            "text": "h1",
+                            "column_header": True,
+                            "start_row_offset_idx": 0,
+                        },
+                        {
+                            "text": "h2",
+                            "column_header": True,
+                            "start_row_offset_idx": 0,
+                        },
                     ],
                     [{"text": "a"}, {"text": "b"}],
                 ],
@@ -392,7 +407,7 @@ def test_docling_adapter_picture_referenced_asset(tmp_path: Path) -> None:
     assert drawing.asset_ref == "artifacts/image_000000_abc.png"
     assert drawing.fmt == "png"
     assert drawing.self_ref == "#/pictures/0"
-    [ a ] = [a for a in ir.assets if a.ref == drawing.asset_ref]
+    [a] = [a for a in ir.assets if a.ref == drawing.asset_ref]
     assert a.source == asset
     assert a.suggested_name == "image_000000_abc.png"
     # intrinsic_size lands in extras for downstream VLM filtering
@@ -565,8 +580,10 @@ def test_docling_adapter_furniture_skipped_by_content_layer(tmp_path: Path) -> N
     # the furniture's prov page_no=1 must not leak into any block position
     for block in ir.blocks:
         for pos in block.positions:
-            assert pos.anchor != "1" or pos.range is not None or any(
-                p.range is not None for p in block.positions
+            assert (
+                pos.anchor != "1"
+                or pos.range is not None
+                or any(p.range is not None for p in block.positions)
             )
 
 
@@ -577,9 +594,7 @@ def test_docling_adapter_furniture_skipped_by_content_layer(tmp_path: Path) -> N
 
 def test_docling_adapter_picture_children_dropped(tmp_path: Path) -> None:
     texts = [
-        _text_item(
-            label="caption", text="Picture caption", self_ref="#/texts/0"
-        ),
+        _text_item(label="caption", text="Picture caption", self_ref="#/texts/0"),
         _text_item(label="text", text="Inner OCR text 1", self_ref="#/texts/1"),
         _text_item(label="text", text="Inner OCR text 2", self_ref="#/texts/2"),
     ]

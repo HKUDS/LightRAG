@@ -52,9 +52,7 @@ DOCLING_TUNABLE_ENVS: tuple[str, ...] = (
 
 def current_endpoint_signature() -> str:
     """The active docling endpoint, normalized (trailing slash stripped)."""
-    return (
-        os.getenv("DOCLING_ENDPOINT", DEFAULT_DOCLING_ENDPOINT).strip().rstrip("/")
-    )
+    return os.getenv("DOCLING_ENDPOINT", DEFAULT_DOCLING_ENDPOINT).strip().rstrip("/")
 
 
 def compute_options_signature(

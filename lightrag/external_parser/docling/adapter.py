@@ -106,9 +106,7 @@ class DoclingAdapter:
                 f"Docling raw JSON malformed at {main_json}: {exc}"
             ) from exc
         if not isinstance(doc, dict):
-            raise ValueError(
-                f"Docling raw JSON is not an object at {main_json}"
-            )
+            raise ValueError(f"Docling raw JSON is not an object at {main_json}")
         return self._normalize(doc, raw_dir, document_name=document_name)
 
     # ------------------------------------------------------------------
@@ -251,9 +249,7 @@ class DoclingAdapter:
                             anchor=anchor,
                             range=range_,
                             charspan=(
-                                list(charspan)
-                                if isinstance(charspan, list)
-                                else None
+                                list(charspan) if isinstance(charspan, list) else None
                             ),
                             origin=origin_override,
                         )
@@ -352,11 +348,7 @@ class DoclingAdapter:
                 parents = [h for h in heading_stack if h]
                 heading_stack.append(text)
                 # Adjacency merge
-                if (
-                    cb_level > 0
-                    and not cb_has_body
-                    and heading_level > cb_level
-                ):
+                if cb_level > 0 and not cb_has_body and heading_level > cb_level:
                     _merge_heading_as_body(text, heading_level)
                     _record_positions(item)
                     if not doc_title and heading_level == 1:
@@ -641,9 +633,7 @@ def _docling_heading_level(label: str, item: dict) -> int:
     return 0
 
 
-def _resolve_text_refs(
-    refs: Any, ref_index: dict[str, dict]
-) -> list[str]:
+def _resolve_text_refs(refs: Any, ref_index: dict[str, dict]) -> list[str]:
     """Resolve a list of ``$ref`` entries to their text bodies."""
     out: list[str] = []
     for ref in _iter_refs(refs):
@@ -666,7 +656,11 @@ def _build_ir_table(
     if not rows and isinstance(data, dict) and data.get("table_cells"):
         rows = _rows_from_table_cells(data)
 
-    num_rows = int(data.get("num_rows") or len(rows) or 0) if isinstance(data, dict) else len(rows)
+    num_rows = (
+        int(data.get("num_rows") or len(rows) or 0)
+        if isinstance(data, dict)
+        else len(rows)
+    )
     num_cols = int(
         (data.get("num_cols") if isinstance(data, dict) else 0)
         or (max((len(r) for r in rows), default=0))
@@ -720,7 +714,9 @@ def _rows_from_grid(grid: Any) -> list[list[str]]:
     for row in grid:
         if not isinstance(row, list):
             continue
-        out.append([str((c or {}).get("text", "") if isinstance(c, dict) else c) for c in row])
+        out.append(
+            [str((c or {}).get("text", "") if isinstance(c, dict) else c) for c in row]
+        )
     return out
 
 
@@ -756,12 +752,15 @@ def _extract_table_header(grid: Any) -> list[list[str]] | None:
     for row_idx, row in enumerate(grid):
         if not isinstance(row, list):
             break
-        if all(
-            isinstance(c, dict)
-            and bool(c.get("column_header"))
-            and int(c.get("start_row_offset_idx") or 0) == 0
-            for c in row
-        ) and row:
+        if (
+            all(
+                isinstance(c, dict)
+                and bool(c.get("column_header"))
+                and int(c.get("start_row_offset_idx") or 0) == 0
+                for c in row
+            )
+            and row
+        ):
             header_rows.append([str((c or {}).get("text", "")) for c in row])
         else:
             break
@@ -863,9 +862,7 @@ def _build_ir_drawing(
     if item.get("children"):
         extras["children_refs"] = list(item.get("children") or [])
     inner_refs_for_this = [
-        ref
-        for ref in _iter_refs(item.get("children"))
-        if ref in picture_inner_refs
+        ref for ref in _iter_refs(item.get("children")) if ref in picture_inner_refs
     ]
     if inner_refs_for_this:
         extras["ocr_child_count"] = len(inner_refs_for_this)
@@ -885,7 +882,9 @@ def _build_ir_drawing(
         decoded = _decode_data_uri(uri)
         if decoded is not None:
             payload, ext = decoded
-            stem = (item.get("self_ref") or "picture").replace("#/", "").replace("/", "_")
+            stem = (
+                (item.get("self_ref") or "picture").replace("#/", "").replace("/", "_")
+            )
             suggested = f"{stem}.{ext or fmt or 'bin'}"
             asset_ref = uri  # use the data URI as a stable ref
             if asset_ref not in seen_asset_refs:
@@ -937,7 +936,7 @@ def _image_fmt_from_mimetype(mimetype: str) -> str:
     if mimetype == "image/jpeg":
         return "jpg"
     if mimetype.startswith("image/"):
-        return mimetype[len("image/"):].lower()
+        return mimetype[len("image/") :].lower()
     return ""
 
 
@@ -960,7 +959,7 @@ def _decode_data_uri(uri: str) -> tuple[bytes, str] | None:
         return None
     ext = ""
     if head.startswith("data:image/"):
-        ext = head[len("data:image/"):].split(";", 1)[0].lower()
+        ext = head[len("data:image/") :].split(";", 1)[0].lower()
         if ext == "jpeg":
             ext = "jpg"
     return data, ext

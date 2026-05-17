@@ -37,9 +37,7 @@ def select_main_json(raw_dir: Path, source_file_path: Path) -> Path:
     if len(candidates) == 1:
         return candidates[0]
     if not candidates:
-        raise RuntimeError(
-            f"Docling raw bundle at {raw_dir} contains no .json file"
-        )
+        raise RuntimeError(f"Docling raw bundle at {raw_dir} contains no .json file")
     names = ", ".join(p.name for p in candidates)
     raise RuntimeError(
         f"Docling raw bundle at {raw_dir} has multiple .json candidates ({names}); "

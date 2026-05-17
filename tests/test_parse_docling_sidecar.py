@@ -211,15 +211,14 @@ def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         write_manifest(raw_dir, manifest)
         return manifest
 
-    monkeypatch.setattr(
-        client_mod.DoclingRawClient, "download_into", _fake_download
-    )
+    monkeypatch.setattr(client_mod.DoclingRawClient, "download_into", _fake_download)
     return counters
 
 
 def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, rag: LightRAG, src: Path) -> None:
     """Common pipeline-level stubs: avoid moving the source file and pin
     the file resolver to the synthetic path."""
+
     async def _noop_archive(_p: str) -> None:
         return None
 
@@ -230,9 +229,7 @@ def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, rag: LightRAG, src: Path) ->
         "archive_docx_source_after_full_docs_sync",
         _noop_archive,
     )
-    monkeypatch.setattr(
-        rag, "_resolve_source_file_for_parser", lambda _p: str(src)
-    )
+    monkeypatch.setattr(rag, "_resolve_source_file_for_parser", lambda _p: str(src))
 
 
 def _seed_doc_status(rag: LightRAG, doc_id: str) -> Any:
@@ -325,17 +322,15 @@ def test_parse_docling_emits_compliant_sidecar(
             assert (raw_dir / "artifacts" / "img_000000.png").is_file()
 
             # Drawing path correctly resolved
-            drawings = json.loads(
-                (parsed_dir / "demo.drawings.json").read_text()
-            )["drawings"]
+            drawings = json.loads((parsed_dir / "demo.drawings.json").read_text())[
+                "drawings"
+            ]
             (drawing_id, drawing_item) = next(iter(drawings.items()))
             assert drawing_id.startswith("im-")
             assert drawing_item["path"] == "demo.blocks.assets/img_000000.png"
 
             # Table self_ref propagated
-            tables = json.loads((parsed_dir / "demo.tables.json").read_text())[
-                "tables"
-            ]
+            tables = json.loads((parsed_dir / "demo.tables.json").read_text())["tables"]
             (_, table_item) = next(iter(tables.items()))
             assert table_item.get("self_ref") == "#/tables/0"
         finally:
@@ -467,9 +462,9 @@ def test_parse_docling_options_signature_invalidates_cache(
                 file_path="demo.pdf",
                 content_data={"source_path": str(src)},
             )
-            assert counters["calls"] == 2, (
-                "DOCLING_OCR_LANG change must invalidate the bundle cache"
-            )
+            assert (
+                counters["calls"] == 2
+            ), "DOCLING_OCR_LANG change must invalidate the bundle cache"
         finally:
             await rag.finalize_storages()
 

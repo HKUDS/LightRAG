@@ -92,9 +92,7 @@ class DoclingRawClient:
         self.ocr_engine = os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto"
         self.ocr_preset = os.getenv("DOCLING_OCR_PRESET", "auto").strip() or "auto"
         self.ocr_lang_raw = os.getenv("DOCLING_OCR_LANG", "").strip()
-        self.do_formula_enrichment = env_bool(
-            "DOCLING_DO_FORMULA_ENRICHMENT", False
-        )
+        self.do_formula_enrichment = env_bool("DOCLING_DO_FORMULA_ENRICHMENT", False)
 
         self.max_poll_attempts = 240  # ~20 minutes at wait=5s; tweak via code
 
@@ -180,7 +178,9 @@ class DoclingRawClient:
     ) -> str:
         url = f"{self.endpoint}{CONVERT_PATH}"
         file_bytes = await asyncio.to_thread(source_file_path.read_bytes)
-        files = {"files": (source_file_path.name, file_bytes, "application/octet-stream")}
+        files = {
+            "files": (source_file_path.name, file_bytes, "application/octet-stream")
+        }
         resp = await client.post(url, data=self._build_multipart_data(), files=files)
         if resp.status_code >= 400:
             raise RuntimeError(
@@ -189,9 +189,7 @@ class DoclingRawClient:
         payload = resp.json() if resp.text else {}
         task_id = str(payload.get("task_id") or payload.get("id") or "").strip()
         if not task_id:
-            raise RuntimeError(
-                f"Docling upload response missing task_id: {payload!r}"
-            )
+            raise RuntimeError(f"Docling upload response missing task_id: {payload!r}")
         return task_id
 
     async def _poll_until_done(
@@ -205,7 +203,9 @@ class DoclingRawClient:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             payload = resp.json() if resp.text else {}
-            status = str(payload.get("task_status") or payload.get("status") or "").lower()
+            status = str(
+                payload.get("task_status") or payload.get("status") or ""
+            ).lower()
 
             if status in SUCCESS_STATES:
                 return
@@ -275,9 +275,7 @@ def _format_failure(task_id: str, status: str, payload: Any) -> str:
     else:
         err = "<no error_message>"
     truncated = json.dumps(payload, ensure_ascii=False)[:400]
-    return (
-        f"Docling task {task_id} ended in {status}: {err}; payload={truncated}"
-    )
+    return f"Docling task {task_id} ended in {status}: {err}; payload={truncated}"
 
 
 __all__ = [
