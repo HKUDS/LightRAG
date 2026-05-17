@@ -190,10 +190,14 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `caption` | 可见标题（解析器可能留空） |
 | `footnotes` | 脚注字符串列表 |
 | `surrounding` | 上下文对象：参见[§七](#七、surrounding) |
+| `self_ref` | 字符串：可选；解析引擎原始输出中的对象引用（如 Docling JSON Pointer `#/pictures/3`），用于溯源时回查原始解析产物中的对应对象（页面位置、原始结构等）。MinerU/native 等不提供此字段时不输出 |
+| `extras` | 对象：可选；引擎专属的旁路字段（行/列合并、OCR 置信度等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
 | `llm_analyze_result` | 模态分析结果对象：详见 [§九](#九、`llm_analyze_result`) （后续会注入到多模态文本块） |
 | `llm_cache_list` | 模态分析LLM缓存数组（后续会注入到多模态文本块） |
 
 **只有图形支持的 raster 格式（png / jpeg / gif / webp）才会进入 VLM 分析**；其他格式（wmf / emf / svg 等）写 `llm_analyze_result.status="skipped"`，下游不生成多模态 chunk，文档继续处理。图片大小超过环境变量`VLM_MAX_IMAGE_BYTES`规定的大小后，图片同样不会进入VLM分析。
+
+> 图片的大小、DPI等信息统一放进 `extras` 对象；不要在 item 顶层引入未声明的字段（比如 `image` / `img_path` 等）。tables / equations 也遵循同样的 `extras` 约定。`self_ref` 是 spec 顶层声明的可选字段，不属于 extras 范围。
 
 ## 五、tables.json
 
@@ -236,11 +240,10 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
 | `format` | `"json"` (二维数组) 或 `"html"` (负载 `<table>…</table>` 片段，含起止标签) |
 | `content` | 字符串：表格正文，按 `format` 决定结构；这是后续多模态 chunk 真正使用的字符串。 |
 | `table_header` | 字符串：可选；识别出来的作为表格头的行内容 |
+| `self_ref` | 可选；解析引擎原始输出中的对象引用（如 Docling JSON Pointer `#/tables/2`），用于溯源时回查原始解析产物 |
 | `extras` | 对象：可选；引擎专属的旁路字段（行/列合并、OCR 置信度等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
 
 在模态分析阶段，如果`content`字段长度超过大模型的上下文长度时，表格内容会被机械地截断后在喂给模型。
-
-> tables item 表中所列以外的引擎专属字段，统一放进 `extras` 对象；不要在 item 顶层引入未声明的字段（比如 `image` / `img_path` 等），下游对未声明字段不做兼容承诺。drawings / equations 也遵循同样的 `extras` 约定。
 
 ## 六、equations.json
 
@@ -280,6 +283,7 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 | `id` | `eq-<doc_hash>-<NNNN>` 形式（`doc_hash` 为 `doc_id` 去掉 `doc-` 前缀后的 32 位 md5） |
 | `format` | 固定为 `"latex"` |
 | `content` | 字符串：是**原始** LaTeX（可能包含 Unicode 运算符、外层 `\[ \]`），不包含两头的`$`分割符；模态分析阶段直接读这里 |
+| `self_ref` | 可选；解析引擎原始输出中的对象引用（如 Docling JSON Pointer `#/texts/15`），用于溯源时回查原始解析产物 |
 | `llm_analyze_result.equation` | 字符串：是大模型输出的**规范化**后的 LaTeX公式（外层 `$ / \[ \] / equation` 环境，Unicode 转 LaTeX，不包含联投的`$`分割符），这是后续多模态 chunk 真正使用的字符串； |
 
 在模态分析阶段，如果`content`字段长度超过大模型的上下文长度时，表格内容会被机械地截断后在喂给模型。行内公式（与正文连续的 `<equation format="latex">…</equation>`）**不会**保存到 equations.json 文件，它仅会在 blocks 文本里以无 `id` 形式留存。这样做的目的是避免给抽取结果注入过多的噪音。
