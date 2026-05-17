@@ -30,11 +30,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    import httpx
-except Exception:  # pragma: no cover - optional dependency
-    httpx = None
-
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
@@ -80,7 +75,6 @@ from lightrag.utils_pipeline import (
     doc_status_transition_metadata,
     document_canonical_key,
     document_source_key,
-    get_by_path,
     get_duplicate_doc_by_content_hash,
     get_existing_doc_by_content_hash,
     get_existing_doc_by_file_basename,
@@ -88,7 +82,6 @@ from lightrag.utils_pipeline import (
     input_dir_path,
     load_lightrag_document_content,
     make_lightrag_doc_content,
-    normalize_parser_result_to_content_list,
     parsed_artifact_dir_for_source,
     resolve_doc_file_path,
     resolve_lightrag_blocks_path,
@@ -2566,184 +2559,116 @@ class _PipelineMixin:
     async def parse_docling(
         self, doc_id: str, file_path: str, content_data: dict[str, Any]
     ) -> dict[str, Any]:
-        endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
-        if not endpoint:
-            raise ValueError("DOCLING_ENDPOINT is required for Docling parsing")
-        docling_base = endpoint.rstrip("/")
-        convert_path = "/v1/convert/file/async"
-        if docling_base.endswith(convert_path):
-            docling_base = docling_base[: -len(convert_path)]
-        protocol = {
-            "upload_url": endpoint,
-            "poll_url_template": os.getenv(
-                "DOCLING_POLL_ENDPOINT",
-                docling_base + "/v1/status/poll/{task_id}",
-            ),
-            "poll_method": os.getenv("DOCLING_POLL_METHOD", "GET"),
-            "id_field": os.getenv("DOCLING_ID_FIELD", "task_id"),
-            "status_field": os.getenv("DOCLING_STATUS_FIELD", "task_status"),
-            "result_url_field": os.getenv("DOCLING_RESULT_URL_FIELD", "result_url"),
-            "result_url_template": os.getenv(
-                "DOCLING_RESULT_ENDPOINT",
-                docling_base + "/v1/result/{task_id}",
-            ),
-            "content_field": os.getenv("DOCLING_CONTENT_FIELD", "document.md_content"),
-            "file_field": os.getenv("DOCLING_FILE_FIELD", "files"),
-            "success_values": os.getenv(
-                "DOCLING_SUCCESS_VALUES",
-                "done,success,succeeded,completed,finished",
-            ),
-            "failed_values": os.getenv("DOCLING_FAILED_VALUES", "failed,error,failure"),
-            "poll_interval_seconds": float(
-                os.getenv("DOCLING_POLL_INTERVAL_SECONDS", "2")
-            ),
-            "max_polls": int(os.getenv("DOCLING_MAX_POLLS", "180")),
-        }
-        source_file_path = self._resolve_source_file_for_parser(
-            str(content_data.get("source_path") or file_path)
-        )
-        result_text = await self._call_protocol_parse_service(
-            protocol=protocol,
-            file_path=source_file_path,
-        )
-        content_list = normalize_parser_result_to_content_list(result_text)
-        if content_list:
-            return await self._write_lightrag_document_from_content_list(
-                doc_id=doc_id,
-                file_path=file_path,
-                content_list=content_list,
-                engine=PARSER_ENGINE_DOCLING,
-                source_path=source_file_path,
-            )
-        if not result_text:
-            raise ValueError(f"Docling parser returned empty content for {file_path}")
+        """Parse a document through Docling Serve and emit a spec-compliant sidecar.
 
+        Produces the same dual-directory layout as ``parse_mineru``:
+
+        - ``<base>.parsed/``       — sidecar (blocks.jsonl + per-modality JSONs + assets)
+        - ``<base>.docling_raw/``  — preserved Docling bundle (``<stem>.json``,
+          ``<stem>.md``, ``artifacts/``) plus ``_manifest.json``
+
+        The raw bundle is kept so subsequent re-parses with the same source
+        bytes skip the upload + poll + download round trip.
+        """
+        # Lazy imports keep this module import-cheap and avoid pulling httpx
+        # into call paths that never touch the Docling engine.
+        from lightrag.external_parser.docling import (
+            DoclingAdapter,
+            DoclingRawClient,
+            clear_dir_contents,
+            is_bundle_valid,
+            raw_dir_for_parsed_dir,
+        )
+        from lightrag.sidecar import write_sidecar
+
+        source_file_path = Path(
+            self._resolve_source_file_for_parser(
+                str(content_data.get("source_path") or file_path)
+            )
+        )
+        if not source_file_path.is_file():
+            raise FileNotFoundError(
+                f"Docling source file not found: {source_file_path}"
+            )
+
+        document_name = (
+            canonicalize_parser_hinted_basename(file_path)
+            or source_file_path.name
+            or f"{doc_id}.bin"
+        )
+        parsed_dir = parsed_artifact_dir_for_source(str(source_file_path), file_path)
+        raw_dir = raw_dir_for_parsed_dir(parsed_dir)
+
+        force_reparse = os.getenv("LIGHTRAG_FORCE_REPARSE_DOCLING", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+        if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
+            # Cache hit: keep purely local so re-parses still work when the
+            # docling-serve endpoint is temporarily unavailable.
+            logger.info(
+                "[parse_docling] raw cache hit doc_id=%s raw_dir=%s",
+                doc_id,
+                raw_dir,
+            )
+        else:
+            if force_reparse and raw_dir.exists():
+                logger.info(
+                    "[parse_docling] LIGHTRAG_FORCE_REPARSE_DOCLING set; "
+                    "discarding bundle at %s",
+                    raw_dir,
+                )
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            clear_dir_contents(raw_dir)
+            client = DoclingRawClient()
+            await client.download_into(raw_dir, source_file_path)
+
+        adapter = DoclingAdapter()
+        ir = adapter.normalize_from_workdir(raw_dir, document_name=document_name)
+        if not ir.blocks:
+            raise ValueError(
+                f"Docling adapter produced zero blocks for {file_path} "
+                f"(raw_dir={raw_dir})"
+            )
+        parsed_data = write_sidecar(
+            ir,
+            parsed_dir=parsed_dir,
+            doc_id=doc_id,
+            engine=PARSER_ENGINE_DOCLING,
+        )
+
+        blocks_path = Path(parsed_data["blocks_path"])
+        stored_blocks_path = str(blocks_path)
+        try:
+            stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
+        except ValueError:
+            pass
         await self._persist_parsed_full_docs(
             doc_id,
             {
-                "content": str(result_text),
+                "content": make_lightrag_doc_content(parsed_data["content"]),
                 "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_RAW,
+                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                "lightrag_document_path": stored_blocks_path,
                 "parse_engine": PARSER_ENGINE_DOCLING,
                 "update_time": int(time.time()),
             },
         )
-        await archive_docx_source_after_full_docs_sync(source_file_path)
+        await archive_docx_source_after_full_docs_sync(str(source_file_path))
         return {
             "doc_id": doc_id,
             "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_RAW,
-            "content": str(result_text),
-            "blocks_path": "",
+            "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+            "content": parsed_data["content"],
+            "blocks_path": str(blocks_path),
         }
 
     # ============================================================
     # Parser internals
     # ============================================================
-
-    async def _call_protocol_parse_service(
-        self, protocol: dict[str, Any], file_path: str
-    ) -> str | None:
-        """Protocol-driven async parse call for MinerU/Docling."""
-        upload_url = str(protocol.get("upload_url") or "").strip()
-        if not upload_url:
-            return None
-        if httpx is None:
-            logger.warning("httpx not installed, skip async parse service call")
-            return None
-
-        id_field = str(protocol.get("id_field", "id"))
-        status_field = str(protocol.get("status_field", "status"))
-        result_url_field = str(protocol.get("result_url_field", "result_url"))
-        result_url_template = str(protocol.get("result_url_template", "")).strip()
-        content_field = str(protocol.get("content_field", "content"))
-        file_field = str(protocol.get("file_field", "file"))
-        poll_url_tpl = str(protocol.get("poll_url_template", "")).strip()
-        poll_method = str(protocol.get("poll_method", "GET")).upper()
-        poll_interval = float(protocol.get("poll_interval_seconds", 2.0))
-        max_polls = int(protocol.get("max_polls", 120))
-        success_values = set(
-            x.strip().lower()
-            for x in str(
-                protocol.get(
-                    "success_values", "done,success,succeeded,completed,finished"
-                )
-            ).split(",")
-            if x.strip()
-        )
-        failed_values = set(
-            x.strip().lower()
-            for x in str(protocol.get("failed_values", "failed,error")).split(",")
-            if x.strip()
-        )
-
-        def _string_content(value: Any) -> str | None:
-            if value is None:
-                return None
-            if isinstance(value, str):
-                return value or None
-            return json.dumps(value, ensure_ascii=False)
-
-        def _extract_response_content(text: str) -> str | None:
-            if not text:
-                return None
-            try:
-                payload = json.loads(text)
-            except Exception:
-                return text
-            content_val = get_by_path(payload, content_field)
-            return _string_content(content_val) or text
-
-        timeout = httpx.Timeout(120.0, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            with open(file_path, "rb") as f:
-                resp = await client.post(
-                    upload_url, files={file_field: (Path(file_path).name, f)}
-                )
-            if resp.status_code >= 400:
-                raise RuntimeError(
-                    f"Parse service upload failed: {resp.status_code} {resp.text[:400]}"
-                )
-            upload_payload = resp.json() if resp.text else {}
-            task_id = get_by_path(upload_payload, id_field)
-            if not task_id:
-                direct_content = get_by_path(upload_payload, content_field)
-                return _string_content(direct_content)
-            task_id = str(task_id)
-
-            poll_url = (
-                poll_url_tpl.format(task_id=task_id, trace_id=task_id, id=task_id)
-                if poll_url_tpl
-                else upload_url
-            )
-            poll_params = {"task_id": task_id, "trace_id": task_id, "id": task_id}
-            for _ in range(max_polls):
-                await asyncio.sleep(poll_interval)
-                if poll_method == "POST":
-                    poll_resp = await client.post(poll_url, json=poll_params)
-                else:
-                    poll_resp = await client.get(poll_url, params=poll_params)
-                poll_payload = poll_resp.json() if poll_resp.text else {}
-                status_raw = get_by_path(poll_payload, status_field)
-                status_val = str(status_raw).lower() if status_raw is not None else ""
-
-                if status_val in success_values:
-                    result_url = get_by_path(poll_payload, result_url_field)
-                    if not result_url and result_url_template:
-                        result_url = result_url_template.format(
-                            task_id=task_id, trace_id=task_id, id=task_id
-                        )
-                    if result_url:
-                        dl = await client.get(str(result_url))
-                        dl.raise_for_status()
-                        return _extract_response_content(dl.text)
-                    content_val = get_by_path(poll_payload, content_field)
-                    return _string_content(content_val)
-                if status_val in failed_values:
-                    raise RuntimeError(
-                        f"Parse service failed for task {task_id}: {poll_payload}"
-                    )
-        raise TimeoutError(f"Parse service polling timeout for task: {task_id}")
 
     async def _persist_parsed_full_docs(
         self,
