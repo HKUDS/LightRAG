@@ -550,6 +550,8 @@ def _table_item_dict(
     if table.table_header is not None:
         # Spec §5: stored as JSON string.
         item["table_header"] = json.dumps(table.table_header, ensure_ascii=False)
+    if table.self_ref:
+        item["self_ref"] = table.self_ref
     if table.extras:
         item["extras"] = dict(table.extras)
     return item
@@ -578,6 +580,8 @@ def _drawing_item_dict(
         "caption": drawing.caption,
         "footnotes": list(drawing.footnotes),
     }
+    if drawing.self_ref:
+        item["self_ref"] = drawing.self_ref
     if drawing.extras:
         item["extras"] = dict(drawing.extras)
     return item
@@ -616,6 +620,8 @@ def _equation_item_dict(
         "caption": equation.caption,
         "footnotes": list(equation.footnotes),
     }
+    if equation.self_ref:
+        item["self_ref"] = equation.self_ref
     if equation.extras:
         item["extras"] = dict(equation.extras)
     return item

@@ -80,7 +80,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `doc_title` | `str` | 文档标题（通常为首个 H1）；可选 |
 | `doc_summary` | `str` | 文档摘要；可选 |
 | `doc_attributes` | `object` | 文章扩展属性对象；可选 |
-| `bbox_attributes` | `object` | 版面bbox框属性；可选<br />origin: `LEFTTOP` `LEFTBOTTOM`<br />max: `1000` # 宽或高坐标最大值 |
+| `bbox_attributes` | `object` | bbox possition全局属性；详见[§八](八、positions) |
 
 > LightRAG要求同一个workspace（知识库）内的文件名（document_name）必须唯一。
 
@@ -304,11 +304,11 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 
 `positions`是一个对象数组，用于标识`blockid`的内容来之文件中的哪一个文字，用于内容溯源的时候能够在原始文件中找到和显示对应的内容。当`blockid`的内容是由版面的多个栏目合并而成时，会出现多个`position` 对象，每个`position` 对象对应1个版面方框或栏目。为了适应不同的文档格式的内容定位方式，系统提供了以下几种`position` 对象对象类型。
 
-`position` 对象的`type`字段决定了其类型：
+`position` 对象有多种类型，对象的`type`字段决定了其类型：
 
 * paraid
 
-用于docx格式文件；按`段落id`（paraid）定位内容。`rang`字段指定起止`段落id`；`charspan`为可选字段，指定内容从段落的m个字符开始到底n个字符结束。不提供`charspan`表示`blockid`为起止段落的全部内容。示例：
+适用于docx格式文件；按`段落id`（paraid）定位内容。`rang`字段指定起止`段落id`；`charspan`为可选字段，指定内容从段落的m个字符开始到底n个字符结束。不提供`charspan`表示`blockid`为起止段落的全部内容。示例：
 
 ```
 "positions": [
@@ -321,9 +321,17 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 
 * bbox
 
-用于PDF格式文件，按矩形框定位内容。`anchor`字段指定页码（可以是数字也可以字符串）；`range`是矩形坐标数组`[h1,w1,h2,w2]`，如如`[174, 155, 818, 333]`。
+适用于与PDF格式类似的文件，通过页面矩形位置来标定内容来源的原始位置。bbox支持一下字段：
 
-`position` 对象有多种类型，docx文档的`position` 对象的`type`为 `"paraid",`使用`rang`数组表示文本所属的起止段`paraid`位置。PDF文档的`position` 对象类型为`"bbox"`，标识的文本所在的版面矩形位置。`charspan`为可选字段，指定内容从段落的m个字符开始到底n个字符结束。不提供`charspan`表示`blockid`为起止段落的全部内容。示例：
+```
+origin: 矩形坐标相对于页面那个位置（可选字段，默认为LEFTTOP，另一个可选值为LEFTBOTTOM）
+max: 页面布局的长和宽的最大值，坐标按此值归一化以便能准确显示位置（可选字段，为空表示坐标按图片的点阵计算）
+anchor: 页码, 页码为字符串，支持罗马数字等非数阿拉伯数字字页码
+range: 矩形坐标数组 [h1,w1,h2,w2]，例如 [174, 155, 818, 333]
+charspan: 内容从标定段落的m个字符开始到底n个字符结束（可选字段）
+```
+
+`blocks.jsonl`文件的`meta`行的`bbox_attributes`字段保存的是bbox的全局设置，避免每个`content`行的`positions`对象中重复保存相同的内容。一下是一个典型的`positions`对象示例：
 
 ```
 "positions": [
@@ -337,7 +345,7 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 
 * heading
 
-用于Markdown格式文件，按标题定位内容。`anchor`是起始标题（标题重复是的处理方式查到markdown anchor规范）；`charspan`为可选字段，指定内容从段落的m个字符开始到底n个字符结束。不提供`charspan`表示`blockid`为起止段落的全部内容。
+适用于与Markdown格式类似的文件，按标题定位内容。`anchor`是起始标题（标题重复是的处理方式查到markdown anchor规范）；`charspan`为可选字段，指定内容从段落的m个字符开始到底n个字符结束。不提供`charspan`表示`blockid`为起止段落的全部内容。
 
 ```
 "positions": [
@@ -351,7 +359,7 @@ equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 
 
 * absolute
 
-用于text格式文件，按字符绝对位置定位。`charspan`指定内容从段落的m个字符开始到底n个字符结束。
+适用于text格式类似的文件，按字符绝对位置定位。`charspan`指定内容从段落的m个字符开始到底n个字符结束。
 
 ```
 "positions": [

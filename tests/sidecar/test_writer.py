@@ -263,6 +263,171 @@ def test_writer_positions_round_trip_bbox(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_position_origin_to_jsonable_omits_when_none() -> None:
+    """Spec §八 per-position origin: ``None`` ⇒ field absent (inherit from
+    meta ``bbox_attributes.origin``)."""
+    pos = IRPosition(type="bbox", anchor=1, range=[1.0, 2.0, 3.0, 4.0])
+    assert "origin" not in pos.to_jsonable()
+
+
+@pytest.mark.offline
+def test_position_origin_to_jsonable_emits_when_set() -> None:
+    """Spec §八 per-position origin: explicit value ⇒ override field in JSON."""
+    pos = IRPosition(
+        type="bbox", anchor=1, range=[1.0, 2.0, 3.0, 4.0], origin="LEFTTOP"
+    )
+    out = pos.to_jsonable()
+    assert out["origin"] == "LEFTTOP"
+
+
+@pytest.mark.offline
+def test_writer_position_origin_mixed_per_block(tmp_path: Path) -> None:
+    """Docling mixed coord_origin scenario: doc-level origin in meta,
+    per-position override on the minority. Coordinates land verbatim."""
+    parsed = tmp_path / "mixed.parsed"
+    ir = IRDoc(
+        document_name="mixed.pdf",
+        document_format="pdf",
+        doc_title="mixed",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="text",
+                positions=[
+                    IRPosition(type="bbox", anchor=1, range=[10.0, 20.0, 30.0, 40.0]),
+                    IRPosition(
+                        type="bbox",
+                        anchor=1,
+                        range=[50.0, 60.0, 70.0, 80.0],
+                        origin="LEFTTOP",
+                    ),
+                ],
+            )
+        ],
+        bbox_attributes={"origin": "LEFTBOTTOM"},
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-bbb1", engine="docling")
+    meta, rows = _load_jsonl(parsed / "mixed.blocks.jsonl")
+    assert meta["bbox_attributes"] == {"origin": "LEFTBOTTOM"}
+    positions = rows[0]["positions"]
+    assert positions[0] == {
+        "type": "bbox",
+        "anchor": 1,
+        "range": [10.0, 20.0, 30.0, 40.0],
+    }
+    assert positions[1] == {
+        "type": "bbox",
+        "anchor": 1,
+        "range": [50.0, 60.0, 70.0, 80.0],
+        "origin": "LEFTTOP",
+    }
+
+
+@pytest.mark.offline
+def test_writer_drawing_self_ref_emitted_only_when_nonempty(tmp_path: Path) -> None:
+    """Spec §四 ``self_ref``: empty string ⇒ field absent; non-empty ⇒
+    written verbatim. Keeps MinerU/native sidecars byte-compatible."""
+    parsed = tmp_path / "sref.parsed"
+    ir = IRDoc(
+        document_name="sref.pdf",
+        document_format="pdf",
+        doc_title="sref",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="{{IMG:a}} {{IMG:b}}",
+                drawings=[
+                    IRDrawing(placeholder_key="a", asset_ref="img_a", fmt="png"),
+                    IRDrawing(
+                        placeholder_key="b",
+                        asset_ref="img_b",
+                        fmt="png",
+                        self_ref="#/pictures/3",
+                    ),
+                ],
+            )
+        ],
+        assets=[
+            AssetSpec(ref="img_a", suggested_name="a.png", source=b"\x89PNG"),
+            AssetSpec(ref="img_b", suggested_name="b.png", source=b"\x89PNG"),
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-ccc1", engine="docling")
+    drawings = json.loads((parsed / "sref.drawings.json").read_text("utf-8"))[
+        "drawings"
+    ]
+    items = list(drawings.values())
+    assert "self_ref" not in items[0]
+    assert items[1]["self_ref"] == "#/pictures/3"
+
+
+@pytest.mark.offline
+def test_writer_table_self_ref_emitted_only_when_nonempty(tmp_path: Path) -> None:
+    """Spec §五 ``self_ref``: same omit-when-empty semantics as drawings."""
+    parsed = tmp_path / "tsref.parsed"
+    ir = IRDoc(
+        document_name="tsref.pdf",
+        document_format="pdf",
+        doc_title="tsref",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="{{TBL:a}} {{TBL:b}}",
+                tables=[
+                    IRTable(placeholder_key="a", rows=[["x"]], num_rows=1, num_cols=1),
+                    IRTable(
+                        placeholder_key="b",
+                        rows=[["y"]],
+                        num_rows=1,
+                        num_cols=1,
+                        self_ref="#/tables/0",
+                    ),
+                ],
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-ddd1", engine="docling")
+    tables = json.loads((parsed / "tsref.tables.json").read_text("utf-8"))["tables"]
+    items = list(tables.values())
+    assert "self_ref" not in items[0]
+    assert items[1]["self_ref"] == "#/tables/0"
+
+
+@pytest.mark.offline
+def test_writer_equation_self_ref_emitted_only_when_nonempty(tmp_path: Path) -> None:
+    """Spec §六 ``self_ref``: block equations carry it; inline equations
+    never reach equations.json so the field is moot there."""
+    parsed = tmp_path / "esref.parsed"
+    ir = IRDoc(
+        document_name="esref.pdf",
+        document_format="pdf",
+        doc_title="esref",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="{{EQ:a}} {{EQ:b}}",
+                equations=[
+                    IREquation(placeholder_key="a", latex="a+b", is_block=True),
+                    IREquation(
+                        placeholder_key="b",
+                        latex="c+d",
+                        is_block=True,
+                        self_ref="#/texts/15",
+                    ),
+                ],
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-eee1", engine="docling")
+    equations = json.loads((parsed / "esref.equations.json").read_text("utf-8"))[
+        "equations"
+    ]
+    items = list(equations.values())
+    assert "self_ref" not in items[0]
+    assert items[1]["self_ref"] == "#/texts/15"
+
+
+@pytest.mark.offline
 def test_writer_id_sequence_is_global_per_kind(tmp_path: Path) -> None:
     """IDs increment across blocks within their own kind: tables ↑,
     drawings ↑, equations ↑ — three independent sequences."""

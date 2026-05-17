@@ -40,12 +40,21 @@ class IRPosition:
 
     ``type`` values: ``"paraid"`` (docx) / ``"bbox"`` (pdf) /
     ``"heading"`` (md) / ``"absolute"`` (text).
+
+    ``origin`` is meaningful only for ``type="bbox"`` and acts as a
+    per-position override of ``IRDoc.bbox_attributes.origin`` (spec §八).
+    Leave ``None`` to inherit the document-level origin; set explicitly
+    (e.g. ``"LEFTTOP"`` / ``"LEFTBOTTOM"``) when this position's
+    coordinate system differs from the document default — used by the
+    Docling adapter to record mixed ``coord_origin`` without flipping
+    coordinates.
     """
 
     type: str
     anchor: Any = None
     range: list | None = None
     charspan: list[int] | None = None
+    origin: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         out: dict[str, Any] = {"type": self.type}
@@ -55,6 +64,8 @@ class IRPosition:
             out["range"] = list(self.range)
         if self.charspan is not None:
             out["charspan"] = list(self.charspan)
+        if self.origin is not None:
+            out["origin"] = self.origin
         return out
 
 
@@ -75,6 +86,10 @@ class IRTable:
     caption: str = ""
     footnotes: list[str] = field(default_factory=list)
     table_header: list[list[str]] | None = None
+    # Spec §五 ``self_ref``: optional pointer into the engine's raw output
+    # (e.g. Docling JSON Pointer ``#/tables/2``). Empty string ⇒ writer
+    # omits the field. Used for traceability back to ``.docling_raw/``.
+    self_ref: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
     # Optional verbatim body to render inside the ``<table …>…</table>`` tag
     # in ``blocks.jsonl``. When set, the writer uses this string in the block
@@ -106,6 +121,10 @@ class IRDrawing:
     caption: str = ""
     footnotes: list[str] = field(default_factory=list)
     src: str = ""
+    # Spec §四 ``self_ref``: optional pointer into the engine's raw output
+    # (e.g. Docling JSON Pointer ``#/pictures/3``). Empty string ⇒ writer
+    # omits the field. Used for traceability back to ``.docling_raw/``.
+    self_ref: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
     # Optional verbatim path. When set, the writer emits this string in
     # both the ``blocks.jsonl`` ``<drawing path>`` attribute and the
@@ -129,6 +148,11 @@ class IREquation:
     is_block: bool = True
     caption: str = ""
     footnotes: list[str] = field(default_factory=list)
+    # Spec §六 ``self_ref``: optional pointer into the engine's raw output
+    # (e.g. Docling JSON Pointer ``#/texts/15``). Empty string ⇒ writer
+    # omits the field. Only meaningful when ``is_block=True``; inline
+    # equations never enter ``equations.json``.
+    self_ref: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
 
 
