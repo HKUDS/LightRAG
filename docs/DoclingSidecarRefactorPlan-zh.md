@@ -369,12 +369,7 @@ Docling `tables[*]` → `IRTable`：
 - `footnotes` refs 解析为 `IRTable.footnotes: list[str]`；
 - 若 `footnotes` 为空，仅检查该 table 对象自身 `children` 中直接引用的 `label="footnote"` text，并按同样规则写入 `IRTable.footnotes`；不把 body 或 `key_value_area` 中的 `注:` 文本归入表格；
 - Docling item 的 `self_ref`（形如 `#/tables/2`）透传到 `IRTable.self_ref`，writer 写入 `tables.json` item 顶层 `self_ref` 字段（spec §五），便于溯源回查 `.docling_raw/<doc>.json`；
-- **`IRTable.extras`**：
-  - `extras.parent = tables[k].parent`；
-  - `extras.children_refs = tables[k].children`；
-  - `extras.references = tables[k].references`；
-  - `extras.annotations = tables[k].annotations`；
-  - `extras.cells`：按 `[i, j]` 顺序保存每个 cell 的 `row_span / col_span / row_header / row_section / fillable / start_*_offset_idx / end_*_offset_idx / bbox`，便于将来需要 HTML 渲染时回查；不污染 `tables.json` 顶层 schema；
+- **`IRTable.extras`**：docling adapter 不向 `IRTable.extras` 写入任何字段。`tables.json` 顶层字段（`caption` / `footnotes` / `table_header` / `content` / `self_ref` / `dimension` / `format`）即为完整契约；单元格 row/col span、bbox、annotations、references 等细节若需消费，请直接查阅 `*.docling_raw/<stem>.json` 中的 `tables[*].data.table_cells` 及 `tables[*].{parent, children, references, annotations}`。早期版本曾把这些字段镜像到 extras，调研表明下游从未读取，且会让 `tables.json` 体积膨胀约 50%，因此已彻底剥离。
 - block 内容追加 `{{TBL:k}}`，writer 渲染为 `<table id="tb-..." format="json">...</table>`。
 
 **不做续表/误标纠正**：如果 Docling 没有把后续分页 table 关联到 caption，`IRTable.caption` 保持空；如果 Docling 把 `表16 与调节器内部接口` 标为 `section_header` 而不是 table caption，adapter 保持 heading 语义，不降级为 caption。
@@ -495,7 +490,7 @@ Docling `prov[]` → `IRPosition`：
 - **不写 `page_sizes` 字段**。页面尺寸消费者直接读 `.docling_raw/<doc>.json` 的 `pages[N].size` 即可，避免 sidecar 与 raw bundle 之间冗余。
 - 支持 `DOCLING_BBOX_ATTRIBUTES`（JSON 字符串）env 覆盖默认 origin，与 [`parser_adapters/mineru.py`](../lightrag/parser_adapters/mineru.py) 的 `MINERU_BBOX_ATTRIBUTES` 对齐。env 不影响 per-position override 逻辑：若设置 `origin=LEFTTOP`，所有 BOTTOMLEFT 的 prov 在 position level 携带 `origin=LEFTBOTTOM` 进行 override。
 
-**实测验证**：PDF 路径下 354 个 texts + 24 个 tables + 4 个 pictures 的顶级 prov 全部为 `BOTTOMLEFT`，因此 per-position `origin` override 在 PDF 路径下几乎不触发；它主要为 markdown / docx / html 与混合输入服务。表 cell 内部 bbox 全部为 `TOPLEFT`，但**不会**以 `IRPosition` 形式写入 sidecar（只在 `IRTable.extras.cells` 里），所以不会因为坐标系不同产生混淆。
+**实测验证**：PDF 路径下 354 个 texts + 24 个 tables + 4 个 pictures 的顶级 prov 全部为 `BOTTOMLEFT`，因此 per-position `origin` override 在 PDF 路径下几乎不触发；它主要为 markdown / docx / html 与混合输入服务。表 cell 内部 bbox 全部为 `TOPLEFT`，但**不会**以 `IRPosition` 形式写入 sidecar（如需访问只能回查 `.docling_raw/<doc>.json` 中的 `tables[*].data.table_cells`），所以不会因为坐标系不同产生混淆。
 
 **优势对比旧方案**：
 

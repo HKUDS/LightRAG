@@ -728,19 +728,6 @@ def _build_ir_table(
             item.get("children"), ref_index, "footnote"
         )
 
-    extras: dict[str, Any] = {}
-    if "parent" in item:
-        extras["parent"] = item.get("parent")
-    if item.get("children"):
-        extras["children_refs"] = list(item.get("children") or [])
-    if item.get("references"):
-        extras["references"] = item.get("references")
-    if item.get("annotations"):
-        extras["annotations"] = item.get("annotations")
-    cell_specs = _table_cell_specs(data)
-    if cell_specs:
-        extras["cells"] = cell_specs
-
     return IRTable(
         placeholder_key="",
         rows=rows or None,
@@ -751,7 +738,6 @@ def _build_ir_table(
         footnotes=footnotes,
         table_header=table_header,
         self_ref=str(item.get("self_ref") or ""),
-        extras=extras,
     )
 
 
@@ -813,34 +799,6 @@ def _extract_table_header(grid: Any) -> list[list[str]] | None:
         else:
             break
     return header_rows or None
-
-
-def _table_cell_specs(data: dict) -> list[dict[str, Any]]:
-    cells = data.get("table_cells") or [] if isinstance(data, dict) else []
-    out: list[dict[str, Any]] = []
-    for cell in cells:
-        if not isinstance(cell, dict):
-            continue
-        out.append(
-            {
-                k: cell.get(k)
-                for k in (
-                    "row_span",
-                    "col_span",
-                    "column_header",
-                    "row_header",
-                    "row_section",
-                    "fillable",
-                    "start_row_offset_idx",
-                    "end_row_offset_idx",
-                    "start_col_offset_idx",
-                    "end_col_offset_idx",
-                    "bbox",
-                )
-                if k in cell
-            }
-        )
-    return out
 
 
 def _resolve_children_with_label(

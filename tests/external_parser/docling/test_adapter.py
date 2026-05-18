@@ -486,6 +486,50 @@ def test_docling_adapter_table_grid_and_header(tmp_path: Path) -> None:
     assert table.self_ref == "#/tables/0"
 
 
+def test_docling_adapter_table_extras_is_empty(tmp_path: Path) -> None:
+    """`IRTable.extras` is intentionally left blank by the docling adapter:
+    the historical ``parent`` / ``children_refs`` / ``references`` /
+    ``annotations`` / ``cells`` fields were never consumed downstream and
+    bloated ``tables.json`` by ~50%. Construct a table that *would* have
+    populated all five legacy fields and assert ``extras == {}``."""
+    tables = [
+        {
+            "self_ref": "#/tables/0",
+            "label": "table",
+            "content_layer": "body",
+            "parent": {"$ref": "#/body"},
+            "children": [{"$ref": "#/texts/0"}],
+            "references": [{"foo": "bar"}],
+            "annotations": [{"note": "x"}],
+            "data": {
+                "num_rows": 1,
+                "num_cols": 1,
+                "grid": [[{"text": "x"}]],
+                "table_cells": [
+                    {
+                        "text": "x",
+                        "row_span": 1,
+                        "col_span": 1,
+                        "start_row_offset_idx": 0,
+                        "end_row_offset_idx": 1,
+                        "start_col_offset_idx": 0,
+                        "end_col_offset_idx": 1,
+                        "bbox": {"l": 1, "t": 2, "r": 3, "b": 4},
+                    }
+                ],
+            },
+            "prov": [],
+        }
+    ]
+    texts = [_text_item(label="caption", text="c", self_ref="#/texts/0")]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(body_children=["#/tables/0"], texts=texts, tables=tables),
+    )
+    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    assert ir.blocks[0].tables[0].extras == {}
+
+
 # ---------------------------------------------------------------------------
 # 5. Picture — referenced asset
 # ---------------------------------------------------------------------------

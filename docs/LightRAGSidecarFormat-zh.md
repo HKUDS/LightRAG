@@ -195,7 +195,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `footnotes` | 脚注字符串列表 |
 | `surrounding` | 上下文对象：参见[§七](#七、surrounding) |
 | `self_ref` | 字符串：可选；解析引擎原始输出中的对象引用（如 Docling JSON Pointer `#/pictures/3`），用于溯源时回查原始解析产物中的对应对象（页面位置、原始结构等）。MinerU/native 等不提供此字段时不输出 |
-| `extras` | 对象：可选；引擎专属的旁路字段（行/列合并、OCR 置信度等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
+| `extras` | 对象：可选；引擎专属的旁路字段（如图片中包含的OCR文字等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
 | `llm_analyze_result` | 模态分析结果对象：详见 [§九](#九、`llm_analyze_result`) （后续会注入到多模态文本块） |
 | `llm_cache_list` | 模态分析LLM缓存数组（后续会注入到多模态文本块） |
 
@@ -252,7 +252,6 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
 | `content` | 字符串：表格正文，按 `format` 决定结构；这是后续多模态 chunk 真正使用的字符串。 |
 | `table_header` | 字符串：可选；识别出来的作为表格头的行内容 |
 | `self_ref` | 可选；解析引擎原始输出中的对象引用（如 Docling JSON Pointer `#/tables/2`），用于溯源时回查原始解析产物 |
-| `extras` | 对象：可选；引擎专属的旁路字段（行/列合并、OCR 置信度等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
 
 在模态分析阶段，如果`content`字段长度超过大模型的上下文长度时，表格内容会被机械地截断后在喂给模型。
 
