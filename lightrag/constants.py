@@ -272,6 +272,18 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
 
 DEFAULT_MAX_PARALLEL_ANALYZE = 2  # Multimodal analysis (VLM) concurrency
 
+# Per-engine parsing concurrency defaults.  mineru / docling default to 1
+# because both engines are resource-intensive (GPU/CPU + memory) and tend to
+# be more stable when run serially; users with capacity can opt into higher
+# concurrency via MAX_PARALLEL_PARSE_* env vars.
+DEFAULT_MAX_PARALLEL_PARSE_NATIVE = 5
+DEFAULT_MAX_PARALLEL_PARSE_MINERU = 1
+DEFAULT_MAX_PARALLEL_PARSE_DOCLING = 1
+
+# Staged pipeline queue size defaults.
+DEFAULT_QUEUE_SIZE_DEFAULT = 100
+DEFAULT_QUEUE_SIZE_INSERT = 4
+
 # Multimodal analysis / chunk thresholds
 # Minimum token count retained when truncating a multimodal chunk's
 # description to fit within DEFAULT_MAX_EXTRACT_INPUT_TOKENS.  Falling below

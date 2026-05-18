@@ -64,6 +64,11 @@ from lightrag.constants import (
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_MAX_PARALLEL_ANALYZE,
+    DEFAULT_MAX_PARALLEL_PARSE_NATIVE,
+    DEFAULT_MAX_PARALLEL_PARSE_MINERU,
+    DEFAULT_MAX_PARALLEL_PARSE_DOCLING,
+    DEFAULT_QUEUE_SIZE_DEFAULT,
+    DEFAULT_QUEUE_SIZE_INSERT,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.utils import get_env_value
@@ -508,21 +513,37 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """Maximum number of parallel insert operations."""
 
     max_parallel_parse_native: int = field(
-        default=int(os.getenv("MAX_PARALLEL_PARSE_NATIVE", "5"))
+        default=int(
+            os.getenv(
+                "MAX_PARALLEL_PARSE_NATIVE", str(DEFAULT_MAX_PARALLEL_PARSE_NATIVE)
+            )
+        )
     )
     max_parallel_parse_mineru: int = field(
-        default=int(os.getenv("MAX_PARALLEL_PARSE_MINERU", "3"))
+        default=int(
+            os.getenv(
+                "MAX_PARALLEL_PARSE_MINERU", str(DEFAULT_MAX_PARALLEL_PARSE_MINERU)
+            )
+        )
     )
     max_parallel_parse_docling: int = field(
-        default=int(os.getenv("MAX_PARALLEL_PARSE_DOCLING", "3"))
+        default=int(
+            os.getenv(
+                "MAX_PARALLEL_PARSE_DOCLING", str(DEFAULT_MAX_PARALLEL_PARSE_DOCLING)
+            )
+        )
     )
     max_parallel_analyze: int = field(
         default=int(
             os.getenv("MAX_PARALLEL_ANALYZE", str(DEFAULT_MAX_PARALLEL_ANALYZE))
         )
     )
-    queue_size_default: int = field(default=int(os.getenv("QUEUE_SIZE_DEFAULT", "100")))
-    queue_size_insert: int = field(default=int(os.getenv("QUEUE_SIZE_INSERT", "4")))
+    queue_size_default: int = field(
+        default=int(os.getenv("QUEUE_SIZE_DEFAULT", str(DEFAULT_QUEUE_SIZE_DEFAULT)))
+    )
+    queue_size_insert: int = field(
+        default=int(os.getenv("QUEUE_SIZE_INSERT", str(DEFAULT_QUEUE_SIZE_INSERT)))
+    )
 
     max_graph_nodes: int = field(
         default=get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
