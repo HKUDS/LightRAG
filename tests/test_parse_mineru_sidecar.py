@@ -94,10 +94,17 @@ def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     """
     import lightrag.external_parser.mineru.client as client_mod
 
-    counters = {"calls": 0}
+    counters = {"calls": 0, "upload_names": []}
 
-    async def _fake_download(self, raw_dir: Path, source_file_path: Path):
+    async def _fake_download(
+        self,
+        raw_dir: Path,
+        source_file_path: Path,
+        *,
+        upload_name: str | None = None,
+    ):
         counters["calls"] += 1
+        counters["upload_names"].append(upload_name)
         raw_dir.mkdir(parents=True, exist_ok=True)
         (raw_dir / "content_list.json").write_text(
             json.dumps(_FAKE_CONTENT_LIST, ensure_ascii=False),
@@ -117,7 +124,7 @@ def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         manifest = Manifest(
             source_content_hash=src_hash,
             source_size_bytes=src_size,
-            source_filename_at_parse=source_file_path.name,
+            source_filename_at_parse=upload_name or source_file_path.name,
             critical_file=ManifestFile(
                 path="content_list.json", size=crit_size, sha256=crit_hash
             ),
@@ -243,6 +250,7 @@ def test_parse_mineru_emits_compliant_sidecar(
             (drawing_id, drawing_item) = next(iter(drawings.items()))
             assert drawing_id.startswith("im-")
             assert drawing_item["path"] == "demo.blocks.assets/img_001.jpg"
+            assert drawing_item["self_ref"] == "content_list.json#/3"
 
             # Raw bundle preserved next to sidecar
             raw_dir = parsed_dir.parent / "demo.pdf.mineru_raw"
@@ -254,6 +262,13 @@ def test_parse_mineru_emits_compliant_sidecar(
             tables = json.loads((parsed_dir / "demo.tables.json").read_text())["tables"]
             (_, table_item) = next(iter(tables.items()))
             assert "image" not in table_item
+            assert table_item["self_ref"] == "content_list.json#/2"
+
+            equations = json.loads((parsed_dir / "demo.equations.json").read_text())[
+                "equations"
+            ]
+            (_, equation_item) = next(iter(equations.items()))
+            assert equation_item["self_ref"] == "content_list.json#/4"
         finally:
             await rag.finalize_storages()
 
@@ -340,6 +355,71 @@ def test_parse_mineru_cache_hit_skips_download(
                 content_data={"source_path": str(src)},
             )
             assert counters["calls"] == 2
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.new_event_loop().run_until_complete(_run())
+
+
+@pytest.mark.offline
+def test_parse_mineru_upload_name_strips_parser_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MinerU upload name should use the canonical filename, not parser
+    hints embedded in the source basename."""
+
+    async def _run() -> None:
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://mineru.example")
+        counters = _install_fake_download(monkeypatch)
+
+        input_dir = tmp_path / "inputs" / "ws"
+        input_dir.mkdir(parents=True)
+        src = input_dir / "demo.[mineru-iet].pdf"
+        src.write_bytes(b"PDFPDF" * 256)
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            doc_id = "doc-abcdef0123456789abcdef0123456789"
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": "PARSING",
+                        "content_summary": "",
+                        "content_length": 0,
+                        "chunks_count": 0,
+                        "chunks_list": [],
+                        "created_at": "2026-05-15T00:00:00+00:00",
+                        "updated_at": "2026-05-15T00:00:00+00:00",
+                        "file_path": src.name,
+                        "track_id": "trk",
+                        "content_hash": "",
+                        "metadata": {},
+                    }
+                }
+            )
+
+            monkeypatch.setattr(
+                rag,
+                "_resolve_source_file_for_parser",
+                lambda _p: str(src),
+            )
+
+            parsed = await rag.parse_mineru(
+                doc_id=doc_id,
+                file_path=src.name,
+                content_data={"source_path": str(src)},
+            )
+
+            assert counters["upload_names"] == ["demo.pdf"]
+            parsed_dir = Path(parsed["blocks_path"]).parent
+            assert parsed_dir.name == "demo.pdf.parsed"
+            manifest = json.loads(
+                (
+                    parsed_dir.parent / "demo.pdf.mineru_raw" / "_manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            assert manifest["source_filename_at_parse"] == "demo.pdf"
         finally:
             await rag.finalize_storages()
 

@@ -34,7 +34,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from lightrag.native_parser.docx.drawing_image_extractor import (
@@ -68,6 +68,33 @@ def _placeholder_keyspace() -> Callable[[str], str]:
     """Return a fresh counter producing ``{prefix}{N}`` keys (1-indexed)."""
     counter = itertools.count(1)
     return lambda prefix: f"{prefix}{next(counter)}"
+
+
+def _safe_asset_ref_from_path(path_val: str, asset_prefix: str) -> str | None:
+    """Return the path inside ``asset_prefix`` only when it is safe.
+
+    Native DOCX images are pre-extracted into ``<base>.blocks.assets/``.
+    Treat a drawing path as local only when the suffix is a clean POSIX
+    relative path. Unsafe local-looking paths are dropped instead of being
+    registered as assets or preserved as linked references.
+    """
+    if not asset_prefix or not path_val.startswith(asset_prefix):
+        return None
+
+    rel_raw = path_val[len(asset_prefix) :]
+    if not rel_raw or "\\" in rel_raw:
+        return None
+
+    rel_path = PurePosixPath(rel_raw)
+    if rel_path.is_absolute():
+        return None
+    if any(part == ".." for part in rel_path.parts):
+        return None
+
+    rel = rel_path.as_posix()
+    if rel in {"", "."}:
+        return None
+    return rel
 
 
 @dataclass
@@ -177,8 +204,8 @@ class _BlockBuilder:
         #      not live under asset_prefix) — pass through
         #      verbatim via IRDrawing.path_override; do NOT emit
         #      an AssetSpec (no on-disk bytes to materialize).
-        if self.asset_prefix and path_val.startswith(self.asset_prefix):
-            rel_inside_assets = path_val[len(self.asset_prefix) :]
+        rel_inside_assets = _safe_asset_ref_from_path(path_val, self.asset_prefix)
+        if rel_inside_assets is not None:
             asset_ref = rel_inside_assets
             suggested_name = Path(rel_inside_assets).name or rel_inside_assets
             if asset_ref and asset_ref not in self.seen_asset_refs:
@@ -199,7 +226,11 @@ class _BlockBuilder:
             # resolution path (which will also produce ``path=""``
             # downstream) rather than masquerading as an explicit
             # builder override.
-            path_override = path_val or None
+            path_override = (
+                None
+                if self.asset_prefix and path_val.startswith(self.asset_prefix)
+                else path_val or None
+            )
 
         placeholder = self.next_key("im")
         self.drawings.append(

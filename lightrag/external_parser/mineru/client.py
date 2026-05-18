@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import zipfile
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -53,6 +54,7 @@ OFFICIAL_DONE_STATES = {"done"}
 OFFICIAL_FAILED_STATES = {"failed"}
 LOCAL_DONE_STATES = {"completed"}
 LOCAL_FAILED_STATES = {"failed"}
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def _get_by_path(payload: Any, path: str) -> Any:
@@ -93,6 +95,20 @@ def _env_int(name: str, default: int) -> int:
 
 def _strip_trailing_slash(url: str) -> str:
     return url.rstrip("/")
+
+
+def _resolve_upload_name(upload_name: str | None, source_file_path: Path) -> str:
+    candidate = Path(str(upload_name or "")).name
+    return candidate or source_file_path.name
+
+
+async def _iter_file_bytes(path: Path) -> AsyncIterator[bytes]:
+    with path.open("rb") as fh:
+        while True:
+            chunk = await asyncio.to_thread(fh.read, UPLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            yield chunk
 
 
 def _validate_base_url(
@@ -194,6 +210,8 @@ class MinerURawClient:
         self,
         raw_dir: Path,
         source_file_path: Path,
+        *,
+        upload_name: str | None = None,
     ) -> Manifest:
         """Download a fresh bundle and write the manifest.
 
@@ -207,18 +225,23 @@ class MinerURawClient:
         if httpx is None:
             raise RuntimeError("httpx is required for MinerU parsing but not installed")
         raw_dir.mkdir(parents=True, exist_ok=True)
+        resolved_upload_name = _resolve_upload_name(upload_name, source_file_path)
 
         timeout = httpx.Timeout(120.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             if self.api_mode == "official":
                 task_id = await self._download_official(
-                    client, source_file_path, raw_dir
+                    client, source_file_path, raw_dir, resolved_upload_name
                 )
             else:
-                task_id = await self._download_local(client, source_file_path, raw_dir)
+                task_id = await self._download_local(
+                    client, source_file_path, raw_dir, resolved_upload_name
+                )
 
-        self._normalize_raw_bundle(raw_dir, source_file_path)
-        return self._build_and_write_manifest(raw_dir, source_file_path, task_id)
+        self._normalize_raw_bundle(raw_dir, source_file_path, resolved_upload_name)
+        return self._build_and_write_manifest(
+            raw_dir, source_file_path, task_id, resolved_upload_name
+        )
 
     # ------------------------------------------------------------------
     # Upload + poll
@@ -230,8 +253,8 @@ class MinerURawClient:
             "Authorization": f"Bearer {self.api_token}",
         }
 
-    def _official_payload(self, source_file_path: Path) -> dict[str, Any]:
-        file_entry: dict[str, Any] = {"name": source_file_path.name}
+    def _official_payload(self, upload_name: str) -> dict[str, Any]:
+        file_entry: dict[str, Any] = {"name": upload_name}
         if self.is_ocr:
             file_entry["is_ocr"] = True
         if self.page_ranges:
@@ -249,12 +272,13 @@ class MinerURawClient:
         client: "httpx.AsyncClient",
         source_file_path: Path,
         raw_dir: Path,
+        upload_name: str,
     ) -> str:
         apply_url = f"{self.official_endpoint}/api/v4/file-urls/batch"
         resp = await client.post(
             apply_url,
             headers=self._official_headers(),
-            json=self._official_payload(source_file_path),
+            json=self._official_payload(upload_name),
         )
         resp.raise_for_status()
         payload = resp.json() if resp.text else {}
@@ -280,15 +304,14 @@ class MinerURawClient:
                 f"MinerU official upload URL response had an empty upload URL: "
                 f"{payload}"
             )
-        # Use ``content=bytes`` rather than ``data=file_object``: httpx 0.28+
-        # wraps a sync file-like into an ``IteratorByteStream`` (a SyncByteStream),
-        # which ``AsyncClient._send_single_request`` rejects with
-        # "Attempted to send an sync request with an AsyncClient instance."
-        file_bytes = await asyncio.to_thread(source_file_path.read_bytes)
-        upload_resp = await client.put(upload_url, content=file_bytes)
+        upload_resp = await client.put(
+            upload_url,
+            content=_iter_file_bytes(source_file_path),
+            headers={"Content-Length": str(source_file_path.stat().st_size)},
+        )
         upload_resp.raise_for_status()
 
-        result_url = await self._poll_official_batch(client, batch_id, source_file_path)
+        result_url = await self._poll_official_batch(client, batch_id, upload_name)
         await self._download_zip(client, result_url, raw_dir)
         return batch_id
 
@@ -296,7 +319,7 @@ class MinerURawClient:
         self,
         client: "httpx.AsyncClient",
         batch_id: str,
-        source_file_path: Path,
+        upload_name: str,
     ) -> str:
         poll_url = f"{self.official_endpoint}/api/v4/extract-results/batch/{batch_id}"
         for _ in range(self.max_polls):
@@ -311,7 +334,7 @@ class MinerURawClient:
             if not isinstance(results, list):
                 continue
 
-            selected = _select_official_extract_result(results, source_file_path.name)
+            selected = _select_official_extract_result(results, upload_name)
             if selected is None:
                 continue
             state = str(selected.get("state") or "").lower()
@@ -364,13 +387,17 @@ class MinerURawClient:
         client: "httpx.AsyncClient",
         source_file_path: Path,
         raw_dir: Path,
+        upload_name: str,
     ) -> str:
         submit_url = f"{self.local_endpoint}/tasks"
-        with source_file_path.open("rb") as f:
+        # Keep data as a Mapping so httpx 0.28 builds an async MultipartStream
+        # and reads the file handle in chunks instead of buffering the payload.
+        with source_file_path.open("rb") as fh:
+            files = {"files": (upload_name, fh, "application/octet-stream")}
             resp = await client.post(
                 submit_url,
-                files={"files": (source_file_path.name, f)},
                 data=self._local_form_data(),
+                files=files,
             )
         resp.raise_for_status()
         payload = resp.json() if resp.text else {}
@@ -447,7 +474,12 @@ class MinerURawClient:
         except OSError:
             pass
 
-    def _normalize_raw_bundle(self, raw_dir: Path, source_file_path: Path) -> None:
+    def _normalize_raw_bundle(
+        self,
+        raw_dir: Path,
+        source_file_path: Path,
+        upload_name: str | None = None,
+    ) -> None:
         """Ensure a downloaded bundle has root-level ``content_list.json``.
 
         Official and local MinerU zip archives commonly place parser outputs at
@@ -462,7 +494,9 @@ class MinerURawClient:
         if (raw_dir / CONTENT_LIST_FILENAME).is_file():
             return
 
-        candidate = _select_content_list_candidate(raw_dir, source_file_path)
+        candidate = _select_content_list_candidate(
+            raw_dir, source_file_path, upload_name
+        )
         if candidate is None:
             return
 
@@ -503,6 +537,7 @@ class MinerURawClient:
         raw_dir: Path,
         source_file_path: Path,
         task_id: str,
+        upload_name: str,
     ) -> Manifest:
         source_size, source_hash = compute_size_and_hash(source_file_path)
 
@@ -533,7 +568,7 @@ class MinerURawClient:
         manifest = Manifest(
             source_content_hash=source_hash,
             source_size_bytes=source_size,
-            source_filename_at_parse=source_file_path.name,
+            source_filename_at_parse=upload_name,
             critical_file=ManifestFile(
                 path=CONTENT_LIST_FILENAME,
                 size=crit_size,
@@ -647,8 +682,9 @@ def _select_official_extract_result(
 def _select_content_list_candidate(
     raw_dir: Path,
     source_file_path: Path,
+    upload_name: str | None = None,
 ) -> Path | None:
-    source_stem = source_file_path.stem
+    source_stem = Path(upload_name or source_file_path.name).stem
     candidates: list[tuple[int, int, str, Path]] = []
     for path in raw_dir.rglob("*.json"):
         if not path.is_file():
