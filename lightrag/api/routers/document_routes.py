@@ -29,6 +29,7 @@ from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     PARSER_ENGINE_LEGACY,
+    PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_FIXED,
 )
@@ -1211,31 +1212,23 @@ def canonicalize_archived_file_variant_basename(
     return normalize_file_path(f"{stem}{path.suffix}")
 
 
-# Directory-suffix patterns we treat as parser artifact subdirectories under
-# __parsed__/. Anything matching gets the basename extracted; the delete
-# path then rmtree's the whole dir.
-#
-# - ".parsed"      : spec sidecar layout (blocks.jsonl + per-modality JSONs +
-#                    assets dir). Written by every engine.
-# - ".mineru_raw"  : MinerU raw bundle (content_list.json + images/ +
-#                    _manifest.json + optional middle.json / full.md /
-#                    layout.pdf). Preserved across re-parses for cache reuse
-#                    and on-demand diagnostics; cleaned only when the user
-#                    deletes the document with delete_file=True so the raw
-#                    artifacts and source file go away together.
-_PARSED_ARTIFACT_DIR_SUFFIXES: tuple[str, ...] = (".parsed", ".mineru_raw")
-
-
 def _canonical_basename_for_parsed_artifact_dir(dir_name: str) -> str | None:
     """Return the canonical source basename for a parser artifact dir.
 
-    Recognized layouts:
+    Recognized layouts (suffix list in
+    :data:`lightrag.constants.PARSED_ARTIFACT_DIR_SUFFIXES`):
 
-    - ``<basename>.parsed[_NNN]/``       — sidecar output
-    - ``<basename>.mineru_raw[_NNN]/``   — MinerU preserved raw bundle
+    - ``<basename>.parsed[_NNN]/``        — sidecar output (every engine)
+    - ``<basename>.mineru_raw[_NNN]/``    — MinerU preserved raw bundle
+    - ``<basename>.docling_raw[_NNN]/``   — Docling preserved raw bundle
+
+    Raw bundles are preserved across re-parses for cache reuse and on-demand
+    diagnostics; they are cleaned only when the user deletes the document
+    with ``delete_file=True`` so the raw artifacts and source file go away
+    together.
     """
     stripped = ARCHIVED_FILE_SUFFIX_RE.sub("", dir_name)
-    for suffix in _PARSED_ARTIFACT_DIR_SUFFIXES:
+    for suffix in PARSED_ARTIFACT_DIR_SUFFIXES:
         if stripped.endswith(suffix):
             basename = stripped[: -len(suffix)]
             if basename:

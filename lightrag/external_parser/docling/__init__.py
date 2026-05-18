@@ -4,12 +4,12 @@ Public surface for the rest of the codebase. ``parse_docling`` imports
 only from this facade so the inner module layout stays free to evolve.
 """
 
+from lightrag.constants import DOCLING_RAW_DIR_SUFFIX
 from lightrag.external_parser._common import (
     clear_dir_contents,
     raw_dir_for_parsed_dir as _raw_dir_for_parsed_dir,
 )
 
-DOCLING_RAW_DIR_SUFFIX = ".docling_raw"
 MANIFEST_ENGINE = "docling"
 
 

@@ -215,6 +215,20 @@ PARSER_ENGINE_SUFFIX_CAPABILITIES = {
 }
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
 
+# Suffixes for parser artifact subdirectories under ``<input>/__parsed__/``.
+# Centralising them here keeps the sidecar writer, engine cache modules and
+# the delete-path whitelist in sync — new engines should add their raw-dir
+# suffix to ``PARSED_ARTIFACT_DIR_SUFFIXES`` so deletion picks them up
+# automatically.
+PARSED_DIR_SUFFIX = ".parsed"  # spec sidecar layout (every engine)
+MINERU_RAW_DIR_SUFFIX = ".mineru_raw"  # preserved MinerU raw bundle
+DOCLING_RAW_DIR_SUFFIX = ".docling_raw"  # preserved Docling raw bundle
+PARSED_ARTIFACT_DIR_SUFFIXES: tuple[str, ...] = (
+    PARSED_DIR_SUFFIX,
+    MINERU_RAW_DIR_SUFFIX,
+    DOCLING_RAW_DIR_SUFFIX,
+)
+
 # Per-file processing options carried by filename hints / LIGHTRAG_PARSER rules.
 # See docs/FileProcessingConfiguration-zh.md for the full specification.
 PROCESS_OPTION_IMAGES = "i"  # Enable VLM analysis for drawings/images

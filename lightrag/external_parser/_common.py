@@ -17,6 +17,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from lightrag.constants import PARSED_DIR_SUFFIX
 from lightrag.utils import logger
 
 
@@ -60,8 +61,8 @@ def raw_dir_for_parsed_dir(parsed_dir: Path, *, suffix: str) -> Path:
     if not suffix.startswith("."):
         raise ValueError(f"raw dir suffix must start with '.', got {suffix!r}")
     stem = parsed_dir.name
-    if stem.endswith(".parsed"):
-        stem = stem[: -len(".parsed")]
+    if stem.endswith(PARSED_DIR_SUFFIX):
+        stem = stem[: -len(PARSED_DIR_SUFFIX)]
     return parsed_dir.parent / f"{stem}{suffix}"
 
 

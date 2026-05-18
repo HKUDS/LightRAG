@@ -31,9 +31,9 @@ import hashlib
 import os
 from pathlib import Path
 
+from lightrag.constants import MINERU_RAW_DIR_SUFFIX, PARSED_DIR_SUFFIX
 from lightrag.external_parser.mineru.manifest import load_manifest
 
-MINERU_RAW_DIR_SUFFIX = ".mineru_raw"
 DEFAULT_MINERU_API_MODE = "local"
 DEFAULT_MINERU_OFFICIAL_ENDPOINT = "https://mineru.net"
 
@@ -45,8 +45,8 @@ def raw_dir_for_parsed_dir(parsed_dir: Path) -> Path:
     cache check time so the layout is canonical.
     """
     stem = parsed_dir.name
-    if stem.endswith(".parsed"):
-        stem = stem[: -len(".parsed")]
+    if stem.endswith(PARSED_DIR_SUFFIX):
+        stem = stem[: -len(PARSED_DIR_SUFFIX)]
     return parsed_dir.parent / f"{stem}{MINERU_RAW_DIR_SUFFIX}"
 
 
