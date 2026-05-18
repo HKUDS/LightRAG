@@ -291,6 +291,34 @@ async def test_client_official_mode_round_trip(
     assert is_bundle_valid(raw, src) is True
 
 
+@pytest.mark.offline
+async def test_client_official_upload_name_overrides_source_basename(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+    monkeypatch.setenv("MINERU_API_TOKEN", "token-123")
+    monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+
+    src = tmp_path / "demo.[mineru-iet].pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    dispatcher = _OfficialDispatcher()
+    _CURRENT.dispatcher = dispatcher
+    manifest = await MinerURawClient().download_into(
+        raw,
+        src,
+        upload_name="demo.pdf",
+    )
+
+    assert dispatcher.apply_payload
+    assert dispatcher.apply_payload["files"][0]["name"] == "demo.pdf"
+    assert manifest.source_filename_at_parse == "demo.pdf"
+
+
 # ---------------------------------------------------------------------------
 # local mode: /tasks + /tasks/{id} + /tasks/{id}/result
 # ---------------------------------------------------------------------------
@@ -299,11 +327,13 @@ async def test_client_official_mode_round_trip(
 class _LocalDispatcher(_Dispatcher):
     def __init__(self) -> None:
         self.form_data: dict[str, Any] | None = None
+        self.files: Any = None
 
     def post(self, url: str, **kwargs: Any) -> _FakeResponse:
         if url == "http://127.0.0.1:8000/tasks":
             self.form_data = kwargs.get("data")
-            assert kwargs.get("files")
+            self.files = kwargs.get("files")
+            assert self.files
             return _FakeResponse(text=json.dumps({"task_id": "L-1"}))
         raise AssertionError(f"unexpected POST {url}")
 
@@ -348,6 +378,33 @@ async def test_client_local_mode_round_trip(
     assert manifest.endpoint_signature == "http://127.0.0.1:8000"
     assert (raw / "content_list.json").is_file()
     assert (raw / "images" / "img_001.png").read_bytes() == b"\x89PNGnested"
+
+
+@pytest.mark.offline
+async def test_client_local_upload_name_overrides_multipart_filename(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+    monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+
+    src = tmp_path / "demo.[mineru-R!].pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    dispatcher = _LocalDispatcher()
+    _CURRENT.dispatcher = dispatcher
+    manifest = await MinerURawClient().download_into(
+        raw,
+        src,
+        upload_name="demo.pdf",
+    )
+
+    assert dispatcher.files["files"][0] == "demo.pdf"
+    assert manifest.source_filename_at_parse == "demo.pdf"
 
 
 class _OfficialFailedDispatcher(_OfficialDispatcher):

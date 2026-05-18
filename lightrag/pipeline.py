@@ -2522,7 +2522,11 @@ class _PipelineMixin:
                 doc_id,
                 source_file_path.name,
             )
-            await client.download_into(raw_dir, source_file_path)
+            await client.download_into(
+                raw_dir,
+                source_file_path,
+                upload_name=document_name,
+            )
 
         ir_builder = MinerUIRBuilder()
         ir = ir_builder.normalize_from_workdir(raw_dir, document_name=document_name)

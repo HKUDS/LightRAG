@@ -2505,7 +2505,7 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         src_file = input_dir / "demo.pdf"
         src_file.write_bytes(b"fake-pdf")
 
-        async def _fake_download(self, raw_dir, source_file_path):
+        async def _fake_download(self, raw_dir, source_file_path, **_kwargs):
             assert source_file_path == src_file
             raw_dir.mkdir(parents=True, exist_ok=True)
             content_list = [
@@ -2859,7 +2859,7 @@ def test_parse_mineru_empty_service_result_raises_without_fallback(
         src_file = tmp_path / "demo.pdf"
         src_file.write_bytes(b"fake-pdf")
 
-        async def _fake_download(self, raw_dir, source_file_path):
+        async def _fake_download(self, raw_dir, source_file_path, **_kwargs):
             # Simulate a "MinerU returned nothing useful" bundle: dir is
             # touched but no content_list.json is produced.
             raw_dir.mkdir(parents=True, exist_ok=True)
