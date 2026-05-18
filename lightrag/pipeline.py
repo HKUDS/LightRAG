@@ -2518,8 +2518,7 @@ class _PipelineMixin:
             clear_dir_contents(raw_dir)
             client = MinerURawClient()
             logger.info(
-                "[MinerU] Parsing doc_id=%s "
-                "source=%s (this may take a few minutes)",
+                "[MinerU] Parsing doc_id=%s " "source=%s (this may take a few minutes)",
                 doc_id,
                 source_file_path.name,
             )
