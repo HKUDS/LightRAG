@@ -47,7 +47,7 @@ GET /v1/result/{task_id}
 | 字段 | env / 默认 | 说明 |
 | --- | --- | --- |
 | `do_ocr` | `DOCLING_DO_OCR=true` | 是否启用 OCR |
-| `force_ocr` | `DOCLING_FORCE_OCR=false` | 是否强制全文 OCR；false 时仅图片走 OCR，其余按常规提取 |
+| `force_ocr` | `DOCLING_FORCE_OCR=true` | 是否强制全文 OCR；false 时仅图片走 OCR，其余按常规提取；true 时所有内容都走 OCR，有助于提高内容识别质量 |
 | `ocr_engine` | `DOCLING_OCR_ENGINE=auto` | OpenAPI 已标记 DEPRECATED，但与 `ocr_preset` 同时发送 |
 | `ocr_preset` | `DOCLING_OCR_PRESET=auto` | OCR 引擎 preset（推荐取代 `ocr_engine`） |
 | `ocr_lang` | `DOCLING_OCR_LANG=`（空 / null） | 空时不发送字段；非空按 JSON 数组解析，按服务端实测兼容形式提交 |
@@ -515,7 +515,7 @@ Docling `prov[]` → `IRPosition`：
 
 # Docling OCR / formula enrichment
 DOCLING_DO_OCR=true
-DOCLING_FORCE_OCR=false
+DOCLING_FORCE_OCR=true
 DOCLING_OCR_ENGINE=auto
 DOCLING_OCR_PRESET=auto
 DOCLING_OCR_LANG=

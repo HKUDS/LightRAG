@@ -89,7 +89,7 @@ class DoclingRawClient:
         self.engine_version = os.getenv("DOCLING_ENGINE_VERSION", "").strip()
 
         self.do_ocr = env_bool("DOCLING_DO_OCR", True)
-        self.force_ocr = env_bool("DOCLING_FORCE_OCR", False)
+        self.force_ocr = env_bool("DOCLING_FORCE_OCR", True)
         self.ocr_engine = os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto"
         self.ocr_preset = os.getenv("DOCLING_OCR_PRESET", "auto").strip() or "auto"
         self.ocr_lang_raw = os.getenv("DOCLING_OCR_LANG", "").strip()
