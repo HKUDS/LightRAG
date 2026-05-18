@@ -19,7 +19,6 @@ code change automatically invalidates pre-existing caches.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -205,9 +204,15 @@ class DoclingRawClient:
         filename: str,
     ) -> str:
         url = f"{self.endpoint}{CONVERT_PATH}"
-        file_bytes = await asyncio.to_thread(source_file_path.read_bytes)
-        files = {"files": (filename, file_bytes, "application/octet-stream")}
-        resp = await client.post(url, data=self._build_multipart_data(), files=files)
+        # Hand httpx a file object so its MultipartStream reads the body in
+        # chunks instead of materializing the whole PDF/PPTX in worker memory.
+        # With ``max_parallel_parse_docling > 1`` a per-doc bytes copy can
+        # OOM the worker before docling-serve ever sees the request.
+        with source_file_path.open("rb") as fh:
+            files = {"files": (filename, fh, "application/octet-stream")}
+            resp = await client.post(
+                url, data=self._build_multipart_data(), files=files
+            )
         if resp.status_code >= 400:
             raise RuntimeError(
                 f"Docling upload failed: {resp.status_code} {resp.text[:400]}"

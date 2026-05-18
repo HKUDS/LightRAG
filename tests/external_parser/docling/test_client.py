@@ -98,8 +98,17 @@ class _FakeAsyncClient:
         headers: Any = None,
     ) -> _FakeResponse:
         recorder = _CURRENT["recorder"]
+        # Production passes a file handle inside a `with` block — by the time
+        # tests inspect `post_calls` it's already closed. Drain the stream
+        # here so assertions can keep reading the payload as bytes.
+        snapshot_files = files
+        if files and "files" in files:
+            name, payload, ctype = files["files"]
+            if hasattr(payload, "read"):
+                payload = payload.read()
+            snapshot_files = {"files": (name, payload, ctype)}
         recorder.post_calls.append(
-            {"url": url, "files": files, "data": data, "json": json}
+            {"url": url, "files": snapshot_files, "data": data, "json": json}
         )
         if CONVERT_PATH in url:
             return _FakeResponse(
