@@ -66,16 +66,24 @@ class _FakeAsyncClient:
     async def post(
         self,
         url: str,
+        content: Any = None,
         files: Any = None,
         json: Any = None,
         data: Any = None,
         headers: Any = None,
     ) -> _FakeResponse:
         self.posts.append(
-            {"url": url, "files": files, "json": json, "data": data, "headers": headers}
+            {
+                "url": url,
+                "content": content,
+                "files": files,
+                "json": json,
+                "data": data,
+                "headers": headers,
+            }
         )
         return _CURRENT.dispatcher.post(
-            url, files=files, json=json, data=data, headers=headers
+            url, content=content, files=files, json=json, data=data, headers=headers
         )
 
     async def put(
@@ -85,8 +93,6 @@ class _FakeAsyncClient:
         content: Any = None,
         headers: Any = None,
     ) -> _FakeResponse:
-        # ``content=`` was added to match production ``client.put(url, content=bytes)``
-        # introduced for httpx 0.28+ compatibility (see lightrag/external_parser/mineru/client.py).
         return _CURRENT.dispatcher.put(url, data=data, content=content, headers=headers)
 
     async def get(
@@ -109,6 +115,13 @@ class _Dispatcher:
 
 class _CURRENT:  # set per-test via monkeypatch
     dispatcher: _Dispatcher | None = None
+
+
+async def _collect_async_bytes(stream: Any) -> bytes:
+    chunks = []
+    async for chunk in stream:
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +223,8 @@ class _OfficialDispatcher(_Dispatcher):
         self.polls = 0
         self.uploaded = False
         self.apply_payload: dict[str, Any] | None = None
+        self.upload_content: Any = None
+        self.upload_headers: dict[str, str] | None = None
 
     def post(self, url: str, **kwargs: Any) -> _FakeResponse:
         if url == "https://mineru.net/api/v4/file-urls/batch":
@@ -230,8 +245,12 @@ class _OfficialDispatcher(_Dispatcher):
             )
         raise AssertionError(f"unexpected POST {url}")
 
-    def put(self, url: str, **_: Any) -> _FakeResponse:
+    def put(self, url: str, **kwargs: Any) -> _FakeResponse:
         if url == "https://upload.example/demo.pdf":
+            self.upload_content = kwargs.get("content")
+            self.upload_headers = kwargs.get("headers")
+            assert not isinstance(self.upload_content, bytes)
+            assert hasattr(self.upload_content, "__aiter__")
             self.uploaded = True
             return _FakeResponse(status_code=200)
         raise AssertionError(f"unexpected PUT {url}")
@@ -280,6 +299,8 @@ async def test_client_official_mode_round_trip(
     manifest = await MinerURawClient().download_into(raw, src)
 
     assert dispatcher.uploaded is True
+    assert dispatcher.upload_headers == {"Content-Length": str(src.stat().st_size)}
+    assert await _collect_async_bytes(dispatcher.upload_content) == src.read_bytes()
     assert dispatcher.apply_payload
     assert dispatcher.apply_payload["files"][0]["name"] == "demo.pdf"
     assert dispatcher.apply_payload["model_version"] == "vlm"
@@ -326,14 +347,28 @@ async def test_client_official_upload_name_overrides_source_basename(
 
 class _LocalDispatcher(_Dispatcher):
     def __init__(self) -> None:
+        self.content: Any = None
         self.form_data: dict[str, Any] | None = None
         self.files: Any = None
+        self.headers: dict[str, str] | None = None
+        self.upload_filename: str | None = None
+        self.upload_payload: bytes | None = None
+        self.upload_content_type: str | None = None
 
     def post(self, url: str, **kwargs: Any) -> _FakeResponse:
         if url == "http://127.0.0.1:8000/tasks":
+            self.content = kwargs.get("content")
             self.form_data = kwargs.get("data")
             self.files = kwargs.get("files")
-            assert self.files
+            self.headers = kwargs.get("headers")
+            assert self.content is None
+            assert self.files and "files" in self.files
+            name, payload, ctype = self.files["files"]
+            assert hasattr(payload, "read")
+            assert not isinstance(payload, bytes)
+            self.upload_filename = name
+            self.upload_payload = payload.read()
+            self.upload_content_type = ctype
             return _FakeResponse(text=json.dumps({"task_id": "L-1"}))
         raise AssertionError(f"unexpected POST {url}")
 
@@ -369,10 +404,14 @@ async def test_client_local_mode_round_trip(
     _CURRENT.dispatcher = dispatcher
     manifest = await MinerURawClient().download_into(raw, src)
 
+    assert dispatcher.headers is None
     assert dispatcher.form_data
     assert dispatcher.form_data["response_format_zip"] == "true"
     assert dispatcher.form_data["return_content_list"] == "true"
     assert dispatcher.form_data["return_images"] == "true"
+    assert dispatcher.upload_filename == "demo.pdf"
+    assert dispatcher.upload_content_type == "application/octet-stream"
+    assert dispatcher.upload_payload == src.read_bytes()
     assert manifest.task_id == "L-1"
     assert manifest.api_mode == "local"
     assert manifest.endpoint_signature == "http://127.0.0.1:8000"
@@ -403,7 +442,9 @@ async def test_client_local_upload_name_overrides_multipart_filename(
         upload_name="demo.pdf",
     )
 
-    assert dispatcher.files["files"][0] == "demo.pdf"
+    assert dispatcher.content is None
+    assert dispatcher.upload_filename == "demo.pdf"
+    assert dispatcher.upload_payload == src.read_bytes()
     assert manifest.source_filename_at_parse == "demo.pdf"
 
 

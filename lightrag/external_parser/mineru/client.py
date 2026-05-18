@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import zipfile
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -53,6 +54,7 @@ OFFICIAL_DONE_STATES = {"done"}
 OFFICIAL_FAILED_STATES = {"failed"}
 LOCAL_DONE_STATES = {"completed"}
 LOCAL_FAILED_STATES = {"failed"}
+UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def _get_by_path(payload: Any, path: str) -> Any:
@@ -98,6 +100,15 @@ def _strip_trailing_slash(url: str) -> str:
 def _resolve_upload_name(upload_name: str | None, source_file_path: Path) -> str:
     candidate = Path(str(upload_name or "")).name
     return candidate or source_file_path.name
+
+
+async def _iter_file_bytes(path: Path) -> AsyncIterator[bytes]:
+    with path.open("rb") as fh:
+        while True:
+            chunk = await asyncio.to_thread(fh.read, UPLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            yield chunk
 
 
 def _validate_base_url(
@@ -293,12 +304,11 @@ class MinerURawClient:
                 f"MinerU official upload URL response had an empty upload URL: "
                 f"{payload}"
             )
-        # Use ``content=bytes`` rather than ``data=file_object``: httpx 0.28+
-        # wraps a sync file-like into an ``IteratorByteStream`` (a SyncByteStream),
-        # which ``AsyncClient._send_single_request`` rejects with
-        # "Attempted to send an sync request with an AsyncClient instance."
-        file_bytes = await asyncio.to_thread(source_file_path.read_bytes)
-        upload_resp = await client.put(upload_url, content=file_bytes)
+        upload_resp = await client.put(
+            upload_url,
+            content=_iter_file_bytes(source_file_path),
+            headers={"Content-Length": str(source_file_path.stat().st_size)},
+        )
         upload_resp.raise_for_status()
 
         result_url = await self._poll_official_batch(client, batch_id, upload_name)
@@ -380,11 +390,14 @@ class MinerURawClient:
         upload_name: str,
     ) -> str:
         submit_url = f"{self.local_endpoint}/tasks"
-        with source_file_path.open("rb") as f:
+        # Keep data as a Mapping so httpx 0.28 builds an async MultipartStream
+        # and reads the file handle in chunks instead of buffering the payload.
+        with source_file_path.open("rb") as fh:
+            files = {"files": (upload_name, fh, "application/octet-stream")}
             resp = await client.post(
                 submit_url,
-                files={"files": (upload_name, f)},
                 data=self._local_form_data(),
+                files=files,
             )
         resp.raise_for_status()
         payload = resp.json() if resp.text else {}
