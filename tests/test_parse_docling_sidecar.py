@@ -469,3 +469,152 @@ def test_parse_docling_options_signature_invalidates_cache(
             await rag.finalize_storages()
 
     asyncio.new_event_loop().run_until_complete(_run())
+
+
+@pytest.mark.offline
+def test_parse_docling_endpoint_signature_invalidates_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _run() -> None:
+        monkeypatch.setenv("DOCLING_ENDPOINT", "http://docling.test")
+        counters = _install_fake_download(monkeypatch)
+
+        input_dir = tmp_path / "inputs" / "ws"
+        input_dir.mkdir(parents=True)
+        src = input_dir / "demo.pdf"
+        src.write_bytes(b"PDFPDF" * 256)
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            _stub_pipeline(monkeypatch, rag, src)
+            doc_id = "doc-abcdef0123456789abcdef0123456789"
+            await _seed_doc_status(rag, doc_id)
+
+            await rag.parse_docling(
+                doc_id=doc_id,
+                file_path="demo.pdf",
+                content_data={"source_path": str(src)},
+            )
+            assert counters["calls"] == 1
+
+            # Pointing at a different docling-serve instance must not silently
+            # reuse a bundle that was produced by the previous one.
+            monkeypatch.setenv("DOCLING_ENDPOINT", "http://docling-other.test")
+            await rag.parse_docling(
+                doc_id=doc_id,
+                file_path="demo.pdf",
+                content_data={"source_path": str(src)},
+            )
+            assert (
+                counters["calls"] == 2
+            ), "DOCLING_ENDPOINT change must invalidate the bundle cache"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.new_event_loop().run_until_complete(_run())
+
+
+@pytest.mark.offline
+def test_parse_docling_zero_blocks_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the docling bundle yields no body blocks (e.g. everything was
+    classified as furniture/background) ``parse_docling`` must fail loudly
+    so the document is marked failed — never persist a half-baked sidecar.
+    """
+
+    async def _run() -> None:
+        monkeypatch.setenv("DOCLING_ENDPOINT", "http://docling.test")
+
+        # Install a fake download that writes a valid bundle whose body has
+        # no children — the adapter then produces zero IR blocks.
+        import lightrag.external_parser.docling.client as client_mod
+
+        empty_json: dict[str, Any] = {
+            "schema_name": "DoclingDocument",
+            "version": "1.10.0",
+            "origin": {"filename": "demo.pdf", "mimetype": "application/pdf"},
+            "body": {
+                "self_ref": "#/body",
+                "children": [],
+                "content_layer": "body",
+                "label": "unspecified",
+            },
+            "groups": [],
+            "texts": [],
+            "tables": [],
+            "pictures": [],
+            "key_value_items": [],
+            "form_items": [],
+            "pages": {},
+        }
+
+        async def _fake_download(self, raw_dir: Path, source_file_path: Path):
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            main_json = raw_dir / "demo.json"
+            main_json.write_text(json.dumps(empty_json), encoding="utf-8")
+            (raw_dir / "demo.md").write_text("# empty", encoding="utf-8")
+
+            src_size, src_hash = compute_size_and_hash(source_file_path)
+            crit_size, crit_hash = compute_size_and_hash(main_json)
+            others = [
+                ManifestFile(path="demo.md", size=(raw_dir / "demo.md").stat().st_size),
+            ]
+            options_signature = compute_options_signature(
+                tunable_env=snapshot_tunable_env(),
+                fixed_constants=FIXED_CONSTANTS,
+            )
+            manifest = Manifest(
+                engine="docling",
+                source_content_hash=src_hash,
+                source_size_bytes=src_size,
+                source_filename_at_parse=source_file_path.name,
+                critical_file=ManifestFile(
+                    path="demo.json", size=crit_size, sha256=crit_hash
+                ),
+                files=others,
+                total_size_bytes=crit_size + sum(f.size for f in others),
+                task_id="fake-empty",
+                endpoint_signature="http://docling.test",
+                options_signature=options_signature,
+                extras={"fixed_constants": dict(FIXED_CONSTANTS)},
+                downloaded_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+            write_manifest(raw_dir, manifest)
+            return manifest
+
+        monkeypatch.setattr(
+            client_mod.DoclingRawClient, "download_into", _fake_download
+        )
+
+        input_dir = tmp_path / "inputs" / "ws"
+        input_dir.mkdir(parents=True)
+        src = input_dir / "demo.pdf"
+        src.write_bytes(b"PDFPDF" * 256)
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            _stub_pipeline(monkeypatch, rag, src)
+            doc_id = "doc-abcdef0123456789abcdef0123456789"
+            await _seed_doc_status(rag, doc_id)
+
+            with pytest.raises(ValueError, match="zero blocks"):
+                await rag.parse_docling(
+                    doc_id=doc_id,
+                    file_path="demo.pdf",
+                    content_data={"source_path": str(src)},
+                )
+
+            # Sidecar must NOT have been emitted: ``write_sidecar`` is reached
+            # only after the zero-blocks check, so no ``*.blocks.jsonl`` may
+            # exist anywhere under the workspace.
+            blocks_files = list(tmp_path.rglob("*.blocks.jsonl"))
+            assert (
+                not blocks_files
+            ), f"sidecar emitted despite zero-blocks failure: {blocks_files}"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.new_event_loop().run_until_complete(_run())

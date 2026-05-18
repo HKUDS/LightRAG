@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lightrag.external_parser._common import env_bool
+from lightrag.external_parser._common import env_bool, env_int
 from lightrag.external_parser._zip import safe_extract_zip
 from lightrag.external_parser.docling.cache import (
     compute_options_signature,
@@ -65,7 +65,9 @@ FIXED_CONSTANTS: dict[str, object] = {
 CONVERT_PATH = "/v1/convert/file/async"
 POLL_PATH = "/v1/status/poll/{task_id}"
 RESULT_PATH = "/v1/result/{task_id}"
-POLL_WAIT_SECONDS = 5
+
+DEFAULT_POLL_WAIT_SECONDS = 5
+DEFAULT_MAX_POLLS = 240  # 240 * 5s long-poll ≈ 20 min worst case
 
 # ConversionStatus enum from the docling-serve OpenAPI
 SUCCESS_STATES = {"success"}
@@ -94,7 +96,14 @@ class DoclingRawClient:
         self.ocr_lang_raw = os.getenv("DOCLING_OCR_LANG", "").strip()
         self.do_formula_enrichment = env_bool("DOCLING_DO_FORMULA_ENRICHMENT", False)
 
-        self.max_poll_attempts = 240  # ~20 minutes at wait=5s; tweak via code
+        # Poll cadence: docling-serve's ``?wait=N`` is a server-side long-poll
+        # window. ``DOCLING_POLL_INTERVAL_SECONDS`` sets that window; the
+        # client does NOT add its own sleep between polls. ``DOCLING_MAX_POLLS``
+        # bounds the total polling budget — exceeding it raises ``TimeoutError``.
+        wait = env_int("DOCLING_POLL_INTERVAL_SECONDS", DEFAULT_POLL_WAIT_SECONDS)
+        self.poll_wait_seconds = wait if wait > 0 else DEFAULT_POLL_WAIT_SECONDS
+        max_polls = env_int("DOCLING_MAX_POLLS", DEFAULT_MAX_POLLS)
+        self.max_poll_attempts = max_polls if max_polls > 0 else DEFAULT_MAX_POLLS
 
     # ------------------------------------------------------------------
     # Public API
@@ -198,7 +207,7 @@ class DoclingRawClient:
         task_id: str,
     ) -> None:
         url = f"{self.endpoint}{POLL_PATH.format(task_id=task_id)}"
-        params = {"wait": POLL_WAIT_SECONDS}
+        params = {"wait": self.poll_wait_seconds}
         for _ in range(self.max_poll_attempts):
             resp = await client.get(url, params=params)
             resp.raise_for_status()
@@ -281,6 +290,8 @@ def _format_failure(task_id: str, status: str, payload: Any) -> str:
 __all__ = [
     "DoclingRawClient",
     "CONVERT_PATH",
+    "DEFAULT_MAX_POLLS",
+    "DEFAULT_POLL_WAIT_SECONDS",
     "FIXED_CONSTANTS",
     "IMAGE_EXPORT_MODE",
     "PIPELINE",

@@ -423,7 +423,7 @@ class DoclingAdapter:
             cb_has_body = True
 
         def _handle_table(item: dict) -> None:
-            table = _build_ir_table(item, ref_index, consumed_refs)
+            table = _build_ir_table(item, ref_index)
             placeholder = _next_key("tb")
             table.placeholder_key = placeholder
             cb_tables.append(table)
@@ -435,7 +435,6 @@ class DoclingAdapter:
             drawing, asset = _build_ir_drawing(
                 item,
                 ref_index=ref_index,
-                consumed_refs=consumed_refs,
                 picture_inner_refs=picture_inner_refs,
                 raw_dir=raw_dir,
                 seen_asset_refs=seen_asset_refs,
@@ -648,7 +647,6 @@ def _resolve_text_refs(refs: Any, ref_index: dict[str, dict]) -> list[str]:
 def _build_ir_table(
     item: dict,
     ref_index: dict[str, dict],
-    consumed_refs: set[str],
 ) -> IRTable:
     data = item.get("data") or {}
     grid = data.get("grid") if isinstance(data, dict) else None
@@ -749,7 +747,7 @@ def _extract_table_header(grid: Any) -> list[list[str]] | None:
     if not isinstance(grid, list):
         return None
     header_rows: list[list[str]] = []
-    for row_idx, row in enumerate(grid):
+    for row in grid:
         if not isinstance(row, list):
             break
         if (
@@ -764,8 +762,6 @@ def _extract_table_header(grid: Any) -> list[list[str]] | None:
             header_rows.append([str((c or {}).get("text", "")) for c in row])
         else:
             break
-        if row_idx == 0 and not header_rows:
-            return None
     return header_rows or None
 
 
@@ -817,7 +813,6 @@ def _build_ir_drawing(
     item: dict,
     *,
     ref_index: dict[str, dict],
-    consumed_refs: set[str],
     picture_inner_refs: set[str],
     raw_dir: Path,
     seen_asset_refs: dict[str, str],

@@ -38,8 +38,11 @@ from lightrag.external_parser._common import compute_size_and_hash
 from lightrag.external_parser._manifest import load_manifest
 from lightrag.external_parser.docling import MANIFEST_ENGINE
 
-DEFAULT_DOCLING_ENDPOINT = "http://localhost:5001"
-
+# Envs that change the bytes docling-serve produces. Any change here must
+# invalidate the bundle cache. ``DOCLING_BBOX_ATTRIBUTES`` is intentionally
+# NOT in this list: it only affects how the adapter writes IR meta, not the
+# docling bundle, so flipping it should re-emit the sidecar (which we always
+# do) without forcing a re-download.
 DOCLING_TUNABLE_ENVS: tuple[str, ...] = (
     "DOCLING_DO_OCR",
     "DOCLING_FORCE_OCR",
@@ -51,8 +54,14 @@ DOCLING_TUNABLE_ENVS: tuple[str, ...] = (
 
 
 def current_endpoint_signature() -> str:
-    """The active docling endpoint, normalized (trailing slash stripped)."""
-    return os.getenv("DOCLING_ENDPOINT", DEFAULT_DOCLING_ENDPOINT).strip().rstrip("/")
+    """The active docling endpoint, normalized (trailing slash stripped).
+
+    Returns ``""`` if ``DOCLING_ENDPOINT`` is unset — callers that need a
+    real endpoint (``DoclingRawClient``) raise on empty; callers that only
+    compare against a recorded manifest field (``is_bundle_valid``) silently
+    skip the check when either side is empty.
+    """
+    return os.getenv("DOCLING_ENDPOINT", "").strip().rstrip("/")
 
 
 def compute_options_signature(
@@ -105,7 +114,9 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     if cur_hash != manifest.source_content_hash:
         return False
 
-    # 3. Engine version
+    # 3. Engine version. Skip the comparison when either side is empty so
+    #    operators can opt out by unsetting the env, and so bundles from
+    #    earlier code that never recorded the field aren't force-invalidated.
     cur_engine_version = os.getenv("DOCLING_ENGINE_VERSION", "").strip()
     if (
         cur_engine_version
@@ -114,7 +125,10 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     ):
         return False
 
-    # 4. Endpoint signature
+    # 4. Endpoint signature. Same "both non-empty to compare" rule: a bundle
+    #    parsed against a different docling-serve URL must not be reused, but
+    #    we don't reject the cache just because the env happens to be unset
+    #    at validation time (e.g. CLI tooling that only reads the cache).
     cur_endpoint = current_endpoint_signature()
     if (
         cur_endpoint
@@ -160,7 +174,6 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
 
 
 __all__ = [
-    "DEFAULT_DOCLING_ENDPOINT",
     "DOCLING_TUNABLE_ENVS",
     "compute_options_signature",
     "current_endpoint_signature",

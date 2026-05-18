@@ -2621,7 +2621,8 @@ class _PipelineMixin:
                     "discarding bundle at %s",
                     raw_dir,
                 )
-            raw_dir.mkdir(parents=True, exist_ok=True)
+            # ``download_into`` mkdir's the raw_dir itself; we only need to
+            # wipe the existing contents (manifest + stale bundle files).
             clear_dir_contents(raw_dir)
             client = DoclingRawClient()
             await client.download_into(raw_dir, source_file_path)
