@@ -172,28 +172,32 @@ class DoclingRawClient:
     # Upload + poll + download
     # ------------------------------------------------------------------
 
-    def _build_multipart_data(self) -> list[tuple[str, str]]:
+    def _build_multipart_data(self) -> dict[str, str | list[str]]:
         """Form fields (everything except the file payload).
 
-        List-valued fields like ``to_formats`` are sent as repeated keys,
-        matching docling-serve's pydantic List[Enum] form parsing. ``ocr_lang``
-        is omitted entirely when empty so the engine uses its own default.
+        Returns a ``dict`` (not a list of tuples): httpx ≥ 0.28 short-circuits
+        non-``Mapping`` ``data`` into raw-content encoding and ignores
+        ``files=`` entirely, producing a sync-only stream that an
+        ``AsyncClient`` then rejects. List-valued entries are emitted as
+        repeated form keys by ``MultipartStream``, matching docling-serve's
+        pydantic ``List[Enum]`` form parsing. ``ocr_lang`` is omitted entirely
+        when empty so the engine uses its own default.
         """
-        data: list[tuple[str, str]] = [
-            ("pipeline", PIPELINE),
-            ("target_type", TARGET_TYPE),
-            ("image_export_mode", IMAGE_EXPORT_MODE),
-            ("do_ocr", _bool_form(self.do_ocr)),
-            ("force_ocr", _bool_form(self.force_ocr)),
-            ("ocr_engine", self.ocr_engine),
-            ("ocr_preset", self.ocr_preset),
-            ("do_formula_enrichment", _bool_form(self.do_formula_enrichment)),
-        ]
-        for fmt in TO_FORMATS:
-            data.append(("to_formats", fmt))
+        data: dict[str, str | list[str]] = {
+            "pipeline": PIPELINE,
+            "target_type": TARGET_TYPE,
+            "image_export_mode": IMAGE_EXPORT_MODE,
+            "do_ocr": _bool_form(self.do_ocr),
+            "force_ocr": _bool_form(self.force_ocr),
+            "ocr_engine": self.ocr_engine,
+            "ocr_preset": self.ocr_preset,
+            "do_formula_enrichment": _bool_form(self.do_formula_enrichment),
+            "to_formats": list(TO_FORMATS),
+        }
         if self.ocr_lang_raw:
-            for lang in _parse_ocr_lang(self.ocr_lang_raw):
-                data.append(("ocr_lang", lang))
+            langs = _parse_ocr_lang(self.ocr_lang_raw)
+            if langs:
+                data["ocr_lang"] = langs
         return data
 
     async def _submit(
