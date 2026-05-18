@@ -551,6 +551,91 @@ def test_docling_adapter_footnotes_refs_only(tmp_path: Path) -> None:
     assert "注: this is sibling note" in block.content_template
 
 
+def test_docling_adapter_table_refs_skip_non_body_caption_footnote(
+    tmp_path: Path,
+) -> None:
+    # A body table references a caption/footnote whose targets sit in
+    # content_layer="furniture" — typically a page header/footer that
+    # docling mislabeled and linked to the table. The adapter contract is
+    # that furniture text must never leak into sidecar metadata, so the
+    # IRTable's caption/footnotes lists must come back empty (and the body
+    # reading flow must not pick up the furniture text either).
+    texts = [
+        _text_item(
+            label="caption",
+            text="Page header masquerading as caption",
+            self_ref="#/texts/0",
+            content_layer="furniture",
+        ),
+        _text_item(
+            label="footnote",
+            text="Page footer masquerading as footnote",
+            self_ref="#/texts/1",
+            content_layer="furniture",
+        ),
+    ]
+    tables = [
+        {
+            "self_ref": "#/tables/0",
+            "label": "table",
+            "content_layer": "body",
+            "captions": [{"$ref": "#/texts/0"}],
+            "footnotes": [{"$ref": "#/texts/1"}],
+            "data": {"num_rows": 1, "num_cols": 1, "grid": [[{"text": "x"}]]},
+            "prov": [],
+        }
+    ]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(body_children=["#/tables/0"], texts=texts, tables=tables),
+    )
+    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    block = ir.blocks[0]
+    assert block.tables[0].caption == ""
+    assert block.tables[0].footnotes == []
+    assert "Page header masquerading" not in block.content_template
+    assert "Page footer masquerading" not in block.content_template
+
+
+def test_docling_adapter_picture_children_fallback_skips_non_body(
+    tmp_path: Path,
+) -> None:
+    # Same invariant for the children fallback path: a body picture has no
+    # explicit captions/footnotes, but its ``children`` list refs a caption
+    # whose target is furniture. ``_resolve_children_with_label`` must
+    # skip it rather than silently surfacing furniture text as the
+    # picture's caption.
+    texts = [
+        _text_item(
+            label="caption",
+            text="Furniture caption via children",
+            self_ref="#/texts/0",
+            content_layer="furniture",
+        ),
+    ]
+    pictures = [
+        {
+            "self_ref": "#/pictures/0",
+            "label": "picture",
+            "content_layer": "body",
+            "image": {
+                "uri": "artifacts/p0.png",
+                "mimetype": "image/png",
+            },
+            "children": [{"$ref": "#/texts/0"}],
+            "prov": [],
+        }
+    ]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(body_children=["#/pictures/0"], texts=texts, pictures=pictures),
+    )
+    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    block = ir.blocks[0]
+    assert block.drawings[0].caption == ""
+    assert "Furniture caption via children" not in block.content_template
+
+
 # ---------------------------------------------------------------------------
 # 8. furniture skipped
 # ---------------------------------------------------------------------------

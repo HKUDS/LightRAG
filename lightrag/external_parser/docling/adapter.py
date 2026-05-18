@@ -633,14 +633,24 @@ def _docling_heading_level(label: str, item: dict) -> int:
 
 
 def _resolve_text_refs(refs: Any, ref_index: dict[str, dict]) -> list[str]:
-    """Resolve a list of ``$ref`` entries to their text bodies."""
+    """Resolve a list of ``$ref`` entries to their text bodies.
+
+    Skips targets whose ``content_layer`` is not ``"body"``. The adapter
+    contract (see module docstring) is that furniture/background items
+    never leak into sidecar metadata — even when a body table or picture
+    explicitly references them, because such refs are typically the
+    consequence of a page-header/footer being mislabeled as a caption.
+    """
     out: list[str] = []
     for ref in _iter_refs(refs):
         target = ref_index.get(ref)
-        if isinstance(target, dict):
-            txt = _text_of(target).strip()
-            if txt:
-                out.append(txt)
+        if not isinstance(target, dict):
+            continue
+        if _content_layer(target) != "body":
+            continue
+        txt = _text_of(target).strip()
+        if txt:
+            out.append(txt)
     return out
 
 
@@ -800,6 +810,9 @@ def _resolve_children_with_label(
     for ref in _iter_refs(children):
         target = ref_index.get(ref)
         if not isinstance(target, dict):
+            continue
+        # Same body-only filter as _resolve_text_refs; see its docstring.
+        if _content_layer(target) != "body":
             continue
         if str(target.get("label") or "").lower() != expected_label:
             continue
