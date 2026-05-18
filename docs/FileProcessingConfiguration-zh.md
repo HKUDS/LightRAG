@@ -145,7 +145,7 @@ notes.[R].md
 
 LightRAG在在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改  `mineru` 和 `docling` 引擎的端点地址和提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
 
-#### MinerU 部署与配置
+#### MinerU 配置方法与本地部署
 
 MinerU 客户端支持两种模式，二选一：
 
@@ -187,7 +187,7 @@ MINERU_API_TOKEN=<your_token>
 
 其余高级开关（`MINERU_MODEL_VERSION`、`MINERU_LANGUAGE`、`MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`、`MINERU_PAGE_RANGES`、`MINERU_LOCAL_BACKEND` / `MINERU_LOCAL_PARSE_METHOD`、`MINERU_POLL_INTERVAL_SECONDS` / `MINERU_MAX_POLLS`、`MINERU_ENGINE_VERSION`、`LIGHTRAG_FORCE_REPARSE_MINERU` 等）请参考仓库根目录 `.env` 模板的 MinerU 小节。需要特别注意 `MINERU_PAGE_RANGES` 在两种模式下语义不同：`official` 支持完整列表（如 `1-3,5,7-9`），`local` 仅支持单页（`3`）或简单范围（`1-10`），不接受逗号列表。
 
-#### Docling 部署与配置
+#### Docling 配置方法
 
 `docling` 内容提取引擎需要外部的 [docling-serve](https://github.com/DS4SD/docling-serve) 服务（v1 异步 API）。最少配置：
 
@@ -222,6 +222,79 @@ Bundle 缓存 3 个 env：
 | `DOCLING_BBOX_ATTRIBUTES` | `{"origin":"LEFTBOTTOM"}` | Docling 版面默认坐标系 |
 
 **`DOCLING_DO_FORMULA_ENRICHMENT` 启用前提**：docling-serve 侧需就绪 code-formula 模型权重。adapter 双轨兼容 —— 启用时 `text` 字段为 LaTeX，关闭或权重缺失导致 `text == orig` 时自动按普通文本处理，不写 `equations.json`。因此默认 `false` 是保守值，部署侧确认模型就绪后再开启。
+
+#### Docling本地部署(启用 LaTeX 公式识别)
+
+下面以 Docker 部署 docling-serve 为例，给出从镜像下载到模型挂载的完整步骤，部署完成后将 `DOCLING_DO_FORMULA_ENRICHMENT=true` 写入 LightRAG 的 `.env` 即可启用 LaTeX 公式识别。
+
+> **重要提示**：以下步骤基于显卡支持 CUDA 13 的环境。如果显卡较老旧、不支持 CUDA 13，需要把命令与 compose 文件中的镜像名 `docling-serve-cu130:main` 替换为对应 CUDA 版本的标签。可选镜像列表参见 [docling-serve Packages](https://github.com/orgs/docling-project/packages?repo_name=docling-serve)。
+
+**1. 下载镜像**
+
+```bash
+docker pull ghcr.io/docling-project/docling-serve-cu130:main
+```
+
+**2. 下载模型**
+
+```bash
+# 创建 docling 工作目录
+mkdir docling
+cd docling
+
+# 创建模型挂载目录
+mkdir models
+
+# 把容器内的原有模型拷贝到 models 目录
+docker run --rm -it \
+  -v "$(pwd)/models:/opt/app-root/src/models" \
+  ghcr.io/docling-project/docling-serve-cu130:main \
+  cp -r /opt/app-root/src/.cache/docling/models /opt/app-root/src/
+
+# 下载公式识别模型
+docker run --rm \
+  -v "$(pwd)/models:/opt/app-root/src/models" \
+  -e DOCLING_SERVE_ARTIFACTS_PATH="/opt/app-root/src/models" \
+  ghcr.io/docling-project/docling-serve-cu130:main \
+  docling-tools models download-hf-repo docling-project/CodeFormulaV2 -o models
+```
+
+**3. 创建 `docker-compose.yaml` 文件**
+
+在上一步的 `docling` 目录下创建 `docker-compose.yaml`，内容如下：
+
+```yaml
+services:
+  docling-serve:
+    image: ghcr.io/docling-project/docling-serve-cu130:main
+    container_name: docling-serve
+    ports:
+      - "5001:5001"
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "true"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      DOCLING_SERVE_ARTIFACTS_PATH: "/opt/app-root/src/models"
+    # deploy:  # This section is for compatibility with Swarm
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    runtime: nvidia
+    restart: always
+    volumes:
+      - ./models:/opt/app-root/src/models
+```
+
+随后在该目录执行 `docker compose up -d` 启动服务。容器就绪后，在 LightRAG 的 `.env` 中设置：
+
+```bash
+DOCLING_ENDPOINT=http://localhost:5001
+DOCLING_DO_FORMULA_ENRICHMENT=true
+```
+
+即可让 LightRAG 通过本地 docling-serve 识别文档中的公式并以 LaTeX 形式输出。
 
 ### 2.5 文件处理选项
 
