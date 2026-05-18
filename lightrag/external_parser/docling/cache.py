@@ -140,10 +140,19 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     # 5. Options signature: only enforced if the manifest recorded one
     #    (manifests written before this commit have it empty — they are
     #    treated as stale and re-downloaded the next time the env changes).
+    #
+    #    Compare against the *current* fixed constants from client.py, not
+    #    the copy stashed in the manifest — using the manifest's copy would
+    #    always reproduce the recorded signature and silently swallow
+    #    code-only changes (e.g. flipping image_export_mode or to_formats),
+    #    defeating the invalidation this step is supposed to provide.
+    #    Lazy import: client.py imports from cache.py.
     if manifest.options_signature:
+        from lightrag.external_parser.docling.client import FIXED_CONSTANTS
+
         cur_options = compute_options_signature(
             tunable_env=snapshot_tunable_env(),
-            fixed_constants=manifest.extras.get("fixed_constants", {}),
+            fixed_constants=FIXED_CONSTANTS,
         )
         if cur_options != manifest.options_signature:
             return False

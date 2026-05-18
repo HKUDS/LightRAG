@@ -146,6 +146,34 @@ def test_is_bundle_valid_options_signature_change(
     assert is_bundle_valid(raw, source_file) is False
 
 
+def test_is_bundle_valid_fixed_constants_code_change(
+    tmp_path: Path, source_file: Path
+) -> None:
+    # Simulate a code-only change to one of the fixed pipeline constants
+    # (e.g. image_export_mode flipped from "referenced" to "embedded"
+    # between parse time and validation time). The manifest stores both
+    # the stale constants and a signature computed from them; validation
+    # must compare against current FIXED_CONSTANTS and miss, not against
+    # the manifest's own copy (which would always match).
+    stale_constants = {**FIXED_CONSTANTS, "image_export_mode": "embedded"}
+    stale_signature = compute_options_signature(
+        tunable_env=snapshot_tunable_env(),
+        fixed_constants=stale_constants,
+    )
+    raw = _build_valid_bundle(tmp_path, source_file, options_signature=stale_signature)
+    # Overwrite the manifest's extras to record the stale constants too —
+    # this is the bug surface: if validation rehydrated from extras, it
+    # would reproduce stale_signature and falsely accept the bundle.
+    import json as _json
+
+    mp = raw / "_manifest.json"
+    data = _json.loads(mp.read_text(encoding="utf-8"))
+    data["extras"] = {"fixed_constants": stale_constants}
+    mp.write_text(_json.dumps(data), encoding="utf-8")
+
+    assert is_bundle_valid(raw, source_file) is False
+
+
 def test_is_bundle_valid_critical_file_corrupt(
     tmp_path: Path, source_file: Path
 ) -> None:
