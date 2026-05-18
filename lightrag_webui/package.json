@@ -107,7 +107,6 @@
     "happy-dom": "^20.9.0",
     "playwright": "^1.59.1",
     "prettier": "^3.8.3",
-    "prettier": "^3.8.3",
     "prettier-plugin-tailwindcss": "^0.8.0",
     "tailwindcss": "^4.2.4",
     "tailwindcss-animate": "^1.0.7",

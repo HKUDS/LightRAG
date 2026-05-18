@@ -89,9 +89,6 @@ CLAUDE.md
 # Google Jules
 .jules/
 
-# Google Jules
-.jules/
-
 # Test environment (contains secrets)
 scripts/.env-test
 
