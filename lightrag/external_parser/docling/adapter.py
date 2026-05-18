@@ -533,15 +533,19 @@ def _precompute_consumed_refs(doc: dict) -> tuple[set[str], set[str]]:
     """Return ``(consumed_refs, picture_inner_refs)``.
 
     ``consumed_refs`` enumerates text refs that must NOT enter the reading
-    stream:
+    stream. The rules below apply only when the owning table/picture is
+    itself in the body content layer — refs harvested from furniture or
+    background items are ignored so they do not block legitimate body text
+    that might be reachable through ``body.children``:
 
-    - ``tables[*].captions`` and ``tables[*].footnotes`` (always)
-    - ``pictures[*].captions`` and ``pictures[*].footnotes`` (always)
-    - ``tables[*].children`` / ``pictures[*].children`` that resolve to
-      ``texts[*]`` with ``label="caption"`` or ``"footnote"``
-    - All ``pictures[*].children`` that are non-caption/footnote texts (the
-      picture's inner OCR text). These also land in ``picture_inner_refs``
-      so the adapter can attribute them to the drawing's extras.
+    - body ``tables[*].captions`` and ``tables[*].footnotes``
+    - body ``pictures[*].captions`` and ``pictures[*].footnotes``
+    - body ``tables[*].children`` / ``pictures[*].children`` that resolve
+      to ``texts[*]`` with ``label="caption"`` or ``"footnote"``
+    - All body ``pictures[*].children`` that are non-caption/footnote texts
+      (the picture's inner OCR text). These also land in
+      ``picture_inner_refs`` so the adapter can attribute them to the
+      drawing's extras.
 
     Sibling text nodes are NOT touched: only refs explicitly linked from a
     table/picture object qualify.
@@ -554,8 +558,13 @@ def _precompute_consumed_refs(doc: dict) -> tuple[set[str], set[str]]:
         if isinstance(obj, dict):
             text_label_index[f"#/texts/{i}"] = str(obj.get("label") or "").lower()
 
+    # Furniture/background tables/pictures must not consume refs that may
+    # appear under body.children — the adapter contract is that non-body
+    # items are filtered everywhere, including their outgoing refs.
     for table in doc.get("tables") or []:
         if not isinstance(table, dict):
+            continue
+        if _content_layer(table) != "body":
             continue
         for ref in _iter_refs(table.get("captions")):
             consumed.add(ref)
@@ -568,6 +577,8 @@ def _precompute_consumed_refs(doc: dict) -> tuple[set[str], set[str]]:
 
     for pic in doc.get("pictures") or []:
         if not isinstance(pic, dict):
+            continue
+        if _content_layer(pic) != "body":
             continue
         for ref in _iter_refs(pic.get("captions")):
             consumed.add(ref)
