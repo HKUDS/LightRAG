@@ -20,6 +20,9 @@ def raw_dir_for_parsed_dir(parsed_dir):
 
 # Imported after ``MANIFEST_ENGINE`` / ``DOCLING_RAW_DIR_SUFFIX`` because
 # the submodules read those constants at import time.
+from lightrag.external_parser.docling.adapter import (  # noqa: E402
+    DoclingAdapter,
+)
 from lightrag.external_parser.docling.cache import (  # noqa: E402
     is_bundle_valid,
 )
@@ -30,6 +33,7 @@ from lightrag.external_parser.docling.client import (  # noqa: E402
 __all__ = [
     "DOCLING_RAW_DIR_SUFFIX",
     "MANIFEST_ENGINE",
+    "DoclingAdapter",
     "DoclingRawClient",
     "clear_dir_contents",
     "is_bundle_valid",

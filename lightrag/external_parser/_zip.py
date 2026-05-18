@@ -29,7 +29,11 @@ def safe_extract_zip(payload: bytes, dest_dir: Path) -> list[str]:
         names = zf.namelist()
         for name in names:
             norm = os.path.normpath(name)
-            if norm.startswith("..") or os.path.isabs(norm) or norm.startswith(("/", os.sep)):
+            if (
+                norm.startswith("..")
+                or os.path.isabs(norm)
+                or norm.startswith(("/", os.sep))
+            ):
                 raise RuntimeError(f"Refusing zip entry with unsafe path: {name!r}")
         zf.extractall(dest_dir)
     return names

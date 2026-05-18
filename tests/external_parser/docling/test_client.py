@@ -98,8 +98,17 @@ class _FakeAsyncClient:
         headers: Any = None,
     ) -> _FakeResponse:
         recorder = _CURRENT["recorder"]
+        # Production passes a file handle inside a `with` block — by the time
+        # tests inspect `post_calls` it's already closed. Drain the stream
+        # here so assertions can keep reading the payload as bytes.
+        snapshot_files = files
+        if files and "files" in files:
+            name, payload, ctype = files["files"]
+            if hasattr(payload, "read"):
+                payload = payload.read()
+            snapshot_files = {"files": (name, payload, ctype)}
         recorder.post_calls.append(
-            {"url": url, "files": files, "data": data, "json": json}
+            {"url": url, "files": snapshot_files, "data": data, "json": json}
         )
         if CONVERT_PATH in url:
             return _FakeResponse(
@@ -120,9 +129,7 @@ class _FakeAsyncClient:
             }
             if recorder.terminal_status != "success":
                 payload["error_message"] = "synthetic-failure"
-            return _FakeResponse(
-                status_code=200, text=json_dump(payload)
-            )
+            return _FakeResponse(status_code=200, text=json_dump(payload))
         if RESULT_PATH.format(task_id=recorder.task_id) in url:
             recorder.result_calls += 1
             return _FakeResponse(
@@ -135,6 +142,23 @@ class _FakeAsyncClient:
 
 def json_dump(payload: Any) -> str:
     return json.dumps(payload)
+
+
+def _form_pairs(data: Any) -> list[tuple[str, str]]:
+    """Normalize httpx form data into repeated ``(name, value)`` pairs.
+
+    Production passes a mapping so httpx 0.28 keeps multipart ``files=`` on
+    the async path. List values in that mapping represent repeated form keys.
+    Older tests used tuple lists directly; accepting both keeps assertions
+    focused on the wire contract instead of the container type.
+    """
+    if isinstance(data, dict):
+        pairs: list[tuple[str, str]] = []
+        for name, value in data.items():
+            values = value if isinstance(value, list) else [value]
+            pairs.extend((str(name), str(v)) for v in values)
+        return pairs
+    return [(str(name), str(value)) for name, value in data]
 
 
 def _fake_zip_with_main_json(stem: str) -> bytes:
@@ -208,7 +232,7 @@ async def test_docling_client_sends_fixed_constants(
     assert len(recorder.post_calls) == 1
     data = recorder.post_calls[0]["data"]
     field_map: dict[str, list[str]] = {}
-    for name, value in data:
+    for name, value in _form_pairs(data):
         field_map.setdefault(name, []).append(value)
 
     assert field_map["pipeline"] == ["standard"]
@@ -305,7 +329,7 @@ async def test_docling_client_ocr_lang_omitted_when_empty(
     await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
 
     data = recorder.post_calls[0]["data"]
-    names = [name for name, _ in data]
+    names = [name for name, _ in _form_pairs(data)]
     assert "ocr_lang" not in names
 
 
@@ -325,7 +349,7 @@ async def test_docling_client_ocr_lang_sent_when_set(
     await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
 
     data = recorder.post_calls[0]["data"]
-    langs = [v for name, v in data if name == "ocr_lang"]
+    langs = [v for name, v in _form_pairs(data) if name == "ocr_lang"]
     assert langs == ["en", "zh"]
 
 
@@ -346,7 +370,7 @@ async def test_docling_client_ocr_lang_csv_form(
     await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
 
     data = recorder.post_calls[0]["data"]
-    langs = [v for name, v in data if name == "ocr_lang"]
+    langs = [v for name, v in _form_pairs(data) if name == "ocr_lang"]
     assert langs == ["en", "fr"]
 
 
@@ -356,3 +380,53 @@ async def test_docling_client_rejects_missing_endpoint(
     monkeypatch.setenv("DOCLING_ENDPOINT", "")
     with pytest.raises(ValueError, match="DOCLING_ENDPOINT"):
         DoclingRawClient()
+
+
+async def test_docling_client_strips_parser_hint_from_upload_filename(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Regression: a hinted source (``report.[docling].pdf``) used to cause
+    # docling-serve to name its bundle JSON ``report.[docling].json``, which
+    # the adapter (looking for ``report.json``) could not locate. The
+    # pipeline now passes the canonical name as ``upload_filename`` so the
+    # bundle is canonical-stem from the start.
+    hinted = tmp_path / "report.[docling].pdf"
+    hinted.write_bytes(b"%PDF-1.4 fake")
+    # The fake zip mimics docling-serve responding with the *canonical* stem,
+    # which is what would happen once we send the canonical filename.
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("report"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "report.docling_raw"
+    manifest = await DoclingRawClient().download_into(
+        raw_dir, hinted, upload_filename="report.pdf"
+    )
+
+    name, _blob, _ctype = recorder.post_calls[0]["files"]["files"]
+    assert name == "report.pdf"
+    assert manifest.source_filename_at_parse == "report.pdf"
+    assert manifest.critical_file.path == "report.json"
+    assert (raw_dir / "report.json").is_file()
+
+
+async def test_docling_client_default_upload_filename_falls_back_to_source_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_pdf: Path
+) -> None:
+    # Back-compat guard: callers that don't pass ``upload_filename`` (any
+    # path other than the production pipeline) keep the legacy behavior of
+    # using the on-disk source filename.
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
+
+    name, _blob, _ctype = recorder.post_calls[0]["files"]["files"]
+    assert name == "demo.pdf"

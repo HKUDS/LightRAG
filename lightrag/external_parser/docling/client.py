@@ -22,10 +22,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lightrag.external_parser._common import env_bool
+from lightrag.external_parser._common import env_bool, env_int
 from lightrag.external_parser._zip import safe_extract_zip
 from lightrag.external_parser.docling.cache import (
     compute_options_signature,
@@ -65,7 +66,9 @@ FIXED_CONSTANTS: dict[str, object] = {
 CONVERT_PATH = "/v1/convert/file/async"
 POLL_PATH = "/v1/status/poll/{task_id}"
 RESULT_PATH = "/v1/result/{task_id}"
-POLL_WAIT_SECONDS = 5
+
+DEFAULT_POLL_WAIT_SECONDS = 5
+DEFAULT_MAX_POLLS = 240  # 240 * 5s long-poll ≈ 20 min worst case
 
 # ConversionStatus enum from the docling-serve OpenAPI
 SUCCESS_STATES = {"success"}
@@ -88,15 +91,20 @@ class DoclingRawClient:
         self.engine_version = os.getenv("DOCLING_ENGINE_VERSION", "").strip()
 
         self.do_ocr = env_bool("DOCLING_DO_OCR", True)
-        self.force_ocr = env_bool("DOCLING_FORCE_OCR", False)
+        self.force_ocr = env_bool("DOCLING_FORCE_OCR", True)
         self.ocr_engine = os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto"
         self.ocr_preset = os.getenv("DOCLING_OCR_PRESET", "auto").strip() or "auto"
         self.ocr_lang_raw = os.getenv("DOCLING_OCR_LANG", "").strip()
-        self.do_formula_enrichment = env_bool(
-            "DOCLING_DO_FORMULA_ENRICHMENT", False
-        )
+        self.do_formula_enrichment = env_bool("DOCLING_DO_FORMULA_ENRICHMENT", False)
 
-        self.max_poll_attempts = 240  # ~20 minutes at wait=5s; tweak via code
+        # Poll cadence: docling-serve's ``?wait=N`` is a server-side long-poll
+        # window. ``DOCLING_POLL_INTERVAL_SECONDS`` sets that window; the
+        # client does NOT add its own sleep between polls. ``DOCLING_MAX_POLLS``
+        # bounds the total polling budget — exceeding it raises ``TimeoutError``.
+        wait = env_int("DOCLING_POLL_INTERVAL_SECONDS", DEFAULT_POLL_WAIT_SECONDS)
+        self.poll_wait_seconds = wait if wait > 0 else DEFAULT_POLL_WAIT_SECONDS
+        max_polls = env_int("DOCLING_MAX_POLLS", DEFAULT_MAX_POLLS)
+        self.max_poll_attempts = max_polls if max_polls > 0 else DEFAULT_MAX_POLLS
 
     # ------------------------------------------------------------------
     # Public API
@@ -106,8 +114,19 @@ class DoclingRawClient:
         self,
         raw_dir: Path,
         source_file_path: Path,
+        *,
+        upload_filename: str | None = None,
     ):
         """Upload, poll, download, extract, and write the manifest.
+
+        ``upload_filename`` overrides the multipart filename sent to
+        docling-serve (defaults to ``source_file_path.name``). The pipeline
+        passes the canonical, hint-stripped document name here so the
+        bundle's ``<stem>.json`` ends up canonical too — otherwise a file
+        named ``report.[docling].pdf`` would produce ``report.[docling].json``
+        inside the bundle, and the adapter (which only knows the canonical
+        ``report.pdf``) would not be able to locate it via the preferred
+        ``<stem>.json`` lookup.
 
         Pre-condition: caller cleared ``raw_dir`` (e.g. via
         :func:`lightrag.external_parser.clear_dir_contents`). This method
@@ -120,16 +139,21 @@ class DoclingRawClient:
             )
         raw_dir.mkdir(parents=True, exist_ok=True)
 
+        effective_filename = upload_filename or source_file_path.name
+
         timeout = httpx.Timeout(120.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            task_id = await self._submit(client, source_file_path)
+            task_id = await self._submit(
+                client, source_file_path, filename=effective_filename
+            )
             await self._poll_until_done(client, task_id)
             payload = await self._download_zip_bytes(client, task_id)
 
         safe_extract_zip(payload, raw_dir)
         # Defensive: confirm the main JSON exists before anyone reads the
-        # bundle. ``select_main_json`` raises a clear error if not.
-        select_main_json(raw_dir, source_file_path)
+        # bundle. Look it up by the *uploaded* filename's stem — that's
+        # what docling-serve uses to name the JSON inside the zip.
+        select_main_json(raw_dir, Path(effective_filename))
 
         options_signature = compute_options_signature(
             tunable_env=snapshot_tunable_env(),
@@ -143,45 +167,58 @@ class DoclingRawClient:
             engine_version=self.engine_version,
             options_signature=options_signature,
             fixed_constants=FIXED_CONSTANTS,
+            recorded_filename=effective_filename,
         )
 
     # ------------------------------------------------------------------
     # Upload + poll + download
     # ------------------------------------------------------------------
 
-    def _build_multipart_data(self) -> list[tuple[str, str]]:
+    def _build_multipart_data(self) -> dict[str, str | list[str]]:
         """Form fields (everything except the file payload).
 
-        List-valued fields like ``to_formats`` are sent as repeated keys,
-        matching docling-serve's pydantic List[Enum] form parsing. ``ocr_lang``
-        is omitted entirely when empty so the engine uses its own default.
+        Returns a ``dict`` (not a list of tuples): httpx ≥ 0.28 short-circuits
+        non-``Mapping`` ``data`` into raw-content encoding and ignores
+        ``files=`` entirely, producing a sync-only stream that an
+        ``AsyncClient`` then rejects. List-valued entries are emitted as
+        repeated form keys by ``MultipartStream``, matching docling-serve's
+        pydantic ``List[Enum]`` form parsing. ``ocr_lang`` is omitted entirely
+        when empty so the engine uses its own default.
         """
-        data: list[tuple[str, str]] = [
-            ("pipeline", PIPELINE),
-            ("target_type", TARGET_TYPE),
-            ("image_export_mode", IMAGE_EXPORT_MODE),
-            ("do_ocr", _bool_form(self.do_ocr)),
-            ("force_ocr", _bool_form(self.force_ocr)),
-            ("ocr_engine", self.ocr_engine),
-            ("ocr_preset", self.ocr_preset),
-            ("do_formula_enrichment", _bool_form(self.do_formula_enrichment)),
-        ]
-        for fmt in TO_FORMATS:
-            data.append(("to_formats", fmt))
+        data: dict[str, str | list[str]] = {
+            "pipeline": PIPELINE,
+            "target_type": TARGET_TYPE,
+            "image_export_mode": IMAGE_EXPORT_MODE,
+            "do_ocr": _bool_form(self.do_ocr),
+            "force_ocr": _bool_form(self.force_ocr),
+            "ocr_engine": self.ocr_engine,
+            "ocr_preset": self.ocr_preset,
+            "do_formula_enrichment": _bool_form(self.do_formula_enrichment),
+            "to_formats": list(TO_FORMATS),
+        }
         if self.ocr_lang_raw:
-            for lang in _parse_ocr_lang(self.ocr_lang_raw):
-                data.append(("ocr_lang", lang))
+            langs = _parse_ocr_lang(self.ocr_lang_raw)
+            if langs:
+                data["ocr_lang"] = langs
         return data
 
     async def _submit(
         self,
         client: "httpx.AsyncClient",
         source_file_path: Path,
+        *,
+        filename: str,
     ) -> str:
         url = f"{self.endpoint}{CONVERT_PATH}"
-        file_bytes = await asyncio.to_thread(source_file_path.read_bytes)
-        files = {"files": (source_file_path.name, file_bytes, "application/octet-stream")}
-        resp = await client.post(url, data=self._build_multipart_data(), files=files)
+        # Hand httpx a file object so its MultipartStream reads the body in
+        # chunks instead of materializing the whole PDF/PPTX in worker memory.
+        # With ``max_parallel_parse_docling > 1`` a per-doc bytes copy can
+        # OOM the worker before docling-serve ever sees the request.
+        with source_file_path.open("rb") as fh:
+            files = {"files": (filename, fh, "application/octet-stream")}
+            resp = await client.post(
+                url, data=self._build_multipart_data(), files=files
+            )
         if resp.status_code >= 400:
             raise RuntimeError(
                 f"Docling upload failed: {resp.status_code} {resp.text[:400]}"
@@ -189,9 +226,7 @@ class DoclingRawClient:
         payload = resp.json() if resp.text else {}
         task_id = str(payload.get("task_id") or payload.get("id") or "").strip()
         if not task_id:
-            raise RuntimeError(
-                f"Docling upload response missing task_id: {payload!r}"
-            )
+            raise RuntimeError(f"Docling upload response missing task_id: {payload!r}")
         return task_id
 
     async def _poll_until_done(
@@ -200,25 +235,38 @@ class DoclingRawClient:
         task_id: str,
     ) -> None:
         url = f"{self.endpoint}{POLL_PATH.format(task_id=task_id)}"
-        params = {"wait": POLL_WAIT_SECONDS}
+        params = {"wait": self.poll_wait_seconds}
         for _ in range(self.max_poll_attempts):
+            iteration_started = time.monotonic()
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             payload = resp.json() if resp.text else {}
-            status = str(payload.get("task_status") or payload.get("status") or "").lower()
+            status = str(
+                payload.get("task_status") or payload.get("status") or ""
+            ).lower()
 
             if status in SUCCESS_STATES:
                 return
             if status in FAILURE_STATES:
                 raise RuntimeError(_format_failure(task_id, status, payload))
-            if status in IN_PROGRESS_STATES:
-                continue
-            # Unknown status: keep polling, but surface it so operators notice.
-            logger.warning(
-                "[docling] unknown task status %r for task %s; continuing to poll",
-                status,
-                task_id,
-            )
+            if status not in IN_PROGRESS_STATES:
+                # Unknown status: keep polling, but surface it so operators notice.
+                logger.warning(
+                    "[docling] unknown task status %r for task %s; continuing to poll",
+                    status,
+                    task_id,
+                )
+
+            # The intended cadence is one poll per ``poll_wait_seconds`` — the
+            # design relies on docling-serve's ``?wait=N`` long-polling for
+            # that. Some deployments return immediately instead, which would
+            # burn through ``max_poll_attempts`` in milliseconds and fail
+            # with a spurious timeout. Cap each iteration at the configured
+            # interval ourselves so the total budget holds either way.
+            elapsed = time.monotonic() - iteration_started
+            remaining = self.poll_wait_seconds - elapsed
+            if remaining > 0:
+                await asyncio.sleep(remaining)
 
         raise TimeoutError(f"Docling task {task_id} polling timeout")
 
@@ -275,14 +323,14 @@ def _format_failure(task_id: str, status: str, payload: Any) -> str:
     else:
         err = "<no error_message>"
     truncated = json.dumps(payload, ensure_ascii=False)[:400]
-    return (
-        f"Docling task {task_id} ended in {status}: {err}; payload={truncated}"
-    )
+    return f"Docling task {task_id} ended in {status}: {err}; payload={truncated}"
 
 
 __all__ = [
     "DoclingRawClient",
     "CONVERT_PATH",
+    "DEFAULT_MAX_POLLS",
+    "DEFAULT_POLL_WAIT_SECONDS",
     "FIXED_CONSTANTS",
     "IMAGE_EXPORT_MODE",
     "PIPELINE",

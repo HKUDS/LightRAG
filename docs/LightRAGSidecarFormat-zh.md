@@ -161,6 +161,10 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   "src": "",
   "caption": "",
   "footnotes": [],
+  "extras": {
+    "ocr_texts": "图内第一段 OCR 文本\n\n图内第二段 OCR 文本",
+    "ocr_texts_count": 2
+  },
   "surrounding": {
     "leading": "2.3 结构尺寸及重量\n尺寸及重量要求如下：\na) 外廓尺寸长度为：<drawing …",
     "trailing": "\n图1　外廓尺寸示意\nb) 重量不大于0.85kg。\nc) 测试结果：实测电路噪声Vpp=1.526mV…"
@@ -191,9 +195,16 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `footnotes` | 脚注字符串列表 |
 | `surrounding` | 上下文对象：参见[§七](#七、surrounding) |
 | `self_ref` | 字符串：可选；解析引擎原始输出中的对象引用（如 Docling JSON Pointer `#/pictures/3`），用于溯源时回查原始解析产物中的对应对象（页面位置、原始结构等）。MinerU/native 等不提供此字段时不输出 |
-| `extras` | 对象：可选；引擎专属的旁路字段（行/列合并、OCR 置信度等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
+| `extras` | 对象：可选；引擎专属的旁路字段（如图片中包含的OCR文字等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
 | `llm_analyze_result` | 模态分析结果对象：详见 [§九](#九、`llm_analyze_result`) （后续会注入到多模态文本块） |
 | `llm_cache_list` | 模态分析LLM缓存数组（后续会注入到多模态文本块） |
+
+`extras` 中常见的 drawing 专属键：
+
+| 键 | 说明 |
+|---|---|
+| `ocr_texts` | 字符串：可选；图形对象内部 OCR 文本，多个段落用空行（`\n\n`）拼接。仅当解析引擎显式把 OCR 文本挂在该 drawing 的 children 下时输出；caption / footnote 不进入此字段。 |
+| `ocr_texts_count` | 整数：可选；写入 `ocr_texts` 的非空 OCR 段落数量。 |
 
 **只有图形支持的 raster 格式（png / jpeg / gif / webp）才会进入 VLM 分析**；其他格式（wmf / emf / svg 等）写 `llm_analyze_result.status="skipped"`，下游不生成多模态 chunk，文档继续处理。图片大小超过环境变量`VLM_MAX_IMAGE_BYTES`规定的大小后，图片同样不会进入VLM分析。
 
@@ -241,7 +252,6 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
 | `content` | 字符串：表格正文，按 `format` 决定结构；这是后续多模态 chunk 真正使用的字符串。 |
 | `table_header` | 字符串：可选；识别出来的作为表格头的行内容 |
 | `self_ref` | 可选；解析引擎原始输出中的对象引用（如 Docling JSON Pointer `#/tables/2`），用于溯源时回查原始解析产物 |
-| `extras` | 对象：可选；引擎专属的旁路字段（行/列合并、OCR 置信度等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
 
 在模态分析阶段，如果`content`字段长度超过大模型的上下文长度时，表格内容会被机械地截断后在喂给模型。
 

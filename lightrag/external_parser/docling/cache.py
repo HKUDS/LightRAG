@@ -37,9 +37,22 @@ from pathlib import Path
 from lightrag.external_parser._common import compute_size_and_hash
 from lightrag.external_parser._manifest import load_manifest
 from lightrag.external_parser.docling import MANIFEST_ENGINE
+from lightrag.utils import logger
 
-DEFAULT_DOCLING_ENDPOINT = "http://localhost:5001"
+# Legacy upload-path suffix. ``env.example`` historically documented
+# ``DOCLING_ENDPOINT=http://host:5001/v1/convert/file/async`` (the full
+# upload URL); the current client expects a base URL and appends the path
+# itself. Strip the suffix so an unmodified pre-refactor ``.env`` keeps
+# working instead of producing
+# ``/v1/convert/file/async/v1/convert/file/async`` requests.
+_LEGACY_UPLOAD_PATH_SUFFIX = "/v1/convert/file/async"
+_legacy_endpoint_warned = False
 
+# Envs that change the bytes docling-serve produces. Any change here must
+# invalidate the bundle cache. ``DOCLING_BBOX_ATTRIBUTES`` is intentionally
+# NOT in this list: it only affects how the adapter writes IR meta, not the
+# docling bundle, so flipping it should re-emit the sidecar (which we always
+# do) without forcing a re-download.
 DOCLING_TUNABLE_ENVS: tuple[str, ...] = (
     "DOCLING_DO_OCR",
     "DOCLING_FORCE_OCR",
@@ -51,10 +64,33 @@ DOCLING_TUNABLE_ENVS: tuple[str, ...] = (
 
 
 def current_endpoint_signature() -> str:
-    """The active docling endpoint, normalized (trailing slash stripped)."""
-    return (
-        os.getenv("DOCLING_ENDPOINT", DEFAULT_DOCLING_ENDPOINT).strip().rstrip("/")
-    )
+    """The active docling endpoint, normalized to a base URL.
+
+    Normalization:
+
+    - Trims surrounding whitespace and strips trailing slashes.
+    - Strips the legacy ``/v1/convert/file/async`` upload suffix if present,
+      preserving backwards compatibility with the pre-refactor ``env.example``
+      that documented the full upload URL.
+
+    Returns ``""`` if ``DOCLING_ENDPOINT`` is unset — callers that need a
+    real endpoint (``DoclingRawClient``) raise on empty; callers that only
+    compare against a recorded manifest field (``is_bundle_valid``) silently
+    skip the check when either side is empty.
+    """
+    global _legacy_endpoint_warned
+    endpoint = os.getenv("DOCLING_ENDPOINT", "").strip().rstrip("/")
+    if endpoint.endswith(_LEGACY_UPLOAD_PATH_SUFFIX):
+        endpoint = endpoint[: -len(_LEGACY_UPLOAD_PATH_SUFFIX)]
+        if not _legacy_endpoint_warned:
+            _legacy_endpoint_warned = True
+            logger.warning(
+                "DOCLING_ENDPOINT still includes the legacy %r upload suffix; "
+                "stripping it. Update your .env to a base URL "
+                "(e.g. http://host:5001).",
+                _LEGACY_UPLOAD_PATH_SUFFIX,
+            )
+    return endpoint
 
 
 def compute_options_signature(
@@ -107,7 +143,9 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     if cur_hash != manifest.source_content_hash:
         return False
 
-    # 3. Engine version
+    # 3. Engine version. Skip the comparison when either side is empty so
+    #    operators can opt out by unsetting the env, and so bundles from
+    #    earlier code that never recorded the field aren't force-invalidated.
     cur_engine_version = os.getenv("DOCLING_ENGINE_VERSION", "").strip()
     if (
         cur_engine_version
@@ -116,7 +154,10 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     ):
         return False
 
-    # 4. Endpoint signature
+    # 4. Endpoint signature. Same "both non-empty to compare" rule: a bundle
+    #    parsed against a different docling-serve URL must not be reused, but
+    #    we don't reject the cache just because the env happens to be unset
+    #    at validation time (e.g. CLI tooling that only reads the cache).
     cur_endpoint = current_endpoint_signature()
     if (
         cur_endpoint
@@ -128,10 +169,19 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
     # 5. Options signature: only enforced if the manifest recorded one
     #    (manifests written before this commit have it empty — they are
     #    treated as stale and re-downloaded the next time the env changes).
+    #
+    #    Compare against the *current* fixed constants from client.py, not
+    #    the copy stashed in the manifest — using the manifest's copy would
+    #    always reproduce the recorded signature and silently swallow
+    #    code-only changes (e.g. flipping image_export_mode or to_formats),
+    #    defeating the invalidation this step is supposed to provide.
+    #    Lazy import: client.py imports from cache.py.
     if manifest.options_signature:
+        from lightrag.external_parser.docling.client import FIXED_CONSTANTS
+
         cur_options = compute_options_signature(
             tunable_env=snapshot_tunable_env(),
-            fixed_constants=manifest.extras.get("fixed_constants", {}),
+            fixed_constants=FIXED_CONSTANTS,
         )
         if cur_options != manifest.options_signature:
             return False
@@ -162,7 +212,6 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
 
 
 __all__ = [
-    "DEFAULT_DOCLING_ENDPOINT",
     "DOCLING_TUNABLE_ENVS",
     "compute_options_signature",
     "current_endpoint_signature",

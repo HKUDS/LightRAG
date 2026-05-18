@@ -114,11 +114,10 @@ class MinerURawClient:
     construction time. Methods are async and use a single shared httpx
     client across all calls in :meth:`download_into`.
 
-    The class duplicates a small amount of upload/poll choreography from
-    :meth:`_PipelineMixin._call_protocol_parse_service` (~70 lines). This
-    is deliberate: bundle handling needs the ``result_url`` *and* the
-    ``Content-Type`` of the response, which the original helper does not
-    expose. The legacy single-text helper remains in place for Docling.
+    Implements the MinerU-specific upload + poll + zip download flow
+    inline; bundle handling needs the ``result_url`` *and* the
+    ``Content-Type`` of the response, which a generic protocol helper
+    cannot expose without leaking abstractions.
     """
 
     def __init__(self) -> None:
@@ -222,7 +221,7 @@ class MinerURawClient:
         return self._build_and_write_manifest(raw_dir, source_file_path, task_id)
 
     # ------------------------------------------------------------------
-    # Upload + poll (mirrors _call_protocol_parse_service)
+    # Upload + poll
     # ------------------------------------------------------------------
 
     def _official_headers(self) -> dict[str, str]:
