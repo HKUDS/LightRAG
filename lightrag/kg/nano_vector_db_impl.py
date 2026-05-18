@@ -18,6 +18,7 @@ from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
+    resolve_workspace,
 )
 
 
@@ -40,18 +41,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
             )
         self.cosine_better_than_threshold = cosine_threshold
 
-        working_dir = self.global_config["working_dir"]
-        if self.workspace:
-            # Include workspace in the file path for data isolation
-            workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
-        else:
-            # Default behavior when workspace is empty
-            self.final_namespace = self.namespace
-            self.workspace = ""
-            workspace_dir = working_dir
-
-        os.makedirs(workspace_dir, exist_ok=True)
+        workspace_dir, self.workspace = resolve_workspace(
+            self.global_config, self.workspace
+        )
+        self.final_namespace = (
+            f"{self.workspace}_{self.namespace}" if self.workspace else self.namespace
+        )
         self._client_file_name = os.path.join(
             workspace_dir, f"vdb_{self.namespace}.json"
         )

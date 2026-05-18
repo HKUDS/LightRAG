@@ -13,6 +13,7 @@ from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
+    resolve_workspace,
 )
 
 # You must manually install faiss-cpu or faiss-gpu before using FAISS vector db
@@ -38,18 +39,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
             )
         self.cosine_better_than_threshold = cosine_threshold
 
-        # Where to save index file if you want persistent storage
-        working_dir = self.global_config["working_dir"]
-        if self.workspace:
-            # Include workspace in the file path for data isolation
-            workspace_dir = os.path.join(working_dir, self.workspace)
-
-        else:
-            # Default behavior when workspace is empty
-            workspace_dir = working_dir
-            self.workspace = ""
-
-        os.makedirs(workspace_dir, exist_ok=True)
+        workspace_dir, self.workspace = resolve_workspace(
+            self.global_config, self.workspace
+        )
         self._faiss_index_file = os.path.join(
             workspace_dir, f"faiss_index_{self.namespace}.index"
         )

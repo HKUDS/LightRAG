@@ -316,6 +316,7 @@ def create_app(args):
         "azure_openai",
         "aws_bedrock",
         "gemini",
+        "anthropic",
     ]:
         raise Exception("llm binding not supported")
 
@@ -646,6 +647,40 @@ def create_app(args):
                 from lightrag.llm.ollama import ollama_model_complete
 
                 return ollama_model_complete
+            elif binding == "anthropic":
+                from lightrag.llm.anthropic import anthropic_complete_if_cache
+
+                async def anthropic_model_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    keyword_extraction=False,
+                    **kwargs,
+                ) -> str:
+                    kwargs.pop("keyword_extraction", None)
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = llm_timeout
+                    kwargs.setdefault("max_tokens", 8192)  # required by Anthropic API
+                    result = await anthropic_complete_if_cache(
+                        args.llm_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        api_key=args.llm_binding_api_key,
+                        base_url=args.llm_binding_host if args.llm_binding_host else None,
+                        **kwargs,
+                    )
+                    # anthropic_complete_if_cache always returns an async generator;
+                    # collect it into a string for non-streaming callers
+                    if hasattr(result, "__aiter__"):
+                        chunks = []
+                        async for chunk in result:
+                            chunks.append(chunk)
+                        return "".join(chunks)
+                    return result
+
+                return anthropic_model_complete
             elif binding == "aws_bedrock":
                 return bedrock_model_complete  # Already defined locally
             elif binding == "azure_openai":

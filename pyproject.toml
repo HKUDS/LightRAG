@@ -152,12 +152,19 @@ observability = [
     "langfuse>=3.8.1",
 ]
 
+mcp = [
+    # MCP server dependencies (for lightrag-mcp entry point)
+    "mcp>=1.0.0",
+    "httpx>=0.28.1",
+]
+
 [project.scripts]
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
 lightrag-hash-password = "lightrag.tools.hash_password:main"
 lightrag-download-cache = "lightrag.tools.download_cache:main"
 lightrag-clean-llmqc = "lightrag.tools.clean_llm_query_cache:main"
+lightrag-mcp = "lightrag.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/HKUDS/LightRAG"

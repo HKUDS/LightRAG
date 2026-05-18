@@ -23,6 +23,7 @@ from .shared_storage import (
     set_all_update_flags,
     clear_all_update_flags,
     try_initialize_namespace,
+    resolve_workspace,
 )
 
 
@@ -32,16 +33,9 @@ class JsonDocStatusStorage(DocStatusStorage):
     """JSON implementation of document status storage"""
 
     def __post_init__(self):
-        working_dir = self.global_config["working_dir"]
-        if self.workspace:
-            # Include workspace in the file path for data isolation
-            workspace_dir = os.path.join(working_dir, self.workspace)
-        else:
-            # Default behavior when workspace is empty
-            workspace_dir = working_dir
-            self.workspace = ""
-
-        os.makedirs(workspace_dir, exist_ok=True)
+        workspace_dir, self.workspace = resolve_workspace(
+            self.global_config, self.workspace
+        )
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
         self._data = None
         self._storage_lock = None

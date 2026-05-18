@@ -12,6 +12,7 @@ import logging
 import logging.handlers
 import os
 import re
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -1306,18 +1307,38 @@ def write_json(json_obj, file_name):
         bool: True if sanitization was applied (caller should reload data),
               False if direct write succeeded (no reload needed)
     """
+    dir_name = os.path.dirname(os.path.abspath(file_name))
     try:
-        # Strategy 1: Fast path - try direct serialization
-        with open(file_name, "w", encoding="utf-8") as f:
-            json.dump(json_obj, f, indent=2, ensure_ascii=False)
+        # Strategy 1: Fast path — write to temp file then rename (atomic, avoids
+        # Windows Defender locking the target file mid-write on large JSON files)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(json_obj, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, file_name)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
         return False  # No sanitization needed, no reload required
 
     except (UnicodeEncodeError, UnicodeDecodeError) as e:
         logger.debug(f"Direct JSON write failed, using sanitizing encoder: {e}")
 
     # Strategy 2: Use custom encoder (sanitizes during serialization, zero memory copy)
-    with open(file_name, "w", encoding="utf-8") as f:
-        json.dump(json_obj, f, indent=2, ensure_ascii=False, cls=SanitizingJSONEncoder)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(json_obj, f, indent=2, ensure_ascii=False, cls=SanitizingJSONEncoder)
+        os.replace(tmp_path, file_name)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     logger.info(f"JSON sanitization applied during write: {file_name}")
     return True  # Sanitization applied, reload recommended

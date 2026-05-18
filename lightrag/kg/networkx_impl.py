@@ -11,6 +11,7 @@ from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
+    resolve_workspace,
 )
 
 from dotenv import load_dotenv
@@ -38,16 +39,9 @@ class NetworkXStorage(BaseGraphStorage):
         nx.write_graphml(graph, file_name)
 
     def __post_init__(self):
-        working_dir = self.global_config["working_dir"]
-        if self.workspace:
-            # Include workspace in the file path for data isolation
-            workspace_dir = os.path.join(working_dir, self.workspace)
-        else:
-            # Default behavior when workspace is empty
-            workspace_dir = working_dir
-            self.workspace = ""
-
-        os.makedirs(workspace_dir, exist_ok=True)
+        workspace_dir, self.workspace = resolve_workspace(
+            self.global_config, self.workspace
+        )
         self._graphml_xml_file = os.path.join(
             workspace_dir, f"graph_{self.namespace}.graphml"
         )

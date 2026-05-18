@@ -112,6 +112,26 @@ def get_final_namespace(namespace: str, workspace: str | None = None):
     return final_namespace
 
 
+def resolve_workspace(global_config: dict, workspace: str | None) -> tuple[str, str]:
+    """Return (workspace_dir, resolved_workspace) for file-based storage backends.
+
+    Centralises the workspace path construction that all file-based backends
+    (JsonKVStorage, JsonDocStatusStorage, NanoVectorDBStorage, NetworkXStorage,
+    FaissVectorDBStorage) previously duplicated in their __post_init__ methods.
+
+    Creates workspace_dir on disk if it does not exist.
+    """
+    working_dir = global_config["working_dir"]
+    resolved_workspace = workspace or ""
+    workspace_dir = (
+        os.path.join(working_dir, resolved_workspace)
+        if resolved_workspace
+        else working_dir
+    )
+    os.makedirs(workspace_dir, exist_ok=True)
+    return workspace_dir, resolved_workspace
+
+
 def inc_debug_n_locks_acquired():
     global _debug_n_locks_acquired
     if DEBUG_LOCKS:
