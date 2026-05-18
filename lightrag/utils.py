@@ -1363,7 +1363,24 @@ class Tokenizer:
         Returns:
             A list of integer tokens.
         """
-        return self.tokenizer.encode(content)
+        try:
+            return self.tokenizer.encode(content)
+        except ValueError as e:
+            # tiktoken (and some other tokenizers) raise ValueError when the
+            # content contains literal special-token strings such as
+            # "<|endoftext|>", because by default disallowed_special is the
+            # full set of special tokens. This crashes document indexing on
+            # any user content that happens to contain those strings — common
+            # in documentation, notes, or model output captured in source
+            # corpora. Retry with disallowed_special=() so the tokens are
+            # encoded as ordinary text. Tokenizers that don't accept the
+            # kwarg fall through and re-raise the original error.
+            if "special token" not in str(e):
+                raise
+            try:
+                return self.tokenizer.encode(content, disallowed_special=())
+            except TypeError:
+                raise e
 
     def decode(self, tokens: List[int]) -> str:
         """
