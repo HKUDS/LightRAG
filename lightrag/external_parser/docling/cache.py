@@ -37,6 +37,16 @@ from pathlib import Path
 from lightrag.external_parser._common import compute_size_and_hash
 from lightrag.external_parser._manifest import load_manifest
 from lightrag.external_parser.docling import MANIFEST_ENGINE
+from lightrag.utils import logger
+
+# Legacy upload-path suffix. ``env.example`` historically documented
+# ``DOCLING_ENDPOINT=http://host:5001/v1/convert/file/async`` (the full
+# upload URL); the current client expects a base URL and appends the path
+# itself. Strip the suffix so an unmodified pre-refactor ``.env`` keeps
+# working instead of producing
+# ``/v1/convert/file/async/v1/convert/file/async`` requests.
+_LEGACY_UPLOAD_PATH_SUFFIX = "/v1/convert/file/async"
+_legacy_endpoint_warned = False
 
 # Envs that change the bytes docling-serve produces. Any change here must
 # invalidate the bundle cache. ``DOCLING_BBOX_ATTRIBUTES`` is intentionally
@@ -54,14 +64,33 @@ DOCLING_TUNABLE_ENVS: tuple[str, ...] = (
 
 
 def current_endpoint_signature() -> str:
-    """The active docling endpoint, normalized (trailing slash stripped).
+    """The active docling endpoint, normalized to a base URL.
+
+    Normalization:
+
+    - Trims surrounding whitespace and strips trailing slashes.
+    - Strips the legacy ``/v1/convert/file/async`` upload suffix if present,
+      preserving backwards compatibility with the pre-refactor ``env.example``
+      that documented the full upload URL.
 
     Returns ``""`` if ``DOCLING_ENDPOINT`` is unset — callers that need a
     real endpoint (``DoclingRawClient``) raise on empty; callers that only
     compare against a recorded manifest field (``is_bundle_valid``) silently
     skip the check when either side is empty.
     """
-    return os.getenv("DOCLING_ENDPOINT", "").strip().rstrip("/")
+    global _legacy_endpoint_warned
+    endpoint = os.getenv("DOCLING_ENDPOINT", "").strip().rstrip("/")
+    if endpoint.endswith(_LEGACY_UPLOAD_PATH_SUFFIX):
+        endpoint = endpoint[: -len(_LEGACY_UPLOAD_PATH_SUFFIX)]
+        if not _legacy_endpoint_warned:
+            _legacy_endpoint_warned = True
+            logger.warning(
+                "DOCLING_ENDPOINT still includes the legacy %r upload suffix; "
+                "stripping it. Update your .env to a base URL "
+                "(e.g. http://host:5001).",
+                _LEGACY_UPLOAD_PATH_SUFFIX,
+            )
+    return endpoint
 
 
 def compute_options_signature(
