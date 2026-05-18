@@ -74,9 +74,13 @@ const LabeledNumberInput = ({
     onEditFinishedRef.current = onEditFinished
   })
 
-  useEffect(() => {
+  // Sync local state when controlled value changes (render-time comparison
+  // avoids cascading renders flagged by react-hooks/set-state-in-effect).
+  const [previousValue, setPreviousValue] = useState(value)
+  if (value !== previousValue) {
+    setPreviousValue(value)
     setCurrentValue(value)
-  }, [value])
+  }
 
   // Commit any pending change when the component unmounts (e.g. popover closes)
   useEffect(() => {

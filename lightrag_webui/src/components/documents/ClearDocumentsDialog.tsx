@@ -50,20 +50,20 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
   // Timeout constant (30 seconds)
   const CLEAR_TIMEOUT = 30000
 
-  // Reset state when dialog closes
-  useEffect(() => {
-    if (!open) {
+  // Reset state when dialog closes - handled in onOpenChange to avoid setState in effect
+  const handleOpenChange = useCallback((newOpen: boolean) => {
+    setOpen(newOpen)
+    if (!newOpen) {
       setConfirmText('')
       setClearCacheOption(false)
       setIsClearing(false)
 
-      // Clear timeout timer
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current)
         timeoutRef.current = null
       }
     }
-  }, [open])
+  }, [])
 
   // Cleanup when component unmounts
   useEffect(() => {
@@ -115,7 +115,7 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
       }
 
       // Close dialog after all operations succeed
-      setOpen(false)
+      handleOpenChange(false)
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
       setConfirmText('')
@@ -127,10 +127,10 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
       }
       setIsClearing(false)
     }
-  }, [isConfirmEnabled, isClearing, clearCacheOption, setOpen, t, onDocumentsCleared, CLEAR_TIMEOUT])
+  }, [isConfirmEnabled, isClearing, clearCacheOption, handleOpenChange, t, onDocumentsCleared, CLEAR_TIMEOUT])
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button variant="outline" side="bottom" tooltip={t('documentPanel.clearDocuments.tooltip')} size="sm">
           <EraserIcon/> {t('documentPanel.clearDocuments.button')}
@@ -185,7 +185,7 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
         <DialogFooter>
           <Button
             variant="outline"
-            onClick={() => setOpen(false)}
+            onClick={() => handleOpenChange(false)}
             disabled={isClearing}
           >
             {t('common.cancel')}

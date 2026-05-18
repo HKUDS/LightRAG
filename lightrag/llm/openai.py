@@ -169,6 +169,9 @@ def create_openai_async_client(
             "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
             "Content-Type": "application/json",
         }
+        dashscope_workspace_id = os.getenv("DASHSCOPE_WORKSPACE_ID", "").strip()
+        if dashscope_workspace_id:
+            default_headers["X-DashScope-Workspace"] = dashscope_workspace_id
 
         if client_configs is None:
             client_configs = {}

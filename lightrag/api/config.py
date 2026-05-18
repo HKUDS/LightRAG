@@ -297,6 +297,14 @@ def parse_args() -> argparse.Namespace:
         help="Default workspace for all storage",
     )
 
+    # Path prefix configuration
+    parser.add_argument(
+        "--api-prefix",
+        type=str,
+        default=get_env_value("LIGHTRAG_API_PREFIX", ""),
+        help="API path prefix (e.g., /api/v1). Prepended to all API routes. Default: none (root).",
+    )
+
     # Server workers configuration
     parser.add_argument(
         "--workers",

@@ -153,7 +153,16 @@
       "showButton": "Hiện",
       "hideButton": "Ẩn",
       "showFileNameTooltip": "Hiện tên tệp",
-      "hideFileNameTooltip": "Ẩn tên tệp"
+      "hideFileNameTooltip": "Ẩn tên tệp",
+      "details": {
+        "title": "Chi tiết trạng thái",
+        "openTooltip": "Xem chi tiết trạng thái",
+        "content": "Chi tiết",
+        "copyButton": "Sao chép",
+        "copyTooltip": "Sao chép chi tiết trạng thái",
+        "copySuccess": "Đã sao chép chi tiết trạng thái",
+        "copyFailed": "Sao chép chi tiết trạng thái thất bại"
+      }
     },
     "pipelineStatus": {
       "title": "Trạng Thái Quy Trình",

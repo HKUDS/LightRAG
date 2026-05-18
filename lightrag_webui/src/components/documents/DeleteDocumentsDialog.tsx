@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import Button from '@/components/ui/Button'
 import {
   Dialog,
@@ -47,15 +47,16 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
   const [deleteLLMCache, setDeleteLLMCache] = useState(false)
   const isConfirmEnabled = confirmText.toLowerCase() === 'yes' && !isDeleting
 
-  // Reset state when dialog closes
-  useEffect(() => {
-    if (!open) {
+  // Reset state when dialog closes - handled in onOpenChange to avoid setState in effect
+  const handleOpenChange = useCallback((newOpen: boolean) => {
+    setOpen(newOpen)
+    if (!newOpen) {
       setConfirmText('')
       setDeleteFile(false)
       setDeleteLLMCache(false)
       setIsDeleting(false)
     }
-  }, [open])
+  }, [])
 
   const handleDelete = useCallback(async () => {
     if (!isConfirmEnabled || selectedDocIds.length === 0) return
@@ -89,17 +90,17 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
       }
 
       // Close dialog after successful operation
-      setOpen(false)
+      handleOpenChange(false)
     } catch (err) {
       toast.error(t('documentPanel.deleteDocuments.error', { error: errorMessage(err) }))
       setConfirmText('')
     } finally {
       setIsDeleting(false)
     }
-  }, [isConfirmEnabled, selectedDocIds, deleteFile, deleteLLMCache, setOpen, t, onDocumentsDeleted])
+  }, [isConfirmEnabled, selectedDocIds, deleteFile, deleteLLMCache, handleOpenChange, t, onDocumentsDeleted])
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button
           variant="destructive"
@@ -174,7 +175,7 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)} disabled={isDeleting}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={isDeleting}>
             {t('common.cancel')}
           </Button>
           <Button

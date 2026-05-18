@@ -153,7 +153,16 @@
       "showButton": "Anzeigen",
       "hideButton": "Ausblenden",
       "showFileNameTooltip": "Dateiname anzeigen",
-      "hideFileNameTooltip": "Dateiname ausblenden"
+      "hideFileNameTooltip": "Dateiname ausblenden",
+      "details": {
+        "title": "Statusdetails",
+        "openTooltip": "Statusdetails anzeigen",
+        "content": "Details",
+        "copyButton": "Kopieren",
+        "copyTooltip": "Statusdetails kopieren",
+        "copySuccess": "Statusdetails kopiert",
+        "copyFailed": "Statusdetails konnten nicht kopiert werden"
+      }
     },
     "pipelineStatus": {
       "title": "Pipeline-Status",

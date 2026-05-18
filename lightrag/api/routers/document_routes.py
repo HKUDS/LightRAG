@@ -80,10 +80,12 @@ def format_datetime(dt: Any) -> Optional[str]:
     return dt.isoformat()
 
 
-router = APIRouter(
-    prefix="/documents",
-    tags=["documents"],
-)
+# NOTE: the APIRouter instance is created INSIDE `create_document_routes`
+# (not at module scope). A module-level router is shared across processes,
+# and re-running the factory — which the test suite does to validate
+# create_app for different `--api-prefix` values — would re-decorate the
+# same router each time, accumulating duplicate routes and triggering
+# FastAPI's "Duplicate Operation ID" warnings.
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
@@ -2090,6 +2092,12 @@ async def background_delete_documents(
 def create_document_routes(
     workspace_mgr, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
+    # Fresh router per call — see the note above the temp_prefix constant.
+    router = APIRouter(
+        prefix="/documents",
+        tags=["documents"],
+    )
+
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
 

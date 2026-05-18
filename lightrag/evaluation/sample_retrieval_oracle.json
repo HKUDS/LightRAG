@@ -1,0 +1,31 @@
+{
+  "oracle": [
+    {
+      "question": "How does LightRAG solve the hallucination problem in large language models?",
+      "expected_documents": ["01_lightrag_overview.md"]
+    },
+    {
+      "question": "What are the three main components required in a RAG system?",
+      "expected_documents": ["02_rag_architecture.md"]
+    },
+    {
+      "question": "How does LightRAG's retrieval performance compare to traditional RAG approaches?",
+      "expected_documents": ["03_lightrag_improvements.md"]
+    },
+    {
+      "question": "What vector databases does LightRAG support and what are their key characteristics?",
+      "expected_documents": ["04_supported_databases.md"]
+    },
+    {
+      "question": "What are the four key metrics for evaluating RAG system quality and what does each metric measure?",
+      "expected_documents": ["05_evaluation_and_deployment.md"]
+    },
+    {
+      "question": "What are the core benefits of LightRAG and how does it improve upon traditional RAG systems?",
+      "expected_documents": [
+        "01_lightrag_overview.md",
+        "03_lightrag_improvements.md"
+      ]
+    }
+  ]
+}

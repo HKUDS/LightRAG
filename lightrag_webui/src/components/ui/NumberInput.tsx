@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import { forwardRef, useCallback, useEffect, useState } from 'react'
+import { forwardRef, useCallback, useState } from 'react'
 import { NumericFormat, NumericFormatProps } from 'react-number-format'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
@@ -43,12 +43,12 @@ const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
     const [value, setValue] = useState<number | undefined>(controlledValue ?? defaultValue)
 
     // Sync local state when the controlled value changes (e.g. parent resets the field).
-    // Synchronous setState in useEffect is intentional here: we want the displayed value
-    // to update in the same paint as the prop change, with no visible flicker.
-    useEffect(() => {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+    // Render-time comparison avoids cascading renders flagged by react-hooks/set-state-in-effect.
+    const [previousControlledValue, setPreviousControlledValue] = useState(controlledValue)
+    if (controlledValue !== previousControlledValue) {
+      setPreviousControlledValue(controlledValue)
       if (controlledValue !== undefined) setValue(controlledValue)
-    }, [controlledValue])
+    }
 
     const handleIncrement = useCallback(() => {
       setValue((prev) =>

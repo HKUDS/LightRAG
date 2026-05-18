@@ -4,11 +4,12 @@ LightRAG FastAPI Server
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
 )
+import json
 import os
 import logging
 import logging.config
@@ -79,6 +80,15 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
+
+
+# Fixed WebUI mount path. Used as `app.mount(WEBUI_PATH, ...)` and as the
+# in-app component of `webuiPrefix` injected into window.__LIGHTRAG_CONFIG__
+# (which the browser sees as `LIGHTRAG_API_PREFIX + WEBUI_PATH + "/"`).
+# Not user-configurable: a single mount path simplifies the operator surface
+# and matches how LightRAG is deployed in practice. See
+# docs/MultiSiteDeployment.md.
+WEBUI_PATH = "/webui"
 
 
 class LLMConfigCache:
@@ -347,8 +357,7 @@ def create_app(args):
     # Initialize document manager with workspace support for data isolation
     doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
 
-    # Initialize FastAPI
-
+    # LLM functions will be defined here
     def create_optimized_openai_llm_func(
         config_cache: LLMConfigCache, args, llm_timeout: int
     ):
@@ -1076,6 +1085,23 @@ def create_app(args):
                 )
 
     # Initialize FastAPI
+    # Normalize the API prefix from CLI/env. Strip surrounding whitespace,
+    # strip a trailing slash, and treat empty/"/" as "no prefix". A leading
+    # slash is ensured. The WebUI mount path is fixed at "/webui" — see
+    # docs/MultiSiteDeployment.md for the rationale.
+    def _normalize_api_prefix(value: str | None) -> str:
+        if value is None:
+            return ""
+        value = value.strip()
+        if not value or value == "/":
+            return ""
+        if not value.startswith("/"):
+            value = "/" + value
+        return value.rstrip("/")
+
+    api_prefix = _normalize_api_prefix(getattr(args, "api_prefix", None))
+    webui_path = WEBUI_PATH
+
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
@@ -1091,6 +1117,7 @@ def create_app(args):
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
         "docs_url": None,  # Disable default docs, we'll create custom endpoint
         "redoc_url": "/redoc",  # Explicitly set redoc URL
+        "root_path": api_prefix if api_prefix else None,
         "lifespan": lifespan,
     }
 
@@ -1188,6 +1215,8 @@ def create_app(args):
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
 
     # Add routes
+    # root_path is set on the app for reverse proxy support;
+    # routes stay at their natural paths and are prefixed by the proxy or uvicorn --root-path
     app.include_router(
         create_document_routes(
             workspace_mgr,
@@ -1225,12 +1254,18 @@ def create_app(args):
         return get_swagger_ui_oauth2_redirect_html()
 
     @app.get("/")
-    async def redirect_to_webui():
-        """Redirect root path based on WebUI availability"""
+    async def redirect_to_webui(request: Request):
+        """Redirect root path based on WebUI availability.
+
+        Prepend the ASGI root_path so that, behind a reverse proxy, the
+        absolute redirect target keeps the configured prefix instead of
+        bypassing it.
+        """
+        root = request.scope.get("root_path", "")
         if webui_assets_exist:
-            return RedirectResponse(url="/webui")
+            return RedirectResponse(url=f"{root}{webui_path}/")
         else:
-            return RedirectResponse(url="/docs")
+            return RedirectResponse(url=f"{root}/docs")
 
     @app.get("/auth-status")
     async def get_auth_status():
@@ -1422,12 +1457,49 @@ def create_app(args):
             logger.error(f"Error getting health status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # Custom StaticFiles class for smart caching
+    # Pre-render the runtime-config <script> once. The browser-visible URL
+    # prefixes are NOT baked into the bundle anymore — index.html ships with
+    # a placeholder comment that we replace with this snippet on every HTML
+    # response, so one build serves any reverse-proxy mount point.
+    #
+    # `</` → `<\/` escaping prevents an embedded "</script>" sequence from
+    # breaking out of the inline script (defense-in-depth — values come from
+    # admin config, not user input).
+    _runtime_config_payload = json.dumps(
+        {
+            "apiPrefix": api_prefix,
+            "webuiPrefix": f"{api_prefix}{webui_path}/",
+        }
+    ).replace("</", "<\\/")
+    runtime_config_script = (
+        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};</script>"
+    )
+
+    # Custom StaticFiles class for smart caching + runtime config injection
     class SmartStaticFiles(StaticFiles):  # Renamed from NoCacheStaticFiles
+        # Replaced in index.html on every request. Keep in sync with
+        # lightrag_webui/index.html.
+        RUNTIME_CONFIG_PLACEHOLDER = b"<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
+
         async def get_response(self, path: str, scope):
             response = await super().get_response(path, scope)
 
-            is_html = path.endswith(".html") or response.media_type == "text/html"
+            # `path` is empty when accessing the mount root (StaticFiles
+            # rewrites it to index.html internally) — match on media_type
+            # too so we still inject in that case.
+            is_html = (
+                path.endswith(".html")
+                or path == ""
+                or path.endswith("/")
+                or getattr(response, "media_type", None) == "text/html"
+            )
+
+            if (
+                is_html
+                and getattr(response, "status_code", 0) == 200
+                and isinstance(response, FileResponse)
+            ):
+                response = self._inject_runtime_config(response)
 
             if is_html:
                 response.headers["Cache-Control"] = (
@@ -1451,6 +1523,32 @@ def create_app(args):
 
             return response
 
+        def _inject_runtime_config(self, response: FileResponse) -> Response:
+            """Replace the runtime-config placeholder in index.html.
+
+            Returns the original FileResponse if the placeholder is absent
+            (older build, or a non-index HTML file) — avoids breaking
+            previously-working bundles during upgrades.
+            """
+            try:
+                content = Path(response.path).read_bytes()
+            except OSError as e:
+                logger.warning(
+                    "Could not read %s for runtime config injection: %s",
+                    response.path,
+                    e,
+                )
+                return response
+
+            if self.RUNTIME_CONFIG_PLACEHOLDER not in content:
+                return response
+
+            new_content = content.replace(
+                self.RUNTIME_CONFIG_PLACEHOLDER,
+                runtime_config_script.encode("utf-8"),
+            )
+            return Response(content=new_content, media_type="text/html")
+
     # Mount Swagger UI static files for offline support
     swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
     if swagger_static_dir.exists():
@@ -1465,22 +1563,23 @@ def create_app(args):
         static_dir = Path(__file__).parent / "webui"
         static_dir.mkdir(exist_ok=True)
         app.mount(
-            "/webui",
+            webui_path,
             SmartStaticFiles(
                 directory=static_dir, html=True, check_dir=True
             ),  # Use SmartStaticFiles
             name="webui",
         )
-        logger.info("WebUI assets mounted at /webui")
+        logger.info(f"WebUI assets mounted at {webui_path}")
     else:
-        logger.info("WebUI assets not available, /webui route not mounted")
+        logger.info("WebUI assets not available, WebUI route not mounted")
 
-        # Add redirect for /webui when assets are not available
-        @app.get("/webui")
-        @app.get("/webui/")
-        async def webui_redirect_to_docs():
-            """Redirect /webui to /docs when WebUI is not available"""
-            return RedirectResponse(url="/docs")
+        # Add redirect for WebUI path when assets are not available
+        @app.get(webui_path)
+        @app.get(f"{webui_path}/")
+        async def webui_redirect_to_docs(request: Request):
+            """Redirect WebUI path to /docs when WebUI is not available."""
+            root = request.scope.get("root_path", "")
+            return RedirectResponse(url=f"{root}/docs")
 
     return app
 

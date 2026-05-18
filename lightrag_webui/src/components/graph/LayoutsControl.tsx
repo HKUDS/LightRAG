@@ -140,7 +140,6 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
     if (autoRunFor !== undefined && autoRunFor > -1 && sigma.getGraph().order > 0) {
       console.log('Auto-starting layout animation')
 
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       updatePositions() // transitively calls setIsRunning on error; intentional here
 
       // Set up interval for continuous updates
@@ -148,6 +147,7 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
         updatePositions()
       }, 200) // Reduced interval to create overlapping animations for smoother transitions
 
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsRunning(true) // deliberate: syncing UI to the interval we just started
 
       // Set a timeout to stop it if autoRunFor > 0

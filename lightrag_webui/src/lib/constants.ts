@@ -1,7 +1,9 @@
 import { ButtonVariantType } from '@/components/ui/Button'
+import { normalizeApiPrefix, normalizeWebuiPrefix } from '@/lib/pathPrefix'
+import { getRuntimeApiPrefix, getRuntimeWebuiPrefix } from '@/lib/runtimeConfig'
 
-export const backendBaseUrl = ''
-export const webuiPrefix = '/webui/'
+export const backendBaseUrl = normalizeApiPrefix(getRuntimeApiPrefix())
+export const webuiPrefix = normalizeWebuiPrefix(getRuntimeWebuiPrefix())
 
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 
