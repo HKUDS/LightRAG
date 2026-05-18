@@ -34,7 +34,7 @@ import json
 import os
 from pathlib import Path
 
-from lightrag.external_parser._common import compute_size_and_hash
+from lightrag.external_parser._common import compute_size_and_hash, env_bool
 from lightrag.external_parser._manifest import load_manifest
 from lightrag.external_parser.docling import MANIFEST_ENGINE
 from lightrag.utils import logger
@@ -116,9 +116,17 @@ def compute_options_signature(
 
 
 def snapshot_tunable_env() -> dict[str, str]:
-    """Read all docling tunable envs (with empty strings for missing ones)
-    so the signature is deterministic."""
-    return {name: os.getenv(name, "").strip() for name in DOCLING_TUNABLE_ENVS}
+    """Read effective docling tunables so equivalent requests share a signature."""
+    return {
+        "DOCLING_DO_OCR": str(env_bool("DOCLING_DO_OCR", True)).lower(),
+        "DOCLING_FORCE_OCR": str(env_bool("DOCLING_FORCE_OCR", True)).lower(),
+        "DOCLING_OCR_ENGINE": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
+        "DOCLING_OCR_PRESET": os.getenv("DOCLING_OCR_PRESET", "auto").strip() or "auto",
+        "DOCLING_OCR_LANG": os.getenv("DOCLING_OCR_LANG", "").strip(),
+        "DOCLING_DO_FORMULA_ENRICHMENT": str(
+            env_bool("DOCLING_DO_FORMULA_ENRICHMENT", False)
+        ).lower(),
+    }
 
 
 def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:

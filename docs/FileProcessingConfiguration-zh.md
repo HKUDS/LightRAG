@@ -143,7 +143,7 @@ notes.[R].md
 
 `mineru` 和 `docling` 是外部内容提取引擎，启用相关规则前必须先把服务跑起来，再在 LightRAG 配置对应 endpoint/token。
 
-LightRAG在在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改  `mineru` 和 `docling` 引擎的端点地址和提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
+LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改 `mineru` 和 `docling` 引擎的端点地址和有效提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
 
 #### MinerU 配置方法与本地部署
 
@@ -205,6 +205,8 @@ DOCLING_ENDPOINT=http://localhost:5001
 | `DOCLING_OCR_PRESET` | `auto` | OCR 引擎 preset（不建议修改） |
 | `DOCLING_OCR_LANG` | （空） | 按照OCR引擎要求设置（不建议修改） |
 | `DOCLING_DO_FORMULA_ENRICHMENT` | `false` | 是识别文档中的公式并按LaTex格式输出；启用前需要确保Docling后台下载了公式识别模型（见后面说明） |
+
+未配置 `DOCLING_OCR_ENGINE` / `DOCLING_OCR_PRESET` 时等同于 `auto`；未配置 `DOCLING_OCR_LANG` 时不向 docling-serve 传递语言列表，由 OCR 引擎使用自身默认值。解析缓存按这些有效参数计算签名，因此“未配置”和“显式填写默认值”不会导致缓存失效。
 
 轮询预算 2 个 env（docling-serve 是 server-side long-poll，客户端不再额外 sleep）：
 

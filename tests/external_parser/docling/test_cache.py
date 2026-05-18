@@ -49,6 +49,21 @@ def source_file(tmp_path: Path) -> Path:
     return p
 
 
+def test_snapshot_tunable_env_uses_effective_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unset = snapshot_tunable_env()
+
+    monkeypatch.setenv("DOCLING_DO_OCR", "true")
+    monkeypatch.setenv("DOCLING_FORCE_OCR", "true")
+    monkeypatch.setenv("DOCLING_OCR_ENGINE", "auto")
+    monkeypatch.setenv("DOCLING_OCR_PRESET", "auto")
+    monkeypatch.setenv("DOCLING_OCR_LANG", "")
+    monkeypatch.setenv("DOCLING_DO_FORMULA_ENRICHMENT", "false")
+
+    assert snapshot_tunable_env() == unset
+
+
 def _build_valid_bundle(
     tmp_path: Path,
     source_file: Path,
@@ -142,7 +157,7 @@ def test_is_bundle_valid_options_signature_change(
     tmp_path: Path, source_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     raw = _build_valid_bundle(tmp_path, source_file)
-    monkeypatch.setenv("DOCLING_FORCE_OCR", "true")
+    monkeypatch.setenv("DOCLING_FORCE_OCR", "false")
     assert is_bundle_valid(raw, source_file) is False
 
 
