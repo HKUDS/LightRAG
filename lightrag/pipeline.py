@@ -1778,8 +1778,10 @@ class _PipelineMixin:
 
                 # Reflect the format actually persisted in full_docs.
                 # Previously a structured-parse fallback always tagged
-                # parse_format=raw, which silently disabled
-                # _run_multimodal_postprocess_hook for lightrag documents.
+                # parse_format=raw, which silently mislabelled lightrag docs;
+                # _build_mm_chunks_from_sidecars below gates on the persisted
+                # format via the sidecar presence check, so the tag must
+                # reflect what was actually stored.
                 persisted_format = (
                     content_data.get("parse_format")
                     if isinstance(content_data, dict)
@@ -1818,15 +1820,6 @@ class _PipelineMixin:
                     # transitions via ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
                     "chunk_opts": chunk_opts_str,
                 }
-
-                # Multimodal post-process hook entrypoint:
-                # runs after chunking and before entity extraction.
-                chunking_result = await self._run_multimodal_postprocess_hook(
-                    doc_id=doc_id,
-                    file_path=file_path,
-                    chunking_result=chunking_result,
-                    extraction_meta=extraction_meta,
-                )
 
                 blocks_path = str(parsed_data.get("blocks_path") or "").strip()
                 if blocks_path:
@@ -4033,67 +4026,6 @@ class _PipelineMixin:
         except Exception as e:
             logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
         return parsed_data
-
-    async def _run_multimodal_postprocess_hook(
-        self,
-        doc_id: str,
-        file_path: str,
-        chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
-        extraction_meta: dict[str, Any],
-    ) -> list[dict[str, Any]] | tuple[dict[str, Any], ...]:
-        """Multimodal post-process entrypoint.
-
-        Placement:
-            chunking -> [this hook] -> entity extraction
-
-        Default behavior is no-op. This method defines a stable extension point
-        for built-in multimodal processors.
-
-        Activates when the per-document ``process_options`` opts into at least
-        one of ``i`` / ``t`` / ``e``.  Per-modality work in subsequent steps
-        (``_build_mm_chunks_from_sidecars``, ``analyze_multimodal``) decides
-        whether to act based on whether ``drawings.json`` / ``tables.json`` /
-        ``equations.json`` actually exist on disk — the parser declares
-        modality availability by writing those sidecars, not by listing
-        capabilities in meta.
-        """
-        from lightrag.parser_routing import parse_process_options
-
-        parse_format = extraction_meta.get("parse_format")
-        if parse_format != FULL_DOCS_FORMAT_LIGHTRAG:
-            return chunking_result
-
-        try:
-            content_data = await self.full_docs.get_by_id(doc_id) or {}
-        except Exception:
-            content_data = {}
-        process_opts = parse_process_options(
-            content_data.get("process_options")
-            if isinstance(content_data, dict)
-            else ""
-        )
-        active = {
-            ch
-            for ch, enabled in (
-                ("i", process_opts.images),
-                ("t", process_opts.tables),
-                ("e", process_opts.equations),
-            )
-            if enabled
-        }
-        if not active:
-            return chunking_result
-
-        logger.info(
-            f"[multimodal-hook] enabled for d-id: {doc_id}, file: {file_path}, "
-            f"parse_engine={extraction_meta.get('parse_engine')}, opts={sorted(active)}"
-        )
-
-        # TODO(multimodal pipeline):
-        # 1) call modal processors using vlm_llm_model_func (VLM role)
-        # 2) merge multimodal outputs back into chunk dicts
-        # 3) keep chunk_order_index continuity and chunk_id stability
-        return chunking_result
 
     def _build_mm_chunks_from_sidecars(
         self,

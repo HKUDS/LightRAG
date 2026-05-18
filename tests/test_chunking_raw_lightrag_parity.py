@@ -10,10 +10,10 @@ guard the contract end-to-end:
 * T2: ``full_docs.content`` for lightrag carries the *full* merged text
   with the ``{{LRdoc}}`` marker, while ``doc_status`` reports the bare
   body length / summary (no marker leakage).
-* T3: ``_run_multimodal_postprocess_hook`` now sees
-  ``extraction_meta["parse_format"] == "lightrag"`` for lightrag docs —
+* T3: ``extraction_meta["parse_format"]`` (surfaced via
+  ``doc_status.metadata``) is now ``"lightrag"`` for lightrag docs —
   previously a structured-parse fallback always tagged ``raw`` and
-  silently disabled the hook.
+  silently mislabelled the persisted record.
 * T4: a raw document whose body coincidentally *looks* like structured
   JSONL is still tokenised as plain text — guards against re-introducing
   dropped structured-format detection in the raw path.
@@ -285,19 +285,18 @@ def test_full_docs_content_carries_full_merged_text(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# T3 — multimodal hook entered with parse_format=lightrag (regression guard)
+# T3 — extraction_meta.parse_format reflects persisted format (regression guard)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.offline
-def test_multimodal_hook_sees_lightrag_parse_format(tmp_path, monkeypatch):
+def test_extraction_meta_records_lightrag_parse_format(tmp_path, monkeypatch):
     """Before the unification, a structured-parse fallback tagged
-    ``extraction_meta.parse_format = raw`` for lightrag docs, which made
-    ``_run_multimodal_postprocess_hook`` return early because it gates
-    on ``parse_format == lightrag``.  Assert the tag now reflects the
-    persisted format."""
+    ``extraction_meta.parse_format = raw`` for lightrag docs, silently
+    mislabelling them in ``doc_status.metadata``.  Assert the tag now
+    reflects the persisted format end-to-end."""
 
-    paragraphs = ["Body paragraph for hook visibility test."]
+    paragraphs = ["Body paragraph for parse_format tagging test."]
 
     async def _run():
         input_dir = tmp_path / "input"
@@ -305,43 +304,41 @@ def test_multimodal_hook_sees_lightrag_parse_format(tmp_path, monkeypatch):
         parsed_dir.mkdir(parents=True)
         monkeypatch.setenv("INPUT_DIR", str(input_dir))
 
-        blocks_path = parsed_dir / "hook.blocks.jsonl"
+        blocks_path = parsed_dir / "tag.blocks.jsonl"
         _write_lightrag_blocks(blocks_path, paragraphs)
 
         rag = _new_rag(tmp_path / "work")
         await rag.initialize_storages()
 
-        seen_formats: list[str] = []
-        original_hook = rag._run_multimodal_postprocess_hook
-
-        async def _spy_hook(*, doc_id, file_path, chunking_result, extraction_meta):
-            seen_formats.append(extraction_meta.get("parse_format"))
-            return await original_hook(
-                doc_id=doc_id,
-                file_path=file_path,
-                chunking_result=chunking_result,
-                extraction_meta=extraction_meta,
-            )
-
-        rag._run_multimodal_postprocess_hook = _spy_hook  # type: ignore[assignment]
-
         try:
             await rag.apipeline_enqueue_documents(
                 "",
-                file_paths="hook.lightrag",
+                file_paths="tag.lightrag",
                 docs_format=FULL_DOCS_FORMAT_LIGHTRAG,
-                lightrag_document_paths="__parsed__/hook.blocks.jsonl",
-                track_id="track-hook",
+                lightrag_document_paths="__parsed__/tag.blocks.jsonl",
+                track_id="track-tag",
             )
             await rag.apipeline_process_enqueue_documents()
+
+            doc_id = compute_mdhash_id("tag.lightrag", prefix="doc-")
+            status_doc = await rag.doc_status.get_by_id(doc_id)
+            assert status_doc is not None
+            metadata = (
+                status_doc.get("metadata")
+                if isinstance(status_doc, dict)
+                else getattr(status_doc, "metadata", None)
+            )
+            assert isinstance(
+                metadata, dict
+            ), f"doc_status.metadata should be a dict, got {type(metadata)!r}"
+            assert metadata.get("parse_format") == FULL_DOCS_FORMAT_LIGHTRAG, (
+                f"doc_status.metadata.parse_format="
+                f"{metadata.get('parse_format')!r}; "
+                f"expected {FULL_DOCS_FORMAT_LIGHTRAG!r} so the multimodal "
+                f"sidecar merge path opens"
+            )
         finally:
             await rag.finalize_storages()
-
-        assert seen_formats, "_run_multimodal_postprocess_hook never invoked"
-        assert seen_formats[0] == FULL_DOCS_FORMAT_LIGHTRAG, (
-            f"hook saw parse_format={seen_formats[0]!r}; "
-            f"expected {FULL_DOCS_FORMAT_LIGHTRAG!r} so the hook gate opens"
-        )
 
     asyncio.run(_run())
 
