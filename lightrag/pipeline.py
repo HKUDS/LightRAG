@@ -1383,6 +1383,17 @@ class _PipelineMixin:
                 # subsequent state transition for stage-duration analysis.
                 if not isinstance(status_doc_w.metadata, dict):
                     status_doc_w.metadata = {}
+                # Drop stale per-attempt fields from any prior failed/retried
+                # attempt before stamping the new parsing_start_time.
+                # ``analyzing_start_time`` and ``parse_stage_skipped`` are
+                # downstream of this point and would otherwise be carried
+                # forward via carry-over, skewing stage-duration metrics and
+                # the raw-cache-hit signal for the new attempt. The cache-hit
+                # mirror block below only re-writes ``parse_stage_skipped``
+                # when the parser actually returns a hit, so cache-miss
+                # retries land with the field absent (= not skipped).
+                status_doc_w.metadata.pop("analyzing_start_time", None)
+                status_doc_w.metadata.pop("parse_stage_skipped", None)
                 status_doc_w.metadata["parsing_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
                     doc_id=doc_id_w,
