@@ -19,8 +19,10 @@ code change automatically invalidates pre-existing caches.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -235,6 +237,7 @@ class DoclingRawClient:
         url = f"{self.endpoint}{POLL_PATH.format(task_id=task_id)}"
         params = {"wait": self.poll_wait_seconds}
         for _ in range(self.max_poll_attempts):
+            iteration_started = time.monotonic()
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             payload = resp.json() if resp.text else {}
@@ -246,14 +249,24 @@ class DoclingRawClient:
                 return
             if status in FAILURE_STATES:
                 raise RuntimeError(_format_failure(task_id, status, payload))
-            if status in IN_PROGRESS_STATES:
-                continue
-            # Unknown status: keep polling, but surface it so operators notice.
-            logger.warning(
-                "[docling] unknown task status %r for task %s; continuing to poll",
-                status,
-                task_id,
-            )
+            if status not in IN_PROGRESS_STATES:
+                # Unknown status: keep polling, but surface it so operators notice.
+                logger.warning(
+                    "[docling] unknown task status %r for task %s; continuing to poll",
+                    status,
+                    task_id,
+                )
+
+            # The intended cadence is one poll per ``poll_wait_seconds`` — the
+            # design relies on docling-serve's ``?wait=N`` long-polling for
+            # that. Some deployments return immediately instead, which would
+            # burn through ``max_poll_attempts`` in milliseconds and fail
+            # with a spurious timeout. Cap each iteration at the configured
+            # interval ourselves so the total budget holds either way.
+            elapsed = time.monotonic() - iteration_started
+            remaining = self.poll_wait_seconds - elapsed
+            if remaining > 0:
+                await asyncio.sleep(remaining)
 
         raise TimeoutError(f"Docling task {task_id} polling timeout")
 
