@@ -127,4 +127,3 @@ python -m lightrag.parser_cli ./inputs/workspace/sample.pdf \
   3. `archive_docx_source_after_full_docs_sync` → no-op，保留源文件。
 
 可与 `tests/native_parser/docx/golden/native_docx/` 下的 golden fixture 对比验证（CLI 不冻结时间戳，比对时排除 `created_at` 等时间字段即可）。
-

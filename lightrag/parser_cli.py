@@ -79,9 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _print_summary(
-    blocks_path: Path, raw_dir: Path | None, preview: int
-) -> None:
+def _print_summary(blocks_path: Path, raw_dir: Path | None, preview: int) -> None:
     with blocks_path.open("r", encoding="utf-8") as fh:
         meta_line = fh.readline().strip()
         if not meta_line:
@@ -109,8 +107,7 @@ def _print_summary(
             content = (row.get("content") or "").replace("\n", " ")
             snippet = content if len(content) <= 80 else content[:77] + "..."
             print(
-                f"  [{row.get('blockid', '')[:8]}] "
-                f"heading={heading!r} :: {snippet}"
+                f"  [{row.get('blockid', '')[:8]}] " f"heading={heading!r} :: {snippet}"
             )
 
 

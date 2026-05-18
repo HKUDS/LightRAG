@@ -166,9 +166,9 @@ def test_cli_doc_id_override(tmp_path: Path) -> None:
     meta = _read_meta(parsed_dir / "demo.blocks.jsonl")
     assert meta["doc_id"] == override
 
-    tables = json.loads(
-        (parsed_dir / "demo.tables.json").read_text(encoding="utf-8")
-    )["tables"]
+    tables = json.loads((parsed_dir / "demo.tables.json").read_text(encoding="utf-8"))[
+        "tables"
+    ]
     assert tables
     assert all(tid.startswith("tb-" + "a" * 32 + "-") for tid in tables)
 
@@ -180,13 +180,9 @@ def test_cli_custom_sidecar_parent_dir(tmp_path: Path) -> None:
     custom_parent.mkdir()
     _seed_raw_dir(custom_parent / "demo.pdf.docling_raw")
 
-    rc = main(
-        [str(source), "--engine", "docling", "-o", str(custom_parent)]
-    )
+    rc = main([str(source), "--engine", "docling", "-o", str(custom_parent)])
     assert rc == 0
-    assert (
-        custom_parent / "demo.pdf.parsed" / "demo.blocks.jsonl"
-    ).is_file()
+    assert (custom_parent / "demo.pdf.parsed" / "demo.blocks.jsonl").is_file()
     # Nothing should land in the source's parent directory.
     assert not (tmp_path / "demo.pdf.parsed").exists()
     # Source file is preserved in place.
