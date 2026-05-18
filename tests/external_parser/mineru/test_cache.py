@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from lightrag.mineru_raw import (
+from lightrag.external_parser.mineru import (
     Manifest,
     ManifestFile,
     clear_dir_contents,
@@ -25,7 +25,7 @@ from lightrag.mineru_raw import (
     is_bundle_valid,
     raw_dir_for_parsed_dir,
 )
-from lightrag.mineru_raw.manifest import write_manifest
+from lightrag.external_parser.mineru.manifest import write_manifest
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +359,7 @@ def test_manifest_round_trip_via_disk(tmp_path: Path) -> None:
         endpoint_signature="ep",
     )
     write_manifest(raw, m)
-    from lightrag.mineru_raw.manifest import load_manifest
+    from lightrag.external_parser.mineru.manifest import load_manifest
 
     loaded = load_manifest(raw)
     assert loaded is not None

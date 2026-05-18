@@ -2486,9 +2486,9 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
     cache), the MinerU download choreography happens inside
     :meth:`MinerURawClient.download_into`. We stub that method directly.
     """
-    from lightrag.mineru_raw import compute_size_and_hash
-    from lightrag.mineru_raw.client import MinerURawClient
-    from lightrag.mineru_raw.manifest import (
+    from lightrag.external_parser.mineru import compute_size_and_hash
+    from lightrag.external_parser.mineru.client import MinerURawClient
+    from lightrag.external_parser.mineru.manifest import (
         Manifest,
         ManifestFile,
         write_manifest,
@@ -2842,15 +2842,15 @@ def test_parse_mm_display_name_on_real_builder_output(tmp_path):
 def test_parse_mineru_empty_service_result_raises_without_fallback(
     tmp_path, monkeypatch
 ):
-    """When MinerU produces no content_list.json the adapter raises and the
+    """When MinerU produces no content_list.json the IR builder raises and the
     pipeline propagates the error — no silent fallback to raw text.
 
     With the unified pipeline, an "empty result" surfaces as a missing
-    critical file inside ``*.mineru_raw/``; the adapter's
+    critical file inside ``*.mineru_raw/``; the IR builder's
     ``normalize_from_workdir`` raises :class:`FileNotFoundError` and the
     parse fails fast.
     """
-    from lightrag.mineru_raw.client import MinerURawClient
+    from lightrag.external_parser.mineru.client import MinerURawClient
 
     async def _run():
         rag = _new_rag(tmp_path)

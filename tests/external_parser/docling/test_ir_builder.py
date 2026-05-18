@@ -1,4 +1,4 @@
-"""Tests for :class:`DoclingAdapter`.
+"""Tests for :class:`DoclingIRBuilder`.
 
 Each test constructs a minimal inline DoclingDocument dict — the smallest
 JSON that exercises one mapping rule from
@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from lightrag.external_parser.docling.adapter import DoclingAdapter
+from lightrag.external_parser.docling.ir_builder import DoclingIRBuilder
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ def test_docling_adapter_simple_heading_hierarchy(tmp_path: Path) -> None:
             texts=texts,
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
 
     assert ir.doc_title == "Whole Doc Title"
     headings = [(b.heading, b.level, b.parent_headings) for b in ir.blocks]
@@ -176,7 +176,7 @@ def test_docling_adapter_adjacency_merge_folds_empty_heading(tmp_path: Path) -> 
             texts=texts,
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     # Title had no body → Background folded into it as a `## ` line
     assert len(ir.blocks) == 1
     block = ir.blocks[0]
@@ -212,7 +212,7 @@ def test_docling_adapter_preserves_docling_heading_level(tmp_path: Path) -> None
             texts=texts,
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     levels = [b.level for b in ir.blocks]
     assert levels == [2, 2, 2]  # all bumped by +1, no normalization
 
@@ -268,7 +268,7 @@ def test_docling_adapter_merges_payloads_under_heading(tmp_path: Path) -> None:
     (raw_dir / "artifacts").mkdir()
     (raw_dir / "artifacts" / "foo.png").write_bytes(b"\x89PNG fake")
 
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert len(ir.blocks) == 1
     block = ir.blocks[0]
     template = block.content_template
@@ -342,7 +342,7 @@ def test_docling_adapter_visits_text_children_for_modalities(
     (raw_dir / "artifacts").mkdir()
     (raw_dir / "artifacts" / "foo.png").write_bytes(b"\x89PNG fake")
 
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert len(ir.blocks) == 1
     block = ir.blocks[0]
     assert "Child paragraph." in block.content_template
@@ -382,7 +382,7 @@ def test_docling_adapter_inline_group_joins_children(tmp_path: Path) -> None:
             groups=groups,
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert "hello world" in ir.blocks[0].content_template
 
 
@@ -420,7 +420,7 @@ def test_docling_adapter_inline_group_emits_inline_formula(
             groups=groups,
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
     assert "alpha {{EQI:eq1}} omega" in block.content_template
     assert [eq.is_block for eq in block.equations] == [False]
@@ -474,7 +474,7 @@ def test_docling_adapter_table_grid_and_header(tmp_path: Path) -> None:
             tables=tables,
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert len(ir.blocks) == 1
     table = ir.blocks[0].tables[0]
     assert table.rows == [["h1", "h2"], ["a", "b"]]
@@ -526,7 +526,7 @@ def test_docling_adapter_table_extras_is_empty(tmp_path: Path) -> None:
         tmp_path,
         _doc(body_children=["#/tables/0"], texts=texts, tables=tables),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert ir.blocks[0].tables[0].extras == {}
 
 
@@ -558,7 +558,7 @@ def test_docling_adapter_picture_referenced_asset(tmp_path: Path) -> None:
     asset = art / "image_000000_abc.png"
     asset.write_bytes(b"\x89PNG fake")
 
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     drawing = ir.blocks[0].drawings[0]
     assert drawing.asset_ref == "artifacts/image_000000_abc.png"
     assert drawing.fmt == "png"
@@ -598,7 +598,7 @@ def test_docling_adapter_positions_and_bbox_attributes(tmp_path: Path) -> None:
         tmp_path,
         _doc(body_children=["#/texts/0", "#/texts/1"], texts=texts),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert ir.bbox_attributes == {"origin": "LEFTBOTTOM"}
     # no max / page_sizes leaks
     assert set(ir.bbox_attributes.keys()) == {"origin"}
@@ -630,7 +630,7 @@ def test_docling_adapter_bbox_attributes_env_override(
         tmp_path,
         _doc(body_children=["#/texts/0"], texts=texts),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert ir.bbox_attributes == {"origin": "LEFTTOP"}
 
 
@@ -667,7 +667,7 @@ def test_docling_adapter_caption_refs_only(tmp_path: Path) -> None:
             tables=tables,
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
     assert block.tables[0].caption == "Tab1 caption"
     # consumed caption ref does not leak into body text
@@ -700,7 +700,7 @@ def test_docling_adapter_footnotes_refs_only(tmp_path: Path) -> None:
             tables=tables,
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
     assert block.tables[0].footnotes == ["Linked footnote"]
     assert "Linked footnote" not in block.content_template
@@ -745,7 +745,7 @@ def test_docling_adapter_table_refs_skip_non_body_caption_footnote(
         tmp_path,
         _doc(body_children=["#/tables/0"], texts=texts, tables=tables),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
     assert block.tables[0].caption == ""
     assert block.tables[0].footnotes == []
@@ -788,7 +788,7 @@ def test_docling_adapter_picture_children_fallback_skips_non_body(
     )
     (raw_dir / "artifacts").mkdir()
     (raw_dir / "artifacts" / "p0.png").write_bytes(b"\x89PNG fake")
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
     assert block.drawings[0].caption == ""
     assert "Furniture caption via children" not in block.content_template
@@ -817,7 +817,7 @@ def test_docling_adapter_furniture_skipped_by_content_layer(tmp_path: Path) -> N
             texts=texts,
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     full = "\n".join(b.content_template for b in ir.blocks)
     assert "footer 1/5" not in full
     # the furniture's prov page_no=1 must not leak into any block position
@@ -864,7 +864,7 @@ def test_docling_adapter_picture_children_dropped(tmp_path: Path) -> None:
     art = raw_dir / "artifacts"
     art.mkdir()
     (art / "img.png").write_bytes(b"png")
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
     drawing = block.drawings[0]
     # caption (label=caption) is taken via children fallback
@@ -897,7 +897,7 @@ def test_docling_adapter_picture_missing_image_skipped(tmp_path: Path) -> None:
         tmp_path,
         _doc(body_children=["#/pictures/0"], pictures=pictures),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert ir.blocks == []
     assert ir.assets == []
 
@@ -925,7 +925,7 @@ def test_docling_adapter_picture_rejects_traversal_uri(tmp_path: Path) -> None:
         tmp_path,
         _doc(body_children=["#/pictures/0"], pictures=pictures),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert ir.blocks == []
     assert ir.assets == []
 
@@ -951,7 +951,7 @@ def test_docling_adapter_picture_rejects_absolute_uri(tmp_path: Path) -> None:
         tmp_path,
         _doc(body_children=["#/pictures/0"], pictures=pictures),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert ir.blocks == []
     assert ir.assets == []
 
@@ -978,7 +978,7 @@ def test_docling_adapter_formula_text_equals_orig_still_emits_equation(
         tmp_path,
         _doc(body_children=["#/texts/0"], texts=texts),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
     assert len(block.equations) == 1
     assert block.equations[0].is_block is True
@@ -1001,7 +1001,7 @@ def test_docling_adapter_formula_with_latex_wraps_dollars(tmp_path: Path) -> Non
         tmp_path,
         _doc(body_children=["#/texts/0"], texts=texts),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
     assert len(block.equations) == 1
     eq = block.equations[0]
@@ -1025,6 +1025,6 @@ def test_docling_adapter_kv_form_items_audit_in_split_option(tmp_path: Path) -> 
             form_items=[{"id": "f1"}],
         ),
     )
-    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     extras = ir.split_option["docling_extras"]
     assert extras == {"key_value_items": 2, "form_items": 1}

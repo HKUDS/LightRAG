@@ -1,4 +1,4 @@
-"""MinerU adapter tests: content_list.json → IR translation."""
+"""MinerU IR builder tests: content_list.json → IR translation."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lightrag.parser_adapters import MinerUAdapter
+from lightrag.external_parser.mineru import MinerUIRBuilder
 
 
 def _write_bundle(tmp_path: Path, content_list: list[dict]) -> Path:
@@ -29,7 +29,7 @@ def test_adapter_simple_text_and_heading(tmp_path: Path) -> None:
             {"type": "text", "text": "Sub body."},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="x.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="x.pdf")
 
     assert ir.doc_title == "1 Introduction"
     assert ir.document_format == "pdf"
@@ -59,7 +59,7 @@ def test_adapter_preface_block_for_pre_heading_content(tmp_path: Path) -> None:
             {"type": "text", "text": "A body."},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="p.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="p.pdf")
 
     assert len(ir.blocks) == 2
     preface = ir.blocks[0]
@@ -94,7 +94,7 @@ def test_adapter_merges_mixed_payloads_under_heading(tmp_path: Path) -> None:
             {"type": "code", "code_body": "print('ok')"},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="m.pdf")
     assert len(ir.blocks) == 1
     block = ir.blocks[0]
     assert block.heading == "Methods"
@@ -139,7 +139,7 @@ def test_adapter_table_and_drawing_and_equation(tmp_path: Path) -> None:
     )
     # The drawing references images/img_001.jpg — adapter accepts missing
     # files and produces an AssetSpec with source=None.
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="d.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="d.pdf")
 
     table_block = next(b for b in ir.blocks if b.tables)
     table = table_block.tables[0]
@@ -194,7 +194,7 @@ def test_adapter_page_idx_aggregated_and_deduped_when_no_bbox(
             {"type": "text", "text": "line D", "page_idx": 2},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="p.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="p.pdf")
 
     assert len(ir.blocks) == 1
     block = ir.blocks[0]
@@ -231,7 +231,7 @@ def test_adapter_bbox_items_and_page_only_items_coexist(tmp_path: Path) -> None:
             {"type": "text", "text": "tail line", "page_idx": 2},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="m.pdf")
 
     assert len(ir.blocks) == 1
     positions = ir.blocks[0].positions
@@ -277,7 +277,7 @@ def test_adapter_page_sort_books_convention_with_mixed_anchors(
             {"type": "text", "text": "chapter line B", "page_idx": 9},  # → "10"
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="mix.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="mix.pdf")
 
     assert len(ir.blocks) == 1
     anchors = [p.anchor for p in ir.blocks[0].positions]
@@ -307,7 +307,7 @@ def test_adapter_empty_text_item_does_not_leak_page_to_block(
             {"type": "text", "text": "next body", "page_idx": 1},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="leak.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="leak.pdf")
 
     assert len(ir.blocks) == 2
     a_anchors = [p.anchor for p in ir.blocks[0].positions]
@@ -337,7 +337,7 @@ def test_adapter_adjacent_deeper_heading_merged_as_body(tmp_path: Path) -> None:
             {"type": "text", "text": "More body."},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="m.pdf")
 
     # First "1 Top" absorbs the immediately-following deeper headings;
     # body lands inside the same block. Then a new top-level heading
@@ -375,7 +375,7 @@ def test_adapter_adjacent_shallower_heading_starts_new_block(
             {"type": "text", "text": "body"},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="m.pdf")
 
     # The first block is heading-only; the writer downstream will keep it
     # (the merged-heading rule only forwards DEEPER headings).
@@ -402,7 +402,7 @@ def test_adapter_body_breaks_adjacent_heading_merge(tmp_path: Path) -> None:
             {"type": "text", "text": "Mid body."},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="m.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="m.pdf")
 
     assert len(ir.blocks) == 2
     assert ir.blocks[0].content_template == "# 1 Top\nIntro line under 1."
@@ -428,7 +428,7 @@ def test_adapter_block_equation_preserves_dollar_wrappers(tmp_path: Path) -> Non
             },
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="b.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="b.pdf")
     eq = ir.blocks[0].equations[0]
     assert eq.is_block is True
     # No stripping in the adapter; whitespace.strip() only.
@@ -448,7 +448,7 @@ def test_adapter_empty_equation_dropped(tmp_path: Path) -> None:
             {"type": "text", "text": "kept"},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="g.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="g.pdf")
     eq_count = sum(len(b.equations) for b in ir.blocks)
     assert eq_count == 0
     assert any(b.content_template == "kept" for b in ir.blocks)
@@ -457,7 +457,7 @@ def test_adapter_empty_equation_dropped(tmp_path: Path) -> None:
 @pytest.mark.offline
 def test_adapter_bbox_attributes_default_and_override(tmp_path: Path) -> None:
     raw = _write_bundle(tmp_path, [{"type": "text", "text": "x"}])
-    adapter = MinerUAdapter()
+    adapter = MinerUIRBuilder()
     ir = adapter.normalize_from_workdir(raw, document_name="x.pdf")
     assert ir.bbox_attributes == {"origin": "LEFTTOP", "max": 1000}
 
@@ -471,7 +471,7 @@ def test_adapter_bbox_attributes_env_override(
         '{"origin": "LEFTBOTTOM", "max": 612}',
     )
     raw = _write_bundle(tmp_path, [{"type": "text", "text": "x"}])
-    adapter = MinerUAdapter()
+    adapter = MinerUIRBuilder()
     ir = adapter.normalize_from_workdir(raw, document_name="x.pdf")
     assert ir.bbox_attributes == {"origin": "LEFTBOTTOM", "max": 612}
 
@@ -482,7 +482,7 @@ def test_adapter_engine_version_recorded_in_split_option(
 ) -> None:
     monkeypatch.setenv("MINERU_ENGINE_VERSION", "magic-pdf 1.5.4")
     raw = _write_bundle(tmp_path, [{"type": "text", "text": "x"}])
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="x.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="x.pdf")
     assert ir.split_option == {"engine_version": "magic-pdf 1.5.4"}
 
 
@@ -491,7 +491,7 @@ def test_adapter_missing_content_list_raises(tmp_path: Path) -> None:
     raw_dir = tmp_path / "bad.mineru_raw"
     raw_dir.mkdir()
     with pytest.raises(FileNotFoundError):
-        MinerUAdapter().normalize_from_workdir(raw_dir, document_name="x.pdf")
+        MinerUIRBuilder().normalize_from_workdir(raw_dir, document_name="x.pdf")
 
 
 @pytest.mark.offline
@@ -509,7 +509,7 @@ def test_adapter_html_table_fallback(tmp_path: Path) -> None:
             }
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="h.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
     table = ir.blocks[0].tables[0]
     assert table.rows is None
     assert table.html and "<td>a</td>" in table.html
@@ -523,7 +523,7 @@ def test_adapter_list_items_joined_with_newline(tmp_path: Path) -> None:
             {"type": "list", "list_items": ["one", "two", "three"]},
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="l.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="l.pdf")
     assert ir.blocks[0].content_template == "one\ntwo\nthree"
 
 
@@ -544,7 +544,7 @@ def test_adapter_drawing_asset_source_only_when_file_exists(
     (raw / "images").mkdir()
     (raw / "images" / "exists.png").write_bytes(b"\x89PNG")
 
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="a.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="a.pdf")
     by_ref = {a.ref: a for a in ir.assets}
     assert by_ref["images/exists.png"].source is not None
     assert by_ref["images/missing.png"].source is None
@@ -569,7 +569,7 @@ def test_adapter_refuses_path_traversal_img_path(tmp_path: Path) -> None:
             {"type": "image", "img_path": str(secret)},  # absolute path
         ],
     )
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="x.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="x.pdf")
     by_ref = {a.ref: a for a in ir.assets}
 
     # Relative ``..`` escape is rejected outright.
@@ -600,7 +600,7 @@ def test_adapter_absolute_url_img_path_resolves_to_images_basename(
     (raw / "images").mkdir()
     (raw / "images" / "figure_42.png").write_bytes(b"\x89PNGfake")
 
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="u.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="u.pdf")
     asset = ir.assets[0]
     assert asset.ref == "https://cdn.example.com/imgs/figure_42.png"
     assert asset.suggested_name == "figure_42.png"
@@ -633,7 +633,7 @@ def test_adapter_image_url_template_mode_maps_relative_to_images_basename(
     # template mode the downloader does not write there.
     assert not (raw / "page" / "img.png").exists()
 
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="t.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="t.pdf")
     asset = ir.assets[0]
     assert asset.source is not None
     assert asset.source.read_bytes() == b"\x89PNGtemplate"
@@ -655,7 +655,7 @@ def test_adapter_no_template_keeps_relative_path_lookup(
     (raw / "page").mkdir()
     (raw / "page" / "img.png").write_bytes(b"\x89PNGrel")
 
-    ir = MinerUAdapter().normalize_from_workdir(raw, document_name="r.pdf")
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="r.pdf")
     asset = ir.assets[0]
     assert asset.source is not None
     assert asset.source.read_bytes() == b"\x89PNGrel"

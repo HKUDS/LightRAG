@@ -1,9 +1,9 @@
-"""Docling adapter: ``DoclingDocument`` JSON → :class:`IRDoc`.
+"""Docling IR builder: ``DoclingDocument`` JSON → :class:`IRDoc`.
 
 Input contract: a ``*.docling_raw/`` directory containing a ``<stem>.json``
 produced by docling-serve with ``to_formats=[json,md]`` +
 ``image_export_mode=referenced``. Companion ``<stem>.md`` and
-``artifacts/`` are not read by the adapter (markdown stays for human
+``artifacts/`` are not read by the builder (markdown stays for human
 inspection; image bytes are referenced by relative URI).
 
 Conversion rules (informed by
@@ -70,7 +70,7 @@ PREFACE_HEADING = "Preface/Uncategorized"
 _REF_PATTERN = re.compile(r"^#/(?P<kind>[a-z_]+)(?:/(?P<index>\d+))?$")
 
 
-class DoclingAdapter:
+class DoclingIRBuilder:
     """Stateless except for env-driven config. Reusable across calls."""
 
     def __init__(self) -> None:
@@ -83,7 +83,7 @@ class DoclingAdapter:
         parsed = env_json("DOCLING_BBOX_ATTRIBUTES", default)
         if not isinstance(parsed, dict):
             logger.warning(
-                "[docling_adapter] DOCLING_BBOX_ATTRIBUTES must decode to an object; "
+                "[docling_ir_builder] DOCLING_BBOX_ATTRIBUTES must decode to an object; "
                 "falling back to %s",
                 default,
             )
@@ -138,7 +138,7 @@ class DoclingAdapter:
             return f"{prefix}{placeholder_counter}"
 
         # Heading stack + current block accumulator — identical structure
-        # to MinerUAdapter so downstream P-chunking and provenance behave
+        # to MinerUIRBuilder so downstream P-chunking and provenance behave
         # the same way regardless of engine.
         heading_stack: list[str] = []
         cb_lines: list[str] = []
@@ -233,7 +233,7 @@ class DoclingAdapter:
                         origin_override = None
                     elif coord_origin:
                         logger.warning(
-                            "[docling_adapter] unknown coord_origin %r; "
+                            "[docling_ir_builder] unknown coord_origin %r; "
                             "writing through as override",
                             coord_origin,
                         )
@@ -287,7 +287,7 @@ class DoclingAdapter:
             # Unknown kind — log and ignore; falling through silently would
             # hide schema drift in future docling releases.
             logger.warning(
-                "[docling_adapter] unknown ref kind %r (ref=%r); skipping", kind, ref
+                "[docling_ir_builder] unknown ref kind %r (ref=%r); skipping", kind, ref
             )
 
         def _visit_group(group: dict) -> None:
@@ -304,7 +304,7 @@ class DoclingAdapter:
                 "chapter",
             }:
                 logger.warning(
-                    "[docling_adapter] unrecognized group label %r; "
+                    "[docling_ir_builder] unrecognized group label %r; "
                     "expanding children as default reading order",
                     label,
                 )
@@ -409,7 +409,7 @@ class DoclingAdapter:
             # Unknown label: fall back to writing the text and warn once.
             if text:
                 logger.warning(
-                    "[docling_adapter] unknown text label %r; treating as body",
+                    "[docling_ir_builder] unknown text label %r; treating as body",
                     label,
                 )
                 if _append_text(text):
@@ -571,7 +571,7 @@ def _precompute_consumed_refs(doc: dict, raw_dir: Path) -> tuple[set[str], set[s
       to ``texts[*]`` with ``label="caption"`` or ``"footnote"``
     - All body ``pictures[*].children`` that are non-caption/footnote texts
       (the picture's inner OCR text). These also land in
-      ``picture_inner_refs`` so the adapter can attribute them to the
+      ``picture_inner_refs`` so the builder can attribute them to the
       drawing's extras.
 
     Sibling text nodes are NOT touched: only refs explicitly linked from a
@@ -586,7 +586,7 @@ def _precompute_consumed_refs(doc: dict, raw_dir: Path) -> tuple[set[str], set[s
             text_label_index[f"#/texts/{i}"] = str(obj.get("label") or "").lower()
 
     # Furniture/background tables/pictures must not consume refs that may
-    # appear under body.children — the adapter contract is that non-body
+    # appear under body.children — the builder contract is that non-body
     # items are filtered everywhere, including their outgoing refs.
     for table in doc.get("tables") or []:
         if not isinstance(table, dict):
@@ -675,7 +675,7 @@ def _docling_heading_level(label: str, item: dict) -> int:
 def _resolve_text_refs(refs: Any, ref_index: dict[str, dict]) -> list[str]:
     """Resolve a list of ``$ref`` entries to their text bodies.
 
-    Skips targets whose ``content_layer`` is not ``"body"``. The adapter
+    Skips targets whose ``content_layer`` is not ``"body"``. The builder
     contract (see module docstring) is that furniture/background items
     never leak into sidecar metadata — even when a body table or picture
     explicitly references them, because such refs are typically the
@@ -920,7 +920,7 @@ def _build_ir_drawing(
                 seen_asset_refs[asset_ref] = suggested
         else:
             logger.warning(
-                "[docling_adapter] skipping picture %s because data URI could "
+                "[docling_ir_builder] skipping picture %s because data URI could "
                 "not be decoded",
                 item.get("self_ref") or "<unknown>",
             )
@@ -944,7 +944,7 @@ def _build_ir_drawing(
             )
             if source_path is None:
                 logger.warning(
-                    "[docling_adapter] skipping picture %s because image URI "
+                    "[docling_ir_builder] skipping picture %s because image URI "
                     "%r could not be resolved inside %s",
                     item.get("self_ref") or "<unknown>",
                     uri,
@@ -1053,4 +1053,4 @@ def _sort_page_anchors(pages: set[str]) -> list[str]:
     return non_numeric + numeric
 
 
-__all__ = ["DoclingAdapter"]
+__all__ = ["DoclingIRBuilder"]

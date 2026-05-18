@@ -1,8 +1,8 @@
-"""MinerU adapter: ``content_list.json`` (+ images/) → :class:`IRDoc`.
+"""MinerU IR builder: ``content_list.json`` (+ images/) → :class:`IRDoc`.
 
 Input contract: a ``*.mineru_raw/`` directory containing at least
 ``content_list.json``. Optional sibling resources (``images/``,
-``middle.json``, ``full.md``, ``layout.pdf``) are kept as-is; this adapter
+``middle.json``, ``full.md``, ``layout.pdf``) are kept as-is; this builder
 only reads the content list and image asset bytes.
 
 Conversion rules (informed by spec §3-§六):
@@ -63,14 +63,14 @@ from lightrag.utils import logger
 PREFACE_HEADING = "Preface/Uncategorized"
 
 
-class MinerUAdapter:
+class MinerUIRBuilder:
     """Stateless except for env-driven config. Reusable across calls."""
 
     def __init__(self) -> None:
         self.engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
         # Mirror MinerURawClient.__init__: when this is set, the downloader
         # stores ALL referenced images (including relative ones) under
-        # ``images/<basename>``. The adapter has to look in the same place.
+        # ``images/<basename>``. The builder has to look in the same place.
         self.image_url_template = os.getenv("MINERU_IMAGE_URL_TEMPLATE", "").strip()
         self.bbox_attributes = self._load_bbox_attributes_env()
 
@@ -83,7 +83,7 @@ class MinerUAdapter:
             parsed = json.loads(raw)
         except json.JSONDecodeError as exc:
             logger.warning(
-                "[mineru_adapter] MINERU_BBOX_ATTRIBUTES is not valid JSON "
+                "[mineru_ir_builder] MINERU_BBOX_ATTRIBUTES is not valid JSON "
                 "(%s); falling back to default %s",
                 exc,
                 default,
@@ -91,7 +91,7 @@ class MinerUAdapter:
             return default
         if not isinstance(parsed, dict):
             logger.warning(
-                "[mineru_adapter] MINERU_BBOX_ATTRIBUTES must decode to a JSON "
+                "[mineru_ir_builder] MINERU_BBOX_ATTRIBUTES must decode to a JSON "
                 "object, got %s; falling back to default %s",
                 type(parsed).__name__,
                 default,
@@ -646,7 +646,7 @@ def _safe_local_asset_path(
 
     ``img_path`` comes from MinerU's ``content_list.json`` and is therefore
     untrusted. This resolver mirrors :meth:`MinerURawClient._fetch_one_image`
-    storage rules so the adapter always looks where the downloader wrote
+    storage rules so the builder always looks where the downloader wrote
     the file:
 
     - absolute http(s) URLs and absolute filesystem paths
@@ -707,4 +707,4 @@ def _suggested_asset_name(img_path: str, fmt: str, seen_count: int) -> str:
     return f"image-{seen_count + 1}{('.' + fmt) if fmt else ''}"
 
 
-__all__ = ["MinerUAdapter"]
+__all__ = ["MinerUIRBuilder"]

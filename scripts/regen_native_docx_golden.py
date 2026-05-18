@@ -3,9 +3,9 @@
 sidecar pipeline.
 
 The fixtures live at
-``tests/parser_adapters/golden/native_docx/<scenario>/``
+``tests/native_parser/docx/golden/native_docx/<scenario>/``
 and capture the exact on-disk artifacts ``LightRAG.parse_native`` produces
-for each scenario in ``tests/parser_adapters/_native_docx_fixtures.py``.
+for each scenario in ``tests/native_parser/docx/_native_docx_fixtures.py``.
 
 Usage::
 
@@ -23,7 +23,7 @@ from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "tests"))
+sys.path.insert(0, str(PROJECT_ROOT / "tests" / "native_parser" / "docx"))
 
 
 async def _regen() -> None:
@@ -37,10 +37,10 @@ async def _regen() -> None:
     )
     import lightrag.pipeline as pipeline_module
 
-    from parser_adapters._native_docx_fixtures import SCENARIOS  # type: ignore[import]
+    from _native_docx_fixtures import SCENARIOS  # type: ignore[import]
 
     fixtures_root = (
-        PROJECT_ROOT / "tests" / "parser_adapters" / "golden" / "native_docx"
+        PROJECT_ROOT / "tests" / "native_parser" / "docx" / "golden" / "native_docx"
     )
     fixtures_root.mkdir(parents=True, exist_ok=True)
 

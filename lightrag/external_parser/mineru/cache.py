@@ -31,7 +31,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from lightrag.mineru_raw.manifest import load_manifest
+from lightrag.external_parser.mineru.manifest import load_manifest
 
 MINERU_RAW_DIR_SUFFIX = ".mineru_raw"
 DEFAULT_MINERU_API_MODE = "local"

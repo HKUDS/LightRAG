@@ -7,8 +7,8 @@ package path).
 
 The pipeline-side orchestration (extract → IR → sidecar) now lives in
 :meth:`lightrag.pipeline._PipelineMixin.parse_native` so the native and
-MinerU engines share one shape; see :mod:`lightrag.parser_adapters.native_docx`
-for the engine adapter.
+MinerU engines share one shape; see :mod:`lightrag.native_parser.docx.ir_builder`
+for the engine IR builder.
 """
 
 __all__: list[str] = []
