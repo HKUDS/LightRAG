@@ -460,7 +460,16 @@ def create_app(args):
             )
         else:
             # For other endpoints, return the default FastAPI validation error
-            return JSONResponse(status_code=422, content={"detail": exc.errors()})
+            # Pydantic model_validator errors may contain unserializable objects
+            # in ctx['error'], so convert them to strings before JSON encoding
+            errors = []
+            for error in exc.errors():
+                error_dict = dict(error)
+                if "ctx" in error_dict and "error" in error_dict["ctx"]:
+                    error_dict["ctx"] = dict(error_dict["ctx"])
+                    error_dict["ctx"]["error"] = str(error_dict["ctx"]["error"])
+                errors.append(error_dict)
+            return JSONResponse(status_code=422, content={"detail": errors})
 
     def get_cors_origins():
         """Get allowed origins from global_args

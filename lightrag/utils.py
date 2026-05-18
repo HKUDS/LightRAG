@@ -3309,6 +3309,7 @@ def convert_to_user_format(
             "content": chunk.get("content", ""),
             "file_path": chunk.get("file_path", "unknown_source"),
             "chunk_id": chunk.get("chunk_id", ""),
+            "doc_id": chunk.get("full_doc_id", ""),
         }
         formatted_chunks.append(chunk_data)
 
@@ -3361,10 +3362,13 @@ def generate_reference_list_from_chunks(
 
     # 1. Extract all valid file_paths and count their occurrences
     file_path_counts = {}
+    file_path_to_doc_id = {}
     for chunk in chunks:
         file_path = chunk.get("file_path", "")
         if file_path and file_path != "unknown_source":
             file_path_counts[file_path] = file_path_counts.get(file_path, 0) + 1
+            if not file_path_to_doc_id.get(file_path):
+                file_path_to_doc_id[file_path] = chunk.get("full_doc_id", "")
 
     # 2. Sort file paths by frequency (descending), then by first appearance order
     # Create a list of (file_path, count, first_index) tuples
@@ -3399,6 +3403,12 @@ def generate_reference_list_from_chunks(
     # 5. Build reference_list
     reference_list = []
     for i, file_path in enumerate(unique_file_paths):
-        reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
+        reference_list.append(
+            {
+                "reference_id": str(i + 1),
+                "file_path": file_path,
+                "doc_id": file_path_to_doc_id.get(file_path, ""),
+            }
+        )
 
     return reference_list, updated_chunks

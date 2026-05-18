@@ -146,6 +146,10 @@ class ReferenceItem(BaseModel):
 
     reference_id: str = Field(description="Unique reference identifier")
     file_path: str = Field(description="Path to the source file")
+    doc_id: Optional[str] = Field(
+        default=None,
+        description="Document ID associated with this reference",
+    )
     content: Optional[List[str]] = Field(
         default=None,
         description="List of chunk contents from this file (only present when include_chunk_content=True)",
