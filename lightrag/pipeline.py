@@ -2517,6 +2517,11 @@ class _PipelineMixin:
             raw_dir.mkdir(parents=True, exist_ok=True)
             clear_dir_contents(raw_dir)
             client = MinerURawClient()
+            logger.info(
+                "[MinerU] Parsing doc_id=%s " "source=%s (this may take a few minutes)",
+                doc_id,
+                source_file_path.name,
+            )
             await client.download_into(raw_dir, source_file_path)
 
         ir_builder = MinerUIRBuilder()
@@ -2625,6 +2630,12 @@ class _PipelineMixin:
             # wipe the existing contents (manifest + stale bundle files).
             clear_dir_contents(raw_dir)
             client = DoclingRawClient()
+            logger.info(
+                "[Docling] Parsing doc_id=%s "
+                "source=%s (this may take a few minutes)",
+                doc_id,
+                source_file_path.name,
+            )
             # Pass the canonical (hint-stripped) name so docling-serve names
             # the bundle's main JSON ``<canonical_stem>.json`` instead of
             # ``<hinted_stem>.json``. Otherwise the IR builder — which only sees

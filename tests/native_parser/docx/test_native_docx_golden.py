@@ -26,7 +26,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from _native_docx_fixtures import SCENARIOS, Scenario  # noqa: E402
-from lightrag.native_parser.docx._debug_rag import (  # noqa: E402
+from lightrag.parser_debug import (  # noqa: E402
     FrozenDateTime,
     build_debug_rag,
 )
