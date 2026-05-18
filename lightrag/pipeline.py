@@ -2625,7 +2625,14 @@ class _PipelineMixin:
             # wipe the existing contents (manifest + stale bundle files).
             clear_dir_contents(raw_dir)
             client = DoclingRawClient()
-            await client.download_into(raw_dir, source_file_path)
+            # Pass the canonical (hint-stripped) name so docling-serve names
+            # the bundle's main JSON ``<canonical_stem>.json`` instead of
+            # ``<hinted_stem>.json``. Otherwise the adapter — which only sees
+            # the canonical ``document_name`` — cannot locate the bundle JSON
+            # via the preferred-path lookup.
+            await client.download_into(
+                raw_dir, source_file_path, upload_filename=document_name
+            )
 
         adapter = DoclingAdapter()
         ir = adapter.normalize_from_workdir(raw_dir, document_name=document_name)

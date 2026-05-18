@@ -354,3 +354,53 @@ async def test_docling_client_rejects_missing_endpoint(
     monkeypatch.setenv("DOCLING_ENDPOINT", "")
     with pytest.raises(ValueError, match="DOCLING_ENDPOINT"):
         DoclingRawClient()
+
+
+async def test_docling_client_strips_parser_hint_from_upload_filename(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Regression: a hinted source (``report.[docling].pdf``) used to cause
+    # docling-serve to name its bundle JSON ``report.[docling].json``, which
+    # the adapter (looking for ``report.json``) could not locate. The
+    # pipeline now passes the canonical name as ``upload_filename`` so the
+    # bundle is canonical-stem from the start.
+    hinted = tmp_path / "report.[docling].pdf"
+    hinted.write_bytes(b"%PDF-1.4 fake")
+    # The fake zip mimics docling-serve responding with the *canonical* stem,
+    # which is what would happen once we send the canonical filename.
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("report"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "report.docling_raw"
+    manifest = await DoclingRawClient().download_into(
+        raw_dir, hinted, upload_filename="report.pdf"
+    )
+
+    name, _blob, _ctype = recorder.post_calls[0]["files"]["files"]
+    assert name == "report.pdf"
+    assert manifest.source_filename_at_parse == "report.pdf"
+    assert manifest.critical_file.path == "report.json"
+    assert (raw_dir / "report.json").is_file()
+
+
+async def test_docling_client_default_upload_filename_falls_back_to_source_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_pdf: Path
+) -> None:
+    # Back-compat guard: callers that don't pass ``upload_filename`` (any
+    # path other than the production pipeline) keep the legacy behavior of
+    # using the on-disk source filename.
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
+
+    name, _blob, _ctype = recorder.post_calls[0]["files"]["files"]
+    assert name == "demo.pdf"

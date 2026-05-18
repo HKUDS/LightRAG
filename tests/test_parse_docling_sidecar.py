@@ -169,7 +169,7 @@ def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
 
     counters = {"calls": 0}
 
-    async def _fake_download(self, raw_dir: Path, source_file_path: Path):
+    async def _fake_download(self, raw_dir: Path, source_file_path: Path, **_kwargs):
         counters["calls"] += 1
         raw_dir.mkdir(parents=True, exist_ok=True)
         main_json = raw_dir / "demo.json"
@@ -550,7 +550,9 @@ def test_parse_docling_zero_blocks_raises(
             "pages": {},
         }
 
-        async def _fake_download(self, raw_dir: Path, source_file_path: Path):
+        async def _fake_download(
+            self, raw_dir: Path, source_file_path: Path, **_kwargs
+        ):
             raw_dir.mkdir(parents=True, exist_ok=True)
             main_json = raw_dir / "demo.json"
             main_json.write_text(json.dumps(empty_json), encoding="utf-8")

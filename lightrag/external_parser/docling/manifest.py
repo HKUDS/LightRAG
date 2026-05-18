@@ -15,6 +15,7 @@ from pathlib import Path
 
 from lightrag.external_parser._common import compute_size_and_hash
 from lightrag.external_parser._manifest import (
+    MANIFEST_FILENAME,
     Manifest,
     ManifestFile,
     write_manifest,
@@ -26,14 +27,18 @@ def select_main_json(raw_dir: Path, source_file_path: Path) -> Path:
     """Locate the primary docling JSON inside ``raw_dir``.
 
     Priority: ``<source_stem>.json`` if present, else the single ``*.json``
-    sitting at ``raw_dir`` root. Raises ``RuntimeError`` if zero or multiple
-    candidates exist.
+    sitting at ``raw_dir`` root (excluding ``_manifest.json``, which always
+    sits in the bundle once a download has completed and would otherwise
+    collide with the bundle JSON in the fallback). Raises ``RuntimeError``
+    if zero or multiple candidates exist.
     """
     preferred = raw_dir / f"{source_file_path.stem}.json"
     if preferred.is_file():
         return preferred
 
-    candidates = sorted(p for p in raw_dir.glob("*.json") if p.is_file())
+    candidates = sorted(
+        p for p in raw_dir.glob("*.json") if p.is_file() and p.name != MANIFEST_FILENAME
+    )
     if len(candidates) == 1:
         return candidates[0]
     if not candidates:
@@ -66,12 +71,20 @@ def build_and_write_docling_manifest(
     engine_version: str,
     options_signature: str,
     fixed_constants: dict[str, object],
+    recorded_filename: str | None = None,
 ) -> Manifest:
     """Construct the manifest for a freshly downloaded docling bundle and
     persist it atomically. Returns the in-memory manifest for callers that
     need the task_id / signatures for logging.
+
+    ``recorded_filename`` is the name passed to docling-serve at upload
+    time (canonical, hint-stripped form when called from the pipeline).
+    It governs both the preferred-path lookup for the bundle JSON and the
+    value persisted as ``source_filename_at_parse``. When ``None``, falls
+    back to ``source_file_path.name`` for backward compatibility.
     """
-    main_json = select_main_json(raw_dir, source_file_path)
+    lookup_path = Path(recorded_filename) if recorded_filename else source_file_path
+    main_json = select_main_json(raw_dir, lookup_path)
     crit_size, crit_hash = compute_size_and_hash(main_json)
     critical = ManifestFile(
         path=main_json.relative_to(raw_dir).as_posix(),
@@ -95,7 +108,7 @@ def build_and_write_docling_manifest(
         engine=MANIFEST_ENGINE,
         source_content_hash=source_hash,
         source_size_bytes=source_size,
-        source_filename_at_parse=source_file_path.name,
+        source_filename_at_parse=recorded_filename or source_file_path.name,
         critical_file=critical,
         files=others,
         total_size_bytes=total,

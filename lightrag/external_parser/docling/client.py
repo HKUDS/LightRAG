@@ -113,8 +113,19 @@ class DoclingRawClient:
         self,
         raw_dir: Path,
         source_file_path: Path,
+        *,
+        upload_filename: str | None = None,
     ):
         """Upload, poll, download, extract, and write the manifest.
+
+        ``upload_filename`` overrides the multipart filename sent to
+        docling-serve (defaults to ``source_file_path.name``). The pipeline
+        passes the canonical, hint-stripped document name here so the
+        bundle's ``<stem>.json`` ends up canonical too — otherwise a file
+        named ``report.[docling].pdf`` would produce ``report.[docling].json``
+        inside the bundle, and the adapter (which only knows the canonical
+        ``report.pdf``) would not be able to locate it via the preferred
+        ``<stem>.json`` lookup.
 
         Pre-condition: caller cleared ``raw_dir`` (e.g. via
         :func:`lightrag.external_parser.clear_dir_contents`). This method
@@ -127,16 +138,21 @@ class DoclingRawClient:
             )
         raw_dir.mkdir(parents=True, exist_ok=True)
 
+        effective_filename = upload_filename or source_file_path.name
+
         timeout = httpx.Timeout(120.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            task_id = await self._submit(client, source_file_path)
+            task_id = await self._submit(
+                client, source_file_path, filename=effective_filename
+            )
             await self._poll_until_done(client, task_id)
             payload = await self._download_zip_bytes(client, task_id)
 
         safe_extract_zip(payload, raw_dir)
         # Defensive: confirm the main JSON exists before anyone reads the
-        # bundle. ``select_main_json`` raises a clear error if not.
-        select_main_json(raw_dir, source_file_path)
+        # bundle. Look it up by the *uploaded* filename's stem — that's
+        # what docling-serve uses to name the JSON inside the zip.
+        select_main_json(raw_dir, Path(effective_filename))
 
         options_signature = compute_options_signature(
             tunable_env=snapshot_tunable_env(),
@@ -150,6 +166,7 @@ class DoclingRawClient:
             engine_version=self.engine_version,
             options_signature=options_signature,
             fixed_constants=FIXED_CONSTANTS,
+            recorded_filename=effective_filename,
         )
 
     # ------------------------------------------------------------------
@@ -184,12 +201,12 @@ class DoclingRawClient:
         self,
         client: "httpx.AsyncClient",
         source_file_path: Path,
+        *,
+        filename: str,
     ) -> str:
         url = f"{self.endpoint}{CONVERT_PATH}"
         file_bytes = await asyncio.to_thread(source_file_path.read_bytes)
-        files = {
-            "files": (source_file_path.name, file_bytes, "application/octet-stream")
-        }
+        files = {"files": (filename, file_bytes, "application/octet-stream")}
         resp = await client.post(url, data=self._build_multipart_data(), files=files)
         if resp.status_code >= 400:
             raise RuntimeError(
