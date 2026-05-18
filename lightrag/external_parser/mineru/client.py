@@ -29,7 +29,10 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from lightrag.external_parser.mineru.cache import (
+    DEFAULT_MINERU_LOCAL_BACKEND,
     compute_size_and_hash,
+    local_page_bounds,
+    mineru_options_signature,
 )
 from lightrag.external_parser.mineru.manifest import (
     Manifest,
@@ -189,8 +192,8 @@ class MinerURawClient:
         self.is_ocr = _env_bool("MINERU_IS_OCR", False)
         self.page_ranges = os.getenv("MINERU_PAGE_RANGES", "").strip()
         self.local_backend = (
-            os.getenv("MINERU_LOCAL_BACKEND", "hybrid-auto-engine").strip()
-            or "hybrid-auto-engine"
+            os.getenv("MINERU_LOCAL_BACKEND", DEFAULT_MINERU_LOCAL_BACKEND).strip()
+            or DEFAULT_MINERU_LOCAL_BACKEND
         )
         self.local_parse_method = (
             os.getenv("MINERU_LOCAL_PARSE_METHOD", "auto").strip() or "auto"
@@ -199,7 +202,7 @@ class MinerURawClient:
         self.local_start_page_id = _env_int("MINERU_LOCAL_START_PAGE_ID", 0)
         self.local_end_page_id = _env_int("MINERU_LOCAL_END_PAGE_ID", 99999)
         if self.api_mode == "local" and self.page_ranges:
-            self.local_start_page_id, self.local_end_page_id = _local_page_bounds(
+            self.local_start_page_id, self.local_end_page_id = local_page_bounds(
                 self.page_ranges
             )
 
@@ -581,10 +584,27 @@ class MinerURawClient:
             api_mode=self.api_mode,
             engine_version=self.engine_version,
             endpoint_signature=self.endpoint,
+            options_signature=self._options_signature(),
             downloaded_at=datetime.now(timezone.utc).isoformat(),
         )
         write_manifest(raw_dir, manifest)
         return manifest
+
+    def _options_signature(self) -> str:
+        return mineru_options_signature(
+            api_mode=self.api_mode,
+            model_version=self.model_version,
+            language=self.language,
+            enable_table=self.enable_table,
+            enable_formula=self.enable_formula,
+            is_ocr=self.is_ocr,
+            page_ranges=self.page_ranges,
+            local_backend=self.local_backend,
+            local_parse_method=self.local_parse_method,
+            local_image_analysis=self.local_image_analysis,
+            local_start_page_id=self.local_start_page_id,
+            local_end_page_id=self.local_end_page_id,
+        )
 
 
 def _find_content_list(payload: Any, content_field: str) -> list[dict] | None:
@@ -623,30 +643,6 @@ def _find_content_list(payload: Any, content_field: str) -> list[dict] | None:
 
 def _bool_form(value: bool) -> str:
     return "true" if value else "false"
-
-
-def _local_page_bounds(page_ranges: str) -> tuple[int, int]:
-    raw = page_ranges.strip()
-    if not raw:
-        return 0, 99999
-    if "," in raw:
-        raise ValueError(
-            "MINERU_PAGE_RANGES with MINERU_API_MODE=local supports only a "
-            "single page or simple range such as '1-10'"
-        )
-    if raw.isdigit():
-        page = max(int(raw), 1)
-        return page - 1, page - 1
-    if "-" in raw:
-        left, _, right = raw.partition("-")
-        if left.isdigit() and right.isdigit():
-            start = max(int(left), 1)
-            end = max(int(right), start)
-            return start - 1, end - 1
-    raise ValueError(
-        "MINERU_PAGE_RANGES with MINERU_API_MODE=local must be a single "
-        "positive page number or simple range such as '1-10'"
-    )
 
 
 def _select_official_extract_result(

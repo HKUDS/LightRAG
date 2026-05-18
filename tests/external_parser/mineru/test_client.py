@@ -406,6 +406,9 @@ async def test_client_local_mode_round_trip(
 
     assert dispatcher.headers is None
     assert dispatcher.form_data
+    assert dispatcher.form_data["backend"] == "hybrid-auto-engine"
+    assert dispatcher.form_data["parse_method"] == "auto"
+    assert dispatcher.form_data["image_analysis"] == "true"
     assert dispatcher.form_data["response_format_zip"] == "true"
     assert dispatcher.form_data["return_content_list"] == "true"
     assert dispatcher.form_data["return_images"] == "true"
@@ -415,6 +418,7 @@ async def test_client_local_mode_round_trip(
     assert manifest.task_id == "L-1"
     assert manifest.api_mode == "local"
     assert manifest.endpoint_signature == "http://127.0.0.1:8000"
+    assert manifest.options_signature.startswith("sha256:")
     assert (raw / "content_list.json").is_file()
     assert (raw / "images" / "img_001.png").read_bytes() == b"\x89PNGnested"
 

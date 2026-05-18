@@ -2487,6 +2487,7 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
     :meth:`MinerURawClient.download_into`. We stub that method directly.
     """
     from lightrag.external_parser.mineru import compute_size_and_hash
+    from lightrag.external_parser.mineru.cache import current_mineru_options_signature
     from lightrag.external_parser.mineru.client import MinerURawClient
     from lightrag.external_parser.mineru.manifest import (
         Manifest,
@@ -2547,6 +2548,8 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
                 ],
                 total_size_bytes=crit_size,
                 task_id="fake-task",
+                api_mode="local",
+                options_signature=current_mineru_options_signature(),
             )
             write_manifest(raw_dir, manifest)
             return manifest
