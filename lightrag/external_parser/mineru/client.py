@@ -189,7 +189,8 @@ class MinerURawClient:
         self.is_ocr = _env_bool("MINERU_IS_OCR", False)
         self.page_ranges = os.getenv("MINERU_PAGE_RANGES", "").strip()
         self.local_backend = (
-            os.getenv("MINERU_LOCAL_BACKEND", "pipeline").strip() or "pipeline"
+            os.getenv("MINERU_LOCAL_BACKEND", "hybrid-auto-engine").strip()
+            or "hybrid-auto-engine"
         )
         self.local_parse_method = (
             os.getenv("MINERU_LOCAL_PARSE_METHOD", "auto").strip() or "auto"
