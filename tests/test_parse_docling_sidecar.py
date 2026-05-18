@@ -80,9 +80,6 @@ _FAKE_DOCLING_JSON = {
         "self_ref": "#/body",
         "children": [
             {"$ref": "#/texts/0"},
-            {"$ref": "#/texts/1"},
-            {"$ref": "#/tables/0"},
-            {"$ref": "#/pictures/0"},
         ],
         "content_layer": "body",
         "label": "unspecified",
@@ -96,6 +93,12 @@ _FAKE_DOCLING_JSON = {
             "orig": "Intro",
             "level": 1,
             "content_layer": "body",
+            "children": [
+                {"$ref": "#/texts/1"},
+                {"$ref": "#/tables/0"},
+                {"$ref": "#/pictures/0"},
+                {"$ref": "#/texts/2"},
+            ],
             "prov": [
                 {
                     "page_no": 1,
@@ -129,6 +132,14 @@ _FAKE_DOCLING_JSON = {
                     "charspan": [0, 15],
                 }
             ],
+        },
+        {
+            "self_ref": "#/texts/2",
+            "label": "formula",
+            "text": "E = mc^2",
+            "orig": "E = mc^2",
+            "content_layer": "body",
+            "prov": [],
         },
     ],
     "tables": [
@@ -292,6 +303,7 @@ def test_parse_docling_emits_compliant_sidecar(
             assert "demo.blocks.jsonl" in files
             assert "demo.tables.json" in files
             assert "demo.drawings.json" in files
+            assert "demo.equations.json" in files
             assert (parsed_dir / "demo.blocks.assets").is_dir()
             assert (parsed_dir / "demo.blocks.assets" / "img_000000.png").is_file()
 
@@ -305,6 +317,7 @@ def test_parse_docling_emits_compliant_sidecar(
             assert "page_sizes" not in meta["bbox_attributes"]
             assert meta["table_file"] is True
             assert meta["drawing_file"] is True
+            assert meta["equation_file"] is True
             # No label="title" in the fixture (matches the typical PDF case
             # where docling produces only section_headers) → doc_title falls
             # back to the document stem.
@@ -313,6 +326,7 @@ def test_parse_docling_emits_compliant_sidecar(
             contents = " ".join(row.get("content", "") for row in rows)
             assert '<table id="tb-' in contents
             assert "<drawing" in contents
+            assert "<equation" in contents
 
             # Raw bundle preserved next to sidecar
             raw_dir = parsed_dir.parent / "demo.pdf.docling_raw"

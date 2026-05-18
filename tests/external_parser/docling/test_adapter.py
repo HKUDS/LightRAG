@@ -284,6 +284,77 @@ def test_docling_adapter_merges_payloads_under_heading(tmp_path: Path) -> None:
     assert any(a.ref == "artifacts/foo.png" for a in ir.assets)
 
 
+def test_docling_adapter_visits_text_children_for_modalities(
+    tmp_path: Path,
+) -> None:
+    texts = [
+        _text_item(
+            label="section_header",
+            text="Section",
+            level=1,
+            self_ref="#/texts/0",
+        ),
+        _text_item(label="text", text="Child paragraph.", self_ref="#/texts/1"),
+        _text_item(
+            label="formula",
+            text="E = mc^2",
+            orig="E = mc^2",
+            self_ref="#/texts/2",
+        ),
+    ]
+    texts[0]["children"] = [
+        {"$ref": "#/texts/1"},
+        {"$ref": "#/tables/0"},
+        {"$ref": "#/pictures/0"},
+        {"$ref": "#/texts/2"},
+    ]
+    tables = [
+        {
+            "self_ref": "#/tables/0",
+            "label": "table",
+            "content_layer": "body",
+            "data": {
+                "num_rows": 1,
+                "num_cols": 2,
+                "grid": [[{"text": "A"}, {"text": "B"}]],
+            },
+            "prov": [],
+        }
+    ]
+    pictures = [
+        {
+            "self_ref": "#/pictures/0",
+            "label": "picture",
+            "content_layer": "body",
+            "image": {"uri": "artifacts/foo.png", "mimetype": "image/png"},
+            "prov": [],
+        }
+    ]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(
+            body_children=["#/texts/0"],
+            texts=texts,
+            tables=tables,
+            pictures=pictures,
+        ),
+    )
+    (raw_dir / "artifacts").mkdir()
+    (raw_dir / "artifacts" / "foo.png").write_bytes(b"\x89PNG fake")
+
+    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    assert len(ir.blocks) == 1
+    block = ir.blocks[0]
+    assert "Child paragraph." in block.content_template
+    assert "{{TBL:tb1}}" in block.content_template
+    assert "{{IMG:im2}}" in block.content_template
+    assert "{{EQ:eq3}}" in block.content_template
+    assert len(block.tables) == 1
+    assert len(block.drawings) == 1
+    assert len(block.equations) == 1
+    assert block.equations[0].is_block is True
+
+
 # ---------------------------------------------------------------------------
 # 3. Inline groups
 # ---------------------------------------------------------------------------
@@ -313,6 +384,47 @@ def test_docling_adapter_inline_group_joins_children(tmp_path: Path) -> None:
     )
     ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert "hello world" in ir.blocks[0].content_template
+
+
+def test_docling_adapter_inline_group_emits_inline_formula(
+    tmp_path: Path,
+) -> None:
+    texts = [
+        _text_item(label="section_header", text="S", level=1, self_ref="#/texts/0"),
+        _text_item(label="text", text="alpha", self_ref="#/texts/1"),
+        _text_item(
+            label="formula",
+            text="x_i",
+            orig="x_i",
+            self_ref="#/texts/2",
+        ),
+        _text_item(label="text", text="omega", self_ref="#/texts/3"),
+    ]
+    groups = [
+        {
+            "self_ref": "#/groups/0",
+            "label": "inline",
+            "content_layer": "body",
+            "children": [
+                {"$ref": "#/texts/1"},
+                {"$ref": "#/texts/2"},
+                {"$ref": "#/texts/3"},
+            ],
+        }
+    ]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(
+            body_children=["#/texts/0", "#/groups/0"],
+            texts=texts,
+            groups=groups,
+        ),
+    )
+    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    block = ir.blocks[0]
+    assert "alpha {{EQI:eq1}} omega" in block.content_template
+    assert [eq.is_block for eq in block.equations] == [False]
+    assert block.equations[0].latex == "x_i"
 
 
 # ---------------------------------------------------------------------------
@@ -803,13 +915,14 @@ def test_docling_adapter_picture_rejects_absolute_uri(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 11. Formula degrades to text when enrichment is off
+# 11. Formula
 # ---------------------------------------------------------------------------
 
 
-def test_docling_adapter_formula_degrades_without_enrichment(tmp_path: Path) -> None:
+def test_docling_adapter_formula_text_equals_orig_still_emits_equation(
+    tmp_path: Path,
+) -> None:
     texts = [
-        # text == orig means enrichment didn't run; we must not emit IREquation
         {
             "self_ref": "#/texts/0",
             "label": "formula",
@@ -825,8 +938,10 @@ def test_docling_adapter_formula_degrades_without_enrichment(tmp_path: Path) -> 
     )
     ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
-    assert block.equations == []
-    assert "C = 2 * P / X" in block.content_template
+    assert len(block.equations) == 1
+    assert block.equations[0].is_block is True
+    assert "C = 2 * P / X" in block.equations[0].latex
+    assert "{{EQ:eq1}}" in block.content_template
 
 
 def test_docling_adapter_formula_with_latex_wraps_dollars(tmp_path: Path) -> None:

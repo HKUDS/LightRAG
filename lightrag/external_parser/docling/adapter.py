@@ -33,9 +33,10 @@ Conversion rules (informed by
   are written verbatim — never flipped.
 - ``DOCLING_BBOX_ATTRIBUTES`` env (JSON) can override the doc-level
   ``bbox_attributes``, mirroring MinerU's behaviour.
-- Equations: when ``texts[k].text == texts[k].orig`` (formula enrichment
-  is disabled and LaTeX wasn't produced), the item degrades to a regular
-  text block — no IREquation, no entry in ``equations.json``.
+- Equations: ``texts[k].label == "formula"`` is treated as a structural
+  formula signal whenever text/orig/content is non-empty. Top-level formulas
+  become block equations; formulas inside inline groups become inline
+  equations.
 """
 
 from __future__ import annotations
@@ -293,6 +294,7 @@ class DoclingAdapter:
             if label not in {
                 "list",
                 "inline",
+                "picture_area",
                 "section",
                 "form_area",
                 "key_value_area",
@@ -308,12 +310,15 @@ class DoclingAdapter:
             if label == "inline":
                 _handle_inline_group(group)
                 return
-            for child_ref in group.get("children") or []:
+            _visit_children(group)
+
+        def _visit_children(item: dict) -> None:
+            for child_ref in item.get("children") or []:
                 ref = _ref_str(child_ref)
                 _visit_ref(ref)
 
         def _handle_inline_group(group: dict) -> None:
-            """``inline`` groups concatenate their text children on one line."""
+            """``inline`` groups concatenate text and inline formulas on one line."""
             buf: list[str] = []
             pages_recorded = False
             for child_ref in group.get("children") or []:
@@ -325,10 +330,17 @@ class DoclingAdapter:
                     continue
                 if _content_layer(child) != "body":
                     continue
+                if _ref_kind(ref) != "texts":
+                    continue
                 visited.add(ref)
-                txt = _text_of(child)
-                if txt:
-                    buf.append(txt)
+                label = str(child.get("label") or "").lower()
+                piece = (
+                    _make_equation_placeholder(child, is_block=False)
+                    if label == "formula"
+                    else _text_of(child)
+                )
+                if piece:
+                    buf.append(piece)
                     if not pages_recorded:
                         _record_positions(child)
                         pages_recorded = True
@@ -353,17 +365,22 @@ class DoclingAdapter:
                     _record_positions(item)
                     if not doc_title and heading_level == 1:
                         doc_title = text
+                    _visit_children(item)
                     return
                 _flush_block()
                 _open_block(text, heading_level, parents)
                 _record_positions(item)
                 if not doc_title and heading_level == 1:
                     doc_title = text
+                _visit_children(item)
                 return
 
-            # Formula — degrade to plain text when enrichment is off.
+            # Formula — Docling's label is the structural signal. For DOCX,
+            # valid LaTeX may have text == orig, so do not use that equality
+            # as an enrichment-off heuristic.
             if label == "formula":
                 _handle_formula(item)
+                _visit_children(item)
                 return
 
             # list_item: keep the marker if Docling captured one
@@ -372,6 +389,7 @@ class DoclingAdapter:
                 line = f"{marker} {text}".strip() if marker else text
                 if line and _append_text(line):
                     _record_positions(item)
+                _visit_children(item)
                 return
 
             # Caption/footnote not consumed by any table/picture → keep in
@@ -379,6 +397,7 @@ class DoclingAdapter:
             if label in {"caption", "footnote", "text", "code"}:
                 if _append_text(text):
                     _record_positions(item)
+                _visit_children(item)
                 return
 
             # page_header / page_footer should have been filtered by
@@ -394,29 +413,32 @@ class DoclingAdapter:
                 )
                 if _append_text(text):
                     _record_positions(item)
+                _visit_children(item)
 
         def _handle_formula(item: dict) -> None:
-            text = (item.get("text") or "").strip()
-            orig = (item.get("orig") or "").strip()
-            # Enrichment was either off or produced nothing useful.
-            if not text or text == orig:
-                if _append_text(orig or text):
-                    _record_positions(item)
+            placeholder = _make_equation_placeholder(item, is_block=True)
+            if not placeholder:
                 return
-
-            # We have LaTeX. Wrap with $$...$$ to match writer's contract.
-            latex = f"$$ {text} $$"
-            placeholder = _next_key("eq")
-            equation = IREquation(
-                placeholder_key=placeholder,
-                latex=latex,
-                is_block=True,
-                self_ref=str(item.get("self_ref") or ""),
-            )
-            cb_equations.append(equation)
-            cb_lines.append(f"{{{{EQ:{placeholder}}}}}")
+            cb_lines.append(placeholder)
             _bump_has_body()
             _record_positions(item)
+
+        def _make_equation_placeholder(item: dict, *, is_block: bool) -> str:
+            latex_raw = _text_of(item).strip()
+            if not latex_raw:
+                return ""
+            placeholder = _next_key("eq")
+            token = "EQ" if is_block else "EQI"
+            latex = f"$$ {latex_raw} $$" if is_block else latex_raw
+            cb_equations.append(
+                IREquation(
+                    placeholder_key=placeholder,
+                    latex=latex,
+                    is_block=is_block,
+                    self_ref=str(item.get("self_ref") or "") if is_block else "",
+                )
+            )
+            return f"{{{{{token}:{placeholder}}}}}"
 
         def _bump_has_body() -> None:
             nonlocal cb_has_body
