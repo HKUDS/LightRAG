@@ -61,6 +61,7 @@ from lightrag.utils import logger
 
 
 PREFACE_HEADING = "Preface/Uncategorized"
+CONTENT_LIST_FILENAME = "content_list.json"
 
 
 class MinerUIRBuilder:
@@ -269,7 +270,7 @@ class MinerUIRBuilder:
             md_prefix = "#" * max(level, 1)
             cb_lines.append(f"{md_prefix} {heading}")
 
-        for item in content_list:
+        for item_index, item in enumerate(content_list):
             if not isinstance(item, dict):
                 continue
             item_type = str(item.get("type") or item.get("label") or "").lower()
@@ -343,6 +344,7 @@ class MinerUIRBuilder:
                         is_block=is_block,
                         caption=caption,
                         footnotes=_as_str_list(item.get("footnotes")),
+                        self_ref=_content_list_self_ref(item_index) if is_block else "",
                     )
                 )
                 cb_lines.append(f"{{{{{token}:{placeholder}}}}}")
@@ -354,6 +356,7 @@ class MinerUIRBuilder:
                 table = self._build_ir_table(item)
                 placeholder = _next_key("tb")
                 table.placeholder_key = placeholder
+                table.self_ref = _content_list_self_ref(item_index)
                 cb_tables.append(table)
                 cb_lines.append(f"{{{{TBL:{placeholder}}}}}")
                 cb_has_body = True
@@ -364,6 +367,7 @@ class MinerUIRBuilder:
                 drawing, asset = self._build_ir_drawing(item, raw_dir, seen_assets)
                 placeholder = _next_key("im")
                 drawing.placeholder_key = placeholder
+                drawing.self_ref = _content_list_self_ref(item_index)
                 if asset is not None and asset.ref not in {a.ref for a in assets}:
                     assets.append(asset)
                 cb_drawings.append(drawing)
@@ -550,6 +554,10 @@ def _as_str_list(value: Any) -> list[str]:
         return [str(x) for x in value if str(x).strip()]
     s = str(value).strip()
     return [s] if s else []
+
+
+def _content_list_self_ref(index: int) -> str:
+    return f"{CONTENT_LIST_FILENAME}#/{index}"
 
 
 def _normalize_grid(grid: Any) -> list[list[str]]:

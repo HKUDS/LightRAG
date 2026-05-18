@@ -147,11 +147,13 @@ def test_adapter_table_and_drawing_and_equation(tmp_path: Path) -> None:
     assert table.num_rows == 2 and table.num_cols == 2
     assert table.caption == "Tbl"
     assert table.table_header == [["a", "b"]]
+    assert table.self_ref == "content_list.json#/0"
 
     drawing_block = next(b for b in ir.blocks if b.drawings)
     drawing = drawing_block.drawings[0]
     assert drawing.fmt == "jpg"
     assert drawing.caption == "Fig 1"
+    assert drawing.self_ref == "content_list.json#/1"
     # Position carried through. The bbox-bearing item produces exactly one
     # fine-grained position (anchor + range) and is NOT also rolled into the
     # page-only summary channel — so the block has a single position entry,
@@ -173,6 +175,7 @@ def test_adapter_table_and_drawing_and_equation(tmp_path: Path) -> None:
     assert eq.latex == "$E = mc^2$"
     assert eq.is_block is True
     assert eq.caption == "Eq 1"
+    assert eq.self_ref == "content_list.json#/2"
 
 
 @pytest.mark.offline

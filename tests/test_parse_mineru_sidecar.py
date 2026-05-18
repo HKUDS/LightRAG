@@ -243,6 +243,7 @@ def test_parse_mineru_emits_compliant_sidecar(
             (drawing_id, drawing_item) = next(iter(drawings.items()))
             assert drawing_id.startswith("im-")
             assert drawing_item["path"] == "demo.blocks.assets/img_001.jpg"
+            assert drawing_item["self_ref"] == "content_list.json#/3"
 
             # Raw bundle preserved next to sidecar
             raw_dir = parsed_dir.parent / "demo.pdf.mineru_raw"
@@ -254,6 +255,13 @@ def test_parse_mineru_emits_compliant_sidecar(
             tables = json.loads((parsed_dir / "demo.tables.json").read_text())["tables"]
             (_, table_item) = next(iter(tables.items()))
             assert "image" not in table_item
+            assert table_item["self_ref"] == "content_list.json#/2"
+
+            equations = json.loads((parsed_dir / "demo.equations.json").read_text())[
+                "equations"
+            ]
+            (_, equation_item) = next(iter(equations.items()))
+            assert equation_item["self_ref"] == "content_list.json#/4"
         finally:
             await rag.finalize_storages()
 
