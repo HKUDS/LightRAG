@@ -7,13 +7,13 @@ Each scenario describes:
 - ``parse_metadata`` — the dict the upstream parser fills in (only
   ``first_heading`` is currently consumed by the adapter).
 - ``assets``      — files the upstream extractor would have written into
-  ``<base>.blocks.assets/`` before the adapter runs. Maps relative names
+  ``<base>.blocks.assets/`` before the IR builder runs. Maps relative names
   inside the asset dir → byte content.
 - ``doc_id``      — fixed so blockid + sidecar ids are deterministic.
 - ``file_path``   — used for canonical basename / doc_title fallback.
 
 The captured outputs (``blocks.jsonl`` + per-modality JSONs + assets) live
-under ``tests/parser_adapters/golden/native_docx/<scenario>/``. The
+under ``tests/native_parser/docx/golden/native_docx/<scenario>/``. The
 production path (``LightRAG.parse_native``) must produce byte-identical
 bytes vs those fixtures; the regen script under ``scripts/`` rewrites
 them when the format intentionally changes.

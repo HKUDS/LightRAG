@@ -1,7 +1,7 @@
 """Debug CLI: convert a ``*.docling_raw/`` bundle directly into a sidecar dir.
 
 Skips the production pipeline (docling-serve, cache validation, ``full_docs``,
-storage updates) so the adapter / writer can be iterated against an existing
+storage updates) so the IR builder / writer can be iterated against an existing
 raw bundle without round-tripping through the live service.
 """
 
@@ -16,7 +16,7 @@ from typing import Any
 from lightrag.external_parser._manifest import MANIFEST_FILENAME
 from lightrag.external_parser.docling import (
     DOCLING_RAW_DIR_SUFFIX,
-    DoclingAdapter,
+    DoclingIRBuilder,
 )
 from lightrag.sidecar.ir import IRBlock
 from lightrag.sidecar.writer import write_sidecar
@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     output_dir: Path = args.output_dir or raw_dir.parent / f"{document_name}.parsed"
 
     try:
-        ir = DoclingAdapter().normalize_from_workdir(
+        ir = DoclingIRBuilder().normalize_from_workdir(
             raw_dir, document_name=document_name
         )
         result = write_sidecar(

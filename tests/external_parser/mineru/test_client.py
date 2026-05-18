@@ -19,8 +19,8 @@ from typing import Any
 
 import pytest
 
-from lightrag.mineru_raw import is_bundle_valid
-from lightrag.mineru_raw.client import MinerURawClient
+from lightrag.external_parser.mineru import is_bundle_valid
+from lightrag.external_parser.mineru.client import MinerURawClient
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ class _FakeAsyncClient:
         headers: Any = None,
     ) -> _FakeResponse:
         # ``content=`` was added to match production ``client.put(url, content=bytes)``
-        # introduced for httpx 0.28+ compatibility (see lightrag/mineru_raw/client.py).
+        # introduced for httpx 0.28+ compatibility (see lightrag/external_parser/mineru/client.py).
         return _CURRENT.dispatcher.put(url, data=data, content=content, headers=headers)
 
     async def get(
@@ -118,7 +118,7 @@ class _CURRENT:  # set per-test via monkeypatch
 
 @pytest.fixture
 def fake_httpx(monkeypatch: pytest.MonkeyPatch) -> type:
-    import lightrag.mineru_raw.client as mod
+    import lightrag.external_parser.mineru.client as mod
 
     fake = type(
         "FakeHttpx",

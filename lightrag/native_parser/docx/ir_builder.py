@@ -1,16 +1,16 @@
-"""Native DOCX adapter: ``extract_docx_blocks`` output → :class:`IRDoc`.
+"""Native DOCX IR builder: ``extract_docx_blocks`` output → :class:`IRDoc`.
 
 Input contract: a list of block dicts as produced by
 ``lightrag.native_parser.docx.parse_document.extract_docx_blocks``. Each
 block carries ``content`` text in which ``<table>``, ``<equation>`` and
 ``<drawing …/>`` placeholders are already embedded by the upstream parser.
-The adapter rewrites those placeholders into IR placeholder tokens
+The builder rewrites those placeholders into IR placeholder tokens
 (``{{TBL:k}} / {{EQ:k}} / {{EQI:k}} / {{IMG:k}}``) and builds the matching
 ``IRTable`` / ``IREquation`` / ``IRDrawing`` items.
 
 Asset bytes are extracted to disk by the upstream parser *before* this
-adapter runs (via ``DrawingExtractionContext`` passed to
-``extract_docx_blocks``). The adapter therefore declares assets with
+builder runs (via ``DrawingExtractionContext`` passed to
+``extract_docx_blocks``). The builder therefore declares assets with
 ``AssetSpec.source=None`` — the writer records each entry's size without
 copying.
 
@@ -198,7 +198,7 @@ class _BlockBuilder:
             # ``path=""`` should fall back to the regular asset-
             # resolution path (which will also produce ``path=""``
             # downstream) rather than masquerading as an explicit
-            # adapter override.
+            # builder override.
             path_override = path_val or None
 
         placeholder = self.next_key("im")
@@ -216,13 +216,13 @@ class _BlockBuilder:
         return f"{{{{IMG:{placeholder}}}}}"
 
 
-class NativeDocxAdapter:
+class NativeDocxIRBuilder:
     """Translate ``extract_docx_blocks`` output into an :class:`IRDoc`.
 
-    The adapter is stateless — instantiate per call. ``asset_dir_name`` is
+    The builder is stateless — instantiate per call. ``asset_dir_name`` is
     the relative name (without trailing slash) of ``<base>.blocks.assets/``
     that the upstream parser used when emitting ``<drawing path>``
-    attributes; the adapter strips that prefix when building
+    attributes; the builder strips that prefix when building
     :attr:`AssetSpec.ref` so the writer's ref↔filename mapping has
     predictable keys.
     """
@@ -259,7 +259,7 @@ class NativeDocxAdapter:
                 block_table_headers=list(block.get("table_headers") or []),
             )
 
-            # Rewrite order matches the legacy adapter: tables, then
+            # Rewrite order matches the legacy native flow: tables, then
             # equations, then drawings — each ``re.sub`` operates on the
             # output of the previous pass.
             content_template = _TABLE_TAG_RE.sub(builder.replace_table, raw_content)
@@ -305,4 +305,4 @@ class NativeDocxAdapter:
         )
 
 
-__all__ = ["NativeDocxAdapter"]
+__all__ = ["NativeDocxIRBuilder"]

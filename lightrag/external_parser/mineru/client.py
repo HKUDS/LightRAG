@@ -27,10 +27,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from lightrag.mineru_raw.cache import (
+from lightrag.external_parser.mineru.cache import (
     compute_size_and_hash,
 )
-from lightrag.mineru_raw.manifest import (
+from lightrag.external_parser.mineru.manifest import (
     Manifest,
     ManifestFile,
     write_manifest,

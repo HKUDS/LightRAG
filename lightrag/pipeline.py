@@ -2304,7 +2304,7 @@ class _PipelineMixin:
             from lightrag.native_parser.docx.parse_document import (
                 extract_docx_blocks,
             )
-            from lightrag.parser_adapters import NativeDocxAdapter
+            from lightrag.native_parser.docx.ir_builder import NativeDocxIRBuilder
             from lightrag.sidecar import write_sidecar
 
             canonical_basename = (
@@ -2385,7 +2385,7 @@ class _PipelineMixin:
                     missing_paraid_count,
                 )
 
-            ir = NativeDocxAdapter().normalize(
+            ir = NativeDocxIRBuilder().normalize(
                 blocks,
                 document_name=canonical_basename,
                 asset_dir_name=asset_dir.name,
@@ -2465,13 +2465,13 @@ class _PipelineMixin:
         """
         # Lazy imports keep this module import-cheap and avoid pulling httpx
         # into call paths that never touch the MinerU engine.
-        from lightrag.mineru_raw import (
+        from lightrag.external_parser.mineru import (
+            MinerUIRBuilder,
             MinerURawClient,
             clear_dir_contents,
             is_bundle_valid,
             raw_dir_for_parsed_dir,
         )
-        from lightrag.parser_adapters import MinerUAdapter
         from lightrag.sidecar import write_sidecar
 
         source_file_path = Path(
@@ -2519,8 +2519,8 @@ class _PipelineMixin:
             client = MinerURawClient()
             await client.download_into(raw_dir, source_file_path)
 
-        adapter = MinerUAdapter()
-        ir = adapter.normalize_from_workdir(raw_dir, document_name=document_name)
+        ir_builder = MinerUIRBuilder()
+        ir = ir_builder.normalize_from_workdir(raw_dir, document_name=document_name)
         parsed_data = write_sidecar(
             ir,
             parsed_dir=parsed_dir,
@@ -2573,7 +2573,7 @@ class _PipelineMixin:
         # Lazy imports keep this module import-cheap and avoid pulling httpx
         # into call paths that never touch the Docling engine.
         from lightrag.external_parser.docling import (
-            DoclingAdapter,
+            DoclingIRBuilder,
             DoclingRawClient,
             clear_dir_contents,
             is_bundle_valid,
@@ -2627,18 +2627,18 @@ class _PipelineMixin:
             client = DoclingRawClient()
             # Pass the canonical (hint-stripped) name so docling-serve names
             # the bundle's main JSON ``<canonical_stem>.json`` instead of
-            # ``<hinted_stem>.json``. Otherwise the adapter — which only sees
+            # ``<hinted_stem>.json``. Otherwise the IR builder — which only sees
             # the canonical ``document_name`` — cannot locate the bundle JSON
             # via the preferred-path lookup.
             await client.download_into(
                 raw_dir, source_file_path, upload_filename=document_name
             )
 
-        adapter = DoclingAdapter()
-        ir = adapter.normalize_from_workdir(raw_dir, document_name=document_name)
+        ir_builder = DoclingIRBuilder()
+        ir = ir_builder.normalize_from_workdir(raw_dir, document_name=document_name)
         if not ir.blocks:
             raise ValueError(
-                f"Docling adapter produced zero blocks for {file_path} "
+                f"Docling IR builder produced zero blocks for {file_path} "
                 f"(raw_dir={raw_dir})"
             )
         parsed_data = write_sidecar(

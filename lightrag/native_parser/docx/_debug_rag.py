@@ -3,7 +3,7 @@
 Used by the package's debug CLI (``__main__.py``), the golden-fixture
 regen script (``scripts/regen_native_docx_golden.py``), and the
 byte-equivalence golden tests
-(``tests/parser_adapters/test_native_docx_golden.py``).
+(``tests/native_parser/docx/test_native_docx_golden.py``).
 
 Centralising these stubs keeps the three call sites in sync when
 ``parse_native`` grows new dependencies on ``LightRAG`` attributes.

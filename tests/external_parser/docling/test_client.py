@@ -10,7 +10,7 @@ Cover the contract guarantees that protect the sidecar pipeline:
 - ``DOCLING_OCR_LANG`` is omitted when empty so docling-serve falls back
   to its own default.
 
-Uses an in-process fake httpx client mirroring ``tests/mineru_raw/test_client.py``
+Uses an in-process fake httpx client mirroring ``tests/external_parser/mineru/test_client.py``
 so we don't trip httpx's sync/async stream guard on multipart uploads.
 """
 
