@@ -144,6 +144,23 @@ def json_dump(payload: Any) -> str:
     return json.dumps(payload)
 
 
+def _form_pairs(data: Any) -> list[tuple[str, str]]:
+    """Normalize httpx form data into repeated ``(name, value)`` pairs.
+
+    Production passes a mapping so httpx 0.28 keeps multipart ``files=`` on
+    the async path. List values in that mapping represent repeated form keys.
+    Older tests used tuple lists directly; accepting both keeps assertions
+    focused on the wire contract instead of the container type.
+    """
+    if isinstance(data, dict):
+        pairs: list[tuple[str, str]] = []
+        for name, value in data.items():
+            values = value if isinstance(value, list) else [value]
+            pairs.extend((str(name), str(v)) for v in values)
+        return pairs
+    return [(str(name), str(value)) for name, value in data]
+
+
 def _fake_zip_with_main_json(stem: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -215,7 +232,7 @@ async def test_docling_client_sends_fixed_constants(
     assert len(recorder.post_calls) == 1
     data = recorder.post_calls[0]["data"]
     field_map: dict[str, list[str]] = {}
-    for name, value in data:
+    for name, value in _form_pairs(data):
         field_map.setdefault(name, []).append(value)
 
     assert field_map["pipeline"] == ["standard"]
@@ -312,7 +329,7 @@ async def test_docling_client_ocr_lang_omitted_when_empty(
     await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
 
     data = recorder.post_calls[0]["data"]
-    names = [name for name, _ in data]
+    names = [name for name, _ in _form_pairs(data)]
     assert "ocr_lang" not in names
 
 
@@ -332,7 +349,7 @@ async def test_docling_client_ocr_lang_sent_when_set(
     await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
 
     data = recorder.post_calls[0]["data"]
-    langs = [v for name, v in data if name == "ocr_lang"]
+    langs = [v for name, v in _form_pairs(data) if name == "ocr_lang"]
     assert langs == ["en", "zh"]
 
 
@@ -353,7 +370,7 @@ async def test_docling_client_ocr_lang_csv_form(
     await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
 
     data = recorder.post_calls[0]["data"]
-    langs = [v for name, v in data if name == "ocr_lang"]
+    langs = [v for name, v in _form_pairs(data) if name == "ocr_lang"]
     assert langs == ["en", "fr"]
 
 

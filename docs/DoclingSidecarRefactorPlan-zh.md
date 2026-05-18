@@ -398,9 +398,9 @@ Docling `pictures[*]` → `IRDrawing`：
   - 使用 `IRDrawing.path_override` 保留 URL；
   - `drawings.json.path` 写 URL，后续 VLM 会因本地文件不可用而跳过或按现有逻辑处理。
 - `image` / `image.uri` 缺失：
-  - 仍按 Docling `pictures[*]` 对象生成 `IRDrawing`；
-  - 不创建 `AssetSpec`，`IRDrawing.asset_ref=""`，writer 输出空 `path`；
-  - `IRDrawing.extras.image_missing = true`，供审计和后续 VLM 跳过。
+  - 跳过该 Docling `pictures[*]` 对象，不生成 `IRDrawing`；
+  - 不创建 `AssetSpec`，不在 block 内容中追加 `{{IMG:k}}`；
+  - 这样 `drawings.json.path` 对已输出 drawing 始终指向可用本地 asset 或外部 URL。
 
 **字段映射**：
 
@@ -558,7 +558,7 @@ DOCLING_DO_FORMULA_ENRICHMENT=false
 - result 下载非 zip：如果 content-type 是 JSON，解析并报出 payload；否则提示 content-type 和 body 前 400 字符。
 - zip 缺少 JSON/MD：报清晰错误，不写 manifest。
 - JSON malformed：报主 JSON 路径。
-- 图片资源缺失：不中断解析，写 warning；drawing path 为空会让后续 VLM 按现有逻辑跳过。
+- 图片资源缺失：不中断解析，写 warning；跳过对应 picture，避免生成空 `drawing path`。
 - 解析结果没有任何 block：报错，避免把空 sidecar 写入成功状态。
 
 ## 八、测试计划
@@ -608,9 +608,9 @@ DOCLING_DO_FORMULA_ENRICHMENT=false
   - 校验 A/B 不在任何 IRBlock.content 里；
   - 校验 `IRDrawing.extras.children_refs` / `ocr_child_count` 记录这些 child refs；
   - 校验直系 caption child（若存在且 `label="caption"`）正常进入 `IRDrawing.caption`。
-- `test_docling_adapter_picture_missing_image_kept`
+- `test_docling_adapter_picture_missing_image_skipped`
   - 输入 `pictures[0].image = null` 或无 `image.uri`；
-  - 校验仍生成 `IRDrawing`，`path` 为空，`extras.image_missing == true`。
+  - 校验不生成 `IRDrawing`，也不创建空路径 drawing。
 
 ### 8.2 DoclingRawClient 单测
 

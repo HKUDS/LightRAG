@@ -24,9 +24,10 @@ Conversion rules (informed by
   ``captions`` / ``footnotes`` refs, or as a direct ``children`` ref
   whose target is itself a caption/footnote). Otherwise they remain as
   regular text in the reading flow.
-- ``pictures[*].children`` references that are NOT caption/footnote are
-  treated as inner-OCR text and excluded from the reading stream; they
-  are accounted for in ``IRDrawing.extras`` for audit.
+- ``pictures[*]`` without a usable image reference are skipped instead of
+  emitting empty-path drawings. ``pictures[*].children`` references that
+  are NOT caption/footnote are treated as inner-OCR text and excluded from
+  the reading stream only for pictures that are emitted.
 - ``IRPosition`` writes ``origin="LEFTTOP"`` only when the source
   ``prov.bbox.coord_origin == "TOPLEFT"``. ``BOTTOMLEFT`` inherits the
   doc-level meta (``{"origin":"LEFTBOTTOM"}`` by default). Coordinates
@@ -123,7 +124,7 @@ class DoclingAdapter:
     ) -> IRDoc:
         document_format = Path(document_name).suffix.lower().lstrip(".")
         ref_index = _build_ref_index(doc)
-        consumed_refs, picture_inner_refs = _precompute_consumed_refs(doc)
+        consumed_refs, picture_inner_refs = _precompute_consumed_refs(doc, raw_dir)
 
         blocks: list[IRBlock] = []
         assets: list[AssetSpec] = []
@@ -454,13 +455,16 @@ class DoclingAdapter:
             _record_positions(item)
 
         def _handle_picture(item: dict) -> None:
-            drawing, asset = _build_ir_drawing(
+            built = _build_ir_drawing(
                 item,
                 ref_index=ref_index,
                 picture_inner_refs=picture_inner_refs,
                 raw_dir=raw_dir,
                 seen_asset_refs=seen_asset_refs,
             )
+            if built is None:
+                return
+            drawing, asset = built
             placeholder = _next_key("im")
             drawing.placeholder_key = placeholder
             if asset is not None and asset.ref not in {a.ref for a in assets}:
@@ -551,7 +555,7 @@ def _build_ref_index(doc: dict) -> dict[str, dict]:
     return index
 
 
-def _precompute_consumed_refs(doc: dict) -> tuple[set[str], set[str]]:
+def _precompute_consumed_refs(doc: dict, raw_dir: Path) -> tuple[set[str], set[str]]:
     """Return ``(consumed_refs, picture_inner_refs)``.
 
     ``consumed_refs`` enumerates text refs that must NOT enter the reading
@@ -561,7 +565,8 @@ def _precompute_consumed_refs(doc: dict) -> tuple[set[str], set[str]]:
     that might be reachable through ``body.children``:
 
     - body ``tables[*].captions`` and ``tables[*].footnotes``
-    - body ``pictures[*].captions`` and ``pictures[*].footnotes``
+    - body ``pictures[*].captions`` and ``pictures[*].footnotes`` only when
+      the picture has a usable image reference and will be emitted
     - body ``tables[*].children`` / ``pictures[*].children`` that resolve
       to ``texts[*]`` with ``label="caption"`` or ``"footnote"``
     - All body ``pictures[*].children`` that are non-caption/footnote texts
@@ -601,6 +606,8 @@ def _precompute_consumed_refs(doc: dict) -> tuple[set[str], set[str]]:
         if not isinstance(pic, dict):
             continue
         if _content_layer(pic) != "body":
+            continue
+        if not _has_usable_picture_image(pic, raw_dir):
             continue
         for ref in _iter_refs(pic.get("captions")):
             consumed.add(ref)
@@ -862,7 +869,7 @@ def _build_ir_drawing(
     picture_inner_refs: set[str],
     raw_dir: Path,
     seen_asset_refs: dict[str, str],
-) -> tuple[IRDrawing, AssetSpec | None]:
+) -> tuple[IRDrawing, AssetSpec | None] | None:
     image = item.get("image") or {}
     uri = ""
     mimetype = ""
@@ -918,8 +925,8 @@ def _build_ir_drawing(
     drawing_kwargs: dict[str, Any] = {}
 
     if not uri:
-        extras["image_missing"] = True
-    elif uri.startswith("data:"):
+        return None
+    if uri.startswith("data:"):
         decoded = _decode_data_uri(uri)
         if decoded is not None:
             payload, ext = decoded
@@ -936,7 +943,12 @@ def _build_ir_drawing(
                 )
                 seen_asset_refs[asset_ref] = suggested
         else:
-            extras["image_missing"] = True
+            logger.warning(
+                "[docling_adapter] skipping picture %s because data URI could "
+                "not be decoded",
+                item.get("self_ref") or "<unknown>",
+            )
+            return None
     elif uri.startswith(("http://", "https://")):
         path_override = uri
         asset_ref = uri
@@ -955,7 +967,14 @@ def _build_ir_drawing(
                 source=source_path if source_path is not None else None,
             )
             if source_path is None:
-                extras["image_missing"] = True
+                logger.warning(
+                    "[docling_adapter] skipping picture %s because image URI "
+                    "%r could not be resolved inside %s",
+                    item.get("self_ref") or "<unknown>",
+                    uri,
+                    raw_dir,
+                )
+                return None
             seen_asset_refs[asset_ref] = suggested
 
     if path_override is not None:
@@ -973,6 +992,24 @@ def _build_ir_drawing(
         **drawing_kwargs,
     )
     return drawing, asset
+
+
+def _image_uri_of(item: dict) -> str:
+    image = item.get("image")
+    if not isinstance(image, dict):
+        return ""
+    return str(image.get("uri") or "")
+
+
+def _has_usable_picture_image(item: dict, raw_dir: Path) -> bool:
+    uri = _image_uri_of(item)
+    if not uri:
+        return False
+    if uri.startswith("data:"):
+        return _decode_data_uri(uri) is not None
+    if uri.startswith(("http://", "https://")):
+        return True
+    return _resolve_local_image_path(raw_dir, uri) is not None
 
 
 def _image_fmt_from_mimetype(mimetype: str) -> str:

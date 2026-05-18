@@ -742,6 +742,8 @@ def test_docling_adapter_picture_children_fallback_skips_non_body(
         tmp_path,
         _doc(body_children=["#/pictures/0"], texts=texts, pictures=pictures),
     )
+    (raw_dir / "artifacts").mkdir()
+    (raw_dir / "artifacts" / "p0.png").write_bytes(b"\x89PNG fake")
     ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     block = ir.blocks[0]
     assert block.drawings[0].caption == ""
@@ -829,11 +831,11 @@ def test_docling_adapter_picture_children_dropped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 10. Picture with missing image still emits IRDrawing
+# 10. Picture with missing image is skipped
 # ---------------------------------------------------------------------------
 
 
-def test_docling_adapter_picture_missing_image_kept(tmp_path: Path) -> None:
+def test_docling_adapter_picture_missing_image_skipped(tmp_path: Path) -> None:
     pictures = [
         {
             "self_ref": "#/pictures/0",
@@ -848,9 +850,8 @@ def test_docling_adapter_picture_missing_image_kept(tmp_path: Path) -> None:
         _doc(body_children=["#/pictures/0"], pictures=pictures),
     )
     ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
-    drawing = ir.blocks[0].drawings[0]
-    assert drawing.asset_ref == ""
-    assert drawing.extras["image_missing"] is True
+    assert ir.blocks == []
+    assert ir.assets == []
 
 
 def test_docling_adapter_picture_rejects_traversal_uri(tmp_path: Path) -> None:
@@ -877,13 +878,8 @@ def test_docling_adapter_picture_rejects_traversal_uri(tmp_path: Path) -> None:
         _doc(body_children=["#/pictures/0"], pictures=pictures),
     )
     ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
-    drawing = ir.blocks[0].drawings[0]
-    # The ref is preserved (so audit/extras still show what was claimed),
-    # but the asset has no source and the drawing is flagged missing.
-    assert drawing.asset_ref == "../secret.png"
-    assert drawing.extras["image_missing"] is True
-    [a] = [a for a in ir.assets if a.ref == "../secret.png"]
-    assert a.source is None
+    assert ir.blocks == []
+    assert ir.assets == []
 
 
 def test_docling_adapter_picture_rejects_absolute_uri(tmp_path: Path) -> None:
@@ -908,10 +904,8 @@ def test_docling_adapter_picture_rejects_absolute_uri(tmp_path: Path) -> None:
         _doc(body_children=["#/pictures/0"], pictures=pictures),
     )
     ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
-    drawing = ir.blocks[0].drawings[0]
-    assert drawing.extras["image_missing"] is True
-    [a] = [a for a in ir.assets if a.ref == str(outside)]
-    assert a.source is None
+    assert ir.blocks == []
+    assert ir.assets == []
 
 
 # ---------------------------------------------------------------------------
