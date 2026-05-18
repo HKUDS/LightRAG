@@ -197,3 +197,19 @@ def test_cli_missing_input_file_returns_error(
     assert rc == 1
     err = capsys.readouterr().err
     assert str(missing.resolve()) in err
+
+
+def test_cli_rejects_suffix_engine_mismatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # native only accepts .docx; feeding it a .pdf should fail up-front with
+    # a clear error rather than crashing deep inside the IR builder.
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+
+    rc = main([str(source), "--engine", "native"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "native" in err
+    assert "pdf" in err
+    assert "docx" in err  # supported suffix list mentions docx

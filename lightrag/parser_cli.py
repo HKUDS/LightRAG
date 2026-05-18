@@ -114,7 +114,10 @@ def _print_summary(blocks_path: Path, raw_dir: Path | None, preview: int) -> Non
 async def _run(args: argparse.Namespace) -> int:
     # Pipeline + heavy parser imports are deferred so ``--help`` and the
     # input-file existence check don't pay for them.
-    from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
+    from lightrag.constants import (
+        FULL_DOCS_FORMAT_PENDING_PARSE,
+        PARSER_ENGINE_SUFFIX_CAPABILITIES,
+    )
     from lightrag.parser_debug import build_debug_rag
     from lightrag.utils import compute_mdhash_id
     import lightrag.pipeline as pipeline_mod
@@ -123,6 +126,18 @@ async def _run(args: argparse.Namespace) -> int:
     source = args.input_file.resolve()
     if not source.is_file():
         print(f"error: input file does not exist: {source}", file=sys.stderr)
+        return 1
+
+    # Reject suffix/engine mismatches up-front: the pipeline would otherwise
+    # fail deep inside the IR builder with a less helpful message.
+    suffix = source.suffix.lstrip(".").lower()
+    supported = PARSER_ENGINE_SUFFIX_CAPABILITIES.get(args.engine, frozenset())
+    if suffix not in supported:
+        print(
+            f"error: engine '{args.engine}' does not support .{suffix or '<no suffix>'} "
+            f"files (supported: {', '.join(sorted(supported))})",
+            file=sys.stderr,
+        )
         return 1
 
     sidecar_parent = (args.sidecar_parent_dir or source.parent).resolve()
