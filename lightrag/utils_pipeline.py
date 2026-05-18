@@ -210,10 +210,20 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # format as the ``Chunking <strategy>: ...`` log line (params portion only).
 # Carrying it forward keeps the value visible after PROCESSING -> FAILED,
 # whose ``metadata_extra`` only carries timing fields.
+# ``parsing_start_time`` / ``analyzing_start_time`` are Unix epoch seconds
+# stamped at the entry of ``_parse_worker`` / ``_analyze_worker`` (mirrors
+# the existing ``processing_start_time`` set when entering PROCESSING) so
+# per-stage durations can be derived from doc_status post-mortem.
+# ``parse_stage_skipped`` is written by ``parse_mineru`` / ``parse_docling``
+# when the raw bundle cache is valid and the parse stage round trip is
+# skipped; absence == not skipped (e.g. native parser, or cache miss).
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "process_options",
     "parse_warnings",
     "chunk_opts",
+    "parsing_start_time",
+    "analyzing_start_time",
+    "parse_stage_skipped",
 )
 
 
