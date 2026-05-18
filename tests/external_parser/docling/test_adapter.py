@@ -656,6 +656,67 @@ def test_docling_adapter_picture_missing_image_kept(tmp_path: Path) -> None:
     assert drawing.extras["image_missing"] is True
 
 
+def test_docling_adapter_picture_rejects_traversal_uri(tmp_path: Path) -> None:
+    # A poisoned bundle JSON points the image URI outside raw_dir via "..".
+    # The asset must NOT pick up the outside file — otherwise write_sidecar
+    # would copy it into parsed assets, turning a parser-side compromise
+    # into arbitrary local-file exfiltration.
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(b"\x89PNG outside")
+    pictures = [
+        {
+            "self_ref": "#/pictures/0",
+            "label": "picture",
+            "content_layer": "body",
+            "image": {
+                "uri": "../secret.png",
+                "mimetype": "image/png",
+            },
+            "prov": [],
+        }
+    ]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(body_children=["#/pictures/0"], pictures=pictures),
+    )
+    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    drawing = ir.blocks[0].drawings[0]
+    # The ref is preserved (so audit/extras still show what was claimed),
+    # but the asset has no source and the drawing is flagged missing.
+    assert drawing.asset_ref == "../secret.png"
+    assert drawing.extras["image_missing"] is True
+    [a] = [a for a in ir.assets if a.ref == "../secret.png"]
+    assert a.source is None
+
+
+def test_docling_adapter_picture_rejects_absolute_uri(tmp_path: Path) -> None:
+    # ``Path("raw_dir") / "/etc/passwd"`` discards raw_dir on POSIX, so an
+    # absolute URI would escape even without a "..". Reject these too.
+    outside = tmp_path / "leak.png"
+    outside.write_bytes(b"\x89PNG outside")
+    pictures = [
+        {
+            "self_ref": "#/pictures/0",
+            "label": "picture",
+            "content_layer": "body",
+            "image": {
+                "uri": str(outside),
+                "mimetype": "image/png",
+            },
+            "prov": [],
+        }
+    ]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(body_children=["#/pictures/0"], pictures=pictures),
+    )
+    ir = DoclingAdapter().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    drawing = ir.blocks[0].drawings[0]
+    assert drawing.extras["image_missing"] is True
+    [a] = [a for a in ir.assets if a.ref == str(outside)]
+    assert a.source is None
+
+
 # ---------------------------------------------------------------------------
 # 11. Formula degrades to text when enrichment is off
 # ---------------------------------------------------------------------------

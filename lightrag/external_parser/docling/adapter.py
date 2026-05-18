@@ -897,14 +897,18 @@ def _build_ir_drawing(
     else:
         asset_ref = uri
         if asset_ref not in seen_asset_refs:
-            source_path = raw_dir / uri
+            # A malicious/corrupted bundle JSON could point at "../../etc/..."
+            # or an absolute path; the zip extractor's traversal guard only
+            # covers member names, not refs embedded in JSON metadata. Resolve
+            # against raw_dir and require the result to stay inside.
+            source_path = _resolve_local_image_path(raw_dir, uri)
             suggested = Path(uri).name or f"image_{len(seen_asset_refs):06d}"
             asset = AssetSpec(
                 ref=asset_ref,
                 suggested_name=suggested,
-                source=source_path if source_path.is_file() else None,
+                source=source_path if source_path is not None else None,
             )
-            if not source_path.is_file():
+            if source_path is None:
                 extras["image_missing"] = True
             seen_asset_refs[asset_ref] = suggested
 
@@ -958,6 +962,30 @@ def _decode_data_uri(uri: str) -> tuple[bytes, str] | None:
         if ext == "jpeg":
             ext = "jpg"
     return data, ext
+
+
+def _resolve_local_image_path(raw_dir: Path, uri: str) -> Path | None:
+    """Resolve a relative image URI against the bundle root and return it
+    only if the result is a file *inside* ``raw_dir``.
+
+    Returns ``None`` for: absolute URIs (``Path("foo") / "/etc/x"`` discards
+    the left side and would escape), refs that resolve outside the bundle
+    (``..``-traversal), and refs whose target does not exist. Symlinks are
+    followed by ``resolve()`` and the post-resolution path is what's checked,
+    so a symlink inside the bundle pointing outward is also refused.
+    """
+    if not uri or os.path.isabs(uri):
+        return None
+    try:
+        base = raw_dir.resolve(strict=False)
+        candidate = (raw_dir / uri).resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
 
 
 def _sort_page_anchors(pages: set[str]) -> list[str]:
