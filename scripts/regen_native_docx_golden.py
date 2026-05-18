@@ -31,7 +31,7 @@ async def _regen() -> None:
         FULL_DOCS_FORMAT_PENDING_PARSE,
         PARSED_DIR_NAME,
     )
-    from lightrag.native_parser.docx._debug_rag import (
+    from lightrag.parser_debug import (
         FrozenDateTime,
         build_debug_rag,
     )
