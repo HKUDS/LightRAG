@@ -418,8 +418,8 @@ Docling `pictures[*]` → `IRDrawing`：
 - `extras.dpi = image.dpi`；
 - `extras.mimetype = image.mimetype`；
 - `extras.parent = pictures[k].parent`；
-- `extras.children_refs = pictures[k].children`；
-- `extras.ocr_child_count = 非 caption/footnote child ref 数量`；
+- `extras.ocr_texts = 非 caption/footnote child ref 解析出的 OCR 文本，按段落用 "\n\n" 拼接`；
+- `extras.ocr_texts_count = 写入 ocr_texts 的非空 OCR 段落数量`；
 - `extras.annotations = pictures[k].annotations`（Docling 1.10+ VLM annotation 在此处；fixture 中为空，未来非空时直接透传）；
 - `extras.references = pictures[k].references`（与 captions/footnotes 并列的引用回指字段；fixture 中为空但保留）；
 - block 内容追加 `{{IMG:k}}`，writer 渲染为 `<drawing id="im-..." format="..." path="..." caption="..." src="..." />`。
@@ -427,7 +427,7 @@ Docling `pictures[*]` → `IRDrawing`：
 **`pictures[*].children` 处理**（首版决策）：
 
 - `pictures[k].children` 中 `label="caption"` / `label="footnote"` 的 ref 可以作为对象自身显式结构写入 `IRDrawing.caption` / `footnotes`；
-- 其它 child ref 视为图内 OCR / 内部文本，不进入正文、不生成独立 block；只通过 `extras.children_refs` 和 `extras.ocr_child_count` 保留审计信息；
+- 其它 child ref 视为图内 OCR / 内部文本，不进入正文、不生成独立 block；解析为 `extras.ocr_texts` 的段落文本，并通过 `extras.ocr_texts_count` 保留数量信息；
 - 不根据图片前后的相邻文本推断 caption；Docling 未显式关联时 `IRDrawing.caption` 保持空。
 
 **注意**：`pages[*].image` 是页面渲染图（PDF 路径下为 base64，单页约 100KB），**不作为 drawing 输出**；它只在 raw bundle 中保留，供未来可视化复查。
@@ -606,7 +606,7 @@ DOCLING_DO_FORMULA_ENRICHMENT=false
 - `test_docling_adapter_picture_children_dropped`
   - 输入 `pictures[0].children = [#/texts/A, #/texts/B]`，A/B 为图内 OCR 文本（不在 captions / footnotes 里）；
   - 校验 A/B 不在任何 IRBlock.content 里；
-  - 校验 `IRDrawing.extras.children_refs` / `ocr_child_count` 记录这些 child refs；
+  - 校验 `IRDrawing.extras.ocr_texts` 按段落记录 OCR 文本，`ocr_texts_count` 记录非空 OCR 段落数量；
   - 校验直系 caption child（若存在且 `label="caption"`）正常进入 `IRDrawing.caption`。
 - `test_docling_adapter_picture_missing_image_skipped`
   - 输入 `pictures[0].image = null` 或无 `image.uri`；

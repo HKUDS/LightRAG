@@ -862,6 +862,25 @@ def _resolve_children_with_label(
     return out
 
 
+def _resolve_picture_ocr_paragraphs(
+    children: Any, ref_index: dict[str, dict], picture_inner_refs: set[str]
+) -> list[str]:
+    """Resolve picture OCR child refs into non-empty body-layer paragraphs."""
+    paragraphs: list[str] = []
+    for ref in _iter_refs(children):
+        if ref not in picture_inner_refs:
+            continue
+        target = ref_index.get(ref)
+        if not isinstance(target, dict):
+            continue
+        if _content_layer(target) != "body":
+            continue
+        txt = _text_of(target).strip()
+        if txt:
+            paragraphs.append(txt)
+    return paragraphs
+
+
 def _build_ir_drawing(
     item: dict,
     *,
@@ -907,13 +926,12 @@ def _build_ir_drawing(
         extras["mimetype"] = mimetype
     if "parent" in item:
         extras["parent"] = item.get("parent")
-    if item.get("children"):
-        extras["children_refs"] = list(item.get("children") or [])
-    inner_refs_for_this = [
-        ref for ref in _iter_refs(item.get("children")) if ref in picture_inner_refs
-    ]
-    if inner_refs_for_this:
-        extras["ocr_child_count"] = len(inner_refs_for_this)
+    ocr_paragraphs = _resolve_picture_ocr_paragraphs(
+        item.get("children"), ref_index, picture_inner_refs
+    )
+    if ocr_paragraphs:
+        extras["ocr_texts"] = "\n\n".join(ocr_paragraphs)
+        extras["ocr_texts_count"] = len(ocr_paragraphs)
     if item.get("annotations"):
         extras["annotations"] = item.get("annotations")
     if item.get("references"):

@@ -161,6 +161,10 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   "src": "",
   "caption": "",
   "footnotes": [],
+  "extras": {
+    "ocr_texts": "图内第一段 OCR 文本\n\n图内第二段 OCR 文本",
+    "ocr_texts_count": 2
+  },
   "surrounding": {
     "leading": "2.3 结构尺寸及重量\n尺寸及重量要求如下：\na) 外廓尺寸长度为：<drawing …",
     "trailing": "\n图1　外廓尺寸示意\nb) 重量不大于0.85kg。\nc) 测试结果：实测电路噪声Vpp=1.526mV…"
@@ -194,6 +198,13 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `extras` | 对象：可选；引擎专属的旁路字段（行/列合并、OCR 置信度等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
 | `llm_analyze_result` | 模态分析结果对象：详见 [§九](#九、`llm_analyze_result`) （后续会注入到多模态文本块） |
 | `llm_cache_list` | 模态分析LLM缓存数组（后续会注入到多模态文本块） |
+
+`extras` 中常见的 drawing 专属键：
+
+| 键 | 说明 |
+|---|---|
+| `ocr_texts` | 字符串：可选；图形对象内部 OCR 文本，多个段落用空行（`\n\n`）拼接。仅当解析引擎显式把 OCR 文本挂在该 drawing 的 children 下时输出；caption / footnote 不进入此字段。 |
+| `ocr_texts_count` | 整数：可选；写入 `ocr_texts` 的非空 OCR 段落数量。 |
 
 **只有图形支持的 raster 格式（png / jpeg / gif / webp）才会进入 VLM 分析**；其他格式（wmf / emf / svg 等）写 `llm_analyze_result.status="skipped"`，下游不生成多模态 chunk，文档继续处理。图片大小超过环境变量`VLM_MAX_IMAGE_BYTES`规定的大小后，图片同样不会进入VLM分析。
 

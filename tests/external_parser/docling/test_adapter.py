@@ -796,6 +796,7 @@ def test_docling_adapter_picture_children_dropped(tmp_path: Path) -> None:
         _text_item(label="caption", text="Picture caption", self_ref="#/texts/0"),
         _text_item(label="text", text="Inner OCR text 1", self_ref="#/texts/1"),
         _text_item(label="text", text="Inner OCR text 2", self_ref="#/texts/2"),
+        _text_item(label="text", text="", self_ref="#/texts/3"),
     ]
     pictures = [
         {
@@ -807,6 +808,7 @@ def test_docling_adapter_picture_children_dropped(tmp_path: Path) -> None:
                 {"$ref": "#/texts/0"},
                 {"$ref": "#/texts/1"},
                 {"$ref": "#/texts/2"},
+                {"$ref": "#/texts/3"},
             ],
             "prov": [],
         }
@@ -823,11 +825,13 @@ def test_docling_adapter_picture_children_dropped(tmp_path: Path) -> None:
     drawing = block.drawings[0]
     # caption (label=caption) is taken via children fallback
     assert drawing.caption == "Picture caption"
+    assert "Picture caption" not in drawing.extras.get("ocr_texts", "")
     # OCR-only children do NOT appear in body content
     assert "Inner OCR text 1" not in block.content_template
     assert "Inner OCR text 2" not in block.content_template
-    # extras records the OCR child count
-    assert drawing.extras["ocr_child_count"] == 2
+    # extras records non-empty OCR paragraphs, not raw child refs.
+    assert drawing.extras["ocr_texts"] == "Inner OCR text 1\n\nInner OCR text 2"
+    assert drawing.extras["ocr_texts_count"] == 2
 
 
 # ---------------------------------------------------------------------------
