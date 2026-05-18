@@ -114,6 +114,20 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
 const formatMetadata = (metadata: Record<string, any>): string => {
   const formattedMetadata = { ...metadata };
 
+  if (formattedMetadata.parsing_start_time && typeof formattedMetadata.parsing_start_time === 'number') {
+    const date = new Date(formattedMetadata.parsing_start_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.parsing_start_time = date.toLocaleString();
+    }
+  }
+
+  if (formattedMetadata.analyzing_start_time && typeof formattedMetadata.analyzing_start_time === 'number') {
+    const date = new Date(formattedMetadata.analyzing_start_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.analyzing_start_time = date.toLocaleString();
+    }
+  }
+
   if (formattedMetadata.processing_start_time && typeof formattedMetadata.processing_start_time === 'number') {
     const date = new Date(formattedMetadata.processing_start_time * 1000);
     if (!isNaN(date.getTime())) {

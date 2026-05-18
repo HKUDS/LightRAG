@@ -1377,6 +1377,24 @@ class _PipelineMixin:
                     raise Exception(
                         f"Document content not found in full_docs for doc_id: {doc_id_w}"
                     )
+                # Stamp parsing_start_time on the in-memory status_doc so
+                # carry-over (_DOC_STATUS_METADATA_CARRY_OVER_KEYS) writes it
+                # into doc_status here and preserves it across every
+                # subsequent state transition for stage-duration analysis.
+                if not isinstance(status_doc_w.metadata, dict):
+                    status_doc_w.metadata = {}
+                # Drop stale per-attempt fields from any prior failed/retried
+                # attempt before stamping the new parsing_start_time.
+                # ``analyzing_start_time`` and ``parse_stage_skipped`` are
+                # downstream of this point and would otherwise be carried
+                # forward via carry-over, skewing stage-duration metrics and
+                # the raw-cache-hit signal for the new attempt. The cache-hit
+                # mirror block below only re-writes ``parse_stage_skipped``
+                # when the parser actually returns a hit, so cache-miss
+                # retries land with the field absent (= not skipped).
+                status_doc_w.metadata.pop("analyzing_start_time", None)
+                status_doc_w.metadata.pop("parse_stage_skipped", None)
+                status_doc_w.metadata["parsing_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
                     doc_id=doc_id_w,
                     status=DocStatus.PARSING,
@@ -1405,6 +1423,15 @@ class _PipelineMixin:
                     if not isinstance(status_doc_w.metadata, dict):
                         status_doc_w.metadata = {}
                     status_doc_w.metadata["parse_warnings"] = parse_warnings_payload_w
+
+                # Mirror raw-bundle cache-hit flag from mineru/docling so the
+                # next upsert (ANALYZING) carries it into doc_status; absence
+                # means the parse stage actually ran. Only ``True`` is written
+                # so cache-miss documents stay clean.
+                if parsed_data_w.get("parse_stage_skipped"):
+                    if not isinstance(status_doc_w.metadata, dict):
+                        status_doc_w.metadata = {}
+                    status_doc_w.metadata["parse_stage_skipped"] = True
 
                 # parse_* may have patched content_hash for
                 # pending_parse → raw transitions.
@@ -1464,6 +1491,12 @@ class _PipelineMixin:
                 refreshed_length_w = len(refreshed_content_w)
                 status_doc_w.content_summary = refreshed_summary_w
                 status_doc_w.content_length = refreshed_length_w
+                # Stamp analyzing_start_time so per-stage durations stay
+                # derivable from doc_status even after PROCESSED / FAILED;
+                # carry-over preserves it across later upserts.
+                if not isinstance(status_doc_w.metadata, dict):
+                    status_doc_w.metadata = {}
+                status_doc_w.metadata["analyzing_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
                     doc_id=doc_id_w,
                     status=DocStatus.ANALYZING,
@@ -2490,11 +2523,13 @@ class _PipelineMixin:
             "on",
         }
 
+        parse_stage_skipped = False
         if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
             # Cache hit: keep the path purely local so a re-parse still
             # succeeds if MinerU credentials/endpoint are temporarily
             # unavailable (key rotation, debugging, etc.). Network config
             # is only required on cache miss below.
+            parse_stage_skipped = True
             logger.info(
                 "[parse_mineru] raw cache hit doc_id=%s raw_dir=%s",
                 doc_id,
@@ -2556,6 +2591,7 @@ class _PipelineMixin:
             "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
             "content": parsed_data["content"],
             "blocks_path": str(blocks_path),
+            "parse_stage_skipped": parse_stage_skipped,
         }
 
     async def parse_docling(
@@ -2608,9 +2644,11 @@ class _PipelineMixin:
             "on",
         }
 
+        parse_stage_skipped = False
         if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
             # Cache hit: keep purely local so re-parses still work when the
             # docling-serve endpoint is temporarily unavailable.
+            parse_stage_skipped = True
             logger.info(
                 "[parse_docling] raw cache hit doc_id=%s raw_dir=%s",
                 doc_id,
@@ -2680,6 +2718,7 @@ class _PipelineMixin:
             "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
             "content": parsed_data["content"],
             "blocks_path": str(blocks_path),
+            "parse_stage_skipped": parse_stage_skipped,
         }
 
     # ============================================================
