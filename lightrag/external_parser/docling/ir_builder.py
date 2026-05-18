@@ -447,6 +447,11 @@ class DoclingIRBuilder:
 
         def _handle_table(item: dict) -> None:
             table = _build_ir_table(item, ref_index)
+            if table is None:
+                # Empty body — _build_ir_table already logged the drop.
+                # Skip placeholder allocation and position recording so the
+                # body-less table item leaves no trace in the IR.
+                return
             placeholder = _next_key("tb")
             table.placeholder_key = placeholder
             cb_tables.append(table)
@@ -697,12 +702,27 @@ def _resolve_text_refs(refs: Any, ref_index: dict[str, dict]) -> list[str]:
 def _build_ir_table(
     item: dict,
     ref_index: dict[str, dict],
-) -> IRTable:
+) -> IRTable | None:
     data = item.get("data") or {}
     grid = data.get("grid") if isinstance(data, dict) else None
     rows = _rows_from_grid(grid)
     if not rows and isinstance(data, dict) and data.get("table_cells"):
         rows = _rows_from_table_cells(data)
+
+    # Docling never populates IRTable.html, so a table without visible row
+    # content would land in the sidecar as ``content=""`` and trip the
+    # analyze worker's "missing table content" path (mirrors the MinerU
+    # filter in lightrag/external_parser/mineru/ir_builder.py). Drop the
+    # item up here so the IR stays clean.
+    if not _table_rows_have_content(rows):
+        logger.info(
+            "[docling_ir_builder] dropping empty table item "
+            "(self_ref=%s, num_rows=%s, num_cols=%s)",
+            item.get("self_ref"),
+            data.get("num_rows") if isinstance(data, dict) else None,
+            data.get("num_cols") if isinstance(data, dict) else None,
+        )
+        return None
 
     num_rows = (
         int(data.get("num_rows") or len(rows) or 0)
@@ -739,6 +759,15 @@ def _build_ir_table(
         table_header=table_header,
         self_ref=str(item.get("self_ref") or ""),
     )
+
+
+def _table_rows_have_content(rows: list[list[str]]) -> bool:
+    """True iff at least one cell carries visible text."""
+    for row in rows:
+        for cell in row:
+            if isinstance(cell, str) and cell.strip():
+                return True
+    return False
 
 
 def _rows_from_grid(grid: Any) -> list[list[str]]:
