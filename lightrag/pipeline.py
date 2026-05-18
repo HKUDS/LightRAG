@@ -3728,6 +3728,20 @@ class _PipelineMixin:
                     )
                 content_text = _normalize_text(item.get("content"))
                 if not content_text:
+                    if kind == "table":
+                        # Defensive fallback for sidecars that still carry
+                        # empty-bodied table items (e.g. produced by an older
+                        # parser run, or by a parser that doesn't filter
+                        # MinerU-style misidentified blanks). Don't abort the
+                        # whole worker — record the skip and move on.
+                        logger.warning(
+                            f"[analyze_multimodal] table/{item_id}: missing "
+                            f"table content; skipping analysis ({file_path})"
+                        )
+                        return (
+                            _skipped_result("missing table content"),
+                            None,
+                        )
                     raise MultimodalAnalysisError(
                         f"{kind}/{item_id}: missing {kind} content"
                     )

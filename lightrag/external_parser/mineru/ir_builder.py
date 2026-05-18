@@ -354,6 +354,11 @@ class MinerUIRBuilder:
 
             if item_type == "table":
                 table = self._build_ir_table(item)
+                if table is None:
+                    # Empty body — _build_ir_table already logged the drop.
+                    # Skip placeholder allocation and position recording so
+                    # the misidentified item leaves no trace in the IR.
+                    continue
                 placeholder = _next_key("tb")
                 table.placeholder_key = placeholder
                 table.self_ref = _content_list_self_ref(item_index)
@@ -407,7 +412,7 @@ class MinerUIRBuilder:
     # Tables / drawings
     # ------------------------------------------------------------------
 
-    def _build_ir_table(self, item: dict) -> IRTable:
+    def _build_ir_table(self, item: dict) -> IRTable | None:
         rows: list[list[str]] | None = None
         html: str | None = None
         body_field = item.get("rows")
@@ -432,6 +437,20 @@ class MinerUIRBuilder:
                 rows = _normalize_grid(grid)
             else:
                 html = json.dumps(body, ensure_ascii=False)
+
+        # MinerU occasionally emits table items with no usable body (e.g. when
+        # a page number or blank region is misidentified as a table). Dropping
+        # them here keeps the sidecar free of items that would later trip the
+        # analyze worker's "missing table content" hard-failure path.
+        if not _ir_table_body_has_content(rows, html):
+            logger.debug(
+                "[mineru_ir_builder] dropping empty table item "
+                "(body type=%s, num_rows=%s, num_cols=%s)",
+                type(body).__name__,
+                item.get("num_rows"),
+                item.get("num_cols"),
+            )
+            return None
 
         num_rows = int(item.get("num_rows") or (len(rows) if rows else 0) or 0)
         num_cols_default = max((len(r) for r in rows), default=0) if rows else 0
@@ -575,6 +594,18 @@ def _normalize_grid(grid: Any) -> list[list[str]]:
                 out_row.append(str(cell).strip())
         out.append(out_row)
     return out
+
+
+def _ir_table_body_has_content(rows: list[list[str]] | None, html: str | None) -> bool:
+    """True iff the parsed table body carries any visible cell text or HTML."""
+    if html and html.strip():
+        return True
+    if rows:
+        for row in rows:
+            for cell in row:
+                if isinstance(cell, str) and cell.strip():
+                    return True
+    return False
 
 
 def _is_block_equation(item: dict) -> bool:

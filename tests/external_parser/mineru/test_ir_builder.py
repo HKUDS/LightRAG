@@ -458,6 +458,40 @@ def test_adapter_empty_equation_dropped(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_adapter_empty_table_dropped(tmp_path: Path) -> None:
+    """Table items with no usable body MUST NOT enter the IR.
+
+    MinerU sometimes misidentifies a page-number / blank region as a table
+    and emits a body-less ``table`` item (missing ``table_body``/``rows``,
+    or with an empty string / empty grid). Leaving such items in the IR
+    would later trip the analyze worker's hard-failure path on empty
+    ``content``. The IR builder filters them upstream.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            # 1) Body field completely absent.
+            {"type": "table", "num_rows": 0, "num_cols": 0},
+            # 2) Empty string body (matches the real m012-manual.pdf bug).
+            {"type": "table", "table_body": ""},
+            # 3) Empty list body.
+            {"type": "table", "rows": []},
+            # 4) Grid with only blank cells.
+            {"type": "table", "rows": [["", "  "], ["\t", ""]]},
+            # 5) A real text item so the IR is not entirely empty.
+            {"type": "text", "text": "kept"},
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="t.pdf")
+    table_count = sum(len(b.tables) for b in ir.blocks)
+    assert table_count == 0
+    # No table placeholder should leak into the rendered content either.
+    joined = "\n".join(b.content_template for b in ir.blocks)
+    assert "TBL:" not in joined
+    assert "kept" in joined
+
+
+@pytest.mark.offline
 def test_adapter_bbox_attributes_default_and_override(tmp_path: Path) -> None:
     raw = _write_bundle(tmp_path, [{"type": "text", "text": "x"}])
     adapter = MinerUIRBuilder()

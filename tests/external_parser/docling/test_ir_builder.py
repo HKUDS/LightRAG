@@ -486,6 +486,79 @@ def test_docling_adapter_table_grid_and_header(tmp_path: Path) -> None:
     assert table.self_ref == "#/tables/0"
 
 
+def test_docling_adapter_empty_table_dropped(tmp_path: Path) -> None:
+    """Table items with no usable body MUST NOT enter the IR.
+
+    Docling never populates ``IRTable.html``, so a body-less table would
+    land in the sidecar as ``content=""`` and trip the analyze worker's
+    "missing table content" path. Mirrors the MinerU-side filter in
+    lightrag/external_parser/mineru/ir_builder.py.
+    """
+    # Four shapes of "no visible content" — all must be dropped.
+    tables = [
+        # 1) ``data`` missing entirely.
+        {"self_ref": "#/tables/0", "label": "table", "content_layer": "body"},
+        # 2) Empty grid.
+        {
+            "self_ref": "#/tables/1",
+            "label": "table",
+            "content_layer": "body",
+            "data": {"num_rows": 0, "num_cols": 0, "grid": []},
+        },
+        # 3) Grid with only blank cell text.
+        {
+            "self_ref": "#/tables/2",
+            "label": "table",
+            "content_layer": "body",
+            "data": {
+                "num_rows": 1,
+                "num_cols": 2,
+                "grid": [[{"text": ""}, {"text": "   "}]],
+            },
+        },
+        # 4) table_cells fallback yields a blank grid.
+        {
+            "self_ref": "#/tables/3",
+            "label": "table",
+            "content_layer": "body",
+            "data": {
+                "num_rows": 1,
+                "num_cols": 1,
+                "table_cells": [
+                    {
+                        "text": "",
+                        "start_row_offset_idx": 0,
+                        "end_row_offset_idx": 1,
+                        "start_col_offset_idx": 0,
+                        "end_col_offset_idx": 1,
+                    }
+                ],
+            },
+        },
+    ]
+    texts = [_text_item(label="text", text="kept", self_ref="#/texts/0")]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(
+            body_children=[
+                "#/tables/0",
+                "#/tables/1",
+                "#/tables/2",
+                "#/tables/3",
+                "#/texts/0",
+            ],
+            texts=texts,
+            tables=tables,
+        ),
+    )
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    table_count = sum(len(b.tables) for b in ir.blocks)
+    assert table_count == 0
+    joined = "\n".join(b.content_template for b in ir.blocks)
+    assert "TBL:" not in joined
+    assert "kept" in joined
+
+
 def test_docling_adapter_table_extras_is_empty(tmp_path: Path) -> None:
     """`IRTable.extras` is intentionally left blank by the docling adapter:
     the historical ``parent`` / ``children_refs`` / ``references`` /
