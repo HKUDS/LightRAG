@@ -35,10 +35,13 @@ config.read("config.ini", "utf-8")
 class MemgraphStorage(BaseGraphStorage):
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         # Priority: 1) MEMGRAPH_WORKSPACE env 2) user arg 3) default 'base'
-        memgraph_workspace = os.environ.get("MEMGRAPH_WORKSPACE")
-        original_workspace = workspace  # Save original value for logging
-        if memgraph_workspace and memgraph_workspace.strip():
-            workspace = memgraph_workspace
+        memgraph_workspace = None
+        original_workspace = None
+        if not os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true":
+            memgraph_workspace = os.environ.get("MEMGRAPH_WORKSPACE")
+            original_workspace = workspace  # Save original value for logging
+            if memgraph_workspace and memgraph_workspace.strip():
+                workspace = memgraph_workspace
 
         if not workspace or not str(workspace).strip():
             workspace = "base"

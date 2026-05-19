@@ -82,6 +82,14 @@ interface SettingsState {
   // Search label dropdown refresh trigger (non-persistent, runtime only)
   searchLabelDropdownRefreshTrigger: number
   triggerSearchLabelDropdownRefresh: () => void
+
+  // Workspace settings
+  currentWorkspace: string | null
+  setCurrentWorkspace: (workspace: string | null) => void
+
+  // Workspace refresh trigger (non-persistent, runtime only)
+  workspaceRefreshTrigger: number
+  triggerWorkspaceRefresh: () => void
 }
 
 const useSettingsStoreBase = create<SettingsState>()(
@@ -233,12 +241,34 @@ const useSettingsStoreBase = create<SettingsState>()(
       triggerSearchLabelDropdownRefresh: () =>
         set((state) => ({
           searchLabelDropdownRefreshTrigger: state.searchLabelDropdownRefreshTrigger + 1
-        }))
+        })),
+
+      currentWorkspace: null,
+      setCurrentWorkspace: (workspace: string | null) => set({ currentWorkspace: workspace }),
+
+      // Workspace refresh trigger (not persisted)
+      workspaceRefreshTrigger: 0,
+      triggerWorkspaceRefresh: () =>
+        set((state) => ({
+          workspaceRefreshTrigger: state.workspaceRefreshTrigger + 1
+        })),
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      /* eslint-disable @typescript-eslint/no-unused-vars */
+      partialize: (state) => {
+        const {
+          workspaceRefreshTrigger,
+          triggerWorkspaceRefresh,
+          searchLabelDropdownRefreshTrigger,
+          triggerSearchLabelDropdownRefresh,
+          ...rest
+        } = state
+        return rest
+      },
+      /* eslint-enable @typescript-eslint/no-unused-vars */
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -340,6 +370,9 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (state.querySettings) {
             delete state.querySettings.response_type
           }
+        }
+        if (version < 20) {
+          state.currentWorkspace = null
         }
         return state
       }

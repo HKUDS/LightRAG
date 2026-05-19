@@ -128,20 +128,23 @@ class RedisKVStorage(BaseKVStorage):
     def __post_init__(self):
         # Check for REDIS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Redis storage instances
-        redis_workspace = os.environ.get("REDIS_WORKSPACE")
-        if redis_workspace and redis_workspace.strip():
-            # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = redis_workspace.strip()
-            logger.info(
-                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
-            )
-        else:
-            # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
-                logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
+        if not os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true":
+            redis_workspace = os.environ.get("REDIS_WORKSPACE")
+            if redis_workspace and redis_workspace.strip():
+                # Use environment variable value, overriding the passed workspace parameter
+                effective_workspace = redis_workspace.strip()
+                logger.info(
+                    f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
                 )
+            else:
+                # Use the workspace parameter passed during initialization
+                effective_workspace = self.workspace
+                if effective_workspace:
+                    logger.debug(
+                        f"Using passed workspace parameter: '{effective_workspace}'"
+                    )
+        else:
+            effective_workspace = self.workspace
 
         # Build final_namespace with workspace prefix for data isolation
         # Keep original namespace unchanged for type detection logic
@@ -524,20 +527,23 @@ class RedisDocStatusStorage(DocStatusStorage):
     def __post_init__(self):
         # Check for REDIS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Redis storage instances
-        redis_workspace = os.environ.get("REDIS_WORKSPACE")
-        if redis_workspace and redis_workspace.strip():
-            # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = redis_workspace.strip()
-            logger.info(
-                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
-            )
-        else:
-            # Use the workspace parameter passed during initialization
-            effective_workspace = self.workspace
-            if effective_workspace:
-                logger.debug(
-                    f"Using passed workspace parameter: '{effective_workspace}'"
+        if not os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true":
+            redis_workspace = os.environ.get("REDIS_WORKSPACE")
+            if redis_workspace and redis_workspace.strip():
+                # Use environment variable value, overriding the passed workspace parameter
+                effective_workspace = redis_workspace.strip()
+                logger.info(
+                    f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
                 )
+            else:
+                # Use the workspace parameter passed during initialization
+                effective_workspace = self.workspace
+                if effective_workspace:
+                    logger.debug(
+                        f"Using passed workspace parameter: '{effective_workspace}'"
+                    )
+        else:
+            effective_workspace = self.workspace
 
         # Build final_namespace with workspace prefix for data isolation
         # Keep original namespace unchanged for type detection logic

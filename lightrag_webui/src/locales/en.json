@@ -1,4 +1,8 @@
 {
+  "workspace": {
+    "none": "None",
+    "selector": "Workspace"
+  },
   "settings": {
     "language": "Language",
     "theme": "Theme",

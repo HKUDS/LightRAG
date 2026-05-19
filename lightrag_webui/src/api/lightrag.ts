@@ -5,6 +5,10 @@ import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
 
+// CRLF injection sanitization for header values
+export const sanitizeHeader = (value: string | null): string | null =>
+  value?.replace(/[\r\n]/g, '') ?? null
+
 // Types
 export type LightragNodeType = {
   id: string
@@ -76,6 +80,12 @@ export type LightragStatus = {
   }
   webui_title?: string
   webui_description?: string
+}
+
+export type Workspace = {
+  name: string
+  first_seen: string
+  last_seen: string
 }
 
 export type LightragDocumentsScanProgress = {
@@ -279,7 +289,7 @@ export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
 // Axios instance
-const axiosInstance = axios.create({
+export const axiosInstance = axios.create({
   baseURL: backendBaseUrl,
   headers: {
     'Content-Type': 'application/json'
@@ -351,6 +361,11 @@ axiosInstance.interceptors.request.use((config) => {
   }
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
+  }
+  // Workspace header
+  const workspace = sanitizeHeader(useSettingsStore.getState().currentWorkspace)
+  if (workspace) {
+    config.headers['LIGHTRAG-WORKSPACE'] = workspace
   }
   return config
 })
@@ -529,6 +544,10 @@ export const queryTextStream = async (
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
+  }
+  const workspace = sanitizeHeader(useSettingsStore.getState().currentWorkspace);
+  if (workspace) {
+    headers['LIGHTRAG-WORKSPACE'] = workspace;
   }
 
   try {
@@ -1179,4 +1198,12 @@ export const getDocumentsPaginatedWithTimeout = (
 export const getDocumentStatusCounts = async (): Promise<StatusCountsResponse> => {
   const response = await axiosInstance.get('/documents/status_counts')
   return response.data
+}
+
+export const getWorkspaces = async (): Promise<Workspace[]> => {
+  const response = await axiosInstance.get('/workspaces')
+  if (!response.data?.workspaces || !Array.isArray(response.data.workspaces)) {
+    throw new Error('Invalid workspaces response')
+  }
+  return response.data.workspaces
 }

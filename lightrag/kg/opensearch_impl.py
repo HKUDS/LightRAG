@@ -188,13 +188,14 @@ class ClientManager:
 
 def _resolve_workspace(workspace: str, namespace: str):
     """Resolve effective workspace from env or parameter."""
-    opensearch_workspace = os.environ.get("OPENSEARCH_WORKSPACE")
-    if opensearch_workspace and opensearch_workspace.strip():
-        effective = opensearch_workspace.strip()
-        logger.info(
-            f"Using OPENSEARCH_WORKSPACE: '{effective}' (overriding '{workspace}/{namespace}')"
-        )
-        return effective
+    if not os.environ.get("WORKSPACE_ISOLATION", "").lower() == "true":
+        opensearch_workspace = os.environ.get("OPENSEARCH_WORKSPACE")
+        if opensearch_workspace and opensearch_workspace.strip():
+            effective = opensearch_workspace.strip()
+            logger.info(
+                f"Using OPENSEARCH_WORKSPACE: '{effective}' (overriding '{workspace}/{namespace}')"
+            )
+            return effective
     return workspace
 
 
