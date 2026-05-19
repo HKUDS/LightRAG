@@ -875,7 +875,9 @@ class _PipelineMixin:
         current_time = datetime.now(timezone.utc).isoformat()
 
         for error_file in error_files:
-            file_path = error_file.get("file_path", "unknown_file")
+            file_path = normalize_document_file_path(
+                error_file.get("file_path", "unknown_file")
+            )
             error_description = error_file.get(
                 "error_description", "File extraction failed"
             )

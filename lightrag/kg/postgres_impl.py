@@ -4263,57 +4263,22 @@ class PGDocStatusStorage(DocStatusStorage):
         """PG-native override of basename-based document lookup.
 
         Replaces the base-class full-table scan with a database-level query on
-        the canonical ``file_path`` column. Inputs are normalized via
-        :func:`lightrag.utils_pipeline.normalize_document_file_path`; the
-        ``unknown_source`` sentinel is treated as a miss.
+        the canonical ``file_path`` column. The caller is responsible for
+        passing an already-canonical basename; storage performs an exact match
+        only.
         """
         if not basename:
             return None
 
-        from lightrag.utils_pipeline import normalize_document_file_path
-
-        target = normalize_document_file_path(basename)
-        if target == "unknown_source":
+        if basename == "unknown_source":
             return None
 
-        # New writes always store the canonical basename, so an exact match
-        # on workspace + file_path handles the common case. The LIKE branch
-        # is a defensive fallback for legacy rows still carrying a parser
-        # hint segment (e.g. ``a.[native].docx``); the LIKE pattern is built
-        # from the stem of the canonical target.
-        #
-        # Filename characters % / _ / \ are LIKE metacharacters in PostgreSQL,
-        # so the stem and extension are escaped before composition. The
-        # literal ``[%]`` segment is the intentional wildcard placeholder for
-        # the hint marker and is NOT escaped. We also declare ESCAPE '\\' on
-        # the LIKE clause so the escaping is honored.
-        from os.path import splitext
-
-        def _escape_like(s: str) -> str:
-            # Backslash first to avoid double-escaping the escape itself.
-            return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-        stem, ext = splitext(target)
-        like_pattern = f"{_escape_like(stem)}.[%]{_escape_like(ext)}" if stem else None
-
-        # ORDER BY (file_path = $2) DESC ranks the exact match above any
-        # LIKE-only legacy row, then (created_at, id) breaks ties stably so
-        # repeated calls and read replicas return the same row.
-        if like_pattern:
-            sql = (
-                "SELECT * FROM LIGHTRAG_DOC_STATUS "
-                "WHERE workspace=$1 AND (file_path = $2 OR file_path LIKE $3 ESCAPE '\\') "
-                "ORDER BY (file_path = $2) DESC, created_at ASC, id ASC "
-                "LIMIT 1"
-            )
-            params = [self.workspace, target, like_pattern]
-        else:
-            sql = (
-                "SELECT * FROM LIGHTRAG_DOC_STATUS "
-                "WHERE workspace=$1 AND file_path = $2 "
-                "ORDER BY created_at ASC, id ASC LIMIT 1"
-            )
-            params = [self.workspace, target]
+        sql = (
+            "SELECT * FROM LIGHTRAG_DOC_STATUS "
+            "WHERE workspace=$1 AND file_path = $2 "
+            "ORDER BY created_at ASC, id ASC LIMIT 1"
+        )
+        params = [self.workspace, basename]
 
         result = await self.db.query(sql, params, True)
         if not result:

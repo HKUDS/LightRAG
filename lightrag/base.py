@@ -922,12 +922,9 @@ class DocStatusStorage(BaseKVStorage, ABC):
     ) -> tuple[str, dict[str, Any]] | None:
         """Get document by canonical file basename.
 
-        Used for filename-based deduplication. Inputs are canonicalized via
-        :func:`lightrag.utils_pipeline.normalize_document_file_path`, so
-        callers may pass either ``abc.docx`` or ``abc.[native-iet].docx``.
-        Stored ``file_path`` values are already canonical for new records;
-        legacy rows that still carry a hint segment are also matched via a
-        defensive second normalization.
+        Used for filename-based deduplication. Callers must pass the canonical
+        basename; storage implementations only compare against the canonical
+        ``file_path`` persisted by the business layer.
 
         Args:
             basename: The filename basename to search for (e.g. "report.pdf").
@@ -937,12 +934,7 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """
         if not basename:
             return None
-        # Lazy import avoids the module-load cycle (utils_pipeline imports
-        # DocProcessingStatus from this module).
-        from lightrag.utils_pipeline import normalize_document_file_path
-
-        target = normalize_document_file_path(basename)
-        if target == "unknown_source":
+        if basename == "unknown_source":
             return None
         try:
             docs = await self.get_docs_by_statuses(list(DocStatus))
@@ -958,7 +950,7 @@ class DocStatusStorage(BaseKVStorage, ABC):
             )
             if not stored:
                 continue
-            if stored == target or normalize_document_file_path(stored) == target:
+            if stored == basename:
                 return doc_id, (doc if isinstance(doc, dict) else asdict(doc))
         return None
 

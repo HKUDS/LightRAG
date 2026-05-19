@@ -405,29 +405,20 @@ class JsonDocStatusStorage(DocStatusStorage):
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Find an existing record whose canonical basename matches.
 
-        Inputs are normalized via
-        :func:`lightrag.utils_pipeline.normalize_document_file_path`, so
-        callers may pass either the canonical (``abc.docx``) or the
-        hint-bearing (``abc.[native].docx``) form. New records store
-        ``file_path`` already canonical; the second normalization protects
-        legacy rows that still carry a hint segment.
+        The caller is responsible for passing an already-canonical basename.
+        Stored ``file_path`` values are canonicalized by the business layer, so
+        this lookup intentionally performs an exact match only.
         """
         if not basename:
             return None
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
 
-        from lightrag.utils_pipeline import normalize_document_file_path
-
-        target = normalize_document_file_path(basename)
-        if target == "unknown_source":
+        if basename == "unknown_source":
             return None
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
-                stored = doc_data.get("file_path")
-                if not stored:
-                    continue
-                if stored == target or normalize_document_file_path(stored) == target:
+                if doc_data.get("file_path") == basename:
                     return doc_id, doc_data
         return None
 

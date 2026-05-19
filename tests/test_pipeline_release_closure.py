@@ -1468,22 +1468,22 @@ def test_legacy_empty_file_paths_do_not_block_unsourced_insert(tmp_path):
 
 
 @pytest.mark.offline
-def test_basename_lookup_finds_legacy_full_path_records(tmp_path):
+def test_basename_lookup_requires_canonical_stored_file_path(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
-            # Simulate a legacy doc_status row whose file_path still holds a
-            # full path; the new basename lookup should still resolve it.
-            legacy_id = "doc-legacy-1"
+            # Storage does not normalize or apply legacy basename fallback.
+            # Business-layer writes must persist the canonical basename.
+            noncanonical_id = "doc-noncanonical-1"
             await rag.doc_status.upsert(
                 {
-                    legacy_id: {
+                    noncanonical_id: {
                         "status": DocStatus.PROCESSED,
-                        "content_summary": "legacy",
+                        "content_summary": "noncanonical",
                         "content_length": 7,
                         "file_path": "/inputs/legacy.txt",
-                        "track_id": "legacy-track",
+                        "track_id": "noncanonical-track",
                         "created_at": "2025-01-01T00:00:00+00:00",
                         "updated_at": "2025-01-01T00:00:00+00:00",
                         "chunks_list": [],
@@ -1492,19 +1492,22 @@ def test_basename_lookup_finds_legacy_full_path_records(tmp_path):
             )
 
             match = await rag.doc_status.get_doc_by_file_basename("legacy.txt")
-            assert match is not None
-            doc_id, doc = match
-            assert doc_id == legacy_id
-            assert doc["file_path"] == "/inputs/legacy.txt"
+            assert match is None
 
-            # Re-enqueueing the same basename hits the filename guard.
+            # Re-enqueueing through the business path stores the canonical
+            # basename and is not blocked by a noncanonical storage row.
             await rag.apipeline_enqueue_documents(
                 "fresh body",
                 file_paths="legacy.txt",
                 track_id="track-x",
             )
             new_id = compute_mdhash_id("legacy.txt", prefix="doc-")
-            assert await rag.full_docs.get_by_id(new_id) is None
+            full_doc = await rag.full_docs.get_by_id(new_id)
+            status = await rag.doc_status.get_by_id(new_id)
+            assert full_doc is not None
+            assert status is not None
+            assert full_doc["file_path"] == "legacy.txt"
+            assert status["file_path"] == "legacy.txt"
         finally:
             await rag.finalize_storages()
 

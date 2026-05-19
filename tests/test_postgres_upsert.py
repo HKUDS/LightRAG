@@ -150,7 +150,7 @@ async def test_upsert_text_chunks_tuple_order():
             "chunk_order_index": 0,
             "full_doc_id": "doc-1",
             "content": "hello world",
-            "file_path": "/a/b.txt",
+            "file_path": "/a/b.[native-Fi].txt",
             "llm_cache_list": ["cache-key"],
             "heading": {"level": 2, "text": "Section A"},
             "sidecar": {"type": "drawing", "id": "img-1", "refs": []},
@@ -172,7 +172,7 @@ async def test_upsert_text_chunks_tuple_order():
     assert row[3] == 0  # chunk_order_index
     assert row[4] == "doc-1"  # full_doc_id
     assert row[5] == "hello world"  # content
-    assert row[6] == "/a/b.txt"  # file_path
+    assert row[6] == "/a/b.[native-Fi].txt"  # file_path
     assert json.loads(row[7]) == ["cache-key"]  # llm_cache_list
     assert json.loads(row[8]) == {"level": 2, "text": "Section A"}  # heading
     assert json.loads(row[9]) == {
@@ -237,7 +237,7 @@ async def test_upsert_full_docs_tuple_order():
     data = {
         "doc-1": {
             "content": "full text",
-            "file_path": "/path/doc.pdf",
+            "file_path": "/path/doc.[mineru-Fi].pdf",
             "sidecar_location": "lightrag://sidecar/doc-1",
             "parse_format": "lightrag",
             "content_hash": "deadbeef",
@@ -255,7 +255,7 @@ async def test_upsert_full_docs_tuple_order():
     #       content_hash, process_options, chunk_options, parse_engine)
     assert row[0] == "doc-1"
     assert row[1] == "full text"
-    assert row[2] == "/path/doc.pdf"
+    assert row[2] == "/path/doc.[mineru-Fi].pdf"
     assert row[3] == "test_ws"
     assert row[4] == "lightrag://sidecar/doc-1"
     assert row[5] == "lightrag"
@@ -601,7 +601,7 @@ async def test_doc_status_upsert_includes_content_hash():
                 "content_length": 12,
                 "chunks_count": 1,
                 "status": "processed",
-                "file_path": "/a.txt",
+                "file_path": "/uploads/a.[native-Fi].txt",
                 "chunks_list": ["chunk-1"],
                 "metadata": {"source": "test"},
                 "content_hash": "abc123",
@@ -618,6 +618,7 @@ async def test_doc_status_upsert_includes_content_hash():
     # Tuple layout: workspace, id, content_summary, content_length, chunks_count,
     # status, file_path, chunks_list, track_id, metadata, error_msg,
     # content_hash, created_at, updated_at
+    assert row[6] == "/uploads/a.[native-Fi].txt"
     assert row[11] == "abc123"
 
 
