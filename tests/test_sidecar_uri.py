@@ -92,12 +92,8 @@ def test_sidecar_blocks_path_locates_jsonl(tmp_path):
     uri = sidecar_uri_for(sidecar_dir)
 
     assert sidecar_blocks_path(uri) == str(blocks)
-    assert sidecar_modality_path(uri, "tables") == str(
-        sidecar_dir / "demo.tables.json"
-    )
-    assert sidecar_assets_dir_for_uri(uri) == Path(
-        sidecar_dir / "demo.blocks.assets"
-    )
+    assert sidecar_modality_path(uri, "tables") == str(sidecar_dir / "demo.tables.json")
+    assert sidecar_assets_dir_for_uri(uri) == Path(sidecar_dir / "demo.blocks.assets")
 
 
 @pytest.mark.offline

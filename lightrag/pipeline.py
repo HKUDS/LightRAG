@@ -388,9 +388,7 @@ class _PipelineMixin:
             doc_options = _process_options_at(index)
             if chunk_options is not None:
                 return slim_chunk_options(chunk_options[index], doc_options)
-            return resolve_chunk_options(
-                self.addon_params, process_options=doc_options
-            )
+            return resolve_chunk_options(self.addon_params, process_options=doc_options)
 
         # 1. Validate ids and build contents (when lightrag: no content dedup, content may be empty)
         if ids is not None:
@@ -2348,9 +2346,7 @@ class _PipelineMixin:
             if document_name == "unknown_source":
                 document_name = p.name or f"{doc_id}.bin"
             base_name = Path(document_name).stem or document_name
-            parsed_dir = parsed_artifact_dir_for(
-                document_name, parent_hint=p.parent
-            )
+            parsed_dir = parsed_artifact_dir_for(document_name, parent_hint=p.parent)
             asset_dir = parsed_dir / f"{base_name}.blocks.assets"
 
             def _extract_blocks_sync() -> (

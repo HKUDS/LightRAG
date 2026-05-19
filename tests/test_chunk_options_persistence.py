@@ -354,8 +354,12 @@ def test_constructor_chunk_size_overlays_addon_params(tmp_path, monkeypatch):
     # remain unchanged.
     assert addon_params["chunker"]["chunk_token_size"] == 7
     assert addon_params["chunker"]["fixed_token"]["chunk_overlap_token_size"] == 2
-    assert addon_params["chunker"]["recursive_character"]["chunk_overlap_token_size"] == 2
-    assert addon_params["chunker"]["paragraph_semantic"]["chunk_overlap_token_size"] == 2
+    assert (
+        addon_params["chunker"]["recursive_character"]["chunk_overlap_token_size"] == 2
+    )
+    assert (
+        addon_params["chunker"]["paragraph_semantic"]["chunk_overlap_token_size"] == 2
+    )
     assert "chunk_overlap_token_size" not in addon_params["chunker"]["semantic_vector"]
 
 
@@ -460,7 +464,9 @@ def test_strategy_env_wins_over_legacy_ctor_field(tmp_path, monkeypatch):
         return row_r, row_f, row_p, rag.chunk_overlap_token_size
 
     row_r, row_f, row_p, ctor_field = asyncio.run(_run())
-    assert row_r["chunk_options"]["recursive_character"]["chunk_overlap_token_size"] == 42, (
+    assert (
+        row_r["chunk_options"]["recursive_character"]["chunk_overlap_token_size"] == 42
+    ), (
         "Strategy-specific CHUNK_R_OVERLAP_SIZE must win over the "
         "legacy chunk_overlap_token_size constructor field."
     )
@@ -506,8 +512,12 @@ def test_legacy_env_is_final_fallback(tmp_path, monkeypatch):
 
     row_f, row_r, row_p, ctor_field = asyncio.run(_run())
     assert row_f["chunk_options"]["fixed_token"]["chunk_overlap_token_size"] == 77
-    assert row_r["chunk_options"]["recursive_character"]["chunk_overlap_token_size"] == 77
-    assert row_p["chunk_options"]["paragraph_semantic"]["chunk_overlap_token_size"] == 77
+    assert (
+        row_r["chunk_options"]["recursive_character"]["chunk_overlap_token_size"] == 77
+    )
+    assert (
+        row_p["chunk_options"]["paragraph_semantic"]["chunk_overlap_token_size"] == 77
+    )
     assert ctor_field == 77
 
     # Mixed case: F-specific env set, legacy still acts as R's fallback.
@@ -537,8 +547,12 @@ def test_legacy_env_is_final_fallback(tmp_path, monkeypatch):
 
     row_f, row_r, row_p = asyncio.run(_run_mixed())
     assert row_f["chunk_options"]["fixed_token"]["chunk_overlap_token_size"] == 10
-    assert row_r["chunk_options"]["recursive_character"]["chunk_overlap_token_size"] == 77
-    assert row_p["chunk_options"]["paragraph_semantic"]["chunk_overlap_token_size"] == 77
+    assert (
+        row_r["chunk_options"]["recursive_character"]["chunk_overlap_token_size"] == 77
+    )
+    assert (
+        row_p["chunk_options"]["paragraph_semantic"]["chunk_overlap_token_size"] == 77
+    )
 
 
 @pytest.mark.offline

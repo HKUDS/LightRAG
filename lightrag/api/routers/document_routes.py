@@ -1181,9 +1181,7 @@ async def _release_enqueue_slot(rag: LightRAG) -> None:
             pipeline_status["pending_enqueues"] = current - 1
 
 
-def find_existing_file_by_file_path(
-    input_dir: Path, file_path: str
-) -> Path | None:
+def find_existing_file_by_file_path(input_dir: Path, file_path: str) -> Path | None:
     """Find an input-dir file whose canonical basename matches ``file_path``.
 
     Callers pass the stored canonical ``file_path`` (already hint-stripped);
@@ -1296,9 +1294,7 @@ def delete_file_variants_by_file_path(
                 continue
 
             if in_parsed_dir and candidate.is_dir():
-                canonical_for_dir = _file_path_for_parsed_artifact_dir(
-                    candidate.name
-                )
+                canonical_for_dir = _file_path_for_parsed_artifact_dir(candidate.name)
                 if (
                     canonical_for_dir is None
                     or canonical_for_dir not in canonical_names
