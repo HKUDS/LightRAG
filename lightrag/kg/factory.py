@@ -8,10 +8,10 @@ else is resolved lazily through the registry.
 
 from __future__ import annotations
 
+import importlib
 from typing import Any, Callable
 
 from lightrag.kg import STORAGES
-from lightrag.utils import lazy_external_import
 
 
 def get_storage_class(storage_name: str) -> Callable[..., Any]:
@@ -33,6 +33,10 @@ def get_storage_class(storage_name: str) -> Callable[..., Any]:
 
         return JsonDocStatusStorage
 
-    # Fallback to dynamic import for other storage implementations
+    # Fallback to dynamic import for other storage implementations.
+    # STORAGES values are relative paths (e.g. ".kg.postgres_impl") authored
+    # against the top-level ``lightrag`` package, so anchor the import there
+    # rather than letting it resolve against this module's own package.
     import_path = STORAGES[storage_name]
-    return lazy_external_import(import_path, storage_name)
+    module = importlib.import_module(import_path, package="lightrag")
+    return getattr(module, storage_name)
