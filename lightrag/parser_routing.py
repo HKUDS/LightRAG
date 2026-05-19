@@ -668,7 +668,7 @@ def resolve_stored_document_parser_engine(
     if content_data:
         doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
         if doc_format == FULL_DOCS_FORMAT_LIGHTRAG and content_data.get(
-            "lightrag_document_path"
+            "sidecar_location"
         ):
             return PARSER_ENGINE_NATIVE
         if doc_format != FULL_DOCS_FORMAT_PENDING_PARSE:

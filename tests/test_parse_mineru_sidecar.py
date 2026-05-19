@@ -202,7 +202,7 @@ def test_parse_mineru_emits_compliant_sidecar(
             parsed = await rag.parse_mineru(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1, "download_into should run once on miss"
 
@@ -338,7 +338,7 @@ def test_parse_mineru_cache_hit_skips_download(
             await rag.parse_mineru(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1
 
@@ -346,7 +346,7 @@ def test_parse_mineru_cache_hit_skips_download(
             await rag.parse_mineru(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1, "cache hit must not re-download"
 
@@ -355,7 +355,7 @@ def test_parse_mineru_cache_hit_skips_download(
             await rag.parse_mineru(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 2
         finally:
@@ -411,7 +411,7 @@ def test_parse_mineru_upload_name_strips_parser_hint(
             parsed = await rag.parse_mineru(
                 doc_id=doc_id,
                 file_path=src.name,
-                content_data={"source_path": str(src)},
+                content_data={},
             )
 
             assert counters["upload_names"] == ["demo.pdf"]
@@ -487,7 +487,7 @@ def test_parse_mineru_cache_invalidates_on_source_change(
             await rag.parse_mineru(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1
 
@@ -498,7 +498,7 @@ def test_parse_mineru_cache_invalidates_on_source_change(
             await rag.parse_mineru(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 2
         finally:

@@ -1,4 +1,4 @@
-"""``delete_file_variants_by_canonical_basename`` now also clears the
+"""``delete_file_variants_by_file_path`` now also clears the
 MinerU raw bundle (``*.mineru_raw/``) alongside the sidecar
 (``*.parsed/``) and source file when ``delete_file=True`` is selected.
 """
@@ -15,29 +15,29 @@ import pytest
 sys.argv = sys.argv[:1]
 
 from lightrag.api.routers.document_routes import (  # noqa: E402
-    _canonical_basename_for_parsed_artifact_dir,
-    delete_file_variants_by_canonical_basename,
+    _file_path_for_parsed_artifact_dir,
+    delete_file_variants_by_file_path,
 )
 from lightrag.constants import PARSED_DIR_NAME  # noqa: E402
 
 
 @pytest.mark.offline
 def test_canonical_basename_recognizes_both_suffixes() -> None:
-    assert _canonical_basename_for_parsed_artifact_dir("foo.pdf.parsed") == "foo.pdf"
+    assert _file_path_for_parsed_artifact_dir("foo.pdf.parsed") == "foo.pdf"
     assert (
-        _canonical_basename_for_parsed_artifact_dir("foo.pdf.mineru_raw") == "foo.pdf"
+        _file_path_for_parsed_artifact_dir("foo.pdf.mineru_raw") == "foo.pdf"
     )
     # archive variants (parsed_001, mineru_raw_002, ...) handled
     assert (
-        _canonical_basename_for_parsed_artifact_dir("foo.pdf.parsed_001") == "foo.pdf"
+        _file_path_for_parsed_artifact_dir("foo.pdf.parsed_001") == "foo.pdf"
     )
     assert (
-        _canonical_basename_for_parsed_artifact_dir("foo.pdf.mineru_raw_002")
+        _file_path_for_parsed_artifact_dir("foo.pdf.mineru_raw_002")
         == "foo.pdf"
     )
     # unrelated names don't match
-    assert _canonical_basename_for_parsed_artifact_dir("foo.parsed.bak") is None
-    assert _canonical_basename_for_parsed_artifact_dir("notes.txt") is None
+    assert _file_path_for_parsed_artifact_dir("foo.parsed.bak") is None
+    assert _file_path_for_parsed_artifact_dir("notes.txt") is None
 
 
 @pytest.mark.offline
@@ -65,8 +65,8 @@ def test_delete_file_variants_removes_parsed_and_mineru_raw(
     (raw_dir / "images").mkdir()
     (raw_dir / "images" / "img.png").write_bytes(b"png")
 
-    deleted, errors = delete_file_variants_by_canonical_basename(
-        input_dir, file_path="demo.pdf", source_path=None
+    deleted, errors = delete_file_variants_by_file_path(
+        input_dir, file_path="demo.pdf"
     )
 
     # Both directories and the archived source file were deleted.
@@ -95,8 +95,8 @@ def test_delete_file_variants_handles_only_raw_dir(tmp_path: Path) -> None:
     raw_dir.mkdir()
     (raw_dir / "_manifest.json").write_text("{}")
 
-    deleted, errors = delete_file_variants_by_canonical_basename(
-        input_dir, file_path="demo.pdf", source_path=None
+    deleted, errors = delete_file_variants_by_file_path(
+        input_dir, file_path="demo.pdf"
     )
     assert errors == []
     assert any("demo.pdf.mineru_raw" in p for p in deleted)
@@ -118,8 +118,8 @@ def test_delete_file_variants_leaves_unrelated_dirs(tmp_path: Path) -> None:
     other_parsed = parsed_root / "other.pdf.parsed"
     other_parsed.mkdir()
 
-    deleted, errors = delete_file_variants_by_canonical_basename(
-        input_dir, file_path="demo.pdf", source_path=None
+    deleted, errors = delete_file_variants_by_file_path(
+        input_dir, file_path="demo.pdf"
     )
     assert errors == []
     assert not target_raw.exists()

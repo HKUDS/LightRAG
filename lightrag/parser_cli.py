@@ -153,7 +153,9 @@ async def _run(args: argparse.Namespace) -> int:
     doc_id = args.doc_id or compute_mdhash_id(str(source), prefix="doc-")
 
     def _patched_artifact_dir(
-        source_path: str | None = None, file_path: str | None = None
+        file_path: str | None = None,
+        *,
+        parent_hint: Any | None = None,
     ) -> Path:
         # Flatten the production "<INPUT_DIR>/__parsed__/<base>.parsed/"
         # layout to "<sidecar_parent>/<source.name>.parsed/" so the sidecar
@@ -176,19 +178,19 @@ async def _run(args: argparse.Namespace) -> int:
 
     with ExitStack() as stack:
         # Patch 1: redirect sidecar output to the flat layout.
-        # parsed_artifact_dir_for_source is from-imported into pipeline at
+        # parsed_artifact_dir_for is from-imported into pipeline at
         # module load, so patch both namespaces.
         stack.enter_context(
             mock.patch.object(
                 utils_pipeline_mod,
-                "parsed_artifact_dir_for_source",
+                "parsed_artifact_dir_for",
                 _patched_artifact_dir,
             )
         )
         stack.enter_context(
             mock.patch.object(
                 pipeline_mod,
-                "parsed_artifact_dir_for_source",
+                "parsed_artifact_dir_for",
                 _patched_artifact_dir,
             )
         )
@@ -225,7 +227,6 @@ async def _run(args: argparse.Namespace) -> int:
             {
                 "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
                 "content": "",
-                "source_path": str(source),
             },
         )
 

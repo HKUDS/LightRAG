@@ -5,7 +5,6 @@ from enum import Enum
 import os
 from dotenv import load_dotenv
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import (
     Any,
     Literal,
@@ -782,7 +781,13 @@ class DocProcessingStatus:
     content_length: int
     """Total length of document"""
     file_path: str
-    """File path of the document"""
+    """Canonical basename of the document.
+
+    Always a hint-stripped basename (e.g. ``abc.docx``) or the literal
+    ``"unknown_source"`` sentinel; never carries directory components or
+    parser ``[hint]`` segments. UI display, filename-based dedup, and
+    citation paths all share this value.
+    """
     status: DocStatus
     """Current processing status"""
     created_at: str
@@ -805,12 +810,6 @@ class DocProcessingStatus:
 
     Used together with file_path basename for duplicate detection. Empty for
     pending_parse records whose content has not been extracted yet.
-    """
-    canonical_basename: str | None = None
-    """Canonical (parser-hint stripped) basename used as the dedup index key.
-
-    Stored alongside the original ``file_path`` so backends can look records
-    up by ``abc.docx`` even when the user-visible name is ``abc.[native].docx``.
     """
     """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
 
@@ -921,14 +920,14 @@ class DocStatusStorage(BaseKVStorage, ABC):
     async def get_doc_by_file_basename(
         self, basename: str
     ) -> tuple[str, dict[str, Any]] | None:
-        """Get document by file basename (filename without directory).
+        """Get document by canonical file basename.
 
-        Used for filename-based deduplication.  Comparison is performed
-        against the canonical (parser-hint stripped) basename, so callers may
-        pass either the original or the canonical form.  Backends that can
-        index by ``canonical_basename`` should override this for efficiency.
-        The default implementation scans all documents via
-        :meth:`get_docs_by_statuses`.
+        Used for filename-based deduplication. Inputs are canonicalized via
+        :func:`lightrag.utils_pipeline.normalize_document_file_path`, so
+        callers may pass either ``abc.docx`` or ``abc.[native-iet].docx``.
+        Stored ``file_path`` values are already canonical for new records;
+        legacy rows that still carry a hint segment are also matched via a
+        defensive second normalization.
 
         Args:
             basename: The filename basename to search for (e.g. "report.pdf").
@@ -938,11 +937,13 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """
         if not basename:
             return None
-        # Imported lazily to avoid a hard dependency at module-load time and
-        # because parser_routing already depends on lightrag.constants.
-        from lightrag.parser_routing import canonicalize_parser_hinted_basename
+        # Lazy import avoids the module-load cycle (utils_pipeline imports
+        # DocProcessingStatus from this module).
+        from lightrag.utils_pipeline import normalize_document_file_path
 
-        target = canonicalize_parser_hinted_basename(basename)
+        target = normalize_document_file_path(basename)
+        if target == "unknown_source":
+            return None
         try:
             docs = await self.get_docs_by_statuses(list(DocStatus))
         except NotImplementedError:
@@ -950,23 +951,14 @@ class DocStatusStorage(BaseKVStorage, ABC):
         except Exception:
             return None
         for doc_id, doc in docs.items():
-            stored_canonical = (
-                doc.get("canonical_basename")
+            stored = (
+                doc.get("file_path")
                 if isinstance(doc, dict)
-                else getattr(doc, "canonical_basename", None)
+                else getattr(doc, "file_path", None)
             )
-            if not stored_canonical:
-                existing_path = (
-                    doc.get("file_path")
-                    if isinstance(doc, dict)
-                    else getattr(doc, "file_path", None)
-                )
-                if not existing_path:
-                    continue
-                stored_canonical = canonicalize_parser_hinted_basename(
-                    Path(str(existing_path)).name
-                )
-            if stored_canonical == target:
+            if not stored:
+                continue
+            if stored == target or normalize_document_file_path(stored) == target:
                 return doc_id, (doc if isinstance(doc, dict) else asdict(doc))
         return None
 
@@ -1022,7 +1014,6 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
-    source_path: str | None = None
 
 
 # Unified Query Result Data Structures for Reference List Support

@@ -364,9 +364,9 @@ def test_apipeline_enqueue_persists_process_options(tmp_path):
             doc_id = compute_mdhash_id("abc.docx", prefix="doc-")
             full_doc = await rag.full_docs.get_by_id(doc_id)
             assert full_doc is not None
-            # full_docs preserves the user-visible name and the canonical key.
-            assert full_doc["file_path"] == "abc.[native-R!].docx"
-            assert full_doc.get("canonical_basename") == "abc.docx"
+            # full_docs stores the canonical (hint-stripped) basename only.
+            assert full_doc["file_path"] == "abc.docx"
+            assert "canonical_basename" not in full_doc
             assert full_doc.get("process_options") == "R!"
 
             status_doc = await rag.doc_status.get_by_id(doc_id)
@@ -534,7 +534,6 @@ def test_resume_purges_old_chunks_when_content_already_extracted(tmp_path):
                     doc_id: {
                         "content": "previously extracted body",
                         "file_path": "resume.txt",
-                        "canonical_basename": "resume.txt",
                         "parse_format": "raw",
                         "parse_engine": "legacy",
                         "content_hash": "deadbeef",
@@ -553,7 +552,6 @@ def test_resume_purges_old_chunks_when_content_already_extracted(tmp_path):
                         "created_at": "2026-01-01T00:00:00+00:00",
                         "updated_at": "2026-01-01T00:00:01+00:00",
                         "file_path": "resume.txt",
-                        "canonical_basename": "resume.txt",
                         "track_id": "track-resume",
                         "content_hash": "deadbeef",
                         "chunks_list": stale_chunks,
@@ -612,7 +610,6 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
                     doc_id: {
                         "content": "fresh body",
                         "file_path": "noskip.txt",
-                        "canonical_basename": "noskip.txt",
                         "parse_format": "raw",
                         "parse_engine": "legacy",
                         "content_hash": "fresh",
@@ -628,7 +625,6 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
                         "created_at": "2026-01-01T00:00:00+00:00",
                         "updated_at": "2026-01-01T00:00:01+00:00",
                         "file_path": "noskip.txt",
-                        "canonical_basename": "noskip.txt",
                         "track_id": "track-noskip",
                         "content_hash": "fresh",
                         "chunks_list": [],
@@ -1334,10 +1330,11 @@ def test_enqueue_dedupes_parser_hinted_filename_variants(tmp_path):
             first_id = compute_mdhash_id("abc.docx", prefix="doc-")
             first_doc = await rag.full_docs.get_by_id(first_id)
             assert first_doc is not None
-            # file_path keeps the user's original basename verbatim, while
-            # canonical_basename carries the dedup key.
+            # ``file_path`` is the canonical (hint-stripped) basename and
+            # serves as the dedup key — no separate ``canonical_basename``
+            # field is written.
             assert first_doc["file_path"] == "abc.docx"
-            assert first_doc.get("canonical_basename") == "abc.docx"
+            assert "canonical_basename" not in first_doc
 
             await rag.apipeline_enqueue_documents(
                 "changed body",
@@ -1347,12 +1344,11 @@ def test_enqueue_dedupes_parser_hinted_filename_variants(tmp_path):
             assert (await rag.full_docs.get_by_id(first_id))["content"] == "alpha body"
 
             failed_docs = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
-            # The duplicate record reflects the second attempt's user-visible
-            # basename (hint preserved); the canonical dedup happened against
-            # ``abc.docx`` regardless.
+            # The duplicate record stores the canonical basename — hint is
+            # not preserved anywhere in the new schema.
             assert any(
                 getattr(doc, "metadata", {}).get("duplicate_kind") == "filename"
-                and getattr(doc, "file_path", "") == "abc.[native].docx"
+                and getattr(doc, "file_path", "") == "abc.docx"
                 for doc in failed_docs.values()
             )
         finally:
@@ -1362,15 +1358,14 @@ def test_enqueue_dedupes_parser_hinted_filename_variants(tmp_path):
 
 
 @pytest.mark.offline
-def test_delete_result_preserves_parser_hinted_source_path(tmp_path):
+def test_delete_result_uses_canonical_file_path(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
-            source_path = str(tmp_path / "abc.[native].docx")
             await rag.apipeline_enqueue_documents(
                 "",
-                file_paths=source_path,
+                file_paths=str(tmp_path / "abc.[native].docx"),
                 docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
                 parse_engine=PARSER_ENGINE_NATIVE,
                 track_id="track-delete-source",
@@ -1380,10 +1375,11 @@ def test_delete_result_preserves_parser_hinted_source_path(tmp_path):
             result = await rag.adelete_by_doc_id(doc_id)
 
             assert result.status == "success"
-            # ``file_path`` now preserves the parser-hint segment for UI
-            # display; canonicalisation only affects the dedup key.
-            assert result.file_path == "abc.[native].docx"
-            assert result.source_path == source_path
+            # New schema: file_path is the canonical (hint-stripped)
+            # basename; the ``source_path`` field is no longer carried on
+            # DeletionResult.
+            assert result.file_path == "abc.docx"
+            assert not hasattr(result, "source_path")
         finally:
             await rag.finalize_storages()
 
@@ -1647,10 +1643,10 @@ def test_persist_parsed_full_docs_syncs_hash_to_doc_status(tmp_path):
 
 @pytest.mark.offline
 def test_persist_parsed_full_docs_preserves_pending_metadata(tmp_path):
-    """``_persist_parsed_full_docs`` must keep process_options / canonical_basename
-    seeded at enqueue time so downstream stages (analyze_multimodal,
-    chunking selection, KG-skip) still see the user's original opt-ins after
-    the parse-result record overwrites the pending_parse row.
+    """``_persist_parsed_full_docs`` must keep process_options seeded at
+    enqueue time so downstream stages (analyze_multimodal, chunking
+    selection, KG-skip) still see the user's original opt-ins after the
+    parse-result record overwrites the pending_parse row.
     """
 
     async def _run():
@@ -1670,8 +1666,8 @@ def test_persist_parsed_full_docs_preserves_pending_metadata(tmp_path):
             pre = await rag.full_docs.get_by_id(doc_id)
             assert pre is not None
             assert pre.get("process_options") == "iet!"
-            assert pre.get("canonical_basename") == "report.docx"
-            assert pre.get("file_path") == "report.[native-iet!].docx"
+            assert "canonical_basename" not in pre
+            assert pre.get("file_path") == "report.docx"
 
             # Simulate a parse_* completion: pass only the fresh fields the
             # parsers actually emit and verify that pre-existing metadata
@@ -1680,7 +1676,7 @@ def test_persist_parsed_full_docs_preserves_pending_metadata(tmp_path):
                 doc_id,
                 {
                     "content": "extracted body",
-                    "file_path": "report.[native-iet!].docx",
+                    "file_path": "report.docx",
                     "parse_format": "raw",
                     "parse_engine": PARSER_ENGINE_NATIVE,
                     "update_time": 12345,
@@ -1694,8 +1690,7 @@ def test_persist_parsed_full_docs_preserves_pending_metadata(tmp_path):
             assert post["parse_format"] == "raw"
             # ...while metadata seeded at enqueue time is preserved.
             assert post.get("process_options") == "iet!"
-            assert post.get("canonical_basename") == "report.docx"
-            assert post.get("file_path") == "report.[native-iet!].docx"
+            assert post.get("file_path") == "report.docx"
             # And content_hash is freshly computed from the parsed body.
             assert post["content_hash"] == compute_mdhash_id(
                 "extracted body", prefix=""
@@ -2314,7 +2309,6 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(
             file_path="demo.docx",
             content_list=content_list,
             engine="docling",
-            source_path=str(source_path),
         )
 
         blocks_path = Path(parsed["blocks_path"])
@@ -2356,9 +2350,12 @@ def test_write_lightrag_document_preserves_headings_and_table_dimensions(
         assert drawings["drawings"]["im-1-0001"]["heading"] == "1.1 研究背景"
 
         full_doc = await rag.full_docs.get_by_id("doc-1")
-        assert full_doc["lightrag_document_path"] == (
-            "__parsed__/demo.docx.parsed/demo.blocks.jsonl"
-        )
+        expected_sidecar_dir = (
+            tmp_path / PARSED_DIR_NAME / "demo.docx.parsed"
+        ).resolve()
+        assert full_doc["sidecar_location"].startswith("file://")
+        assert full_doc["sidecar_location"].endswith("/")
+        assert str(expected_sidecar_dir) in full_doc["sidecar_location"]
 
         await rag.finalize_storages()
 
@@ -2382,7 +2379,6 @@ def test_write_lightrag_document_strips_parser_hint_from_artifact_names(
                 file_path="demo.[native].docx",
                 content_list=[{"type": "text", "text": "body"}],
                 engine="native",
-                source_path=str(source_path),
             )
 
             blocks_path = Path(parsed["blocks_path"])
@@ -2392,9 +2388,12 @@ def test_write_lightrag_document_strips_parser_hint_from_artifact_names(
             assert not source_path.exists()
             assert (tmp_path / PARSED_DIR_NAME / source_path.name).exists()
             full_doc = await rag.full_docs.get_by_id("doc-hinted")
-            assert full_doc["lightrag_document_path"] == (
-                "__parsed__/demo.docx.parsed/demo.blocks.jsonl"
-            )
+            expected_sidecar_dir = (
+                tmp_path / PARSED_DIR_NAME / "demo.docx.parsed"
+            ).resolve()
+            assert full_doc["sidecar_location"].startswith("file://")
+            assert full_doc["sidecar_location"].endswith("/")
+            assert str(expected_sidecar_dir) in full_doc["sidecar_location"]
         finally:
             await rag.finalize_storages()
 
@@ -2591,9 +2590,9 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         # Per docs/FileProcessingConfiguration-zh.md spec, ``content`` is now
         # ``{{LRdoc}}`` followed by a leading-text summary of the document.
         assert full_doc["content"].startswith("{{LRdoc}}")
-        assert full_doc["lightrag_document_path"] == str(
-            blocks_path.relative_to(input_dir)
-        )
+        assert full_doc["sidecar_location"].startswith("file://")
+        assert full_doc["sidecar_location"].endswith("/")
+        assert str(blocks_path.parent.resolve()) in full_doc["sidecar_location"]
 
         await rag.finalize_storages()
 

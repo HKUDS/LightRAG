@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 import os
-from pathlib import Path
 from typing import Any, Union, final
 
 from lightrag.base import (
@@ -406,31 +405,29 @@ class JsonDocStatusStorage(DocStatusStorage):
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Find an existing record whose canonical basename matches.
 
-        Compares against the stored ``canonical_basename`` field, falling
-        back to ``canonicalize_parser_hinted_basename(file_path)`` for
-        legacy records that pre-date the field.  Inputs are likewise
-        canonicalized so callers can pass either ``abc.docx`` or
-        ``abc.[native].docx``.
+        Inputs are normalized via
+        :func:`lightrag.utils_pipeline.normalize_document_file_path`, so
+        callers may pass either the canonical (``abc.docx``) or the
+        hint-bearing (``abc.[native].docx``) form. New records store
+        ``file_path`` already canonical; the second normalization protects
+        legacy rows that still carry a hint segment.
         """
         if not basename:
             return None
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
 
-        from lightrag.parser_routing import canonicalize_parser_hinted_basename
+        from lightrag.utils_pipeline import normalize_document_file_path
 
-        target = canonicalize_parser_hinted_basename(basename)
+        target = normalize_document_file_path(basename)
+        if target == "unknown_source":
+            return None
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
-                stored_canonical = doc_data.get("canonical_basename")
-                if not stored_canonical:
-                    stored_path = doc_data.get("file_path")
-                    if not stored_path:
-                        continue
-                    stored_canonical = canonicalize_parser_hinted_basename(
-                        Path(str(stored_path)).name
-                    )
-                if stored_canonical == target:
+                stored = doc_data.get("file_path")
+                if not stored:
+                    continue
+                if stored == target or normalize_document_file_path(stored) == target:
                     return doc_id, doc_data
         return None
 

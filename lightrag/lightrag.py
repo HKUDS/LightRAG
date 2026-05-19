@@ -2779,7 +2779,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         deletion_stage = "initializing"
         doc_status_data: dict[str, Any] | None = None
         file_path: str | None = None
-        source_path: str | None = None
 
         async with pipeline_status_lock:
             log_message = f"Starting deletion process for document {doc_id}"
@@ -2800,9 +2799,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     file_path="",
                 )
             file_path = doc_status_data.get("file_path")
-            full_doc_data = await self.full_docs.get_by_id(doc_id)
-            if isinstance(full_doc_data, dict):
-                source_path = full_doc_data.get("source_path")
 
             # Check document status and log warning for non-completed documents
             raw_status = doc_status_data.get("status")
@@ -2926,7 +2922,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     message=log_message,
                     status_code=200,
                     file_path=file_path,
-                    source_path=source_path,
                 )
 
             # Mark that deletion operations have started
@@ -3510,7 +3505,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 message=log_message,
                 status_code=200,
                 file_path=file_path,
-                source_path=source_path,
             )
 
         except Exception as e:
@@ -3549,7 +3543,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 message=error_message,
                 status_code=500,
                 file_path=file_path,
-                source_path=source_path,
             )
 
         finally:

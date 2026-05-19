@@ -1181,17 +1181,22 @@ async def _release_enqueue_slot(rag: LightRAG) -> None:
             pipeline_status["pending_enqueues"] = current - 1
 
 
-def find_existing_file_by_canonical_basename(
-    input_dir: Path, canonical_basename: str
+def find_existing_file_by_file_path(
+    input_dir: Path, file_path: str
 ) -> Path | None:
-    """Find an input-dir file whose canonical basename matches."""
-    if not canonical_basename or canonical_basename == UNKNOWN_FILE_SOURCE:
+    """Find an input-dir file whose canonical basename matches ``file_path``.
+
+    Callers pass the stored canonical ``file_path`` (already hint-stripped);
+    on-disk filenames are normalized before comparison so a hint-bearing
+    variant on disk still matches a canonical stored ``file_path``.
+    """
+    if not file_path or file_path == UNKNOWN_FILE_SOURCE:
         return None
     try:
         for candidate in input_dir.iterdir():
             if not candidate.is_file():
                 continue
-            if normalize_file_path(candidate.name) == canonical_basename:
+            if normalize_file_path(candidate.name) == file_path:
                 return candidate
     except FileNotFoundError:
         return None
@@ -1212,7 +1217,7 @@ def canonicalize_archived_file_variant_basename(
     return normalize_file_path(f"{stem}{path.suffix}")
 
 
-def _canonical_basename_for_parsed_artifact_dir(dir_name: str) -> str | None:
+def _file_path_for_parsed_artifact_dir(dir_name: str) -> str | None:
     """Return the canonical source basename for a parser artifact dir.
 
     Recognized layouts (suffix list in
@@ -1236,20 +1241,17 @@ def _canonical_basename_for_parsed_artifact_dir(dir_name: str) -> str | None:
     return None
 
 
-def delete_file_variants_by_canonical_basename(
+def delete_file_variants_by_file_path(
     input_dir: Path,
     file_path: str | None,
-    source_path: str | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Delete input/__parsed__ source files matching a canonical basename."""
-    source_names = [source_path, file_path]
-    canonical_names = {
-        normalize_file_path(source)
-        for source in source_names
-        if source and normalize_file_path(source) != UNKNOWN_FILE_SOURCE
-    }
-    if not canonical_names:
+    """Delete input/__parsed__ source files matching a canonical ``file_path``."""
+    if not file_path:
         return [], []
+    canonical = normalize_file_path(file_path)
+    if canonical == UNKNOWN_FILE_SOURCE:
+        return [], []
+    canonical_names = {canonical}
 
     deleted_files: list[str] = []
     errors: list[str] = []
@@ -1294,7 +1296,7 @@ def delete_file_variants_by_canonical_basename(
                 continue
 
             if in_parsed_dir and candidate.is_dir():
-                canonical_for_dir = _canonical_basename_for_parsed_artifact_dir(
+                canonical_for_dir = _file_path_for_parsed_artifact_dir(
                     candidate.name
                 )
                 if (
@@ -2468,17 +2470,16 @@ async def background_delete_documents(
                         pipeline_status["history_messages"].append(success_msg)
 
                     # Handle file deletion if requested and source information is available
-                    result_source_path = getattr(result, "source_path", None)
-                    if delete_file and (
-                        (result.file_path and result.file_path != UNKNOWN_FILE_SOURCE)
-                        or result_source_path
+                    if (
+                        delete_file
+                        and result.file_path
+                        and result.file_path != UNKNOWN_FILE_SOURCE
                     ):
                         try:
                             deleted_files, file_delete_errors = (
-                                delete_file_variants_by_canonical_basename(
+                                delete_file_variants_by_file_path(
                                     doc_manager.input_dir,
                                     result.file_path,
-                                    result_source_path,
                                 )
                             )
                             for file_delete_error in file_delete_errors:
@@ -2505,7 +2506,7 @@ async def background_delete_documents(
                             else:
                                 file_error_msg = (
                                     "File deletion skipped, missing or unsafe file: "
-                                    f"{result.file_path or result_source_path}"
+                                    f"{result.file_path}"
                                 )
                                 logger.warning(file_error_msg)
                                 async with pipeline_status_lock:
@@ -2863,7 +2864,7 @@ def create_document_routes(
             if file_path.exists():
                 existing_input_file: Path | None = file_path
             else:
-                existing_input_file = find_existing_file_by_canonical_basename(
+                existing_input_file = find_existing_file_by_file_path(
                     doc_manager.input_dir, canonical_filename
                 )
             if existing_input_file:
