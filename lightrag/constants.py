@@ -270,7 +270,7 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
     }
 )
 
-DEFAULT_MAX_PARALLEL_ANALYZE = 2  # Multimodal analysis (VLM) concurrency
+DEFAULT_MAX_PARALLEL_ANALYZE = 5  # Multimodal analysis (VLM) concurrency
 
 # Per-engine parsing concurrency defaults.  mineru / docling default to 1
 # because both engines are resource-intensive (GPU/CPU + memory) and tend to
