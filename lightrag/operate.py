@@ -1903,7 +1903,10 @@ async def _merge_nodes_then_upsert(
             logger.debug(status_message)
 
         # 11. Update both graph and vector db
-        node_data = dict(
+        # Preserve existing custom attributes (e.g. brain_meta_*, community_id)
+        # to be consistent with aedit_entity and amerge_entities behavior
+        node_data = dict(already_node) if already_node else {}
+        node_data.update(
             entity_id=entity_name,
             entity_type=entity_type,
             description=description,
@@ -2429,29 +2432,27 @@ async def _merge_edges_then_upsert(
                             pipeline_status["history_messages"].append(status_message)
 
         edge_created_at = int(time.time())
-        await knowledge_graph_inst.upsert_edge(
-            src_id,
-            tgt_id,
-            edge_data=dict(
-                weight=weight,
-                description=description,
-                keywords=keywords,
-                source_id=source_id,
-                file_path=file_path,
-                created_at=edge_created_at,
-                truncate=truncation_info,
-            ),
-        )
-
-        edge_data = dict(
-            src_id=src_id,
-            tgt_id=tgt_id,
+        # Preserve existing custom attributes (e.g. brain_meta_*, relation_type)
+        # to be consistent with aedit_entity and amerge_entities behavior
+        edge_data = dict(already_edge) if already_edge else {}
+        edge_data.update(
+            weight=weight,
             description=description,
             keywords=keywords,
             source_id=source_id,
             file_path=file_path,
             created_at=edge_created_at,
             truncate=truncation_info,
+        )
+        await knowledge_graph_inst.upsert_edge(
+            src_id,
+            tgt_id,
+            edge_data=edge_data,
+        )
+
+        edge_data.update(
+            src_id=src_id,
+            tgt_id=tgt_id,
             weight=weight,
         )
 
