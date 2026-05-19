@@ -42,16 +42,15 @@ LIGHTRAG_PARSER=docx:native-iet
 LIGHTRAG_PARSER=docx:native-ietV
 ```
 
-### 梦幻组合
+### 推荐文件处理组合
 
-* 用 Legacy 处理 md（写在最前面是为了避免用 Docling 处理 md 文件）
-* 用 Native 处理 docx 文件（写在最前面是为了避免用 MinerU 处理 docx 文件）
-* 用 MinerU 处理它擅长的（PDF 和其余 Office）
-* 让 Docling 处理它擅长的其他文件格式（HTML 和图片等）
-* 其余文件回退 Legacy
+* 优先让 `native` 处理其支持的 docx 文件
+* 其次让 `mineru` 处理它擅长的（PDF、Office文件、图片）
+* 其余文件格格式由 `legacy` 兜底
+* `native` `mineru` 解析结果含段落等结构信息和多模态信息，开启ite分析，使用P分块策略；`legacy` 提取内容不含段落和多模态信息，使用简单的R分块策略。
 
 ```bash
-LIGHTRAG_PARSER=md:legacy-R,docx:native-R,*:mineru-R,*:docling-R,*:legacy-R
+LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
 MINERU_API_MODE=local
 MINERU_LOCAL_ENDPOINT=http://localhost:8000
 DOCLING_ENDPOINT=http://localhost:5001
