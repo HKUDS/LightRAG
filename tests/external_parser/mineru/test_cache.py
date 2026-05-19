@@ -5,6 +5,7 @@ Covers every failure mode that triggers a re-download:
 - missing / malformed manifest
 - source file size mismatch (fast-path)
 - source file content_hash mismatch
+- parser options signature missing / mismatch
 - engine version / endpoint env mismatch
 - critical_file (content_list.json) size or sha256 mismatch
 - any non-critical file size mismatch
@@ -25,6 +26,7 @@ from lightrag.external_parser.mineru import (
     is_bundle_valid,
     raw_dir_for_parsed_dir,
 )
+from lightrag.external_parser.mineru.cache import current_mineru_options_signature
 from lightrag.external_parser.mineru.manifest import write_manifest
 
 
@@ -69,6 +71,8 @@ def fresh_bundle(tmp_path: Path, source_file: Path) -> tuple[Path, Manifest]:
         files=files,
         total_size_bytes=crit_size + sum(f.size for f in files),
         task_id="task-1",
+        api_mode="local",
+        options_signature=current_mineru_options_signature(),
     )
     write_manifest(raw, manifest)
     return raw, manifest
@@ -209,6 +213,92 @@ def test_invalid_when_api_mode_mismatch(
     (raw / "_manifest.json").write_text(json.dumps(payload))
     monkeypatch.setenv("MINERU_API_MODE", "official")
     monkeypatch.setenv("MINERU_API_TOKEN", "token")
+    assert is_bundle_valid(raw, source_file) is False
+
+
+@pytest.mark.offline
+def test_invalid_when_options_signature_missing(
+    fresh_bundle: tuple[Path, Manifest], source_file: Path
+) -> None:
+    raw, _ = fresh_bundle
+    payload = json.loads((raw / "_manifest.json").read_text())
+    payload.pop("options_signature", None)
+    (raw / "_manifest.json").write_text(json.dumps(payload))
+    assert is_bundle_valid(raw, source_file) is False
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("MINERU_LOCAL_BACKEND", "pipeline"),
+        ("MINERU_LOCAL_PARSE_METHOD", "ocr"),
+        ("MINERU_LOCAL_IMAGE_ANALYSIS", "false"),
+        ("MINERU_LOCAL_START_PAGE_ID", "1"),
+    ],
+)
+def test_invalid_when_local_parser_options_change(
+    fresh_bundle: tuple[Path, Manifest],
+    source_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    value: str,
+) -> None:
+    raw, _ = fresh_bundle
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv(key, value)
+    assert is_bundle_valid(raw, source_file) is False
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("MINERU_MODEL_VERSION", "pipeline"),
+        ("MINERU_IS_OCR", "true"),
+        ("MINERU_PAGE_RANGES", "1-5"),
+        ("MINERU_LANGUAGE", "en"),
+        ("MINERU_ENABLE_TABLE", "false"),
+        ("MINERU_ENABLE_FORMULA", "false"),
+    ],
+)
+def test_invalid_when_official_parser_options_change(
+    tmp_path: Path,
+    source_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    value: str,
+) -> None:
+    """Symmetric coverage for the official-mode partition of the signature.
+
+    Build a bundle whose ``options_signature`` reflects the official defaults,
+    sanity-check that it validates, then flip ``key`` and assert a cache miss.
+    """
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+
+    raw = tmp_path / "src.mineru_raw"
+    raw.mkdir()
+    content_list = raw / "content_list.json"
+    content_list.write_text('[{"type":"text","text":"hi"}]', encoding="utf-8")
+    crit_size, crit_hash = compute_size_and_hash(content_list)
+    src_size, src_hash = compute_size_and_hash(source_file)
+    manifest = Manifest(
+        source_content_hash=src_hash,
+        source_size_bytes=src_size,
+        source_filename_at_parse=source_file.name,
+        critical_file=ManifestFile(
+            path="content_list.json", size=crit_size, sha256=crit_hash
+        ),
+        files=[],
+        total_size_bytes=crit_size,
+        task_id="task-official",
+        api_mode="official",
+        options_signature=current_mineru_options_signature(),
+    )
+    write_manifest(raw, manifest)
+
+    assert is_bundle_valid(raw, source_file) is True
+    monkeypatch.setenv(key, value)
     assert is_bundle_valid(raw, source_file) is False
 
 
@@ -357,6 +447,7 @@ def test_manifest_round_trip_via_disk(tmp_path: Path) -> None:
         task_id="t1",
         engine_version="v",
         endpoint_signature="ep",
+        options_signature="sha256:opts",
     )
     write_manifest(raw, m)
     from lightrag.external_parser.mineru.manifest import load_manifest
@@ -367,3 +458,4 @@ def test_manifest_round_trip_via_disk(tmp_path: Path) -> None:
     assert loaded.critical_file.sha256 == "sha256:cl"
     assert [f.path for f in loaded.files] == ["images/i.png"]
     assert loaded.task_id == "t1"
+    assert loaded.options_signature == "sha256:opts"

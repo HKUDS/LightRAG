@@ -3,7 +3,7 @@
 The manifest is the *atomic success marker* for a raw bundle. Its presence
 implies "all files in this directory finished downloading"; its content is
 the cache key for "is this bundle for the same source file, the same MinerU
-engine version, and the same endpoint we are using right now?".
+parser options, engine version, and endpoint we are using right now?".
 
 Write path: ``write_manifest(path, manifest)`` writes a temp file then
 atomically renames to ``_manifest.json``. A crash mid-download leaves no
@@ -54,6 +54,7 @@ class Manifest:
     api_mode: str = ""
     engine_version: str = ""
     endpoint_signature: str = ""
+    options_signature: str = ""
     downloaded_at: str = ""
     version: str = MANIFEST_VERSION
     engine: str = MANIFEST_ENGINE
@@ -65,6 +66,7 @@ class Manifest:
             "api_mode": self.api_mode,
             "engine_version": self.engine_version,
             "endpoint_signature": self.endpoint_signature,
+            "options_signature": self.options_signature,
             "source_content_hash": self.source_content_hash,
             "source_size_bytes": int(self.source_size_bytes),
             "source_filename_at_parse": self.source_filename_at_parse,
@@ -85,6 +87,7 @@ class Manifest:
             api_mode=str(payload.get("api_mode") or ""),
             engine_version=str(payload.get("engine_version") or ""),
             endpoint_signature=str(payload.get("endpoint_signature") or ""),
+            options_signature=str(payload.get("options_signature") or ""),
             source_content_hash=str(payload.get("source_content_hash") or ""),
             source_size_bytes=int(payload.get("source_size_bytes") or 0),
             source_filename_at_parse=str(payload.get("source_filename_at_parse") or ""),

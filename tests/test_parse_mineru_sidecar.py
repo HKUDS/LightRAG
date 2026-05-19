@@ -26,6 +26,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
 )
 from lightrag.external_parser.mineru import compute_size_and_hash
+from lightrag.external_parser.mineru.cache import current_mineru_options_signature
 from lightrag.external_parser.mineru.manifest import (
     Manifest,
     ManifestFile,
@@ -131,6 +132,8 @@ def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
             files=files,
             total_size_bytes=crit_size + sum(f.size for f in files),
             task_id=f"fake-{counters['calls']}",
+            api_mode="local",
+            options_signature=current_mineru_options_signature(),
         )
         write_manifest(raw_dir, manifest)
         return manifest
