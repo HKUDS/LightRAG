@@ -139,10 +139,15 @@ def test_canonicalize_parser_hinted_basename():
         == "name.[native].pdf"
     )
     # New options-only and engine+options forms strip cleanly too.
-    assert canonicalize_parser_hinted_basename("foo.[!].docx") == "foo.docx"
+    assert canonicalize_parser_hinted_basename("foo.[-!].docx") == "foo.docx"
     assert canonicalize_parser_hinted_basename("foo.[native-iet].docx") == "foo.docx"
     assert canonicalize_parser_hinted_basename("foo.[mineru-R!].pdf") == "foo.pdf"
-    # Invalid options-only hint (unknown chars) is left alone.
+    # Options without the leading hyphen and unknown parsers are left alone.
+    assert canonicalize_parser_hinted_basename("foo.[!].docx") == "foo.[!].docx"
+    assert (
+        canonicalize_parser_hinted_basename("foo.[native-].docx")
+        == "foo.[native-].docx"
+    )
     assert canonicalize_parser_hinted_basename("foo.[xyz].docx") == "foo.[xyz].docx"
 
 
@@ -152,10 +157,11 @@ def test_filename_parser_directives_decodes_engine_and_options():
 
     assert filename_parser_directives("paper.[native-iet].docx") == ("native", "iet")
     assert filename_parser_directives("memo.[native-R!].md") == ("native", "R!")
-    assert filename_parser_directives("report.[!].pdf") == (None, "!")
+    assert filename_parser_directives("report.[-!].pdf") == (None, "!")
     assert filename_parser_directives("doc.[mineru].docx") == ("mineru", "")
     assert filename_parser_directives("foo.docx") == (None, "")
-    # Unsupported tokens leave the hint untouched and unparsed.
+    # Unsupported tokens and old options-only syntax stay unparsed.
+    assert filename_parser_directives("foo.[!].docx") == (None, "")
     assert filename_parser_directives("foo.[draft].docx") == (None, "")
 
 
@@ -188,6 +194,10 @@ def test_filename_hint_rejects_invalid_engine_qualified_options():
         resolve_file_parser_directives("foo.[native-FR].docx")
     with pytest.raises(FilenameParserHintError, match="unsupported character"):
         resolve_file_parser_directives("foo.[native-Q].docx")
+    with pytest.raises(FilenameParserHintError, match="options-only filename hints"):
+        resolve_file_parser_directives("foo.[!].docx")
+    with pytest.raises(FilenameParserHintError, match="options-only filename hints"):
+        resolve_file_parser_directives("foo.[iet].docx")
     with pytest.raises(
         FilenameParserHintError, match="unsupported parser engine 'abc'"
     ):
@@ -198,6 +208,10 @@ def test_filename_hint_rejects_invalid_engine_qualified_options():
         resolve_file_parser_directives("foo.[xyz].docx")
     with pytest.raises(FilenameParserHintError, match="is empty"):
         resolve_file_parser_directives("foo.[].docx")
+    with pytest.raises(FilenameParserHintError, match="empty process options"):
+        resolve_file_parser_directives("foo.[-].docx")
+    with pytest.raises(FilenameParserHintError, match="empty process options"):
+        resolve_file_parser_directives("foo.[native-].docx")
 
 
 @pytest.mark.offline
@@ -281,7 +295,7 @@ def test_resolve_file_parser_directives_priority(monkeypatch):
     assert options == "iet"
 
     # Options-only hint keeps engine from rule but uses hinted options.
-    engine, options = resolve_file_parser_directives("plain.[!].docx")
+    engine, options = resolve_file_parser_directives("plain.[-!].docx")
     assert engine == "native"
     assert options == "!"
 
