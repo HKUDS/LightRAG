@@ -106,7 +106,48 @@ async def test_get_doc_by_file_basename_legacy_hint_fallback_via_like():
     params = call.args[1]
     # The SQL must push the fallback to the DB rather than scan in Python
     assert "LIKE" in sql
+    # Honor LIKE metacharacter escaping via ESCAPE clause
+    assert "ESCAPE '\\'" in sql
     assert params[2] == "report.[%].pdf"
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_file_basename_orders_exact_before_legacy_hint():
+    """When both an exact-match row and a legacy hint-bearing row exist for
+    the same basename, the exact match must win regardless of insertion
+    order. The SQL must carry the (file_path = $2) DESC precedence clause
+    so Postgres ranks the exact row first."""
+    storage = _make_storage()
+    storage.db.query.return_value = [_row(id="doc-exact", file_path="report.pdf")]
+
+    result = await storage.get_doc_by_file_basename("report.pdf")
+
+    assert result is not None
+    assert result[0] == "doc-exact"
+
+    sql = storage.db.query.call_args.args[0]
+    # Exact match outranks legacy hint via boolean DESC; (created_at, id)
+    # breaks ties stably across re-runs / replicas.
+    assert "(file_path = $2) DESC" in sql
+    assert "created_at ASC" in sql
+    assert "id ASC" in sql
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_file_basename_escapes_like_metacharacters():
+    """Filename stems containing LIKE metacharacters (%, _, \\) must be
+    escaped so they cannot widen the legacy-hint fallback pattern. The
+    literal ``[%]`` segment in the pattern is the intentional wildcard for
+    the hint marker and stays unescaped."""
+    storage = _make_storage()
+    storage.db.query.return_value = []
+
+    await storage.get_doc_by_file_basename("100%_off.pdf")
+
+    params = storage.db.query.call_args.args[1]
+    # The user-supplied % and _ must be backslash-escaped; the [%]
+    # placeholder between stem and ext stays a wildcard.
+    assert params[2] == "100\\%\\_off.[%].pdf"
 
 
 @pytest.mark.asyncio

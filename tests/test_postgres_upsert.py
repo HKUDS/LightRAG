@@ -266,8 +266,17 @@ async def test_upsert_full_docs_tuple_order():
 
 
 @pytest.mark.asyncio
-async def test_upsert_full_docs_defaults_for_missing_pipeline_fields():
-    """Missing pipeline-derived fields should fall back to sane defaults."""
+async def test_upsert_full_docs_missing_pipeline_fields_pass_through_as_none():
+    """Missing pipeline-derived fields must serialize as None at the Python
+    layer so the SQL-level COALESCE guard can distinguish "caller did not
+    supply" from "caller supplied a real value".
+
+    The 'raw' default for parse_format is provided by the column DDL on
+    initial insert; the Python layer must NOT inject it, otherwise the
+    COALESCE guard never triggers on subsequent partial writes (a follow-up
+    upsert with no parse_format would re-stamp the column with 'raw' and
+    blow away a previously-set 'lightrag').
+    """
     storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
     data = {"doc-1": {"content": "full text", "file_path": "/path/doc.pdf"}}
     await storage.upsert(data)
@@ -275,7 +284,7 @@ async def test_upsert_full_docs_defaults_for_missing_pipeline_fields():
     _, rows = storage._captured[0]
     row = rows[0]
     assert row[4] is None  # sidecar_location
-    assert row[5] == "raw"  # parse_format default
+    assert row[5] is None  # parse_format — DDL supplies 'raw' default on insert
     assert row[6] is None  # content_hash
     assert row[7] is None  # process_options
     assert json.loads(row[8]) == {}  # chunk_options default
@@ -296,6 +305,48 @@ async def test_upsert_full_docs_none_chunk_options_defaults_to_empty_dict():
 
     _, rows = storage._captured[0]
     assert json.loads(rows[0][8]) == {}
+
+
+@pytest.mark.asyncio
+async def test_upsert_full_docs_sql_protects_partial_writes():
+    """The ON CONFLICT clause must COALESCE+NULLIF every pipeline-derived
+    column so a follow-up upsert that only carries ``content`` + ``doc_name``
+    does not silently overwrite previously-recorded metadata back to defaults.
+
+    We assert this at the SQL-template level since the actual COALESCE
+    behavior is executed by Postgres. The presence of the protective
+    expression in the SQL is the single source of truth for the guarantee.
+    """
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    await storage.upsert(
+        {"doc-1": {"content": "full text", "file_path": "/path/doc.pdf"}}
+    )
+    sql, _ = storage._captured[0]
+    normalized = " ".join(sql.split()).lower()
+
+    # Each pipeline-derived string column must be COALESCE/NULLIF-guarded
+    for col in (
+        "sidecar_location",
+        "parse_format",
+        "content_hash",
+        "process_options",
+        "parse_engine",
+    ):
+        assert (
+            f"coalesce( nullif(excluded.{col}, '')" in normalized
+        ), f"upsert_doc_full must guard {col} via COALESCE+NULLIF"
+        assert (
+            f"lightrag_doc_full.{col}" in normalized
+        ), f"upsert_doc_full must preserve existing {col} on partial write"
+
+    # chunk_options (JSONB) is guarded via CASE on NULL/empty-object literal
+    assert "excluded.chunk_options is null" in normalized
+    assert "excluded.chunk_options = '{}'::jsonb" in normalized
+    assert "lightrag_doc_full.chunk_options" in normalized
+
+    # content / doc_name remain straight overwrites — they ARE the payload
+    assert "content = excluded.content" in normalized
+    assert "doc_name = excluded.doc_name" in normalized
 
 
 # ---------------------------------------------------------------------------

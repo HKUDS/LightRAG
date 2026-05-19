@@ -1279,10 +1279,14 @@ class PostgreSQLDB:
         the remaining columns; the migration is idempotent and retried on
         every startup until all columns are present.
         """
+        # content_hash uses TEXT (not VARCHAR(N)) so the column stays
+        # algorithm-agnostic; future SHA-512 / base64 hashes do not require a
+        # schema change. process_options is an opaque selector string emitted
+        # by sanitize_process_options() (e.g. "Fi").
         columns_to_add = [
             ("sidecar_location", "TEXT NULL"),
             ("parse_format", "VARCHAR(32) NULL DEFAULT 'raw'"),
-            ("content_hash", "VARCHAR(64) NULL"),
+            ("content_hash", "TEXT NULL"),
             ("process_options", "TEXT NULL"),
             ("chunk_options", "JSONB NULL DEFAULT '{}'::jsonb"),
             ("parse_engine", "VARCHAR(32) NULL"),
@@ -1307,9 +1311,7 @@ class PostgreSQLDB:
 
         for col_name, col_type in columns_to_add:
             if col_name in existing_names:
-                logger.debug(
-                    f"Column {col_name} already exists in LIGHTRAG_DOC_FULL"
-                )
+                logger.debug(f"Column {col_name} already exists in LIGHTRAG_DOC_FULL")
                 continue
             try:
                 alter_sql = (
@@ -1361,8 +1363,10 @@ class PostgreSQLDB:
             column_info = await self.query(check_column_sql)
             if not column_info:
                 logger.info("Adding content_hash column to LIGHTRAG_DOC_STATUS table")
+                # TEXT (not VARCHAR(N)) so the column is agnostic to the hash
+                # algorithm; today the pipeline writes 64-char SHA-256 hex.
                 await self.execute(
-                    "ALTER TABLE LIGHTRAG_DOC_STATUS ADD COLUMN content_hash VARCHAR(64) NULL"
+                    "ALTER TABLE LIGHTRAG_DOC_STATUS ADD COLUMN content_hash TEXT NULL"
                 )
                 logger.info(
                     "Successfully added content_hash column to LIGHTRAG_DOC_STATUS table"
@@ -1425,9 +1429,7 @@ class PostgreSQLDB:
 
         for col_name, col_type in columns_to_add:
             if col_name in existing_names:
-                logger.debug(
-                    f"Column {col_name} already exists in LIGHTRAG_DOC_CHUNKS"
-                )
+                logger.debug(f"Column {col_name} already exists in LIGHTRAG_DOC_CHUNKS")
                 continue
             try:
                 alter_sql = (
@@ -2811,6 +2813,14 @@ class PGKVStorage(BaseKVStorage):
                 # Tuple order must match SQL: (id, content, doc_name, workspace,
                 #   sidecar_location, parse_format, content_hash, process_options,
                 #   chunk_options, parse_engine)
+                #
+                # All pipeline-derived fields pass through untouched so the
+                # SQL-level COALESCE guard in upsert_doc_full can distinguish
+                # "caller did not supply" (None/'') from "caller supplied a
+                # real value". The 'raw' default for parse_format is provided
+                # by the column DDL on initial insert; do NOT default it here
+                # or the COALESCE guard never triggers on subsequent partial
+                # writes.
                 batch_values.append(
                     (
                         k,
@@ -2818,7 +2828,7 @@ class PGKVStorage(BaseKVStorage):
                         v.get("file_path", ""),
                         self.workspace,
                         v.get("sidecar_location"),
-                        v.get("parse_format", "raw"),
+                        v.get("parse_format"),
                         v.get("content_hash"),
                         v.get("process_options"),
                         json.dumps(v.get("chunk_options") or {}),
@@ -4271,22 +4281,37 @@ class PGDocStatusStorage(DocStatusStorage):
         # is a defensive fallback for legacy rows still carrying a parser
         # hint segment (e.g. ``a.[native].docx``); the LIKE pattern is built
         # from the stem of the canonical target.
+        #
+        # Filename characters % / _ / \ are LIKE metacharacters in PostgreSQL,
+        # so the stem and extension are escaped before composition. The
+        # literal ``[%]`` segment is the intentional wildcard placeholder for
+        # the hint marker and is NOT escaped. We also declare ESCAPE '\\' on
+        # the LIKE clause so the escaping is honored.
         from os.path import splitext
 
-        stem, ext = splitext(target)
-        like_pattern = f"{stem}.[%]{ext}" if stem else None
+        def _escape_like(s: str) -> str:
+            # Backslash first to avoid double-escaping the escape itself.
+            return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
+        stem, ext = splitext(target)
+        like_pattern = f"{_escape_like(stem)}.[%]{_escape_like(ext)}" if stem else None
+
+        # ORDER BY (file_path = $2) DESC ranks the exact match above any
+        # LIKE-only legacy row, then (created_at, id) breaks ties stably so
+        # repeated calls and read replicas return the same row.
         if like_pattern:
             sql = (
                 "SELECT * FROM LIGHTRAG_DOC_STATUS "
-                "WHERE workspace=$1 AND (file_path = $2 OR file_path LIKE $3) "
+                "WHERE workspace=$1 AND (file_path = $2 OR file_path LIKE $3 ESCAPE '\\') "
+                "ORDER BY (file_path = $2) DESC, created_at ASC, id ASC "
                 "LIMIT 1"
             )
             params = [self.workspace, target, like_pattern]
         else:
             sql = (
                 "SELECT * FROM LIGHTRAG_DOC_STATUS "
-                "WHERE workspace=$1 AND file_path = $2 LIMIT 1"
+                "WHERE workspace=$1 AND file_path = $2 "
+                "ORDER BY created_at ASC, id ASC LIMIT 1"
             )
             params = [self.workspace, target]
 
@@ -4876,6 +4901,19 @@ class PGDocStatusStorage(DocStatusStorage):
             len(data),
         )
 
+        # NOTE: content_hash uses COALESCE(NULLIF(...,''), existing) rather than
+        # a straight EXCLUDED overwrite. This gives write-once-after-set
+        # semantics: once a non-empty content_hash is recorded, subsequent
+        # upserts that omit it (or pass '' / NULL) will NOT clear it. Required
+        # because pipeline state transitions (e.g. processing -> processed)
+        # reuse the existing DocProcessingStatus payload without re-supplying
+        # the hash, while _persist_parsed_full_docs patches the hash in a
+        # separate upsert.
+        #
+        # This is a deliberate behavioral divergence from JsonDocStatusStorage,
+        # which overwrites unconditionally. No caller today wants to clear a
+        # content_hash, so the divergence is invisible — but if that ever
+        # changes, this guard must be revisited.
         sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,metadata,error_msg,content_hash,created_at,updated_at)
                  values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                   on conflict(id,workspace) do update set
@@ -6765,7 +6803,13 @@ TABLES = {
                     meta JSONB,
                     sidecar_location TEXT NULL,
                     parse_format VARCHAR(32) NULL DEFAULT 'raw',
-                    content_hash VARCHAR(64) NULL,
+                    -- content_hash is TEXT (not VARCHAR(N)) so the column is
+                    -- agnostic to the hash algorithm. Today's pipeline writes
+                    -- 64-char SHA-256 hex; future algos (SHA-512, base64) do
+                    -- not require a schema change.
+                    content_hash TEXT NULL,
+                    -- process_options is an opaque selector string emitted by
+                    -- sanitize_process_options() (e.g. "Fi").
                     process_options TEXT NULL,
                     chunk_options JSONB NULL DEFAULT '{}'::jsonb,
                     parse_engine VARCHAR(32) NULL,
@@ -6862,7 +6906,11 @@ TABLES = {
 	               track_id varchar(255) NULL,
 	               metadata JSONB NULL DEFAULT '{}'::jsonb,
 	               error_msg TEXT NULL,
-	               content_hash VARCHAR(64) NULL,
+	               -- content_hash is TEXT (not VARCHAR(N)) so the column is
+	               -- agnostic to the hash algorithm. Today's pipeline writes
+	               -- 64-char SHA-256 hex; future algos (SHA-512, base64) do
+	               -- not require a schema change.
+	               content_hash TEXT NULL,
 	               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)
@@ -7006,6 +7054,16 @@ SQL_TEMPLATES = {
                                  FROM LIGHTRAG_RELATION_CHUNKS WHERE workspace=$1 AND id = ANY($2)
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
+    # Pipeline-derived columns (sidecar_location / parse_format / content_hash /
+    # process_options / chunk_options / parse_engine) are guarded with COALESCE
+    # so a partial upsert (e.g. a caller writing only ``content`` + ``doc_name``)
+    # does not silently overwrite metadata recorded by _persist_parsed_full_docs.
+    # ``content`` and ``doc_name`` themselves are always overwritten — they are
+    # the primary payload, never a candidate for preservation.
+    # For the string columns we use NULLIF('', ...) so that an empty string from
+    # a default-bearing caller is treated as "no value, preserve existing".
+    # For chunk_options (JSONB) we treat NULL or the empty-object literal as
+    # "no value, preserve existing".
     "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace,
                             sidecar_location, parse_format, content_hash,
                             process_options, chunk_options, parse_engine)
@@ -7013,12 +7071,32 @@ SQL_TEMPLATES = {
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = EXCLUDED.content,
                                doc_name = EXCLUDED.doc_name,
-                               sidecar_location = EXCLUDED.sidecar_location,
-                               parse_format = EXCLUDED.parse_format,
-                               content_hash = EXCLUDED.content_hash,
-                               process_options = EXCLUDED.process_options,
-                               chunk_options = EXCLUDED.chunk_options,
-                               parse_engine = EXCLUDED.parse_engine,
+                               sidecar_location = COALESCE(
+                                   NULLIF(EXCLUDED.sidecar_location, ''),
+                                   LIGHTRAG_DOC_FULL.sidecar_location
+                               ),
+                               parse_format = COALESCE(
+                                   NULLIF(EXCLUDED.parse_format, ''),
+                                   LIGHTRAG_DOC_FULL.parse_format
+                               ),
+                               content_hash = COALESCE(
+                                   NULLIF(EXCLUDED.content_hash, ''),
+                                   LIGHTRAG_DOC_FULL.content_hash
+                               ),
+                               process_options = COALESCE(
+                                   NULLIF(EXCLUDED.process_options, ''),
+                                   LIGHTRAG_DOC_FULL.process_options
+                               ),
+                               chunk_options = CASE
+                                   WHEN EXCLUDED.chunk_options IS NULL
+                                     OR EXCLUDED.chunk_options = '{}'::jsonb
+                                   THEN LIGHTRAG_DOC_FULL.chunk_options
+                                   ELSE EXCLUDED.chunk_options
+                               END,
+                               parse_engine = COALESCE(
+                                   NULLIF(EXCLUDED.parse_engine, ''),
+                                   LIGHTRAG_DOC_FULL.parse_engine
+                               ),
                                update_time = CURRENT_TIMESTAMP
                        """,
     "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,chunk_id,cache_type,queryparam)
