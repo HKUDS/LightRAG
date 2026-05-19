@@ -82,12 +82,15 @@ def _new_rag(tmp_path: Path, **kwargs) -> LightRAG:
 
 @pytest.mark.offline
 def test_env_driven_snapshot_persisted_in_full_docs(tmp_path, monkeypatch):
-    """Env vars + ainsert split args land in ``full_docs.chunk_options``."""
+    """Env vars + ainsert split args land in ``full_docs.chunk_options``.
+
+    The persisted snapshot is slim — only the strategy slot selected by
+    ``process_options`` survives — so each strategy is verified through
+    its own enqueue with the matching selector.
+    """
     monkeypatch.setenv("CHUNK_R_OVERLAP_SIZE", "42")
     monkeypatch.setenv("CHUNK_V_BREAKPOINT_THRESHOLD_TYPE", "interquartile")
     monkeypatch.setenv("CHUNK_V_BUFFER_SIZE", "3")
-
-    doc_id = "doc-snap-aaaaa"
 
     async def _run():
         from lightrag.parser_routing import resolve_chunk_options
@@ -95,37 +98,67 @@ def test_env_driven_snapshot_persisted_in_full_docs(tmp_path, monkeypatch):
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
-            # Mirror what ``LightRAG.ainsert`` does: build the
-            # chunk_options snapshot from addon_params + F-strategy
-            # runtime args, then hand it to enqueue.  Avoids ainsert
-            # itself so the test stays a focused enqueue-only check.
-            chunk_opts = resolve_chunk_options(
+            # F slot — mirror what ``LightRAG.ainsert`` does: build the
+            # F-scoped chunk_options snapshot from addon_params plus
+            # F-strategy runtime args, then hand it to enqueue.
+            chunk_opts_f = resolve_chunk_options(
                 rag.addon_params,
+                process_options="F",
                 split_by_character="\n\n",
                 split_by_character_only=True,
             )
             await rag.apipeline_enqueue_documents(
-                "Body for chunk_options snapshot test.",
-                ids=[doc_id],
-                file_paths="snap.txt",
-                track_id="track-snap",
-                chunk_options=chunk_opts,
+                "Body for F-strategy snapshot test.",
+                ids=["doc-snap-f"],
+                file_paths="snap-f.txt",
+                track_id="track-snap-f",
+                chunk_options=chunk_opts_f,
             )
-            row = await rag.full_docs.get_by_id(doc_id)
+            row_f = await rag.full_docs.get_by_id("doc-snap-f")
+
+            # R slot — env-driven CHUNK_R_OVERLAP_SIZE flows through
+            # addon_params['chunker'] into the persisted snapshot.
+            await rag.apipeline_enqueue_documents(
+                "Body for R-strategy snapshot test.",
+                ids=["doc-snap-r"],
+                file_paths="snap-r.[native-R].txt",
+                track_id="track-snap-r",
+                process_options="R",
+            )
+            row_r = await rag.full_docs.get_by_id("doc-snap-r")
+
+            # V slot — env-driven CHUNK_V_* params likewise.
+            await rag.apipeline_enqueue_documents(
+                "Body for V-strategy snapshot test.",
+                ids=["doc-snap-v"],
+                file_paths="snap-v.[native-V].txt",
+                track_id="track-snap-v",
+                process_options="V",
+            )
+            row_v = await rag.full_docs.get_by_id("doc-snap-v")
         finally:
             await rag.finalize_storages()
-        return row
+        return row_f, row_r, row_v
 
-    row = asyncio.run(_run())
-    assert row is not None, "doc must be persisted to full_docs"
-    chunk_opts = row.get("chunk_options")
+    row_f, row_r, row_v = asyncio.run(_run())
+    assert row_f is not None and row_r is not None and row_v is not None
 
-    assert chunk_opts is not None, "chunk_options must be persisted"
-    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 42
-    assert chunk_opts["semantic_vector"]["breakpoint_threshold_type"] == "interquartile"
-    assert chunk_opts["semantic_vector"]["buffer_size"] == 3
-    assert chunk_opts["fixed_token"]["split_by_character"] == "\n\n"
-    assert chunk_opts["fixed_token"]["split_by_character_only"] is True
+    f_opts = row_f["chunk_options"]
+    assert f_opts["fixed_token"]["split_by_character"] == "\n\n"
+    assert f_opts["fixed_token"]["split_by_character_only"] is True
+    # Slim contract: only the active strategy survives.
+    assert "recursive_character" not in f_opts
+    assert "semantic_vector" not in f_opts
+    assert "paragraph_semantic" not in f_opts
+
+    r_opts = row_r["chunk_options"]
+    assert r_opts["recursive_character"]["chunk_overlap_token_size"] == 42
+    assert "fixed_token" not in r_opts
+
+    v_opts = row_v["chunk_options"]
+    assert v_opts["semantic_vector"]["breakpoint_threshold_type"] == "interquartile"
+    assert v_opts["semantic_vector"]["buffer_size"] == 3
+    assert "fixed_token" not in v_opts
 
 
 @pytest.mark.offline
@@ -193,7 +226,12 @@ def test_caller_supplied_chunk_options_reach_chunker(tmp_path, monkeypatch):
 @pytest.mark.offline
 def test_per_file_chunk_options_list(tmp_path, monkeypatch):
     """A ``chunk_options`` list aligned with ``input`` writes
-    independent snapshots per doc."""
+    independent snapshots per doc.
+
+    The two docs use ``process_options="R"`` so the slim snapshot
+    keeps their distinct R-strategy params; F/V/P sub-dicts in the
+    caller-supplied input are dropped by design.
+    """
 
     opts_a = {
         "chunk_token_size": 1200,
@@ -239,8 +277,9 @@ def test_per_file_chunk_options_list(tmp_path, monkeypatch):
             await rag.apipeline_enqueue_documents(
                 ["doc one body", "doc two body"],
                 ids=["doc-aaaaa-list", "doc-bbbbb-list"],
-                file_paths=["a.txt", "b.txt"],
+                file_paths=["a.[native-R].txt", "b.[native-R].txt"],
                 track_id="track-list",
+                process_options=["R", "R"],
                 chunk_options=[opts_a, opts_b],
             )
             row_a = await rag.full_docs.get_by_id("doc-aaaaa-list")
@@ -260,6 +299,12 @@ def test_per_file_chunk_options_list(tmp_path, monkeypatch):
     # Independence: mutating one snapshot must not bleed into the other.
     sep_a.append("MUT")
     assert "MUT" not in row_b["chunk_options"]["recursive_character"]["separators"]
+
+    # Slim contract: non-R strategy slots are dropped from the persisted
+    # snapshot since they would never be consumed at process time.
+    assert "fixed_token" not in row_a["chunk_options"]
+    assert "semantic_vector" not in row_a["chunk_options"]
+    assert "paragraph_semantic" not in row_a["chunk_options"]
 
 
 @pytest.mark.offline
@@ -298,19 +343,20 @@ def test_constructor_chunk_size_overlays_addon_params(tmp_path, monkeypatch):
     chunk_opts = row["chunk_options"]
     # Top-level chunk_token_size carries the constructor value.
     assert chunk_opts["chunk_token_size"] == 7
-    # F, R, and P sub-dicts pick up the legacy overlap field; V
-    # doesn't have chunk_overlap_token_size and must remain unchanged.
+    # Default-F doc: the persisted slim snapshot only carries F's slot.
     assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 2
-    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 2
-    assert chunk_opts["paragraph_semantic"]["chunk_overlap_token_size"] == 2
-    assert "chunk_overlap_token_size" not in chunk_opts["semantic_vector"]
-    # addon_params reflects the same overlay so subsequent runtime
-    # mutations operate on the constructor-supplied baseline.
+    assert "recursive_character" not in chunk_opts
+    assert "semantic_vector" not in chunk_opts
+    assert "paragraph_semantic" not in chunk_opts
+    # addon_params still reflects the constructor overlay across every
+    # strategy so subsequent enqueues with other selectors pick up the
+    # same baseline.  V doesn't have chunk_overlap_token_size and must
+    # remain unchanged.
     assert addon_params["chunker"]["chunk_token_size"] == 7
     assert addon_params["chunker"]["fixed_token"]["chunk_overlap_token_size"] == 2
-    assert (
-        addon_params["chunker"]["paragraph_semantic"]["chunk_overlap_token_size"] == 2
-    )
+    assert addon_params["chunker"]["recursive_character"]["chunk_overlap_token_size"] == 2
+    assert addon_params["chunker"]["paragraph_semantic"]["chunk_overlap_token_size"] == 2
+    assert "chunk_overlap_token_size" not in addon_params["chunker"]["semantic_vector"]
 
 
 @pytest.mark.offline
@@ -383,29 +429,46 @@ def test_strategy_env_wins_over_legacy_ctor_field(tmp_path, monkeypatch):
         rag = _new_rag(tmp_path, chunk_overlap_token_size=2)
         await rag.initialize_storages()
         try:
+            # R-strategy doc — strategy-specific env wins.
             await rag.apipeline_enqueue_documents(
-                "Body for strategy-vs-ctor precedence test.",
-                ids=["doc-strategy-vs-ctor"],
-                file_paths="prec.txt",
-                track_id="track-prec",
+                "Body for R precedence test.",
+                ids=["doc-prec-r"],
+                file_paths="prec-r.[native-R].txt",
+                track_id="track-prec-r",
+                process_options="R",
             )
-            row = await rag.full_docs.get_by_id("doc-strategy-vs-ctor")
+            row_r = await rag.full_docs.get_by_id("doc-prec-r")
+            # F-strategy doc — no F-specific env, ctor field fills.
+            await rag.apipeline_enqueue_documents(
+                "Body for F precedence test.",
+                ids=["doc-prec-f"],
+                file_paths="prec-f.txt",
+                track_id="track-prec-f",
+            )
+            row_f = await rag.full_docs.get_by_id("doc-prec-f")
+            # P-strategy doc — no P-specific env, ctor field fills.
+            await rag.apipeline_enqueue_documents(
+                "Body for P precedence test.",
+                ids=["doc-prec-p"],
+                file_paths="prec-p.[native-P].txt",
+                track_id="track-prec-p",
+                process_options="P",
+            )
+            row_p = await rag.full_docs.get_by_id("doc-prec-p")
         finally:
             await rag.finalize_storages()
-        return row, rag.chunk_overlap_token_size
+        return row_r, row_f, row_p, rag.chunk_overlap_token_size
 
-    row, ctor_field = asyncio.run(_run())
-    assert row is not None
-    chunk_opts = row["chunk_options"]
-    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 42, (
+    row_r, row_f, row_p, ctor_field = asyncio.run(_run())
+    assert row_r["chunk_options"]["recursive_character"]["chunk_overlap_token_size"] == 42, (
         "Strategy-specific CHUNK_R_OVERLAP_SIZE must win over the "
         "legacy chunk_overlap_token_size constructor field."
     )
-    assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 2, (
+    assert row_f["chunk_options"]["fixed_token"]["chunk_overlap_token_size"] == 2, (
         "Without a CHUNK_F_OVERLAP_SIZE override, the F slot falls back "
         "to the legacy constructor field."
     )
-    assert chunk_opts["paragraph_semantic"]["chunk_overlap_token_size"] == 2
+    assert row_p["chunk_options"]["paragraph_semantic"]["chunk_overlap_token_size"] == 2
     # self.chunk_overlap_token_size mirrors the F-strategy resolved value.
     assert ctor_field == 2
 
@@ -424,21 +487,27 @@ def test_legacy_env_is_final_fallback(tmp_path, monkeypatch):
         await rag.initialize_storages()
         try:
             await rag.apipeline_enqueue_documents(
-                "Body for legacy-env fallback test.",
-                ids=["doc-legacy-env"],
-                file_paths="legacy.txt",
+                ["F body", "R body", "P body"],
+                ids=["doc-legacy-f", "doc-legacy-r", "doc-legacy-p"],
+                file_paths=[
+                    "legacy-f.txt",
+                    "legacy-r.[native-R].txt",
+                    "legacy-p.[native-P].txt",
+                ],
                 track_id="track-legacy",
+                process_options=["", "R", "P"],
             )
-            row = await rag.full_docs.get_by_id("doc-legacy-env")
+            row_f = await rag.full_docs.get_by_id("doc-legacy-f")
+            row_r = await rag.full_docs.get_by_id("doc-legacy-r")
+            row_p = await rag.full_docs.get_by_id("doc-legacy-p")
         finally:
             await rag.finalize_storages()
-        return row, rag.chunk_overlap_token_size
+        return row_f, row_r, row_p, rag.chunk_overlap_token_size
 
-    row, ctor_field = asyncio.run(_run())
-    chunk_opts = row["chunk_options"]
-    assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 77
-    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 77
-    assert chunk_opts["paragraph_semantic"]["chunk_overlap_token_size"] == 77
+    row_f, row_r, row_p, ctor_field = asyncio.run(_run())
+    assert row_f["chunk_options"]["fixed_token"]["chunk_overlap_token_size"] == 77
+    assert row_r["chunk_options"]["recursive_character"]["chunk_overlap_token_size"] == 77
+    assert row_p["chunk_options"]["paragraph_semantic"]["chunk_overlap_token_size"] == 77
     assert ctor_field == 77
 
     # Mixed case: F-specific env set, legacy still acts as R's fallback.
@@ -449,21 +518,27 @@ def test_legacy_env_is_final_fallback(tmp_path, monkeypatch):
         await rag.initialize_storages()
         try:
             await rag.apipeline_enqueue_documents(
-                "Body for mixed-env fallback test.",
-                ids=["doc-mixed-env"],
-                file_paths="mixed.txt",
+                ["F mixed body", "R mixed body", "P mixed body"],
+                ids=["doc-mixed-f", "doc-mixed-r", "doc-mixed-p"],
+                file_paths=[
+                    "mixed-f.txt",
+                    "mixed-r.[native-R].txt",
+                    "mixed-p.[native-P].txt",
+                ],
                 track_id="track-mixed",
+                process_options=["", "R", "P"],
             )
-            row = await rag.full_docs.get_by_id("doc-mixed-env")
+            row_f = await rag.full_docs.get_by_id("doc-mixed-f")
+            row_r = await rag.full_docs.get_by_id("doc-mixed-r")
+            row_p = await rag.full_docs.get_by_id("doc-mixed-p")
         finally:
             await rag.finalize_storages()
-        return row
+        return row_f, row_r, row_p
 
-    row = asyncio.run(_run_mixed())
-    chunk_opts = row["chunk_options"]
-    assert chunk_opts["fixed_token"]["chunk_overlap_token_size"] == 10
-    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 77
-    assert chunk_opts["paragraph_semantic"]["chunk_overlap_token_size"] == 77
+    row_f, row_r, row_p = asyncio.run(_run_mixed())
+    assert row_f["chunk_options"]["fixed_token"]["chunk_overlap_token_size"] == 10
+    assert row_r["chunk_options"]["recursive_character"]["chunk_overlap_token_size"] == 77
+    assert row_p["chunk_options"]["paragraph_semantic"]["chunk_overlap_token_size"] == 77
 
 
 @pytest.mark.offline
@@ -605,8 +680,9 @@ def test_addon_params_strategy_wins_over_strategy_env(tmp_path, monkeypatch):
             await rag.apipeline_enqueue_documents(
                 "Body for addon-vs-env precedence test.",
                 ids=["doc-addon-vs-env"],
-                file_paths="addon.txt",
+                file_paths="addon.[native-R].txt",
                 track_id="track-addon",
+                process_options="R",
             )
             row = await rag.full_docs.get_by_id("doc-addon-vs-env")
         finally:
@@ -631,12 +707,14 @@ def test_runtime_addon_params_mutation_affects_subsequent_enqueue(tmp_path):
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
-            # Doc A enqueued under default config.
+            # Doc A enqueued under default config (R strategy so the
+            # mutated separators land in the persisted slim snapshot).
             await rag.apipeline_enqueue_documents(
                 "first doc body",
                 ids=["doc-pre-mutation"],
-                file_paths=["pre.txt"],
+                file_paths=["pre.[native-R].txt"],
                 track_id="track-pre",
+                process_options="R",
             )
             row_pre = await rag.full_docs.get_by_id("doc-pre-mutation")
             sep_pre = list(
@@ -653,8 +731,9 @@ def test_runtime_addon_params_mutation_affects_subsequent_enqueue(tmp_path):
             await rag.apipeline_enqueue_documents(
                 "second doc body",
                 ids=["doc-post-mutation"],
-                file_paths=["post.txt"],
+                file_paths=["post.[native-R].txt"],
                 track_id="track-post",
+                process_options="R",
             )
             row_post = await rag.full_docs.get_by_id("doc-post-mutation")
         finally:

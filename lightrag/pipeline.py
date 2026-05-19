@@ -20,7 +20,6 @@ import json
 import json_repair
 import mimetypes
 import os
-from copy import deepcopy
 import re
 import shutil
 import time
@@ -360,12 +359,18 @@ class _PipelineMixin:
             return sanitize_process_options(process_options[index])
 
         def _chunk_options_at(index: int) -> dict[str, Any]:
-            """Resolve the per-doc chunk_options snapshot.
+            """Resolve the per-doc slim chunk_options snapshot.
 
-            When the caller supplied ``chunk_options`` we take a deep
-            copy so two docs in the same batch (broadcast from a single
-            dict) cannot share mutable inner sub-dicts; otherwise we
-            build a fresh snapshot from ``self.addon_params['chunker']``.
+            Projects the chunker config down to the one strategy
+            sub-dict selected by the doc's ``process_options`` (F by
+            default) — the persisted ``full_docs[doc_id]['chunk_options']``
+            carries only the params actually consumed at process time.
+
+            When the caller supplied ``chunk_options`` we slim it
+            against the per-doc options (deep-copying internally so two
+            docs broadcast from a single dict cannot share mutable
+            sub-dicts); otherwise we build a fresh snapshot from
+            ``self.addon_params['chunker']``.
 
             F-strategy runtime args (``split_by_character`` /
             ``split_by_character_only`` from :meth:`LightRAG.ainsert`)
@@ -375,11 +380,17 @@ class _PipelineMixin:
             is purely a persistence helper; chunker-config construction
             is not its concern.
             """
-            from lightrag.parser_routing import resolve_chunk_options
+            from lightrag.parser_routing import (
+                resolve_chunk_options,
+                slim_chunk_options,
+            )
 
+            doc_options = _process_options_at(index)
             if chunk_options is not None:
-                return deepcopy(chunk_options[index])
-            return resolve_chunk_options(self.addon_params)
+                return slim_chunk_options(chunk_options[index], doc_options)
+            return resolve_chunk_options(
+                self.addon_params, process_options=doc_options
+            )
 
         # 1. Validate ids and build contents (when lightrag: no content dedup, content may be empty)
         if ids is not None:
@@ -1665,14 +1676,19 @@ class _PipelineMixin:
                 if not isinstance(chunk_opts, dict) or not chunk_opts:
                     # Backwards compatibility: rows enqueued before the
                     # chunk_options snapshot was added fall back to a
-                    # fresh build from current addon_params['chunker'].
-                    # F-strategy split args fall back to whatever lives
-                    # in addon_params['chunker']['fixed_token']; runtime
-                    # overrides are an ainsert-time concern and don't
-                    # apply at process time for legacy rows.
+                    # fresh build from current addon_params['chunker'],
+                    # scoped to the per-doc strategy decoded above so
+                    # the slim shape stays consistent with newly
+                    # enqueued rows.  F-strategy split args fall back
+                    # to whatever lives in
+                    # ``addon_params['chunker']['fixed_token']``;
+                    # runtime overrides are an ainsert-time concern and
+                    # don't apply at process time for legacy rows.
                     from lightrag.parser_routing import resolve_chunk_options
 
-                    chunk_opts = resolve_chunk_options(self.addon_params)
+                    chunk_opts = resolve_chunk_options(
+                        self.addon_params, process_options=doc_process_opts
+                    )
                 resolved_chunk_size = int(
                     chunk_opts.get("chunk_token_size") or self.chunk_token_size
                 )
