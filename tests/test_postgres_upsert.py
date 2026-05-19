@@ -152,6 +152,8 @@ async def test_upsert_text_chunks_tuple_order():
             "content": "hello world",
             "file_path": "/a/b.txt",
             "llm_cache_list": ["cache-key"],
+            "heading": {"level": 2, "text": "Section A"},
+            "sidecar": {"type": "drawing", "id": "img-1", "refs": []},
         }
     }
     await storage.upsert(data)
@@ -162,7 +164,8 @@ async def test_upsert_text_chunks_tuple_order():
     assert len(rows) == 1
     row = rows[0]
     # SQL: (workspace, id, tokens, chunk_order_index, full_doc_id,
-    #        content, file_path, llm_cache_list, create_time, update_time)
+    #        content, file_path, llm_cache_list, heading, sidecar,
+    #        create_time, update_time)
     assert row[0] == "test_ws"  # workspace
     assert row[1] == "chunk-1"  # id
     assert row[2] == 42  # tokens
@@ -171,6 +174,56 @@ async def test_upsert_text_chunks_tuple_order():
     assert row[5] == "hello world"  # content
     assert row[6] == "/a/b.txt"  # file_path
     assert json.loads(row[7]) == ["cache-key"]  # llm_cache_list
+    assert json.loads(row[8]) == {"level": 2, "text": "Section A"}  # heading
+    assert json.loads(row[9]) == {
+        "type": "drawing",
+        "id": "img-1",
+        "refs": [],
+    }  # sidecar
+
+
+@pytest.mark.asyncio
+async def test_upsert_text_chunks_missing_heading_sidecar_defaults_to_empty_dict():
+    """Plain-text chunks without heading/sidecar should serialize to '{}'."""
+    storage = make_storage(NameSpace.KV_STORE_TEXT_CHUNKS)
+    data = {
+        "chunk-1": {
+            "tokens": 10,
+            "chunk_order_index": 0,
+            "full_doc_id": "doc-1",
+            "content": "plain text",
+            "file_path": "/a/b.txt",
+        }
+    }
+    await storage.upsert(data)
+
+    _, rows = storage._captured[0]
+    row = rows[0]
+    assert json.loads(row[8]) == {}  # heading
+    assert json.loads(row[9]) == {}  # sidecar
+
+
+@pytest.mark.asyncio
+async def test_upsert_text_chunks_none_heading_sidecar_defaults_to_empty_dict():
+    """Explicit None values should be coerced to '{}' to avoid type errors."""
+    storage = make_storage(NameSpace.KV_STORE_TEXT_CHUNKS)
+    data = {
+        "chunk-1": {
+            "tokens": 10,
+            "chunk_order_index": 0,
+            "full_doc_id": "doc-1",
+            "content": "plain text",
+            "file_path": "/a/b.txt",
+            "heading": None,
+            "sidecar": None,
+        }
+    }
+    await storage.upsert(data)
+
+    _, rows = storage._captured[0]
+    row = rows[0]
+    assert json.loads(row[8]) == {}
+    assert json.loads(row[9]) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -181,17 +234,68 @@ async def test_upsert_text_chunks_tuple_order():
 @pytest.mark.asyncio
 async def test_upsert_full_docs_tuple_order():
     storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
-    data = {"doc-1": {"content": "full text", "file_path": "/path/doc.pdf"}}
+    data = {
+        "doc-1": {
+            "content": "full text",
+            "file_path": "/path/doc.pdf",
+            "sidecar_location": "lightrag://sidecar/doc-1",
+            "parse_format": "lightrag",
+            "content_hash": "deadbeef",
+            "process_options": "Fi",
+            "chunk_options": {"chunk_token_size": 1200, "chunk_overlap": 100},
+            "parse_engine": "mineru",
+        }
+    }
     await storage.upsert(data)
 
     assert len(storage._captured) == 1
     _, rows = storage._captured[0]
     row = rows[0]
-    # SQL: (id, content, doc_name, workspace)
+    # SQL: (id, content, doc_name, workspace, sidecar_location, parse_format,
+    #       content_hash, process_options, chunk_options, parse_engine)
     assert row[0] == "doc-1"
     assert row[1] == "full text"
     assert row[2] == "/path/doc.pdf"
     assert row[3] == "test_ws"
+    assert row[4] == "lightrag://sidecar/doc-1"
+    assert row[5] == "lightrag"
+    assert row[6] == "deadbeef"
+    assert row[7] == "Fi"
+    assert json.loads(row[8]) == {"chunk_token_size": 1200, "chunk_overlap": 100}
+    assert row[9] == "mineru"
+
+
+@pytest.mark.asyncio
+async def test_upsert_full_docs_defaults_for_missing_pipeline_fields():
+    """Missing pipeline-derived fields should fall back to sane defaults."""
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    data = {"doc-1": {"content": "full text", "file_path": "/path/doc.pdf"}}
+    await storage.upsert(data)
+
+    _, rows = storage._captured[0]
+    row = rows[0]
+    assert row[4] is None  # sidecar_location
+    assert row[5] == "raw"  # parse_format default
+    assert row[6] is None  # content_hash
+    assert row[7] is None  # process_options
+    assert json.loads(row[8]) == {}  # chunk_options default
+    assert row[9] is None  # parse_engine
+
+
+@pytest.mark.asyncio
+async def test_upsert_full_docs_none_chunk_options_defaults_to_empty_dict():
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    data = {
+        "doc-1": {
+            "content": "full text",
+            "file_path": "/path/doc.pdf",
+            "chunk_options": None,
+        }
+    }
+    await storage.upsert(data)
+
+    _, rows = storage._captured[0]
+    assert json.loads(rows[0][8]) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +533,99 @@ async def test_doc_status_upsert_passes_timing_label():
     assert storage._retry_kwargs[0]["timing_label"] == (
         "test_ws PGDocStatusStorage.upsert"
     )
+
+
+# ---------------------------------------------------------------------------
+# doc_status: content_hash tuple + COALESCE SQL guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_doc_status_upsert_includes_content_hash():
+    storage = make_doc_status_storage()
+    await storage.upsert(
+        {
+            "doc-1": {
+                "content_summary": "summary",
+                "content_length": 12,
+                "chunks_count": 1,
+                "status": "processed",
+                "file_path": "/a.txt",
+                "chunks_list": ["chunk-1"],
+                "metadata": {"source": "test"},
+                "content_hash": "abc123",
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+            }
+        }
+    )
+
+    sql, rows = storage._captured[0]
+    # content_hash should be present in the INSERT column list and tuple
+    assert "content_hash" in sql
+    row = rows[0]
+    # Tuple layout: workspace, id, content_summary, content_length, chunks_count,
+    # status, file_path, chunks_list, track_id, metadata, error_msg,
+    # content_hash, created_at, updated_at
+    assert row[11] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_doc_status_upsert_missing_content_hash_is_none():
+    """Existing callers that do not pass content_hash still produce valid tuples."""
+    storage = make_doc_status_storage()
+    await storage.upsert(
+        {
+            "doc-1": {
+                "content_summary": "summary",
+                "content_length": 12,
+                "chunks_count": 1,
+                "status": "processed",
+                "file_path": "/a.txt",
+                "chunks_list": ["chunk-1"],
+                "metadata": {"source": "test"},
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+            }
+        }
+    )
+
+    _, rows = storage._captured[0]
+    assert rows[0][11] is None
+
+
+@pytest.mark.asyncio
+async def test_doc_status_upsert_sql_protects_existing_content_hash():
+    """The ON CONFLICT clause must COALESCE+NULLIF to preserve a previously
+    set content_hash when a subsequent state-transition upsert carries no
+    hash (None) or an empty string.
+
+    We assert this at the SQL-template level since the actual COALESCE
+    behavior is executed by Postgres. The presence of the protective
+    expression in the SQL is the single source of truth for the guarantee.
+    """
+    storage = make_doc_status_storage()
+    await storage.upsert(
+        {
+            "doc-1": {
+                "content_summary": "summary",
+                "content_length": 12,
+                "chunks_count": 1,
+                "status": "processed",
+                "file_path": "/a.txt",
+                "chunks_list": [],
+                "metadata": {},
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "updated_at": "2024-01-01T00:00:00+00:00",
+            }
+        }
+    )
+
+    sql, _ = storage._captured[0]
+    normalized = " ".join(sql.split()).lower()
+    assert "coalesce(" in normalized
+    assert "nullif(excluded.content_hash, '')" in normalized
+    assert "lightrag_doc_status.content_hash" in normalized
 
 
 @pytest.mark.asyncio

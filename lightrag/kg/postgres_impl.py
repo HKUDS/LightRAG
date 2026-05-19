@@ -1272,6 +1272,177 @@ class PostgreSQLDB:
                 f"Failed to add metadata/error_msg columns to LIGHTRAG_DOC_STATUS: {e}"
             )
 
+    async def _migrate_doc_full_add_pipeline_fields(self):
+        """Add pipeline-derived fields to LIGHTRAG_DOC_FULL if they don't exist.
+
+        Each ALTER is guarded individually so a single failure does not abort
+        the remaining columns; the migration is idempotent and retried on
+        every startup until all columns are present.
+        """
+        columns_to_add = [
+            ("sidecar_location", "TEXT NULL"),
+            ("parse_format", "VARCHAR(32) NULL DEFAULT 'raw'"),
+            ("content_hash", "VARCHAR(64) NULL"),
+            ("process_options", "TEXT NULL"),
+            ("chunk_options", "JSONB NULL DEFAULT '{}'::jsonb"),
+            ("parse_engine", "VARCHAR(32) NULL"),
+        ]
+        try:
+            existing = await self.query(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'lightrag_doc_full'
+                  AND column_name = ANY($1)
+                """,
+                [[c for c, _ in columns_to_add]],
+                multirows=True,
+            )
+            existing_names = {row["column_name"] for row in (existing or [])}
+        except Exception as e:
+            logger.warning(
+                f"Failed to inspect LIGHTRAG_DOC_FULL columns for migration: {e}"
+            )
+            existing_names = set()
+
+        for col_name, col_type in columns_to_add:
+            if col_name in existing_names:
+                logger.debug(
+                    f"Column {col_name} already exists in LIGHTRAG_DOC_FULL"
+                )
+                continue
+            try:
+                alter_sql = (
+                    f"ALTER TABLE LIGHTRAG_DOC_FULL ADD COLUMN {col_name} {col_type}"
+                )
+                logger.info(f"Adding {col_name} column to LIGHTRAG_DOC_FULL table")
+                await self.execute(alter_sql)
+                logger.info(
+                    f"Successfully added {col_name} column to LIGHTRAG_DOC_FULL table"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to add column {col_name} to LIGHTRAG_DOC_FULL: {e}"
+                )
+
+        # Create partial index on (workspace, content_hash) for dedup lookups
+        try:
+            check_index_sql = """
+            SELECT indexname FROM pg_indexes
+            WHERE tablename = 'lightrag_doc_full'
+              AND indexname = 'idx_lightrag_doc_full_workspace_content_hash'
+            """
+            index_info = await self.query(check_index_sql)
+            if not index_info:
+                logger.info(
+                    "Creating partial index idx_lightrag_doc_full_workspace_content_hash"
+                )
+                await self.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_lightrag_doc_full_workspace_content_hash
+                    ON LIGHTRAG_DOC_FULL (workspace, content_hash)
+                    WHERE content_hash IS NOT NULL AND content_hash <> ''
+                    """
+                )
+        except Exception as e:
+            logger.error(
+                f"Failed to create partial content_hash index on LIGHTRAG_DOC_FULL: {e}"
+            )
+
+    async def _migrate_doc_status_add_content_hash(self):
+        """Add content_hash column to LIGHTRAG_DOC_STATUS table if it doesn't exist."""
+        try:
+            check_column_sql = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'lightrag_doc_status'
+              AND column_name = 'content_hash'
+            """
+            column_info = await self.query(check_column_sql)
+            if not column_info:
+                logger.info("Adding content_hash column to LIGHTRAG_DOC_STATUS table")
+                await self.execute(
+                    "ALTER TABLE LIGHTRAG_DOC_STATUS ADD COLUMN content_hash VARCHAR(64) NULL"
+                )
+                logger.info(
+                    "Successfully added content_hash column to LIGHTRAG_DOC_STATUS table"
+                )
+            else:
+                logger.debug(
+                    "content_hash column already exists in LIGHTRAG_DOC_STATUS table"
+                )
+        except Exception as e:
+            logger.error(
+                f"Failed to add content_hash column to LIGHTRAG_DOC_STATUS: {e}"
+            )
+
+        try:
+            check_index_sql = """
+            SELECT indexname FROM pg_indexes
+            WHERE tablename = 'lightrag_doc_status'
+              AND indexname = 'idx_lightrag_doc_status_workspace_content_hash'
+            """
+            index_info = await self.query(check_index_sql)
+            if not index_info:
+                logger.info(
+                    "Creating partial index idx_lightrag_doc_status_workspace_content_hash"
+                )
+                await self.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_lightrag_doc_status_workspace_content_hash
+                    ON LIGHTRAG_DOC_STATUS (workspace, content_hash)
+                    WHERE content_hash IS NOT NULL AND content_hash <> ''
+                    """
+                )
+        except Exception as e:
+            logger.error(
+                f"Failed to create partial content_hash index on LIGHTRAG_DOC_STATUS: {e}"
+            )
+
+    async def _migrate_text_chunks_add_heading_sidecar(self):
+        """Add heading and sidecar JSONB columns to LIGHTRAG_DOC_CHUNKS if missing."""
+        columns_to_add = [
+            ("heading", "JSONB NULL DEFAULT '{}'::jsonb"),
+            ("sidecar", "JSONB NULL DEFAULT '{}'::jsonb"),
+        ]
+        try:
+            existing = await self.query(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'lightrag_doc_chunks'
+                  AND column_name = ANY($1)
+                """,
+                [[c for c, _ in columns_to_add]],
+                multirows=True,
+            )
+            existing_names = {row["column_name"] for row in (existing or [])}
+        except Exception as e:
+            logger.warning(
+                f"Failed to inspect LIGHTRAG_DOC_CHUNKS columns for migration: {e}"
+            )
+            existing_names = set()
+
+        for col_name, col_type in columns_to_add:
+            if col_name in existing_names:
+                logger.debug(
+                    f"Column {col_name} already exists in LIGHTRAG_DOC_CHUNKS"
+                )
+                continue
+            try:
+                alter_sql = (
+                    f"ALTER TABLE LIGHTRAG_DOC_CHUNKS ADD COLUMN {col_name} {col_type}"
+                )
+                logger.info(f"Adding {col_name} column to LIGHTRAG_DOC_CHUNKS table")
+                await self.execute(alter_sql)
+                logger.info(
+                    f"Successfully added {col_name} column to LIGHTRAG_DOC_CHUNKS table"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to add column {col_name} to LIGHTRAG_DOC_CHUNKS: {e}"
+                )
+
     async def _migrate_field_lengths(self):
         """Migrate database field lengths: entity_name, source_id, target_id, and file_path"""
         # Define the field changes needed
@@ -1580,6 +1751,33 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(
                 f"PostgreSQL, Failed to create full entities/relations tables: {e}"
+            )
+
+        # Migrate LIGHTRAG_DOC_FULL to add pipeline-derived fields used by the
+        # JSON storage parity: sidecar_location / parse_format / content_hash /
+        # process_options / chunk_options / parse_engine
+        try:
+            await self._migrate_doc_full_add_pipeline_fields()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to migrate LIGHTRAG_DOC_FULL pipeline fields: {e}"
+            )
+
+        # Migrate LIGHTRAG_DOC_STATUS to add content_hash column for content
+        # dedup queries
+        try:
+            await self._migrate_doc_status_add_content_hash()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to migrate LIGHTRAG_DOC_STATUS content_hash field: {e}"
+            )
+
+        # Migrate LIGHTRAG_DOC_CHUNKS to add heading / sidecar JSONB columns
+        try:
+            await self._migrate_text_chunks_add_heading_sidecar()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to migrate LIGHTRAG_DOC_CHUNKS heading/sidecar fields: {e}"
             )
 
     async def _migrate_create_full_entities_relations_tables(self):
@@ -2239,10 +2437,45 @@ class PGKVStorage(BaseKVStorage):
                 except json.JSONDecodeError:
                     llm_cache_list = []
             response["llm_cache_list"] = llm_cache_list
+
+            # Parse heading JSON string back to dict; normalize None/missing to {}
+            heading = response.get("heading")
+            if isinstance(heading, str):
+                try:
+                    heading = json.loads(heading)
+                except json.JSONDecodeError:
+                    heading = {}
+            if not isinstance(heading, dict):
+                heading = {}
+            response["heading"] = heading
+
+            # Parse sidecar JSON string back to dict; normalize None/missing to {}
+            sidecar = response.get("sidecar")
+            if isinstance(sidecar, str):
+                try:
+                    sidecar = json.loads(sidecar)
+                except json.JSONDecodeError:
+                    sidecar = {}
+            if not isinstance(sidecar, dict):
+                sidecar = {}
+            response["sidecar"] = sidecar
+
             create_time = response.get("create_time", 0)
             update_time = response.get("update_time", 0)
             response["create_time"] = create_time
             response["update_time"] = create_time if update_time == 0 else update_time
+
+        if response and is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
+            # Parse chunk_options JSON string back to dict; normalize None/missing to {}
+            chunk_options = response.get("chunk_options")
+            if isinstance(chunk_options, str):
+                try:
+                    chunk_options = json.loads(chunk_options)
+                except json.JSONDecodeError:
+                    chunk_options = {}
+            if not isinstance(chunk_options, dict):
+                chunk_options = {}
+            response["chunk_options"] = chunk_options
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if response and is_namespace(
@@ -2364,7 +2597,7 @@ class PGKVStorage(BaseKVStorage):
             return ordered
 
         if results and is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
-            # Parse llm_cache_list JSON string back to list for each result
+            # Parse llm_cache_list / heading / sidecar JSON strings for each result
             for result in results:
                 llm_cache_list = result.get("llm_cache_list", [])
                 if isinstance(llm_cache_list, str):
@@ -2373,10 +2606,43 @@ class PGKVStorage(BaseKVStorage):
                     except json.JSONDecodeError:
                         llm_cache_list = []
                 result["llm_cache_list"] = llm_cache_list
+
+                heading = result.get("heading")
+                if isinstance(heading, str):
+                    try:
+                        heading = json.loads(heading)
+                    except json.JSONDecodeError:
+                        heading = {}
+                if not isinstance(heading, dict):
+                    heading = {}
+                result["heading"] = heading
+
+                sidecar = result.get("sidecar")
+                if isinstance(sidecar, str):
+                    try:
+                        sidecar = json.loads(sidecar)
+                    except json.JSONDecodeError:
+                        sidecar = {}
+                if not isinstance(sidecar, dict):
+                    sidecar = {}
+                result["sidecar"] = sidecar
+
                 create_time = result.get("create_time", 0)
                 update_time = result.get("update_time", 0)
                 result["create_time"] = create_time
                 result["update_time"] = create_time if update_time == 0 else update_time
+
+        if results and is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
+            for result in results:
+                chunk_options = result.get("chunk_options")
+                if isinstance(chunk_options, str):
+                    try:
+                        chunk_options = json.loads(chunk_options)
+                    except json.JSONDecodeError:
+                        chunk_options = {}
+                if not isinstance(chunk_options, dict):
+                    chunk_options = {}
+                result["chunk_options"] = chunk_options
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if results and is_namespace(
@@ -2520,7 +2786,8 @@ class PGKVStorage(BaseKVStorage):
             current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for i, (k, v) in enumerate(data.items(), start=1):
                 # Tuple order must match SQL: (workspace, id, tokens, chunk_order_index,
-                #   full_doc_id, content, file_path, llm_cache_list, create_time, update_time)
+                #   full_doc_id, content, file_path, llm_cache_list, heading, sidecar,
+                #   create_time, update_time)
                 batch_values.append(
                     (
                         self.workspace,
@@ -2531,6 +2798,8 @@ class PGKVStorage(BaseKVStorage):
                         v["content"],
                         v["file_path"],
                         json.dumps(v.get("llm_cache_list", [])),
+                        json.dumps(v.get("heading") or {}),
+                        json.dumps(v.get("sidecar") or {}),
                         current_time,
                         current_time,
                     )
@@ -2539,9 +2808,22 @@ class PGKVStorage(BaseKVStorage):
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
             upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
             for i, (k, v) in enumerate(data.items(), start=1):
-                # Tuple order must match SQL: (id, content, doc_name, workspace)
+                # Tuple order must match SQL: (id, content, doc_name, workspace,
+                #   sidecar_location, parse_format, content_hash, process_options,
+                #   chunk_options, parse_engine)
                 batch_values.append(
-                    (k, v["content"], v.get("file_path", ""), self.workspace)
+                    (
+                        k,
+                        v["content"],
+                        v.get("file_path", ""),
+                        self.workspace,
+                        v.get("sidecar_location"),
+                        v.get("parse_format", "raw"),
+                        v.get("content_hash"),
+                        v.get("process_options"),
+                        json.dumps(v.get("chunk_options") or {}),
+                        v.get("parse_engine"),
+                    )
                 )
                 await _cooperative_yield(i)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
@@ -3854,6 +4136,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 metadata=metadata,
                 error_msg=result[0].get("error_msg"),
                 track_id=result[0].get("track_id"),
+                content_hash=result[0].get("content_hash"),
             )
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -3903,6 +4186,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 "metadata": metadata,
                 "error_msg": row.get("error_msg"),
                 "track_id": row.get("track_id"),
+                "content_hash": row.get("content_hash"),
             }
 
         ordered_results: list[dict[str, Any] | None] = []
@@ -3960,7 +4244,144 @@ class PGDocStatusStorage(DocStatusStorage):
                 metadata=metadata,
                 error_msg=result[0].get("error_msg"),
                 track_id=result[0].get("track_id"),
+                content_hash=result[0].get("content_hash"),
             )
+
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """PG-native override of basename-based document lookup.
+
+        Replaces the base-class full-table scan with a database-level query on
+        the canonical ``file_path`` column. Inputs are normalized via
+        :func:`lightrag.utils_pipeline.normalize_document_file_path`; the
+        ``unknown_source`` sentinel is treated as a miss.
+        """
+        if not basename:
+            return None
+
+        from lightrag.utils_pipeline import normalize_document_file_path
+
+        target = normalize_document_file_path(basename)
+        if target == "unknown_source":
+            return None
+
+        # New writes always store the canonical basename, so an exact match
+        # on workspace + file_path handles the common case. The LIKE branch
+        # is a defensive fallback for legacy rows still carrying a parser
+        # hint segment (e.g. ``a.[native].docx``); the LIKE pattern is built
+        # from the stem of the canonical target.
+        from os.path import splitext
+
+        stem, ext = splitext(target)
+        like_pattern = f"{stem}.[%]{ext}" if stem else None
+
+        if like_pattern:
+            sql = (
+                "SELECT * FROM LIGHTRAG_DOC_STATUS "
+                "WHERE workspace=$1 AND (file_path = $2 OR file_path LIKE $3) "
+                "LIMIT 1"
+            )
+            params = [self.workspace, target, like_pattern]
+        else:
+            sql = (
+                "SELECT * FROM LIGHTRAG_DOC_STATUS "
+                "WHERE workspace=$1 AND file_path = $2 LIMIT 1"
+            )
+            params = [self.workspace, target]
+
+        result = await self.db.query(sql, params, True)
+        if not result:
+            return None
+        row = result[0]
+
+        chunks_list = row.get("chunks_list", [])
+        if isinstance(chunks_list, str):
+            try:
+                chunks_list = json.loads(chunks_list)
+            except json.JSONDecodeError:
+                chunks_list = []
+
+        metadata = row.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+
+        created_at = self._format_datetime_with_timezone(row["created_at"])
+        updated_at = self._format_datetime_with_timezone(row["updated_at"])
+
+        doc = dict(
+            content_length=row["content_length"],
+            content_summary=row["content_summary"],
+            status=row["status"],
+            chunks_count=row["chunks_count"],
+            created_at=created_at,
+            updated_at=updated_at,
+            file_path=row["file_path"],
+            chunks_list=chunks_list,
+            metadata=metadata,
+            error_msg=row.get("error_msg"),
+            track_id=row.get("track_id"),
+            content_hash=row.get("content_hash"),
+        )
+        return str(row["id"]), doc
+
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """PG-native override of content-hash document lookup.
+
+        Replaces the base-class full-table scan with an indexed query on
+        ``workspace + content_hash``. Empty strings are treated as a miss
+        to align with the partial-index predicate.
+        """
+        if not content_hash:
+            return None
+
+        sql = (
+            "SELECT * FROM LIGHTRAG_DOC_STATUS "
+            "WHERE workspace=$1 AND content_hash=$2 "
+            "ORDER BY created_at ASC, id ASC LIMIT 1"
+        )
+        result = await self.db.query(sql, [self.workspace, content_hash], True)
+        if not result:
+            return None
+        row = result[0]
+
+        chunks_list = row.get("chunks_list", [])
+        if isinstance(chunks_list, str):
+            try:
+                chunks_list = json.loads(chunks_list)
+            except json.JSONDecodeError:
+                chunks_list = []
+
+        metadata = row.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+
+        created_at = self._format_datetime_with_timezone(row["created_at"])
+        updated_at = self._format_datetime_with_timezone(row["updated_at"])
+
+        doc = dict(
+            content_length=row["content_length"],
+            content_summary=row["content_summary"],
+            status=row["status"],
+            chunks_count=row["chunks_count"],
+            created_at=created_at,
+            updated_at=updated_at,
+            file_path=row["file_path"],
+            chunks_list=chunks_list,
+            metadata=metadata,
+            error_msg=row.get("error_msg"),
+            track_id=row.get("track_id"),
+            content_hash=row.get("content_hash"),
+        )
+        return str(row["id"]), doc
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -4025,6 +4446,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 metadata=metadata,
                 error_msg=element.get("error_msg"),
                 track_id=element.get("track_id"),
+                content_hash=element.get("content_hash"),
             )
 
         return docs_by_status
@@ -4086,6 +4508,7 @@ class PGDocStatusStorage(DocStatusStorage):
                     metadata=metadata,
                     error_msg=element.get("error_msg"),
                     track_id=element.get("track_id"),
+                    content_hash=element.get("content_hash"),
                 )
             except (KeyError, TypeError) as e:
                 doc_id_hint = element.get("id", "<unknown>") if element else "<unknown>"
@@ -4147,6 +4570,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 track_id=element.get("track_id"),
                 metadata=metadata,
                 error_msg=element.get("error_msg"),
+                content_hash=element.get("content_hash"),
             )
 
         return docs_by_track_id
@@ -4257,7 +4681,7 @@ class PGDocStatusStorage(DocStatusStorage):
             ),
             paged AS (
                 SELECT id, workspace, content_summary, content_length, chunks_count,
-                       status, file_path, track_id, metadata, error_msg,
+                       status, file_path, track_id, metadata, error_msg, content_hash,
                        created_at, updated_at
                 FROM LIGHTRAG_DOC_STATUS
                 {where_clause}
@@ -4310,6 +4734,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 track_id=element.get("track_id"),
                 metadata=metadata,
                 error_msg=element.get("error_msg"),
+                content_hash=element.get("content_hash"),
             )
             documents.append((doc_id, doc_status))
 
@@ -4451,8 +4876,8 @@ class PGDocStatusStorage(DocStatusStorage):
             len(data),
         )
 
-        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,metadata,error_msg,created_at,updated_at)
-                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status,file_path,chunks_list,track_id,metadata,error_msg,content_hash,created_at,updated_at)
+                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                   on conflict(id,workspace) do update set
                   content_summary = EXCLUDED.content_summary,
                   content_length = EXCLUDED.content_length,
@@ -4463,12 +4888,16 @@ class PGDocStatusStorage(DocStatusStorage):
                   track_id = EXCLUDED.track_id,
                   metadata = EXCLUDED.metadata,
                   error_msg = EXCLUDED.error_msg,
+                  content_hash = COALESCE(
+                      NULLIF(EXCLUDED.content_hash, ''),
+                      LIGHTRAG_DOC_STATUS.content_hash
+                  ),
                   created_at = EXCLUDED.created_at,
                   updated_at = EXCLUDED.updated_at"""
 
         # Tuple order must match SQL: (workspace, id, content_summary, content_length,
         #   chunks_count, status, file_path, chunks_list, track_id, metadata,
-        #   error_msg, created_at, updated_at)
+        #   error_msg, content_hash, created_at, updated_at)
         batch: list[tuple] = []
         skipped: list[str] = []
         batch_build_start = time.perf_counter()
@@ -4487,6 +4916,7 @@ class PGDocStatusStorage(DocStatusStorage):
                         v.get("track_id"),
                         json.dumps(v.get("metadata", {})),
                         v.get("error_msg"),
+                        v.get("content_hash"),
                         _parse_doc_status_datetime(
                             v.get("created_at"),
                             f"[{self.workspace}] doc {k} created_at",
@@ -6333,6 +6763,12 @@ TABLES = {
                     doc_name VARCHAR(1024),
                     content TEXT,
                     meta JSONB,
+                    sidecar_location TEXT NULL,
+                    parse_format VARCHAR(32) NULL DEFAULT 'raw',
+                    content_hash VARCHAR(64) NULL,
+                    process_options TEXT NULL,
+                    chunk_options JSONB NULL DEFAULT '{}'::jsonb,
+                    parse_engine VARCHAR(32) NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
@@ -6348,6 +6784,8 @@ TABLES = {
                     content TEXT,
                     file_path TEXT NULL,
                     llm_cache_list JSONB NULL DEFAULT '[]'::jsonb,
+                    heading JSONB NULL DEFAULT '{}'::jsonb,
+                    sidecar JSONB NULL DEFAULT '{}'::jsonb,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
@@ -6424,6 +6862,7 @@ TABLES = {
 	               track_id varchar(255) NULL,
 	               metadata JSONB NULL DEFAULT '{}'::jsonb,
 	               error_msg TEXT NULL,
+	               content_hash VARCHAR(64) NULL,
 	               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)
@@ -6479,12 +6918,20 @@ TABLES = {
 SQL_TEMPLATES = {
     # SQL for KVStorage
     "get_by_id_full_docs": """SELECT id, COALESCE(content, '') as content,
-                                COALESCE(doc_name, '') as file_path
+                                COALESCE(doc_name, '') as file_path,
+                                sidecar_location,
+                                parse_format,
+                                content_hash,
+                                process_options,
+                                COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
+                                parse_engine
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
                                 chunk_order_index, full_doc_id, file_path,
                                 COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
+                                COALESCE(heading, '{}'::jsonb) as heading,
+                                COALESCE(sidecar, '{}'::jsonb) as sidecar,
                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                 FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
@@ -6495,12 +6942,20 @@ SQL_TEMPLATES = {
                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id=$2
                                """,
     "get_by_ids_full_docs": """SELECT id, COALESCE(content, '') as content,
-                                 COALESCE(doc_name, '') as file_path
+                                 COALESCE(doc_name, '') as file_path,
+                                 sidecar_location,
+                                 parse_format,
+                                 content_hash,
+                                 process_options,
+                                 COALESCE(chunk_options, '{}'::jsonb) as chunk_options,
+                                 parse_engine
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id = ANY($2)
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
                                   chunk_order_index, full_doc_id, file_path,
                                   COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
+                                  COALESCE(heading, '{}'::jsonb) as heading,
+                                  COALESCE(sidecar, '{}'::jsonb) as sidecar,
                                   EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
                                   EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                    FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id = ANY($2)
@@ -6551,11 +7006,19 @@ SQL_TEMPLATES = {
                                  FROM LIGHTRAG_RELATION_CHUNKS WHERE workspace=$1 AND id = ANY($2)
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
-    "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace)
-                        VALUES ($1, $2, $3, $4)
+    "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace,
+                            sidecar_location, parse_format, content_hash,
+                            process_options, chunk_options, parse_engine)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                         ON CONFLICT (workspace,id) DO UPDATE
-                           SET content = $2,
-                               doc_name = $3,
+                           SET content = EXCLUDED.content,
+                               doc_name = EXCLUDED.doc_name,
+                               sidecar_location = EXCLUDED.sidecar_location,
+                               parse_format = EXCLUDED.parse_format,
+                               content_hash = EXCLUDED.content_hash,
+                               process_options = EXCLUDED.process_options,
+                               chunk_options = EXCLUDED.chunk_options,
+                               parse_engine = EXCLUDED.parse_engine,
                                update_time = CURRENT_TIMESTAMP
                        """,
     "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,chunk_id,cache_type,queryparam)
@@ -6570,8 +7033,8 @@ SQL_TEMPLATES = {
                                      """,
     "upsert_text_chunk": """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, file_path, llm_cache_list,
-                      create_time, update_time)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                      heading, sidecar, create_time, update_time)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET tokens=EXCLUDED.tokens,
                       chunk_order_index=EXCLUDED.chunk_order_index,
@@ -6579,6 +7042,8 @@ SQL_TEMPLATES = {
                       content = EXCLUDED.content,
                       file_path=EXCLUDED.file_path,
                       llm_cache_list=EXCLUDED.llm_cache_list,
+                      heading=EXCLUDED.heading,
+                      sidecar=EXCLUDED.sidecar,
                       update_time = EXCLUDED.update_time
                      """,
     "upsert_full_entities": """INSERT INTO LIGHTRAG_FULL_ENTITIES (workspace, id, entity_names, count,
