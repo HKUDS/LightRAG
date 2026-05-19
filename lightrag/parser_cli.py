@@ -86,7 +86,8 @@ def _print_summary(blocks_path: Path, raw_dir: Path | None, preview: int) -> Non
             raise SystemExit(f"empty blocks file at {blocks_path}")
         meta = json.loads(meta_line)
         rows = [json.loads(line) for line in fh if line.strip()]
-    print(f"parsed dir : {blocks_path.parent}")
+    parsed_dir = blocks_path.parent
+    print(f"parsed dir : {parsed_dir} (exists={parsed_dir.exists()})")
     if raw_dir is not None:
         print(f"raw dir    : {raw_dir} (exists={raw_dir.exists()})")
     print(f"document   : {meta.get('document_name')}")

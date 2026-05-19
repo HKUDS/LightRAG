@@ -2833,11 +2833,24 @@ class _PipelineMixin:
         name = p.name
         candidates: list[Path] = []
         input_path = input_dir_path()
+        # API ``DocumentManager`` scopes its input dir to
+        # ``<base_input_dir>/<workspace>/`` (see DocumentManager.__init__);
+        # check that location first so files uploaded into a workspace
+        # subdirectory resolve correctly. ``self.workspace`` is empty when
+        # no workspace is configured, in which case these candidates
+        # collapse to the base candidates that follow.
+        workspace = getattr(self, "workspace", "") or ""
+        if workspace:
+            candidates.append(input_path / workspace / name)
+            candidates.append(input_path / workspace / PARSED_DIR_NAME / name)
         candidates.append(input_path / name)
         candidates.append(input_path / PARSED_DIR_NAME / name)
 
         # Common local defaults used by API server.
         cwd = Path.cwd()
+        if workspace:
+            candidates.append(cwd / "inputs" / workspace / name)
+            candidates.append(cwd / "inputs" / workspace / PARSED_DIR_NAME / name)
         candidates.extend(
             [
                 cwd / "inputs" / name,
