@@ -251,6 +251,58 @@ def test_invalid_when_local_parser_options_change(
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("MINERU_MODEL_VERSION", "pipeline"),
+        ("MINERU_IS_OCR", "true"),
+        ("MINERU_PAGE_RANGES", "1-5"),
+        ("MINERU_LANGUAGE", "en"),
+        ("MINERU_ENABLE_TABLE", "false"),
+        ("MINERU_ENABLE_FORMULA", "false"),
+    ],
+)
+def test_invalid_when_official_parser_options_change(
+    tmp_path: Path,
+    source_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    value: str,
+) -> None:
+    """Symmetric coverage for the official-mode partition of the signature.
+
+    Build a bundle whose ``options_signature`` reflects the official defaults,
+    sanity-check that it validates, then flip ``key`` and assert a cache miss.
+    """
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+
+    raw = tmp_path / "src.mineru_raw"
+    raw.mkdir()
+    content_list = raw / "content_list.json"
+    content_list.write_text('[{"type":"text","text":"hi"}]', encoding="utf-8")
+    crit_size, crit_hash = compute_size_and_hash(content_list)
+    src_size, src_hash = compute_size_and_hash(source_file)
+    manifest = Manifest(
+        source_content_hash=src_hash,
+        source_size_bytes=src_size,
+        source_filename_at_parse=source_file.name,
+        critical_file=ManifestFile(
+            path="content_list.json", size=crit_size, sha256=crit_hash
+        ),
+        files=[],
+        total_size_bytes=crit_size,
+        task_id="task-official",
+        api_mode="official",
+        options_signature=current_mineru_options_signature(),
+    )
+    write_manifest(raw, manifest)
+
+    assert is_bundle_valid(raw, source_file) is True
+    monkeypatch.setenv(key, value)
+    assert is_bundle_valid(raw, source_file) is False
+
+
+@pytest.mark.offline
 def test_invalid_when_endpoint_signature_mismatch(
     fresh_bundle: tuple[Path, Manifest],
     source_file: Path,

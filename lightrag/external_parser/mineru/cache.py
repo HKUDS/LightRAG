@@ -33,11 +33,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from lightrag.constants import MINERU_RAW_DIR_SUFFIX, PARSED_DIR_SUFFIX
 from lightrag.external_parser.mineru.manifest import load_manifest
+from lightrag.utils import logger
 
 DEFAULT_MINERU_API_MODE = "local"
 DEFAULT_MINERU_OFFICIAL_ENDPOINT = "https://mineru.net"
@@ -48,6 +50,9 @@ DEFAULT_MINERU_LOCAL_PARSE_METHOD = "auto"
 DEFAULT_MINERU_LOCAL_IMAGE_ANALYSIS = True
 DEFAULT_MINERU_LOCAL_START_PAGE_ID = 0
 DEFAULT_MINERU_LOCAL_END_PAGE_ID = 99999
+DEFAULT_MINERU_ENABLE_TABLE = True
+DEFAULT_MINERU_ENABLE_FORMULA = True
+DEFAULT_MINERU_IS_OCR = False
 
 
 def raw_dir_for_parsed_dir(parsed_dir: Path) -> Path:
@@ -125,6 +130,9 @@ def _env_int(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
+        logger.warning(
+            "[mineru_raw] %s=%r is not an integer; using %s", name, raw, default
+        )
         return default
 
 
@@ -165,14 +173,89 @@ def local_page_bounds(page_ranges: str) -> tuple[int, int]:
     )
 
 
+@dataclass(frozen=True)
+class MinerUParserOptions:
+    """Effective MinerU parser options used both for live requests and the
+    cache signature.
+
+    Constructed once via :meth:`from_env` so the client and the cache
+    validator agree on every defaulting / normalization rule.
+    """
+
+    api_mode: str
+    model_version: str
+    language: str
+    enable_table: bool
+    enable_formula: bool
+    is_ocr: bool
+    page_ranges: str
+    local_backend: str
+    local_parse_method: str
+    local_image_analysis: bool
+    local_start_page_id: int
+    local_end_page_id: int
+
+    @classmethod
+    def from_env(cls, *, api_mode: str | None = None) -> "MinerUParserOptions":
+        mode = (
+            _normalize_api_mode(api_mode)
+            if api_mode is not None
+            else _current_api_mode()
+        )
+        page_ranges = os.getenv("MINERU_PAGE_RANGES", "").strip()
+        local_start = _env_int(
+            "MINERU_LOCAL_START_PAGE_ID", DEFAULT_MINERU_LOCAL_START_PAGE_ID
+        )
+        local_end = _env_int(
+            "MINERU_LOCAL_END_PAGE_ID", DEFAULT_MINERU_LOCAL_END_PAGE_ID
+        )
+        if mode == "local" and page_ranges:
+            local_start, local_end = local_page_bounds(page_ranges)
+        return cls(
+            api_mode=mode,
+            model_version=(
+                os.getenv("MINERU_MODEL_VERSION", DEFAULT_MINERU_MODEL_VERSION).strip()
+                or DEFAULT_MINERU_MODEL_VERSION
+            ),
+            language=(
+                os.getenv("MINERU_LANGUAGE", DEFAULT_MINERU_LANGUAGE).strip()
+                or DEFAULT_MINERU_LANGUAGE
+            ),
+            enable_table=_env_bool("MINERU_ENABLE_TABLE", DEFAULT_MINERU_ENABLE_TABLE),
+            enable_formula=_env_bool(
+                "MINERU_ENABLE_FORMULA", DEFAULT_MINERU_ENABLE_FORMULA
+            ),
+            is_ocr=_env_bool("MINERU_IS_OCR", DEFAULT_MINERU_IS_OCR),
+            page_ranges=page_ranges,
+            local_backend=(
+                os.getenv("MINERU_LOCAL_BACKEND", DEFAULT_MINERU_LOCAL_BACKEND).strip()
+                or DEFAULT_MINERU_LOCAL_BACKEND
+            ),
+            local_parse_method=(
+                os.getenv(
+                    "MINERU_LOCAL_PARSE_METHOD", DEFAULT_MINERU_LOCAL_PARSE_METHOD
+                ).strip()
+                or DEFAULT_MINERU_LOCAL_PARSE_METHOD
+            ),
+            local_image_analysis=_env_bool(
+                "MINERU_LOCAL_IMAGE_ANALYSIS", DEFAULT_MINERU_LOCAL_IMAGE_ANALYSIS
+            ),
+            local_start_page_id=local_start,
+            local_end_page_id=local_end,
+        )
+
+    def signature(self) -> str:
+        return mineru_options_signature(**asdict(self))
+
+
 def mineru_options_signature(
     *,
     api_mode: str,
     model_version: str = DEFAULT_MINERU_MODEL_VERSION,
     language: str = DEFAULT_MINERU_LANGUAGE,
-    enable_table: bool = True,
-    enable_formula: bool = True,
-    is_ocr: bool = False,
+    enable_table: bool = DEFAULT_MINERU_ENABLE_TABLE,
+    enable_formula: bool = DEFAULT_MINERU_ENABLE_FORMULA,
+    is_ocr: bool = DEFAULT_MINERU_IS_OCR,
     page_ranges: str = "",
     local_backend: str = DEFAULT_MINERU_LOCAL_BACKEND,
     local_parse_method: str = DEFAULT_MINERU_LOCAL_PARSE_METHOD,
@@ -215,43 +298,7 @@ def mineru_options_signature(
 
 
 def current_mineru_options_signature() -> str:
-    mode = _current_api_mode()
-    page_ranges = os.getenv("MINERU_PAGE_RANGES", "").strip()
-    local_start_page_id = _env_int(
-        "MINERU_LOCAL_START_PAGE_ID", DEFAULT_MINERU_LOCAL_START_PAGE_ID
-    )
-    local_end_page_id = _env_int(
-        "MINERU_LOCAL_END_PAGE_ID", DEFAULT_MINERU_LOCAL_END_PAGE_ID
-    )
-    if mode == "local" and page_ranges:
-        local_start_page_id, local_end_page_id = local_page_bounds(page_ranges)
-
-    return mineru_options_signature(
-        api_mode=mode,
-        model_version=os.getenv(
-            "MINERU_MODEL_VERSION", DEFAULT_MINERU_MODEL_VERSION
-        ).strip()
-        or DEFAULT_MINERU_MODEL_VERSION,
-        language=os.getenv("MINERU_LANGUAGE", DEFAULT_MINERU_LANGUAGE).strip()
-        or DEFAULT_MINERU_LANGUAGE,
-        enable_table=_env_bool("MINERU_ENABLE_TABLE", True),
-        enable_formula=_env_bool("MINERU_ENABLE_FORMULA", True),
-        is_ocr=_env_bool("MINERU_IS_OCR", False),
-        page_ranges=page_ranges,
-        local_backend=os.getenv(
-            "MINERU_LOCAL_BACKEND", DEFAULT_MINERU_LOCAL_BACKEND
-        ).strip()
-        or DEFAULT_MINERU_LOCAL_BACKEND,
-        local_parse_method=os.getenv(
-            "MINERU_LOCAL_PARSE_METHOD", DEFAULT_MINERU_LOCAL_PARSE_METHOD
-        ).strip()
-        or DEFAULT_MINERU_LOCAL_PARSE_METHOD,
-        local_image_analysis=_env_bool(
-            "MINERU_LOCAL_IMAGE_ANALYSIS", DEFAULT_MINERU_LOCAL_IMAGE_ANALYSIS
-        ),
-        local_start_page_id=local_start_page_id,
-        local_end_page_id=local_end_page_id,
-    )
+    return MinerUParserOptions.from_env().signature()
 
 
 def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
@@ -339,6 +386,7 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
 
 __all__ = [
     "MINERU_RAW_DIR_SUFFIX",
+    "MinerUParserOptions",
     "clear_dir_contents",
     "compute_size_and_hash",
     "current_mineru_options_signature",

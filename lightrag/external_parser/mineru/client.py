@@ -29,10 +29,8 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from lightrag.external_parser.mineru.cache import (
-    DEFAULT_MINERU_LOCAL_BACKEND,
+    MinerUParserOptions,
     compute_size_and_hash,
-    local_page_bounds,
-    mineru_options_signature,
 )
 from lightrag.external_parser.mineru.manifest import (
     Manifest,
@@ -72,28 +70,6 @@ def _get_by_path(payload: Any, path: str) -> Any:
         else:
             return None
     return cur
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name, "").strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning(
-            "[mineru_raw] %s=%r is not an integer; using %s", name, raw, default
-        )
-        return default
 
 
 def _strip_trailing_slash(url: str) -> str:
@@ -185,26 +161,19 @@ class MinerURawClient:
         self.max_polls = int(os.getenv("MINERU_MAX_POLLS", "180"))
         self.engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
 
-        self.model_version = os.getenv("MINERU_MODEL_VERSION", "vlm").strip() or "vlm"
-        self.language = os.getenv("MINERU_LANGUAGE", "ch").strip() or "ch"
-        self.enable_table = _env_bool("MINERU_ENABLE_TABLE", True)
-        self.enable_formula = _env_bool("MINERU_ENABLE_FORMULA", True)
-        self.is_ocr = _env_bool("MINERU_IS_OCR", False)
-        self.page_ranges = os.getenv("MINERU_PAGE_RANGES", "").strip()
-        self.local_backend = (
-            os.getenv("MINERU_LOCAL_BACKEND", DEFAULT_MINERU_LOCAL_BACKEND).strip()
-            or DEFAULT_MINERU_LOCAL_BACKEND
-        )
-        self.local_parse_method = (
-            os.getenv("MINERU_LOCAL_PARSE_METHOD", "auto").strip() or "auto"
-        )
-        self.local_image_analysis = _env_bool("MINERU_LOCAL_IMAGE_ANALYSIS", True)
-        self.local_start_page_id = _env_int("MINERU_LOCAL_START_PAGE_ID", 0)
-        self.local_end_page_id = _env_int("MINERU_LOCAL_END_PAGE_ID", 99999)
-        if self.api_mode == "local" and self.page_ranges:
-            self.local_start_page_id, self.local_end_page_id = local_page_bounds(
-                self.page_ranges
-            )
+        options = MinerUParserOptions.from_env(api_mode=self.api_mode)
+        self._parser_options = options
+        self.model_version = options.model_version
+        self.language = options.language
+        self.enable_table = options.enable_table
+        self.enable_formula = options.enable_formula
+        self.is_ocr = options.is_ocr
+        self.page_ranges = options.page_ranges
+        self.local_backend = options.local_backend
+        self.local_parse_method = options.local_parse_method
+        self.local_image_analysis = options.local_image_analysis
+        self.local_start_page_id = options.local_start_page_id
+        self.local_end_page_id = options.local_end_page_id
 
     # ------------------------------------------------------------------
     # Public API
@@ -591,20 +560,7 @@ class MinerURawClient:
         return manifest
 
     def _options_signature(self) -> str:
-        return mineru_options_signature(
-            api_mode=self.api_mode,
-            model_version=self.model_version,
-            language=self.language,
-            enable_table=self.enable_table,
-            enable_formula=self.enable_formula,
-            is_ocr=self.is_ocr,
-            page_ranges=self.page_ranges,
-            local_backend=self.local_backend,
-            local_parse_method=self.local_parse_method,
-            local_image_analysis=self.local_image_analysis,
-            local_start_page_id=self.local_start_page_id,
-            local_end_page_id=self.local_end_page_id,
-        )
+        return self._parser_options.signature()
 
 
 def _find_content_list(payload: Any, content_field: str) -> list[dict] | None:
