@@ -18,6 +18,7 @@ from lightrag.operate import (
     _parse_mm_display_name,
 )
 from lightrag.parser_routing import (
+    FilenameParserHintError,
     ParserRoutingConfigError,
     canonicalize_parser_hinted_basename,
     resolve_file_parser_engine,
@@ -161,23 +162,19 @@ def test_filename_parser_directives_decodes_engine_and_options():
 @pytest.mark.offline
 def test_filename_hint_rejects_invalid_engine_qualified_options():
     """Engine-qualified hints with bad option chars must fail validation
-    the same way options-only hints do, so the documented behaviour
-    "invalid characters → whole hint fails → defaults apply" holds across
-    all hint shapes (otherwise foo.[native-FR].docx would be canonicalised
-    even though its options conflict).
+    during parser directive resolution instead of silently falling back to
+    parser rules/defaults.
     """
     from lightrag.parser_routing import (
         canonicalize_parser_hinted_basename,
         filename_parser_directives,
+        resolve_file_parser_directives,
     )
 
-    # F+R conflict → hint dropped; engine and options are NOT applied.
+    # Low-level helpers stay non-throwing for scan grouping/canonicalization.
     assert filename_parser_directives("foo.[native-FR].docx") == (None, "")
-    # Unknown char Q → hint dropped; engine native is also NOT applied.
     assert filename_parser_directives("foo.[native-Q].docx") == (None, "")
 
-    # The basename must remain unchanged so the documented "defaults apply"
-    # path in the dedup index reflects the literal file the user supplied.
     assert (
         canonicalize_parser_hinted_basename("foo.[native-FR].docx")
         == "foo.[native-FR].docx"
@@ -186,6 +183,31 @@ def test_filename_hint_rejects_invalid_engine_qualified_options():
         canonicalize_parser_hinted_basename("foo.[native-Q].docx")
         == "foo.[native-Q].docx"
     )
+
+    with pytest.raises(FilenameParserHintError, match="multiple chunking modes"):
+        resolve_file_parser_directives("foo.[native-FR].docx")
+    with pytest.raises(FilenameParserHintError, match="unsupported character"):
+        resolve_file_parser_directives("foo.[native-Q].docx")
+    with pytest.raises(
+        FilenameParserHintError, match="unsupported parser engine 'abc'"
+    ):
+        resolve_file_parser_directives("foo.[abc].docx")
+    with pytest.raises(
+        FilenameParserHintError, match="unsupported parser engine 'xyz'"
+    ):
+        resolve_file_parser_directives("foo.[xyz].docx")
+    with pytest.raises(FilenameParserHintError, match="is empty"):
+        resolve_file_parser_directives("foo.[].docx")
+
+
+@pytest.mark.offline
+def test_filename_hint_missing_required_endpoint_rejects(monkeypatch):
+    from lightrag.parser_routing import resolve_file_parser_directives
+
+    monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+
+    with pytest.raises(FilenameParserHintError, match="requires DOCLING_ENDPOINT"):
+        resolve_file_parser_directives("foo.[docling].docx")
 
 
 @pytest.mark.offline
