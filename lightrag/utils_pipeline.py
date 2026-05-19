@@ -16,6 +16,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import quote, unquote, urlsplit
 
 from lightrag.base import DocProcessingStatus, DocStatus, DocStatusStorage
 from lightrag.constants import (
@@ -32,6 +33,7 @@ from lightrag.utils import (
 
 
 PLACEHOLDER_DOCUMENT_SOURCES = {"", "no-file-path", "unknown_source"}
+SIDECAR_LOCATION_UNKNOWN = "unknown_source"
 
 
 def build_chunks_dict_from_chunking_result(
@@ -121,61 +123,28 @@ def resolve_doc_file_path(
 ) -> str:
     """Resolve the best available document file path.
 
-    Prefer a non-placeholder path from doc_status, then fall back to full_docs.
-    This avoids overwriting historical file paths with placeholder values during
-    retries or early-cancellation paths.
+    Returns the first non-placeholder ``file_path`` from doc_status, then
+    full_docs. Both are already canonicalized at write time, so this only
+    has to skip placeholder sentinels.
     """
-
-    placeholder_paths = {"", "no-file-path", "unknown_source"}
-
-    def _normalize_path(candidate: Any) -> str | None:
-        if not isinstance(candidate, str):
-            return None
-
-        normalized = candidate.strip()
-        if not normalized:
-            return None
-
-        return normalized
-
-    candidates = [
-        _normalize_path(getattr(status_doc, "file_path", None)),
-        _normalize_path(content_data.get("file_path") if content_data else None),
-    ]
-
-    for candidate in candidates:
-        if candidate and candidate not in placeholder_paths:
+    for source in (
+        getattr(status_doc, "file_path", None),
+        content_data.get("file_path") if content_data else None,
+    ):
+        if not isinstance(source, str):
+            continue
+        candidate = source.strip()
+        if candidate and candidate not in PLACEHOLDER_DOCUMENT_SOURCES:
             return candidate
-
-    for candidate in candidates:
-        if candidate:
-            return "unknown_source" if candidate == "no-file-path" else candidate
-
     return "unknown_source"
 
 
-def document_source_key(file_path: Any) -> str:
-    """Return the user-visible basename for ``full_docs.file_path``.
-
-    Preserves any ``[hint]`` segment so the UI can show users their original
-    naming intent.  Use :func:`document_canonical_key` to get the canonical
-    form used for filename-based deduplication.
-    """
-    source = str(file_path or "").strip()
-    if source in PLACEHOLDER_DOCUMENT_SOURCES:
-        return "unknown_source"
-    basename = Path(source).name.strip()
-    if basename in PLACEHOLDER_DOCUMENT_SOURCES:
-        return "unknown_source"
-    return basename or "unknown_source"
-
-
-def document_canonical_key(file_path: Any) -> str:
-    """Return the canonical basename used for filename dedup / doc_id seeding.
+def normalize_document_file_path(file_path: Any) -> str:
+    """Return the canonical basename stored as ``file_path``.
 
     Strips any supported ``[hint]`` segment so ``abc.docx`` and
-    ``abc.[native-iet].docx`` map to the same key.  Returns
-    ``"unknown_source"`` for placeholder sources.
+    ``abc.[native-iet].docx`` map to the same key. Collapses placeholders to
+    ``"unknown_source"``. Idempotent.
     """
     source = str(file_path or "").strip()
     if source in PLACEHOLDER_DOCUMENT_SOURCES:
@@ -184,6 +153,11 @@ def document_canonical_key(file_path: Any) -> str:
     if canonical in PLACEHOLDER_DOCUMENT_SOURCES:
         return "unknown_source"
     return canonical or "unknown_source"
+
+
+# Back-compat alias retained until call sites that import the old name are
+# all switched over (the public surface is ``normalize_document_file_path``).
+document_canonical_key = normalize_document_file_path
 
 
 def has_known_document_source(source_key: str) -> bool:
@@ -357,12 +331,12 @@ async def get_existing_doc_by_file_basename(
 ) -> tuple[str, Any] | None:
     """Find an existing doc_status record by canonical file basename.
 
-    Stored ``file_path`` values keep any ``[hint]`` segment intact so the UI
-    can surface the user's original naming.  Filename-based dedup, however,
-    operates on the canonical (hint-stripped) basename so ``abc.docx`` and
-    ``abc.[native-iet].docx`` are treated as the same logical document.
+    Inputs are normalized via :func:`normalize_document_file_path` so callers
+    may pass either the bare canonical name (``abc.docx``) or a hint-bearing
+    variant (``abc.[native-iet].docx``); both resolve to the same logical
+    document.
     """
-    basename = document_canonical_key(file_path)
+    basename = normalize_document_file_path(file_path)
     if basename == "unknown_source":
         return None
     return await doc_status.get_doc_by_file_basename(basename)
@@ -445,50 +419,120 @@ def input_dir_path() -> Path:
     return configured_input_dir()
 
 
-def parsed_dir_for_source(source_path: str | None = None) -> Path:
-    if not source_path:
-        return input_dir_path() / PARSED_DIR_NAME
-
-    source = Path(source_path)
-    if source.is_absolute():
-        if source.parent.name == PARSED_DIR_NAME:
-            return source.parent
-        return source.parent / PARSED_DIR_NAME
-
-    source_parent = source.parent
-    if str(source_parent) == ".":
-        return input_dir_path() / PARSED_DIR_NAME
-    if source_parent.name == PARSED_DIR_NAME:
-        return input_dir_path() / source_parent
-    return input_dir_path() / source_parent / PARSED_DIR_NAME
+def parsed_dir() -> Path:
+    """Return the project-wide parsed-artifact root: ``<input_dir>/__parsed__``."""
+    return input_dir_path() / PARSED_DIR_NAME
 
 
-def parsed_artifact_dir_for_source(
-    source_path: str | None = None, file_path: str | None = None
+def parsed_artifact_dir_for(
+    file_path: str, *, parent_hint: Path | str | None = None
 ) -> Path:
-    parsed_dir = parsed_dir_for_source(source_path)
+    """Return the per-document sidecar directory for ``file_path``.
+
+    ``file_path`` must already be canonical (run ``normalize_document_file_path``
+    first if unsure). When ``parent_hint`` is supplied (e.g. the live source
+    file's parent), the sidecar is placed next to it under ``__parsed__/``
+    rather than under the global ``input_dir``; this keeps test isolation
+    intact when the source lives outside ``INPUT_DIR``. On collision with an
+    existing non-directory entry, the helper appends ``_001``..``_999`` and
+    finally a unix timestamp suffix.
+    """
+    if parent_hint is not None:
+        hint = Path(parent_hint)
+        # ``hint`` may already point at a ``__parsed__/`` dir (e.g. when the
+        # caller re-archived a source); reuse it in place rather than nesting.
+        root = hint if hint.name == PARSED_DIR_NAME else hint / PARSED_DIR_NAME
+    else:
+        root = parsed_dir()
     source_name = (
-        canonicalize_parser_hinted_basename(source_path or file_path or "document")
-        or "document"
+        canonicalize_parser_hinted_basename(file_path or "document") or "document"
     )
     artifact_name = f"{source_name}.parsed"
-    artifact_dir = parsed_dir / artifact_name
+    artifact_dir = root / artifact_name
     if not artifact_dir.exists() or artifact_dir.is_dir():
         return artifact_dir
 
     for i in range(1, 1000):
-        candidate = parsed_dir / f"{artifact_name}_{i:03d}"
+        candidate = root / f"{artifact_name}_{i:03d}"
         if not candidate.exists() or candidate.is_dir():
             return candidate
 
-    return parsed_dir / f"{artifact_name}_{int(time.time())}"
+    return root / f"{artifact_name}_{int(time.time())}"
 
 
-def resolve_lightrag_document_path(document_path: str) -> str:
-    path = Path(document_path)
-    if path.is_absolute():
-        return str(path)
-    return str(input_dir_path() / path)
+# ---------------------------------------------------------------------------
+# Sidecar URI helpers (``full_docs.sidecar_location``)
+# ---------------------------------------------------------------------------
+#
+# Sidecar URI scheme conventions:
+#   - Local:  ``file:///abs/path/to/abc.parsed/``   (trailing slash required)
+#   - Remote: ``s3://bucket/workspace/abc.parsed/`` (future; resolver returns
+#             None today so local readers gracefully skip)
+#   - Unknown sentinel: literal string ``"unknown_source"``
+
+
+def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
+    """Build the canonical sidecar URI for a local artifact directory.
+
+    The result always ends with ``/`` so a reader can distinguish a directory
+    from a file at the URI level. Non-ASCII characters are percent-encoded.
+    """
+    p = Path(parsed_artifact_dir).resolve()
+    encoded = quote(str(p), safe="/")
+    return f"file://{encoded}/"
+
+
+def resolve_sidecar_uri(uri: str | None) -> Path | None:
+    """Decode a sidecar URI into a local filesystem Path.
+
+    Returns None for the unknown sentinel, empty input, or any non-``file://``
+    scheme (remote schemes will get their own resolvers).
+    """
+    if not uri or uri == SIDECAR_LOCATION_UNKNOWN:
+        return None
+    parts = urlsplit(uri)
+    if parts.scheme != "file":
+        return None
+    path_str = unquote(parts.path)
+    if path_str.endswith("/") and len(path_str) > 1:
+        path_str = path_str[:-1]
+    return Path(path_str)
+
+
+def sidecar_blocks_path(uri: str | None) -> str | None:
+    """Locate the first ``*.blocks.jsonl`` file inside a sidecar URI.
+
+    Returns the absolute path as a string, or None when the URI cannot be
+    resolved locally or the directory holds no blocks file.
+    """
+    d = resolve_sidecar_uri(uri)
+    if d is None or not d.is_dir():
+        return None
+    candidates = sorted(d.glob("*.blocks.jsonl"))
+    return str(candidates[0]) if candidates else None
+
+
+def sidecar_modality_path(uri: str | None, modality: str) -> str | None:
+    """Return the path for a sidecar modality JSON (drawings/tables/equations).
+
+    Does not require the file to exist — callers check. Returns None when the
+    sidecar URI cannot be resolved or has no blocks file to anchor the name.
+    """
+    blocks = sidecar_blocks_path(uri)
+    if not blocks:
+        return None
+    return f"{blocks[: -len('.blocks.jsonl')]}.{modality}.json"
+
+
+def sidecar_assets_dir_for_uri(uri: str | None) -> Path | None:
+    """Return the ``*.blocks.assets/`` directory Path for a sidecar URI.
+
+    The directory may not exist; callers create it on first asset write.
+    """
+    blocks = sidecar_blocks_path(uri)
+    if not blocks:
+        return None
+    return Path(f"{blocks[: -len('.blocks.jsonl')]}.blocks.assets")
 
 
 # ---------------------------------------------------------------------------
@@ -523,39 +567,18 @@ async def archive_source_after_full_docs_sync(source_path: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def resolve_lightrag_blocks_path(lightrag_document_path: str) -> str | None:
-    """Resolve the canonical ``.blocks.jsonl`` path without reading it.
+async def load_lightrag_document_content(sidecar_uri: str) -> tuple[str, str]:
+    """Load LightRAG Document blocks and return ``(merged_text, blocks_path)``.
 
-    Mirrors the path-candidate search used by
-    ``load_lightrag_document_content`` so callers that only need the
-    sidecar location (e.g. parse_native looking up
-    ``drawings.json`` / ``tables.json`` via ``_build_mm_chunks_from_sidecars``)
-    can skip the disk read.
+    ``sidecar_uri`` is a sidecar location URI (see ``sidecar_uri_for``); this
+    locates the ``*.blocks.jsonl`` file inside it, reads the content lines
+    (skipping the meta header at index 0 and any non-content entries), and
+    returns the merged body plus the absolute blocks path.
     """
-    path = Path(lightrag_document_path)
-    candidates: list[Path] = []
-    if path.suffix == ".jsonl" and path.name.endswith(".blocks.jsonl"):
-        candidates.append(path)
-    else:
-        candidates.append(Path(str(path) + ".blocks.jsonl"))
-        if path.is_dir():
-            candidates.extend(path.glob("*.blocks.jsonl"))
-        else:
-            candidates.append(path)
-    for c in candidates:
-        if c.exists() and c.is_file():
-            return str(c)
-    return None
-
-
-async def load_lightrag_document_content(
-    lightrag_document_path: str,
-) -> tuple[str, str]:
-    """Load LightRAG Document blocks and return (merged_text, blocks_path)."""
-    resolved = resolve_lightrag_blocks_path(lightrag_document_path)
+    resolved = sidecar_blocks_path(sidecar_uri)
     if resolved is None:
         raise FileNotFoundError(
-            f"LightRAG blocks file not found from path: {lightrag_document_path}"
+            f"LightRAG blocks file not found from sidecar uri: {sidecar_uri}"
         )
     blocks_path = Path(resolved)
 

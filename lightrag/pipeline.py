@@ -20,7 +20,6 @@ import json
 import json_repair
 import mimetypes
 import os
-from copy import deepcopy
 import re
 import shutil
 import time
@@ -44,7 +43,6 @@ from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledExcept
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser_routing import (
-    canonicalize_parser_hinted_basename,
     resolve_file_parser_directives,
     resolve_stored_document_parser_engine,
 )
@@ -73,8 +71,6 @@ from lightrag.utils_pipeline import (
     compute_text_content_hash,
     doc_status_field,
     doc_status_transition_metadata,
-    document_canonical_key,
-    document_source_key,
     get_duplicate_doc_by_content_hash,
     get_existing_doc_by_content_hash,
     get_existing_doc_by_file_basename,
@@ -82,10 +78,11 @@ from lightrag.utils_pipeline import (
     input_dir_path,
     load_lightrag_document_content,
     make_lightrag_doc_content,
-    parsed_artifact_dir_for_source,
+    normalize_document_file_path,
+    parsed_artifact_dir_for,
     resolve_doc_file_path,
-    resolve_lightrag_blocks_path,
-    resolve_lightrag_document_path,
+    sidecar_blocks_path,
+    sidecar_uri_for,
     strip_lightrag_doc_prefix,
 )
 
@@ -362,12 +359,18 @@ class _PipelineMixin:
             return sanitize_process_options(process_options[index])
 
         def _chunk_options_at(index: int) -> dict[str, Any]:
-            """Resolve the per-doc chunk_options snapshot.
+            """Resolve the per-doc slim chunk_options snapshot.
 
-            When the caller supplied ``chunk_options`` we take a deep
-            copy so two docs in the same batch (broadcast from a single
-            dict) cannot share mutable inner sub-dicts; otherwise we
-            build a fresh snapshot from ``self.addon_params['chunker']``.
+            Projects the chunker config down to the one strategy
+            sub-dict selected by the doc's ``process_options`` (F by
+            default) — the persisted ``full_docs[doc_id]['chunk_options']``
+            carries only the params actually consumed at process time.
+
+            When the caller supplied ``chunk_options`` we slim it
+            against the per-doc options (deep-copying internally so two
+            docs broadcast from a single dict cannot share mutable
+            sub-dicts); otherwise we build a fresh snapshot from
+            ``self.addon_params['chunker']``.
 
             F-strategy runtime args (``split_by_character`` /
             ``split_by_character_only`` from :meth:`LightRAG.ainsert`)
@@ -377,11 +380,15 @@ class _PipelineMixin:
             is purely a persistence helper; chunker-config construction
             is not its concern.
             """
-            from lightrag.parser_routing import resolve_chunk_options
+            from lightrag.parser_routing import (
+                resolve_chunk_options,
+                slim_chunk_options,
+            )
 
+            doc_options = _process_options_at(index)
             if chunk_options is not None:
-                return deepcopy(chunk_options[index])
-            return resolve_chunk_options(self.addon_params)
+                return slim_chunk_options(chunk_options[index], doc_options)
+            return resolve_chunk_options(self.addon_params, process_options=doc_options)
 
         # 1. Validate ids and build contents (when lightrag: no content dedup, content may be empty)
         if ids is not None:
@@ -390,15 +397,12 @@ class _PipelineMixin:
             if len(ids) != len(set(ids)):
                 raise ValueError("IDs must be unique")
 
-        # Two basenames per file:
-        #  - source_keys: user-visible name preserved verbatim, written as
-        #    full_docs.file_path / doc_status.file_path so the UI can render
-        #    the user's original ``[hint]`` choice.
-        #  - canonical_keys: parser-hint stripped basename used for filename
-        #    dedup and as the seed for deterministic doc_ids; written as
-        #    full_docs.canonical_basename / doc_status.canonical_basename.
-        source_keys = [document_source_key(path) for path in file_paths]
-        canonical_keys = [document_canonical_key(path) for path in file_paths]
+        # Canonicalize every input filename once: the stored ``file_path``
+        # is hint-stripped and serves UI display, filename dedup, and the
+        # deterministic doc_id seed in one go.
+        file_paths_canonical = [
+            normalize_document_file_path(path) for path in file_paths
+        ]
         contents: dict[str, dict[str, Any]] = {}
         source_to_doc_id: dict[str, str] = {}
         content_hash_to_doc_id: dict[str, str] = {}
@@ -409,11 +413,9 @@ class _PipelineMixin:
             content: str,
             doc_format: str,
             *,
-            lightrag_document_path: str | None = None,
+            sidecar_location: str | None = None,
         ) -> None:
-            source_key = source_keys[index]
-            canonical_key = canonical_keys[index]
-            source_path = file_paths[index]
+            file_path_canonical = file_paths_canonical[index]
 
             # Body length excludes the {{LRdoc}} marker so duplicate-attempt
             # bookkeeping reports the same units as raw documents.
@@ -430,26 +432,26 @@ class _PipelineMixin:
                     strip_lightrag_doc_prefix(content or "", doc_format)
                 )
 
-            known_source = has_known_document_source(canonical_key)
+            known_source = has_known_document_source(file_path_canonical)
             if ids is not None:
                 doc_id = ids[index]
             elif known_source:
-                doc_id = compute_mdhash_id(canonical_key, prefix="doc-")
+                doc_id = compute_mdhash_id(file_path_canonical, prefix="doc-")
             elif doc_format == FULL_DOCS_FORMAT_RAW:
                 doc_id = compute_mdhash_id(content or "", prefix="doc-")
             elif content_hash:
                 doc_id = compute_mdhash_id(content_hash, prefix="doc-")
             else:
                 doc_id = compute_mdhash_id(
-                    f"{canonical_key}-{track_id}-{index}", prefix="doc-"
+                    f"{file_path_canonical}-{track_id}-{index}", prefix="doc-"
                 )
 
-            if known_source and canonical_key in source_to_doc_id:
+            if known_source and file_path_canonical in source_to_doc_id:
                 duplicate_attempts.append(
                     {
                         "doc_id": doc_id,
-                        "original_doc_id": source_to_doc_id[canonical_key],
-                        "file_path": source_key,
+                        "original_doc_id": source_to_doc_id[file_path_canonical],
+                        "file_path": file_path_canonical,
                         "content_length": body_length,
                         "existing_status": "batch_duplicate",
                         "existing_track_id": "",
@@ -463,7 +465,7 @@ class _PipelineMixin:
                     {
                         "doc_id": doc_id,
                         "original_doc_id": content_hash_to_doc_id[content_hash],
-                        "file_path": source_key,
+                        "file_path": file_path_canonical,
                         "content_length": body_length,
                         "existing_status": "batch_duplicate",
                         "existing_track_id": "",
@@ -473,26 +475,19 @@ class _PipelineMixin:
                 return
 
             if known_source:
-                source_to_doc_id[canonical_key] = doc_id
+                source_to_doc_id[file_path_canonical] = doc_id
             if content_hash:
                 content_hash_to_doc_id[content_hash] = doc_id
 
             content_data: dict[str, Any] = {
                 "content": content,
-                "file_path": source_key,
-                "canonical_basename": canonical_key,
+                "file_path": file_path_canonical,
                 "parse_format": doc_format,
             }
             if content_hash:
                 content_data["content_hash"] = content_hash
-            # Persist the original path only when it actually carries directory
-            # information (absolute path or contains a separator); a plain
-            # basename is already captured by ``file_path``.
-            raw_source = str(source_path).strip()
-            if raw_source and (os.sep in raw_source or "/" in raw_source):
-                content_data["source_path"] = source_path
-            if lightrag_document_path:
-                content_data["lightrag_document_path"] = lightrag_document_path
+            if sidecar_location:
+                content_data["sidecar_location"] = sidecar_location
             if engine := _parse_engine_at(index):
                 content_data["parse_engine"] = engine
             options_str = _process_options_at(index)
@@ -509,23 +504,37 @@ class _PipelineMixin:
             # LightRAG Document: no content hash dedup; content may be empty
             for i in range(len(file_paths)):
                 path = file_paths[i]
-                lightrag_path = (
+                raw_path = (
                     lightrag_document_paths[i] if lightrag_document_paths else ""
                 ) or path
+                # Resolve to an absolute path so the sidecar URI carries
+                # full location info; relative paths are interpreted under
+                # input_dir.
+                p = Path(raw_path)
+                if not p.is_absolute():
+                    p = input_dir_path() / p
+                # The user may point at the ``*.blocks.jsonl`` file itself
+                # or at its containing ``*.parsed/`` directory.  Sidecars
+                # are addressed by directory, so step up when given a file.
+                sidecar_dir = (
+                    p.parent
+                    if p.suffix == ".jsonl" and p.name.endswith(".blocks.jsonl")
+                    else p
+                )
+                sidecar_location = sidecar_uri_for(sidecar_dir)
                 # Per docs/FileProcessingConfiguration-zh.md, full_docs.content
                 # for format=lightrag must be "{{LRdoc}}" + a leading summary.
                 # Read the blocks file and derive the summary; if the file is
                 # not yet readable (rare, e.g. mid-rotation), fall back to an
                 # empty summary so enqueue is never blocked by I/O issues.
                 try:
-                    resolved_path = str(
-                        Path(resolve_lightrag_document_path(str(lightrag_path)))
+                    merged_text, _ = await load_lightrag_document_content(
+                        sidecar_location
                     )
-                    merged_text, _ = await load_lightrag_document_content(resolved_path)
                 except Exception as exc:
                     logger.warning(
                         f"[apipeline_enqueue] failed to load LightRAG Document "
-                        f"for summary ({lightrag_path}): {exc}"
+                        f"for summary ({raw_path}): {exc}"
                     )
                     merged_text = ""
                 summary_content = make_lightrag_doc_content(merged_text)
@@ -533,7 +542,7 @@ class _PipelineMixin:
                     i,
                     summary_content,
                     FULL_DOCS_FORMAT_LIGHTRAG,
-                    lightrag_document_path=lightrag_path,
+                    sidecar_location=sidecar_location,
                 )
         elif ids is not None:
             for i, doc in enumerate(input):
@@ -574,7 +583,6 @@ class _PipelineMixin:
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "file_path": content_data["file_path"],
-                "canonical_basename": content_data.get("canonical_basename"),
                 "track_id": track_id,
             }
             if content_data.get("content_hash"):
@@ -781,7 +789,6 @@ class _PipelineMixin:
                 doc_id: {
                     "content": contents[doc_id].get("content", ""),
                     "file_path": contents[doc_id]["file_path"],
-                    "canonical_basename": contents[doc_id].get("canonical_basename"),
                     "parse_format": contents[doc_id].get(
                         "parse_format", FULL_DOCS_FORMAT_RAW
                     ),
@@ -793,13 +800,9 @@ class _PipelineMixin:
                     full_docs_data[doc_id]["content_hash"] = contents[doc_id][
                         "content_hash"
                     ]
-                if contents[doc_id].get("source_path"):
-                    full_docs_data[doc_id]["source_path"] = contents[doc_id][
-                        "source_path"
-                    ]
-                if contents[doc_id].get("lightrag_document_path"):
-                    full_docs_data[doc_id]["lightrag_document_path"] = contents[doc_id][
-                        "lightrag_document_path"
+                if contents[doc_id].get("sidecar_location"):
+                    full_docs_data[doc_id]["sidecar_location"] = contents[doc_id][
+                        "sidecar_location"
                     ]
                 if contents[doc_id].get("parse_engine"):
                     full_docs_data[doc_id]["parse_engine"] = contents[doc_id][
@@ -1671,14 +1674,19 @@ class _PipelineMixin:
                 if not isinstance(chunk_opts, dict) or not chunk_opts:
                     # Backwards compatibility: rows enqueued before the
                     # chunk_options snapshot was added fall back to a
-                    # fresh build from current addon_params['chunker'].
-                    # F-strategy split args fall back to whatever lives
-                    # in addon_params['chunker']['fixed_token']; runtime
-                    # overrides are an ainsert-time concern and don't
-                    # apply at process time for legacy rows.
+                    # fresh build from current addon_params['chunker'],
+                    # scoped to the per-doc strategy decoded above so
+                    # the slim shape stays consistent with newly
+                    # enqueued rows.  F-strategy split args fall back
+                    # to whatever lives in
+                    # ``addon_params['chunker']['fixed_token']``;
+                    # runtime overrides are an ainsert-time concern and
+                    # don't apply at process time for legacy rows.
                     from lightrag.parser_routing import resolve_chunk_options
 
-                    chunk_opts = resolve_chunk_options(self.addon_params)
+                    chunk_opts = resolve_chunk_options(
+                        self.addon_params, process_options=doc_process_opts
+                    )
                 resolved_chunk_size = int(
                     chunk_opts.get("chunk_token_size") or self.chunk_token_size
                 )
@@ -2096,7 +2104,7 @@ class _PipelineMixin:
         content_already_extracted = isinstance(content_data, dict) and (
             (
                 content_data.get("parse_format") == FULL_DOCS_FORMAT_LIGHTRAG
-                and content_data.get("lightrag_document_path")
+                and content_data.get("sidecar_location")
             )
             or (
                 content_data.get("parse_format") == FULL_DOCS_FORMAT_RAW
@@ -2298,9 +2306,9 @@ class _PipelineMixin:
             merged_text = strip_lightrag_doc_prefix(
                 content_data.get("content"), doc_format
             )
-            raw_doc_path = content_data.get("lightrag_document_path") or file_path
-            resolved_doc_path = resolve_lightrag_document_path(str(raw_doc_path))
-            blocks_path = resolve_lightrag_blocks_path(resolved_doc_path) or ""
+            blocks_path = (
+                sidecar_blocks_path(content_data.get("sidecar_location")) or ""
+            )
 
             return {
                 "doc_id": doc_id,
@@ -2311,9 +2319,7 @@ class _PipelineMixin:
             }
 
         if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-            source_path = self._resolve_source_file_for_parser(
-                str(content_data.get("source_path") or file_path)
-            )
+            source_path = self._resolve_source_file_for_parser(file_path)
             p = Path(source_path)
             if not (p.exists() and p.is_file() and p.suffix.lower() == ".docx"):
                 raise ValueError(
@@ -2333,13 +2339,14 @@ class _PipelineMixin:
             from lightrag.native_parser.docx.ir_builder import NativeDocxIRBuilder
             from lightrag.sidecar import write_sidecar
 
-            canonical_basename = (
-                canonicalize_parser_hinted_basename(file_path)
-                or p.name
-                or f"{doc_id}.bin"
-            )
-            base_name = Path(canonical_basename).stem or canonical_basename
-            parsed_dir = parsed_artifact_dir_for_source(str(p), file_path)
+            # ``file_path`` is canonical at the worker layer; canonicalize
+            # again defensively so direct callers (tests, CLI) may pass
+            # absolute paths or hint-bearing names.
+            document_name = normalize_document_file_path(file_path)
+            if document_name == "unknown_source":
+                document_name = p.name or f"{doc_id}.bin"
+            base_name = Path(document_name).stem or document_name
+            parsed_dir = parsed_artifact_dir_for(document_name, parent_hint=p.parent)
             asset_dir = parsed_dir / f"{base_name}.blocks.assets"
 
             def _extract_blocks_sync() -> (
@@ -2348,7 +2355,7 @@ class _PipelineMixin:
                 # Pre-clean parsed_dir and pre-create the asset dir so the
                 # drawing extractor can write image bytes BEFORE write_sidecar
                 # runs (which is then called with clean_parsed_dir=False to
-                # keep those bytes). ``parsed_artifact_dir_for_source`` returns
+                # keep those bytes). ``parsed_artifact_dir_for`` returns
                 # a unique dir per source (with ``_001``/``_002`` suffixes on
                 # collision), so the rmtree here only ever clobbers stale
                 # artifacts from a previous attempt at the same doc_id.
@@ -2413,7 +2420,7 @@ class _PipelineMixin:
 
             ir = NativeDocxIRBuilder().normalize(
                 blocks,
-                document_name=canonical_basename,
+                document_name=document_name,
                 asset_dir_name=asset_dir.name,
                 parse_metadata=parse_metadata,
             )
@@ -2426,19 +2433,13 @@ class _PipelineMixin:
                 block_drawing_path_style="basename_only",  # legacy native shape
             )
 
-            blocks_path = Path(parsed_data["blocks_path"])
-            stored_blocks_path = str(blocks_path)
-            try:
-                stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
-            except ValueError:
-                pass
             await self._persist_parsed_full_docs(
                 doc_id,
                 {
                     "content": make_lightrag_doc_content(parsed_data["content"]),
                     "file_path": file_path,
                     "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                    "lightrag_document_path": stored_blocks_path,
+                    "sidecar_location": sidecar_uri_for(parsed_dir),
                     "parse_engine": PARSER_ENGINE_NATIVE,
                     "update_time": int(time.time()),
                 },
@@ -2487,7 +2488,7 @@ class _PipelineMixin:
         source content can skip the upload+poll+download round trip. It is
         cleaned only when the user explicitly deletes the document with the
         "also delete original file" option; see
-        :func:`lightrag.api.routers.document_routes.delete_file_variants_by_canonical_basename`.
+        :func:`lightrag.api.routers.document_routes.delete_file_variants_by_file_path`.
         """
         # Lazy imports keep this module import-cheap and avoid pulling httpx
         # into call paths that never touch the MinerU engine.
@@ -2500,20 +2501,18 @@ class _PipelineMixin:
         )
         from lightrag.sidecar import write_sidecar
 
-        source_file_path = Path(
-            self._resolve_source_file_for_parser(
-                str(content_data.get("source_path") or file_path)
-            )
-        )
+        source_file_path = Path(self._resolve_source_file_for_parser(file_path))
         if not source_file_path.is_file():
             raise FileNotFoundError(f"MinerU source file not found: {source_file_path}")
 
-        document_name = (
-            canonicalize_parser_hinted_basename(file_path)
-            or source_file_path.name
-            or f"{doc_id}.bin"
+        # Canonicalize defensively so direct callers (tests, CLI) may pass
+        # absolute paths or hint-bearing names.
+        document_name = normalize_document_file_path(file_path)
+        if document_name == "unknown_source":
+            document_name = source_file_path.name or f"{doc_id}.bin"
+        parsed_dir = parsed_artifact_dir_for(
+            document_name, parent_hint=source_file_path.parent
         )
-        parsed_dir = parsed_artifact_dir_for_source(str(source_file_path), file_path)
         raw_dir = raw_dir_for_parsed_dir(parsed_dir)
 
         force_reparse = os.getenv("LIGHTRAG_FORCE_REPARSE_MINERU", "").lower() in {
@@ -2567,19 +2566,13 @@ class _PipelineMixin:
 
         # Keep full_docs in sync so restart/reprocess can directly use the
         # sidecar (matches the native_docx and content_list paths).
-        blocks_path = Path(parsed_data["blocks_path"])
-        stored_blocks_path = str(blocks_path)
-        try:
-            stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
-        except ValueError:
-            pass
         await self._persist_parsed_full_docs(
             doc_id,
             {
                 "content": make_lightrag_doc_content(parsed_data["content"]),
                 "file_path": file_path,
                 "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "lightrag_document_path": stored_blocks_path,
+                "sidecar_location": sidecar_uri_for(parsed_dir),
                 "parse_engine": PARSER_ENGINE_MINERU,
                 "update_time": int(time.time()),
             },
@@ -2590,7 +2583,7 @@ class _PipelineMixin:
             "file_path": file_path,
             "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
             "content": parsed_data["content"],
-            "blocks_path": str(blocks_path),
+            "blocks_path": parsed_data["blocks_path"],
             "parse_stage_skipped": parse_stage_skipped,
         }
 
@@ -2619,22 +2612,18 @@ class _PipelineMixin:
         )
         from lightrag.sidecar import write_sidecar
 
-        source_file_path = Path(
-            self._resolve_source_file_for_parser(
-                str(content_data.get("source_path") or file_path)
-            )
-        )
+        source_file_path = Path(self._resolve_source_file_for_parser(file_path))
         if not source_file_path.is_file():
             raise FileNotFoundError(
                 f"Docling source file not found: {source_file_path}"
             )
 
-        document_name = (
-            canonicalize_parser_hinted_basename(file_path)
-            or source_file_path.name
-            or f"{doc_id}.bin"
+        document_name = normalize_document_file_path(file_path)
+        if document_name == "unknown_source":
+            document_name = source_file_path.name or f"{doc_id}.bin"
+        parsed_dir = parsed_artifact_dir_for(
+            document_name, parent_hint=source_file_path.parent
         )
-        parsed_dir = parsed_artifact_dir_for_source(str(source_file_path), file_path)
         raw_dir = raw_dir_for_parsed_dir(parsed_dir)
 
         force_reparse = os.getenv("LIGHTRAG_FORCE_REPARSE_DOCLING", "").lower() in {
@@ -2694,19 +2683,13 @@ class _PipelineMixin:
             engine=PARSER_ENGINE_DOCLING,
         )
 
-        blocks_path = Path(parsed_data["blocks_path"])
-        stored_blocks_path = str(blocks_path)
-        try:
-            stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
-        except ValueError:
-            pass
         await self._persist_parsed_full_docs(
             doc_id,
             {
                 "content": make_lightrag_doc_content(parsed_data["content"]),
                 "file_path": file_path,
                 "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "lightrag_document_path": stored_blocks_path,
+                "sidecar_location": sidecar_uri_for(parsed_dir),
                 "parse_engine": PARSER_ENGINE_DOCLING,
                 "update_time": int(time.time()),
             },
@@ -2717,7 +2700,7 @@ class _PipelineMixin:
             "file_path": file_path,
             "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
             "content": parsed_data["content"],
-            "blocks_path": str(blocks_path),
+            "blocks_path": parsed_data["blocks_path"],
             "parse_stage_skipped": parse_stage_skipped,
         }
 
@@ -2735,16 +2718,17 @@ class _PipelineMixin:
         Computes ``content_hash`` from the actual extracted body so subsequent
         ``get_doc_by_content_hash`` lookups can dedupe across pending_parse
         records that did not have a hash at enqueue time. Also patches the
-        existing ``doc_status`` row so both storages stay aligned.
+        existing ``doc_status`` row so both storages stay aligned on
+        ``content_hash``.
 
         The original ``pending_parse`` record carries metadata seeded at
-        enqueue time (``process_options``, ``canonical_basename``,
-        ``source_path``, ...) that downstream stages still need after parsing.
-        ``full_docs`` upserts overwrite the entire row, so we merge the
-        existing record with the new ``record`` payload before upserting:
-        fresh fields from ``record`` (``content`` / ``parse_format`` /
-        ``lightrag_document_path`` / ``parse_engine`` / ``update_time``)
-        take precedence, while pre-existing fields are preserved.
+        enqueue time (``process_options`` etc.) that downstream stages still
+        need after parsing. ``full_docs`` upserts overwrite the entire row,
+        so we merge the existing record with the new ``record`` payload
+        before upserting: fresh fields from ``record`` (``content`` /
+        ``parse_format`` / ``sidecar_location`` / ``parse_engine`` /
+        ``update_time``) take precedence, while pre-existing fields are
+        preserved.
         """
         fmt = record.get("parse_format")
         content_hash: str | None = None
@@ -2841,7 +2825,7 @@ class _PipelineMixin:
         except Exception as e:
             logger.warning(f"Failed to remove duplicate full_docs entry {doc_id}: {e}")
 
-        source_path = str((content_data or {}).get("source_path") or file_path)
+        source_path = self._resolve_source_file_for_parser(file_path)
         archived = await archive_source_after_full_docs_sync(source_path)
         archive_msg = f"; archived to {archived}" if archived else ""
         warning = f"Duplicate content skipped after parsing: {file_path}{archive_msg}"
@@ -2861,11 +2845,24 @@ class _PipelineMixin:
         name = p.name
         candidates: list[Path] = []
         input_path = input_dir_path()
+        # API ``DocumentManager`` scopes its input dir to
+        # ``<base_input_dir>/<workspace>/`` (see DocumentManager.__init__);
+        # check that location first so files uploaded into a workspace
+        # subdirectory resolve correctly. ``self.workspace`` is empty when
+        # no workspace is configured, in which case these candidates
+        # collapse to the base candidates that follow.
+        workspace = getattr(self, "workspace", "") or ""
+        if workspace:
+            candidates.append(input_path / workspace / name)
+            candidates.append(input_path / workspace / PARSED_DIR_NAME / name)
         candidates.append(input_path / name)
         candidates.append(input_path / PARSED_DIR_NAME / name)
 
         # Common local defaults used by API server.
         cwd = Path.cwd()
+        if workspace:
+            candidates.append(cwd / "inputs" / workspace / name)
+            candidates.append(cwd / "inputs" / workspace / PARSED_DIR_NAME / name)
         candidates.extend(
             [
                 cwd / "inputs" / name,
@@ -2885,16 +2882,17 @@ class _PipelineMixin:
         file_path: str,
         content_list: list[dict[str, Any]],
         engine: str,
-        source_path: str | None = None,
     ) -> dict[str, Any]:
         """Convert parser content list to LightRAG Document files and return parsed_data."""
-        parsed_dir = parsed_artifact_dir_for_source(source_path, file_path)
+        document_name = normalize_document_file_path(file_path)
+        if document_name == "unknown_source":
+            document_name = f"{doc_id}.bin"
+        parsed_dir = parsed_artifact_dir_for(document_name)
         if parsed_dir.exists():
             shutil.rmtree(parsed_dir)
         parsed_dir.mkdir(parents=True, exist_ok=True)
 
-        source_name = canonicalize_parser_hinted_basename(file_path) or f"{doc_id}.bin"
-        base_name = Path(source_name).stem or source_name
+        base_name = Path(document_name).stem or document_name
         blocks_path = parsed_dir / f"{base_name}.blocks.jsonl"
         tables_path = parsed_dir / f"{base_name}.tables.json"
         drawings_path = parsed_dir / f"{base_name}.drawings.json"
@@ -3233,8 +3231,8 @@ class _PipelineMixin:
             "type": "meta",
             "format": "lightrag",
             "version": "1.0",
-            "document_name": source_name,
-            "document_format": Path(source_name).suffix.lower().lstrip("."),
+            "document_name": document_name,
+            "document_format": Path(document_name).suffix.lower().lstrip("."),
             "document_hash": f"sha256:{doc_hash}",
             "table_file": bool(tables),
             "equation_file": bool(equations),
@@ -3245,7 +3243,7 @@ class _PipelineMixin:
             "doc_id": doc_id,
             "parse_engine": engine,
             "parse_time": parse_time,
-            "doc_title": Path(source_name).stem or source_name,
+            "doc_title": Path(document_name).stem or document_name,
         }
         blocks_path.write_text(
             "\n".join([json.dumps(meta, ensure_ascii=False)] + blocks_lines) + "\n",
@@ -3279,24 +3277,19 @@ class _PipelineMixin:
             )
 
         # Keep full_docs in sync so restart/reprocess can directly use LightRAG Document.
-        stored_blocks_path = str(blocks_path)
-        try:
-            stored_blocks_path = str(blocks_path.relative_to(input_dir_path()))
-        except ValueError:
-            pass
         await self._persist_parsed_full_docs(
             doc_id,
             {
                 "content": make_lightrag_doc_content(merged_text),
                 "file_path": file_path,
                 "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "lightrag_document_path": stored_blocks_path,
+                "sidecar_location": sidecar_uri_for(parsed_dir),
                 "parse_engine": engine,
                 "update_time": int(time.time()),
             },
         )
         await archive_docx_source_after_full_docs_sync(
-            source_path or self._resolve_source_file_for_parser(file_path)
+            self._resolve_source_file_for_parser(file_path)
         )
         return {
             "doc_id": doc_id,

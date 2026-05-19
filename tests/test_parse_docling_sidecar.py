@@ -291,7 +291,7 @@ def test_parse_docling_emits_compliant_sidecar(
             parsed = await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1
 
@@ -376,14 +376,14 @@ def test_parse_docling_cache_hit_skips_download(
             await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1
 
             await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1, "cache hit must not re-download"
 
@@ -391,7 +391,7 @@ def test_parse_docling_cache_hit_skips_download(
             await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 2
         finally:
@@ -423,7 +423,7 @@ def test_parse_docling_cache_invalidates_on_source_change(
             await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1
 
@@ -433,7 +433,7 @@ def test_parse_docling_cache_invalidates_on_source_change(
             await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 2
         finally:
@@ -465,7 +465,7 @@ def test_parse_docling_options_signature_invalidates_cache(
             await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1
 
@@ -474,7 +474,7 @@ def test_parse_docling_options_signature_invalidates_cache(
             await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert (
                 counters["calls"] == 2
@@ -508,7 +508,7 @@ def test_parse_docling_endpoint_signature_invalidates_cache(
             await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert counters["calls"] == 1
 
@@ -518,7 +518,7 @@ def test_parse_docling_endpoint_signature_invalidates_cache(
             await rag.parse_docling(
                 doc_id=doc_id,
                 file_path="demo.pdf",
-                content_data={"source_path": str(src)},
+                content_data={},
             )
             assert (
                 counters["calls"] == 2
@@ -620,7 +620,7 @@ def test_parse_docling_zero_blocks_raises(
                 await rag.parse_docling(
                     doc_id=doc_id,
                     file_path="demo.pdf",
-                    content_data={"source_path": str(src)},
+                    content_data={},
                 )
 
             # Sidecar must NOT have been emitted: ``write_sidecar`` is reached

@@ -102,7 +102,6 @@ def _run_new_path(
                 {
                     "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
                     "content": "",
-                    "source_path": str(source_path),
                 },
             )
 

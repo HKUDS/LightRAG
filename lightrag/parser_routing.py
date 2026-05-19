@@ -163,7 +163,67 @@ def parse_process_options(options: Any) -> ProcessOptions:
 # F/R/V/P selector in ``ProcessOptions``.  ``process_options`` chooses
 # the strategy; ``chunk_options`` carries the parameters the chosen
 # strategy reads.
+#
+# Storage shape: the per-document snapshot persisted to
+# ``full_docs[doc_id]['chunk_options']`` carries ONLY the sub-dict of
+# the chunking strategy selected by ``process_options`` — the other
+# strategies' parameters are dropped because they are never consumed
+# during processing.  Reparsing a document overwrites both
+# ``process_options`` and ``chunk_options`` together.
 # ---------------------------------------------------------------------------
+
+
+# Strategy selector (F/R/V/P) → snapshot sub-dict key.  Single source
+# of truth for the slim ``chunk_options`` shape — used by
+# :func:`resolve_chunk_options` to pick which strategy block to keep
+# and by :func:`slim_chunk_options` to project caller-supplied dicts
+# down to the selected strategy.
+_CHUNK_STRATEGY_KEYS: dict[str, str] = {
+    PROCESS_OPTION_CHUNK_FIXED: "fixed_token",
+    PROCESS_OPTION_CHUNK_RECURSIVE: "recursive_character",
+    PROCESS_OPTION_CHUNK_VECTOR: "semantic_vector",
+    PROCESS_OPTION_CHUNK_PARAGRAH: "paragraph_semantic",
+}
+
+
+def chunk_strategy_key(process_options: Any) -> str:
+    """Return the ``chunk_options`` sub-dict key for ``process_options``.
+
+    Accepts a raw options string or a :class:`ProcessOptions` value.
+    Falls back to ``"fixed_token"`` when no chunking selector is
+    present — F is the default strategy used both by the file-chunker
+    dispatcher (when ``chunking_explicit`` is False the legacy
+    ``chunking_func`` runs, which defaults to fixed-token chunking
+    that reads from the same sub-dict).
+    """
+    if isinstance(process_options, ProcessOptions):
+        strategy = process_options.chunking
+    else:
+        strategy = parse_process_options(process_options).chunking
+    return _CHUNK_STRATEGY_KEYS.get(strategy, "fixed_token")
+
+
+def slim_chunk_options(
+    snapshot: Mapping[str, Any] | None,
+    process_options: Any = "",
+) -> dict[str, Any]:
+    """Project a (possibly full) chunker snapshot down to the active strategy.
+
+    Keeps the top-level ``chunk_token_size`` and the one strategy
+    sub-dict picked by :func:`chunk_strategy_key`; everything else is
+    discarded.  Idempotent: a slim snapshot whose key already matches
+    ``process_options`` passes through unchanged (deep-copied for
+    isolation).  When the matching strategy block is absent from the
+    input, an empty dict is used so downstream consumers always see a
+    dict-shaped slot.
+    """
+    key = chunk_strategy_key(process_options)
+    src: Mapping[str, Any] = snapshot or {}
+    result: dict[str, Any] = {}
+    if "chunk_token_size" in src:
+        result["chunk_token_size"] = deepcopy(src["chunk_token_size"])
+    result[key] = deepcopy(dict(src.get(key) or {}))
+    return result
 
 
 def _env_optional_str(key: str) -> str | None:
@@ -290,17 +350,26 @@ def default_chunker_config() -> dict[str, Any]:
 def resolve_chunk_options(
     addon_params: Mapping[str, Any] | None,
     *,
+    process_options: Any = "",
     split_by_character: str | None = None,
     split_by_character_only: bool = False,
 ) -> dict[str, Any]:
-    """Build a per-document ``chunk_options`` snapshot.
+    """Build a per-document slim ``chunk_options`` snapshot.
 
     Reads the chunker config from ``addon_params['chunker']``, falling
     back to a freshly built :func:`default_chunker_config` when the
-    addon-params mapping is missing or hasn't been populated.  The F
-    runtime args from ``LightRAG.ainsert`` overlay the ``fixed_token``
-    sub-dict — non-default values win over the env-driven defaults so
-    callers can opt out of an env-set delimiter on a per-call basis:
+    addon-params mapping is missing or hasn't been populated, then
+    keeps only the parameters of the strategy selected by
+    ``process_options`` (the other strategies' sub-dicts are dropped —
+    they would never be consumed during processing).  See
+    :func:`slim_chunk_options` for the projection rules and
+    :func:`chunk_strategy_key` for the strategy → sub-dict mapping
+    (default F → ``fixed_token``).
+
+    The F runtime args from ``LightRAG.ainsert`` overlay the
+    ``fixed_token`` sub-dict when (and only when) the active strategy
+    is F — for R/V/P these args have no slot to land in and are
+    silently dropped:
 
       - ``split_by_character`` overrides the env when **non-None**.
         ``None`` (signature default) means "use the env / addon_params
@@ -321,13 +390,14 @@ def resolve_chunk_options(
             src = candidate
     if src is None:
         src = default_chunker_config()
-    snapshot = deepcopy(dict(src))
 
-    fixed = snapshot.setdefault("fixed_token", {})
-    if split_by_character is not None:
-        fixed["split_by_character"] = split_by_character
-    if split_by_character_only:
-        fixed["split_by_character_only"] = True
+    snapshot = slim_chunk_options(src, process_options)
+    if chunk_strategy_key(process_options) == "fixed_token":
+        fixed = snapshot["fixed_token"]
+        if split_by_character is not None:
+            fixed["split_by_character"] = split_by_character
+        if split_by_character_only:
+            fixed["split_by_character_only"] = True
     return snapshot
 
 
@@ -668,7 +738,7 @@ def resolve_stored_document_parser_engine(
     if content_data:
         doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
         if doc_format == FULL_DOCS_FORMAT_LIGHTRAG and content_data.get(
-            "lightrag_document_path"
+            "sidecar_location"
         ):
             return PARSER_ENGINE_NATIVE
         if doc_format != FULL_DOCS_FORMAT_PENDING_PARSE:

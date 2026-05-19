@@ -1652,10 +1652,9 @@ def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
     unrelated_artifact_dir.mkdir()
     (unrelated_artifact_dir / "other.blocks.jsonl").write_text("{}", encoding="utf-8")
 
-    deleted_files, errors = _document_routes.delete_file_variants_by_canonical_basename(
+    deleted_files, errors = _document_routes.delete_file_variants_by_file_path(
         tmp_path,
         "report.docx",
-        str(tmp_path / "report.[native].docx"),
     )
 
     assert errors == []
@@ -1691,7 +1690,6 @@ async def test_background_delete_removes_parser_hint_file_variants(tmp_path):
             doc_id="doc-paper",
             message="deleted",
             file_path="paper.docx",
-            source_path=str(source_file),
         )
     )
     shared_storage.initialize_share_data()
@@ -1734,6 +1732,7 @@ async def test_docx_archive_failure_is_best_effort(tmp_path, monkeypatch):
 
 
 async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeypatch):
+    monkeypatch.setenv("INPUT_DIR", str(tmp_path))
     source_path = tmp_path / "parsed-after-sync.docx"
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
@@ -1786,28 +1785,29 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     assert rag.full_docs.data["doc-test"]["content"].startswith("{{LRdoc}}")
 
 
-def test_parsed_artifact_dir_uses_unique_suffix_when_path_is_file(tmp_path):
-    from lightrag.utils_pipeline import parsed_artifact_dir_for_source
+def test_parsed_artifact_dir_uses_unique_suffix_when_path_is_file(
+    tmp_path, monkeypatch
+):
+    from lightrag.utils_pipeline import parsed_artifact_dir_for
 
-    source_path = tmp_path / "demo.docx"
+    monkeypatch.setenv("INPUT_DIR", str(tmp_path))
     parsed_dir = tmp_path / PARSED_DIR_NAME
     parsed_dir.mkdir()
     (parsed_dir / "demo.docx.parsed").write_text("legacy file", encoding="utf-8")
 
-    artifact_dir = parsed_artifact_dir_for_source(str(source_path))
+    artifact_dir = parsed_artifact_dir_for("demo.docx")
 
     assert artifact_dir == parsed_dir / "demo.docx.parsed_001"
 
 
-def test_parsed_artifact_dir_reuses_existing_parsed_parent(tmp_path):
-    from lightrag.utils_pipeline import parsed_artifact_dir_for_source
+def test_parsed_artifact_dir_reuses_existing_parsed_parent(tmp_path, monkeypatch):
+    from lightrag.utils_pipeline import parsed_artifact_dir_for
 
+    monkeypatch.setenv("INPUT_DIR", str(tmp_path))
     parsed_dir = tmp_path / PARSED_DIR_NAME
     parsed_dir.mkdir()
-    source_path = parsed_dir / "demo.docx"
-    source_path.write_bytes(b"docx bytes")
 
-    artifact_dir = parsed_artifact_dir_for_source(str(source_path))
+    artifact_dir = parsed_artifact_dir_for("demo.docx")
 
     assert artifact_dir == parsed_dir / "demo.docx.parsed"
 
@@ -1876,7 +1876,7 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
         "report.[mineru].docx",
         {
             "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-            "lightrag_document_path": "report.blocks.jsonl",
+            "sidecar_location": "file:///tmp/report.docx.parsed/",
             "parse_engine": "mineru",
         },
     )
