@@ -1327,30 +1327,6 @@ class PostgreSQLDB:
                     f"Failed to add column {col_name} to LIGHTRAG_DOC_FULL: {e}"
                 )
 
-        # Create partial index on (workspace, content_hash) for dedup lookups
-        try:
-            check_index_sql = """
-            SELECT indexname FROM pg_indexes
-            WHERE tablename = 'lightrag_doc_full'
-              AND indexname = 'idx_lightrag_doc_full_workspace_content_hash'
-            """
-            index_info = await self.query(check_index_sql)
-            if not index_info:
-                logger.info(
-                    "Creating partial index idx_lightrag_doc_full_workspace_content_hash"
-                )
-                await self.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_lightrag_doc_full_workspace_content_hash
-                    ON LIGHTRAG_DOC_FULL (workspace, content_hash)
-                    WHERE content_hash IS NOT NULL AND content_hash <> ''
-                    """
-                )
-        except Exception as e:
-            logger.error(
-                f"Failed to create partial content_hash index on LIGHTRAG_DOC_FULL: {e}"
-            )
-
     async def _migrate_doc_status_add_content_hash(self):
         """Add content_hash column to LIGHTRAG_DOC_STATUS table if it doesn't exist."""
         try:
