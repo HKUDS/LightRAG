@@ -99,6 +99,10 @@ export type LightragStatus = {
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
   pipeline_busy: boolean
+  pipeline_active?: boolean
+  pipeline_scanning?: boolean
+  pipeline_destructive_busy?: boolean
+  pipeline_pending_enqueues?: number
   llm_queue_status?: Record<string, LightragQueueStatus>
   embedding_queue_status?: LightragQueueStatus
   rerank_queue_status?: LightragQueueStatus

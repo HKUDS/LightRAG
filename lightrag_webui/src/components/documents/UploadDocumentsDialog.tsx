@@ -19,9 +19,18 @@ import { useTranslation } from 'react-i18next'
 
 interface UploadDocumentsDialogProps {
   onDocumentsUploaded?: () => Promise<void>
+  /**
+   * Fired once per batch as soon as the first file is accepted by the server.
+   * Lets the parent start its activity probe as early as possible (rather
+   * than waiting for the whole sequential batch to finish).
+   */
+  onUploadBatchAccepted?: () => void
 }
 
-export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDocumentsDialogProps) {
+export default function UploadDocumentsDialog({
+  onDocumentsUploaded,
+  onUploadBatchAccepted
+}: UploadDocumentsDialogProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -76,6 +85,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
       try {
         // Track errors locally to ensure we have the final state
         const uploadErrors: Record<string, string> = {}
+        let batchProbeTriggered = false
 
         // Create a collator that supports Chinese sorting
         const collator = new Intl.Collator(['zh-CN', 'en'], {
@@ -112,6 +122,10 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
             } else {
               // Mark that we had at least one successful upload
               hasSuccessfulUpload = true
+              if (!batchProbeTriggered) {
+                batchProbeTriggered = true
+                onUploadBatchAccepted?.()
+              }
             }
           } catch (err) {
             console.error(`Upload failed for ${file.name}:`, err)
@@ -186,7 +200,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         setIsUploading(false)
       }
     },
-    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded]
+    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded, onUploadBatchAccepted]
   )
 
   return (

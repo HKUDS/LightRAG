@@ -1811,6 +1811,21 @@ def create_app(args):
                 "pipeline_status", workspace=workspace
             )
 
+            pipeline_busy = bool(pipeline_status.get("busy", False))
+            pipeline_scanning = bool(pipeline_status.get("scanning", False))
+            pipeline_destructive_busy = bool(
+                pipeline_status.get("destructive_busy", False)
+            )
+            pipeline_pending_enqueues = int(
+                pipeline_status.get("pending_enqueues", 0) or 0
+            )
+            pipeline_active = (
+                pipeline_busy
+                or pipeline_scanning
+                or pipeline_destructive_busy
+                or pipeline_pending_enqueues > 0
+            )
+
             if not auth_configured:
                 auth_mode = "disabled"
             else:
@@ -1869,7 +1884,11 @@ def create_app(args):
                     "role_llm_config": rag.get_llm_role_config(),
                 },
                 "auth_mode": auth_mode,
-                "pipeline_busy": pipeline_status.get("busy", False),
+                "pipeline_busy": pipeline_busy,
+                "pipeline_active": pipeline_active,
+                "pipeline_scanning": pipeline_scanning,
+                "pipeline_destructive_busy": pipeline_destructive_busy,
+                "pipeline_pending_enqueues": pipeline_pending_enqueues,
                 "keyed_locks": keyed_lock_info,
                 "llm_queue_status": await rag.get_llm_queue_status(include_base=True),
                 "embedding_queue_status": await rag.get_embedding_queue_status(),
