@@ -561,6 +561,16 @@ class MongoDocStatusStorage(DocStatusStorage):
                     "keys": [("status", 1), ("file_path", 1)],
                     "collation": collation_config,
                 },
+                # Partial index on content_hash for content-based dedup lookups.
+                # Mirrors the PG partial index: skip legacy/empty values so the
+                # index stays small and a content_hash="" query is a guaranteed miss.
+                {
+                    "name": f"{workspace_prefix}content_hash",
+                    "keys": [("content_hash", 1)],
+                    "partialFilterExpression": {
+                        "content_hash": {"$exists": True, "$type": "string", "$gt": ""}
+                    },
+                },
             ]
 
             # 2. Handle legacy index cleanup: only drop old indexes that exist in THIS collection
@@ -573,6 +583,7 @@ class MongoDocStatusStorage(DocStatusStorage):
                 "created_at",
                 "id",
                 "track_id",
+                "content_hash",
             ]
 
             for legacy_name in legacy_index_names:
@@ -599,6 +610,10 @@ class MongoDocStatusStorage(DocStatusStorage):
                     create_kwargs = {"name": index_name}
                     if "collation" in index_info:
                         create_kwargs["collation"] = index_info["collation"]
+                    if "partialFilterExpression" in index_info:
+                        create_kwargs["partialFilterExpression"] = index_info[
+                            "partialFilterExpression"
+                        ]
 
                     try:
                         await self._data.create_index(
@@ -747,6 +762,58 @@ class MongoDocStatusStorage(DocStatusStorage):
             Returns the same format as get_by_id method
         """
         return await self._data.find_one({"file_path": file_path})
+
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Mongo-native override of basename-based document lookup.
+
+        The caller is responsible for passing an already-canonical basename;
+        stored ``file_path`` values are canonicalized by the business layer, so
+        this lookup performs an exact match only and relies on the file_path
+        index created by ``create_and_migrate_indexes_if_not_exists``.
+        """
+        if not basename:
+            return None
+        if basename == "unknown_source":
+            return None
+
+        try:
+            doc = await self._data.find_one({"file_path": basename})
+        except PyMongoError as e:
+            logger.error(f"[{self.workspace}] Error in get_doc_by_file_basename: {e}")
+            return None
+        if not doc:
+            return None
+        doc_id = doc.get("_id")
+        if doc_id is None:
+            return None
+        return str(doc_id), doc
+
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Mongo-native override of content-hash document lookup.
+
+        Uses the partial ``content_hash`` index. Empty strings are treated as a
+        miss to align with the partial-index predicate; legacy rows missing the
+        field cannot match a non-empty query because ``find_one`` requires an
+        exact value.
+        """
+        if not content_hash:
+            return None
+
+        try:
+            doc = await self._data.find_one({"content_hash": content_hash})
+        except PyMongoError as e:
+            logger.error(f"[{self.workspace}] Error in get_doc_by_content_hash: {e}")
+            return None
+        if not doc:
+            return None
+        doc_id = doc.get("_id")
+        if doc_id is None:
+            return None
+        return str(doc_id), doc
 
 
 @final
