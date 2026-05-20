@@ -860,9 +860,3 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 
 - 自动续跑：scan 按 §6.4 的分类规则处理同名文件（归档 / 续跑 / 删 stub 后重入队），由 §七 续跑规则在处理循环里统一接管。
 - 强制刷新：先调 `/documents/{doc_id}` 删旧文档，再上传同名新文件。
-
-## 附录 A：从旧版升级的注意事项
-
-### 多模态全局开关已废弃
-
-`addon_params["enable_multimodal_pipeline"]` 已废弃，相关行为统一由文件级 `i/t/e` 选项控制（§2.5）。如启动配置仍包含该字段，会在日志输出 deprecation warning 并被忽略。

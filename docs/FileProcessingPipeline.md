@@ -860,9 +860,3 @@ The legacy `apipeline_enqueue_documents` behavior of `reprocess_existing_non_pro
 
 - Automatic resume: scan handles same-named files per the classification rules in §6.4 (archive / resume / delete stub then re-enqueue), uniformly picked up by the resume rules in §7 inside the processing loop.
 - Forced refresh: first call `/documents/{doc_id}` to delete the old document, then upload the same-named new file.
-
-## Appendix A: Notes on Upgrading from Legacy
-
-### Global Multimodal Switch Deprecated
-
-`addon_params["enable_multimodal_pipeline"]` is deprecated; the related behavior is now uniformly controlled by the file-level `i/t/e` options (§2.5). If the startup configuration still contains this field, a deprecation warning is logged and the field is ignored.
