@@ -56,7 +56,7 @@ rag_storage/
 data/
 
 # User cumstomized prompt directory
-prompts
+prompts/entity_type/
 
 # Evaluation results
 lightrag/evaluation/results/
