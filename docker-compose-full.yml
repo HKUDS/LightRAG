@@ -14,6 +14,7 @@ services:
     volumes:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
+      - ./data/prompts:/app/data/prompts
       - ./.env:/app/.env
     deploy:
       restart_policy:
@@ -32,6 +33,7 @@ services:
       WORKING_DIR: "/app/data/rag_storage"
       MILVUS_URI: "http://milvus:19530"
       INPUT_DIR: "/app/data/inputs"
+      PROMPT_DIR: "/app/data/prompts"
       MEMGRAPH_URI: "bolt://host.docker.internal:7687"
     depends_on:
       vllm-embed:

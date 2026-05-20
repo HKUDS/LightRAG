@@ -412,7 +412,7 @@ _WIZARD_COMPOSE_LIGHTRAG_KEYS=(
   "EMBEDDING_BINDING_HOST" "RERANK_BINDING_HOST" "LLM_BINDING_HOST"
   "REDIS_URI" "MONGO_URI" "NEO4J_URI" "MILVUS_URI" "QDRANT_URL" "MEMGRAPH_URI" "OPENSEARCH_HOSTS"
   "POSTGRES_HOST" "POSTGRES_PORT" "PORT" "HOST" "SSL_CERTFILE" "SSL_KEYFILE"
-  "WORKING_DIR" "INPUT_DIR"
+  "WORKING_DIR" "INPUT_DIR" "PROMPT_DIR"
 )
 
 _managed_service_root_name() {
@@ -1208,6 +1208,13 @@ generate_docker_compose() {
     inject_lightrag_port_mapping "$tmp_file" "$LIGHTRAG_COMPOSE_SERVER_PORT_MAPPING"
   fi
 
+  # Ensure the optional prompts directory mount exists so users can supply
+  # custom entity-type prompt profiles without rebuilding the image. Mirrors
+  # the ./data/inputs and ./data/rag_storage bind layout.
+  if ! _lightrag_volumes_have_container_target "$tmp_file" "/app/data/prompts"; then
+    lightrag_mounts+=("./data/prompts:/app/data/prompts")
+  fi
+
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_CERTFILE]:-}" || return 1
   append_lightrag_ssl_mount lightrag_mounts "${COMPOSE_ENV_OVERRIDES[SSL_KEYFILE]:-}" || return 1
   if ((${#lightrag_mounts[@]} > 0)); then
@@ -1669,6 +1676,55 @@ inject_service_image_override() {
   fi
 
   mv "$tmp_file" "$compose_file"
+}
+
+# Return success when the lightrag service already has a volume mount whose
+# container target matches the supplied path. Used to make idempotent mount
+# injections that should not duplicate existing user/wizard entries.
+_lightrag_volumes_have_container_target() {
+  local compose_file="$1"
+  local target_path="$2"
+  local line
+  local in_lightrag="no"
+  local in_volumes="no"
+  local mount_spec=""
+  local remainder=""
+  local container_path=""
+
+  if [[ ! -f "$compose_file" || -z "$target_path" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_lightrag" == "yes" ]]; then
+      if [[ "$line" =~ ^[[:space:]]{2}[^[:space:]] && "$line" != "  lightrag:" ]] || \
+         [[ "$line" =~ ^[^[:space:]] ]]; then
+        in_lightrag="no"
+        in_volumes="no"
+      elif [[ "$line" == "    volumes:" ]]; then
+        in_volumes="yes"
+      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{4}[^[:space:]-] ]]; then
+        in_volumes="no"
+      elif [[ "$in_volumes" == "yes" && "$line" =~ ^[[:space:]]{6}-[[:space:]](.+)$ ]]; then
+        mount_spec="$(_strip_wrapping_quotes "${BASH_REMATCH[1]}")"
+        remainder="${mount_spec#*:}"
+        if [[ "$remainder" == "$mount_spec" ]]; then
+          continue
+        fi
+        container_path="${remainder%%:*}"
+        if [[ "$container_path" == "$target_path" ]]; then
+          return 0
+        fi
+      fi
+    fi
+
+    if [[ "$line" == "  lightrag:" ]]; then
+      in_lightrag="yes"
+      in_volumes="no"
+    fi
+  done < "$compose_file"
+
+  return 1
 }
 
 # Return success when a volume mount entry is a wizard-managed SSL cert/key

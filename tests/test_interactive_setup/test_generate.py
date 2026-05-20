@@ -467,7 +467,11 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
 """
         in generated_compose
     )
-    assert "        max_attempts: 10\n\n  sidecar:\n" in generated_compose
+    assert "        max_attempts: 10\n\n    volumes:\n" in generated_compose
+    assert (
+        '      - "./data/prompts:/app/data/prompts"\n\n  sidecar:\n'
+        in generated_compose
+    )
 
 
 def test_generate_docker_compose_preserves_non_managed_named_volumes(

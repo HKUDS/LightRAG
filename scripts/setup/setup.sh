@@ -66,6 +66,7 @@ STORAGE_SERVICES=(
 DEFAULT_RUNTIME_TARGET="host"
 COMPOSE_LIGHTRAG_WORKING_DIR="/app/data/rag_storage"
 COMPOSE_LIGHTRAG_INPUT_DIR="/app/data/inputs"
+COMPOSE_LIGHTRAG_PROMPT_DIR="/app/data/prompts"
 # shellcheck disable=SC2034
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -684,6 +685,7 @@ prepare_compose_data_path_overrides() {
   # storage into a different location.
   set_compose_override "WORKING_DIR" "$COMPOSE_LIGHTRAG_WORKING_DIR"
   set_compose_override "INPUT_DIR" "$COMPOSE_LIGHTRAG_INPUT_DIR"
+  set_compose_override "PROMPT_DIR" "$COMPOSE_LIGHTRAG_PROMPT_DIR"
 }
 
 prepare_compose_env_overrides() {

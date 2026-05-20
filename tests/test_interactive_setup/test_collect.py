@@ -280,7 +280,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
             ['ENV_VALUES[REDIS_URI]="redis://cache.example.com:6380/1"'],
             "collect_redis_config yes",
             "REDIS_URI",
-            "redis://localhost:6379/",
+            "redis://localhost:6379",
         ),
         (
             ['ENV_VALUES[MILVUS_URI]="http://milvus.example.com:19530"'],
