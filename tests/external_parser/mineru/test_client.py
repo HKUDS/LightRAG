@@ -452,6 +452,41 @@ async def test_client_local_upload_name_overrides_multipart_filename(
     assert manifest.source_filename_at_parse == "demo.pdf"
 
 
+class _OfficialBadRequestDispatcher(_Dispatcher):
+    def post(self, url: str, **_: Any) -> _FakeResponse:
+        if url == "https://mineru.net/api/v4/file-urls/batch":
+            return _FakeResponse(
+                status_code=401,
+                text=json.dumps({"code": 401, "msg": "invalid api token"}),
+            )
+        raise AssertionError(f"unexpected POST {url}")
+
+
+@pytest.mark.offline
+async def test_client_official_bad_request_preserves_response_body(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+    monkeypatch.setenv("MINERU_API_TOKEN", "token-123")
+    monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    _CURRENT.dispatcher = _OfficialBadRequestDispatcher()
+    with pytest.raises(RuntimeError) as exc_info:
+        await MinerURawClient().download_into(raw, src)
+
+    message = str(exc_info.value)
+    assert "MinerU official upload URL request" in message
+    assert "HTTP 401" in message
+    assert "invalid api token" in message
+
+
 class _OfficialFailedDispatcher(_OfficialDispatcher):
     def get(self, url: str, **kwargs: Any) -> _FakeResponse:
         if url == "https://mineru.net/api/v4/extract-results/batch/B-1":
@@ -530,6 +565,81 @@ async def test_client_local_failed_state_raises(
     _CURRENT.dispatcher = _LocalFailedDispatcher()
     with pytest.raises(RuntimeError, match="bad pdf"):
         await MinerURawClient().download_into(raw, src)
+
+
+class _LocalRedirectDispatcher(_Dispatcher):
+    def post(self, url: str, **_: Any) -> _FakeResponse:
+        if url == "http://127.0.0.1:8000/tasks":
+            # Proxy/CDN misconfig: redirect with httpx default
+            # ``follow_redirects=False`` would otherwise fall through and
+            # break with a confusing "missing task_id" downstream.
+            return _FakeResponse(
+                status_code=302,
+                headers={"Location": "http://alt.example/tasks"},
+            )
+        raise AssertionError(f"unexpected POST {url}")
+
+
+@pytest.mark.offline
+async def test_client_local_redirect_treated_as_error(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    _CURRENT.dispatcher = _LocalRedirectDispatcher()
+    with pytest.raises(RuntimeError) as exc_info:
+        await MinerURawClient().download_into(raw, src)
+
+    message = str(exc_info.value)
+    assert "MinerU local task submission" in message
+    assert "HTTP 302" in message
+
+
+class _LocalBadRequestDispatcher(_Dispatcher):
+    def post(self, url: str, **_: Any) -> _FakeResponse:
+        if url == "http://127.0.0.1:8000/tasks":
+            return _FakeResponse(
+                status_code=400,
+                text=json.dumps(
+                    {
+                        "detail": "unsupported file type: .xlsx extension does not match payload"
+                    }
+                ),
+            )
+        raise AssertionError(f"unexpected POST {url}")
+
+
+@pytest.mark.offline
+async def test_client_local_bad_request_preserves_response_body(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+
+    src = tmp_path / "demo.xlsx"
+    src.write_bytes(b"not-really-xlsx")
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    _CURRENT.dispatcher = _LocalBadRequestDispatcher()
+    with pytest.raises(RuntimeError) as exc_info:
+        await MinerURawClient().download_into(raw, src)
+
+    message = str(exc_info.value)
+    assert "MinerU local task submission" in message
+    assert "HTTP 400" in message
+    assert "unsupported file type" in message
+    assert "demo.xlsx" in message
 
 
 @pytest.mark.offline

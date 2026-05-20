@@ -26,7 +26,11 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lightrag.external_parser._common import env_bool, env_int
+from lightrag.external_parser._common import (
+    env_bool,
+    env_int,
+    raise_for_status_with_detail,
+)
 from lightrag.external_parser._zip import safe_extract_zip
 from lightrag.external_parser.docling.cache import (
     compute_options_signature,
@@ -219,10 +223,7 @@ class DoclingRawClient:
             resp = await client.post(
                 url, data=self._build_multipart_data(), files=files
             )
-        if resp.status_code >= 400:
-            raise RuntimeError(
-                f"Docling upload failed: {resp.status_code} {resp.text[:400]}"
-            )
+        raise_for_status_with_detail(resp, f"Docling upload for {filename!r}")
         payload = resp.json() if resp.text else {}
         task_id = str(payload.get("task_id") or payload.get("id") or "").strip()
         if not task_id:
@@ -239,7 +240,7 @@ class DoclingRawClient:
         for _ in range(self.max_poll_attempts):
             iteration_started = time.monotonic()
             resp = await client.get(url, params=params)
-            resp.raise_for_status()
+            raise_for_status_with_detail(resp, f"Docling task {task_id} poll")
             payload = resp.json() if resp.text else {}
             status = str(
                 payload.get("task_status") or payload.get("status") or ""
@@ -277,7 +278,7 @@ class DoclingRawClient:
     ) -> bytes:
         url = f"{self.endpoint}{RESULT_PATH.format(task_id=task_id)}"
         resp = await client.get(url)
-        resp.raise_for_status()
+        raise_for_status_with_detail(resp, f"Docling result {task_id} download")
         ctype = resp.headers.get("content-type", "")
         if "zip" not in ctype.lower():
             raise RuntimeError(

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from lightrag.external_parser._common import raise_for_status_with_detail
 from lightrag.external_parser.mineru.cache import (
     MinerUParserOptions,
     compute_size_and_hash,
@@ -253,7 +254,7 @@ class MinerURawClient:
             headers=self._official_headers(),
             json=self._official_payload(upload_name),
         )
-        resp.raise_for_status()
+        raise_for_status_with_detail(resp, "MinerU official upload URL request")
         payload = resp.json() if resp.text else {}
         self._raise_if_official_error(payload, "MinerU official upload URL request")
         data = payload.get("data") if isinstance(payload, dict) else {}
@@ -282,7 +283,7 @@ class MinerURawClient:
             content=_iter_file_bytes(source_file_path),
             headers={"Content-Length": str(source_file_path.stat().st_size)},
         )
-        upload_resp.raise_for_status()
+        raise_for_status_with_detail(upload_resp, "MinerU official file upload")
 
         result_url = await self._poll_official_batch(client, batch_id, upload_name)
         await self._download_zip(client, result_url, raw_dir)
@@ -298,7 +299,7 @@ class MinerURawClient:
         for _ in range(self.max_polls):
             await asyncio.sleep(self.poll_interval)
             resp = await client.get(poll_url, headers=self._official_headers())
-            resp.raise_for_status()
+            raise_for_status_with_detail(resp, "MinerU official batch poll")
             payload = resp.json() if resp.text else {}
             self._raise_if_official_error(payload, "MinerU official batch poll")
             results = _get_by_path(payload, "data.extract_result")
@@ -372,7 +373,10 @@ class MinerURawClient:
                 data=self._local_form_data(),
                 files=files,
             )
-        resp.raise_for_status()
+        raise_for_status_with_detail(
+            resp,
+            f"MinerU local task submission for {upload_name!r}",
+        )
         payload = resp.json() if resp.text else {}
         task_id = str(payload.get("task_id") or "")
         if not task_id:
@@ -397,7 +401,7 @@ class MinerURawClient:
         for _ in range(self.max_polls):
             await asyncio.sleep(self.poll_interval)
             resp = await client.get(poll_url)
-            resp.raise_for_status()
+            raise_for_status_with_detail(resp, "MinerU local task poll")
             payload = resp.json() if resp.text else {}
             status = str(payload.get("status") or "").lower()
             if status in LOCAL_DONE_STATES:
@@ -420,7 +424,7 @@ class MinerURawClient:
         """Download (or re-use already-fetched response) and extract."""
         if resp is None or not hasattr(resp, "content"):
             resp = await client.get(result_url)
-            resp.raise_for_status()
+            raise_for_status_with_detail(resp, "MinerU result bundle download")
         buf = io.BytesIO(resp.content)
         with zipfile.ZipFile(buf) as zf:
             # Safe-extract: refuse absolute paths and ``..`` traversal.

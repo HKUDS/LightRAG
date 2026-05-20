@@ -102,11 +102,51 @@ def env_json(name: str, default: Any) -> Any:
         return default
 
 
+def response_error_detail(resp: Any, *, limit: int = 1000) -> str:
+    """Return a compact response body snippet for HTTP error reporting."""
+    try:
+        payload = resp.json() if getattr(resp, "text", "") else None
+    except Exception:
+        payload = None
+
+    if payload is not None:
+        try:
+            detail = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            detail = repr(payload)
+    else:
+        detail = str(getattr(resp, "text", "") or "").strip()
+
+    detail = " ".join(detail.split())
+    if not detail:
+        return "empty response body"
+    if len(detail) > limit:
+        return f"{detail[:limit]}...<truncated>"
+    return detail
+
+
+def raise_for_status_with_detail(resp: Any, operation: str) -> None:
+    """Raise an HTTP error that preserves service-provided response details.
+
+    Treats any non-2xx response as an error, matching httpx's
+    ``raise_for_status`` status handling (which also raises on 1xx/3xx,
+    not just 4xx/5xx) while attaching a compact response-body snippet to
+    the message for faster diagnosis.
+    """
+    status_code = int(getattr(resp, "status_code", 0) or 0)
+    if 200 <= status_code < 300:
+        return
+    detail = response_error_detail(resp)
+    raise RuntimeError(f"{operation} failed: HTTP {status_code} {detail}")
+
+
 __all__ = [
     "clear_dir_contents",
     "compute_size_and_hash",
     "env_bool",
     "env_int",
     "env_json",
+    "raise_for_status_with_detail",
     "raw_dir_for_parsed_dir",
+    "response_error_detail",
 ]

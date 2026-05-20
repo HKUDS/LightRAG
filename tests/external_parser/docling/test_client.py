@@ -66,10 +66,22 @@ class _Recorder:
         terminal_status: str,
         zip_bytes: bytes,
         task_id: str = "task-abc",
+        submit_status_code: int = 200,
+        submit_text: str | None = None,
+        poll_status_code: int = 200,
+        poll_text: str | None = None,
+        result_status_code: int = 200,
+        result_text: str | None = None,
     ) -> None:
         self.terminal_status = terminal_status
         self.zip_bytes = zip_bytes
         self.task_id = task_id
+        self.submit_status_code = submit_status_code
+        self.submit_text = submit_text
+        self.poll_status_code = poll_status_code
+        self.poll_text = poll_text
+        self.result_status_code = result_status_code
+        self.result_text = result_text
 
         self.post_calls: list[dict] = []
         self.get_calls: list[dict] = []
@@ -111,6 +123,11 @@ class _FakeAsyncClient:
             {"url": url, "files": snapshot_files, "data": data, "json": json}
         )
         if CONVERT_PATH in url:
+            if recorder.submit_status_code != 200:
+                return _FakeResponse(
+                    status_code=recorder.submit_status_code,
+                    text=recorder.submit_text or "",
+                )
             return _FakeResponse(
                 status_code=200,
                 text=json_dump({"task_id": recorder.task_id}),
@@ -123,6 +140,11 @@ class _FakeAsyncClient:
         recorder = _CURRENT["recorder"]
         recorder.get_calls.append({"url": url, "params": params})
         if POLL_PATH.format(task_id=recorder.task_id) in url:
+            if recorder.poll_status_code != 200:
+                return _FakeResponse(
+                    status_code=recorder.poll_status_code,
+                    text=recorder.poll_text or "",
+                )
             payload: dict[str, Any] = {
                 "task_id": recorder.task_id,
                 "task_status": recorder.terminal_status,
@@ -132,6 +154,11 @@ class _FakeAsyncClient:
             return _FakeResponse(status_code=200, text=json_dump(payload))
         if RESULT_PATH.format(task_id=recorder.task_id) in url:
             recorder.result_calls += 1
+            if recorder.result_status_code != 200:
+                return _FakeResponse(
+                    status_code=recorder.result_status_code,
+                    text=recorder.result_text or "",
+                )
             return _FakeResponse(
                 status_code=200,
                 content=recorder.zip_bytes,
@@ -312,6 +339,109 @@ async def test_docling_client_skipped_aborts(
             tmp_path / "demo.docling_raw", source_pdf
         )
     assert recorder.result_calls == 0
+
+
+async def test_docling_client_upload_http_error_preserves_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+        submit_status_code=400,
+        submit_text=json_dump({"detail": "unsupported file type"}),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+
+    message = str(excinfo.value)
+    assert "Docling upload for 'demo.pdf'" in message
+    assert "HTTP 400" in message
+    assert "unsupported file type" in message
+
+
+async def test_docling_client_poll_http_error_preserves_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+        poll_status_code=503,
+        poll_text=json_dump({"message": "queue unavailable"}),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+
+    message = str(excinfo.value)
+    assert "Docling task task-abc poll" in message
+    assert "HTTP 503" in message
+    assert "queue unavailable" in message
+
+
+async def test_docling_client_result_redirect_treated_as_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    # docling-serve fronted by a misconfigured proxy could emit a 302 to a
+    # CDN that httpx (default ``follow_redirects=False``) won't follow.
+    # Without the explicit non-2xx guard the redirect body would fall into
+    # the zip-decoder and surface as a cryptic "bad zip" error.
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+        result_status_code=302,
+        result_text="",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+
+    message = str(excinfo.value)
+    assert "Docling result task-abc download" in message
+    assert "HTTP 302" in message
+
+
+async def test_docling_client_result_http_error_preserves_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+        result_status_code=500,
+        result_text="zip artifact missing",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+
+    message = str(excinfo.value)
+    assert "Docling result task-abc download" in message
+    assert "HTTP 500" in message
+    assert "zip artifact missing" in message
 
 
 async def test_docling_client_ocr_lang_omitted_when_empty(
