@@ -1110,6 +1110,101 @@ class RedisDocStatusStorage(DocStatusStorage):
                 logger.error(f"[{self.workspace}] Error in get_doc_by_file_path: {e}")
                 return None
 
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose canonical basename matches.
+
+        The caller is responsible for passing an already-canonical basename.
+        Stored ``file_path`` values are canonicalized by the business layer, so
+        this lookup intentionally performs an exact match only.
+        """
+        if not basename:
+            return None
+        if basename == "unknown_source":
+            return None
+
+        async with self._get_redis_connection() as redis:
+            try:
+                cursor = 0
+                while True:
+                    cursor, keys = await redis.scan(
+                        cursor, match=f"{self.final_namespace}:*", count=1000
+                    )
+                    if keys:
+                        pipe = redis.pipeline()
+                        for key in keys:
+                            pipe.get(key)
+                        values = await pipe.execute()
+
+                        for key, value in zip(keys, values):
+                            if not value:
+                                continue
+                            try:
+                                doc_data = json.loads(value)
+                            except json.JSONDecodeError as e:
+                                logger.error(
+                                    f"[{self.workspace}] JSON decode error in get_doc_by_file_basename: {e}"
+                                )
+                                continue
+                            if doc_data.get("file_path") == basename:
+                                doc_id = key.split(":", 1)[1]
+                                return doc_id, doc_data
+
+                    if cursor == 0:
+                        break
+
+                return None
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error in get_doc_by_file_basename: {e}"
+                )
+                return None
+
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose content_hash field matches."""
+        if not content_hash:
+            return None
+
+        async with self._get_redis_connection() as redis:
+            try:
+                cursor = 0
+                while True:
+                    cursor, keys = await redis.scan(
+                        cursor, match=f"{self.final_namespace}:*", count=1000
+                    )
+                    if keys:
+                        pipe = redis.pipeline()
+                        for key in keys:
+                            pipe.get(key)
+                        values = await pipe.execute()
+
+                        for key, value in zip(keys, values):
+                            if not value:
+                                continue
+                            try:
+                                doc_data = json.loads(value)
+                            except json.JSONDecodeError as e:
+                                logger.error(
+                                    f"[{self.workspace}] JSON decode error in get_doc_by_content_hash: {e}"
+                                )
+                                continue
+                            if doc_data.get("content_hash") == content_hash:
+                                doc_id = key.split(":", 1)[1]
+                                return doc_id, doc_data
+
+                    if cursor == 0:
+                        break
+
+                return None
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error in get_doc_by_content_hash: {e}"
+                )
+                return None
+
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources"""
         try:
