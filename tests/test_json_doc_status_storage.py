@@ -2,7 +2,9 @@ import pytest
 
 from lightrag.base import DocStatus
 from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
+from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+from lightrag.namespace import NameSpace
 
 pytestmark = pytest.mark.offline
 
@@ -75,3 +77,92 @@ async def test_get_docs_paginated_with_status_filters(tmp_path):
         DocStatus.PARSING,
         DocStatus.ANALYZING,
     ]
+
+
+@pytest.mark.asyncio
+async def test_doc_status_upsert_preserves_caller_file_path(tmp_path):
+    storage = JsonDocStatusStorage(
+        namespace=NameSpace.DOC_STATUS,
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+        workspace="test",
+    )
+    await storage.initialize()
+
+    await storage.upsert(
+        {
+            "doc-1": _doc(
+                DocStatus.PENDING.value,
+                "/tmp/uploads/report.[native-Fi].pdf",
+            )
+        }
+    )
+
+    assert (await storage.get_by_id("doc-1"))["file_path"] == (
+        "/tmp/uploads/report.[native-Fi].pdf"
+    )
+    assert await storage.get_doc_by_file_basename("report.pdf") is None
+
+
+@pytest.mark.asyncio
+async def test_doc_status_basename_lookup_requires_canonical_stored_path(tmp_path):
+    storage = JsonDocStatusStorage(
+        namespace=NameSpace.DOC_STATUS,
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+        workspace="test",
+    )
+    await storage.initialize()
+
+    async with storage._storage_lock:
+        storage._data["doc-1"] = _doc(
+            DocStatus.PROCESSED.value,
+            "report.[native].pdf",
+        )
+
+    assert await storage.get_doc_by_file_basename("report.pdf") is None
+
+
+@pytest.mark.asyncio
+async def test_json_kv_upsert_preserves_caller_file_paths(tmp_path):
+    full_docs = JsonKVStorage(
+        namespace=NameSpace.KV_STORE_FULL_DOCS,
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+        workspace="test",
+    )
+    text_chunks = JsonKVStorage(
+        namespace=NameSpace.KV_STORE_TEXT_CHUNKS,
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+        workspace="test",
+    )
+    await full_docs.initialize()
+    await text_chunks.initialize()
+
+    await full_docs.upsert(
+        {
+            "doc-1": {
+                "content": "full text",
+                "file_path": "/tmp/uploads/report.[native-Fi].pdf",
+            }
+        }
+    )
+    await text_chunks.upsert(
+        {
+            "chunk-1": {
+                "content": "chunk text",
+                "tokens": 2,
+                "chunk_order_index": 0,
+                "full_doc_id": "doc-1",
+                "file_path": "/tmp/uploads/report.[native-Fi].pdf",
+            }
+        }
+    )
+
+    assert (await full_docs.get_by_id("doc-1"))["file_path"] == (
+        "/tmp/uploads/report.[native-Fi].pdf"
+    )
+    assert (await text_chunks.get_by_id("chunk-1"))["file_path"] == (
+        "/tmp/uploads/report.[native-Fi].pdf"
+    )

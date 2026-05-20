@@ -47,11 +47,15 @@ _VALID_MINERU_API_MODES = {"official", "local"}
 # Group 1 captures the raw engine token (still needs normalize_parser_engine
 # and SUPPORTED_PARSER_ENGINES validation); group 2 captures ``.ext`` so it
 # can be reattached when stripping the hint.
-_PARSER_HINT_RE = re.compile(r"\.\[([^\]]+)\](\.[^.]+)$")
+_PARSER_HINT_RE = re.compile(r"\.\[([^\]]*)\](\.[^.]+)$")
 
 
 class ParserRoutingConfigError(ValueError):
     """Raised when LIGHTRAG_PARSER contains an invalid routing rule."""
+
+
+class FilenameParserHintError(ValueError):
+    """Raised when a filename parser hint is invalid for ingestion."""
 
 
 def normalize_parser_engine(engine: Any) -> str:
@@ -404,29 +408,30 @@ def resolve_chunk_options(
 def split_engine_and_options(bracket_inner: str) -> tuple[str | None, str]:
     """Decompose a bracket-hint inner string into ``(engine, options)``.
 
-    Format rules (see docs/FileProcessingConfiguration-zh.md):
+    Format rules (see docs/FileProcessingPipeline-zh.md):
         - ``ENGINE-OPTIONS``: first ``-``-separated segment is the engine
           candidate; the remainder is the options string.
         - ``ENGINE``: matches a supported engine name as a whole.
-        - ``OPTIONS``: anything else is treated as options-only.
+        - ``-OPTIONS``: leading ``-`` marks an options-only hint.
     """
     inner = (bracket_inner or "").strip()
     if not inner:
         return None, ""
+
+    if inner.startswith("-"):
+        return None, inner[1:].strip()
 
     if "-" in inner:
         head, _, tail = inner.partition("-")
         engine_candidate = normalize_parser_engine(head)
         if engine_candidate in SUPPORTED_PARSER_ENGINES:
             return engine_candidate, tail.strip()
-        # Unknown engine before "-"; treat the whole thing as opaque options
-        # (likely invalid — caller will validate downstream).
-        return None, inner
+        return None, ""
 
     engine_candidate = normalize_parser_engine(inner)
     if engine_candidate in SUPPORTED_PARSER_ENGINES:
         return engine_candidate, ""
-    return None, inner
+    return None, ""
 
 
 def parser_suffix(file_path: str | Path) -> str:
@@ -486,18 +491,26 @@ def _filename_hint_match(
     """Locate a supported ``[hint]`` segment in a basename.
 
     Returns ``(match, engine_or_empty, options)`` when the bracket inner is a
-    recognised hint per the spec; otherwise ``None``.  Both branches require
-    the options portion to pass :func:`validate_process_options` —
-    engine-qualified hints with bad option chars (e.g. ``[native-FR]``,
-    ``[native-Q]``) fail the same way options-only hints do, so the
-    documented "invalid characters → whole hint fails → defaults apply"
-    contract holds for every hint shape.
+    recognised hint per the spec; otherwise ``None``.  This low-level helper
+    stays non-throwing because scan grouping and basename canonicalization need
+    a best-effort classifier.  Ingestion entrypoints must call
+    :func:`resolve_file_parser_directives`, which validates malformed hints and
+    raises instead of falling back.
     """
     basename = Path(file_path).name
     m = _PARSER_HINT_RE.search(basename)
     if not m:
         return None
-    engine, options = split_engine_and_options(m.group(1))
+    inner = m.group(1).strip()
+    if inner.startswith("-") and not inner[1:].strip():
+        return None
+    if (
+        "-" in inner
+        and not inner.startswith("-")
+        and not inner.partition("-")[2].strip()
+    ):
+        return None
+    engine, options = split_engine_and_options(inner)
     if options:
         option_errors = validate_process_options(options)
         if option_errors:
@@ -511,6 +524,101 @@ def _filename_hint_match(
     if engine is None and options:
         return m, "", options
     return None
+
+
+def _validate_filename_hint_for_resolution(
+    file_path: str | Path,
+    *,
+    require_external_endpoint: bool,
+) -> None:
+    """Fail fast for malformed filename hints on ingestion entrypoints."""
+    basename = Path(file_path).name
+    m = _PARSER_HINT_RE.search(basename)
+    if not m:
+        return
+
+    inner = m.group(1)
+    errors: list[str] = []
+
+    if not inner.strip():
+        errors.append(f"filename hint {m.group(0)!r} is empty")
+        raise FilenameParserHintError(
+            f"Invalid filename parser hint in {basename!r}: " + "; ".join(errors)
+        )
+
+    engine: str | None = None
+    options = ""
+
+    if inner.startswith("-"):
+        options = inner[1:].strip()
+        if not options:
+            errors.append(f"filename hint {m.group(0)!r} has empty process options")
+        else:
+            errors.extend(
+                validate_process_options(
+                    options,
+                    label=f"filename hint {m.group(0)!r} options",
+                )
+            )
+    elif "-" in inner:
+        engine_name, _, options = inner.partition("-")
+        engine = normalize_parser_engine(engine_name)
+        if engine not in SUPPORTED_PARSER_ENGINES:
+            supported = ", ".join(sorted(SUPPORTED_PARSER_ENGINES))
+            errors.append(
+                f"filename hint {m.group(0)!r} uses unsupported parser engine "
+                f"{engine_name.strip()!r}; supported engines: {supported}"
+            )
+        elif not options.strip():
+            errors.append(f"filename hint {m.group(0)!r} has empty process options")
+        else:
+            errors.extend(
+                validate_process_options(
+                    options,
+                    label=f"filename hint {m.group(0)!r} options",
+                )
+            )
+    else:
+        engine = normalize_parser_engine(inner)
+        if engine not in SUPPORTED_PARSER_ENGINES:
+            supported = ", ".join(sorted(SUPPORTED_PARSER_ENGINES))
+            message = (
+                f"filename hint {m.group(0)!r} uses unsupported parser engine "
+                f"{inner.strip()!r}; supported engines: {supported}"
+            )
+            if all(ch in SUPPORTED_PROCESS_OPTIONS or ch == " " for ch in inner):
+                message += (
+                    "; options-only filename hints must start with '-' "
+                    f"(use '[-{inner.strip()}]' instead)"
+                )
+            errors.append(message)
+
+    if engine in SUPPORTED_PARSER_ENGINES:
+        suffix = parser_suffix(file_path)
+        if not parser_engine_supports_suffix(engine, suffix):
+            supported_suffixes = ", ".join(
+                sorted(PARSER_ENGINE_SUFFIX_CAPABILITIES.get(engine, frozenset()))
+            )
+            errors.append(
+                f"filename hint {m.group(0)!r} uses parser engine {engine!r} "
+                f"for unsupported suffix {suffix!r}; supported suffixes: "
+                f"{supported_suffixes}"
+            )
+        endpoint_req = parser_engine_endpoint_requirement(engine)
+        if (
+            require_external_endpoint
+            and endpoint_req
+            and not parser_engine_endpoint_configured(engine)
+        ):
+            errors.append(
+                f"filename hint {m.group(0)!r} requires {endpoint_req} "
+                "to be configured"
+            )
+
+    if errors:
+        raise FilenameParserHintError(
+            f"Invalid filename parser hint in {basename!r}: " + "; ".join(errors)
+        )
 
 
 def filename_parser_hint(file_path: str | Path) -> str | None:
@@ -543,7 +651,7 @@ def canonicalize_parser_hinted_basename(file_path: str | Path) -> str:
     """Return basename with a supported parser hint removed.
 
     Only the final ``.[engine].ext`` (or ``.[engine-options].ext`` /
-    ``.[options].ext``) segment is stripped, exactly once, and only when the
+    ``.[-options].ext``) segment is stripped, exactly once, and only when the
     bracket content is a recognised hint.  Nested hints such as
     ``name.[native].[mineru].pdf`` therefore become ``name.[native].pdf`` —
     additional outer hints are not unwrapped.
@@ -709,6 +817,10 @@ def resolve_file_parser_directives(
         3. Default engine ``legacy`` with empty options.
     """
     suffix = parser_suffix(file_path)
+    _validate_filename_hint_for_resolution(
+        file_path,
+        require_external_endpoint=require_external_endpoint,
+    )
 
     hinted_engine, hinted_options = filename_parser_directives(file_path)
     if hinted_engine and not _engine_is_usable(

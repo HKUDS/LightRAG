@@ -176,6 +176,34 @@ class _ScanRag:
         self.full_docs = _ScanFullDocs(full_docs_by_id)
         self.process_calls = 0
         self.workspace = "scan-test"
+        self.enqueued = []
+        self.errors = []
+
+    async def apipeline_enqueue_documents(
+        self,
+        input,
+        ids=None,
+        file_paths=None,
+        track_id=None,
+        docs_format=None,
+        parse_engine=None,
+        process_options=None,
+        from_scan=False,
+    ):
+        item = {
+            "input": input,
+            "file_path": file_paths,
+            "track_id": track_id,
+            "docs_format": docs_format,
+            "parse_engine": parse_engine,
+            "process_options": process_options,
+            "from_scan": from_scan,
+        }
+        self.enqueued.append(item)
+        return track_id
+
+    async def apipeline_enqueue_error_documents(self, error_files, track_id=None):
+        self.errors.append((error_files, track_id))
 
     async def apipeline_process_enqueue_documents(self):
         self.process_calls += 1
@@ -271,7 +299,7 @@ async def test_pipeline_index_file_leaves_lightrag_document_docx_for_parser_arch
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
-    file_path = tmp_path / "sample.[docling].docx"
+    file_path = tmp_path / "sample.docx"
     file_path.write_bytes(b"docx bytes")
     rag = _FakeRag()
 
@@ -451,6 +479,31 @@ async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
     assert file_path.exists()
 
 
+async def test_pipeline_enqueue_rejects_invalid_filename_hint(tmp_path, monkeypatch):
+    """Bad filename processing hints must become file-processing errors."""
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
+    file_path = tmp_path / "report.[abc].docx"
+    file_path.write_bytes(b"docx-bytes")
+    rag = _FakeRag()
+
+    success, returned_track_id = await pipeline_enqueue_file(
+        rag, file_path, "track-bad-hint"
+    )
+
+    assert success is False
+    assert returned_track_id == "track-bad-hint"
+    assert rag.enqueued == []
+    assert len(rag.errors) == 1
+    error_files, track_id = rag.errors[0]
+    assert track_id == "track-bad-hint"
+    assert error_files[0]["file_path"] == file_path.name
+    assert error_files[0]["error_description"] == (
+        "[File Extraction]Filename hint error"
+    )
+    assert "unsupported parser engine 'abc'" in error_files[0]["original_error"]
+    assert file_path.exists()
+
+
 async def test_pipeline_enqueue_lightrag_parser_rule_provides_default_options(
     tmp_path, monkeypatch
 ):
@@ -612,6 +665,28 @@ async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypat
     assert archived_names == {"same.docx"}
     assert hinted_file.exists()
     assert not plain_file.exists()
+
+
+async def test_scan_rejects_invalid_filename_hint(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
+    file_path = tmp_path / "bad-scan.[native-FR].docx"
+    file_path.write_bytes(b"docx bytes")
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag({})
+
+    await run_scanning_process(rag, doc_manager, "track-scan")
+
+    assert rag.enqueued == []
+    assert len(rag.errors) == 1
+    error_files, track_id = rag.errors[0]
+    assert track_id == "track-scan"
+    assert error_files[0]["file_path"] == file_path.name
+    assert error_files[0]["error_description"] == (
+        "[File Extraction]Filename hint error"
+    )
+    assert "multiple chunking modes" in error_files[0]["original_error"]
+    assert rag.process_calls == 0
+    assert file_path.exists()
 
 
 async def test_scan_existing_non_processed_reprocesses_file(tmp_path, monkeypatch):

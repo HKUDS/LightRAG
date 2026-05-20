@@ -10,6 +10,7 @@ from lightrag.base import DocStatus
 from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     PARSED_DIR_NAME,
+    PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
 )
 from lightrag.operate import (
@@ -17,6 +18,7 @@ from lightrag.operate import (
     _parse_mm_display_name,
 )
 from lightrag.parser_routing import (
+    FilenameParserHintError,
     ParserRoutingConfigError,
     canonicalize_parser_hinted_basename,
     resolve_file_parser_engine,
@@ -137,10 +139,15 @@ def test_canonicalize_parser_hinted_basename():
         == "name.[native].pdf"
     )
     # New options-only and engine+options forms strip cleanly too.
-    assert canonicalize_parser_hinted_basename("foo.[!].docx") == "foo.docx"
+    assert canonicalize_parser_hinted_basename("foo.[-!].docx") == "foo.docx"
     assert canonicalize_parser_hinted_basename("foo.[native-iet].docx") == "foo.docx"
     assert canonicalize_parser_hinted_basename("foo.[mineru-R!].pdf") == "foo.pdf"
-    # Invalid options-only hint (unknown chars) is left alone.
+    # Options without the leading hyphen and unknown parsers are left alone.
+    assert canonicalize_parser_hinted_basename("foo.[!].docx") == "foo.[!].docx"
+    assert (
+        canonicalize_parser_hinted_basename("foo.[native-].docx")
+        == "foo.[native-].docx"
+    )
     assert canonicalize_parser_hinted_basename("foo.[xyz].docx") == "foo.[xyz].docx"
 
 
@@ -150,33 +157,30 @@ def test_filename_parser_directives_decodes_engine_and_options():
 
     assert filename_parser_directives("paper.[native-iet].docx") == ("native", "iet")
     assert filename_parser_directives("memo.[native-R!].md") == ("native", "R!")
-    assert filename_parser_directives("report.[!].pdf") == (None, "!")
+    assert filename_parser_directives("report.[-!].pdf") == (None, "!")
     assert filename_parser_directives("doc.[mineru].docx") == ("mineru", "")
     assert filename_parser_directives("foo.docx") == (None, "")
-    # Unsupported tokens leave the hint untouched and unparsed.
+    # Unsupported tokens and old options-only syntax stay unparsed.
+    assert filename_parser_directives("foo.[!].docx") == (None, "")
     assert filename_parser_directives("foo.[draft].docx") == (None, "")
 
 
 @pytest.mark.offline
 def test_filename_hint_rejects_invalid_engine_qualified_options():
     """Engine-qualified hints with bad option chars must fail validation
-    the same way options-only hints do, so the documented behaviour
-    "invalid characters → whole hint fails → defaults apply" holds across
-    all hint shapes (otherwise foo.[native-FR].docx would be canonicalised
-    even though its options conflict).
+    during parser directive resolution instead of silently falling back to
+    parser rules/defaults.
     """
     from lightrag.parser_routing import (
         canonicalize_parser_hinted_basename,
         filename_parser_directives,
+        resolve_file_parser_directives,
     )
 
-    # F+R conflict → hint dropped; engine and options are NOT applied.
+    # Low-level helpers stay non-throwing for scan grouping/canonicalization.
     assert filename_parser_directives("foo.[native-FR].docx") == (None, "")
-    # Unknown char Q → hint dropped; engine native is also NOT applied.
     assert filename_parser_directives("foo.[native-Q].docx") == (None, "")
 
-    # The basename must remain unchanged so the documented "defaults apply"
-    # path in the dedup index reflects the literal file the user supplied.
     assert (
         canonicalize_parser_hinted_basename("foo.[native-FR].docx")
         == "foo.[native-FR].docx"
@@ -185,6 +189,39 @@ def test_filename_hint_rejects_invalid_engine_qualified_options():
         canonicalize_parser_hinted_basename("foo.[native-Q].docx")
         == "foo.[native-Q].docx"
     )
+
+    with pytest.raises(FilenameParserHintError, match="multiple chunking modes"):
+        resolve_file_parser_directives("foo.[native-FR].docx")
+    with pytest.raises(FilenameParserHintError, match="unsupported character"):
+        resolve_file_parser_directives("foo.[native-Q].docx")
+    with pytest.raises(FilenameParserHintError, match="options-only filename hints"):
+        resolve_file_parser_directives("foo.[!].docx")
+    with pytest.raises(FilenameParserHintError, match="options-only filename hints"):
+        resolve_file_parser_directives("foo.[iet].docx")
+    with pytest.raises(
+        FilenameParserHintError, match="unsupported parser engine 'abc'"
+    ):
+        resolve_file_parser_directives("foo.[abc].docx")
+    with pytest.raises(
+        FilenameParserHintError, match="unsupported parser engine 'xyz'"
+    ):
+        resolve_file_parser_directives("foo.[xyz].docx")
+    with pytest.raises(FilenameParserHintError, match="is empty"):
+        resolve_file_parser_directives("foo.[].docx")
+    with pytest.raises(FilenameParserHintError, match="empty process options"):
+        resolve_file_parser_directives("foo.[-].docx")
+    with pytest.raises(FilenameParserHintError, match="empty process options"):
+        resolve_file_parser_directives("foo.[native-].docx")
+
+
+@pytest.mark.offline
+def test_filename_hint_missing_required_endpoint_rejects(monkeypatch):
+    from lightrag.parser_routing import resolve_file_parser_directives
+
+    monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+
+    with pytest.raises(FilenameParserHintError, match="requires DOCLING_ENDPOINT"):
+        resolve_file_parser_directives("foo.[docling].docx")
 
 
 @pytest.mark.offline
@@ -258,7 +295,7 @@ def test_resolve_file_parser_directives_priority(monkeypatch):
     assert options == "iet"
 
     # Options-only hint keeps engine from rule but uses hinted options.
-    engine, options = resolve_file_parser_directives("plain.[!].docx")
+    engine, options = resolve_file_parser_directives("plain.[-!].docx")
     assert engine == "native"
     assert options == "!"
 
@@ -266,9 +303,8 @@ def test_resolve_file_parser_directives_priority(monkeypatch):
 @pytest.mark.offline
 def test_doc_status_metadata_carry_over_helper():
     """``doc_status_transition_metadata`` preserves long-lived per-doc fields
-    (currently ``process_options``) and layers in any transition-specific
-    extras passed via ``extra=``.  Empty / missing carry-over fields are
-    dropped, not written as null.
+    and layers in any transition-specific extras passed via ``extra=``.
+    Empty / missing carry-over fields are dropped, not written as null.
     """
     from lightrag.utils_pipeline import doc_status_transition_metadata
 
@@ -279,6 +315,12 @@ def test_doc_status_metadata_carry_over_helper():
     # Carries process_options forward.
     md = doc_status_transition_metadata(_StubStatusDoc({"process_options": "iet"}))
     assert md == {"process_options": "iet"}
+
+    # Carries the internal pending-parse source basename forward for retries.
+    md = doc_status_transition_metadata(
+        _StubStatusDoc({"source_file_name": "demo.[mineru].pdf"})
+    )
+    assert md == {"source_file_name": "demo.[mineru].pdf"}
 
     # Layers in transition extras while keeping the carry-over.
     md = doc_status_transition_metadata(
@@ -1468,22 +1510,22 @@ def test_legacy_empty_file_paths_do_not_block_unsourced_insert(tmp_path):
 
 
 @pytest.mark.offline
-def test_basename_lookup_finds_legacy_full_path_records(tmp_path):
+def test_basename_lookup_requires_canonical_stored_file_path(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
-            # Simulate a legacy doc_status row whose file_path still holds a
-            # full path; the new basename lookup should still resolve it.
-            legacy_id = "doc-legacy-1"
+            # Storage does not normalize or apply legacy basename fallback.
+            # Business-layer writes must persist the canonical basename.
+            noncanonical_id = "doc-noncanonical-1"
             await rag.doc_status.upsert(
                 {
-                    legacy_id: {
+                    noncanonical_id: {
                         "status": DocStatus.PROCESSED,
-                        "content_summary": "legacy",
+                        "content_summary": "noncanonical",
                         "content_length": 7,
                         "file_path": "/inputs/legacy.txt",
-                        "track_id": "legacy-track",
+                        "track_id": "noncanonical-track",
                         "created_at": "2025-01-01T00:00:00+00:00",
                         "updated_at": "2025-01-01T00:00:00+00:00",
                         "chunks_list": [],
@@ -1492,19 +1534,22 @@ def test_basename_lookup_finds_legacy_full_path_records(tmp_path):
             )
 
             match = await rag.doc_status.get_doc_by_file_basename("legacy.txt")
-            assert match is not None
-            doc_id, doc = match
-            assert doc_id == legacy_id
-            assert doc["file_path"] == "/inputs/legacy.txt"
+            assert match is None
 
-            # Re-enqueueing the same basename hits the filename guard.
+            # Re-enqueueing through the business path stores the canonical
+            # basename and is not blocked by a noncanonical storage row.
             await rag.apipeline_enqueue_documents(
                 "fresh body",
                 file_paths="legacy.txt",
                 track_id="track-x",
             )
             new_id = compute_mdhash_id("legacy.txt", prefix="doc-")
-            assert await rag.full_docs.get_by_id(new_id) is None
+            full_doc = await rag.full_docs.get_by_id(new_id)
+            status = await rag.doc_status.get_by_id(new_id)
+            assert full_doc is not None
+            assert status is not None
+            assert full_doc["file_path"] == "legacy.txt"
+            assert status["file_path"] == "legacy.txt"
         finally:
             await rag.finalize_storages()
 
@@ -2477,6 +2522,46 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
 
 
 @pytest.mark.offline
+def test_parser_source_resolver_finds_hint_variant_by_canonical_name(
+    tmp_path, monkeypatch
+):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+    hinted = input_dir / "demo.[mineru].pdf"
+    hinted.write_bytes(b"fake-pdf")
+    rag = _new_rag(tmp_path / "work")
+
+    resolved = rag._resolve_source_file_for_parser(
+        "demo.pdf",
+        parser_engine=PARSER_ENGINE_MINERU,
+    )
+
+    assert Path(resolved) == hinted
+
+
+@pytest.mark.offline
+def test_parser_source_resolver_prefers_exact_canonical_file(tmp_path, monkeypatch):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+    exact = input_dir / "demo.pdf"
+    hinted = input_dir / "demo.[mineru].pdf"
+    exact.write_bytes(b"canonical")
+    hinted.write_bytes(b"hinted")
+    rag = _new_rag(tmp_path / "work")
+
+    resolved = rag._resolve_source_file_for_parser(
+        "demo.pdf",
+        parser_engine=PARSER_ENGINE_MINERU,
+    )
+
+    assert Path(resolved) == exact
+
+
+@pytest.mark.offline
 def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
     """End-to-end: parse_mineru routes through MinerURawClient + sidecar
     writer and produces spec-compliant *.parsed/ + *.mineru_raw/ artifacts.
@@ -2593,6 +2678,106 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         assert full_doc["sidecar_location"].startswith("file://")
         assert full_doc["sidecar_location"].endswith("/")
         assert str(blocks_path.parent.resolve()) in full_doc["sidecar_location"]
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_parse_mineru_uses_hint_source_and_canonical_upload_name(tmp_path, monkeypatch):
+    from lightrag.external_parser.mineru import compute_size_and_hash
+    from lightrag.external_parser.mineru.cache import current_mineru_options_signature
+    from lightrag.external_parser.mineru.client import MinerURawClient
+    from lightrag.external_parser.mineru.manifest import (
+        Manifest,
+        ManifestFile,
+        write_manifest,
+    )
+
+    async def _run():
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
+
+        rag = _new_rag(tmp_path / "work")
+        await rag.initialize_storages()
+
+        hinted_name = "LightRAG - Simple and Fast RAG.[mineru].pdf"
+        canonical_name = "LightRAG - Simple and Fast RAG.pdf"
+        src_file = input_dir / hinted_name
+        src_file.write_bytes(b"fake-pdf")
+
+        async def _fake_download(self, raw_dir, source_file_path, **kwargs):
+            assert source_file_path == src_file
+            assert kwargs.get("upload_name") == canonical_name
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            content_list = [{"type": "text", "text": "第一段正文"}]
+            content_path = raw_dir / "content_list.json"
+            content_path.write_text(
+                json.dumps(content_list, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            src_size, src_hash = compute_size_and_hash(source_file_path)
+            crit_size, crit_hash = compute_size_and_hash(content_path)
+            manifest = Manifest(
+                source_content_hash=src_hash,
+                source_size_bytes=src_size,
+                source_filename_at_parse=kwargs.get("upload_name"),
+                critical_file=ManifestFile(
+                    path="content_list.json",
+                    size=crit_size,
+                    sha256=crit_hash,
+                ),
+                files=[],
+                total_size_bytes=crit_size,
+                task_id="fake-task",
+                api_mode="local",
+                options_signature=current_mineru_options_signature(),
+            )
+            write_manifest(raw_dir, manifest)
+            return manifest
+
+        monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
+
+        await rag.apipeline_enqueue_documents(
+            "",
+            file_paths=str(src_file),
+            track_id="track-hint",
+            docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+            parse_engine=PARSER_ENGINE_MINERU,
+        )
+
+        doc_id = compute_mdhash_id(canonical_name, prefix="doc-")
+        status = await rag.doc_status.get_by_id(doc_id)
+        assert status is not None
+        assert status["file_path"] == canonical_name
+        assert status["metadata"]["source_file_name"] == hinted_name
+
+        content_data = await rag.full_docs.get_by_id(doc_id)
+        assert content_data is not None
+        content_data["source_file_name"] = status["metadata"]["source_file_name"]
+
+        parsed = await rag.parse_mineru(
+            doc_id=doc_id,
+            file_path=status["file_path"],
+            content_data=content_data,
+        )
+
+        blocks_path = Path(parsed["blocks_path"])
+        expected_parsed_dir = input_dir / PARSED_DIR_NAME / f"{canonical_name}.parsed"
+        expected_raw_dir = (
+            input_dir
+            / PARSED_DIR_NAME
+            / ("LightRAG - Simple and Fast RAG.pdf.mineru_raw")
+        )
+        archived_source = input_dir / PARSED_DIR_NAME / hinted_name
+
+        assert blocks_path.parent == expected_parsed_dir
+        assert expected_raw_dir.is_dir()
+        assert not src_file.exists()
+        assert archived_source.is_file()
 
         await rag.finalize_storages()
 

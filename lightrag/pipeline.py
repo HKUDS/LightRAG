@@ -100,6 +100,28 @@ _INFLIGHT_DOC_STATUSES = (
 )
 
 
+def _call_source_file_resolver(
+    owner: Any,
+    file_path: str,
+    *,
+    source_file_name: str | None = None,
+    parser_engine: str | None = None,
+) -> str:
+    """Call parser source resolver while tolerating legacy test doubles."""
+    resolver = owner._resolve_source_file_for_parser
+    params = inspect.signature(resolver).parameters
+    supports_context = "source_file_name" in params or any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
+    if supports_context:
+        return resolver(
+            file_path,
+            source_file_name=source_file_name,
+            parser_engine=parser_engine,
+        )
+    return resolver(source_file_name or file_path)
+
+
 # Map ``process_options.chunking`` selector → ``extraction_meta.chunking_method``
 # string used by the pipeline observability layer and the resume path.
 _CHUNKING_METHOD_LABELS: dict[str, str] = {
@@ -490,6 +512,10 @@ class _PipelineMixin:
                 content_data["sidecar_location"] = sidecar_location
             if engine := _parse_engine_at(index):
                 content_data["parse_engine"] = engine
+            if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
+                source_file_name = Path(str(file_paths[index] or "").strip()).name
+                if has_known_document_source(source_file_name):
+                    content_data["source_file_name"] = source_file_name
             options_str = _process_options_at(index)
             if options_str:
                 content_data["process_options"] = options_str
@@ -587,11 +613,17 @@ class _PipelineMixin:
             }
             if content_data.get("content_hash"):
                 base["content_hash"] = content_data["content_hash"]
+            metadata: dict[str, Any] = {}
             options_str = content_data.get("process_options") or ""
             if options_str:
                 # Mirror process_options into doc_status.metadata so admin UIs
                 # can surface the per-document strategy without a full_docs lookup.
-                base["metadata"] = {"process_options": options_str}
+                metadata["process_options"] = options_str
+            source_file_name = content_data.get("source_file_name")
+            if source_file_name:
+                metadata["source_file_name"] = source_file_name
+            if metadata:
+                base["metadata"] = metadata
             return base
 
         new_docs: dict[str, Any] = {
@@ -875,7 +907,9 @@ class _PipelineMixin:
         current_time = datetime.now(timezone.utc).isoformat()
 
         for error_file in error_files:
-            file_path = error_file.get("file_path", "unknown_file")
+            file_path = normalize_document_file_path(
+                error_file.get("file_path", "unknown_file")
+            )
             error_description = error_file.get(
                 "error_description", "File extraction failed"
             )
@@ -1380,6 +1414,12 @@ class _PipelineMixin:
                     raise Exception(
                         f"Document content not found in full_docs for doc_id: {doc_id_w}"
                     )
+                if isinstance(status_doc_w.metadata, dict):
+                    source_file_name_w = status_doc_w.metadata.get("source_file_name")
+                    if source_file_name_w and not content_data_w.get(
+                        "source_file_name"
+                    ):
+                        content_data_w["source_file_name"] = source_file_name_w
                 # Stamp parsing_start_time on the in-memory status_doc so
                 # carry-over (_DOC_STATUS_METADATA_CARRY_OVER_KEYS) writes it
                 # into doc_status here and preserves it across every
@@ -2319,7 +2359,12 @@ class _PipelineMixin:
             }
 
         if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-            source_path = self._resolve_source_file_for_parser(file_path)
+            source_path = _call_source_file_resolver(
+                self,
+                file_path,
+                source_file_name=content_data.get("source_file_name"),
+                parser_engine=PARSER_ENGINE_NATIVE,
+            )
             p = Path(source_path)
             if not (p.exists() and p.is_file() and p.suffix.lower() == ".docx"):
                 raise ValueError(
@@ -2501,7 +2546,14 @@ class _PipelineMixin:
         )
         from lightrag.sidecar import write_sidecar
 
-        source_file_path = Path(self._resolve_source_file_for_parser(file_path))
+        source_file_path = Path(
+            _call_source_file_resolver(
+                self,
+                file_path,
+                source_file_name=content_data.get("source_file_name"),
+                parser_engine=PARSER_ENGINE_MINERU,
+            )
+        )
         if not source_file_path.is_file():
             raise FileNotFoundError(f"MinerU source file not found: {source_file_path}")
 
@@ -2612,7 +2664,14 @@ class _PipelineMixin:
         )
         from lightrag.sidecar import write_sidecar
 
-        source_file_path = Path(self._resolve_source_file_for_parser(file_path))
+        source_file_path = Path(
+            _call_source_file_resolver(
+                self,
+                file_path,
+                source_file_name=content_data.get("source_file_name"),
+                parser_engine=PARSER_ENGINE_DOCLING,
+            )
+        )
         if not source_file_path.is_file():
             raise FileNotFoundError(
                 f"Docling source file not found: {source_file_path}"
@@ -2825,7 +2884,13 @@ class _PipelineMixin:
         except Exception as e:
             logger.warning(f"Failed to remove duplicate full_docs entry {doc_id}: {e}")
 
-        source_path = self._resolve_source_file_for_parser(file_path)
+        source_path = _call_source_file_resolver(
+            self,
+            file_path,
+            source_file_name=content_data.get("source_file_name")
+            if content_data
+            else None,
+        )
         archived = await archive_source_after_full_docs_sync(source_path)
         archive_msg = f"; archived to {archived}" if archived else ""
         warning = f"Duplicate content skipped after parsing: {file_path}{archive_msg}"
@@ -2836,14 +2901,38 @@ class _PipelineMixin:
                 pipeline_status["history_messages"].append(warning)
         return True
 
-    def _resolve_source_file_for_parser(self, file_path: str) -> str:
-        """Resolve a readable source file path for parser upload."""
-        p = Path(file_path)
-        if p.exists() and p.is_file():
-            return str(p)
+    def _resolve_source_file_for_parser(
+        self,
+        file_path: str,
+        *,
+        source_file_name: str | None = None,
+        parser_engine: str | None = None,
+    ) -> str:
+        """Resolve a readable source file path for parser upload.
 
-        name = p.name
+        ``file_path`` is the canonical stored basename. Pending-parse records
+        may also carry ``source_file_name`` with the real uploaded/scanned
+        basename, including parser hints.
+        """
         candidates: list[Path] = []
+        roots: list[Path] = []
+
+        def _add_candidate(path_value: Any) -> None:
+            raw = str(path_value or "").strip()
+            if not raw:
+                return
+            path = Path(raw)
+            candidates.append(path)
+            if path.parent != Path("."):
+                roots.append(path.parent)
+                roots.append(path.parent / PARSED_DIR_NAME)
+                candidates.append(path.parent / PARSED_DIR_NAME / path.name)
+
+        _add_candidate(file_path)
+
+        p = Path(file_path)
+        name = p.name
+        source_name = Path(str(source_file_name or "").strip()).name
         input_path = input_dir_path()
         # API ``DocumentManager`` scopes its input dir to
         # ``<base_input_dir>/<workspace>/`` (see DocumentManager.__init__);
@@ -2855,14 +2944,20 @@ class _PipelineMixin:
         if workspace:
             candidates.append(input_path / workspace / name)
             candidates.append(input_path / workspace / PARSED_DIR_NAME / name)
+            roots.append(input_path / workspace)
+            roots.append(input_path / workspace / PARSED_DIR_NAME)
         candidates.append(input_path / name)
         candidates.append(input_path / PARSED_DIR_NAME / name)
+        roots.append(input_path)
+        roots.append(input_path / PARSED_DIR_NAME)
 
         # Common local defaults used by API server.
         cwd = Path.cwd()
         if workspace:
             candidates.append(cwd / "inputs" / workspace / name)
             candidates.append(cwd / "inputs" / workspace / PARSED_DIR_NAME / name)
+            roots.append(cwd / "inputs" / workspace)
+            roots.append(cwd / "inputs" / workspace / PARSED_DIR_NAME)
         candidates.extend(
             [
                 cwd / "inputs" / name,
@@ -2870,10 +2965,56 @@ class _PipelineMixin:
                 cwd / PARSED_DIR_NAME / name,
             ]
         )
+        roots.extend(
+            [
+                cwd / "inputs",
+                cwd / "inputs" / PARSED_DIR_NAME,
+                cwd / PARSED_DIR_NAME,
+            ]
+        )
 
+        if source_name:
+            candidates = [root / source_name for root in roots] + candidates
+
+        seen_candidates: set[Path] = set()
         for candidate in candidates:
+            if candidate in seen_candidates:
+                continue
+            seen_candidates.add(candidate)
             if candidate.exists() and candidate.is_file():
                 return str(candidate)
+
+        canonical_name = normalize_document_file_path(file_path)
+        if has_known_document_source(canonical_name):
+            matches: list[Path] = []
+            seen_roots: set[Path] = set()
+            for root in roots:
+                if root in seen_roots:
+                    continue
+                seen_roots.add(root)
+                if not root.exists() or not root.is_dir():
+                    continue
+                for candidate in sorted(root.iterdir(), key=lambda item: item.name):
+                    if (
+                        candidate.is_file()
+                        and normalize_document_file_path(candidate.name)
+                        == canonical_name
+                    ):
+                        matches.append(candidate)
+
+            if source_name:
+                for candidate in matches:
+                    if candidate.name == source_name:
+                        return str(candidate)
+            if parser_engine:
+                from lightrag.parser_routing import filename_parser_directives
+
+                for candidate in matches:
+                    hinted_engine, _ = filename_parser_directives(candidate.name)
+                    if hinted_engine == parser_engine:
+                        return str(candidate)
+            if matches:
+                return str(matches[0])
         return file_path
 
     async def _write_lightrag_document_from_content_list(

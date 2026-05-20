@@ -191,6 +191,8 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # ``parse_stage_skipped`` is written by ``parse_mineru`` / ``parse_docling``
 # when the raw bundle cache is valid and the parse stage round trip is
 # skipped; absence == not skipped (e.g. native parser, or cache miss).
+# ``source_file_name`` records the original pending-parse source basename used
+# by parser workers; it is intentionally separate from canonical ``file_path``.
 #
 # The order of this tuple is the rendering order of metadata fields in
 # the WebUI ``DocumentStatusDetailsDialog`` (carry-over builds the new
@@ -200,6 +202,7 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # together, etc., so the dialog reads top-to-bottom along the pipeline.
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "process_options",
+    "source_file_name",
     "parse_warnings",
     "chunk_opts",
     "parsing_start_time",

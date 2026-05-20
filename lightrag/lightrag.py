@@ -108,6 +108,7 @@ from lightrag.operate import (
     rebuild_knowledge_from_chunks,
     _warn_deprecated_query_model_func,
 )
+from lightrag.utils_pipeline import normalize_document_file_path
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import (
     Tokenizer,
@@ -1311,7 +1312,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # Clean input texts
             full_text = sanitize_text_for_encoding(full_text)
             text_chunks = [sanitize_text_for_encoding(chunk) for chunk in text_chunks]
-            file_path = ""
+            file_path = normalize_document_file_path("")
 
             # Process cleaned texts
             if doc_id is None:
@@ -1433,7 +1434,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             for chunk_data in custom_kg.get("chunks", []):
                 chunk_content = sanitize_text_for_encoding(chunk_data["content"])
                 source_id = chunk_data["source_id"]
-                file_path = chunk_data.get("file_path", "custom_kg")
+                file_path = normalize_document_file_path(
+                    chunk_data.get("file_path", "custom_kg")
+                )
                 tokens = len(self.tokenizer.encode(chunk_content))
                 chunk_order_index = (
                     0
@@ -1480,7 +1483,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 description = entity_data.get("description", "No description provided")
                 source_chunk_id = entity_data.get("source_id", "UNKNOWN")
                 source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
-                file_path = entity_data.get("file_path", "custom_kg")
+                file_path = normalize_document_file_path(
+                    entity_data.get("file_path", "custom_kg")
+                )
 
                 if source_id == "UNKNOWN":
                     logger.warning(
@@ -1536,7 +1541,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 tgt_id = relationship_data["tgt_id"]
                 source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
                 source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
-                file_path = relationship_data.get("file_path", "custom_kg")
+                file_path = normalize_document_file_path(
+                    relationship_data.get("file_path", "custom_kg")
+                )
 
                 if source_id == "UNKNOWN":
                     logger.warning(

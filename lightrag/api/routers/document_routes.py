@@ -34,6 +34,7 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_FIXED,
 )
 from lightrag.parser_routing import (
+    FilenameParserHintError,
     canonicalize_parser_hinted_basename,
     filename_parser_hint,
     resolve_file_parser_directives,
@@ -1628,7 +1629,25 @@ async def pipeline_enqueue_file(
         except Exception:
             file_size = 0
 
-        extraction_engine, process_options = resolve_file_parser_directives(file_path)
+        try:
+            extraction_engine, process_options = resolve_file_parser_directives(
+                file_path
+            )
+        except FilenameParserHintError as e:
+            error_files = [
+                {
+                    "file_path": str(file_path.name),
+                    "error_description": "[File Extraction]Filename hint error",
+                    "original_error": str(e),
+                    "file_size": file_size,
+                }
+            ]
+            await rag.apipeline_enqueue_error_documents(error_files, track_id)
+            logger.error(
+                f"[File Extraction]Invalid filename hint in {file_path.name}: {e}"
+            )
+            return False, track_id
+
         api_process_options = process_options or PROCESS_OPTION_CHUNK_FIXED
         if extraction_engine != PARSER_ENGINE_LEGACY:
             try:
