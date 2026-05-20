@@ -671,8 +671,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             mapping = await self.client.indices.get_mapping(index=self._index_name)
         except OpenSearchException:
             return
-        props = mapping.get(self._index_name, {}).get("mappings", {}).get(
-            "properties", {}
+        props = (
+            mapping.get(self._index_name, {}).get("mappings", {}).get("properties", {})
         )
         if "content_hash" in props:
             return
@@ -1050,9 +1050,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return None
-            logger.error(
-                f"[{self.workspace}] Error getting doc by file_basename: {e}"
-            )
+            logger.error(f"[{self.workspace}] Error getting doc by file_basename: {e}")
             return None
 
     async def get_doc_by_content_hash(
@@ -1082,9 +1080,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return None
-            logger.error(
-                f"[{self.workspace}] Error getting doc by content_hash: {e}"
-            )
+            logger.error(f"[{self.workspace}] Error getting doc by content_hash: {e}")
             return None
 
     async def index_done_callback(self) -> None:
