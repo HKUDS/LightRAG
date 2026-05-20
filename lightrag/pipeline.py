@@ -2581,11 +2581,7 @@ class _PipelineMixin:
             # unavailable (key rotation, debugging, etc.). Network config
             # is only required on cache miss below.
             parse_stage_skipped = True
-            logger.info(
-                "[parse_mineru] raw cache hit doc_id=%s raw_dir=%s",
-                doc_id,
-                raw_dir,
-            )
+            logger.info("[parse_mineru] raw cache hit doc_id=%s", doc_id)
         else:
             if force_reparse and raw_dir.exists():
                 logger.info(
@@ -2597,7 +2593,7 @@ class _PipelineMixin:
             clear_dir_contents(raw_dir)
             client = MinerURawClient()
             logger.info(
-                "[MinerU] Parsing doc_id=%s " "source=%s (this may take a few minutes)",
+                "[MinerU] Parsing %s %s (may take a few minutes)",
                 doc_id,
                 source_file_path.name,
             )
@@ -2697,11 +2693,7 @@ class _PipelineMixin:
             # Cache hit: keep purely local so re-parses still work when the
             # docling-serve endpoint is temporarily unavailable.
             parse_stage_skipped = True
-            logger.info(
-                "[parse_docling] raw cache hit doc_id=%s raw_dir=%s",
-                doc_id,
-                raw_dir,
-            )
+            logger.info("[parse_docling] raw cache hit doc_id=%s", doc_id)
         else:
             if force_reparse and raw_dir.exists():
                 logger.info(
@@ -2714,8 +2706,7 @@ class _PipelineMixin:
             clear_dir_contents(raw_dir)
             client = DoclingRawClient()
             logger.info(
-                "[Docling] Parsing doc_id=%s "
-                "source=%s (this may take a few minutes)",
+                "[Docling] Parsing %s %s (may take a few minutes)",
                 doc_id,
                 source_file_path.name,
             )
@@ -3526,10 +3517,7 @@ class _PipelineMixin:
                 opt_in_missing.append(f"{opt_char}:{modality}")
         if opt_in_missing:
             logger.info(
-                f"[analyze_multimodal] process_options opted into "
-                f"{','.join(opt_in_missing)} for d-id: {doc_id} (file={file_path}), "
-                f"but the parser produced no such sidecar; VLM analysis skipped "
-                f"for those modalities."
+                f"[analyze_multimodal] {','.join(opt_in_missing)} sidecar empty: {doc_id}"
             )
 
         # Backfill sidecar `surrounding` for the enabled modalities just
@@ -3560,9 +3548,9 @@ class _PipelineMixin:
                 )
                 if any(enrich_counts.values()):
                     logger.info(
-                        f"[analyze_multimodal] surrounding backfilled for "
-                        f"d-id: {doc_id}, file: {file_path}: "
+                        "[analyze_multimodal] "
                         + ", ".join(f"{k}={v}" for k, v in enrich_counts.items() if v)
+                        + f" surrounding backfilled: {doc_id}"
                     )
             except Exception as enrich_err:
                 logger.warning(
@@ -4205,9 +4193,7 @@ class _PipelineMixin:
                     raise failure_to_raise
 
             parsed_data["multimodal_processed"] = True
-            logger.info(
-                f"[analyze_multimodal] completed for d-id: {doc_id}, file: {file_path}"
-            )
+            logger.info(f"[analyze_multimodal] completed for d-id: {doc_id}")
         except MultimodalAnalysisError:
             raise
         except Exception as e:
