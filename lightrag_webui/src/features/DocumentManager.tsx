@@ -318,7 +318,9 @@ export default function DocumentManager() {
   // Track component mount status
   const isMountedRef = useRef(true);
 
-  // Set up mount/unmount status tracking
+  // Set up mount/unmount status tracking. Pending throttle/probe timers are NOT
+  // explicitly cleared on unmount — every timer callback checks isMountedRef
+  // before doing any work, so a stray fire is a no-op.
   useEffect(() => {
     isMountedRef.current = true;
 
@@ -338,7 +340,7 @@ export default function DocumentManager() {
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
-  const pipelineBusy = useBackendState.use.pipelineBusy()
+  const pipelineActive = useBackendState.use.pipelineActive()
 
   // Legacy state for backward compatibility
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
@@ -360,6 +362,13 @@ export default function DocumentManager() {
     has_prev: false
   })
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
+  // Mirror statusCounts in a ref so async callbacks (e.g. activity probe ticks)
+  // can read the latest value without being tied to the closure captured at
+  // schedule time. Synced via useEffect to satisfy react-hooks/refs.
+  const statusCountsRef = useRef(statusCounts)
+  useEffect(() => {
+    statusCountsRef.current = statusCounts
+  }, [statusCounts])
   const [isRefreshing, setIsRefreshing] = useState(false)
 
   // Sort state
@@ -383,15 +392,24 @@ export default function DocumentManager() {
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
   const isSelectionMode = selectedDocIds.length > 0
 
-  // Add refs to track previous pipelineBusy state and current interval
-  const prevPipelineBusyRef = useRef<boolean | undefined>(undefined);
+  // Add refs to track previous pipelineActive state and current interval
+  const prevPipelineActiveRef = useRef<boolean | undefined>(undefined);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeRefreshPromiseRef = useRef<Promise<void> | null>(null);
   const pendingRefreshRequestRef = useRef<RefreshRequest | null>(null);
   const latestRefreshRequestVersionRef = useRef(0);
+  // Throttle gate: all auto-driven /documents/paginated entrances funnel through
+  // refreshDocumentsThrottled() to enforce a minimum 2s wall-clock interval.
+  const lastPaginatedAtRef = useRef(0);
+  const pendingPaginatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Activity probe: exponential-backoff burst of /health calls that stops once
+  // pipelineActive flips true. Holds the pending setTimeout ids so re-entry can
+  // reset the schedule to t=0.
+  const probeTimersRef = useRef<ReturnType<typeof setTimeout>[] | null>(null);
+  const probeActiveRef = useRef(false);
 
-  // Add retry mechanism state
-  const [retryState, setRetryState] = useState({
+  // Add retry mechanism state (read by circuit breaker via setRetryState only).
+  const [, setRetryState] = useState({
     count: 0,
     lastError: null as Error | null,
     isBackingOff: false
@@ -933,6 +951,104 @@ export default function DocumentManager() {
     });
   }, [buildQuerySnapshot, enqueueRefresh, pagination.page]);
 
+  // Throttle gate: any caller wanting to refresh the document list goes through
+  // here. If the wall-clock gap since the last paginated request is >= 2s, fire
+  // immediately; otherwise schedule a single trailing call at the 2s boundary
+  // and drop any further calls into that pending slot (natural coalescing).
+  const refreshDocumentsThrottled = useCallback(() => {
+    const fire = () => {
+      lastPaginatedAtRef.current = Date.now()
+      handleIntelligentRefresh().catch((err) => {
+        console.error('Throttled document refresh failed:', err)
+      })
+    }
+    const gap = Date.now() - lastPaginatedAtRef.current
+    if (gap >= 2000) {
+      fire()
+      return
+    }
+    if (pendingPaginatedTimerRef.current !== null) return
+    // Snapshot the query identity. If page/filter/sort changes while we wait,
+    // the page-change useEffect bumps latestRefreshRequestVersionRef AND fires
+    // its own paginated request on the new query. Our trailing closure still
+    // holds the OLD handleIntelligentRefresh (capturing the old page), so we
+    // must drop it — otherwise the stale request would overwrite the new list
+    // (its requestVersion would be the newly-bumped value, so the in-flight
+    // stale-check inside runRefreshRequest can't catch it).
+    const versionAtSchedule = latestRefreshRequestVersionRef.current
+    pendingPaginatedTimerRef.current = setTimeout(() => {
+      pendingPaginatedTimerRef.current = null
+      if (!isMountedRef.current) return
+      if (versionAtSchedule !== latestRefreshRequestVersionRef.current) return
+      fire()
+    }, 2000 - gap)
+  }, [handleIntelligentRefresh]);
+
+  // Activity probe: short exponential-backoff burst of /health checks fired
+  // after scan/upload triggers. Stops as soon as pipelineActive flips true so
+  // we can hand off to the existing 5s active polling cadence. Re-entry
+  // (e.g. another scan while a probe is mid-flight) cancels the current
+  // schedule and restarts at t=0 so the latest action gets a fresh observation
+  // window.
+  const startActivityProbe = useCallback((reason: string) => {
+    if (probeTimersRef.current) {
+      probeTimersRef.current.forEach((id) => clearTimeout(id))
+      probeTimersRef.current = null
+    }
+    probeActiveRef.current = true
+    const timers: ReturnType<typeof setTimeout>[] = []
+    const probeSchedule = [0, 1000, 2000, 4000, 8000, 16000] as const
+    const refreshAt = new Set<number>([0, 2000, 4000, 8000, 16000])
+    const cleanup = () => {
+      timers.forEach((id) => clearTimeout(id))
+      if (probeTimersRef.current === timers) {
+        probeTimersRef.current = null
+        probeActiveRef.current = false
+      }
+    }
+    probeSchedule.forEach((delay, index) => {
+      const id = setTimeout(async () => {
+        if (!isMountedRef.current) {
+          cleanup()
+          return
+        }
+        try {
+          await useBackendState.getState().check()
+        } catch (err) {
+          console.error(`Activity probe (${reason}) check failed:`, err)
+        }
+        if (!isMountedRef.current) {
+          cleanup()
+          return
+        }
+        if (refreshAt.has(delay)) {
+          refreshDocumentsThrottled()
+        }
+        // Exit conditions (in priority order):
+        //  - pipelineActive=true AND the document list has caught up: the 5s
+        //    active polling cadence will take over from here.
+        //  - pipelineActive=false after the first tick: the scan/upload didn't
+        //    actually start any work (e.g. scan found nothing new, upload was
+        //    rejected) — no point continuing to burst /health.
+        //  - last tick: time budget exhausted, hand off to the polling loop.
+        // Note: NOT stopping on bare `pipelineActive=true` is intentional.
+        // /health flips to active on scanning/pending_enqueues before the new
+        // doc rows are visible in /documents/paginated, so a premature exit
+        // would strand the UI in 30s idle polling while classification is
+        // still running.
+        const active = useBackendState.getState().pipelineActive
+        const docsActive = hasActiveDocumentsStatus(statusCountsRef.current)
+        const isLast = index === probeSchedule.length - 1
+        const stop = (active && docsActive) || (!active && index > 0) || isLast
+        if (stop) {
+          cleanup()
+        }
+      }, delay)
+      timers.push(id)
+    })
+    probeTimersRef.current = timers
+  }, [refreshDocumentsThrottled]);
+
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
     page: number,
@@ -971,90 +1087,44 @@ export default function DocumentManager() {
   const startPollingInterval = useCallback((intervalMs: number) => {
     clearPollingInterval();
 
-    pollingIntervalRef.current = setInterval(async () => {
-      try {
-        // Check circuit breaker before making request
-        if (isCircuitBreakerOpen()) {
-          return; // Skip this polling cycle
-        }
-
-        // Only perform fetch if component is still mounted
-        if (isMountedRef.current) {
-          await fetchDocuments();
-          recordSuccess(); // Record successful operation
-        }
-      } catch (err) {
-        // Only handle error if component is still mounted
-        if (isMountedRef.current) {
-          const errorClassification = classifyError(err);
-
-          // Always reset isRefreshing state on error
-          setIsRefreshing(false);
-
-          if (errorClassification.shouldShowToast) {
-            toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }));
-          }
-
-          if (errorClassification.shouldRetry) {
-            recordFailure(err as Error);
-
-            // Implement exponential backoff for retries
-            const backoffDelay = Math.min(Math.pow(2, retryState.count) * 1000, 30000); // Max 30s
-
-            if (retryState.count < 3) { // Max 3 retries
-              setTimeout(() => {
-                if (isMountedRef.current) {
-                  setRetryState(prev => ({ ...prev, isBackingOff: false }));
-                }
-              }, backoffDelay);
-            }
-          } else {
-            // For non-retryable errors, stop polling
-            clearPollingInterval();
-          }
-        }
-      }
+    pollingIntervalRef.current = setInterval(() => {
+      if (!isMountedRef.current) return;
+      if (isCircuitBreakerOpen()) return;
+      // refreshDocumentsThrottled is fire-and-forget; errors are surfaced via
+      // toast/recordFailure inside runRefreshRequest.
+      refreshDocumentsThrottled();
+      recordSuccess();
     }, intervalMs);
-  }, [fetchDocuments, t, clearPollingInterval, isCircuitBreakerOpen, recordSuccess, recordFailure, classifyError, retryState.count]);
+  }, [refreshDocumentsThrottled, clearPollingInterval, isCircuitBreakerOpen, recordSuccess]);
 
   const scanDocuments = useCallback(async () => {
     try {
-      // Check if component is still mounted before starting the request
       if (!isMountedRef.current) return;
 
-      const { status, message, track_id: _track_id } = await scanNewDocuments(); // eslint-disable-line @typescript-eslint/no-unused-vars
+      const { status, message } = await scanNewDocuments();
 
-      // Check again if component is still mounted after the request completes
       if (!isMountedRef.current) return;
 
-      // Note: _track_id is available for future use (e.g., progress tracking)
       toast.message(message || status);
 
-      // Reset health check timer with 1 second delay to avoid race condition
-      useBackendState.getState().resetHealthCheckTimerDelayed(1000);
-
-      // Perform immediate refresh with 90s timeout after scan (tolerates PostgreSQL switchover)
-      await handleIntelligentRefresh(undefined, false, 90000);
-
-      // Start fast refresh with 2-second interval after initial refresh
-      startPollingInterval(2000);
-
-      // Set recovery timer to restore normal polling interval after 15 seconds
-      setTimeout(() => {
-        if (isMountedRef.current && currentTab === 'documents' && health) {
-          // Restore intelligent polling interval based on document status
-          const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-          const normalInterval = hasActiveDocuments ? 5000 : 30000;
-          startPollingInterval(normalInterval);
-        }
-      }, 15000); // Restore after 15 seconds
+      if (status === 'scanning_started') {
+        // Activity probe drives /health bursts + throttled document refreshes.
+        // It exits as soon as pipelineActive flips true, after which the
+        // standard 5s polling cadence (driven by hasActiveDocumentsStatus)
+        // takes over.
+        startActivityProbe('scan');
+      } else {
+        // scanning_skipped_pipeline_busy: a single check+refresh is enough,
+        // no need to start the probe (pipeline is already active).
+        useBackendState.getState().check().catch(() => undefined);
+        refreshDocumentsThrottled();
+      }
     } catch (err) {
-      // Only show error if component is still mounted
       if (isMountedRef.current) {
         toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
       }
     }
-  }, [t, startPollingInterval, currentTab, health, statusCounts, handleIntelligentRefresh])
+  }, [t, startActivityProbe, refreshDocumentsThrottled])
 
   // Handle manual refresh with pagination reset logic
   const handleManualRefresh = useCallback(async () => {
@@ -1069,49 +1139,45 @@ export default function DocumentManager() {
     latestRefreshRequestVersionRef.current += 1
   }, [pagination.page, pagination.page_size, statusFilter, sortField, sortDirection])
 
-  // Monitor pipelineBusy changes and trigger immediate refresh with timer reset
+  // Monitor pipelineActive changes and trigger an immediate refresh. The
+  // polling interval is reconciled by the main polling useEffect below
+  // (which also depends on pipelineActive), so there's no need to re-call
+  // startPollingInterval here.
   useEffect(() => {
-    // Skip the first render when prevPipelineBusyRef is undefined
-    if (prevPipelineBusyRef.current !== undefined && prevPipelineBusyRef.current !== pipelineBusy) {
-      // pipelineBusy state has changed, trigger immediate refresh
+    if (prevPipelineActiveRef.current !== undefined && prevPipelineActiveRef.current !== pipelineActive) {
       if (currentTab === 'documents' && health && isMountedRef.current) {
-        // Use intelligent refresh to preserve current page
-        handleIntelligentRefresh();
-
-        // Reset polling timer after intelligent refresh
-        const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-        const pollingInterval = hasActiveDocuments ? 5000 : 30000;
-        startPollingInterval(pollingInterval);
+        refreshDocumentsThrottled();
       }
     }
-    // Update the previous state
-    prevPipelineBusyRef.current = pipelineBusy;
+    prevPipelineActiveRef.current = pipelineActive;
   }, [
-    pipelineBusy,
+    pipelineActive,
     currentTab,
     health,
-    handleIntelligentRefresh,
-    statusCounts,
-    startPollingInterval
+    refreshDocumentsThrottled
   ]);
 
-  // Set up intelligent polling with dynamic interval based on document status
+  // Set up intelligent polling with dynamic interval based on document status.
+  // Treat pipelineActive=true as enough reason to stay in 5s fast polling even
+  // when statusCounts hasn't surfaced pending rows yet — /health flips active
+  // during scan classification / upload enqueue, well before the new doc rows
+  // appear in /documents/paginated. Without this, the UI would stall in 30s
+  // idle polling for several seconds after the user clicked scan/upload.
   useEffect(() => {
     if (currentTab !== 'documents' || !health) {
       clearPollingInterval();
       return
     }
 
-    // Determine polling interval based on document status
     const hasActiveDocuments = hasActiveDocumentsStatus(statusCounts);
-    const pollingInterval = hasActiveDocuments ? 5000 : 30000; // 5s if active, 30s if idle
+    const pollingInterval = (hasActiveDocuments || pipelineActive) ? 5000 : 30000;
 
     startPollingInterval(pollingInterval);
 
     return () => {
       clearPollingInterval();
     }
-  }, [health, t, currentTab, statusCounts, startPollingInterval, clearPollingInterval])
+  }, [health, t, currentTab, statusCounts, pipelineActive, startPollingInterval, clearPollingInterval])
 
   // Monitor docs changes to check status counts and trigger health check if needed
   useEffect(() => {
@@ -1131,12 +1197,14 @@ export default function DocumentManager() {
       status => newStatusCounts[status] !== prevStatusCounts.current[status]
     )
 
-    // Trigger health check if changes detected and component is still mounted
-    if (hasStatusCountChange && isMountedRef.current) {
+    // Trigger health check if changes detected and component is still mounted.
+    // Skip when the activity probe is running — the probe already drives /health
+    // on its own schedule, and double-firing would burn cache and skew rate.
+    if (hasStatusCountChange && isMountedRef.current && !probeActiveRef.current) {
       useBackendState.getState().check()
     }
 
-    // Update previous status counts
+    // Always update the snapshot so the first post-probe transition still fires.
     prevStatusCounts.current = newStatusCounts
   }, [docs]);
 
@@ -1284,7 +1352,7 @@ export default function DocumentManager() {
               tooltip={t('documentPanel.documentManager.pipelineStatusTooltip')}
               size="sm"
               className={cn(
-                pipelineBusy && 'pipeline-busy'
+                pipelineActive && 'pipeline-busy'
               )}
             >
               <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
@@ -1332,7 +1400,10 @@ export default function DocumentManager() {
             ) : !isSelectionMode ? (
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
-            <UploadDocumentsDialog onDocumentsUploaded={() => handleIntelligentRefresh(undefined, false, 120000)} />
+            <UploadDocumentsDialog
+              onUploadBatchAccepted={() => startActivityProbe('upload')}
+              onDocumentsUploaded={async () => { refreshDocumentsThrottled() }}
+            />
             <PipelineStatusDialog
               open={showPipelineStatus}
               onOpenChange={setShowPipelineStatus}

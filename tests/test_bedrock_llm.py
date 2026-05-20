@@ -832,3 +832,71 @@ def test_health_role_llm_config_uses_runtime_snapshot(tmp_path, monkeypatch):
     assert body["llm_queue_status"]["query"]["rejected_total"] == 2
     assert body["embedding_queue_status"]["running"] == 1
     assert body["rerank_queue_status"]["available"] is False
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "pipeline_state, expected_active",
+    [
+        ({"busy": False}, False),
+        ({"busy": True}, True),
+        ({"busy": False, "scanning": True}, True),
+        ({"busy": False, "destructive_busy": True}, True),
+        ({"busy": False, "pending_enqueues": 2}, True),
+        (
+            {
+                "busy": False,
+                "scanning": False,
+                "destructive_busy": False,
+                "pending_enqueues": 0,
+            },
+            False,
+        ),
+    ],
+)
+def test_health_pipeline_active_derivation(
+    tmp_path, monkeypatch, pipeline_state, expected_active
+):
+    _reload_api_modules_if_mocked()
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    config = importlib.import_module("lightrag.api.config")
+    config.initialize_config(_make_args(tmp_path), force=True)
+    lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
+    monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
+    monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
+    monkeypatch.setattr(
+        lightrag_server, "create_document_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(
+        lightrag_server, "create_query_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(
+        lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
+    monkeypatch.setattr(
+        lightrag_server,
+        "get_namespace_data",
+        AsyncMock(return_value=pipeline_state),
+    )
+    monkeypatch.setattr(lightrag_server, "get_default_workspace", lambda: "default")
+    monkeypatch.setattr(
+        lightrag_server,
+        "cleanup_keyed_lock",
+        lambda: {"cleanup_performed": {}, "current_status": {}},
+    )
+
+    app = lightrag_server.create_app(_make_args(tmp_path))
+    response = TestClient(app).get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pipeline_busy"] is bool(pipeline_state.get("busy", False))
+    assert body["pipeline_scanning"] is bool(pipeline_state.get("scanning", False))
+    assert body["pipeline_destructive_busy"] is bool(
+        pipeline_state.get("destructive_busy", False)
+    )
+    assert body["pipeline_pending_enqueues"] == int(
+        pipeline_state.get("pending_enqueues", 0)
+    )
+    assert body["pipeline_active"] is expected_active
