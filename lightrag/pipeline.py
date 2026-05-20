@@ -1761,7 +1761,7 @@ class _PipelineMixin:
                             str(parsed_data.get("blocks_path") or "").strip() or None
                         )
                         chunk_opts_str = _format_chunking_params(p_chunk_size, p_opts)
-                        logger.info(f"Chunking P: {chunk_opts_str}, file: {file_path}")
+                        logger.info(f"Chunking P: {chunk_opts_str}, doc_id: {doc_id}")
                         chunking_result = chunking_by_paragraph_semantic(
                             self.tokenizer,
                             content,
@@ -1782,7 +1782,7 @@ class _PipelineMixin:
                             r_opts.pop("chunk_token_size", resolved_chunk_size)
                         )
                         chunk_opts_str = _format_chunking_params(r_chunk_size, r_opts)
-                        logger.info(f"Chunking R: {chunk_opts_str}, file: {file_path}")
+                        logger.info(f"Chunking R: {chunk_opts_str}, doc_id: {doc_id}")
                         chunking_result = chunking_by_recursive_character(
                             self.tokenizer,
                             content,
@@ -1799,7 +1799,7 @@ class _PipelineMixin:
                             v_opts.pop("chunk_token_size", resolved_chunk_size)
                         )
                         chunk_opts_str = _format_chunking_params(v_chunk_size, v_opts)
-                        logger.info(f"Chunking V: {chunk_opts_str}, file: {file_path}")
+                        logger.info(f"Chunking V: {chunk_opts_str}, doc_id: {doc_id}")
                         chunking_result = await chunking_by_semantic_vector(
                             self.tokenizer,
                             content,
@@ -1812,7 +1812,7 @@ class _PipelineMixin:
                         chunk_opts_str = _format_chunking_params(
                             resolved_chunk_size, f_opts
                         )
-                        logger.info(f"Chunking F: {chunk_opts_str}, file: {file_path}")
+                        logger.info(f"Chunking F: {chunk_opts_str}, doc_id: {doc_id}")
                         chunking_result = chunking_by_fixed_token(
                             self.tokenizer,
                             content,
@@ -1835,7 +1835,7 @@ class _PipelineMixin:
                         },
                     )
                     logger.info(
-                        f"Chunking F(legacy): {chunk_opts_str}, file: {file_path}"
+                        f"Chunking F(legacy): {chunk_opts_str}, doc_id: {doc_id}"
                     )
                     chunking_result = self.chunking_func(
                         self.tokenizer,
