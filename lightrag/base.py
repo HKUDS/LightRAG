@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 import os
 from dotenv import load_dotenv
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Literal,
@@ -917,6 +917,7 @@ class DocStatusStorage(BaseKVStorage, ABC):
             Returns the same format as get_by_ids method
         """
 
+    @abstractmethod
     async def get_doc_by_file_basename(
         self, basename: str
     ) -> tuple[str, dict[str, Any]] | None:
@@ -932,36 +933,14 @@ class DocStatusStorage(BaseKVStorage, ABC):
         Returns:
             (doc_id, doc_data) when a matching record exists, otherwise None.
         """
-        if not basename:
-            return None
-        if basename == "unknown_source":
-            return None
-        try:
-            docs = await self.get_docs_by_statuses(list(DocStatus))
-        except NotImplementedError:
-            raise
-        except Exception:
-            return None
-        for doc_id, doc in docs.items():
-            stored = (
-                doc.get("file_path")
-                if isinstance(doc, dict)
-                else getattr(doc, "file_path", None)
-            )
-            if not stored:
-                continue
-            if stored == basename:
-                return doc_id, (doc if isinstance(doc, dict) else asdict(doc))
-        return None
 
+    @abstractmethod
     async def get_doc_by_content_hash(
         self, content_hash: str
     ) -> tuple[str, dict[str, Any]] | None:
         """Get document by content_hash field.
 
-        Used for content-hash deduplication of full documents. Backends that
-        can index by content_hash should override this for efficiency. The
-        default implementation scans all documents via get_docs_by_statuses().
+        Used for content-hash deduplication of full documents.
 
         Args:
             content_hash: The content hash value to search for.
@@ -969,23 +948,6 @@ class DocStatusStorage(BaseKVStorage, ABC):
         Returns:
             (doc_id, doc_data) when a matching record exists, otherwise None.
         """
-        if not content_hash:
-            return None
-        try:
-            docs = await self.get_docs_by_statuses(list(DocStatus))
-        except NotImplementedError:
-            raise
-        except Exception:
-            return None
-        for doc_id, doc in docs.items():
-            existing_hash = (
-                doc.get("content_hash")
-                if isinstance(doc, dict)
-                else getattr(doc, "content_hash", None)
-            )
-            if existing_hash and existing_hash == content_hash:
-                return doc_id, (doc if isinstance(doc, dict) else asdict(doc))
-        return None
 
 
 class StoragesStatus(str, Enum):
