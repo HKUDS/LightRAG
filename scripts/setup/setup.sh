@@ -344,7 +344,7 @@ normalize_redis_uri_for_local_service() {
   local uri="$1"
 
   if [[ "$uri" =~ ^rediss?://([^/?#]+@)?(redis|localhost|127\.0\.0\.1|0\.0\.0\.0)(:([0-9]+))?(/.*)?$ ]]; then
-    printf 'redis://localhost:6379%s' "${BASH_REMATCH[5]:-/}"
+    printf 'redis://localhost:6379%s' "${BASH_REMATCH[5]}"
     return 0
   fi
 
