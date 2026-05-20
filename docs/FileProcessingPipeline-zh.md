@@ -325,7 +325,7 @@ DOCLING_DO_FORMULA_ENRICHMENT=true
 | ! | Extraction实体关系抽取 | 跳过实体/关系抽取与图谱写入；chunks 仍写入向量库以保留 naive / mix 检索能力。 |
 | F/R/V/P | Chunking文本分块 | 决定使用哪种分块策略；对解析阶段输出无影响。 |
 
-> 模态可用性以"sidecar 文件是否存在"为唯一信号，内容提取引擎不需要在 meta 中声明能力。某文档若没有任何图像/表格/公式，对应 sidecar 不会写入；用户即使开启了 `i/t/e`，对应模态也只会被静默跳过，但 `analyze_multimodal` 会在该篇文档落一行 INFO 级日志（`[analyze_multimodal] e:equations is empty: doc—id ...`），便于排查"VLM 为何没跑"。这种情况不会报错。
+> 模态可用性以"sidecar 文件是否存在"为唯一信号，内容提取引擎不需要在 meta 中声明能力。某文档若没有任何图像/表格/公式，对应 sidecar 不会写入；用户即使开启了 `i/t/e`，对应模态也只会被静默跳过，但 `analyze_multimodal` 会在该篇文档落一行 INFO 级日志（`[analyze_multimodal] sidecar e:equations empty: doc—id ...`），便于排查"VLM 为何没跑"。这种情况不会报错。
 
 ### 2.6 校验、优先级与回退
 
