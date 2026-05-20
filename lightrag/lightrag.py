@@ -36,6 +36,7 @@ from lightrag.prompt import (
     validate_entity_extraction_prompt_profile_for_mode,
 )
 from lightrag.constants import (
+    DEFAULT_CHUNK_P_SIZE,
     DEFAULT_MAX_GLEANING,
     DEFAULT_MAX_EXTRACTION_RECORDS,
     DEFAULT_MAX_EXTRACTION_ENTITIES,
@@ -713,6 +714,28 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 chunker_cfg[strategy_key] = sub
             if "chunk_overlap_token_size" not in sub:
                 sub["chunk_overlap_token_size"] = legacy_overlap_default
+
+        # P-specific chunk_token_size backfill — P does NOT inherit the
+        # top-level chunk_token_size (CHUNK_SIZE / legacy ctor) when
+        # nothing more specific was set; paragraph-semantic merging
+        # needs more headroom than the global default to keep related
+        # paragraphs together.  ``default_chunker_config`` already
+        # pre-fills this slot for the default-built chunker dict, but
+        # when the caller hands us a partial ``addon_params['chunker']``
+        # that lacks the slot (e.g. ``{"paragraph_semantic": {}}``)
+        # ``normalize_addon_params`` does not re-run the defaults
+        # builder — so this overlay is the last guard that ensures the
+        # slot is always populated.  Precedence (high → low):
+        # explicit ``addon_params`` > ``CHUNK_P_SIZE`` env >
+        # ``DEFAULT_CHUNK_P_SIZE``.  ``setdefault`` preserves any
+        # explicit value the caller did provide; the env read here
+        # mirrors ``default_chunker_config`` so partial-addon-params
+        # callers still pick up env overrides.
+        p_size_raw = os.getenv("CHUNK_P_SIZE")
+        chunker_cfg["paragraph_semantic"].setdefault(
+            "chunk_token_size",
+            int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE,
+        )
 
         # Back-fill legacy instance fields → always int afterwards.
         # Overlap mirrors the F-strategy resolved value, matching the

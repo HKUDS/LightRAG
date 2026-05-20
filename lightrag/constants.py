@@ -108,6 +108,14 @@ DEFAULT_R_SEPARATORS: tuple[str, ...] = (
 # bare ``。？！`` (CJK has no inter-sentence whitespace).
 DEFAULT_SENTENCE_SPLIT_REGEX = r"(?<=[.?!])\s+|(?<=[。？！])"
 
+# DEFAULT_CHUNK_P_SIZE: paragraph-semantic chunker target size when
+# CHUNK_P_SIZE env is unset.  Deliberately larger than the global
+# CHUNK_SIZE default — heading-aligned paragraph merging needs more
+# headroom to keep semantically related paragraphs together; falling
+# back to CHUNK_SIZE (1200) would force premature splits and defeat
+# the strategy's purpose.
+DEFAULT_CHUNK_P_SIZE = 2000
+
 # LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]
 FULL_DOCS_FORMAT_LIGHTRAG = "lightrag"  # content in LightRAG Document files
