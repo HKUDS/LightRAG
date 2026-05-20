@@ -112,7 +112,11 @@ class TestMongoDocStatusLookup:
     async def test_get_doc_by_file_basename_returns_tuple_on_hit(self):
         storage = self._make_storage()
         storage._data.find_one = AsyncMock(
-            return_value={"_id": "doc-1", "file_path": "report.pdf", "status": "processed"}
+            return_value={
+                "_id": "doc-1",
+                "file_path": "report.pdf",
+                "status": "processed",
+            }
         )
 
         result = await storage.get_doc_by_file_basename("report.pdf")
