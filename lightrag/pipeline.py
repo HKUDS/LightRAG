@@ -1746,13 +1746,15 @@ class _PipelineMixin:
 
                     strategy = doc_process_opts.chunking
                     if strategy == "P":
-                        # P carries its own optional ``chunk_token_size``
-                        # override (CHUNK_P_SIZE env or
-                        # ``addon_params['chunker']['paragraph_semantic']``);
+                        # P carries its own ``chunk_token_size`` (CHUNK_P_SIZE
+                        # env or ``addon_params['chunker']['paragraph_semantic']``);
                         # pop it out of the kwargs so we don't pass it
                         # both positionally and via ``**`` splat (which
-                        # would TypeError).  Fall back to the shared
-                        # top-level resolved size when unset.
+                        # would TypeError).  Unlike R/V, ``default_chunker_config``
+                        # always populates this slot — falling back to
+                        # ``resolved_chunk_size`` (global CHUNK_SIZE) here is
+                        # only a safety net for snapshots predating that
+                        # change; new docs always carry ``DEFAULT_CHUNK_P_SIZE``.
                         p_opts = dict(chunk_opts.get("paragraph_semantic") or {})
                         p_chunk_size = int(
                             p_opts.pop("chunk_token_size", resolved_chunk_size)

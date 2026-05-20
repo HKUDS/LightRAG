@@ -383,10 +383,10 @@ All variables in the table below are read into `addon_params["chunker"]` once wh
 | `CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT` | (unset = `null`) | float? | V threshold magnitude; `null` lets LangChain pick the default by type (e.g., percentile=95) |
 | `CHUNK_V_BUFFER_SIZE` | `1` | int | V sentence buffer window; the number of adjacent sentences to merge during distance computation |
 | `CHUNK_V_SENTENCE_SPLIT_REGEX` | `(?<=[.?!])\s+\|(?<=[。？！])` | str | V's sentence splitting regex, fed to LangChain's `SemanticChunker`. The default recognizes both English `.?!` (requiring trailing whitespace to avoid mis-splitting `0.95`) and Chinese `。？！` (no whitespace required, fitting Chinese continuous writing). The env value is the raw regex string; no JSON quoting needed. |
-| `CHUNK_P_SIZE` | unset | int | P strategy-specific `chunk_token_size`; higher than the top-level legacy fallback (`CHUNK_SIZE` and the SDK path's `LightRAG(chunk_token_size=…)`). When unset, P inherits the top-level resolved value. |
+| `CHUNK_P_SIZE` | `2000` (`DEFAULT_CHUNK_P_SIZE`) | int | P strategy-specific `chunk_token_size`. Unlike R/V, P does NOT inherit the top-level `CHUNK_SIZE` / `LightRAG(chunk_token_size=…)` when unset — paragraph-semantic merging needs more headroom than the global default to keep related paragraphs together, so the slot always carries `DEFAULT_CHUNK_P_SIZE` (2000) instead. |
 | `CHUNK_P_OVERLAP_SIZE` | unset | int | P strategy-specific overlap; higher than the legacy constructor field and `CHUNK_OVERLAP_SIZE`. Used for text overlap when long body text within the same JSONL content line falls back to R, and as the per-side budget for bridging text copied into the adjacent large-table chunks. |
 
-P's internal ratio constants are algorithmic scales and are automatically derived in proportion to `chunk_token_size`; setting `CHUNK_P_SIZE` lets P use an independent `chunk_token_size`, avoiding being dragged down by other strategies' preferences (such as F preferring small) when sharing `CHUNK_SIZE`. `CHUNK_P_OVERLAP_SIZE` only affects P's internal plain-text fallback and table bridging context; it does not let table row-level slices overlap each other. The same applies to `CHUNK_R_SIZE` / `CHUNK_V_SIZE`: R prefers a smaller target to better split sentences, while V (as an advisory ceiling) typically wants to be enlarged to reduce over-splitting.
+P's internal ratio constants are algorithmic scales and are automatically derived in proportion to `chunk_token_size`. P always uses an independent `chunk_token_size` decoupled from the global chain — even when `CHUNK_P_SIZE` is unset, P falls back to `DEFAULT_CHUNK_P_SIZE` (2000) rather than the global `CHUNK_SIZE`, because paragraph-semantic merging needs more headroom than the global default to keep related paragraphs together. Use `CHUNK_P_SIZE` to override that default per deployment. `CHUNK_P_OVERLAP_SIZE` only affects P's internal plain-text fallback and table bridging context; it does not let table row-level slices overlap each other. `CHUNK_R_SIZE` / `CHUNK_V_SIZE` work differently — when unset they DO fall back to the top-level `chunk_token_size` (R prefers a smaller target to better split sentences, while V — as an advisory ceiling — typically wants to be enlarged to reduce over-splitting).
 
 ### 3.3 Priority Chain
 
@@ -398,6 +398,8 @@ The final value of each chunking slot is resolved by a specificity-ordered chain
 4. **Legacy env** — `CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`. Final fallback.
 
 Example: `CHUNK_R_OVERLAP_SIZE=42` + `LightRAG(chunk_overlap_token_size=2)` → R sub-dictionary `chunk_overlap_token_size=42` (strategy env wins), F / P sub-dictionary `chunk_overlap_token_size=2` (no F / P-specific env; the legacy constructor field is filled in).
+
+**Special case for P's `chunk_token_size`**: the P `chunk_token_size` slot does NOT walk the full four-tier chain. When ① is not explicitly provided, it resolves directly via `CHUNK_P_SIZE` env > `DEFAULT_CHUNK_P_SIZE` (2000), **skipping** ③ legacy constructor field `LightRAG(chunk_token_size=…)` and ④ legacy env `CHUNK_SIZE`. See the `CHUNK_P_SIZE` row in §3.2 for the rationale.
 
 Three layers of semantic guarantee:
 
@@ -432,7 +434,8 @@ Three layers of semantic guarantee:
     "sentence_split_regex": "(?<=[.?!])\\s+|(?<=[。？！])"      // default regex handles both English and Chinese sentence-ending punctuation
   },
   "paragraph_semantic": {                                     // P-specific
-    "chunk_token_size": 3000,                                 // when omitted, inherits the common setting; suggested to set a larger chunk size
+    "chunk_token_size": 2000,                                 // when omitted, resolves from CHUNK_P_SIZE or DEFAULT_CHUNK_P_SIZE (2000);
+                                                              // does NOT inherit the common chunk_token_size
     "chunk_overlap_token_size": 100                           // when omitted, inherits the legacy overlap resolution chain
   }
 }

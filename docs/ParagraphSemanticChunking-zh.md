@@ -291,7 +291,7 @@ P 策略有多层降级保护：
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
-| `CHUNK_P_SIZE` | 未设（沿用 `CHUNK_SIZE`） | P 专用 `chunk_token_size`；建议设置较大值（如 3000），避免与 F/R 共享时被偏小目标拖累 |
+| `CHUNK_P_SIZE` | `2000`（未设时使用 `DEFAULT_CHUNK_P_SIZE`，**不**沿用 `CHUNK_SIZE`） | P 专用 `chunk_token_size`；段落语义合并需要比全局默认更大的上限，因此独立默认而非回退到 `CHUNK_SIZE` |
 | `CHUNK_P_OVERLAP_SIZE` | 未设（沿用 `CHUNK_OVERLAP_SIZE`） | P 专用 overlap；只影响同一内容行内长正文 fallback 和表格桥接预算，**不**让表格行级切片互相重叠 |
 | `CHUNK_OVERLAP_SIZE` / `LightRAG(chunk_overlap_token_size=…)` | `100` | 未设 P 专用 overlap 时的全局兜底 |
 
@@ -301,7 +301,7 @@ P 策略有多层降级保护：
 
 ```bash
 LIGHTRAG_PARSER=docx:native-P,*:legacy-R
-CHUNK_P_SIZE=3000
+CHUNK_P_SIZE=2000
 CHUNK_P_OVERLAP_SIZE=100
 ```
 

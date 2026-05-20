@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from lightrag.constants import (
+    DEFAULT_CHUNK_P_SIZE,
     DEFAULT_R_SEPARATORS,
     DEFAULT_SENTENCE_SPLIT_REGEX,
     FULL_DOCS_FORMAT_LIGHTRAG,
@@ -220,6 +221,20 @@ def slim_chunk_options(
     isolation).  When the matching strategy block is absent from the
     input, an empty dict is used so downstream consumers always see a
     dict-shaped slot.
+
+    Strategy-specific default backfill: for ``paragraph_semantic`` we
+    guarantee a populated ``chunk_token_size`` slot before returning
+    (caller-supplied value > ``CHUNK_P_SIZE`` env >
+    ``DEFAULT_CHUNK_P_SIZE``).  This is the single chokepoint that
+    every enqueue path runs through — both the
+    ``resolve_chunk_options`` path (built from addon_params) AND the
+    direct ``chunk_options=`` kwarg path (caller supplies the dict)
+    flow through here, so the backfill cannot be bypassed by runtime
+    addon_params mutation or by passing an explicit ``chunk_options``
+    that omits the P slot.  P must NOT inherit the top-level
+    ``chunk_token_size`` (global ``CHUNK_SIZE`` / legacy ctor) —
+    paragraph-semantic merging needs more headroom than the global
+    default.
     """
     key = chunk_strategy_key(process_options)
     src: Mapping[str, Any] = snapshot or {}
@@ -227,6 +242,11 @@ def slim_chunk_options(
     if "chunk_token_size" in src:
         result["chunk_token_size"] = deepcopy(src["chunk_token_size"])
     result[key] = deepcopy(dict(src.get(key) or {}))
+    if key == "paragraph_semantic" and "chunk_token_size" not in result[key]:
+        p_size_raw = os.getenv("CHUNK_P_SIZE")
+        result[key]["chunk_token_size"] = (
+            int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE
+        )
     return result
 
 
@@ -331,11 +351,17 @@ def default_chunker_config() -> dict[str, Any]:
     # P strategy carries its own ``chunk_token_size`` override so the
     # paragraph-semantic merge target can diverge from the global
     # ``CHUNK_SIZE`` (e.g. heading-aligned chunks may want a larger
-    # ceiling).  Slot is left absent when unset; the dispatcher falls
-    # back to the top-level ``chunk_token_size`` resolved by overlay.
+    # ceiling).  Unlike R/V, the slot is ALWAYS populated — when
+    # ``CHUNK_P_SIZE`` is unset we use ``DEFAULT_CHUNK_P_SIZE`` (2000)
+    # rather than letting the dispatcher fall back to the global
+    # ``CHUNK_SIZE`` (1200): paragraph-semantic merging needs more
+    # headroom than the global default to keep related paragraphs
+    # together, and silently inheriting the smaller global ceiling
+    # defeats the strategy's purpose.
     p_size_raw = os.getenv("CHUNK_P_SIZE")
-    if p_size_raw is not None:
-        config["paragraph_semantic"]["chunk_token_size"] = int(p_size_raw)
+    config["paragraph_semantic"]["chunk_token_size"] = (
+        int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE
+    )
 
     # R/V strategies likewise carry their own optional ``chunk_token_size``
     # overrides (recursive character splitting may want a smaller target,
@@ -402,6 +428,10 @@ def resolve_chunk_options(
             fixed["split_by_character"] = split_by_character
         if split_by_character_only:
             fixed["split_by_character_only"] = True
+    # P-strategy ``chunk_token_size`` backfill lives in
+    # ``slim_chunk_options`` — that's the single chokepoint shared by
+    # every enqueue path (this function AND the direct
+    # ``chunk_options=`` kwarg path in ``_chunk_options_at``).
     return snapshot
 
 
