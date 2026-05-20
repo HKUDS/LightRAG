@@ -200,8 +200,7 @@ async def test_vlm_process_enable_false_hard_fails_for_images(
 @pytest.mark.asyncio
 async def test_vlm_disabled_then_enabled_reprocesses_item(tmp_path):
     """After the first run hard-failed under VLM=disabled, flipping the
-    switch and clearing the failure marker must re-invoke the VLM and
-    persist a success result."""
+    switch must re-invoke the VLM and overwrite the persisted failure."""
     call_log: list[dict] = []
     vlm_func = _make_vlm_mock(call_log)
 
@@ -219,11 +218,6 @@ async def test_vlm_disabled_then_enabled_reprocesses_item(tmp_path):
         assert call_log == []
     finally:
         await rag_off.finalize_storages()
-
-    # Operator clears the failure marker before the second run.
-    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    payload["drawings"]["im-001"].pop("llm_analyze_result", None)
-    sidecar_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     rag_on = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
     await rag_on.initialize_storages()
@@ -314,13 +308,8 @@ async def test_vlm_cache_hit_on_second_run(tmp_path):
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         assert cache_id in payload["drawings"]["im-001"]["llm_cache_list"]
 
-        # Clear the analysis result and re-run: should hit the cache and not
-        # call the VLM again.
-        payload["drawings"]["im-001"].pop("llm_analyze_result", None)
-        sidecar_path.write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-        )
-
+        # Re-run: analyze_multimodal always recomputes for enabled modalities,
+        # but the cache key matches so the VLM is not called again.
         await rag.analyze_multimodal(
             doc_id=doc_id,
             file_path="fixture.pdf",

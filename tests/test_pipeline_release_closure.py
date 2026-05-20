@@ -1182,12 +1182,9 @@ def test_apipeline_enqueue_from_scan_bypasses_scanning_guard(tmp_path):
 
 
 @pytest.mark.offline
-def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
-    """Re-running analyze_multimodal must not re-analyze items that already
-    carry an ``llm_analyze_result`` from a prior pass.  This makes
-    enabling a new modality (e.g. add ``t`` after a prior ``i``-only pass)
-    cheap: the drawings sidecar is fully populated and skipped, while the
-    tables sidecar is newly populated.
+def test_analyze_multimodal_overwrites_already_analyzed_items(tmp_path):
+    """Re-running analyze_multimodal recomputes enabled modalities and
+    overwrites any prior ``llm_analyze_result`` from the sidecar.
     """
 
     async def _run():
@@ -1233,6 +1230,28 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
             encoding="utf-8",
         )
 
+        # 64x64 PNG so the image-pixel skip guard does NOT short-circuit
+        # before the VLM call.
+        img_path = tmp_path / "img1.png"
+        import struct
+        import zlib
+
+        def _png_bytes(w: int, h: int) -> bytes:
+            sig = b"\x89PNG\r\n\x1a\n"
+            ihdr = struct.pack(">II", w, h) + b"\x08\x06\x00\x00\x00"
+            crc = zlib.crc32(b"IHDR" + ihdr).to_bytes(4, "big")
+            ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + crc
+            idat_payload = b"\x00" * (w * h * 4 + h)
+            compressed = zlib.compress(idat_payload)
+            crc_idat = zlib.crc32(b"IDAT" + compressed).to_bytes(4, "big")
+            idat_chunk = (
+                struct.pack(">I", len(compressed)) + b"IDAT" + compressed + crc_idat
+            )
+            iend_chunk = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+            return sig + ihdr_chunk + idat_chunk + iend_chunk
+
+        img_path.write_bytes(_png_bytes(64, 64))
+
         # Drawings sidecar with ONE item already analyzed (status=success).
         drawings = tmp_path / "demo.drawings.json"
         drawings.write_text(
@@ -1243,7 +1262,7 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
                         "id1": {
                             "id": "id1",
                             "caption": "fig1",
-                            "path": "missing.png",
+                            "path": str(img_path),
                             "llm_analyze_result": {
                                 "name": "Existing",
                                 "type": "Photo",
@@ -1287,8 +1306,9 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
 
         drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
         existing = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
-        # Existing result preserved verbatim — VLM was NOT called for this item.
-        assert existing["name"] == "Existing"
+        # Existing result was overwritten by the new VLM result.
+        assert existing["name"] == "Image"
+        assert existing["description"] == "details"
         assert existing["status"] == "success"
 
         tables_payload = json.loads(tables.read_text(encoding="utf-8"))
@@ -1296,9 +1316,9 @@ def test_analyze_multimodal_skips_already_analyzed_items(tmp_path):
         assert new_result["name"] == "Item"
         assert new_result["status"] == "success"
 
-        # Drawings were idempotently skipped (VLM never called); tables took
-        # the EXTRACT role (per design §3.1), not VLM.
-        assert vlm_calls["n"] == 0
+        # Drawings are recomputed through VLM; tables take the EXTRACT role
+        # (per design §3.1), not VLM.
+        assert vlm_calls["n"] == 1
         assert extract_calls["n"] == 1
 
     asyncio.run(_run())

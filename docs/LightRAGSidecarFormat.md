@@ -15,7 +15,7 @@ This document describes the **LightRAG Sidecar** file format that content parsin
 Design intent of sidecars:
 
 - During the parsing stage, the content extraction engine (native/mineru/docling) is **only** responsible for generating "objective" fields such as `blockid / heading / content / surrounding`;
-- During the multimodal analysis stage (`analyze_multimodal`), the analysis result dict `llm_analyze_result` is **only** appended.
+- During the multimodal analysis stage (`analyze_multimodal`), the analysis result dict `llm_analyze_result` is written by LightRAG and may be appended or overwritten; parsers should not pre-populate it.
 
 ## 2. Directory Layout
 
@@ -394,6 +394,6 @@ Additional notes:
 
 - `analyze_time` is epoch seconds and is present for every status;
 - `message` is **always an empty string** when `status="success"`, making filtering convenient;
-- Items already at `status="success"` or `status="skipped"` are **skipped** by default on the next `analyze_multimodal` run (idempotent). Items at `status="failure"` will still be treated as failures next time and re-raised, to avoid silently swallowing errors.
+- Items for enabled modalities are recomputed on each `analyze_multimodal` run, and the current run overwrites any prior `llm_analyze_result` (`success`, `skipped`, or `failure`). This allows operators to fix VLM/EXTRACT configuration and retry without manually clearing stale sidecar results. LLM calls still use the analysis cache: if the cache key matches, the provider is not called and semantic fields usually remain the same, though runtime fields such as `analyze_time` are rewritten. A cache miss, for example after changing the effective role model/binding/host, prompt inputs, or image metadata, can produce different saved content.
 
 Drawing `type` is constrained to a 12-value enum (see [`IMAGE_TYPE_ENUM`](../lightrag/prompt_multimodal.py): `Photo / Illustration / Screenshot / Icon / Chart / Table / Infographic / Flowchart / Chat Log / Wireframe / Texture / Other`); values returned by the model outside the enum are normalized to `Other` rather than failing.

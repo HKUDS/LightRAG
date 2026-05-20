@@ -3453,11 +3453,10 @@ class _PipelineMixin:
         flags so toggling options later does not require re-parsing — only
         the ``llm_analyze_result`` payload is gated here.
 
-        Idempotent by design: per-item ``llm_analyze_result`` already
-        present is not re-computed.  This lets users incrementally enable
-        new modalities (e.g. add ``t`` after a prior ``i``-only pass) and
-        re-trigger analysis without redundant VLM calls or losing prior
-        results.
+        Per-item ``llm_analyze_result`` is recomputed and overwritten on each
+        run for enabled modalities.  This lets operators fix VLM/EXTRACT
+        configuration or prompt limits and retry without manually clearing
+        prior failure markers from the sidecar.
 
         Args:
             process_options: Optional override that bypasses the
@@ -4124,22 +4123,9 @@ class _PipelineMixin:
 
                 valid_keys: list[str] = []
                 analyze_tasks: list[Any] = []
-                skipped_existing = 0
                 for item_id, item in items.items():
                     if not isinstance(item, dict):
                         continue
-                    existing = item.get("llm_analyze_result")
-                    if isinstance(existing, dict):
-                        existing_status = existing.get("status")
-                        if existing_status in ("success", "skipped"):
-                            skipped_existing += 1
-                            continue
-                        if existing_status == "failure":
-                            raise MultimodalAnalysisError(
-                                f"{root_key}/{item_id}: prior llm_analyze_result "
-                                f"is failure ({existing.get('message') or 'no message'})"
-                            )
-                        # Unknown legacy status falls through to re-analysis.
                     valid_keys.append(item_id)
                     if kind == "drawing":
                         analyze_tasks.append(
@@ -4149,12 +4135,6 @@ class _PipelineMixin:
                         analyze_tasks.append(
                             _analyze_text_modality(kind, item_id, item)
                         )
-                if skipped_existing:
-                    logger.debug(
-                        f"[analyze_multimodal] {root_key}: "
-                        f"{skipped_existing} item(s) already analyzed, skipping; "
-                        f"{len(analyze_tasks)} item(s) to analyze"
-                    )
 
                 analyzed = await asyncio.gather(*analyze_tasks, return_exceptions=True)
 
