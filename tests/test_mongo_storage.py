@@ -7,6 +7,8 @@ pytest.importorskip(
     reason="pymongo is required for Mongo storage tests",
 )
 
+from pymongo.errors import PyMongoError
+
 from lightrag.kg.mongo_impl import MongoDocStatusStorage, MongoGraphStorage
 
 pytestmark = pytest.mark.offline
@@ -188,3 +190,13 @@ class TestMongoDocStatusLookup:
         storage._data.find_one = AsyncMock(return_value=None)
 
         assert await storage.get_doc_by_content_hash("zzz999") is None
+
+    @pytest.mark.asyncio
+    async def test_lookup_swallows_pymongo_error_and_returns_none(self):
+        # PyMongoError must not propagate to the caller; the dedup path treats
+        # a storage failure as "no match" and the error is logged instead.
+        storage = self._make_storage()
+        storage._data.find_one = AsyncMock(side_effect=PyMongoError("boom"))
+
+        assert await storage.get_doc_by_file_basename("report.pdf") is None
+        assert await storage.get_doc_by_content_hash("abc123") is None
