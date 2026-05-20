@@ -1006,6 +1006,183 @@ class TestDocStatusStorage:
             assert await s.get_doc_by_file_path("/nope.txt") is None
 
     @pytest.mark.asyncio
+    async def test_get_doc_by_file_basename_returns_tuple_on_hit(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "doc-1",
+                            "_source": {
+                                "file_path": "report.pdf",
+                                "status": "processed",
+                            },
+                        },
+                    ],
+                    "total": {"value": 1},
+                },
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            result = await s.get_doc_by_file_basename("report.pdf")
+            assert result is not None
+            doc_id, doc = result
+            assert doc_id == "doc-1"
+            assert doc["file_path"] == "report.pdf"
+            body = mock_client.search.call_args.kwargs.get(
+                "body"
+            ) or mock_client.search.call_args[1].get("body", {})
+            assert body["query"] == {"term": {"file_path": "report.pdf"}}
+
+    @pytest.mark.asyncio
+    async def test_get_doc_by_file_basename_empty_short_circuits(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.search.reset_mock()
+            assert await s.get_doc_by_file_basename("") is None
+            mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_doc_by_file_basename_unknown_source_sentinel(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.search.reset_mock()
+            assert await s.get_doc_by_file_basename("unknown_source") is None
+            mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_doc_by_file_basename_miss_returns_none(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.search = AsyncMock(
+            return_value={"hits": {"hits": [], "total": {"value": 0}}}
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_doc_by_file_basename("missing.pdf") is None
+
+    @pytest.mark.asyncio
+    async def test_get_doc_by_content_hash_returns_tuple_on_hit(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "doc-1",
+                            "_source": {
+                                "file_path": "report.pdf",
+                                "content_hash": "abc123",
+                                "status": "processed",
+                            },
+                        },
+                    ],
+                    "total": {"value": 1},
+                },
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            result = await s.get_doc_by_content_hash("abc123")
+            assert result is not None
+            doc_id, doc = result
+            assert doc_id == "doc-1"
+            assert doc["content_hash"] == "abc123"
+            body = mock_client.search.call_args.kwargs.get(
+                "body"
+            ) or mock_client.search.call_args[1].get("body", {})
+            assert body["query"] == {"term": {"content_hash": "abc123"}}
+
+    @pytest.mark.asyncio
+    async def test_get_doc_by_content_hash_empty_short_circuits(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.search.reset_mock()
+            assert await s.get_doc_by_content_hash("") is None
+            mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_doc_by_content_hash_miss_returns_none(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.search = AsyncMock(
+            return_value={"hits": {"hits": [], "total": {"value": 0}}}
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_doc_by_content_hash("zzz999") is None
+
+    @pytest.mark.asyncio
+    async def test_ensure_content_hash_mapping_added_when_missing(
+        self, global_config, embed_func, mock_client
+    ):
+        """Pre-existing indices without content_hash mapping should get one added."""
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={
+                "test_doc_status": {
+                    "mappings": {
+                        "properties": {
+                            "__mirrored_id": {"type": "keyword"},
+                            "status": {"type": "keyword"},
+                            "file_path": {"type": "keyword"},
+                        }
+                    }
+                }
+            }
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.indices.put_mapping.assert_awaited_once()
+            kwargs = mock_client.indices.put_mapping.call_args.kwargs
+            assert kwargs["body"] == {
+                "properties": {"content_hash": {"type": "keyword"}}
+            }
+
+    @pytest.mark.asyncio
+    async def test_ensure_content_hash_mapping_skipped_when_present(
+        self, global_config, embed_func, mock_client
+    ):
+        """Indices that already have content_hash mapping should not be touched."""
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={
+                "test_doc_status": {
+                    "mappings": {
+                        "properties": {
+                            "__mirrored_id": {"type": "keyword"},
+                            "content_hash": {"type": "keyword"},
+                        }
+                    }
+                }
+            }
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            mock_client.indices.put_mapping.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_prepare_doc_status_data(self, global_config, embed_func):
         s = self._make(global_config, embed_func)
         raw = {"_id": "x", "status": "processed", "error": "oops"}
