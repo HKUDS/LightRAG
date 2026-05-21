@@ -189,6 +189,7 @@ async def anthropic_complete_if_cache(
         raise
 
     if stream:
+
         async def stream_response():
             try:
                 async for event in response:
