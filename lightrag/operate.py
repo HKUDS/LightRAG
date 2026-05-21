@@ -3266,7 +3266,10 @@ async def kg_query(
     )
 
     # Build system prompt
-    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
+    sys_prompt_key = (
+        "rag_response_no_refs" if not query_param.include_references else "rag_response"
+    )
+    sys_prompt_temp = system_prompt if system_prompt else PROMPTS[sys_prompt_key]
     sys_prompt = sys_prompt_temp.format(
         response_type=response_type,
         user_prompt=user_prompt,
@@ -5018,8 +5021,11 @@ async def naive_query(
     )
 
     # Use the provided system prompt or default
+    sys_prompt_key = (
+        "naive_rag_response_no_refs" if not query_param.include_references else "naive_rag_response"
+    )
     sys_prompt_template = (
-        system_prompt if system_prompt else PROMPTS["naive_rag_response"]
+        system_prompt if system_prompt else PROMPTS[sys_prompt_key]
     )
 
     # Create a preliminary system prompt with empty content_data to calculate overhead
