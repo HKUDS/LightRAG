@@ -57,8 +57,17 @@ async def anthropic_complete_if_cache(
     enable_cot: bool = False,
     base_url: str | None = None,
     api_key: str | None = None,
+    image_inputs: list[Any] | None = None,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    """Call Anthropic Messages API with LightRAG-compatible shims.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before the request.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+    """
     if history_messages is None:
         history_messages = []
     if enable_cot:
@@ -78,7 +87,23 @@ async def anthropic_complete_if_cache(
         logging.getLogger("anthropic").setLevel(logging.INFO)
 
     kwargs.pop("hashing_kv", None)
-    kwargs.pop("keyword_extraction", None)
+    # Anthropic Messages API has no JSON mode; drop legacy flags and
+    # response_format. Emit DeprecationWarning when the booleans were set.
+    if kwargs.pop("keyword_extraction", False):
+        warnings.warn(
+            "anthropic_complete_if_cache(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if kwargs.pop("entity_extraction", False):
+        warnings.warn(
+            "anthropic_complete_if_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    kwargs.pop("response_format", None)
     timeout = kwargs.pop("timeout", None)
 
     anthropic_async_client = (
@@ -96,7 +121,26 @@ async def anthropic_complete_if_cache(
 
     messages: list[dict[str, Any]] = []
     messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
+    if image_inputs:
+        from lightrag.llm._vision_utils import normalize_image_inputs
+
+        normalized_images = normalize_image_inputs(image_inputs)
+        user_content: list[dict[str, Any]] = []
+        for img in normalized_images:
+            user_content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.mime_type,
+                        "data": img.base64_str,
+                    },
+                }
+            )
+        user_content.append({"type": "text", "text": prompt})
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": prompt})
 
     logger.debug("===== Sending Query to Anthropic LLM =====")
     logger.debug(f"Model: {model}   Base URL: {base_url}")

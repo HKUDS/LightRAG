@@ -11,7 +11,7 @@ services:
     volumes:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
-      - ./config.ini:/app/config.ini
+      - ./data/prompts:/app/data/prompts
       - ./.env:/app/.env
     deploy:
       restart_policy:
@@ -22,5 +22,6 @@ services:
     environment:
       WORKING_DIR: "/app/data/rag_storage"
       INPUT_DIR: "/app/data/inputs"
+      PROMPT_DIR: "/app/data/prompts"
       HOST: "0.0.0.0"
       PORT: "9621"
