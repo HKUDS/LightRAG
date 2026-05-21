@@ -429,6 +429,12 @@ class _PipelineMixin:
         source_to_doc_id: dict[str, str] = {}
         content_hash_to_doc_id: dict[str, str] = {}
         duplicate_attempts: list[dict[str, Any]] = []
+        # Per-doc I/O failures from the lightrag-format branch.  Populated when
+        # ``load_lightrag_document_content`` cannot read the user-supplied
+        # blocks.jsonl; flushed as FAILED stubs via
+        # ``apipeline_enqueue_error_documents`` inside the critical section so
+        # the UI surfaces the root cause instead of a silent empty document.
+        lightrag_load_errors: list[dict[str, Any]] = []
 
         def _add_content(
             index: int,
@@ -549,20 +555,41 @@ class _PipelineMixin:
                 )
                 sidecar_location = sidecar_uri_for(sidecar_dir)
                 # Per docs/FileProcessingConfiguration-zh.md, full_docs.content
-                # for format=lightrag must be "{{LRdoc}}" + a leading summary.
-                # Read the blocks file and derive the summary; if the file is
-                # not yet readable (rare, e.g. mid-rotation), fall back to an
-                # empty summary so enqueue is never blocked by I/O issues.
+                # for format=lightrag must be "{{LRdoc}}" + the merged body.
+                # If the blocks file cannot be read (permission, truncation,
+                # invalid JSON line), recording an empty body would let an
+                # untrue "{{LRdoc}}" record land in full_docs and desync from
+                # the on-disk blocks.jsonl.  Instead, skip this doc and flush
+                # a FAILED stub via apipeline_enqueue_error_documents after
+                # the critical section so /documents surfaces the cause and
+                # /documents/scan retries cleanly once the file is fixed.
                 try:
                     merged_text, _ = await load_lightrag_document_content(
                         sidecar_location
                     )
                 except Exception as exc:
+                    error_msg = f"load_lightrag_document_content failed: {exc}"
                     logger.warning(
-                        f"[apipeline_enqueue] failed to load LightRAG Document "
-                        f"for summary ({raw_path}): {exc}"
+                        f"[apipeline_enqueue] {error_msg} ({raw_path})"
                     )
-                    merged_text = ""
+                    file_size = 0
+                    blocks_path_str = sidecar_blocks_path(sidecar_location)
+                    if blocks_path_str:
+                        try:
+                            file_size = Path(blocks_path_str).stat().st_size
+                        except OSError:
+                            file_size = 0
+                    lightrag_load_errors.append(
+                        {
+                            "file_path": path,
+                            "error_description": (
+                                "Failed to load LightRAG Document blocks"
+                            ),
+                            "original_error": error_msg,
+                            "file_size": file_size,
+                        }
+                    )
+                    continue
                 summary_content = make_lightrag_doc_content(merged_text)
                 _add_content(
                     i,
@@ -805,6 +832,16 @@ class _PipelineMixin:
                         f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
                     )
 
+            # Flush lightrag-format I/O failures as FAILED stubs.  Done
+            # inside the critical section so concurrent enqueues either see
+            # the failure rows in full or not at all, and so a subsequent
+            # /documents/scan finds the stub-without-full_docs combination
+            # that document_routes treats as "delete and re-extract".
+            if lightrag_load_errors:
+                await self.apipeline_enqueue_error_documents(
+                    lightrag_load_errors, track_id=track_id
+                )
+
             # Filter new_docs to only include documents with unique IDs
             new_docs = {
                 doc_id: new_docs[doc_id]
@@ -814,6 +851,13 @@ class _PipelineMixin:
 
             if not new_docs:
                 logger.warning("No new unique documents were found.")
+                # If FAILED stubs were just flushed (lightrag-format I/O
+                # errors), the caller needs the track_id to query their
+                # status; a bare ``return None`` would also be interpreted
+                # by document_routes upload paths as "all duplicate —
+                # archive the source", silently hiding the failure.
+                if lightrag_load_errors:
+                    return track_id
                 return
 
             # 4. Store document content in full_docs and status in doc_status
