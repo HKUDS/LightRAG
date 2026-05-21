@@ -377,8 +377,12 @@ async def _summarize_descriptions(
         if summary_token_count > threshold:
             logger.warning(
                 f"Summary tokens({summary_token_count}) exceeds embedding_token_limit({embedding_token_limit}) "
-                f" for {description_type}: {description_name}"
+                f" for {description_type}: {description_name}. Truncating to fit."
             )
+            # Truncate summary to fit within embedding token limit
+            tokens = tokenizer.encode(summary)
+            truncated_tokens = tokens[:threshold]
+            summary = tokenizer.decode(truncated_tokens)
 
     return summary
 
