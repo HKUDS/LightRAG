@@ -81,6 +81,12 @@ async def anthropic_complete_if_cache(
     kwargs.pop("keyword_extraction", None)
     timeout = kwargs.pop("timeout", None)
 
+    # Require max_tokens; the Anthropic SDK errors if it's missing
+    kwargs.setdefault("max_tokens", 8192)
+    # Pop stream from kwargs so it doesn't leak into create_params;
+    # default to False (non-streaming) for consistency with other providers
+    stream = kwargs.pop("stream", False)
+
     anthropic_async_client = (
         AsyncAnthropic(
             default_headers=default_headers, api_key=api_key, timeout=timeout
@@ -105,7 +111,9 @@ async def anthropic_complete_if_cache(
     verbose_debug(f"System prompt: {system_prompt}")
 
     try:
-        create_params = {"model": model, "messages": messages, "stream": True, **kwargs}
+        create_params = {"model": model, "messages": messages, **kwargs}
+        if stream:
+            create_params["stream"] = True
         if system_prompt:
             create_params["system"] = system_prompt
         response = await anthropic_async_client.messages.create(**create_params)
@@ -136,26 +144,29 @@ async def anthropic_complete_if_cache(
         )
         raise
 
-    async def stream_response():
-        try:
-            async for event in response:
-                content = (
-                    event.delta.text
-                    if hasattr(event, "delta")
-                    and hasattr(event.delta, "text")
-                    and event.delta.text
-                    else None
-                )
-                if content is None:
-                    continue
-                if r"\u" in content:
-                    content = safe_unicode_decode(content.encode("utf-8"))
-                yield content
-        except Exception as e:
-            logger.error(f"Error in stream response: {str(e)}")
-            raise
+    if stream:
+        async def stream_response():
+            try:
+                async for event in response:
+                    content = (
+                        event.delta.text
+                        if hasattr(event, "delta")
+                        and hasattr(event.delta, "text")
+                        and event.delta.text
+                        else None
+                    )
+                    if content is None:
+                        continue
+                    if r"\u" in content:
+                        content = safe_unicode_decode(content.encode("utf-8"))
+                    yield content
+            except Exception as e:
+                logger.error(f"Error in stream response: {str(e)}")
+                raise
 
-    return stream_response()
+        return stream_response()
+    else:
+        return response.content[0].text
 
 
 # Generic Anthropic completion function
