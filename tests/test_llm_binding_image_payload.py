@@ -123,11 +123,7 @@ async def test_anthropic_binding_inserts_image_content_block():
         async def create(self, **kwargs):
             captured.update(kwargs)
 
-            async def empty():
-                if False:
-                    yield None
-
-            return empty()
+            return MagicMock(content=[MagicMock(text="")])
 
     fake_client = MagicMock()
     fake_client.messages = FakeMessages()
