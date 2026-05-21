@@ -137,3 +137,14 @@ class DataMigrationError(Exception):
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message
+
+
+class MultimodalAnalysisError(RuntimeError):
+    """Raised when multimodal analysis must fail the current document.
+
+    Hard failures (missing required field, schema mismatch, model not
+    available, sidecar already carries ``status="failure"``) bubble this
+    exception so the pipeline marks the document failed instead of writing
+    an unusable analyze result. Callers persist a ``status="failure"``
+    sidecar entry alongside the raise so a re-run sees the failure.
+    """

@@ -34,6 +34,7 @@ dependencies = [
     "pipmaster",
     "pydantic",
     "pypinyin",
+    "PyYAML>=6.0,<7.0",
     "python-dotenv",
     "setuptools",
     "tenacity",
@@ -63,6 +64,7 @@ api = [
     "pipmaster",
     "pydantic",
     "pypinyin",
+    "PyYAML>=6.0,<7.0",
     "python-dotenv",
     "setuptools",
     "tenacity",
@@ -92,13 +94,10 @@ api = [
     "pypdf>=6.1.0",                 # PDF processing
     "python-docx>=0.8.11,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
-]
-
-# Advanced document processing engine (optional)
-docling = [
-    # On macOS, pytorch and frameworks use Objective-C are not fork-safe,
-    # and not compatible to gunicorn multi-worker mode
-    "docling>=2.0.0,<3.0.0; sys_platform != 'darwin'",
+    "defusedxml>=0.7.0,<1.0.0",    # Safer XML parser used by native_parser/docx
+    # Chunking strategies (process_options=R / V); lazy-imported by lightrag.chunker
+    "langchain-text-splitters>=0.3,<2",
+    "langchain-experimental>=0.3,<1",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)

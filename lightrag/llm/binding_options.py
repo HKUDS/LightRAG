@@ -342,6 +342,69 @@ class BindingOptions:
 
         return options
 
+    @classmethod
+    def options_dict_for_role(
+        cls, args: Namespace, role: str, is_cross_provider: bool = False
+    ) -> dict[str, Any]:
+        """
+        Extract role-specific provider options with proper inheritance.
+
+        Same provider:
+        - inherit the base binding options from parsed args
+        - overlay any role-specific environment variable overrides
+
+        Cross provider:
+        - start from empty provider options
+        - overlay any role-specific environment variable overrides
+
+        Role env vars follow the pattern:
+        `{ROLE}_{BINDING_PREFIX}_{FIELD}`
+        e.g. `EXTRACT_OPENAI_LLM_TEMPERATURE`
+        """
+        import os
+
+        if is_cross_provider:
+            base: dict[str, Any] = {}
+        else:
+            base = cls.options_dict(args)
+
+        role_upper = role.upper()
+        env_prefix = cls._binding_name.upper() + "_"
+
+        for arg_item in cls.args_env_name_type_value():
+            original_env = arg_item["env_name"]
+            role_env = f"{role_upper}_{original_env}"
+            field_name = original_env[len(env_prefix) :].lower()
+
+            env_raw = os.getenv(role_env)
+            if env_raw is None:
+                continue
+
+            field_type = _resolve_optional_type(arg_item["type"])
+            try:
+                if field_type is bool:
+                    base[field_name] = env_raw.lower() in (
+                        "true",
+                        "1",
+                        "yes",
+                        "t",
+                        "on",
+                    )
+                elif field_type in (list, List[str]):
+                    base[field_name] = json.loads(env_raw)
+                elif field_type is dict:
+                    base[field_name] = json.loads(env_raw)
+                elif field_type is int:
+                    base[field_name] = int(env_raw)
+                elif field_type is float:
+                    base[field_name] = float(env_raw)
+                else:
+                    base[field_name] = env_raw
+            except (ValueError, json.JSONDecodeError):
+                base[field_name] = env_raw
+
+        return base
+
     def asdict(self) -> dict[str, Any]:
         """
         Convert an instance of binding options to a dictionary.
@@ -564,6 +627,36 @@ class OpenAILLMOptions(BindingOptions):
         "top_p": "Nucleus sampling parameter (0.0-1.0, lower = more focused)",
         "max_tokens": "Maximum number of tokens to generate (deprecated, use max_completion_tokens instead)",
         "extra_body": 'Extra body parameters for OpenRouter of vLLM (JSON dict, e.g., \'"reasoning": {"reasoning": {"enabled": false}}\')',
+    }
+
+
+# =============================================================================
+# Binding Options for AWS Bedrock
+# =============================================================================
+#
+# Bedrock binding options map to the subset of the Bedrock Converse API
+# inferenceConfig that LightRAG's bedrock driver actually forwards. See
+# ``lightrag/llm/bedrock.py`` for the whitelist — any field added here that is
+# not in that whitelist will be silently dropped by the driver.
+# =============================================================================
+@dataclass
+class BedrockLLMOptions(BindingOptions):
+    """Options for AWS Bedrock LLM (Converse API inferenceConfig)."""
+
+    _binding_name: ClassVar[str] = "bedrock_llm"
+
+    temperature: float = DEFAULT_TEMPERATURE
+    max_tokens: int | None = None
+    top_p: float = 1.0
+    stop_sequences: List[str] = field(default_factory=list)
+    extra_fields: dict = None  # Converse API additionalModelRequestFields
+
+    _help: ClassVar[dict[str, str]] = {
+        "temperature": "Controls randomness (0.0-1.0 for most Bedrock models)",
+        "max_tokens": "Maximum tokens generated in the response (leave empty for model default)",
+        "top_p": "Nucleus sampling parameter (0.0-1.0)",
+        "stop_sequences": "Stop sequences (JSON array of strings, e.g., '[\"</s>\"]')",
+        "extra_fields": 'Model-specific request fields forwarded as Converse API additionalModelRequestFields (JSON dict, e.g., \'{"reasoning_config": {"type": "enabled"}}\')',
     }
 
 

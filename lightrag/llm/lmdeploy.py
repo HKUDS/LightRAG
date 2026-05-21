@@ -1,3 +1,5 @@
+import warnings
+
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
@@ -62,7 +64,14 @@ async def lmdeploy_model_if_cache(
     quant_policy=0,
     **kwargs,
 ) -> str:
-    """
+    """Run lmdeploy generation with LightRAG-compatible shims.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before generation.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+
     Args:
         model (str): The path to the model.
             It could be one of the following options:
@@ -102,6 +111,22 @@ async def lmdeploy_model_if_cache(
     except Exception:
         raise ImportError("Please install lmdeploy before initialize lmdeploy backend.")
     kwargs.pop("hashing_kv", None)
+    # lmdeploy has no JSON mode; drop response_format and warn when legacy
+    # boolean shim flags are set.
+    if kwargs.pop("keyword_extraction", False):
+        warnings.warn(
+            "lmdeploy_model_if_cache(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if kwargs.pop("entity_extraction", False):
+        warnings.warn(
+            "lmdeploy_model_if_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     kwargs.pop("response_format", None)
     max_new_tokens = kwargs.pop("max_tokens", 512)
     tp = kwargs.pop("tp", 1)
