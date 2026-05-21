@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import lightrag.lightrag as lightrag_module
+import lightrag.pipeline as pipeline_module
 from lightrag.base import DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
@@ -319,7 +320,7 @@ async def test_extract_failure_preserves_chunks_and_allows_delete_with_cache_cle
     try:
         content = "extract failure document"
         file_path = "extract_failure.txt"
-        doc_id = compute_mdhash_id(content, prefix="doc-")
+        doc_id = compute_mdhash_id(file_path, prefix="doc-")
         await rag.apipeline_enqueue_documents(input=content, file_paths=file_path)
 
         async def fail_extract(self, chunks, pipeline_status, pipeline_status_lock):
@@ -353,14 +354,25 @@ async def test_extract_failure_preserves_chunks_and_allows_delete_with_cache_cle
 
 
 @pytest.mark.asyncio
-async def test_extract_failure_before_chunking_preserves_previous_chunk_snapshot(
+async def test_extract_failure_before_chunking_clears_stale_chunk_snapshot(
     tmp_path,
 ):
+    """The resume branch of ``apipeline_process_enqueue_documents`` purges
+    any stale ``chunks_list`` from a previous interrupted run *before*
+    chunking starts (so the new run does not mix old and new chunks).
+    Therefore, when chunking subsequently fails on the retry, the failed
+    doc_status reflects the post-purge state — the previous snapshot is
+    intentionally not preserved any more.
+
+    Earlier this test asserted the opposite ("preserve previous snapshot
+    across failure"), which conflicted with the documented resume rule
+    that "已抽取文档一律删掉所有的文本块，重新走多模态分析和实体关系提取".
+    """
     rag = await _build_rag(tmp_path, "extract_failure_pre_chunking", _failing_chunking)
     try:
         content = "chunking failure document"
         file_path = "chunking_failure.txt"
-        doc_id = compute_mdhash_id(content, prefix="doc-")
+        doc_id = compute_mdhash_id(file_path, prefix="doc-")
         await rag.apipeline_enqueue_documents(input=content, file_paths=file_path)
 
         previous_chunks = ["chunk-old-1", "chunk-old-2", "chunk-old-3"]
@@ -389,8 +401,11 @@ async def test_extract_failure_before_chunking_preserves_previous_chunk_snapshot
         failed_status = await rag.doc_status.get_by_id(doc_id)
         assert failed_status is not None
         assert _status_to_text(failed_status["status"]) == "failed"
-        assert failed_status.get("chunks_list") == previous_chunks
-        assert failed_status.get("chunks_count") == len(previous_chunks)
+        # Resume purged the stale list before chunking; the failure record
+        # therefore shows zero chunks rather than the previous snapshot.
+        assert failed_status.get("chunks_list") == []
+        assert failed_status.get("chunks_count") == 0
+        assert "chunking fail sentinel" in (failed_status.get("error_msg") or "")
     finally:
         await rag.finalize_storages()
 
@@ -405,7 +420,7 @@ async def test_merge_failure_preserves_chunks_and_skip_cache_cleanup_when_disabl
     try:
         content = "merge failure document"
         file_path = "merge_failure.txt"
-        doc_id = compute_mdhash_id(content, prefix="doc-")
+        doc_id = compute_mdhash_id(file_path, prefix="doc-")
         await rag.apipeline_enqueue_documents(input=content, file_paths=file_path)
 
         async def ok_extract(self, chunks, pipeline_status, pipeline_status_lock):
@@ -415,7 +430,7 @@ async def test_merge_failure_preserves_chunks_and_skip_cache_cleanup_when_disabl
             raise RuntimeError("merge fail sentinel")
 
         rag._process_extract_entities = MethodType(ok_extract, rag)
-        monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", fail_merge)
+        monkeypatch.setattr(pipeline_module, "merge_nodes_and_edges", fail_merge)
 
         await rag.apipeline_process_enqueue_documents()
 
@@ -1207,7 +1222,7 @@ async def test_pipeline_cancellation_preserves_file_path_for_queued_docs(
         release_first_doc.set()
         await asyncio.wait_for(pipeline_task, timeout=5)
 
-        second_doc_id = compute_mdhash_id(contents[1], prefix="doc-")
+        second_doc_id = compute_mdhash_id(file_paths[1], prefix="doc-")
         second_status = await rag.doc_status.get_by_id(second_doc_id)
         assert second_status is not None
         assert _status_to_text(second_status["status"]) == "failed"
@@ -1232,7 +1247,7 @@ async def test_pipeline_cancellation_repairs_placeholder_file_path_for_queued_do
         file_paths = ["first.md", "second.md"]
         await rag.apipeline_enqueue_documents(input=contents, file_paths=file_paths)
 
-        second_doc_id = compute_mdhash_id(contents[1], prefix="doc-")
+        second_doc_id = compute_mdhash_id(file_paths[1], prefix="doc-")
         second_status = await rag.doc_status.get_by_id(second_doc_id)
         assert second_status is not None
         second_status["file_path"] = "unknown_source"
