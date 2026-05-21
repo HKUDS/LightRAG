@@ -185,7 +185,7 @@ MINERU_API_TOKEN=<your_token>
 # MINERU_OFFICIAL_ENDPOINT=https://mineru.net   # Default value, usually no need to change
 ```
 
-For the remaining advanced switches (`MINERU_MODEL_VERSION`, `MINERU_LANGUAGE`, `MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`, `MINERU_PAGE_RANGES`, `MINERU_LOCAL_BACKEND` / `MINERU_LOCAL_PARSE_METHOD`, `MINERU_POLL_INTERVAL_SECONDS` / `MINERU_MAX_POLLS`, `MINERU_ENGINE_VERSION`, `LIGHTRAG_FORCE_REPARSE_MINERU`, etc.), refer to the MinerU section of the `.env` template at the repository root. Note that `MINERU_PAGE_RANGES` has different semantics in the two modes: `official` supports a complete list (e.g., `1-3,5,7-9`), while `local` only supports a single page (`3`) or a simple range (`1-10`); it does not accept comma-separated lists.
+For the remaining advanced switches (`MINERU_MODEL_VERSION`, `MINERU_LANGUAGE`, `MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`, `MINERU_PAGE_RANGES`, `MINERU_LOCAL_BACKEND` / `MINERU_LOCAL_PARSE_METHOD`, `MINERU_POLL_INTERVAL_SECONDS` / `MINERU_MAX_POLLS`, `MINERU_ENGINE_VERSION`, `LIGHTRAG_FORCE_REPARSE_MINERU`, etc.), refer to the MinerU section of the `env.example` template at the repository root. Note that `MINERU_PAGE_RANGES` has different semantics in the two modes: `official` supports a complete list (e.g., `1-3,5,7-9`), while `local` only supports a single page (`3`) or a simple range (`1-10`); it does not accept comma-separated lists.
 
 #### Docling Configuration
 
