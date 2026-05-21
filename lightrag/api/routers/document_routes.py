@@ -2170,16 +2170,21 @@ async def pipeline_index_texts(
     if len(set(normalized_file_sources)) != len(normalized_file_sources):
         raise ValueError("File sources must be unique by filename")
 
+    chunk_options: dict[str, Any] | None = {}
+    if split_by_character is not None:
+        chunk_options["split_by_character"] = split_by_character
+        chunk_options["split_by_character_only"] = split_by_character_only
+    if not chunk_options:
+        chunk_options = None
+
     await rag.apipeline_enqueue_documents(
         input=texts,
         file_paths=normalized_file_sources,
         track_id=track_id,
         process_options=PROCESS_OPTION_CHUNK_FIXED,
+        chunk_options=chunk_options,
     )
-    await rag.apipeline_process_enqueue_documents(
-        split_by_character=split_by_character,
-        split_by_character_only=split_by_character_only,
-    )
+    await rag.apipeline_process_enqueue_documents()
 
 
 async def run_scanning_process(
