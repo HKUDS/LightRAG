@@ -385,6 +385,44 @@ class TestAinsertCustomKgBatchPath:
 
     @pytest.mark.offline
     @pytest.mark.asyncio
+    async def test_ainsert_custom_kg_canonicalizes_file_paths_before_upsert(self):
+        """custom KG ingestion normalizes file names before touching storage."""
+        from lightrag import LightRAG
+
+        custom_kg = self._make_custom_kg()
+        for section in ("chunks", "entities", "relationships"):
+            for item in custom_kg[section]:
+                item["file_path"] = "/tmp/uploads/test.[native-Fi].pdf"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rag = LightRAG(
+                working_dir=tmp,
+                llm_model_func=AsyncMock(return_value=""),
+                embedding_func=mock_embedding_func,
+            )
+            await rag.initialize_storages()
+
+            rag.entities_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.delete = AsyncMock()
+            rag.text_chunks.upsert = AsyncMock()
+            rag.doc_status.upsert = AsyncMock()
+
+            await rag.ainsert_custom_kg(custom_kg)
+
+            text_chunks = rag.text_chunks.upsert.call_args.args[0]
+            assert next(iter(text_chunks.values()))["file_path"] == "test.pdf"
+
+            entities = rag.entities_vdb.upsert.call_args.args[0]
+            assert next(iter(entities.values()))["file_path"] == "test.pdf"
+
+            relationships = rag.relationships_vdb.upsert.call_args.args[0]
+            assert next(iter(relationships.values()))["file_path"] == "test.pdf"
+
+            await rag.finalize_storages()
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
     async def test_ainsert_custom_kg_no_hasattr_needed(self):
         """
         The batch methods are always available on the base class, so no

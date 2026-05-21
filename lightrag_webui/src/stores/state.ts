@@ -11,6 +11,7 @@ interface BackendState {
   status: LightragStatus | null
   lastCheckTime: number
   pipelineBusy: boolean
+  pipelineActive: boolean
   healthCheckIntervalId: ReturnType<typeof setInterval> | null
   healthCheckFunction: (() => void) | null
   healthCheckIntervalValue: number
@@ -50,6 +51,7 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
   lastCheckTime: Date.now(),
   status: null,
   pipelineBusy: false,
+  pipelineActive: false,
   healthCheckIntervalId: null,
   healthCheckFunction: null,
   healthCheckIntervalValue: healthCheckInterval * 1000, // Use constant from lib/constants
@@ -98,7 +100,8 @@ const useBackendStateStoreBase = create<BackendState>()((set, get) => ({
         messageTitle: null,
         lastCheckTime: Date.now(),
         status: health,
-        pipelineBusy: health.pipeline_busy
+        pipelineBusy: health.pipeline_busy,
+        pipelineActive: health.pipeline_active ?? health.pipeline_busy
       })
       return true
     }

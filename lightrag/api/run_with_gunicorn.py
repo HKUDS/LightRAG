@@ -7,15 +7,10 @@ import os
 import sys
 import platform
 import pipmaster as pm
-from lightrag.api.utils_api import display_splash_screen, check_env_file
-from lightrag.api.config import global_args
-from lightrag.utils import get_env_value
-from lightrag.kg.shared_storage import initialize_share_data
 
-from lightrag.constants import (
-    DEFAULT_WOKERS,
-    DEFAULT_TIMEOUT,
-)
+# Capture this before importing LightRAG modules, because those imports load .env.
+# On macOS, libobjc needs this value in the inherited process environment.
+_PROCESS_START_OBJC_FORK_SAFETY = os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY")
 
 
 def check_and_install_dependencies():
@@ -35,9 +30,16 @@ def check_and_install_dependencies():
 
 
 def main():
-    # Explicitly initialize configuration for Gunicorn mode
-    from lightrag.api.config import initialize_config
+    from lightrag.api.utils_api import display_splash_screen, check_env_file
+    from lightrag.api.config import global_args, initialize_config
+    from lightrag.utils import get_env_value
+    from lightrag.kg.shared_storage import initialize_share_data
+    from lightrag.constants import (
+        DEFAULT_WOKERS,
+        DEFAULT_TIMEOUT,
+    )
 
+    # Explicitly initialize configuration for Gunicorn mode
     initialize_config()
 
     # Set Gunicorn mode flag for lifespan cleanup detection
@@ -47,41 +49,13 @@ def main():
     if not check_env_file():
         sys.exit(1)
 
-    # Check DOCLING compatibility with Gunicorn multi-worker mode on macOS
-    if (
-        platform.system() == "Darwin"
-        and global_args.document_loading_engine == "DOCLING"
-        and global_args.workers > 1
-    ):
-        print("\n" + "=" * 80)
-        print("❌ ERROR: Incompatible configuration detected!")
-        print("=" * 80)
-        print(
-            "\nDOCLING engine with Gunicorn multi-worker mode is not supported on macOS"
-        )
-        print("\nReason:")
-        print("  PyTorch (required by DOCLING) has known compatibility issues with")
-        print("  fork-based multiprocessing on macOS, which can cause crashes or")
-        print("  unexpected behavior when using Gunicorn with multiple workers.")
-        print("\nCurrent configuration:")
-        print("  - Operating System: macOS (Darwin)")
-        print(f"  - Document Engine: {global_args.document_loading_engine}")
-        print(f"  - Workers: {global_args.workers}")
-        print("\nPossible solutions:")
-        print("  1. Use single worker mode:")
-        print("     --workers 1")
-        print("\n  2. Change document loading engine in .env:")
-        print("     DOCUMENT_LOADING_ENGINE=DEFAULT")
-        print("\n  3. Deploy on Linux where multi-worker mode is fully supported")
-        print("=" * 80 + "\n")
-        sys.exit(1)
-
     # Check macOS fork safety environment variable for multi-worker mode
     if (
         platform.system() == "Darwin"
         and global_args.workers > 1
-        and os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY") != "YES"
+        and _PROCESS_START_OBJC_FORK_SAFETY != "YES"
     ):
+        current_objc_fork_safety = os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY")
         print("\n" + "=" * 80)
         print("❌ ERROR: Missing required environment variable on macOS!")
         print("=" * 80)
@@ -95,8 +69,18 @@ def main():
         print("  - Operating System: macOS (Darwin)")
         print(f"  - Workers: {global_args.workers}")
         print(
-            f"  - Environment Variable: {os.environ.get('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'NOT SET')}"
+            "  - Process Environment at Startup: "
+            f"{_PROCESS_START_OBJC_FORK_SAFETY or 'NOT SET'}"
         )
+        print(
+            "  - Environment After .env Load: "
+            f"{current_objc_fork_safety or 'NOT SET'}"
+        )
+        if current_objc_fork_safety == "YES":
+            print("\nNote:")
+            print("  OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES was loaded from .env,")
+            print("  but that is too late for the macOS Objective-C runtime.")
+            print("  Export it before starting lightrag-gunicorn.")
         print("\nHow to fix:")
         print("  Option 1 - Set environment variable before starting (recommended):")
         print("     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES")
