@@ -4716,8 +4716,9 @@ async def _build_context_str(
     )
 
     # Get the system prompt template from PROMPTS or global_config
+    sys_prompt_key = "rag_response_no_refs" if not query_param.include_references else "rag_response"
     sys_prompt_template = global_config.get(
-        "system_prompt_template", PROMPTS["rag_response"]
+        "system_prompt_template", PROMPTS[sys_prompt_key]
     )
 
     kg_context_template = PROMPTS["kg_query_context"]

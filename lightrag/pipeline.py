@@ -569,7 +569,9 @@ class _PipelineMixin:
                     )
                 except Exception as exc:
                     error_msg = f"load_lightrag_document_content failed: {exc}"
-                    logger.warning(f"[apipeline_enqueue] {error_msg} ({raw_path})")
+                    logger.warning(
+                        f"[apipeline_enqueue] {error_msg} ({raw_path})"
+                    )
                     file_size = 0
                     blocks_path_str = sidecar_blocks_path(sidecar_location)
                     if blocks_path_str:
