@@ -216,7 +216,6 @@ python -c "from lightrag import LightRAG; print('✓ LightRAG imported')"
 python -c "from lightrag.utils import TiktokenTokenizer; t = TiktokenTokenizer(); print('✓ Tiktoken working')"
 
 # Test optional dependencies (if installed)
-python -c "import docling; print('✓ Docling available')"
 python -c "import redis; print('✓ Redis available')"
 ```
 

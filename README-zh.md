@@ -73,6 +73,9 @@
 ---
 
 ## 🎉 新闻
+- [2026.05]🎯[新功能]：**将 RagAnything 合并至 LightRAG**🎉。支持通过 **MinerU / Docling** 服务进行多模态内容解析与提取。
+- [2026.05]🎯[新功能]：引入四种可选的文本分块策略：`Fix`（固定）、`Recursive`（递归）、`Vector`（向量）和 `Paragraph`（段落语义）。
+- [2026.05]🎯[新功能]：**支持按角色配置 LLM**，提供四个独立角色：EXTRACT、QUERY、KEYWORDS 和 VLM，每个角色拥有独立的 LLM 设置。
 - [2026.03]🎯[新功能]: 集成了 **OpenSearch** 作为统一存储后端，为 LightRAG 的全部四种存储类型提供全面支持。
 - [2026.03]🎯[新功能]: 推出交互式安装向导，支持通过 Docker 在本地部署 Embedding、Reranking 及存储后端服务。
 - [2025.11]🎯[新功能]: 集成了 **RAGAS 评估**和 **Langfuse 追踪**。更新了 API 以在查询结果中返回召回上下文，支持上下文精度指标。
@@ -292,11 +295,9 @@ python examples/lightrag_openai_demo.py
 
 LightRAG 提供 Token 用量追踪、知识图谱数据导出、LLM 缓存管理、Langfuse 可观测性集成和基于 RAGAS 的评估框架。详见 **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**（英文）。
 
-### 多模态文档处理（RAG-Anything 集成）
+### 多模态文档处理
 
-LightRAG 与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 集成，支持对 PDF、Office 文档、图像、表格和公式的端到端多模态 RAG。详见 **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**（英文）。
-
-> LightRAG Server 将会在不久的将来把 RAG-Anything 的多模态处理能力整合到其文件件处理流水线中。敬请期待。
+LightRAG Server 已内置多模态文档流水线，支持 PDF、Office 文档、图像、表格和公式。解析通过外置 MinerU 或 Docling 服务完成，多模态索引在 LightRAG 流水线内执行。详见 **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**（英文）。
 
 ## 重现论文结果
 

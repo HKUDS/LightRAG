@@ -242,6 +242,7 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -259,6 +260,11 @@ class JsonDocStatusStorage(DocStatusStorage):
         Returns:
             Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
         """
+        status_filter_values = self.resolve_status_filter_values(
+            status_filter=status_filter,
+            status_filters=status_filters,
+        )
+
         # Validate parameters
         if page < 1:
             page = 1
@@ -280,8 +286,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             for doc_id, doc_data in self._data.items():
                 # Apply status filter
                 if (
-                    status_filter is not None
-                    and doc_data.get("status") != status_filter.value
+                    status_filter_values is not None
+                    and doc_data.get("status") not in status_filter_values
                 ):
                     continue
 
@@ -392,6 +398,43 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # Return complete document data, consistent with get_by_ids method
                     return doc_data
 
+        return None
+
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose canonical basename matches.
+
+        The caller is responsible for passing an already-canonical basename.
+        Stored ``file_path`` values are canonicalized by the business layer, so
+        this lookup intentionally performs an exact match only.
+        """
+        if not basename:
+            return None
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+
+        if basename == "unknown_source":
+            return None
+        async with self._storage_lock:
+            for doc_id, doc_data in self._data.items():
+                if doc_data.get("file_path") == basename:
+                    return doc_id, doc_data
+        return None
+
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose content_hash field matches."""
+        if not content_hash:
+            return None
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+
+        async with self._storage_lock:
+            for doc_id, doc_data in self._data.items():
+                if doc_data.get("content_hash") == content_hash:
+                    return doc_id, doc_data
         return None
 
     async def drop(self) -> dict[str, str]:

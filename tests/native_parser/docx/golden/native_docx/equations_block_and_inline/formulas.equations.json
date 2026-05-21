@@ -1,0 +1,23 @@
+{
+  "version": "1.0",
+  "equations": {
+    "eq-bbbb222233334444bbbb222233334444-0001": {
+      "id": "eq-bbbb222233334444bbbb222233334444-0001",
+      "blockid": "603a388c6d9c45900dcbde3a86a0c3b5",
+      "heading": "Equations",
+      "format": "latex",
+      "content": "x^2 + y^2 = r^2",
+      "caption": "",
+      "footnotes": []
+    },
+    "eq-bbbb222233334444bbbb222233334444-0002": {
+      "id": "eq-bbbb222233334444bbbb222233334444-0002",
+      "blockid": "e4c6683e6107d75437b7d0712cf75c82",
+      "heading": "Equations",
+      "format": "latex",
+      "content": "a + b = c",
+      "caption": "",
+      "footnotes": []
+    }
+  }
+}
