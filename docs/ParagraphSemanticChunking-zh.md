@@ -1,8 +1,4 @@
-# Paragraph Semantic Chunking 算法说明
-
-> 代码实现：[lightrag/chunker/paragraph_semantic.py](../lightrag/chunker/paragraph_semantic.py)
->
-> 文件处理选项与三种策略（F/R/V/P）的整体配置语法见 [FileProcessingConfiguration-zh.md](FileProcessingConfiguration-zh.md)。
+# Paragraph Semantic 分块策略
 
 ## 1. 适用场景与策略选择
 

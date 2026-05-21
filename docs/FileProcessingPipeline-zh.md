@@ -12,49 +12,35 @@ LightRAG Server引入了一个文件处理的中间格式： `LightRAG Document`
 
 ## 一、快速开始
 
-### 保持旧版行为
+### 保持旧版文件处理行为
 
-不配置 `LIGHTRAG_PARSER`：
-
-```bash
-# LIGHTRAG_PARSER=
-```
-
-所有文件按旧版 `legacy` 本地抽取方式处理。
-
-### 仅启用 Native 处理 docx
+所有文件按旧版的文档解析和分块策略处理所有文档。不配置 `LIGHTRAG_PARSER` 或把它配置为如下值：
 
 ```bash
-# 使用默认的F分块策略
-LIGHTRAG_PARSER=docx:native
-
-# 使用R分块策略
-LIGHTRAG_PARSER=docx:native-R
+LIGHTRAG_PARSER=*:legacy-F
 ```
 
-为 docx 默认开启图、表、公式分析（`-iet` 后缀给该规则的所有匹配文件加上默认处理选项）：
+### 推荐起步文件处理行为
+
+不依赖外部文档解析服务，不依赖`VLM`视觉模型。使用新版原生的 `Native` 解析 `docx` 文档，开启表格(t)和公式(e)的模态分析，搭配`P`分块策略；其余文档使用老版本的内容解析器，搭配效果更好的`R`分块策略。
 
 ```bash
-# 使用默认的F分块策略
-LIGHTRAG_PARSER=docx:native-iet
-
-# 使用V分块策略
-LIGHTRAG_PARSER=docx:native-ietV
+LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 ```
 
-### 推荐文件处理组合
+### 开启多模态处理能力
 
-* 优先让 `native` 处理其支持的 docx 文件
-* 其次让 `mineru` 处理它擅长的（PDF、Office文件、图片）
-* 其余文件格格式由 `legacy` 兜底
-* `native` `mineru` 解析结果含段落等结构信息和多模态信息，开启ite分析，使用P分块策略；`legacy` 提取内容不含段落和多模态信息，使用简单的R分块策略。
+开启多模态处理能力需要依赖 `MinerU` 文件解析服务和 `VLM` 视觉识别模型。使用 `Native` 解释 `docx` 文件，使用 `MinerU` 解析 `pdf`、`office` 和各种图片文件。以上文件都开启图片(i)、表格(t)和公式(e)的模态分析，并并搭配`P`分块策略。其余文档回退到老版本的内容解析器并搭配`R`分块策略。
 
 ```bash
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
+VLM_PROCESS_ENABLE=true
+VLM_LLM_MODEL=kimi-k2.6
 MINERU_API_MODE=local
 MINERU_LOCAL_ENDPOINT=http://localhost:8000
-DOCLING_ENDPOINT=http://localhost:5001
 ```
+
+> `P`分块策略是LightRAG原生的分块策略，详情请参阅[Paragraph Semantic 分块策略](ParagraphSemanticChunking-zh.md)。VLM的配资请参阅[基于角色的 LLM/VLM 配置指南](RoleSpecificLLMConfiguration-zh.md)
 
 ## 二、内容抽取与处理选项配置
 

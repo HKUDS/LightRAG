@@ -12,49 +12,35 @@ This document is organized from the perspective of **LightRAG Server** deploymen
 
 ## 1. Quick Start
 
-### Keep the legacy behavior
+### Keep the legacy file-processing behavior
 
-Don't configure `LIGHTRAG_PARSER`:
-
-```bash
-# LIGHTRAG_PARSER=
-```
-
-All files are processed using the legacy `legacy` local extraction.
-
-### Enable Native only for docx
+All files are processed using the legacy document parsing and chunking strategy. Either leave `LIGHTRAG_PARSER` unconfigured, or set it to the following value:
 
 ```bash
-# Use the default F chunking strategy
-LIGHTRAG_PARSER=docx:native
-
-# Use the R chunking strategy
-LIGHTRAG_PARSER=docx:native-R
+LIGHTRAG_PARSER=*:legacy-F
 ```
 
-To enable drawing, table, and equation analysis for docx by default (the `-iet` suffix adds default processing options to all files matched by this rule):
+### Recommended starting file-processing behavior
+
+No reliance on external document parsing services or on `VLM` vision models. Use the new built-in `Native` engine to parse `docx` documents with table (t) and equation (e) modality analysis enabled, paired with the `P` chunking strategy; other documents use the legacy content extractor paired with the more effective `R` chunking strategy.
 
 ```bash
-# Use the default F chunking strategy
-LIGHTRAG_PARSER=docx:native-iet
-
-# Use the V chunking strategy
-LIGHTRAG_PARSER=docx:native-ietV
+LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 ```
 
-### Recommended file-processing combination
+### Enable multimodal processing capability
 
-* Let `native` handle the docx files it supports first
-* Then let `mineru` handle what it does best (PDFs, Office files, images)
-* Other file formats fall back to `legacy`
-* `native` and `mineru` parsing results contain paragraph structure information and multimodal information; enable ite analysis and use the P chunking strategy. `legacy` extraction does not contain paragraph or multimodal information; use the simple R chunking strategy.
+Enabling multimodal processing requires the `MinerU` file parsing service and a `VLM` vision recognition model. Use `Native` to parse `docx` files; use `MinerU` to parse `pdf`, `office`, and various image files. All of the above files have image (i), table (t), and equation (e) modality analysis enabled and are paired with the `P` chunking strategy. Other documents fall back to the legacy content extractor paired with the `R` chunking strategy.
 
 ```bash
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
+VLM_PROCESS_ENABLE=true
+VLM_LLM_MODEL=kimi-k2.6
 MINERU_API_MODE=local
 MINERU_LOCAL_ENDPOINT=http://localhost:8000
-DOCLING_ENDPOINT=http://localhost:5001
 ```
+
+> `P` is LightRAG's native chunking strategy; see [Paragraph Semantic Chunking](ParagraphSemanticChunking.md) for details. For VLM configuration, see [Role-based LLM/VLM Configuration Guide](RoleSpecificLLMConfiguration.md).
 
 ## 2. Content Extraction and Processing Option Configuration
 
