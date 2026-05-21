@@ -5647,11 +5647,11 @@ async def naive_query(
 
     # Use the provided system prompt or default
     sys_prompt_key = (
-        "naive_rag_response_no_refs" if not query_param.include_references else "naive_rag_response"
+        "naive_rag_response_no_refs"
+        if not query_param.include_references
+        else "naive_rag_response"
     )
-    sys_prompt_template = (
-        system_prompt if system_prompt else PROMPTS[sys_prompt_key]
-    )
+    sys_prompt_template = system_prompt if system_prompt else PROMPTS[sys_prompt_key]
 
     # Create a preliminary system prompt with empty content_data to calculate overhead
     pre_sys_prompt = sys_prompt_template.format(
