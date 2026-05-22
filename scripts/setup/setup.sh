@@ -1928,6 +1928,15 @@ collect_llm_config() {
   ENV_VALUES["LLM_MODEL"]="$model"
   ENV_VALUES["LLM_BINDING_HOST"]="$host"
   store_optional_env_value "LLM_BINDING_API_KEY" "$api_key"
+
+  # Role-specific LLM models — default to the base LLM_MODEL when unset in .env.
+  local keyword_default query_default keyword_model query_model
+  keyword_default="${ENV_VALUES[KEYWORD_LLM_MODEL]:-$model}"
+  query_default="${ENV_VALUES[QUERY_LLM_MODEL]:-$model}"
+  keyword_model="$(prompt_with_default "Keyword LLM model" "$keyword_default")"
+  query_model="$(prompt_with_default "Query LLM model" "$query_default")"
+  ENV_VALUES["KEYWORD_LLM_MODEL"]="$keyword_model"
+  ENV_VALUES["QUERY_LLM_MODEL"]="$query_model"
 }
 
 collect_embedding_config() {

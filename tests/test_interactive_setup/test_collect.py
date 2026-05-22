@@ -839,6 +839,70 @@ printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}\"
     assert values["AWS_REGION_SET"] == ""
 
 
+def test_collect_llm_config_role_models_default_to_base_model_when_unset() -> None:
+    """KEYWORD/QUERY_LLM_MODEL must default to the freshly-chosen LLM_MODEL when absent."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_choice() {{ printf 'openai'; }}
+prompt_with_default() {{
+  case "$1" in
+    "LLM model") printf 'gpt-4o' ;;
+    *) printf '%s' "$2" ;;
+  esac
+}}
+prompt_secret_until_valid_with_default() {{ printf 'fake-key'; }}
+
+collect_llm_config
+
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+printf 'KEYWORD_LLM_MODEL=%s\\n' "${{ENV_VALUES[KEYWORD_LLM_MODEL]}}"
+printf 'QUERY_LLM_MODEL=%s\\n' "${{ENV_VALUES[QUERY_LLM_MODEL]}}\"
+""")
+    values = parse_lines(output)
+    assert values["LLM_MODEL"] == "gpt-4o"
+    assert values["KEYWORD_LLM_MODEL"] == "gpt-4o"
+    assert values["QUERY_LLM_MODEL"] == "gpt-4o"
+
+
+def test_collect_llm_config_role_models_reuse_existing_values(tmp_path: Path) -> None:
+    """KEYWORD/QUERY_LLM_MODEL values already in .env survive a base wizard rerun."""
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai",
+            "LLM_MODEL=gpt-4o",
+            "LLM_BINDING_HOST=https://api.openai.com/v1",
+            "LLM_BINDING_API_KEY=existing-key",
+            "KEYWORD_LLM_MODEL=custom-keyword-model",
+            "QUERY_LLM_MODEL=custom-query-model",
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{ printf 'openai'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_llm_config
+
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+printf 'KEYWORD_LLM_MODEL=%s\\n' "${{ENV_VALUES[KEYWORD_LLM_MODEL]}}"
+printf 'QUERY_LLM_MODEL=%s\\n' "${{ENV_VALUES[QUERY_LLM_MODEL]}}\"
+""")
+    values = parse_lines(output)
+    assert values["LLM_MODEL"] == "gpt-4o"
+    assert values["KEYWORD_LLM_MODEL"] == "custom-keyword-model"
+    assert values["QUERY_LLM_MODEL"] == "custom-query-model"
+
+
 def test_collect_rerank_config_preserves_api_key_when_disabled(tmp_path: Path) -> None:
     """Disabling reranking should preserve credentials so they survive re-enable."""
     write_text_lines(
