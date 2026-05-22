@@ -1487,7 +1487,7 @@ class _PipelineMixin:
                     file_path=file_path_w,
                 )
                 async with ctx.pipeline_status_lock:
-                    log_message = f"Parsing ({engine}): {file_path_w}"
+                    log_message = f"Parsing ({engine}): {doc_id_w}"
                     ctx.pipeline_status["latest_message"] = log_message
                     ctx.pipeline_status["history_messages"].append(log_message)
                 if engine == "mineru":
@@ -4148,7 +4148,7 @@ class _PipelineMixin:
                         and pipeline_status_lock is not None
                     ):
                         async with pipeline_status_lock:
-                            log_message = f"  {kind}/{item_id} failed: {file_path}"
+                            log_message = f"Analyzing {kind}/{item_id}: failed"
                             pipeline_status["latest_message"] = log_message
                             pipeline_status["history_messages"].append(log_message)
                     raise
@@ -4161,7 +4161,7 @@ class _PipelineMixin:
                         else "skipped"
                     )
                     async with pipeline_status_lock:
-                        log_message = f"  {kind}/{item_id} {item_status}: {file_path}"
+                        log_message = f"Analyzing  {kind}/{item_id}: {item_status}"
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
                 return result
@@ -4210,7 +4210,7 @@ class _PipelineMixin:
                     and pipeline_status_lock is not None
                 ):
                     async with pipeline_status_lock:
-                        log_message = f"Analyzing multimodal: {file_path}"
+                        log_message = f"Analyzing multimodal: {doc_id}"
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
                     start_logged = True
