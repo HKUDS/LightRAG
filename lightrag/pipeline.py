@@ -42,7 +42,7 @@ from lightrag.constants import (
 from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.operate import merge_nodes_and_edges
-from lightrag.parser_routing import (
+from lightrag.parser.routing import (
     resolve_file_parser_directives,
     resolve_stored_document_parser_engine,
 )
@@ -242,7 +242,7 @@ class _PipelineMixin:
                 Accepted as ``dict`` (broadcast to every input) or
                 ``list[dict]`` (aligned with ``input``).  When ``None``,
                 each doc's snapshot is built via
-                :func:`lightrag.parser_routing.resolve_chunk_options`
+                :func:`lightrag.parser.routing.resolve_chunk_options`
                 from ``self.addon_params['chunker']``.  Persisted to
                 ``full_docs[doc_id]['chunk_options']`` and consumed by
                 :meth:`process_single_document` to drive the file
@@ -376,7 +376,7 @@ class _PipelineMixin:
         def _process_options_at(index: int) -> str:
             if process_options is None:
                 return ""
-            from lightrag.parser_routing import sanitize_process_options
+            from lightrag.parser.routing import sanitize_process_options
 
             return sanitize_process_options(process_options[index])
 
@@ -397,12 +397,12 @@ class _PipelineMixin:
             F-strategy runtime args (``split_by_character`` /
             ``split_by_character_only`` from :meth:`LightRAG.ainsert`)
             are baked into the snapshot upstream — ainsert calls
-            :func:`lightrag.parser_routing.resolve_chunk_options` itself
+            :func:`lightrag.parser.routing.resolve_chunk_options` itself
             and passes the result via ``chunk_options=``.  This function
             is purely a persistence helper; chunker-config construction
             is not its concern.
             """
-            from lightrag.parser_routing import (
+            from lightrag.parser.routing import (
                 resolve_chunk_options,
                 slim_chunk_options,
             )
@@ -1648,7 +1648,7 @@ class _PipelineMixin:
         PROCESSING → PROCESSED state machine, with FAILED fallbacks at both
         the extract and merge stage boundaries.
         """
-        from lightrag.parser_routing import parse_process_options
+        from lightrag.parser.routing import parse_process_options
 
         file_path = resolve_doc_file_path(status_doc=status_doc)
         current_file_number = 0
@@ -1764,7 +1764,7 @@ class _PipelineMixin:
                     # ``addon_params['chunker']['fixed_token']``;
                     # runtime overrides are an ainsert-time concern and
                     # don't apply at process time for legacy rows.
-                    from lightrag.parser_routing import resolve_chunk_options
+                    from lightrag.parser.routing import resolve_chunk_options
 
                     chunk_opts = resolve_chunk_options(
                         self.addon_params, process_options=doc_process_opts
@@ -2418,14 +2418,14 @@ class _PipelineMixin:
             # Lazy imports keep this module import-cheap and avoid pulling
             # the docx parser into call paths that never touch the native
             # engine (mirrors parse_mineru).
-            from lightrag.native_parser.docx.drawing_image_extractor import (
+            from lightrag.parser.docx.drawing_image_extractor import (
                 DrawingExtractionContext,
                 load_relationships,
             )
-            from lightrag.native_parser.docx.parse_document import (
+            from lightrag.parser.docx.parse_document import (
                 extract_docx_blocks,
             )
-            from lightrag.native_parser.docx.ir_builder import NativeDocxIRBuilder
+            from lightrag.parser.docx.ir_builder import NativeDocxIRBuilder
             from lightrag.sidecar import write_sidecar
 
             # ``file_path`` is canonical at the worker layer; canonicalize
@@ -2536,7 +2536,7 @@ class _PipelineMixin:
             await archive_docx_source_after_full_docs_sync(str(p))
             logger.info(
                 f"[parse_native] pending_parse completed for {file_path} "
-                f"via native_parser/docx"
+                f"via parser/docx"
             )
             result: dict[str, Any] = {
                 "doc_id": doc_id,
@@ -2581,7 +2581,7 @@ class _PipelineMixin:
         """
         # Lazy imports keep this module import-cheap and avoid pulling httpx
         # into call paths that never touch the MinerU engine.
-        from lightrag.external_parser.mineru import (
+        from lightrag.parser.external.mineru import (
             MinerUIRBuilder,
             MinerURawClient,
             clear_dir_contents,
@@ -2695,7 +2695,7 @@ class _PipelineMixin:
         """
         # Lazy imports keep this module import-cheap and avoid pulling httpx
         # into call paths that never touch the Docling engine.
-        from lightrag.external_parser.docling import (
+        from lightrag.parser.external.docling import (
             DoclingIRBuilder,
             DoclingRawClient,
             clear_dir_contents,
@@ -3042,7 +3042,7 @@ class _PipelineMixin:
                     if candidate.name == source_name:
                         return str(candidate)
             if parser_engine:
-                from lightrag.parser_routing import filename_parser_directives
+                from lightrag.parser.routing import filename_parser_directives
 
                 for candidate in matches:
                     hinted_engine, _ = filename_parser_directives(candidate.name)
@@ -3506,7 +3506,7 @@ class _PipelineMixin:
                 tests that exercise the VLM analysis path without going
                 through the enqueue pipeline.
         """
-        from lightrag.parser_routing import parse_process_options
+        from lightrag.parser.routing import parse_process_options
 
         blocks_path = parsed_data.get("blocks_path")
         if not blocks_path:
@@ -4261,7 +4261,7 @@ class _PipelineMixin:
             DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
             DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS,
         )
-        from lightrag.parser_routing import parse_process_options
+        from lightrag.parser.routing import parse_process_options
 
         block_file = Path(blocks_path)
         if not block_file.exists():

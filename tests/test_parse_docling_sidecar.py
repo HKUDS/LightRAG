@@ -27,17 +27,17 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.constants import FULL_DOCS_FORMAT_LIGHTRAG
-from lightrag.external_parser import (
+from lightrag.parser.external import (
     Manifest,
     ManifestFile,
     compute_size_and_hash,
     write_manifest,
 )
-from lightrag.external_parser.docling.cache import (
+from lightrag.parser.external.docling.cache import (
     compute_options_signature,
     snapshot_tunable_env,
 )
-from lightrag.external_parser.docling.client import FIXED_CONSTANTS
+from lightrag.parser.external.docling.client import FIXED_CONSTANTS
 from lightrag.utils import EmbeddingFunc, Tokenizer
 
 
@@ -176,7 +176,7 @@ _FAKE_DOCLING_JSON = {
 def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     """Replace ``DoclingRawClient.download_into`` with a recorder that
     writes a synthetic raw bundle and a valid manifest."""
-    import lightrag.external_parser.docling.client as client_mod
+    import lightrag.parser.external.docling.client as client_mod
 
     counters = {"calls": 0}
 
@@ -543,7 +543,7 @@ def test_parse_docling_zero_blocks_raises(
 
         # Install a fake download that writes a valid bundle whose body has
         # no children — the adapter then produces zero IR blocks.
-        import lightrag.external_parser.docling.client as client_mod
+        import lightrag.parser.external.docling.client as client_mod
 
         empty_json: dict[str, Any] = {
             "schema_name": "DoclingDocument",

@@ -17,7 +17,7 @@ from lightrag.operate import (
     _get_relationship_vdb_timeout_seconds,
     _parse_mm_display_name,
 )
-from lightrag.parser_routing import (
+from lightrag.parser.routing import (
     FilenameParserHintError,
     ParserRoutingConfigError,
     canonicalize_parser_hinted_basename,
@@ -153,7 +153,7 @@ def test_canonicalize_parser_hinted_basename():
 
 @pytest.mark.offline
 def test_filename_parser_directives_decodes_engine_and_options():
-    from lightrag.parser_routing import filename_parser_directives
+    from lightrag.parser.routing import filename_parser_directives
 
     assert filename_parser_directives("paper.[native-iet].docx") == ("native", "iet")
     assert filename_parser_directives("memo.[native-R!].md") == ("native", "R!")
@@ -171,7 +171,7 @@ def test_filename_hint_rejects_invalid_engine_qualified_options():
     during parser directive resolution instead of silently falling back to
     parser rules/defaults.
     """
-    from lightrag.parser_routing import (
+    from lightrag.parser.routing import (
         canonicalize_parser_hinted_basename,
         filename_parser_directives,
         resolve_file_parser_directives,
@@ -216,7 +216,7 @@ def test_filename_hint_rejects_invalid_engine_qualified_options():
 
 @pytest.mark.offline
 def test_filename_hint_missing_required_endpoint_rejects(monkeypatch):
-    from lightrag.parser_routing import resolve_file_parser_directives
+    from lightrag.parser.routing import resolve_file_parser_directives
 
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
 
@@ -226,7 +226,7 @@ def test_filename_hint_missing_required_endpoint_rejects(monkeypatch):
 
 @pytest.mark.offline
 def test_parse_process_options_decodes_flags():
-    from lightrag.parser_routing import parse_process_options
+    from lightrag.parser.routing import parse_process_options
 
     opts = parse_process_options("iet")
     assert opts.images and opts.tables and opts.equations
@@ -247,7 +247,7 @@ def test_parse_process_options_decodes_flags():
 
 @pytest.mark.offline
 def test_validate_process_options_rejects_invalid_combos():
-    from lightrag.parser_routing import validate_process_options
+    from lightrag.parser.routing import validate_process_options
 
     assert validate_process_options("iet") == []
     assert validate_process_options("R!") == []
@@ -279,7 +279,7 @@ def test_lightrag_parser_rule_supports_options_suffix(monkeypatch):
 
 @pytest.mark.offline
 def test_resolve_file_parser_directives_priority(monkeypatch):
-    from lightrag.parser_routing import resolve_file_parser_directives
+    from lightrag.parser.routing import resolve_file_parser_directives
 
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native-iet,*:legacy")
@@ -1861,7 +1861,7 @@ def test_pending_parse_duplicate_hash_fails_and_archives_source(tmp_path, monkey
                 "table_chunk_role": "none",
             }
             monkeypatch.setattr(
-                "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
+                "lightrag.parser.docx.parse_document.extract_docx_blocks",
                 lambda *args, **kwargs: [dict(stable_block)],
             )
 
@@ -2590,10 +2590,10 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
     cache), the MinerU download choreography happens inside
     :meth:`MinerURawClient.download_into`. We stub that method directly.
     """
-    from lightrag.external_parser.mineru import compute_size_and_hash
-    from lightrag.external_parser.mineru.cache import current_mineru_options_signature
-    from lightrag.external_parser.mineru.client import MinerURawClient
-    from lightrag.external_parser.mineru.manifest import (
+    from lightrag.parser.external.mineru import compute_size_and_hash
+    from lightrag.parser.external.mineru.cache import current_mineru_options_signature
+    from lightrag.parser.external.mineru.client import MinerURawClient
+    from lightrag.parser.external.mineru.manifest import (
         Manifest,
         ManifestFile,
         write_manifest,
@@ -2706,10 +2706,10 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
 
 @pytest.mark.offline
 def test_parse_mineru_uses_hint_source_and_canonical_upload_name(tmp_path, monkeypatch):
-    from lightrag.external_parser.mineru import compute_size_and_hash
-    from lightrag.external_parser.mineru.cache import current_mineru_options_signature
-    from lightrag.external_parser.mineru.client import MinerURawClient
-    from lightrag.external_parser.mineru.manifest import (
+    from lightrag.parser.external.mineru import compute_size_and_hash
+    from lightrag.parser.external.mineru.cache import current_mineru_options_signature
+    from lightrag.parser.external.mineru.client import MinerURawClient
+    from lightrag.parser.external.mineru.manifest import (
         Manifest,
         ManifestFile,
         write_manifest,
@@ -3057,7 +3057,7 @@ def test_parse_mineru_empty_service_result_raises_without_fallback(
     ``normalize_from_workdir`` raises :class:`FileNotFoundError` and the
     parse fails fast.
     """
-    from lightrag.external_parser.mineru.client import MinerURawClient
+    from lightrag.parser.external.mineru.client import MinerURawClient
 
     async def _run():
         rag = _new_rag(tmp_path)
