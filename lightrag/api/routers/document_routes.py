@@ -33,7 +33,7 @@ from lightrag.constants import (
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_FIXED,
 )
-from lightrag.parser_routing import (
+from lightrag.parser.routing import (
     FilenameParserHintError,
     canonicalize_parser_hinted_basename,
     filename_parser_hint,

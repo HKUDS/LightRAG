@@ -10,7 +10,7 @@ The full algorithm and rationale are documented in
 post-Stage-A pipeline (B/C/D) on top of blocks.jsonl input, parameterised
 on ``chunk_token_size`` so chunk size targets follow the user's RAG
 configuration rather than the audit-mode constants in
-``lightrag/native_parser/docx/parse_document.py``.
+``lightrag/parser/docx/parse_document.py``.
 
 Pipeline:
   - Stage A — heading-driven initial split: already done at parse time and
@@ -57,7 +57,7 @@ from lightrag.utils import Tokenizer, logger
 
 # ---------------------------------------------------------------------------
 # Threshold ratios — derived from the audit-mode constants in
-# lightrag/native_parser/docx/parse_document.py so the trade-off curves
+# lightrag/parser/docx/parse_document.py so the trade-off curves
 # (table vs. block size, ideal vs. max, etc.) carry over verbatim. The
 # absolute values scale with the user-configured ``chunk_token_size``.
 # ---------------------------------------------------------------------------
@@ -770,7 +770,7 @@ def _split_long_block(
 ) -> list[dict[str, Any]]:
     """Split an oversized block into balanced sub-blocks at short-paragraph anchors.
 
-    Mirrors :func:`lightrag.native_parser.docx.parse_document.split_long_block`,
+    Mirrors :func:`lightrag.parser.docx.parse_document.split_long_block`,
     parameterised on ``target_max`` / ``target_ideal``. Tables (``is_table``)
     are excluded from the anchor candidate pool, so Stage B's row-level
     splits stay intact. When no anchor exists (including the single-
@@ -1081,7 +1081,7 @@ def _merge_small_blocks(
     """Bottom-up, level-aware small-block merging.
 
     Re-implementation of
-    :func:`lightrag.native_parser.docx.parse_document.merge_small_blocks`,
+    :func:`lightrag.parser.docx.parse_document.merge_small_blocks`,
     parameterised on the chunk-size targets and operating on internal
     block dicts (no ``uuid`` / ``table_header`` propagation needed: the
     chunking output schema does not carry them).

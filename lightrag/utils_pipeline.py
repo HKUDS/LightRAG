@@ -24,7 +24,7 @@ from lightrag.constants import (
     LIGHTRAG_DOC_CONTENT_PREFIX,
     PARSED_DIR_NAME,
 )
-from lightrag.parser_routing import canonicalize_parser_hinted_basename
+from lightrag.parser.routing import canonicalize_parser_hinted_basename
 from lightrag.utils import (
     compute_mdhash_id,
     logger,

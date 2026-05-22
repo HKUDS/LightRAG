@@ -25,9 +25,9 @@ from lightrag import LightRAG
 from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
 )
-from lightrag.external_parser.mineru import compute_size_and_hash
-from lightrag.external_parser.mineru.cache import current_mineru_options_signature
-from lightrag.external_parser.mineru.manifest import (
+from lightrag.parser.external.mineru import compute_size_and_hash
+from lightrag.parser.external.mineru.cache import current_mineru_options_signature
+from lightrag.parser.external.mineru.manifest import (
     Manifest,
     ManifestFile,
     write_manifest,
@@ -93,7 +93,7 @@ def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     """Replace :meth:`MinerURawClient.download_into` with a recorder that
     writes a synthetic bundle (content_list.json + one image + manifest).
     """
-    import lightrag.external_parser.mineru.client as client_mod
+    import lightrag.parser.external.mineru.client as client_mod
 
     counters = {"calls": 0, "upload_names": []}
 

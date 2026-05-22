@@ -1,4 +1,4 @@
-"""Tests for the unified parser debug CLI (``lightrag/parser_cli.py``).
+"""Tests for the unified parser debug CLI (``lightrag/parser/cli.py``).
 
 The CLI behaviour under test is engine-agnostic: argument parsing, the
 flat sidecar layout (no ``__parsed__/`` middle layer), the lenient raw
@@ -11,7 +11,7 @@ file) with zero external service or fixture-file dependency. The other
 two engines exercise the same CLI code path:
 
 - ``native`` would need a real ``.docx`` byte stream end-to-end (golden
-  fixtures live under ``tests/native_parser/docx/golden/`` and have
+  fixtures live under ``tests/parser/docx/golden/`` and have
   their own coverage via ``test_native_docx_golden.py``).
 - ``mineru`` would need to mock ``MinerURawClient.download_into`` on
   the cache-miss path, or seed a mineru raw bundle layout (more files
@@ -28,7 +28,7 @@ from typing import Any
 
 import pytest
 
-from lightrag.parser_cli import main
+from lightrag.parser.cli import main
 
 
 def _make_main_json(
