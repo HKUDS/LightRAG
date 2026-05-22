@@ -286,7 +286,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     so the per-doc snapshot reflects the constructor choice.  Per-strategy
     chunker parameters (R / V separators, thresholds, overlap overrides,
     etc.) live in ``addon_params['chunker']`` and are documented in
-    :func:`lightrag.parser_routing.default_chunker_config`.  Per-doc
+    :func:`lightrag.parser.routing.default_chunker_config`.  Per-doc
     snapshots are persisted to ``full_docs[doc_id]['chunk_options']``
     at enqueue time."""
 
@@ -336,7 +336,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``process_options`` simply does not select a chunker.
 
     The presence/absence of the selector is exposed by
-    :attr:`lightrag.parser_routing.ProcessOptions.chunking_explicit`.
+    :attr:`lightrag.parser.routing.ProcessOptions.chunking_explicit`.
 
     **Signature** — preserved unchanged from earlier LightRAG releases
     so externally-supplied chunkers continue to drop in without edits:
@@ -664,7 +664,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
            already carries the key).
         2. Strategy-specific env (``CHUNK_F_OVERLAP_SIZE`` /
            ``CHUNK_R_OVERLAP_SIZE`` / ``CHUNK_P_OVERLAP_SIZE`` — already pre-filled by
-           :func:`lightrag.parser_routing.default_chunker_config` *only*
+           :func:`lightrag.parser.routing.default_chunker_config` *only*
            when the env var is set).  No strategy-specific top-level
            ``CHUNK_*_SIZE`` exists today; if added later, plug it in
            between this tier and the legacy ctor tier.
@@ -1296,7 +1296,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # setting.  ``apipeline_enqueue_documents`` itself doesn't take
         # split args — chunk_options is the canonical chunker-config
         # carrier; runtime split args are an ainsert-only concern.
-        from lightrag.parser_routing import resolve_chunk_options
+        from lightrag.parser.routing import resolve_chunk_options
 
         chunk_opts = resolve_chunk_options(
             self.addon_params,

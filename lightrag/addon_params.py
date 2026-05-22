@@ -42,7 +42,7 @@ def default_addon_params() -> dict[str, Any]:
     # Lazy import to avoid the parser_routing → utils → … cycle that
     # would otherwise form when parser_routing imports back into this
     # module via ``LightRAG`` construction paths.
-    from lightrag.parser_routing import default_chunker_config
+    from lightrag.parser.routing import default_chunker_config
 
     return {
         "language": get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str),
@@ -59,7 +59,7 @@ def default_addon_params() -> dict[str, Any]:
 
 def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, Any]:
     """Coerce ``addon_params`` to a plain dict with env defaults backfilled."""
-    from lightrag.parser_routing import default_chunker_config
+    from lightrag.parser.routing import default_chunker_config
 
     if addon_params is None:
         normalized = default_addon_params()

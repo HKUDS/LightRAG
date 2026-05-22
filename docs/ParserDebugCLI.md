@@ -11,7 +11,7 @@ The rest of the flow (IR construction, sidecar writing, `full_docs` synchronizat
 ## Command Format
 
 ```bash
-python -m lightrag.parser_cli <input_file> \
+python -m lightrag.parser.cli <input_file> \
     --engine {native|mineru|docling} \
     [-o <sidecar_parent_dir>] \
     [--doc-id <doc-id>] \
@@ -53,7 +53,7 @@ The `native` engine does not produce a raw directory (parsing is local, with no 
 ### A. Locally parse a `.docx` (zero network dependency)
 
 ```bash
-python -m lightrag.parser_cli ./inputs/workspace/sample.docx --engine native
+python -m lightrag.parser.cli ./inputs/workspace/sample.docx --engine native
 # Output: ./inputs/workspace/sample.docx.parsed/  (contains blocks.jsonl + assets)
 ```
 
@@ -61,9 +61,9 @@ python -m lightrag.parser_cli ./inputs/workspace/sample.docx --engine native
 
 ```bash
 # First run: download raw bundle + generate sidecar
-python -m lightrag.parser_cli ./inputs/workspace/sample.pdf --engine mineru
+python -m lightrag.parser.cli ./inputs/workspace/sample.pdf --engine mineru
 # Second run (no changes): raw directory non-empty → reused directly → only regenerate sidecar, fast
-python -m lightrag.parser_cli ./inputs/workspace/sample.pdf --engine mineru
+python -m lightrag.parser.cli ./inputs/workspace/sample.pdf --engine mineru
 # The log will show: [parse_mineru] raw cache hit doc_id=... raw_dir=.../sample.pdf.mineru_raw
 ```
 
@@ -71,16 +71,16 @@ python -m lightrag.parser_cli ./inputs/workspace/sample.pdf --engine mineru
 
 ```bash
 # Existing ./inputs/workspace/sample.pdf.docling_raw/ (contains docling's JSON output, etc.)
-python -m lightrag.parser_cli ./inputs/workspace/sample.pdf --engine docling
+python -m lightrag.parser.cli ./inputs/workspace/sample.pdf --engine docling
 # The CLI does not check the manifest; as long as the raw directory is non-empty, the docling-serve call is skipped
 ```
 
-> Note: this is the equivalent replacement for the "rebuild sidecar from an existing raw directory" scenario that used to live in the legacy `python -m lightrag.external_parser.docling` debug entry point — just place the raw directory at the agreed location (`<sidecar_parent>/<source>.docling_raw/`) to trigger the cache-hit branch.
+> Note: this is the equivalent replacement for the "rebuild sidecar from an existing raw directory" scenario that used to live in the legacy `python -m lightrag.parser.external.docling` debug entry point — just place the raw directory at the agreed location (`<sidecar_parent>/<source>.docling_raw/`) to trigger the cache-hit branch.
 
 ### D. Output to a custom directory
 
 ```bash
-python -m lightrag.parser_cli ./inputs/workspace/sample.docx \
+python -m lightrag.parser.cli ./inputs/workspace/sample.docx \
     --engine native -o /tmp/debug_sidecar
 # Output: /tmp/debug_sidecar/sample.docx.parsed/
 # The source file ./inputs/workspace/sample.docx is not moved
@@ -89,7 +89,7 @@ python -m lightrag.parser_cli ./inputs/workspace/sample.docx \
 ### E. Force re-parse (clear raw and re-download)
 
 ```bash
-python -m lightrag.parser_cli ./inputs/workspace/sample.pdf \
+python -m lightrag.parser.cli ./inputs/workspace/sample.pdf \
     --engine docling --force-reparse
 # raw directory is cleared → docling-serve is called again to download → sidecar regenerated
 ```
@@ -117,7 +117,7 @@ When the **cache is hit** (the raw directory already exists and is non-empty, an
 
 ## Equivalence with the `LightRAG.parse_*` Production Path
 
-This CLI directly calls the production code paths `LightRAG.parse_native` / `parse_mineru` / `parse_docling` (via the lightweight RAG stand-in in `lightrag/parser_debug.py`), so:
+This CLI directly calls the production code paths `LightRAG.parse_native` / `parse_mineru` / `parse_docling` (via the lightweight RAG stand-in in `lightrag/parser/debug.py`), so:
 
 - The sidecar fields, naming, and content format are identical to production ingestion;
 - The IR builders, `write_sidecar` calls, and `_persist_parsed_full_docs` behavior are identical;
@@ -126,4 +126,4 @@ This CLI directly calls the production code paths `LightRAG.parse_native` / `par
   2. `is_bundle_valid` → "raw is valid if non-empty";
   3. `archive_docx_source_after_full_docs_sync` → no-op, source file preserved.
 
-Results can be cross-validated against golden fixtures under `tests/native_parser/docx/golden/native_docx/` (the CLI does not freeze timestamps; just exclude time fields such as `created_at` when comparing).
+Results can be cross-validated against golden fixtures under `tests/parser/docx/golden/native_docx/` (the CLI does not freeze timestamps; just exclude time fields such as `created_at` when comparing).

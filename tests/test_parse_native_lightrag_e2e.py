@@ -71,7 +71,7 @@ class _CharTokenizer(TokenizerInterface):
 
 
 class _MiniRag:
-    """Just enough surface for parse_native + native_parser/docx adapter."""
+    """Just enough surface for parse_native + parser/docx adapter."""
 
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
 
@@ -113,7 +113,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
             return [dict(b) for b in stable_blocks]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
+            "lightrag.parser.docx.parse_document.extract_docx_blocks",
             _stub_extract,
         )
 
@@ -193,7 +193,7 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
             return [_block("the body")]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
+            "lightrag.parser.docx.parse_document.extract_docx_blocks",
             _stub_extract,
         )
 
@@ -234,7 +234,7 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
             return [_block('before\n<table>[["A"]]</table>\nafter')]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
+            "lightrag.parser.docx.parse_document.extract_docx_blocks",
             _stub_extract,
         )
 
@@ -306,7 +306,7 @@ def test_analyze_entrypoint_backfills_surrounding_for_all_sidecars(
             ]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
+            "lightrag.parser.docx.parse_document.extract_docx_blocks",
             _stub_extract,
         )
 
@@ -385,7 +385,7 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
             ]
 
         monkeypatch.setattr(
-            "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
+            "lightrag.parser.docx.parse_document.extract_docx_blocks",
             _stub_extract,
         )
 

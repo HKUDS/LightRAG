@@ -42,7 +42,7 @@ from lightrag.constants import (
 from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.operate import merge_nodes_and_edges
-from lightrag.parser_routing import (
+from lightrag.parser.routing import (
     resolve_file_parser_directives,
     resolve_stored_document_parser_engine,
 )
@@ -242,7 +242,7 @@ class _PipelineMixin:
                 Accepted as ``dict`` (broadcast to every input) or
                 ``list[dict]`` (aligned with ``input``).  When ``None``,
                 each doc's snapshot is built via
-                :func:`lightrag.parser_routing.resolve_chunk_options`
+                :func:`lightrag.parser.routing.resolve_chunk_options`
                 from ``self.addon_params['chunker']``.  Persisted to
                 ``full_docs[doc_id]['chunk_options']`` and consumed by
                 :meth:`process_single_document` to drive the file
@@ -376,7 +376,7 @@ class _PipelineMixin:
         def _process_options_at(index: int) -> str:
             if process_options is None:
                 return ""
-            from lightrag.parser_routing import sanitize_process_options
+            from lightrag.parser.routing import sanitize_process_options
 
             return sanitize_process_options(process_options[index])
 
@@ -397,12 +397,12 @@ class _PipelineMixin:
             F-strategy runtime args (``split_by_character`` /
             ``split_by_character_only`` from :meth:`LightRAG.ainsert`)
             are baked into the snapshot upstream — ainsert calls
-            :func:`lightrag.parser_routing.resolve_chunk_options` itself
+            :func:`lightrag.parser.routing.resolve_chunk_options` itself
             and passes the result via ``chunk_options=``.  This function
             is purely a persistence helper; chunker-config construction
             is not its concern.
             """
-            from lightrag.parser_routing import (
+            from lightrag.parser.routing import (
                 resolve_chunk_options,
                 slim_chunk_options,
             )
@@ -1486,6 +1486,10 @@ class _PipelineMixin:
                     status_doc=status_doc_w,
                     file_path=file_path_w,
                 )
+                async with ctx.pipeline_status_lock:
+                    log_message = f"Parsing ({engine}): {file_path_w}"
+                    ctx.pipeline_status["latest_message"] = log_message
+                    ctx.pipeline_status["history_messages"].append(log_message)
                 if engine == "mineru":
                     parsed_data_w = await self.parse_mineru(
                         doc_id_w, file_path_w, content_data_w
@@ -1592,6 +1596,8 @@ class _PipelineMixin:
                     doc_id=doc_id_w,
                     file_path=file_path_w,
                     parsed_data=parsed_data_w,
+                    pipeline_status=ctx.pipeline_status,
+                    pipeline_status_lock=ctx.pipeline_status_lock,
                 )
                 await ctx.q_process.put((doc_id_w, status_doc_w, analyzed))
             except Exception as e:
@@ -1648,7 +1654,7 @@ class _PipelineMixin:
         PROCESSING → PROCESSED state machine, with FAILED fallbacks at both
         the extract and merge stage boundaries.
         """
-        from lightrag.parser_routing import parse_process_options
+        from lightrag.parser.routing import parse_process_options
 
         file_path = resolve_doc_file_path(status_doc=status_doc)
         current_file_number = 0
@@ -1764,7 +1770,7 @@ class _PipelineMixin:
                     # ``addon_params['chunker']['fixed_token']``;
                     # runtime overrides are an ainsert-time concern and
                     # don't apply at process time for legacy rows.
-                    from lightrag.parser_routing import resolve_chunk_options
+                    from lightrag.parser.routing import resolve_chunk_options
 
                     chunk_opts = resolve_chunk_options(
                         self.addon_params, process_options=doc_process_opts
@@ -2418,14 +2424,14 @@ class _PipelineMixin:
             # Lazy imports keep this module import-cheap and avoid pulling
             # the docx parser into call paths that never touch the native
             # engine (mirrors parse_mineru).
-            from lightrag.native_parser.docx.drawing_image_extractor import (
+            from lightrag.parser.docx.drawing_image_extractor import (
                 DrawingExtractionContext,
                 load_relationships,
             )
-            from lightrag.native_parser.docx.parse_document import (
+            from lightrag.parser.docx.parse_document import (
                 extract_docx_blocks,
             )
-            from lightrag.native_parser.docx.ir_builder import NativeDocxIRBuilder
+            from lightrag.parser.docx.ir_builder import NativeDocxIRBuilder
             from lightrag.sidecar import write_sidecar
 
             # ``file_path`` is canonical at the worker layer; canonicalize
@@ -2536,7 +2542,7 @@ class _PipelineMixin:
             await archive_docx_source_after_full_docs_sync(str(p))
             logger.info(
                 f"[parse_native] pending_parse completed for {file_path} "
-                f"via native_parser/docx"
+                f"via parser/docx"
             )
             result: dict[str, Any] = {
                 "doc_id": doc_id,
@@ -2581,7 +2587,7 @@ class _PipelineMixin:
         """
         # Lazy imports keep this module import-cheap and avoid pulling httpx
         # into call paths that never touch the MinerU engine.
-        from lightrag.external_parser.mineru import (
+        from lightrag.parser.external.mineru import (
             MinerUIRBuilder,
             MinerURawClient,
             clear_dir_contents,
@@ -2695,7 +2701,7 @@ class _PipelineMixin:
         """
         # Lazy imports keep this module import-cheap and avoid pulling httpx
         # into call paths that never touch the Docling engine.
-        from lightrag.external_parser.docling import (
+        from lightrag.parser.external.docling import (
             DoclingIRBuilder,
             DoclingRawClient,
             clear_dir_contents,
@@ -3042,7 +3048,7 @@ class _PipelineMixin:
                     if candidate.name == source_name:
                         return str(candidate)
             if parser_engine:
-                from lightrag.parser_routing import filename_parser_directives
+                from lightrag.parser.routing import filename_parser_directives
 
                 for candidate in matches:
                     hinted_engine, _ = filename_parser_directives(candidate.name)
@@ -3486,6 +3492,8 @@ class _PipelineMixin:
         parsed_data: dict[str, Any],
         *,
         process_options: str | None = None,
+        pipeline_status: dict | None = None,
+        pipeline_status_lock: Any | None = None,
     ) -> dict[str, Any]:
         """Phase 2: Multimodal analysis (VLM). Writes llm_analyze_result to LightRAG Document.
 
@@ -3506,7 +3514,7 @@ class _PipelineMixin:
                 tests that exercise the VLM analysis path without going
                 through the enqueue pipeline.
         """
-        from lightrag.parser_routing import parse_process_options
+        from lightrag.parser.routing import parse_process_options
 
         blocks_path = parsed_data.get("blocks_path")
         if not blocks_path:
@@ -4150,6 +4158,7 @@ class _PipelineMixin:
                     process_opts.equations,
                 ),
             ]
+            start_logged = False
             for sidecar_path, root_key, kind, enabled in sidecars:
                 if not enabled or not sidecar_path.exists():
                     continue
@@ -4162,6 +4171,18 @@ class _PipelineMixin:
                 items = payload.get(root_key, {})
                 if not isinstance(items, dict):
                     continue
+
+                if (
+                    items
+                    and not start_logged
+                    and pipeline_status is not None
+                    and pipeline_status_lock is not None
+                ):
+                    async with pipeline_status_lock:
+                        log_message = f"Analyzing multimodal: {file_path}"
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+                    start_logged = True
 
                 valid_keys: list[str] = []
                 analyze_tasks: list[Any] = []
@@ -4188,21 +4209,32 @@ class _PipelineMixin:
                     outcome = analyzed[idx]
                     if isinstance(outcome, MultimodalAnalysisError):
                         item["llm_analyze_result"] = _failure_result(str(outcome))
+                        item_status = "failed"
                         if failure_to_raise is None:
                             failure_to_raise = outcome
-                        continue
-                    if isinstance(outcome, Exception):
+                    elif isinstance(outcome, Exception):
                         item["llm_analyze_result"] = _failure_result(
                             f"unexpected error: {outcome}"
                         )
+                        item_status = "failed"
                         if failure_to_raise is None:
                             failure_to_raise = MultimodalAnalysisError(
                                 f"{root_key}/{item_id}: unexpected error: {outcome}"
                             )
-                        continue
-                    result_obj, cache_id = outcome
-                    item["llm_analyze_result"] = result_obj
-                    _attach_cache_id(item, cache_id)
+                    else:
+                        result_obj, cache_id = outcome
+                        item["llm_analyze_result"] = result_obj
+                        _attach_cache_id(item, cache_id)
+                        item_status = (
+                            "ok" if result_obj.get("status") == "success" else "skipped"
+                        )
+                    if pipeline_status is not None and pipeline_status_lock is not None:
+                        async with pipeline_status_lock:
+                            log_message = (
+                                f"  {kind}/{item_id} {item_status}: {file_path}"
+                            )
+                            pipeline_status["latest_message"] = log_message
+                            pipeline_status["history_messages"].append(log_message)
                 try:
                     sidecar_path.write_text(
                         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -4261,7 +4293,7 @@ class _PipelineMixin:
             DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
             DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS,
         )
-        from lightrag.parser_routing import parse_process_options
+        from lightrag.parser.routing import parse_process_options
 
         block_file = Path(blocks_path)
         if not block_file.exists():

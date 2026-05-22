@@ -3,9 +3,9 @@
 sidecar pipeline.
 
 The fixtures live at
-``tests/native_parser/docx/golden/native_docx/<scenario>/``
+``tests/parser/docx/golden/native_docx/<scenario>/``
 and capture the exact on-disk artifacts ``LightRAG.parse_native`` produces
-for each scenario in ``tests/native_parser/docx/_native_docx_fixtures.py``.
+for each scenario in ``tests/parser/docx/_native_docx_fixtures.py``.
 
 Usage::
 
@@ -23,7 +23,7 @@ from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "tests" / "native_parser" / "docx"))
+sys.path.insert(0, str(PROJECT_ROOT / "tests" / "parser" / "docx"))
 
 
 async def _regen() -> None:
@@ -31,7 +31,7 @@ async def _regen() -> None:
         FULL_DOCS_FORMAT_PENDING_PARSE,
         PARSED_DIR_NAME,
     )
-    from lightrag.parser_debug import (
+    from lightrag.parser.debug import (
         FrozenDateTime,
         build_debug_rag,
     )
@@ -40,7 +40,7 @@ async def _regen() -> None:
     from _native_docx_fixtures import SCENARIOS  # type: ignore[import]
 
     fixtures_root = (
-        PROJECT_ROOT / "tests" / "native_parser" / "docx" / "golden" / "native_docx"
+        PROJECT_ROOT / "tests" / "parser" / "docx" / "golden" / "native_docx"
     )
     fixtures_root.mkdir(parents=True, exist_ok=True)
 
@@ -82,7 +82,7 @@ async def _regen() -> None:
             with (
                 mock.patch.dict("os.environ", {"INPUT_DIR": str(input_dir)}),
                 mock.patch(
-                    "lightrag.native_parser.docx.parse_document.extract_docx_blocks",
+                    "lightrag.parser.docx.parse_document.extract_docx_blocks",
                     _stub_extract,
                 ),
                 mock.patch.object(

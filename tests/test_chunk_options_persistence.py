@@ -5,9 +5,9 @@ Three properties under test:
 1. **env-driven snapshot**: env vars (CHUNK_R_OVERLAP_SIZE,
    CHUNK_V_BREAKPOINT_THRESHOLD_TYPE, …) flow into
    ``addon_params['chunker']`` via
-   :func:`lightrag.parser_routing.default_chunker_config`, then into
+   :func:`lightrag.parser.routing.default_chunker_config`, then into
    ``full_docs[doc_id]['chunk_options']`` at enqueue time via
-   :func:`lightrag.parser_routing.resolve_chunk_options`.
+   :func:`lightrag.parser.routing.resolve_chunk_options`.
 
 2. **caller-supplied chunk_options**: an explicit ``chunk_options``
    kwarg passed to ``apipeline_enqueue_documents`` is persisted
@@ -93,7 +93,7 @@ def test_env_driven_snapshot_persisted_in_full_docs(tmp_path, monkeypatch):
     monkeypatch.setenv("CHUNK_V_BUFFER_SIZE", "3")
 
     async def _run():
-        from lightrag.parser_routing import resolve_chunk_options
+        from lightrag.parser.routing import resolve_chunk_options
 
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
