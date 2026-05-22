@@ -4135,6 +4135,37 @@ class _PipelineMixin:
                     existing.append(cache_id)
                 item_obj["llm_cache_list"] = existing
 
+            async def _run_with_progress_log(coro, kind: str, item_id: str):
+                """Append per-item completion log to pipeline_status the moment
+                this single ``_analyze_*`` task finishes — not after the whole
+                ``asyncio.gather`` batch returns — so the UI sees each
+                drawing/table/equation result land in real time."""
+                try:
+                    result = await coro
+                except Exception:
+                    if (
+                        pipeline_status is not None
+                        and pipeline_status_lock is not None
+                    ):
+                        async with pipeline_status_lock:
+                            log_message = f"  {kind}/{item_id} failed: {file_path}"
+                            pipeline_status["latest_message"] = log_message
+                            pipeline_status["history_messages"].append(log_message)
+                    raise
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    result_obj = result[0] if isinstance(result, tuple) else {}
+                    item_status = (
+                        "ok"
+                        if isinstance(result_obj, dict)
+                        and result_obj.get("status") == "success"
+                        else "skipped"
+                    )
+                    async with pipeline_status_lock:
+                        log_message = f"  {kind}/{item_id} {item_status}: {file_path}"
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+                return result
+
             base_name = str(block_file)
             if base_name.endswith(".blocks.jsonl"):
                 base_name = base_name[: -len(".blocks.jsonl")]
@@ -4191,13 +4222,14 @@ class _PipelineMixin:
                         continue
                     valid_keys.append(item_id)
                     if kind == "drawing":
-                        analyze_tasks.append(
-                            _analyze_drawing(item_id, item, sidecar_path.parent)
+                        inner_coro = _analyze_drawing(
+                            item_id, item, sidecar_path.parent
                         )
                     else:
-                        analyze_tasks.append(
-                            _analyze_text_modality(kind, item_id, item)
-                        )
+                        inner_coro = _analyze_text_modality(kind, item_id, item)
+                    analyze_tasks.append(
+                        _run_with_progress_log(inner_coro, kind, item_id)
+                    )
 
                 analyzed = await asyncio.gather(*analyze_tasks, return_exceptions=True)
 
@@ -4209,14 +4241,12 @@ class _PipelineMixin:
                     outcome = analyzed[idx]
                     if isinstance(outcome, MultimodalAnalysisError):
                         item["llm_analyze_result"] = _failure_result(str(outcome))
-                        item_status = "failed"
                         if failure_to_raise is None:
                             failure_to_raise = outcome
                     elif isinstance(outcome, Exception):
                         item["llm_analyze_result"] = _failure_result(
                             f"unexpected error: {outcome}"
                         )
-                        item_status = "failed"
                         if failure_to_raise is None:
                             failure_to_raise = MultimodalAnalysisError(
                                 f"{root_key}/{item_id}: unexpected error: {outcome}"
@@ -4225,16 +4255,6 @@ class _PipelineMixin:
                         result_obj, cache_id = outcome
                         item["llm_analyze_result"] = result_obj
                         _attach_cache_id(item, cache_id)
-                        item_status = (
-                            "ok" if result_obj.get("status") == "success" else "skipped"
-                        )
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            log_message = (
-                                f"  {kind}/{item_id} {item_status}: {file_path}"
-                            )
-                            pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
                 try:
                     sidecar_path.write_text(
                         json.dumps(payload, ensure_ascii=False, indent=2),
