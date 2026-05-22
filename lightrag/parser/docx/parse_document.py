@@ -47,6 +47,15 @@ TABLE_MIN_LAST_CHUNK_TOKENS = int(
 )  # Minimum size for last chunk to avoid tiny fragments
 TABLE_CHUNK_SUFFIX_LABEL = "表格片段"  # Label prefix for split table chunk headings
 
+# OOXML tracked-change/comment tags whose subtree must be dropped so we only
+# surface the *final* revised text. w:ins / w:moveTo are kept via default
+# recursion so inserted/moved-in content survives.
+_SKIP_REVISION_TAGS = frozenset({"del", "moveFrom"})
+_SKIP_COMMENT_TAGS = frozenset(
+    {"commentRangeStart", "commentRangeEnd", "commentReference", "annotationRef"}
+)
+_SKIP_PARAGRAPH_TAGS = _SKIP_REVISION_TAGS | _SKIP_COMMENT_TAGS
+
 
 def print_error(title: str, details: str, solution: str):
     """
@@ -1360,9 +1369,10 @@ def extract_paragraph_content(
 
     def append_from(node) -> None:
         tag = node.tag.split("}")[-1]
-        # Skip deleted content (w:del) and moved-from content (w:moveFrom) in tracked changes
-        # to maintain consistency with w:delText handling
-        if tag in ("del", "moveFrom"):
+        # Drop tracked-change deletions (w:del/w:moveFrom) and comment markers
+        # (w:commentRangeStart/End, w:commentReference, w:annotationRef) so the
+        # output only contains the final revised text without annotation glyphs.
+        if tag in _SKIP_PARAGRAPH_TAGS:
             return
         if tag == "r":
             parts.append(
@@ -1392,6 +1402,11 @@ def extract_paragraph_content(
         append_from(child)
 
     return "".join(parts)
+
+
+def _is_table_empty(rows: list) -> bool:
+    """Return True iff every cell in ``rows`` is whitespace-only."""
+    return all(not (cell or "").strip() for row in rows for cell in row)
 
 
 def _collect_table_headers(paragraphs: list) -> list:
@@ -1700,6 +1715,13 @@ def extract_docx_blocks(
             para_ids = table_metadata["para_ids"]
             para_ids_end = table_metadata["para_ids_end"]  # Last paraId in each cell
             header_indices = table_metadata["header_indices"]
+
+            # Skip tables whose every cell is whitespace-only — otherwise an
+            # empty `<table>[[""]]</table>` placeholder would leak into block
+            # content and a useless IRTable would appear in tables.json.
+            if _is_table_empty(table_rows):
+                resolver.reset_tracking_state()
+                continue
 
             # Count tables whose cells carry no w14:paraId. Legacy / non-Word
             # docx authors omit these attributes; we no longer fail-fast, but

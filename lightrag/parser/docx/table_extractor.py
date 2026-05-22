@@ -16,6 +16,19 @@ from .drawing_image_extractor import (
     extract_vml_image_placeholder_from_element,
 )
 
+# Keep in sync with parse_document._SKIP_PARAGRAPH_TAGS — duplicated here to
+# avoid a circular import between parse_document and table_extractor.
+_SKIP_PARAGRAPH_TAGS = frozenset(
+    {
+        "del",
+        "moveFrom",
+        "commentRangeStart",
+        "commentRangeEnd",
+        "commentReference",
+        "annotationRef",
+    }
+)
+
 
 def extract_text_from_run_table(
     run_elem,
@@ -105,9 +118,10 @@ def extract_paragraph_content_table(
 
     def append_from(node) -> None:
         tag = node.tag.split("}")[-1]
-        # Skip deleted content (w:del) and moved-from content (w:moveFrom) in tracked changes
-        # to maintain consistency with w:delText handling
-        if tag in ("del", "moveFrom"):
+        # Drop tracked-change deletions (w:del/w:moveFrom) and comment markers
+        # (w:commentRangeStart/End, w:commentReference, w:annotationRef) so the
+        # output only contains the final revised text without annotation glyphs.
+        if tag in _SKIP_PARAGRAPH_TAGS:
             return
         if tag == "r":
             parts.append(
