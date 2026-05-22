@@ -1745,17 +1745,6 @@ clear_bedrock_credentials() {
   unset 'ENV_VALUES[AWS_REGION]'
 }
 
-bedrock_binding_in_use() {
-  [[ "${ENV_VALUES[LLM_BINDING]:-}" == "bedrock" ||
-    "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "bedrock" ]]
-}
-
-clear_bedrock_credentials_if_unused() {
-  if ! bedrock_binding_in_use; then
-    clear_bedrock_credentials
-  fi
-}
-
 collect_bedrock_credentials() {
   local access_key secret_key session_token region
 
@@ -1939,7 +1928,15 @@ collect_llm_config() {
   ENV_VALUES["LLM_MODEL"]="$model"
   ENV_VALUES["LLM_BINDING_HOST"]="$host"
   store_optional_env_value "LLM_BINDING_API_KEY" "$api_key"
-  clear_bedrock_credentials_if_unused
+
+  # Role-specific LLM models — default to the base LLM_MODEL when unset in .env.
+  local keyword_default query_default keyword_model query_model
+  keyword_default="${ENV_VALUES[KEYWORD_LLM_MODEL]:-$model}"
+  query_default="${ENV_VALUES[QUERY_LLM_MODEL]:-$model}"
+  keyword_model="$(prompt_with_default "Keyword LLM model" "$keyword_default")"
+  query_model="$(prompt_with_default "Query LLM model" "$query_default")"
+  ENV_VALUES["KEYWORD_LLM_MODEL"]="$keyword_model"
+  ENV_VALUES["QUERY_LLM_MODEL"]="$query_model"
 }
 
 collect_embedding_config() {
@@ -2009,7 +2006,6 @@ collect_embedding_config() {
   ENV_VALUES["EMBEDDING_DIM"]="$dim"
   ENV_VALUES["EMBEDDING_BINDING_HOST"]="$host"
   store_optional_env_value "EMBEDDING_BINDING_API_KEY" "$api_key"
-  clear_bedrock_credentials_if_unused
   # User chose a remote provider — clear the Docker deployment marker.
   unset 'ENV_VALUES[LIGHTRAG_SETUP_EMBEDDING_PROVIDER]'
 }
