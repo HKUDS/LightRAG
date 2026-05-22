@@ -79,6 +79,102 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 auth_configured = bool(auth_handler.accounts)
 
 
+def _inject_swagger_theme(html: str, theme: str) -> str:
+    if theme not in {"dark", "light"}:
+        theme = "auto"
+
+    theme_snippet = (
+        "\n    <script>\n"
+        f"      document.documentElement.dataset.lightragDocsTheme = {json.dumps(theme)};\n"
+        "    </script>\n"
+        """
+    <style>
+      html[data-lightrag-docs-theme="dark"] {
+        color-scheme: dark;
+        --lightrag-docs-bg: #0f172a;
+        --lightrag-docs-input-bg: #020617;
+        --lightrag-docs-border: #334155;
+        --lightrag-docs-text: #e5e7eb;
+        --lightrag-docs-input-text: #f8fafc;
+        --lightrag-docs-authorize-bg: #064e3b;
+        --lightrag-docs-authorize-border: #34d399;
+        --lightrag-docs-authorize-text: #d1fae5;
+        --lightrag-docs-shadow: none;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        html[data-lightrag-docs-theme="auto"] {
+          color-scheme: dark;
+          --lightrag-docs-bg: #0f172a;
+          --lightrag-docs-input-bg: #020617;
+          --lightrag-docs-border: #334155;
+          --lightrag-docs-text: #e5e7eb;
+          --lightrag-docs-input-text: #f8fafc;
+          --lightrag-docs-authorize-bg: #064e3b;
+          --lightrag-docs-authorize-border: #34d399;
+          --lightrag-docs-authorize-text: #d1fae5;
+          --lightrag-docs-shadow: none;
+        }
+      }
+
+      body,
+      .swagger-ui,
+      .swagger-ui .scheme-container,
+      .swagger-ui section.models,
+      .swagger-ui .model-box,
+      .swagger-ui .opblock,
+      .swagger-ui .dialog-ux .modal-ux,
+      .swagger-ui .auth-container {
+        background: var(--lightrag-docs-bg);
+        color: var(--lightrag-docs-text);
+      }
+
+      .swagger-ui .info .title,
+      .swagger-ui .opblock-tag,
+      .swagger-ui .opblock .opblock-summary-description,
+      .swagger-ui .model-title,
+      .swagger-ui .parameter__name,
+      .swagger-ui .parameter__type,
+      .swagger-ui .response-col_status,
+      .swagger-ui .response-col_description,
+      .swagger-ui .auth-container h4,
+      .swagger-ui .auth-container label,
+      .swagger-ui .auth-container p {
+        color: var(--lightrag-docs-text);
+      }
+
+      .swagger-ui input,
+      .swagger-ui textarea,
+      .swagger-ui select {
+        background: var(--lightrag-docs-input-bg);
+        border-color: var(--lightrag-docs-border);
+        color: var(--lightrag-docs-input-text);
+      }
+
+      .swagger-ui .btn.authorize,
+      .swagger-ui .auth-wrapper .authorize {
+        background: var(--lightrag-docs-authorize-bg);
+        border-color: var(--lightrag-docs-authorize-border);
+        color: var(--lightrag-docs-authorize-text);
+      }
+
+      .swagger-ui .btn.authorize svg {
+        fill: var(--lightrag-docs-authorize-text);
+      }
+
+      .swagger-ui .dialog-ux .modal-ux,
+      .swagger-ui .scheme-container,
+      .swagger-ui section.models,
+      .swagger-ui .opblock {
+        border-color: var(--lightrag-docs-border);
+        box-shadow: var(--lightrag-docs-shadow);
+      }
+    </style>
+    """
+    )
+    return html.replace("</head>", f"{theme_snippet}</head>")
+
+
 # Fixed WebUI mount path. Used as `app.mount(WEBUI_PATH, ...)` and as the
 # in-app component of `webuiPrefix` injected into window.__LIGHTRAG_CONFIG__
 # (which the browser sees as `LIGHTRAG_API_PREFIX + WEBUI_PATH + "/"`).
@@ -1665,9 +1761,9 @@ def create_app(args):
 
     # Custom Swagger UI endpoint for offline support
     @app.get("/docs", include_in_schema=False)
-    async def custom_swagger_ui_html():
+    async def custom_swagger_ui_html(request: Request):
         """Custom Swagger UI HTML with local static files"""
-        return get_swagger_ui_html(
+        response = get_swagger_ui_html(
             openapi_url=app.openapi_url,
             title=app.title + " - Swagger UI",
             oauth2_redirect_url="/docs/oauth2-redirect",
@@ -1676,6 +1772,11 @@ def create_app(args):
             swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
             swagger_ui_parameters=app.swagger_ui_parameters,
         )
+        html = response.body.decode("utf-8")
+        html = _inject_swagger_theme(
+            html, request.query_params.get("theme", "auto").lower()
+        )
+        return Response(content=html, media_type="text/html")
 
     @app.get("/docs/oauth2-redirect", include_in_schema=False)
     async def swagger_ui_redirect():

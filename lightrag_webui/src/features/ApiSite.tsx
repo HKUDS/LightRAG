@@ -8,6 +8,7 @@ export default function ApiSite() {
   const { isTabVisible } = useTabVisibility()
   const isApiTabVisible = isTabVisible('api')
   const [iframeLoaded, setIframeLoaded] = useState(false)
+  const [docsTheme, setDocsTheme] = useState<'light' | 'dark'>('light')
 
   // Load the iframe once on component mount
   useEffect(() => {
@@ -15,12 +16,25 @@ export default function ApiSite() {
     return () => clearTimeout(timer)
   }, [])
 
+  useEffect(() => {
+    const root = window.document.documentElement
+    const syncDocsTheme = () => {
+      setDocsTheme(root.classList.contains('dark') ? 'dark' : 'light')
+    }
+
+    syncDocsTheme()
+    const observer = new MutationObserver(syncDocsTheme)
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] })
+
+    return () => observer.disconnect()
+  }, [])
+
   // Use CSS to hide content when tab is not visible
   return (
     <div className={`size-full ${isApiTabVisible ? '' : 'hidden'}`}>
       {iframeLoaded ? (
         <iframe
-          src={backendBaseUrl + '/docs'}
+          src={`${backendBaseUrl}/docs?theme=${docsTheme}`}
           className="size-full w-full h-full"
           style={{ width: '100%', height: '100%', border: 'none' }}
           // Use key to ensure iframe doesn't reload
