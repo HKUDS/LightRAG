@@ -1996,7 +1996,7 @@ def test_three_phase_status_flow(tmp_path, monkeypatch):
                 "blocks_path": "",
             }
 
-        async def _fake_analyze(doc_id, file_path, parsed_data):
+        async def _fake_analyze(doc_id, file_path, parsed_data, **kwargs):
             parsed_data["multimodal_processed"] = True
             return parsed_data
 
