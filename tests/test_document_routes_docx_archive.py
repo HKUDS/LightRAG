@@ -92,6 +92,7 @@ class _FakeRag:
         parse_engine=None,
         process_options=None,
         from_scan=False,
+        chunk_options=None,
     ):
         item = {
             "input": input,
@@ -102,6 +103,8 @@ class _FakeRag:
             "process_options": process_options,
             "from_scan": from_scan,
         }
+        if chunk_options is not None:
+            item["chunk_options"] = chunk_options
         self.enqueued.append(item)
         return track_id
 
@@ -189,6 +192,7 @@ class _ScanRag:
         parse_engine=None,
         process_options=None,
         from_scan=False,
+        chunk_options=None,
     ):
         item = {
             "input": input,
@@ -199,6 +203,8 @@ class _ScanRag:
             "process_options": process_options,
             "from_scan": from_scan,
         }
+        if chunk_options is not None:
+            item["chunk_options"] = chunk_options
         self.enqueued.append(item)
         return track_id
 

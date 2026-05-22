@@ -919,7 +919,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             logger.debug(
                 f"Captured embedding max_token_size: {embedding_max_token_size}"
             )
-        self.embedding_token_limit = embedding_max_token_size
+        # Allow EMBEDDING_TOKEN_LIMIT env var to override provider default
+        env_token_limit = os.environ.get("EMBEDDING_TOKEN_LIMIT")
+        if env_token_limit is not None:
+            try:
+                self.embedding_token_limit = int(env_token_limit)
+                logger.info(
+                    f"Using EMBEDDING_TOKEN_LIMIT from env: {self.embedding_token_limit}"
+                )
+            except ValueError:
+                logger.warning(
+                    f"Invalid EMBEDDING_TOKEN_LIMIT value: {env_token_limit}, falling back to provider default"
+                )
+                self.embedding_token_limit = embedding_max_token_size
+        else:
+            self.embedding_token_limit = embedding_max_token_size
 
         # Fix global_config now
         global_config = self._build_global_config()

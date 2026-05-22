@@ -238,6 +238,9 @@ class InsertTextRequest(BaseModel):
     Attributes:
         text: The text content to be inserted into the RAG system
         file_source: Source of the text (optional)
+        split_by_character: Character to split text on (optional). If set, text is split by this
+            character first; chunks longer than chunk_token_size are further split by token size.
+        split_by_character_only: Only split by split_by_character, no token-based fallback.
     """
 
     text: str = Field(
@@ -246,6 +249,13 @@ class InsertTextRequest(BaseModel):
     )
     file_source: Optional[str] = Field(
         default=None, min_length=0, description="File Source"
+    )
+    split_by_character: Optional[str] = Field(
+        default=None, description="Character to split text on for chunking"
+    )
+    split_by_character_only: bool = Field(
+        default=False,
+        description="If True, split only by split_by_character without token fallback",
     )
 
     @field_validator("text", mode="after")
@@ -263,6 +273,8 @@ class InsertTextRequest(BaseModel):
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
+                "split_by_character": "\n",
+                "split_by_character_only": False,
             }
         }
     )
@@ -274,6 +286,9 @@ class InsertTextsRequest(BaseModel):
     Attributes:
         texts: List of text contents to be inserted into the RAG system
         file_sources: Sources of the texts (optional)
+        split_by_character: Character to split text on (optional). If set, text is split by this
+            character first; chunks longer than chunk_token_size are further split by token size.
+        split_by_character_only: Only split by split_by_character, no token-based fallback.
     """
 
     texts: list[str] = Field(
@@ -282,6 +297,13 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: Optional[list[str]] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    split_by_character: Optional[str] = Field(
+        default=None, description="Character to split text on for chunking"
+    )
+    split_by_character_only: bool = Field(
+        default=False,
+        description="If True, split only by split_by_character without token fallback",
     )
 
     @field_validator("texts", mode="after")
@@ -309,6 +331,8 @@ class InsertTextsRequest(BaseModel):
                 "file_sources": [
                     "First file source (optional)",
                 ],
+                "split_by_character": "\n",
+                "split_by_character_only": False,
             }
         }
     )
@@ -2121,6 +2145,8 @@ async def pipeline_index_texts(
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    split_by_character: str | None = None,
+    split_by_character_only: bool = False,
 ):
     """Index a list of texts with track_id
 
@@ -2129,6 +2155,8 @@ async def pipeline_index_texts(
         texts: The texts to index
         file_sources: Sources of the texts
         track_id: Optional tracking ID
+        split_by_character: Character to split text on for chunking
+        split_by_character_only: If True, split only by split_by_character
     """
     if not texts:
         return
@@ -2142,11 +2170,19 @@ async def pipeline_index_texts(
     if len(set(normalized_file_sources)) != len(normalized_file_sources):
         raise ValueError("File sources must be unique by filename")
 
+    chunk_options: dict[str, Any] | None = {}
+    if split_by_character is not None:
+        chunk_options["split_by_character"] = split_by_character
+        chunk_options["split_by_character_only"] = split_by_character_only
+    if not chunk_options:
+        chunk_options = None
+
     await rag.apipeline_enqueue_documents(
         input=texts,
         file_paths=normalized_file_sources,
         track_id=track_id,
         process_options=PROCESS_OPTION_CHUNK_FIXED,
+        chunk_options=chunk_options,
     )
     await rag.apipeline_process_enqueue_documents()
 
@@ -3042,6 +3078,8 @@ def create_document_routes(
                         [request.text],
                         file_sources=[normalized_file_source],
                         track_id=track_id,
+                        split_by_character=request.split_by_character,
+                        split_by_character_only=request.split_by_character_only,
                     )
                 finally:
                     await _release_enqueue_slot(rag)
@@ -3155,6 +3193,8 @@ def create_document_routes(
                         request.texts,
                         file_sources=normalized_file_sources,
                         track_id=track_id,
+                        split_by_character=request.split_by_character,
+                        split_by_character_only=request.split_by_character_only,
                     )
                 finally:
                     await _release_enqueue_slot(rag)
