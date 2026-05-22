@@ -4143,10 +4143,7 @@ class _PipelineMixin:
                 try:
                     result = await coro
                 except Exception:
-                    if (
-                        pipeline_status is not None
-                        and pipeline_status_lock is not None
-                    ):
+                    if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
                             log_message = f"Analyzing {kind}/{item_id}: failed"
                             pipeline_status["latest_message"] = log_message
