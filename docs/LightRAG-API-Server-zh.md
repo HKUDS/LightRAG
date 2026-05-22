@@ -225,6 +225,171 @@ docker compose up
 
 > 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). 如需获取更多关于docker部署的信息，请参阅 [DockerDeployment.md](./DockerDeployment.md).
 
+### 渐进式配置示例
+
+如果您是 LightRAG 新用户，建议从最小可运行配置开始，确认上一阶段正常后再逐步开启更多能力：
+
+1. 使用托管 LLM 和 Embedding 模型完成最小 Docker 启动
+2. 增加 Reranking 以提升查询质量
+3. 使用 MinerU 官方 API 和视觉模型开启多模态解析
+4. 迁移到 GPU 加速、Docker 托管数据库的准生产部署
+
+完整的 `env.example` 仍然是配置项总参考，并且会被 `make env-*` setup 向导使用。下面的片段只展示每一步最关键的配置。
+
+#### 1. 最小 Docker 启动
+
+如果您只想先把 WebUI 和 API 跑起来，并暂时不引入外部数据库、解析服务或本地模型服务，可以在 `docker-compose.yml` 旁边创建如下最小 `.env`：
+
+```bash
+###########################
+### Server Configuration
+###########################
+PORT=9621
+WEBUI_TITLE='My First LightRAG KB'
+WEBUI_DESCRIPTION='Simple and Fast Graph Based RAG System'
+OLLAMA_EMULATING_MODEL_TAG=latest
+
+########################################
+### Document processing configuration
+########################################
+SUMMARY_LANGUAGE=English
+ENTITY_EXTRACTION_USE_JSON=true
+LIGHTRAG_PARSER=*:native-teP,*:legacy-R
+VLM_PROCESS_ENABLE=false
+
+###########################################################################
+### LLM Configuration
+###########################################################################
+LLM_BINDING=openai
+LLM_BINDING_HOST=https://api.openai.com/v1
+LLM_BINDING_API_KEY=your_api_key
+LLM_MODEL=gpt-5-mini
+
+KEYWORD_LLM_MODEL=gpt-5-nano
+QUERY_LLM_MODEL=gpt-5
+
+#######################################################################################
+### Embedding Configuration (do not change after the first file is processed)
+#######################################################################################
+EMBEDDING_BINDING=openai
+EMBEDDING_BINDING_HOST=https://api.openai.com/v1
+EMBEDDING_BINDING_API_KEY=your_api_key
+EMBEDDING_MODEL=text-embedding-3-large
+EMBEDDING_DIM=3072
+EMBEDDING_TOKEN_LIMIT=8192
+EMBEDDING_SEND_DIM=false
+EMBEDDING_USE_BASE64=true
+
+############################
+### Data storage selection
+############################
+LIGHTRAG_KV_STORAGE=JsonKVStorage
+LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage
+LIGHTRAG_GRAPH_STORAGE=NetworkXStorage
+LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage
+```
+
+如有需要，请将模型 ID 替换为您自己的 provider 账号可用的模型。上传文档前，先启动并验证服务：
+
+```bash
+docker compose up -d
+curl http://localhost:9621/health
+```
+
+然后打开 WebUI：`http://localhost:9621/webui`，上传一个小型文本或 DOCX 文件，等待索引完成后使用 `hybrid` 或 `mix` 模式查询。
+
+#### 2. 增加 Reranking
+
+Reranking 是查询阶段能力。启用、关闭或更换 reranker 通常不需要重新索引已有文档。
+
+使用 Cohere 官方托管 rerank 服务：
+
+```bash
+RERANK_BINDING=cohere
+RERANK_MODEL=rerank-v3.5
+RERANK_BINDING_HOST=https://api.cohere.com/v2/rerank
+RERANK_BINDING_API_KEY=your_cohere_api_key
+```
+
+使用本地 vLLM 部署、并暴露 Cohere-compatible API 的 reranker：
+
+```bash
+RERANK_BINDING=cohere
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=http://localhost:8000/rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+如果 LightRAG 自身运行在 Docker 容器中，而 reranker 运行在宿主机，请使用 `host.docker.internal` 等容器可访问地址，不要直接使用 `localhost`。如果 reranker 由 setup 向导生成，向导会自动把 Compose 内部服务地址注入到 `docker-compose.final.yml`。
+
+#### 3. 使用 MinerU 官方 API 开启多模态解析
+
+建议在基础文档流程已经正常后再开启该能力。使用 MinerU 官方 API 可以避免本地部署解析服务，但必须在 LightRAG 服务器启动前配置 `MINERU_API_TOKEN`。VLM 角色也必须使用支持图片输入的 provider/model。
+
+```bash
+LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
+
+VLM_PROCESS_ENABLE=true
+VLM_LLM_MODEL=gpt-5-mini
+
+MINERU_API_MODE=official
+MINERU_API_TOKEN=your_mineru_api_token
+MINERU_OFFICIAL_ENDPOINT=https://mineru.net
+MINERU_MODEL_VERSION=vlm
+MINERU_IS_OCR=false
+```
+
+该路由会优先对支持的 DOCX 文件使用内置 `native` 解析器，对 PDF、图片等其他 MinerU 支持的文件使用 MinerU，最后回退到 `legacy`。`i`、`t`、`e` 选项会在解析器产出对应 sidecar 时，对图片、表格和公式运行 VLM 分析。
+
+使用 official 模式时，Docker 不需要访问宿主机上的 MinerU 回环地址；容器只需要能够访问 `MINERU_OFFICIAL_ENDPOINT`。
+
+#### 4. GPU All-In-One 风格部署
+
+对于本地 GPU 加速部署，建议使用 setup 向导生成 `.env` 和 `docker-compose.final.yml`，不要手写每个服务块：
+
+```bash
+make env-base
+```
+
+推荐选择：
+
+- 主 LLM 使用托管 provider 或 OpenAI-compatible provider。
+- 对 `Run embedding model locally via Docker (vLLM)?` 回答 `yes`。
+- Embedding device 选择 `cuda`。
+- 启用 reranking，对 `Run rerank service locally via Docker?` 回答 `yes`，rerank device 选择 `cuda`。
+
+然后配置存储：
+
+```bash
+make env-storage
+```
+
+推荐存储选择：
+
+- `LIGHTRAG_KV_STORAGE=PGKVStorage`
+- `LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage`
+- `LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage`
+- `LIGHTRAG_GRAPH_STORAGE=MemgraphStorage`
+- PostgreSQL、Milvus 和 Memgraph 均选择本地 Docker 运行。
+- 如果主机具备 NVIDIA GPU 支持且已安装 NVIDIA Container Toolkit，Milvus device 可选择 `cuda`。
+
+最后配置服务端对外设置并验证：
+
+```bash
+make env-server
+make env-validate
+make env-security-check
+docker compose -f docker-compose.final.yml up -d
+```
+
+对外暴露前，请在 `make env-server` 中配置认证、API key 和 SSL。生成的 `.env` 会保持宿主机可用；容器专用服务名和 Docker 专用覆盖项会写入 `docker-compose.final.yml`。
+
+处理生产数据前请注意：
+
+- 首次上传前确定 Embedding 模型、向量维度和非对称嵌入设置。之后修改这些配置需要清空对应 workspace/向量数据并重新索引文档。
+- 首次上传前确定存储后端。当前不支持在不同存储实现之间直接迁移。
+- 修改 `LIGHTRAG_PARSER` 只影响新上传文件。如需让已有文档使用新的解析路由，请删除后重新上传。
+
 ### Nginx 反向代理配置
 
 在 LightRAG 服务器前使用 Nginx 作为反向代理时，需要为 `/documents/upload` 端点配置 `client_max_body_size` 以处理大文件上传。如果不进行此配置，Nginx 将拒绝大于 1MB（默认限制）的文件，并在请求到达 LightRAG 之前返回 `413 Request Entity Too Large` 错误。
@@ -294,7 +459,7 @@ server {
 
 官方的 LightRAG Docker 镜像完全兼容离线或隔离网络环境。如需搭建自己的离线部署环境，请参考 [离线部署指南](./OfflineDeployment.md)。
 
-### 启动多个LightRAG实例
+### 启动多个 LightRAG 实例
 
 有两种方式可以启动多个LightRAG实例。第一种方式是为每个实例配置一个完全独立的工作环境。此时需要为每个实例创建一个独立的工作目录，然后在这个工作目录上放置一个当前实例专用的`.env`配置文件。不同实例的配置文件中的服务器监听端口不能重复，然后在工作目录上执行 lightrag-server 启动服务即可。
 
@@ -312,7 +477,7 @@ lightrag-server --port 9622 --workspace space2
 
 通过 Docker Compose 启动多个 LightRAG 实例时，只需在 `docker-compose.yml` 中为每个容器指定不同的 `WORKSPACE` 和 `PORT` 环境变量即可。即使所有实例共享同一个 `.env` 文件，Compose 中定义的容器环境变量也会优先覆盖 `.env` 文件中的同名设置，从而确保每个实例拥有独立的配置。
 
-### LightRAG实例间的数据隔离
+### LightRAG 实例间的数据隔离
 
 每个实例配置一个独立的工作目录和专用`.env`配置文件通常能够保证内存数据库中的本地持久化文件保存在各自的工作目录，实现数据的相互隔离。LightRAG默认存储全部都是内存数据库，通过这种方式进行数据隔离是没有问题的。但是如果使用的是外部数据库，如果不同实例访问的是同一个数据库实例，就需要通过配置工作空间来实现数据隔离，否则不同实例的数据将会出现冲突并被破坏。
 
@@ -342,16 +507,14 @@ MAX_PARALLEL_INSERT=2
 MAX_ASYNC=4
 ```
 
-在 macOS 上，Gunicorn 多工作进程模式还要求 Objective-C fork safety
-覆盖变量必须在 Python 进程启动前就存在。不要依赖 `.env` 设置这个变量；
-`.env` 会在 Python 启动后才加载，对 Objective-C 运行时来说已经太晚：
+在 macOS 上，Gunicorn 多工作进程模式还要求 Objective-C fork safety 覆盖变量必须在 Python 进程启动前就存在。不要依赖 `.env` 设置这个变量； `.env` 会在 Python 启动后才加载，对 Objective-C 运行时来说已经太晚：
 
 ```shell
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 lightrag-gunicorn --workers 2
 ```
 
-### 将 Lightrag 安装为 Linux 服务
+### 将 LightRAG 安装为 Linux 服务
 
 从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的服务启动定义：
 
@@ -801,6 +964,8 @@ RERANK_BY_DEFAULT=False
 
 ### .env 文件示例
 
+下面示例适合作为已有部署的调优参考。首次运行建议优先阅读[渐进式配置示例](#渐进式配置示例)，而不是直接手动复制完整 `env.example`。
+
 ```bash
 ### Server Configuration
 # HOST=0.0.0.0
@@ -886,14 +1051,17 @@ LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 
 该配置会对支持的文件使用内置 `native` 解析器，为这些文件启用表格/公式 sidecar 分析选项，并尽可能使用段落语义分块；其他文件回退到 legacy 抽取和递归分块。
 
-使用外部 MinerU 服务和 VLM 的完整多模态配置：
+使用 MinerU 官方 API 和 VLM 的完整多模态配置：
 
 ```bash
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
 VLM_PROCESS_ENABLE=true
 VLM_LLM_MODEL=gpt-4o
-MINERU_API_MODE=local
-MINERU_LOCAL_ENDPOINT=http://localhost:8000
+MINERU_API_MODE=official
+MINERU_API_TOKEN=your_mineru_api_token
+MINERU_OFFICIAL_ENDPOINT=https://mineru.net
+MINERU_MODEL_VERSION=vlm
+MINERU_IS_OCR=false
 ```
 
 如果将文件路由到 `docling`，请配置 `DOCLING_ENDPOINT=http://localhost:5001`。

@@ -225,6 +225,171 @@ docker compose up
 
 You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). For more details about docker deployment, please refer to [DockerDeployment.md](./DockerDeployment.md).
 
+### Progressive Setup Recipes
+
+If you are new to LightRAG, start with the smallest working configuration and add capabilities only after the previous step is healthy:
+
+1. Minimal Docker run with hosted LLM and embedding models
+2. Add reranking to improve query quality
+3. Add multimodal parsing with MinerU and a vision-capable model
+4. Move to a GPU-backed, Docker-managed deployment with database storage
+
+The full `env.example` file remains the complete configuration reference and is used by the `make env-*` setup wizard. The snippets below intentionally show only the values that matter for each step.
+
+#### 1. Minimal Docker Run
+
+Use this path when you want the WebUI and API running first, with no external database, parser service, or local model service. Create `.env` next to `docker-compose.yml` with a minimal OpenAI-compatible configuration:
+
+```bash
+###########################
+### Server Configuration
+###########################
+PORT=9621
+WEBUI_TITLE='My First LightRAG KB'
+WEBUI_DESCRIPTION='Simple and Fast Graph Based RAG System'
+OLLAMA_EMULATING_MODEL_TAG=latest
+
+########################################
+### Document processing configuration
+########################################
+SUMMARY_LANGUAGE=English
+ENTITY_EXTRACTION_USE_JSON=true
+LIGHTRAG_PARSER=*:native-teP,*:legacy-R
+VLM_PROCESS_ENABLE=false
+
+###########################################################################
+### LLM Configuration
+###########################################################################
+LLM_BINDING=openai
+LLM_BINDING_HOST=https://api.openai.com/v1
+LLM_BINDING_API_KEY=your_api_key
+LLM_MODEL=gpt-5-mini
+
+KEYWORD_LLM_MODEL=gpt-5-nano
+QUERY_LLM_MODEL=gpt-5
+
+#######################################################################################
+### Embedding Configuration (do not change after the first file is processed)
+#######################################################################################
+EMBEDDING_BINDING=openai
+EMBEDDING_BINDING_HOST=https://api.openai.com/v1
+EMBEDDING_BINDING_API_KEY=your_api_key
+EMBEDDING_MODEL=text-embedding-3-large
+EMBEDDING_DIM=3072
+EMBEDDING_TOKEN_LIMIT=8192
+EMBEDDING_SEND_DIM=false
+EMBEDDING_USE_BASE64=true
+
+############################
+### Data storage selection
+############################
+LIGHTRAG_KV_STORAGE=JsonKVStorage
+LIGHTRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage
+LIGHTRAG_GRAPH_STORAGE=NetworkXStorage
+LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage
+```
+
+Replace the model IDs with models available in your provider account when needed. Start the service and verify it before uploading documents:
+
+```bash
+docker compose up -d
+curl http://localhost:9621/health
+```
+
+Then open the WebUI at `http://localhost:9621/webui`, upload a small text or DOCX file, wait for indexing to finish, and run a `hybrid` or `mix` query.
+
+#### 2. Add Reranking
+
+Reranking is a query-time improvement. Enabling, disabling, or changing the reranker usually does not require re-indexing existing documents.
+
+For Cohere's official hosted rerank service:
+
+```bash
+RERANK_BINDING=cohere
+RERANK_MODEL=rerank-v3.5
+RERANK_BINDING_HOST=https://api.cohere.com/v2/rerank
+RERANK_BINDING_API_KEY=your_cohere_api_key
+```
+
+For a local vLLM reranker that exposes a Cohere-compatible API:
+
+```bash
+RERANK_BINDING=cohere
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=http://localhost:8000/rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+If LightRAG itself runs inside Docker and the reranker runs on the host, use a host-reachable address such as `host.docker.internal` instead of `localhost`. If the setup wizard creates the vLLM service, it injects the internal Compose service URL into `docker-compose.final.yml` for you.
+
+#### 3. Add Multimodal Parsing With MinerU Official API
+
+Use this after the basic document flow works. The MinerU official API avoids running a local parser service, but `MINERU_API_TOKEN` must be configured before the LightRAG server starts. The VLM role must use a provider/model that supports image input.
+
+```bash
+LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
+
+VLM_PROCESS_ENABLE=true
+VLM_LLM_MODEL=gpt-5-mini
+
+MINERU_API_MODE=official
+MINERU_API_TOKEN=your_mineru_api_token
+MINERU_OFFICIAL_ENDPOINT=https://mineru.net
+MINERU_MODEL_VERSION=vlm
+MINERU_IS_OCR=false
+```
+
+This routing uses the built-in `native` parser for supported DOCX files, MinerU for other MinerU-supported files such as PDFs and images, and `legacy` as the fallback. The `i`, `t`, and `e` options enable VLM analysis for image, table, and equation sidecars when the parser produces them.
+
+For official mode, Docker does not need a host-loopback MinerU endpoint. The container only needs outbound network access to `MINERU_OFFICIAL_ENDPOINT`.
+
+#### 4. GPU All-In-One Style Deployment
+
+For a local GPU-backed deployment, let the wizard generate `.env` and `docker-compose.final.yml` instead of hand-writing every service block:
+
+```bash
+make env-base
+```
+
+Recommended answers:
+
+- Configure the main LLM as a hosted or OpenAI-compatible provider.
+- Answer `yes` to `Run embedding model locally via Docker (vLLM)?`.
+- Choose `cuda` for the embedding device.
+- Enable reranking, answer `yes` to `Run rerank service locally via Docker?`, and choose `cuda` for the rerank device.
+
+Then configure storage:
+
+```bash
+make env-storage
+```
+
+Recommended storage choices:
+
+- `LIGHTRAG_KV_STORAGE=PGKVStorage`
+- `LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage`
+- `LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage`
+- `LIGHTRAG_GRAPH_STORAGE=MemgraphStorage`
+- Answer `yes` to run PostgreSQL, Milvus, and Memgraph locally via Docker.
+- Choose `cuda` for Milvus if your host has NVIDIA GPU support and the NVIDIA Container Toolkit is installed.
+
+Finally configure server-facing settings and validate the result:
+
+```bash
+make env-server
+make env-validate
+make env-security-check
+docker compose -f docker-compose.final.yml up -d
+```
+
+Before exposing this deployment, configure authentication, API keys, and SSL in `make env-server`. The generated `.env` stays host-usable; container-only service names and Docker-specific overrides are written into `docker-compose.final.yml`.
+
+Important rules before processing production data:
+
+- Choose the embedding model, embedding dimension, and asymmetric embedding settings before the first upload. Changing them later requires clearing the affected workspace/vector data and re-indexing documents.
+- Choose storage backends before the first upload. Direct migration between storage implementations is not supported.
+- Changing `LIGHTRAG_PARSER` affects only newly uploaded files. Delete and upload an existing document again if you want it processed by a different parser route.
+
 ### Nginx Reverse Proxy Configuration
 
 When using Nginx as a reverse proxy in front of LightRAG Server, you need to configure `client_max_body_size` for the `/documents/upload` endpoint to handle large file uploads. Without this configuration, Nginx will reject files larger than 1MB (the default limit) with a `413 Request Entity Too Large` error before the request reaches LightRAG.
@@ -342,10 +507,7 @@ MAX_PARALLEL_INSERT=2
 MAX_ASYNC=4
 ```
 
-On macOS, Gunicorn multi-worker mode also requires the Objective-C fork-safety
-override to be present before the Python process starts. Do not rely on `.env`
-for this variable; `.env` is loaded after Python startup and is too late for
-the Objective-C runtime:
+On macOS, Gunicorn multi-worker mode also requires the Objective-C fork-safety override to be present before the Python process starts. Do not rely on `.env` for this variable; `.env` is loaded after Python startup and is too late for the Objective-C runtime:
 
 ```shell
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
@@ -553,6 +715,7 @@ AWS_REGION=us-west-2
 Asymmetric embedding is explicit opt-in. Set `EMBEDDING_ASYMMETRIC=true` only when the selected embedding backend supports either provider task parameters or task prefixes. See [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md) before changing these settings, because existing data must be cleared and files re-indexed after any change.
 
 For LLM and embedding configuration examples, please refer to the `env.example` file in the project's root directory. To view the complete list of configurable options for OpenAI and Ollama-compatible LLM interfaces, use the following commands:
+
 ```
 lightrag-server --llm-binding openai --help
 lightrag-server --llm-binding ollama --help
@@ -801,6 +964,8 @@ The `include_chunk_content` parameter (default: `false`) controls whether the ac
 
 ### .env Examples
 
+The examples below are reference snippets for tuning existing deployments. For a first run, follow [Progressive Setup Recipes](#progressive-setup-recipes) instead of copying the entire `env.example` file by hand.
+
 ```bash
 ### Server Configuration
 # HOST=0.0.0.0
@@ -886,14 +1051,17 @@ LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 
 This uses the built-in `native` parser for supported files, enables table/equation sidecar analysis options for those files, uses paragraph semantic chunking where possible, and falls back to legacy extraction plus recursive chunking for other files.
 
-Full multimodal setup with an external MinerU service and a VLM:
+Full multimodal setup with the MinerU official API and a VLM:
 
 ```bash
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
 VLM_PROCESS_ENABLE=true
 VLM_LLM_MODEL=gpt-4o
-MINERU_API_MODE=local
-MINERU_LOCAL_ENDPOINT=http://localhost:8000
+MINERU_API_MODE=official
+MINERU_API_TOKEN=your_mineru_api_token
+MINERU_OFFICIAL_ENDPOINT=https://mineru.net
+MINERU_MODEL_VERSION=vlm
+MINERU_IS_OCR=false
 ```
 
 Use `DOCLING_ENDPOINT=http://localhost:5001` when routing files to `docling`.
