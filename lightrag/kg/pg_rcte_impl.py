@@ -83,7 +83,9 @@ class _PgPool:
         self._pool: asyncpg.Pool | None = None
 
     async def initialize(self, dsn: str, min_size: int = 1, max_size: int = 10) -> None:
-        self._pool = await asyncpg.create_pool(dsn, min_size=min_size, max_size=max_size)
+        self._pool = await asyncpg.create_pool(
+            dsn, min_size=min_size, max_size=max_size
+        )
         async with self._pool.acquire() as conn:
             await conn.execute(_DDL)
 
@@ -133,7 +135,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
     @property
     def _db(self) -> _PgPool:
         if self._pool is None:
-            raise RuntimeError("PgRcteGraphStorage not initialized — call initialize() first")
+            raise RuntimeError(
+                "PgRcteGraphStorage not initialized — call initialize() first"
+            )
         return self._pool
 
     # ------------------------------------------------------------------
@@ -196,14 +200,16 @@ class PgRcteGraphStorage(BaseGraphStorage):
     async def has_node(self, node_id: str) -> bool:
         row = await self._db.fetchrow(
             "SELECT 1 FROM lightrag_graph_nodes WHERE workspace = $1 AND id = $2",
-            self.workspace, node_id,
+            self.workspace,
+            node_id,
         )
         return row is not None
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         row = await self._db.fetchrow(
             "SELECT properties FROM lightrag_graph_nodes WHERE workspace = $1 AND id = $2",
-            self.workspace, node_id,
+            self.workspace,
+            node_id,
         )
         return json.loads(row["properties"]) if row else None
 
@@ -215,17 +221,21 @@ class PgRcteGraphStorage(BaseGraphStorage):
             ON CONFLICT (workspace, id)
             DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
             """,
-            self.workspace, node_id, json.dumps(node_data),
+            self.workspace,
+            node_id,
+            json.dumps(node_data),
         )
 
     async def delete_node(self, node_id: str) -> None:
         await self._db.execute(
             "DELETE FROM lightrag_graph_edges WHERE workspace=$1 AND (src_id=$2 OR tgt_id=$2)",
-            self.workspace, node_id,
+            self.workspace,
+            node_id,
         )
         await self._db.execute(
             "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND id = $2",
-            self.workspace, node_id,
+            self.workspace,
+            node_id,
         )
 
     async def remove_nodes(self, nodes: list[str]) -> None:
@@ -233,11 +243,13 @@ class PgRcteGraphStorage(BaseGraphStorage):
             return
         await self._db.execute(
             "DELETE FROM lightrag_graph_edges WHERE workspace=$1 AND (src_id=ANY($2) OR tgt_id=ANY($2))",
-            self.workspace, nodes,
+            self.workspace,
+            nodes,
         )
         await self._db.execute(
             "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND id = ANY($2)",
-            self.workspace, nodes,
+            self.workspace,
+            nodes,
         )
 
     # ------------------------------------------------------------------
@@ -251,7 +263,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
             WHERE workspace = $1
               AND ((src_id=$2 AND tgt_id=$3) OR (src_id=$3 AND tgt_id=$2))
             """,
-            self.workspace, source_node_id, target_node_id,
+            self.workspace,
+            source_node_id,
+            target_node_id,
         )
         return row is not None
 
@@ -264,7 +278,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
             WHERE workspace = $1
               AND ((src_id=$2 AND tgt_id=$3) OR (src_id=$3 AND tgt_id=$2))
             """,
-            self.workspace, source_node_id, target_node_id,
+            self.workspace,
+            source_node_id,
+            target_node_id,
         )
         return json.loads(row["properties"]) if row else None
 
@@ -278,7 +294,10 @@ class PgRcteGraphStorage(BaseGraphStorage):
             ON CONFLICT (workspace, src_id, tgt_id)
             DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
             """,
-            self.workspace, source_node_id, target_node_id, json.dumps(edge_data),
+            self.workspace,
+            source_node_id,
+            target_node_id,
+            json.dumps(edge_data),
         )
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
@@ -292,7 +311,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
             WHERE workspace = $1
               AND (src_id, tgt_id) IN (SELECT * FROM unnest($2::text[], $3::text[]))
             """,
-            self.workspace, srcs, tgts,
+            self.workspace,
+            srcs,
+            tgts,
         )
         await self._db.execute(
             """
@@ -300,7 +321,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
             WHERE workspace = $1
               AND (src_id, tgt_id) IN (SELECT * FROM unnest($2::text[], $3::text[]))
             """,
-            self.workspace, tgts, srcs,
+            self.workspace,
+            tgts,
+            srcs,
         )
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -311,7 +334,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
             SELECT src_id, tgt_id FROM lightrag_graph_edges
             WHERE workspace = $1 AND (src_id = $2 OR tgt_id = $2)
             """,
-            self.workspace, source_node_id,
+            self.workspace,
+            source_node_id,
         )
         return [(r["src_id"], r["tgt_id"]) for r in rows]
 
@@ -322,12 +346,14 @@ class PgRcteGraphStorage(BaseGraphStorage):
     async def node_degree(self, node_id: str) -> int:
         val = await self._db.fetchval(
             "SELECT COUNT(*) FROM lightrag_graph_edges WHERE workspace=$1 AND (src_id=$2 OR tgt_id=$2)",
-            self.workspace, node_id,
+            self.workspace,
+            node_id,
         )
         return int(val or 0)
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         import asyncio
+
         s, t = await asyncio.gather(self.node_degree(src_id), self.node_degree(tgt_id))
         return s + t
 
@@ -355,14 +381,17 @@ class PgRcteGraphStorage(BaseGraphStorage):
             ORDER BY degree DESC
             LIMIT $2
             """,
-            self.workspace, limit,
+            self.workspace,
+            limit,
         )
         return [r["id"] for r in rows]
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         rows = await self._db.fetch(
             "SELECT id FROM lightrag_graph_nodes WHERE workspace=$1 AND id ILIKE $2 ORDER BY id LIMIT $3",
-            self.workspace, f"%{query}%", limit,
+            self.workspace,
+            f"%{query}%",
+            limit,
         )
         return [r["id"] for r in rows]
 
@@ -378,7 +407,14 @@ class PgRcteGraphStorage(BaseGraphStorage):
             "SELECT src_id, tgt_id, properties FROM lightrag_graph_edges WHERE workspace = $1",
             self.workspace,
         )
-        return [{"src_id": r["src_id"], "tgt_id": r["tgt_id"], **json.loads(r["properties"])} for r in rows]
+        return [
+            {
+                "src_id": r["src_id"],
+                "tgt_id": r["tgt_id"],
+                **json.loads(r["properties"]),
+            }
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # Knowledge graph — Recursive CTE BFS
@@ -439,7 +475,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
         is_truncated = len(node_ids) >= max_nodes
 
         nodes = [
-            KnowledgeGraphNode(id=r["id"], labels=[r["id"]], properties=json.loads(r["properties"]))
+            KnowledgeGraphNode(
+                id=r["id"], labels=[r["id"]], properties=json.loads(r["properties"])
+            )
             for r in node_rows
         ]
 
@@ -450,7 +488,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
                 SELECT src_id, tgt_id, properties FROM lightrag_graph_edges
                 WHERE workspace = $1 AND src_id = ANY($2) AND tgt_id = ANY($2)
                 """,
-                self.workspace, list(node_ids),
+                self.workspace,
+                list(node_ids),
             )
             edges = [
                 KnowledgeGraphEdge(
@@ -474,7 +513,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
             return {}
         rows = await self._db.fetch(
             "SELECT id, properties FROM lightrag_graph_nodes WHERE workspace=$1 AND id=ANY($2)",
-            self.workspace, node_ids,
+            self.workspace,
+            node_ids,
         )
         return {r["id"]: json.loads(r["properties"]) for r in rows}
 
@@ -491,7 +531,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
             ) sub
             GROUP BY id
             """,
-            self.workspace, node_ids,
+            self.workspace,
+            node_ids,
         )
         result = {nid: 0 for nid in node_ids}
         for r in rows:
@@ -520,7 +561,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
             WHERE workspace=$1
               AND (src_id, tgt_id) IN (SELECT * FROM unnest($2::text[], $3::text[]))
             """,
-            self.workspace, srcs, tgts,
+            self.workspace,
+            srcs,
+            tgts,
         )
         result: dict[tuple[str, str], dict] = {}
         for r in rows:
@@ -531,7 +574,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
             WHERE workspace=$1
               AND (src_id, tgt_id) IN (SELECT * FROM unnest($2::text[], $3::text[]))
             """,
-            self.workspace, tgts, srcs,
+            self.workspace,
+            tgts,
+            srcs,
         )
         for r in rev:
             key = (r["tgt_id"], r["src_id"])
@@ -549,7 +594,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
             SELECT src_id, tgt_id FROM lightrag_graph_edges
             WHERE workspace=$1 AND (src_id=ANY($2) OR tgt_id=ANY($2))
             """,
-            self.workspace, node_ids,
+            self.workspace,
+            node_ids,
         )
         result: dict[str, list[tuple[str, str]]] = {nid: [] for nid in node_ids}
         for r in rows:
