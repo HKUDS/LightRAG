@@ -4,7 +4,7 @@ LightRAG FastAPI Server
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
@@ -15,6 +15,7 @@ import re
 import logging
 import logging.config
 import sys
+import textwrap
 import uvicorn
 import pipmaster as pm
 from typing import Any
@@ -87,96 +88,149 @@ def _inject_swagger_theme(html: str, theme: str) -> str:
     if theme not in {"dark", "light"}:
         theme = "auto"
 
-    theme_snippet = (
-        "\n    <script>\n"
-        f"      document.documentElement.dataset.lightragDocsTheme = {json.dumps(theme)};\n"
-        "    </script>\n"
+    # The script resolves dark / light / (auto + prefers-color-scheme) into a
+    # single boolean attribute `data-lightrag-docs-dark` on <html>. CSS below
+    # only matches when that attribute is present, so light/auto-light paths
+    # leave Swagger UI's default palette untouched.
+    theme_snippet = textwrap.dedent(
+        f"""
+        <script>
+          (function () {{
+            var ALLOWED = {{ dark: 1, light: 1, auto: 1 }};
+            var currentTheme = {json.dumps(theme)};
+            var mql = window.matchMedia('(prefers-color-scheme: dark)');
+            function resolveDark(value) {{
+              if (value === 'dark') return true;
+              if (value === 'auto') return mql.matches;
+              return false;
+            }}
+            function apply(value) {{
+              currentTheme = ALLOWED[value] ? value : 'auto';
+              var root = document.documentElement;
+              if (resolveDark(currentTheme)) {{
+                root.setAttribute('data-lightrag-docs-dark', '1');
+              }} else {{
+                root.removeAttribute('data-lightrag-docs-dark');
+              }}
+            }}
+            apply(currentTheme);
+            // Re-resolve when the OS theme flips while `theme=auto` is active.
+            var onMqlChange = function () {{ apply(currentTheme); }};
+            if (mql.addEventListener) mql.addEventListener('change', onMqlChange);
+            else if (mql.addListener) mql.addListener(onMqlChange);
+            window.addEventListener('message', function (event) {{
+              var data = event.data;
+              if (!data || data.type !== 'lightrag:set-docs-theme') return;
+              apply(data.theme);
+            }});
+          }})();
+        </script>
+        <style>
+          html[data-lightrag-docs-dark="1"] {{
+            color-scheme: dark;
+          }}
+
+          html[data-lightrag-docs-dark="1"] body,
+          html[data-lightrag-docs-dark="1"] .swagger-ui,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .scheme-container,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-box,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .dialog-ux .modal-ux,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container {{
+            background: #0f172a;
+            color: #e5e7eb;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .info .title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock-tag,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock .opblock-summary-description,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .parameter__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .parameter__type,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .response-col_status,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .response-col_description,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container h4,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container label,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .markdown p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .markdown li,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .renderedMarkdown p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .renderedMarkdown li,
+          html[data-lightrag-docs-dark="1"] .swagger-ui table thead tr th,
+          html[data-lightrag-docs-dark="1"] .swagger-ui table tbody tr td,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li button.tablinks {{
+            color: #e5e7eb;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock-description-wrapper p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock-external-docs-wrapper p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .response-col_links {{
+            color: #cbd5f5;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui input,
+          html[data-lightrag-docs-dark="1"] .swagger-ui textarea,
+          html[data-lightrag-docs-dark="1"] .swagger-ui select {{
+            background: #020617;
+            border-color: #334155;
+            color: #f8fafc;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .markdown code,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .renderedMarkdown code,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .highlight-code,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .highlight-code pre,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .microlight,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .body-param__example,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .example,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-example pre {{
+            background: #020617;
+            color: #e2e8f0;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui table thead tr th,
+          html[data-lightrag-docs-dark="1"] .swagger-ui table tbody tr td {{
+            border-color: #334155;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li.active button.tablinks,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li.tabitem.active {{
+            color: #f8fafc;
+            border-bottom-color: #34d399;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .btn.authorize,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-wrapper .authorize {{
+            background: #064e3b;
+            border-color: #34d399;
+            color: #d1fae5;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .btn.authorize svg {{
+            fill: #d1fae5;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .dialog-ux .modal-ux,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .scheme-container,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock {{
+            border-color: #334155;
+            box-shadow: none;
+          }}
+        </style>
         """
-    <style>
-      html[data-lightrag-docs-theme="dark"] {
-        color-scheme: dark;
-        --lightrag-docs-bg: #0f172a;
-        --lightrag-docs-input-bg: #020617;
-        --lightrag-docs-border: #334155;
-        --lightrag-docs-text: #e5e7eb;
-        --lightrag-docs-input-text: #f8fafc;
-        --lightrag-docs-authorize-bg: #064e3b;
-        --lightrag-docs-authorize-border: #34d399;
-        --lightrag-docs-authorize-text: #d1fae5;
-        --lightrag-docs-shadow: none;
-      }
+    ).strip()
 
-      @media (prefers-color-scheme: dark) {
-        html[data-lightrag-docs-theme="auto"] {
-          color-scheme: dark;
-          --lightrag-docs-bg: #0f172a;
-          --lightrag-docs-input-bg: #020617;
-          --lightrag-docs-border: #334155;
-          --lightrag-docs-text: #e5e7eb;
-          --lightrag-docs-input-text: #f8fafc;
-          --lightrag-docs-authorize-bg: #064e3b;
-          --lightrag-docs-authorize-border: #34d399;
-          --lightrag-docs-authorize-text: #d1fae5;
-          --lightrag-docs-shadow: none;
-        }
-      }
-
-      body,
-      .swagger-ui,
-      .swagger-ui .scheme-container,
-      .swagger-ui section.models,
-      .swagger-ui .model-box,
-      .swagger-ui .opblock,
-      .swagger-ui .dialog-ux .modal-ux,
-      .swagger-ui .auth-container {
-        background: var(--lightrag-docs-bg);
-        color: var(--lightrag-docs-text);
-      }
-
-      .swagger-ui .info .title,
-      .swagger-ui .opblock-tag,
-      .swagger-ui .opblock .opblock-summary-description,
-      .swagger-ui .model-title,
-      .swagger-ui .parameter__name,
-      .swagger-ui .parameter__type,
-      .swagger-ui .response-col_status,
-      .swagger-ui .response-col_description,
-      .swagger-ui .auth-container h4,
-      .swagger-ui .auth-container label,
-      .swagger-ui .auth-container p {
-        color: var(--lightrag-docs-text);
-      }
-
-      .swagger-ui input,
-      .swagger-ui textarea,
-      .swagger-ui select {
-        background: var(--lightrag-docs-input-bg);
-        border-color: var(--lightrag-docs-border);
-        color: var(--lightrag-docs-input-text);
-      }
-
-      .swagger-ui .btn.authorize,
-      .swagger-ui .auth-wrapper .authorize {
-        background: var(--lightrag-docs-authorize-bg);
-        border-color: var(--lightrag-docs-authorize-border);
-        color: var(--lightrag-docs-authorize-text);
-      }
-
-      .swagger-ui .btn.authorize svg {
-        fill: var(--lightrag-docs-authorize-text);
-      }
-
-      .swagger-ui .dialog-ux .modal-ux,
-      .swagger-ui .scheme-container,
-      .swagger-ui section.models,
-      .swagger-ui .opblock {
-        border-color: var(--lightrag-docs-border);
-        box-shadow: var(--lightrag-docs-shadow);
-      }
-    </style>
-    """
-    )
-    return html.replace("</head>", f"{theme_snippet}</head>")
+    needle = "</head>"
+    if needle not in html:
+        logger.warning(
+            "Swagger UI HTML missing </head> tag; theme patch was skipped. "
+            "FastAPI's swagger template may have changed."
+        )
+        return html
+    return html.replace(needle, f"{theme_snippet}\n{needle}", 1)
 
 
 # Fixed WebUI mount path. Used as `app.mount(WEBUI_PATH, ...)` and as the
@@ -1837,7 +1891,7 @@ def create_app(args):
         html = _inject_swagger_theme(
             html, request.query_params.get("theme", "auto").lower()
         )
-        return Response(content=html, media_type="text/html")
+        return HTMLResponse(content=html)
 
     @app.get("/docs/oauth2-redirect", include_in_schema=False)
     async def swagger_ui_redirect():
