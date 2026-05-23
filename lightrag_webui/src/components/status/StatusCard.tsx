@@ -42,6 +42,44 @@ const statValue = (value: number | undefined) => {
   return typeof value === 'number' ? value.toString() : '-'
 }
 
+const boolTF = (value: boolean | undefined) => (value ? 'T' : 'F')
+
+type MinerUStatus = NonNullable<LightragStatus['configuration']['mineru']>
+type DoclingStatus = NonNullable<LightragStatus['configuration']['docling']>
+
+const formatMinerU = (m: MinerUStatus | undefined): string => {
+  if (!m || (!m.endpoint && !m.api_mode)) return '-'
+  const opts = m.options || {}
+  const parts: string[] = []
+  if (m.api_mode) parts.push(`mode=${m.api_mode}`)
+  if (opts.language !== undefined) parts.push(`lang=${opts.language || '-'}`)
+  if (opts.enable_table !== undefined) parts.push(`table=${boolTF(opts.enable_table)}`)
+  if (opts.enable_formula !== undefined) parts.push(`formula=${boolTF(opts.enable_formula)}`)
+  if (m.api_mode === 'official') {
+    if (opts.model_version !== undefined) parts.push(`model_version=${opts.model_version || '-'}`)
+    if (opts.is_ocr !== undefined) parts.push(`ocr=${boolTF(opts.is_ocr)}`)
+  } else if (m.api_mode === 'local') {
+    if (opts.local_backend !== undefined) parts.push(`backend=${opts.local_backend || '-'}`)
+    if (opts.local_parse_method !== undefined) parts.push(`parse_method=${opts.local_parse_method || '-'}`)
+    if (opts.local_image_analysis !== undefined) parts.push(`image_analysis=${boolTF(opts.local_image_analysis)}`)
+  }
+  const endpoint = m.endpoint || '-'
+  return parts.length ? `${endpoint} (${parts.join(', ')})` : endpoint
+}
+
+const formatDocling = (d: DoclingStatus | undefined): string => {
+  if (!d || !d.endpoint) return '-'
+  const opts = d.options || {}
+  const parts: string[] = []
+  if (opts.do_ocr !== undefined) parts.push(`ocr=${boolTF(opts.do_ocr)}`)
+  if (opts.force_ocr !== undefined) parts.push(`force=${boolTF(opts.force_ocr)}`)
+  if (opts.ocr_engine !== undefined) parts.push(`engine=${opts.ocr_engine || '-'}`)
+  if (opts.ocr_lang !== undefined) parts.push(`lang=${opts.ocr_lang || '-'}`)
+  if (opts.do_formula_enrichment !== undefined)
+    parts.push(`formula=${boolTF(opts.do_formula_enrichment)}`)
+  return parts.length ? `${d.endpoint} (${parts.join(', ')})` : d.endpoint
+}
+
 const getModelRows = (status: LightragStatus): RoleLLMRow[] => {
   const configs = status.configuration.role_llm_config || {}
   const queues = status.llm_queue_status || {}
@@ -142,16 +180,46 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
       <div className="space-y-1">
         <h4 className="font-medium">{t('graphPanel.statusCard.serverInfo')}</h4>
         <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
-          <span>{t('graphPanel.statusCard.workingDirectory')}:</span>
-          <span className="truncate">{status.working_directory}</span>
           <span>{t('graphPanel.statusCard.inputDirectory')}:</span>
           <span className="truncate">{status.input_directory}</span>
-          <span>{t('graphPanel.statusCard.summarySettings')}:</span>
-          <span>{status.configuration.summary_language} / LLM summary on {status.configuration.force_llm_summary_on_merge.toString()} fragments</span>
-          <span>{t('graphPanel.statusCard.threshold')}:</span>
-          <span>cosine {status.configuration.cosine_threshold} / rerank_score {status.configuration.min_rerank_score} / max_related {status.configuration.related_chunk_number}</span>
+          <span>{t('graphPanel.statusCard.parser')}:</span>
+          <span
+            className="truncate"
+            title={status.configuration.parser_routing || undefined}
+          >
+            {textValue(status.configuration.parser_routing)}
+            {' (VLM_PROCESS_ENABLE='}
+            {String(status.configuration.vlm_process_enable ?? false)}
+            {')'}
+          </span>
+          <span>{t('graphPanel.statusCard.mineru')}:</span>
+          {(() => {
+            const minerUText = formatMinerU(status.configuration.mineru)
+            return (
+              <span className="truncate" title={minerUText !== '-' ? minerUText : undefined}>
+                {minerUText}
+              </span>
+            )
+          })()}
+          <span>{t('graphPanel.statusCard.docling')}:</span>
+          {(() => {
+            const doclingText = formatDocling(status.configuration.docling)
+            return (
+              <span className="truncate" title={doclingText !== '-' ? doclingText : undefined}>
+                {doclingText}
+              </span>
+            )
+          })()}
           <span>{t('graphPanel.statusCard.otherSettings')}:</span>
-          <span>max_graph_nodes {status.configuration.max_graph_nodes || '-'} / max_parallel_insert {status.configuration.max_parallel_insert}</span>
+          <span>
+            {status.configuration.summary_language}
+            {' / Sum_on_f '}{status.configuration.force_llm_summary_on_merge.toString()}
+            {' / max_p_i '}{status.configuration.max_parallel_insert}
+            {' / cosine '}{status.configuration.cosine_threshold}
+            {' / rerank '}{status.configuration.min_rerank_score}
+            {' / max_related '}{status.configuration.related_chunk_number}
+            {' / max_g_n '}{status.configuration.max_graph_nodes || '-'}
+          </span>
           {status.keyed_locks && (
             <>
               <span>{t('graphPanel.statusCard.lockStatus')}:</span>

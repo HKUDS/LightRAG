@@ -294,10 +294,11 @@
     "statusCard": {
       "unavailable": "状态信息不可用",
       "serverInfo": "服务器信息",
-      "workingDirectory": "工作目录",
       "inputDirectory": "输入目录",
+      "parser": "解析器",
+      "mineru": "MinerU",
+      "docling": "Docling",
       "otherSettings": "其它设置",
-      "summarySettings": "摘要设置",
       "llmConfig": "模型配置",
       "llmBinding": "LLM绑定",
       "llmBindingHost": "LLM端点",
@@ -315,8 +316,7 @@
       "rerankerConfig": "重排序配置",
       "rerankerBindingHost": "重排序端点",
       "rerankerModel": "重排序模型",
-      "lockStatus": "锁状态",
-      "threshold": "阈值"
+      "lockStatus": "锁状态"
     },
     "propertiesView": {
       "editProperty": "编辑{{property}}",

@@ -93,6 +93,32 @@ export type LightragStatus = {
     min_rerank_score: number
     related_chunk_number: number
     role_llm_config?: Record<string, LightragRoleLLMConfig>
+    vlm_process_enable?: boolean
+    parser_routing?: string
+    mineru?: {
+      endpoint: string
+      api_mode: 'official' | 'local' | null
+      options: {
+        language?: string
+        enable_table?: boolean
+        enable_formula?: boolean
+        model_version?: string
+        is_ocr?: boolean
+        local_backend?: string
+        local_parse_method?: string
+        local_image_analysis?: boolean
+      }
+    }
+    docling?: {
+      endpoint: string
+      options: {
+        do_ocr?: boolean
+        force_ocr?: boolean
+        ocr_engine?: string
+        ocr_lang?: string
+        do_formula_enrichment?: boolean
+      }
+    }
   }
   update_status?: Record<string, any>
   core_version?: string

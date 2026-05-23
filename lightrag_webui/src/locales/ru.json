@@ -294,10 +294,11 @@
     "statusCard": {
       "unavailable": "Информация о статусе недоступна",
       "serverInfo": "Информация о сервере",
-      "workingDirectory": "Рабочая директория",
       "inputDirectory": "Входная директория",
+      "parser": "Парсер",
+      "mineru": "MinerU",
+      "docling": "Docling",
       "otherSettings": "Другие настройки",
-      "summarySettings": "Настройки краткого содержания",
       "llmConfig": "Конфигурация модели",
       "llmBinding": "Привязка LLM",
       "llmBindingHost": "Конечная точка LLM",
@@ -315,8 +316,7 @@
       "rerankerConfig": "Конфигурация ранжирования",
       "rerankerBindingHost": "Конечная точка ранжирования",
       "rerankerModel": "Модель ранжирования",
-      "lockStatus": "Статус блокировки",
-      "threshold": "Порог"
+      "lockStatus": "Статус блокировки"
     },
     "propertiesView": {
       "editProperty": "Редактировать {{property}}",

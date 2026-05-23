@@ -294,10 +294,11 @@
     "statusCard": {
       "unavailable": "ステータス情報が利用できません",
       "serverInfo": "サーバー情報",
-      "workingDirectory": "作業ディレクトリ",
       "inputDirectory": "入力ディレクトリ",
+      "parser": "パーサー",
+      "mineru": "MinerU",
+      "docling": "Docling",
       "otherSettings": "その他の設定",
-      "summarySettings": "概要設定",
       "llmConfig": "モデル設定",
       "llmBinding": "LLMバインディング",
       "llmBindingHost": "LLMエンドポイント",
@@ -315,8 +316,7 @@
       "rerankerConfig": "リランカー設定",
       "rerankerBindingHost": "リランカーエンドポイント",
       "rerankerModel": "リランカーモデル",
-      "lockStatus": "ロックステータス",
-      "threshold": "しきい値"
+      "lockStatus": "ロックステータス"
     },
     "propertiesView": {
       "editProperty": "{{property}}を編集",

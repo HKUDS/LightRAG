@@ -294,10 +294,11 @@
     "statusCard": {
       "unavailable": "Statusinformationen nicht verfügbar",
       "serverInfo": "Server-Informationen",
-      "workingDirectory": "Arbeitsverzeichnis",
       "inputDirectory": "Eingabeverzeichnis",
+      "parser": "Parser",
+      "mineru": "MinerU",
+      "docling": "Docling",
       "otherSettings": "Weitere Einstellungen",
-      "summarySettings": "Zusammenfassungseinstellungen",
       "llmConfig": "Modellkonfiguration",
       "llmBinding": "LLM-Bindung",
       "llmBindingHost": "LLM-Endpunkt",
@@ -315,8 +316,7 @@
       "rerankerConfig": "Reranker-Konfiguration",
       "rerankerBindingHost": "Reranker-Endpunkt",
       "rerankerModel": "Reranker-Modell",
-      "lockStatus": "Sperrstatus",
-      "threshold": "Schwellenwert"
+      "lockStatus": "Sperrstatus"
     },
     "propertiesView": {
       "editProperty": "{{property}} bearbeiten",
