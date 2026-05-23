@@ -42,42 +42,48 @@ const statValue = (value: number | undefined) => {
   return typeof value === 'number' ? value.toString() : '-'
 }
 
-const boolTF = (value: boolean | undefined) => (value ? 'T' : 'F')
-
 type MinerUStatus = NonNullable<LightragStatus['configuration']['mineru']>
 type DoclingStatus = NonNullable<LightragStatus['configuration']['docling']>
+
+// Compact param display: values printed verbatim; True bools printed as
+// their flag name; False bools and empty values dropped entirely. Params
+// after the endpoint are wrapped in parens so they don't read like URL
+// path segments.
+const joinParts = (endpoint: string, parts: string[]): string => {
+  if (!endpoint && !parts.length) return '-'
+  if (!parts.length) return endpoint
+  if (!endpoint) return parts.join(' / ')
+  return `${endpoint} (${parts.join(' / ')})`
+}
 
 const formatMinerU = (m: MinerUStatus | undefined): string => {
   if (!m || (!m.endpoint && !m.api_mode)) return '-'
   const opts = m.options || {}
   const parts: string[] = []
-  if (m.api_mode) parts.push(`mode=${m.api_mode}`)
-  if (opts.language !== undefined) parts.push(`lang=${opts.language || '-'}`)
-  if (opts.enable_table !== undefined) parts.push(`table=${boolTF(opts.enable_table)}`)
-  if (opts.enable_formula !== undefined) parts.push(`formula=${boolTF(opts.enable_formula)}`)
+  if (m.api_mode) parts.push(m.api_mode)
+  if (opts.language) parts.push(opts.language)
+  if (opts.enable_table) parts.push('table')
+  if (opts.enable_formula) parts.push('formula')
   if (m.api_mode === 'official') {
-    if (opts.model_version !== undefined) parts.push(`model_version=${opts.model_version || '-'}`)
-    if (opts.is_ocr !== undefined) parts.push(`ocr=${boolTF(opts.is_ocr)}`)
+    if (opts.model_version) parts.push(opts.model_version)
+    if (opts.is_ocr) parts.push('ocr')
   } else if (m.api_mode === 'local') {
-    if (opts.local_backend !== undefined) parts.push(`backend=${opts.local_backend || '-'}`)
-    if (opts.local_parse_method !== undefined) parts.push(`parse_method=${opts.local_parse_method || '-'}`)
-    if (opts.local_image_analysis !== undefined) parts.push(`image_analysis=${boolTF(opts.local_image_analysis)}`)
+    if (opts.local_backend) parts.push(opts.local_backend)
+    if (opts.local_parse_method) parts.push(opts.local_parse_method)
+    if (opts.local_image_analysis) parts.push('image_analysis')
   }
-  const endpoint = m.endpoint || '-'
-  return parts.length ? `${endpoint} (${parts.join(', ')})` : endpoint
+  return joinParts(m.endpoint || '', parts)
 }
 
 const formatDocling = (d: DoclingStatus | undefined): string => {
   if (!d || !d.endpoint) return '-'
   const opts = d.options || {}
   const parts: string[] = []
-  if (opts.do_ocr !== undefined) parts.push(`ocr=${boolTF(opts.do_ocr)}`)
-  if (opts.force_ocr !== undefined) parts.push(`force=${boolTF(opts.force_ocr)}`)
-  if (opts.ocr_engine !== undefined) parts.push(`engine=${opts.ocr_engine || '-'}`)
-  if (opts.ocr_lang !== undefined) parts.push(`lang=${opts.ocr_lang || '-'}`)
-  if (opts.do_formula_enrichment !== undefined)
-    parts.push(`formula=${boolTF(opts.do_formula_enrichment)}`)
-  return parts.length ? `${d.endpoint} (${parts.join(', ')})` : d.endpoint
+  if (opts.ocr_engine) parts.push(opts.ocr_engine)
+  if (opts.do_ocr) parts.push('ocr')
+  if (opts.force_ocr) parts.push('force_ocr')
+  if (opts.do_formula_enrichment) parts.push('formula')
+  return joinParts(d.endpoint, parts)
 }
 
 const getModelRows = (status: LightragStatus): RoleLLMRow[] => {
