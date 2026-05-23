@@ -50,7 +50,11 @@ from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
 )
-from lightrag.parser.routing import validate_parser_routing_config
+from lightrag.parser.routing import (
+    parser_rules_from_env,
+    validate_parser_routing_config,
+)
+from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
@@ -221,6 +225,63 @@ def _get_storage_workspaces(rag: Any) -> dict[str, str | None]:
             getattr(rag, "chunk_entity_relation_graph", None)
         ),
         "vector_storage": _get_storage_workspace(getattr(rag, "entities_vdb", None)),
+    }
+
+
+def _build_mineru_status() -> dict[str, Any]:
+    """Snapshot MinerU-related env vars for the /health endpoint.
+
+    Reads env directly (no MinerURawClient instantiation — that has
+    side effects like token validation). Reuses MinerUParserOptions to
+    share defaulting logic with the actual parser path.
+    """
+    api_mode_raw = os.getenv("MINERU_API_MODE", "").strip().lower()
+    api_mode: str | None = api_mode_raw or None
+    endpoint = ""
+    if api_mode == "official":
+        endpoint = os.getenv("MINERU_OFFICIAL_ENDPOINT", "").strip()
+    elif api_mode == "local":
+        endpoint = os.getenv("MINERU_LOCAL_ENDPOINT", "").strip()
+
+    options: dict[str, Any] = {}
+    if api_mode in ("official", "local"):
+        try:
+            opts = MinerUParserOptions.from_env(api_mode=api_mode)
+        except Exception:
+            opts = None
+        if opts is not None:
+            options = {
+                "language": opts.language,
+                "enable_table": opts.enable_table,
+                "enable_formula": opts.enable_formula,
+            }
+            if opts.api_mode == "official":
+                options["model_version"] = opts.model_version
+                options["is_ocr"] = opts.is_ocr
+            else:
+                options["local_backend"] = opts.local_backend
+                options["local_parse_method"] = opts.local_parse_method
+                options["local_image_analysis"] = opts.local_image_analysis
+
+    return {"endpoint": endpoint, "api_mode": api_mode, "options": options}
+
+
+def _build_docling_status() -> dict[str, Any]:
+    """Snapshot Docling-related env vars for the /health endpoint."""
+    endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
+    if not endpoint:
+        return {"endpoint": "", "options": {}}
+    return {
+        "endpoint": endpoint,
+        "options": {
+            "do_ocr": get_env_value("DOCLING_DO_OCR", True, bool),
+            "force_ocr": get_env_value("DOCLING_FORCE_OCR", True, bool),
+            "ocr_engine": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
+            "ocr_lang": os.getenv("DOCLING_OCR_LANG", "").strip(),
+            "do_formula_enrichment": get_env_value(
+                "DOCLING_DO_FORMULA_ENRICHMENT", False, bool
+            ),
+        },
     }
 
 
@@ -1890,6 +1951,23 @@ def create_app(args):
                                     "graph_storage": "default",
                                     "vector_storage": "default",
                                 },
+                                "parser_routing": "pdf:mineru",
+                                "mineru": {
+                                    "endpoint": "http://localhost:8080",
+                                    "api_mode": "local",
+                                    "options": {
+                                        "language": "ch",
+                                        "enable_table": True,
+                                        "enable_formula": True,
+                                        "local_backend": "pipeline",
+                                        "local_parse_method": "auto",
+                                        "local_image_analysis": False,
+                                    },
+                                },
+                                "docling": {
+                                    "endpoint": "",
+                                    "options": {},
+                                },
                             },
                             "auth_mode": "enabled",
                             "pipeline_busy": False,
@@ -1983,6 +2061,10 @@ def create_app(args):
                     "embedding_batch_num": args.embedding_batch_num,
                     "embedding_timeout": args.embedding_timeout,
                     "role_llm_config": rag.get_llm_role_config(),
+                    # Parser routing snapshot — surfaced in the WebUI status card
+                    "parser_routing": parser_rules_from_env(),
+                    "mineru": _build_mineru_status(),
+                    "docling": _build_docling_status(),
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_busy,
