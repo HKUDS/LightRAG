@@ -1451,6 +1451,22 @@ class _PipelineMixin:
             try:
                 doc_id_w, status_doc_w = item
                 file_path_w = getattr(status_doc_w, "file_path", "unknown_source")
+                # Boundary cancellation check: skip parsing the next queued doc
+                # without invoking the engine, mark it FAILED with a friendly
+                # "User cancelled" message, and let the finally task_done()
+                # drain the queue so q.join() in _run_pipeline_batch returns.
+                if await self._cancellation_requested(
+                    ctx.pipeline_status, ctx.pipeline_status_lock
+                ):
+                    await self._mark_doc_cancelled_in_stage(
+                        doc_id=doc_id_w,
+                        status_doc=status_doc_w,
+                        file_path=file_path_w,
+                        stage_label="parse",
+                        pipeline_status=ctx.pipeline_status,
+                        pipeline_status_lock=ctx.pipeline_status_lock,
+                    )
+                    continue
                 content_data_w = await self.full_docs.get_by_id(doc_id_w)
                 if not content_data_w:
                     raise Exception(
@@ -1547,6 +1563,20 @@ class _PipelineMixin:
                     continue
 
                 await ctx.q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
+            except PipelineCancelledException:
+                # Cancellation raised from inside the parse engine (future-
+                # proofing — engines don't currently call _raise_if_cancelled,
+                # but if they do, route through the same friendly message
+                # path as the boundary check above instead of the generic
+                # except block below.
+                await self._mark_doc_cancelled_in_stage(
+                    doc_id=doc_id_w,
+                    status_doc=status_doc_w,
+                    file_path=getattr(status_doc_w, "file_path", "unknown_source"),
+                    stage_label="parse",
+                    pipeline_status=ctx.pipeline_status,
+                    pipeline_status_lock=ctx.pipeline_status_lock,
+                )
             except Exception as e:
                 logger.error(f"Parse worker failed ({engine}): {e}")
                 try:
@@ -1575,6 +1605,22 @@ class _PipelineMixin:
             try:
                 doc_id_w, status_doc_w, parsed_data_w = item
                 file_path_w = getattr(status_doc_w, "file_path", "unknown_source")
+                # Boundary cancellation check: same pattern as _parse_worker.
+                # Items already past PARSING that are still queued for analyze
+                # are short-circuited to FAILED here so the multimodal VLM
+                # path is not entered after the user clicked cancel.
+                if await self._cancellation_requested(
+                    ctx.pipeline_status, ctx.pipeline_status_lock
+                ):
+                    await self._mark_doc_cancelled_in_stage(
+                        doc_id=doc_id_w,
+                        status_doc=status_doc_w,
+                        file_path=file_path_w,
+                        stage_label="analyze",
+                        pipeline_status=ctx.pipeline_status,
+                        pipeline_status_lock=ctx.pipeline_status_lock,
+                    )
+                    continue
                 refreshed_content_w = parsed_data_w.get("content", "") or ""
                 refreshed_summary_w = get_content_summary(refreshed_content_w)
                 refreshed_length_w = len(refreshed_content_w)
@@ -1600,6 +1646,19 @@ class _PipelineMixin:
                     pipeline_status_lock=ctx.pipeline_status_lock,
                 )
                 await ctx.q_process.put((doc_id_w, status_doc_w, analyzed))
+            except PipelineCancelledException:
+                # In-flight cancellation surfaced from analyze_multimodal
+                # (poll loop detected cancellation_requested mid-VLM).
+                # Route through the friendly message path so error_msg and
+                # history_messages match the boundary-check branch.
+                await self._mark_doc_cancelled_in_stage(
+                    doc_id=doc_id_w,
+                    status_doc=status_doc_w,
+                    file_path=getattr(status_doc_w, "file_path", "unknown_source"),
+                    stage_label="analyze",
+                    pipeline_status=ctx.pipeline_status,
+                    pipeline_status_lock=ctx.pipeline_status_lock,
+                )
             except Exception as e:
                 # Mirror _parse_worker: failures here must transition the
                 # document to FAILED with a diagnostic ``error_msg``, otherwise
@@ -2300,6 +2359,60 @@ class _PipelineMixin:
         async with pipeline_status_lock:
             if pipeline_status.get("cancellation_requested", False):
                 raise PipelineCancelledException("User cancelled")
+
+    async def _cancellation_requested(
+        self,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> bool:
+        """Read-only cancellation check.
+
+        Use this when a worker wants to branch on the flag (e.g. drain a queue
+        item) instead of raising. Callers that prefer the exception style
+        should use :meth:`_raise_if_cancelled` instead.
+        """
+        async with pipeline_status_lock:
+            return bool(pipeline_status.get("cancellation_requested", False))
+
+    async def _mark_doc_cancelled_in_stage(
+        self,
+        *,
+        doc_id: str,
+        status_doc: DocProcessingStatus,
+        file_path: str,
+        stage_label: str,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Mark a queued document FAILED with a 'User cancelled' message.
+
+        Used by the PARSE and ANALYZE workers, which do not have the
+        chunks-snapshot / pending-tasks bookkeeping that
+        :meth:`_finalize_doc_failure` carries for the PROCESS stage. Also
+        flushes the LLM response cache so any cache_ids written by completed
+        sibling tasks (e.g. successful multimodal items inside a doc that is
+        being cancelled) survive a server restart.
+        """
+        error_msg = f"User cancelled during {stage_label}: {file_path}"
+        logger.warning(error_msg)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = error_msg
+            pipeline_status["history_messages"].append(error_msg)
+        if self.llm_response_cache:
+            try:
+                await self.llm_response_cache.index_done_callback()
+            except Exception as persist_error:
+                logger.error(f"Failed to persist LLM cache: {persist_error}")
+        try:
+            await self._upsert_doc_status_transition(
+                doc_id=doc_id,
+                status=DocStatus.FAILED,
+                status_doc=status_doc,
+                file_path=file_path,
+                extra_fields={"error_msg": error_msg},
+            )
+        except Exception as exc:
+            logger.error(f"Failed to mark cancelled doc {doc_id} as FAILED: {exc}")
 
     async def _finalize_doc_failure(
         self,
@@ -4212,46 +4325,111 @@ class _PipelineMixin:
                         pipeline_status["history_messages"].append(log_message)
                     start_logged = True
 
-                valid_keys: list[str] = []
-                analyze_tasks: list[Any] = []
+                # Pre-schedule cancellation check: if the user cancelled
+                # between _analyze_worker's boundary check and the moment
+                # we are about to spawn VLM tasks for this sidecar, raise
+                # here so no item task ever runs. Without this we'd briefly
+                # create tasks and then cancel them on the very first poll
+                # iteration — wasteful and harder to reason about.
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    await self._raise_if_cancelled(
+                        pipeline_status, pipeline_status_lock
+                    )
+
+                task_meta: dict[asyncio.Task, tuple[str, dict]] = {}
                 for item_id, item in items.items():
                     if not isinstance(item, dict):
                         continue
-                    valid_keys.append(item_id)
                     if kind == "drawing":
                         inner_coro = _analyze_drawing(
                             item_id, item, sidecar_path.parent
                         )
                     else:
                         inner_coro = _analyze_text_modality(kind, item_id, item)
-                    analyze_tasks.append(
+                    task = asyncio.create_task(
                         _run_with_progress_log(inner_coro, kind, item_id)
                     )
+                    task_meta[task] = (item_id, item)
 
-                analyzed = await asyncio.gather(*analyze_tasks, return_exceptions=True)
+                if not task_meta:
+                    # No valid items in this sidecar — asyncio.wait([]) would
+                    # ValueError, so skip the wait loop entirely.
+                    continue
 
-                failure_to_raise: MultimodalAnalysisError | None = None
-                for idx, item_id in enumerate(valid_keys):
-                    item = items.get(item_id)
-                    if not isinstance(item, dict):
-                        continue
-                    outcome = analyzed[idx]
-                    if isinstance(outcome, MultimodalAnalysisError):
-                        item["llm_analyze_result"] = _failure_result(str(outcome))
-                        if failure_to_raise is None:
-                            failure_to_raise = outcome
-                    elif isinstance(outcome, Exception):
-                        item["llm_analyze_result"] = _failure_result(
-                            f"unexpected error: {outcome}"
+                # Fail-fast polling loop. Three trigger paths:
+                #   1. an item task raises (e.g. MultimodalAnalysisError) →
+                #      asyncio.wait returns early via FIRST_EXCEPTION;
+                #   2. an item task raises PipelineCancelledException →
+                #      same path, preserving the exception type;
+                #   3. user clicks /cancel_pipeline mid-VLM → the
+                #      cancellation_requested check at the top of the next
+                #      poll iteration (≤ POLL_INTERVAL_SECONDS) fabricates
+                #      a PipelineCancelledException.
+                #
+                # Do NOT add a watcher coroutine to the wait set: it would be
+                # an infinite loop that stays pending when all items succeed,
+                # preventing FIRST_EXCEPTION from ever returning.
+                pending: set[asyncio.Task] = set(task_meta.keys())
+                fail_fast_exc: BaseException | None = None
+                POLL_INTERVAL_SECONDS = 0.5
+                while pending:
+                    if (
+                        pipeline_status is not None
+                        and pipeline_status_lock is not None
+                        and await self._cancellation_requested(
+                            pipeline_status, pipeline_status_lock
                         )
-                        if failure_to_raise is None:
-                            failure_to_raise = MultimodalAnalysisError(
-                                f"{root_key}/{item_id}: unexpected error: {outcome}"
-                            )
-                    else:
-                        result_obj, cache_id = outcome
+                    ):
+                        fail_fast_exc = PipelineCancelledException(
+                            "User cancelled during analyze"
+                        )
+                        break
+
+                    done_now, pending = await asyncio.wait(
+                        pending,
+                        timeout=POLL_INTERVAL_SECONDS,
+                        return_when=asyncio.FIRST_EXCEPTION,
+                    )
+                    for t in done_now:
+                        if t.cancelled():
+                            continue
+                        texc = t.exception()
+                        if texc is not None:
+                            # Preserve original exception type so the
+                            # _analyze_worker except dispatch can distinguish
+                            # PipelineCancelledException from
+                            # MultimodalAnalysisError.
+                            fail_fast_exc = texc
+                            break
+                    if fail_fast_exc is not None:
+                        break
+
+                # If we broke early, cancel the still-running tasks.
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+
+                # Collect results — preserve completed successes so reprocess
+                # can hit the LLM cache instead of re-running the VLM.
+                for t, (item_id, item) in task_meta.items():
+                    if t.cancelled():
+                        item["llm_analyze_result"] = _failure_result("cancelled")
+                        continue
+                    texc = t.exception()
+                    if texc is None:
+                        result_obj, cache_id = t.result()
                         item["llm_analyze_result"] = result_obj
                         _attach_cache_id(item, cache_id)
+                    elif isinstance(texc, PipelineCancelledException):
+                        item["llm_analyze_result"] = _failure_result("cancelled")
+                    elif isinstance(texc, MultimodalAnalysisError):
+                        item["llm_analyze_result"] = _failure_result(str(texc))
+                    else:
+                        item["llm_analyze_result"] = _failure_result(
+                            f"unexpected error: {texc}"
+                        )
+
                 try:
                     sidecar_path.write_text(
                         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -4262,11 +4440,30 @@ class _PipelineMixin:
                         f"[analyze_multimodal] failed to write sidecar "
                         f"{sidecar_path}: {exc}"
                     )
-                if failure_to_raise is not None:
-                    raise failure_to_raise
+
+                if fail_fast_exc is not None:
+                    # Best-effort cache flush so any cache_ids written by
+                    # already-completed sibling tasks survive a restart —
+                    # otherwise the sidecar references cache rows that
+                    # haven't been persisted yet. Mirrors
+                    # _finalize_doc_failure's PROCESS-stage behaviour.
+                    if self.llm_response_cache:
+                        try:
+                            await self.llm_response_cache.index_done_callback()
+                        except Exception as persist_error:
+                            logger.error(
+                                f"Failed to persist LLM cache after analyze "
+                                f"fail-fast: {persist_error}"
+                            )
+                    raise fail_fast_exc
 
             parsed_data["multimodal_processed"] = True
             logger.info(f"[analyze_multimodal] completed for d-id: {doc_id}")
+        except PipelineCancelledException:
+            # Must re-raise BEFORE the generic Exception handler below,
+            # otherwise the doc would be returned as if analyze succeeded
+            # and would advance to PROCESS instead of being marked FAILED.
+            raise
         except MultimodalAnalysisError:
             raise
         except Exception as e:
