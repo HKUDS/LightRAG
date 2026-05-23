@@ -1504,6 +1504,7 @@ class _PipelineMixin:
                 )
                 async with ctx.pipeline_status_lock:
                     log_message = f"Parsing ({engine}): {doc_id_w}"
+                    logger.info(log_message)
                     ctx.pipeline_status["latest_message"] = log_message
                     ctx.pipeline_status["history_messages"].append(log_message)
                 if engine == "mineru":
@@ -4252,28 +4253,37 @@ class _PipelineMixin:
                 """Append per-item completion log to pipeline_status the moment
                 this single ``_analyze_*`` task finishes — not after the whole
                 ``asyncio.gather`` batch returns — so the UI sees each
-                drawing/table/equation result land in real time."""
+                drawing/table/equation result land in real time.
+
+                Skipped items are demoted to debug-only logs and do NOT write
+                pipeline_status — benign skips (image too small / wrong format
+                / missing table body) otherwise flood the UI history for docs
+                with many items. The per-item ``llm_analyze_result.message``
+                still records why the item was skipped."""
                 try:
                     result = await coro
                 except Exception:
+                    log_message = f"Analyzing {kind}/{item_id}: failed"
+                    logger.warning(log_message)
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
-                            log_message = f"Analyzing {kind}/{item_id}: failed"
                             pipeline_status["latest_message"] = log_message
                             pipeline_status["history_messages"].append(log_message)
                     raise
-                if pipeline_status is not None and pipeline_status_lock is not None:
-                    result_obj = result[0] if isinstance(result, tuple) else {}
-                    item_status = (
-                        "ok"
-                        if isinstance(result_obj, dict)
-                        and result_obj.get("status") == "success"
-                        else "skipped"
-                    )
-                    async with pipeline_status_lock:
-                        log_message = f"Analyzing  {kind}/{item_id}: {item_status}"
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                result_obj = result[0] if isinstance(result, tuple) else {}
+                is_success = (
+                    isinstance(result_obj, dict)
+                    and result_obj.get("status") == "success"
+                )
+                if is_success:
+                    log_message = f"Analyzing  {kind}/{item_id}: ok"
+                    logger.info(log_message)
+                    if pipeline_status is not None and pipeline_status_lock is not None:
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = log_message
+                            pipeline_status["history_messages"].append(log_message)
+                else:
+                    logger.debug(f"Analyzing  {kind}/{item_id}: skipped")
                 return result
 
             base_name = str(block_file)
@@ -4321,6 +4331,7 @@ class _PipelineMixin:
                 ):
                     async with pipeline_status_lock:
                         log_message = f"Analyzing multimodal: {doc_id}"
+                        logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
                     start_logged = True
