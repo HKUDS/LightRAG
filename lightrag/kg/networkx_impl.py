@@ -1,7 +1,8 @@
+import glob
 import os
-from collections import deque
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import final
 
@@ -32,13 +33,20 @@ class NetworkXStorage(BaseGraphStorage):
             return nx.read_graphml(file_name)
         return None
 
+    # Orphan .tmp files older than this are reaped on startup. Picked to be
+    # large enough that an in-flight write from another live process cannot
+    # plausibly still be running — nx.write_graphml of multi-million-node
+    # graphs completes in minutes, not hours.
+    _TMP_REAP_AGE_SECONDS = 3600
+
     @staticmethod
     def write_nx_graph(graph: nx.Graph, file_name, workspace="_"):
         logger.info(
             f"[{workspace}] Writing graph with {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges"
         )
-        # Atomic write: stream to a per-writer .tmp, then rename. POSIX
-        # rename(2) is atomic on the same filesystem, so a crash, kill, or
+        # Atomic write: stream to a per-writer .tmp, then rename. os.replace
+        # is atomic on the same filesystem (POSIX rename(2); Windows
+        # MoveFileEx with MOVEFILE_REPLACE_EXISTING), so a crash, kill, or
         # OOM mid-write leaves the on-disk graph as either the prior
         # snapshot or the new one — never a truncated XML that fails to
         # parse on reload.
@@ -53,6 +61,31 @@ class NetworkXStorage(BaseGraphStorage):
         )
         nx.write_graphml(graph, tmp)
         os.replace(tmp, file_name)
+
+    @staticmethod
+    def _reap_orphan_tmp_files(file_name: str, workspace: str = "_") -> None:
+        # A crash between write_graphml() and os.replace() leaves a
+        # .tmp.<pid>.<tid>.<ns> sibling behind. Reap any sibling older than
+        # _TMP_REAP_AGE_SECONDS — newer ones may belong to a concurrent live
+        # writer in another process.
+        pattern = f"{file_name}.tmp.*"
+        now = time.time()
+        for path in glob.glob(pattern):
+            try:
+                age = now - os.path.getmtime(path)
+            except OSError:
+                continue
+            if age < NetworkXStorage._TMP_REAP_AGE_SECONDS:
+                continue
+            try:
+                os.remove(path)
+                logger.info(
+                    f"[{workspace}] Reaped orphan graph tmp file: {path} (age {age:.0f}s)"
+                )
+            except OSError as e:
+                logger.warning(
+                    f"[{workspace}] Failed to reap orphan graph tmp file {path}: {e}"
+                )
 
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
@@ -71,6 +104,10 @@ class NetworkXStorage(BaseGraphStorage):
         self._storage_lock = None
         self.storage_updated = None
         self._graph = None
+
+        NetworkXStorage._reap_orphan_tmp_files(
+            self._graphml_xml_file, workspace=self.workspace or "_"
+        )
 
         # Load initial graph
         preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
