@@ -405,15 +405,19 @@ async def _summarize_descriptions(
     # Check summary token length against embedding limit
     embedding_token_limit = global_config.get("embedding_token_limit")
     if embedding_token_limit is not None and summary:
-        tokenizer = global_config["tokenizer"]
-        summary_token_count = len(tokenizer.encode(summary))
         threshold = int(embedding_token_limit)
-
-        if summary_token_count > threshold:
-            logger.warning(
-                f"Summary tokens({summary_token_count}) exceeds embedding_token_limit({embedding_token_limit}) "
-                f" for {description_type}: {description_name}"
-            )
+        # Non-positive limits are treated as "disabled" to stay consistent
+        # with the hard-fallback split in pipeline.py (which only runs when
+        # embedding_token_limit > 0).
+        if threshold > 0:
+            tokenizer = global_config["tokenizer"]
+            tokens = tokenizer.encode(summary)
+            if len(tokens) > threshold:
+                logger.warning(
+                    f"Summary tokens({len(tokens)}) exceeds embedding_token_limit({threshold}) "
+                    f"for {description_type}: {description_name}. Truncating to fit."
+                )
+                summary = tokenizer.decode(tokens[:threshold])
 
     return summary
 
