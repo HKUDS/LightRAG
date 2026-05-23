@@ -8,6 +8,7 @@ from lightrag.base import (
     DocStatusStorage,
 )
 from lightrag.utils import (
+    _cooperative_yield,
     load_json,
     logger,
     write_json,
@@ -16,7 +17,7 @@ from lightrag.utils import (
 from lightrag.exceptions import StorageNotInitializedError
 from .shared_storage import (
     get_namespace_data,
-    get_storage_lock,
+    get_namespace_lock,
     get_data_init_lock,
     get_update_flag,
     set_all_update_flags,
@@ -35,12 +36,10 @@ class JsonDocStatusStorage(DocStatusStorage):
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
-            self.final_namespace = self.namespace
-            self.workspace = "_"
             workspace_dir = working_dir
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
@@ -50,12 +49,20 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         """Initialize storage data"""
-        self._storage_lock = get_storage_lock()
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self._storage_lock = get_namespace_lock(
+            self.namespace, workspace=self.workspace
+        )
+        self.storage_updated = await get_update_flag(
+            self.namespace, workspace=self.workspace
+        )
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
-            need_init = await try_initialize_namespace(self.final_namespace)
-            self._data = await get_namespace_data(self.final_namespace)
+            need_init = await try_initialize_namespace(
+                self.namespace, workspace=self.workspace
+            )
+            self._data = await get_namespace_data(
+                self.namespace, workspace=self.workspace
+            )
             if need_init:
                 loaded_data = load_json(self._file_name) or {}
                 async with self._storage_lock:
@@ -72,15 +79,17 @@ class JsonDocStatusStorage(DocStatusStorage):
             return set(keys) - set(self._data.keys())
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
+        ordered_results: list[dict[str, Any] | None] = []
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
-                    result.append(data)
-        return result
+                    ordered_results.append(data.copy())
+                else:
+                    ordered_results.append(None)
+        return ordered_results
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -96,29 +105,41 @@ class JsonDocStatusStorage(DocStatusStorage):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
+        return await self.get_docs_by_statuses([status])
+
+    async def get_docs_by_statuses(
+        self, statuses: list[DocStatus]
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents matching any of the given statuses in a single pass.
+
+        Acquires the storage lock once and scans the in-memory dict once,
+        filtering against a set of status values.  More efficient than N separate
+        get_docs_by_status() calls, which would acquire the lock N times and scan
+        the data N times.
+        """
+        if not statuses:
+            return {}
+        status_values = {s.value for s in statuses}
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
-                if v["status"] == status.value:
-                    try:
-                        # Make a copy of the data to avoid modifying the original
-                        data = v.copy()
-                        # Remove deprecated content field if it exists
-                        data.pop("content", None)
-                        # If file_path is not in data, use document id as file path
-                        if "file_path" not in data:
-                            data["file_path"] = "no-file-path"
-                        # Ensure new fields exist with default values
-                        if "metadata" not in data:
-                            data["metadata"] = {}
-                        if "error_msg" not in data:
-                            data["error_msg"] = None
-                        result[k] = DocProcessingStatus(**data)
-                    except KeyError as e:
-                        logger.error(
-                            f"[{self.workspace}] Missing required field for document {k}: {e}"
-                        )
-                        continue
+                if v["status"] not in status_values:
+                    continue
+                try:
+                    data = v.copy()
+                    data.pop("content", None)
+                    if not data.get("file_path"):
+                        data["file_path"] = "no-file-path"
+                    if "metadata" not in data:
+                        data["metadata"] = {}
+                    if "error_msg" not in data:
+                        data["error_msg"] = None
+                    result[k] = DocProcessingStatus(**data)
+                except (KeyError, TypeError) as e:
+                    logger.error(
+                        f"[{self.workspace}] Missing required field for document {k}: {e}"
+                    )
+                    continue
         return result
 
     async def get_docs_by_track_id(
@@ -134,8 +155,8 @@ class JsonDocStatusStorage(DocStatusStorage):
                         data = v.copy()
                         # Remove deprecated content field if it exists
                         data.pop("content", None)
-                        # If file_path is not in data, use document id as file path
-                        if "file_path" not in data:
+                        # Normalize missing or null file_path
+                        if not data.get("file_path"):
                             data["file_path"] = "no-file-path"
                         # Ensure new fields exist with default values
                         if "metadata" not in data:
@@ -159,8 +180,21 @@ class JsonDocStatusStorage(DocStatusStorage):
                 logger.debug(
                     f"[{self.workspace}] Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}"
                 )
-                write_json(data_dict, self._file_name)
-                await clear_all_update_flags(self.final_namespace)
+
+                # Write JSON and check if sanitization was applied
+                needs_reload = write_json(data_dict, self._file_name)
+
+                # If data was sanitized, reload cleaned data to update shared memory
+                if needs_reload:
+                    logger.info(
+                        f"[{self.workspace}] Reloading sanitized data into shared memory for {self.namespace}"
+                    )
+                    cleaned_data = load_json(self._file_name)
+                    if cleaned_data is not None:
+                        self._data.clear()
+                        self._data.update(cleaned_data)
+
+                await clear_all_update_flags(self.namespace, workspace=self.workspace)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
@@ -175,15 +209,31 @@ class JsonDocStatusStorage(DocStatusStorage):
         )
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
+        # Prepare data outside the lock: this only mutates the caller-supplied
+        # dict values, not shared storage state, so no lock needed here.
+        for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
+            if "chunks_list" not in doc_data:
+                doc_data["chunks_list"] = []
+            await _cooperative_yield(i)
         async with self._storage_lock:
-            # Ensure chunks_list field exists for new documents
-            for doc_id, doc_data in data.items():
-                if "chunks_list" not in doc_data:
-                    doc_data["chunks_list"] = []
             self._data.update(data)
-            await set_all_update_flags(self.final_namespace)
+            await set_all_update_flags(self.namespace, workspace=self.workspace)
 
         await self.index_done_callback()
+
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage is empty, False otherwise
+
+        Raises:
+            StorageNotInitializedError: If storage is not initialized
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        async with self._storage_lock:
+            return len(self._data) == 0
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         async with self._storage_lock:
@@ -192,6 +242,7 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -209,6 +260,11 @@ class JsonDocStatusStorage(DocStatusStorage):
         Returns:
             Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
         """
+        status_filter_values = self.resolve_status_filter_values(
+            status_filter=status_filter,
+            status_filters=status_filters,
+        )
+
         # Validate parameters
         if page < 1:
             page = 1
@@ -230,8 +286,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             for doc_id, doc_data in self._data.items():
                 # Apply status filter
                 if (
-                    status_filter is not None
-                    and doc_data.get("status") != status_filter.value
+                    status_filter_values is not None
+                    and doc_data.get("status") not in status_filter_values
                 ):
                     continue
 
@@ -239,7 +295,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # Prepare document data
                     data = doc_data.copy()
                     data.pop("content", None)
-                    if "file_path" not in data:
+                    if not data.get("file_path"):
                         data["file_path"] = "no-file-path"
                     if "metadata" not in data:
                         data["metadata"] = {}
@@ -321,7 +377,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     any_deleted = True
 
             if any_deleted:
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
 
     async def get_doc_by_file_path(self, file_path: str) -> Union[dict[str, Any], None]:
         """Get document by file path
@@ -344,6 +400,43 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         return None
 
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose canonical basename matches.
+
+        The caller is responsible for passing an already-canonical basename.
+        Stored ``file_path`` values are canonicalized by the business layer, so
+        this lookup intentionally performs an exact match only.
+        """
+        if not basename:
+            return None
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+
+        if basename == "unknown_source":
+            return None
+        async with self._storage_lock:
+            for doc_id, doc_data in self._data.items():
+                if doc_data.get("file_path") == basename:
+                    return doc_id, doc_data
+        return None
+
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose content_hash field matches."""
+        if not content_hash:
+            return None
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+
+        async with self._storage_lock:
+            for doc_id, doc_data in self._data.items():
+                if doc_data.get("content_hash") == content_hash:
+                    return doc_id, doc_data
+        return None
+
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources
 
@@ -360,7 +453,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         try:
             async with self._storage_lock:
                 self._data.clear()
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
 
             await self.index_done_callback()
             logger.info(

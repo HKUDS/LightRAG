@@ -13,6 +13,7 @@
     "api": "API",
     "projectRepository": "專案庫",
     "logout": "登出",
+    "frontendNeedsRebuild": "前端程式碼需重新建置",
     "themeToggle": {
       "switchToLight": "切換至淺色主題",
       "switchToDark": "切換至深色主題"
@@ -70,6 +71,7 @@
       "confirmButton": "確定",
       "deleteFileOption": "同時刪除上傳檔案",
       "deleteFileTooltip": "選取此選項將同時刪除伺服器上對應的上傳檔案",
+      "deleteLLMCacheOption": "同時刪除實體關係擷取 LLM 快取",
       "success": "文件刪除流水線啟動成功",
       "failed": "刪除文件失敗：\n{{message}}",
       "error": "刪除文件失敗：\n{{error}}",
@@ -97,7 +99,7 @@
         "error": "部分檔案上傳失敗"
       },
       "generalError": "上傳失敗\n{{error}}",
-      "fileTypes": "支援的檔案類型：TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "支援的檔案類型：TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "一次只能上傳一個檔案",
         "maxFilesLimit": "最多只能上傳 {{count}} 個檔案",
@@ -113,11 +115,11 @@
     },
     "documentManager": {
       "title": "文件管理",
-      "scanButton": "掃描",
-      "scanTooltip": "掃描輸入目錄中的文件",
+      "scanButton": "掃描/重試",
+      "scanTooltip": "掃描處理輸入目錄中的文件，同時重新處理所有失敗的文件",
       "refreshTooltip": "重設文件清單",
-      "pipelineStatusButton": "pipeline 狀態",
-      "pipelineStatusTooltip": "查看pipeline 狀態",
+      "pipelineStatusButton": "管線狀態",
+      "pipelineStatusTooltip": "查看文件處理管線狀態",
       "uploadedTitle": "已上傳文件",
       "uploadedDescription": "已上傳文件清單及其狀態",
       "emptyTitle": "無文件",
@@ -134,9 +136,20 @@
         "metadata": "元資料",
         "select": "選擇"
       },
+      "filters": {
+        "all": "全部",
+        "completed": "已完成",
+        "analyzing": "分析中",
+        "processing": "處理中",
+        "pending": "等待中",
+        "failed": "失敗"
+      },
       "status": {
         "all": "全部",
         "completed": "已完成",
+        "preprocessed": "預處理",
+        "parsing": "內容擷取",
+        "analyzing": "分析中",
         "processing": "處理中",
         "pending": "等待中",
         "failed": "失敗"
@@ -150,20 +163,39 @@
       "showButton": "顯示",
       "hideButton": "隱藏",
       "showFileNameTooltip": "顯示檔案名稱",
-      "hideFileNameTooltip": "隱藏檔案名稱"
+      "hideFileNameTooltip": "隱藏檔案名稱",
+      "details": {
+        "title": "狀態詳情",
+        "openTooltip": "檢視狀態詳情",
+        "content": "詳情",
+        "copyButton": "複製",
+        "copyTooltip": "複製狀態詳情",
+        "copySuccess": "狀態詳情已複製",
+        "copyFailed": "複製狀態詳情失敗"
+      }
     },
     "pipelineStatus": {
-      "title": "pipeline 狀態",
-      "busy": "pipeline 忙碌中",
+      "title": "流水線狀態",
+      "busy": "流水線忙碌",
       "requestPending": "待處理請求",
-      "jobName": "工作名稱",
+      "cancellationRequested": "取消請求",
+      "jobName": "作業名稱",
       "startTime": "開始時間",
       "progress": "進度",
-      "unit": "梯次",
-      "latestMessage": "最新訊息",
-      "historyMessages": "歷史訊息",
+      "unit": "批",
+      "pipelineMessages": "流水線消息",
+      "cancelButton": "中斷",
+      "cancelTooltip": "中斷流水線處理",
+      "cancelConfirmTitle": "確認中斷流水線",
+      "cancelConfirmDescription": "此操作將中斷正在進行的流水線處理。確定要繼續嗎？",
+      "cancelConfirmButton": "確認中斷",
+      "cancelInProgress": "取消請求進行中...",
+      "pipelineNotRunning": "流水線未運行",
+      "cancelSuccess": "流水線中斷請求已發送",
+      "cancelFailed": "中斷流水線失敗\n{{error}}",
+      "cancelNotBusy": "流水線未運行，無需中斷",
       "errors": {
-        "fetchFailed": "取得pipeline 狀態失敗\n{{error}}"
+        "fetchFailed": "獲取流水線狀態失敗\n{{error}}"
       }
     }
   },
@@ -262,11 +294,12 @@
     "statusCard": {
       "unavailable": "狀態資訊不可用",
       "serverInfo": "伺服器資訊",
-      "workingDirectory": "工作目錄",
       "inputDirectory": "輸入目錄",
-      "maxParallelInsert": "並行處理文档",
-      "summarySettings": "摘要設定",
-      "llmConfig": "LLM 設定",
+      "parser": "解析器",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "其它設定",
+      "llmConfig": "模型設定",
       "llmBinding": "LLM 綁定",
       "llmBindingHost": "LLM 端點",
       "llmModel": "LLM 模型",
@@ -280,12 +313,10 @@
       "graphStorage": "圖形儲存",
       "vectorStorage": "向量儲存",
       "workspace": "工作空間",
-      "maxGraphNodes": "最大圖形節點數",
       "rerankerConfig": "重排序設定",
       "rerankerBindingHost": "重排序端點",
       "rerankerModel": "重排序模型",
-      "lockStatus": "鎖定狀態",
-      "threshold": "閾值"
+      "lockStatus": "鎖定狀態"
     },
     "propertiesView": {
       "editProperty": "編輯{{property}}",
@@ -293,11 +324,24 @@
       "errors": {
         "duplicateName": "節點名稱已存在",
         "updateFailed": "更新節點失敗",
-        "tryAgainLater": "請稍後重試"
+        "tryAgainLater": "請稍後重試",
+        "updateSuccessButMergeFailed": "屬性已更新，但合併失敗：{{error}}",
+        "mergeFailed": "合併失敗：{{error}}"
       },
       "success": {
         "entityUpdated": "節點更新成功",
-        "relationUpdated": "關係更新成功"
+        "relationUpdated": "關係更新成功",
+        "entityMerged": "節點合併成功"
+      },
+      "mergeOptionLabel": "遇到重名時自動合併",
+      "mergeOptionDescription": "勾選後，重新命名為既有名稱時會自動將當前節點合併過去，不再報錯。",
+      "mergeDialog": {
+        "title": "節點已合併",
+        "description": "\"{{source}}\" 已合併到 \"{{target}}\"。",
+        "refreshHint": "請重新整理圖譜以取得最新結構。",
+        "keepCurrentStart": "重新整理並保留目前的起始節點",
+        "useMergedStart": "重新整理並以合併後的節點為起始節點",
+        "refreshing": "正在重新整理圖譜..."
       },
       "node": {
         "title": "節點",
@@ -307,7 +351,7 @@
         "properties": "屬性",
         "relationships": "關係(子圖內)",
         "expandNode": "展開節點",
-        "pruneNode": "修剪節點",
+        "pruneNode": "隱藏節點",
         "deleteAllNodesError": "拒絕刪除圖中的所有節點",
         "nodesRemoved": "已刪除 {{count}} 個節點，包括孤立節點",
         "noNewNodes": "沒有發現可以展開的節點",
@@ -315,9 +359,9 @@
           "description": "描述",
           "entity_id": "名稱",
           "entity_type": "類型",
-          "source_id": "來源ID",
+          "source_id": "C-ID",
           "Neighbour": "鄰接",
-          "file_path": "來源",
+          "file_path": "檔案",
           "keywords": "Keys",
           "weight": "權重"
         }
@@ -333,14 +377,14 @@
     },
     "search": {
       "placeholder": "頁面內搜尋節點...",
-      "message": "還有 {count} 個"
+      "message": "還有 {{count}} 個"
     },
     "graphLabels": {
       "selectTooltip": "獲取節點(標籤)子圖",
       "noLabels": "未找到匹配的節點",
       "label": "搜尋節點名稱",
       "placeholder": "搜尋節點名稱...",
-      "andOthers": "還有 {count} 個",
+      "andOthers": "還有 {{count}} 個",
       "refreshGlobalTooltip": "重新整理全圖資料和重置搜尋歷史",
       "refreshCurrentLabelTooltip": "重新整理目前頁面圖形資料",
       "refreshingTooltip": "正在重新整理資料..."
@@ -410,12 +454,12 @@
       "userPromptPlaceholder": "輸入自定義提示詞（可選）",
       "enableRerank": "啟用重排",
       "enableRerankTooltip": "為檢索到的文本塊啟用重排。如果為True但未配置重排模型，將發出警告。默認為True。",
-      "maxEntityTokens": "實體令牌數上限",
-      "maxEntityTokensTooltip": "統一令牌控制系統中分配給實體上下文的最大令牌數",
-      "maxRelationTokens": "關係令牌數上限",
-      "maxRelationTokensTooltip": "統一令牌控制系統中分配給關係上下文的最大令牌數",
-      "maxTotalTokens": "總令牌數上限",
-      "maxTotalTokensTooltip": "整個查詢上下文的最大總令牌預算（實體+關係+文檔塊+系統提示）"
+      "maxEntityTokens": "實體詞元數上限",
+      "maxEntityTokensTooltip": "統一詞元控制系統中分配給實體上下文的最大詞元數",
+      "maxRelationTokens": "關係詞元數上限",
+      "maxRelationTokensTooltip": "統一詞元控制系統中分配給關係上下文的最大詞元數",
+      "maxTotalTokens": "總詞元數上限",
+      "maxTotalTokensTooltip": "整個查詢上下文的最大總詞元預算（實體+關係+文檔塊+系統提示）"
     }
   },
   "apiSite": {

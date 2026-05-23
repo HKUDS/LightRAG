@@ -21,6 +21,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
     """ChromaDB vector storage implementation."""
 
     def __post_init__(self):
+        self._validate_embedding_func()
         try:
             config = self.global_config.get("vector_db_storage_cls_kwargs", {})
             cosine_threshold = config.get("cosine_better_than_threshold")
@@ -295,17 +296,23 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             if not result or not result["ids"] or len(result["ids"]) == 0:
                 return []
 
-            # Format the results to match the expected structure
-            return [
-                {
-                    "id": result["ids"][i],
+            # Format the results to match the expected structure and preserve ordering
+            formatted_map: dict[str, dict[str, Any]] = {}
+            for i, result_id in enumerate(result["ids"]):
+                record = {
+                    "id": result_id,
                     "vector": result["embeddings"][i],
                     "content": result["documents"][i],
                     "created_at": result["metadatas"][i].get("created_at"),
                     **result["metadatas"][i],
                 }
-                for i in range(len(result["ids"]))
-            ]
+                formatted_map[str(result_id)] = record
+
+            ordered_results: list[dict[str, Any] | None] = []
+            for requested_id in ids:
+                ordered_results.append(formatted_map.get(str(requested_id)))
+
+            return ordered_results
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []

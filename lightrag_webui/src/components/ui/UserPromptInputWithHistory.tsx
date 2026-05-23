@@ -57,33 +57,33 @@ export default function UserPromptInputWithHistory({
     }
 
     switch (e.key) {
-    case 'ArrowDown':
-      e.preventDefault()
-      setSelectedIndex(prev =>
-        prev < history.length - 1 ? prev + 1 : prev
-      )
-      break
-    case 'ArrowUp':
-      e.preventDefault()
-      setSelectedIndex(prev => prev > 0 ? prev - 1 : -1)
-      if (selectedIndex === 0) {
-        setSelectedIndex(-1)
-      }
-      break
-    case 'Enter':
-      if (selectedIndex >= 0 && selectedIndex < history.length) {
+      case 'ArrowDown':
         e.preventDefault()
-        const selectedPrompt = history[selectedIndex]
-        onSelectFromHistory(selectedPrompt)
+        setSelectedIndex(prev =>
+          prev < history.length - 1 ? prev + 1 : prev
+        )
+        break
+      case 'ArrowUp':
+        e.preventDefault()
+        setSelectedIndex(prev => prev > 0 ? prev - 1 : -1)
+        if (selectedIndex === 0) {
+          setSelectedIndex(-1)
+        }
+        break
+      case 'Enter':
+        if (selectedIndex >= 0 && selectedIndex < history.length) {
+          e.preventDefault()
+          const selectedPrompt = history[selectedIndex]
+          onSelectFromHistory(selectedPrompt)
+          setIsOpen(false)
+          setSelectedIndex(-1)
+        }
+        break
+      case 'Escape':
+        e.preventDefault()
         setIsOpen(false)
         setSelectedIndex(-1)
-      }
-      break
-    case 'Escape':
-      e.preventDefault()
-      setIsOpen(false)
-      setSelectedIndex(-1)
-      break
+        break
     }
   }, [isOpen, selectedIndex, history, onSelectFromHistory])
 

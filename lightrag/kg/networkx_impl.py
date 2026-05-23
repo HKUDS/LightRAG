@@ -1,4 +1,5 @@
 import os
+from collections import deque
 import threading
 import time
 from dataclasses import dataclass
@@ -7,10 +8,9 @@ from typing import final
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
 from lightrag.base import BaseGraphStorage
-from lightrag.constants import GRAPH_FIELD_SEP
 import networkx as nx
 from .shared_storage import (
-    get_storage_lock,
+    get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
@@ -59,12 +59,10 @@ class NetworkXStorage(BaseGraphStorage):
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:
             # Default behavior when workspace is empty
-            self.final_namespace = self.namespace
             workspace_dir = working_dir
-            self.workspace = "_"
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._graphml_xml_file = os.path.join(
@@ -82,16 +80,20 @@ class NetworkXStorage(BaseGraphStorage):
             )
         else:
             logger.info(
-                f"[{self.workspace}] Created new empty graph fiel: {self._graphml_xml_file}"
+                f"[{self.workspace}] Created new empty graph file: {self._graphml_xml_file}"
             )
         self._graph = preloaded_graph or nx.Graph()
 
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self.storage_updated = await get_update_flag(
+            self.namespace, workspace=self.workspace
+        )
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = get_namespace_lock(
+            self.namespace, workspace=self.workspace
+        )
 
     async def _get_graph(self):
         """Check if the storage should be reloaded"""
@@ -125,7 +127,9 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def node_degree(self, node_id: str) -> int:
         graph = await self._get_graph()
-        return graph.degree(node_id)
+        if graph.has_node(node_id):
+            return graph.degree(node_id)
+        return 0
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         graph = await self._get_graph()
@@ -166,6 +170,40 @@ class NetworkXStorage(BaseGraphStorage):
         """
         graph = await self._get_graph()
         graph.add_edge(source_node_id, target_node_id, **edge_data)
+
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch insert/update multiple nodes in a single call.
+
+        Much faster than calling upsert_node() in a loop for large imports
+        because it avoids per-call async event loop overhead.
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        graph = await self._get_graph()
+        for node_id, node_data in nodes:
+            graph.add_node(node_id, **node_data)
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes in a single call.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        graph = await self._get_graph()
+        return {nid for nid in node_ids if graph.has_node(nid)}
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Batch insert/update multiple edges in a single call.
+
+        Args:
+            edges: List of (source_id, target_id, edge_data) tuples.
+        """
+        graph = await self._get_graph()
+        for src, tgt, edge_data in edges:
+            graph.add_edge(src, tgt, **edge_data)
 
     async def delete_node(self, node_id: str) -> None:
         """
@@ -217,7 +255,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all node labels in the graph
+        Get all node labels(entity names) in the graph
         Returns:
             [label1, label2, ...]  # Alphabetically sorted label list
         """
@@ -231,7 +269,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """
-        Get popular labels by node degree (most connected entities)
+        Get popular labels(entity names) by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
@@ -256,7 +294,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """
-        Search labels with fuzzy matching
+        Search labels(entity names) with fuzzy matching
 
         Args:
             query: Search query string
@@ -368,7 +406,7 @@ class NetworkXStorage(BaseGraphStorage):
             bfs_nodes = []
             visited = set()
             # Store (node, depth, degree) in the queue
-            queue = [(node_label, 0, graph.degree(node_label))]
+            queue = deque([(node_label, 0, graph.degree(node_label))])
 
             # Flag to track if there are unexplored neighbors due to depth limit
             has_unexplored_neighbors = False
@@ -381,7 +419,7 @@ class NetworkXStorage(BaseGraphStorage):
                 # Collect all nodes at the current depth
                 current_level_nodes = []
                 while queue and queue[0][1] == current_depth:
-                    current_level_nodes.append(queue.pop(0))
+                    current_level_nodes.append(queue.popleft())
 
                 # Sort nodes at current depth by degree (highest first)
                 current_level_nodes.sort(key=lambda x: x[2], reverse=True)
@@ -487,33 +525,6 @@ class NetworkXStorage(BaseGraphStorage):
         )
         return result
 
-    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        chunk_ids_set = set(chunk_ids)
-        graph = await self._get_graph()
-        matching_nodes = []
-        for node_id, node_data in graph.nodes(data=True):
-            if "source_id" in node_data:
-                node_source_ids = set(node_data["source_id"].split(GRAPH_FIELD_SEP))
-                if not node_source_ids.isdisjoint(chunk_ids_set):
-                    node_data_with_id = node_data.copy()
-                    node_data_with_id["id"] = node_id
-                    matching_nodes.append(node_data_with_id)
-        return matching_nodes
-
-    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        chunk_ids_set = set(chunk_ids)
-        graph = await self._get_graph()
-        matching_edges = []
-        for u, v, edge_data in graph.edges(data=True):
-            if "source_id" in edge_data:
-                edge_source_ids = set(edge_data["source_id"].split(GRAPH_FIELD_SEP))
-                if not edge_source_ids.isdisjoint(chunk_ids_set):
-                    edge_data_with_nodes = edge_data.copy()
-                    edge_data_with_nodes["source"] = u
-                    edge_data_with_nodes["target"] = v
-                    matching_edges.append(edge_data_with_nodes)
-        return matching_edges
-
     async def get_all_nodes(self) -> list[dict]:
         """Get all nodes in the graph.
 
@@ -567,7 +578,7 @@ class NetworkXStorage(BaseGraphStorage):
                     self._graph, self._graphml_xml_file, self.workspace
                 )
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 return True  # Return success
@@ -598,7 +609,7 @@ class NetworkXStorage(BaseGraphStorage):
                     os.remove(self._graphml_xml_file)
                 self._graph = nx.Graph()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 logger.info(

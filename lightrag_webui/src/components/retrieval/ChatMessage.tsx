@@ -45,7 +45,13 @@ export type MessageWithError = Message & {
 }
 
 // Restore original component definition and export
-export const ChatMessage = ({ message }: { message: MessageWithError }) => { // Remove isComplete prop
+export const ChatMessage = ({
+  message,
+  isTabActive = true
+}: {
+  message: MessageWithError
+  isTabActive?: boolean
+}) => {
   const { t } = useTranslation()
   const { theme } = useTheme()
   const [katexPlugin, setKatexPlugin] = useState<((options?: KaTeXOptions) => any) | null>(null)
@@ -54,13 +60,21 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
   // Directly use props passed from the parent.
   const { thinkingContent, displayContent, thinkingTime, isThinking } = message
 
-  // Reset expansion state when new thinking starts
-  useEffect(() => {
+  // Reset expansion state when new thinking starts.
+  // Render-time comparison avoids cascading renders from setState-in-useEffect.
+  const [previousThinkingState, setPreviousThinkingState] = useState({
+    isThinking,
+    messageId: message.id
+  })
+  if (
+    previousThinkingState.isThinking !== isThinking ||
+    previousThinkingState.messageId !== message.id
+  ) {
+    setPreviousThinkingState({ isThinking, messageId: message.id })
     if (isThinking) {
-      // When thinking starts, always reset to collapsed state
       setIsThinkingExpanded(false)
     }
-  }, [isThinking, message.id])
+  }
 
   // The content to display is now non-ambiguous.
   const finalThinkingContent = thinkingContent
@@ -70,7 +84,8 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
     ? message.content
     : (displayContent !== undefined ? displayContent : (message.content || ''))
 
-  // Load KaTeX dynamically
+  // Load KaTeX rehype plugin dynamically
+  // Note: KaTeX extensions (mhchem, copy-tex) are imported statically in main.tsx
   useEffect(() => {
     const loadKaTeX = async () => {
       try {
@@ -78,7 +93,6 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
         setKatexPlugin(() => rehypeKatex);
       } catch (error) {
         console.error('Failed to load KaTeX plugin:', error);
-        // Set to null to ensure we don't try to use a failed plugin
         setKatexPlugin(null);
       }
     };
@@ -148,8 +162,13 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
       } rounded-lg px-4 py-2`}
     >
       {/* Thinking process display - only for assistant messages */}
+      {/* Always render to prevent layout shift when switching tabs */}
       {message.role === 'assistant' && (isThinking || thinkingTime !== null) && (
-        <div className="mb-2">
+        <div className={cn(
+          'mb-2',
+          // Reduce visual priority in inactive tabs while maintaining layout
+          !isTabActive && 'opacity-50'
+        )}>
           <div
             className="flex items-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors duration-200 text-sm cursor-pointer select-none"
             onClick={() => {
@@ -161,7 +180,8 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
           >
             {isThinking ? (
               <>
-                <LoaderIcon className="mr-2 size-4 animate-spin" />
+                {/* Only show spinner animation in active tab to save resources */}
+                {isTabActive && <LoaderIcon className="mr-2 size-4 animate-spin" />}
                 <span>{t('retrievePanel.chatMessage.thinking')}</span>
               </>
             ) : (
@@ -210,48 +230,50 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
       {/* Main content display */}
       {finalDisplayContent && (
         <div className="relative">
-          <ReactMarkdown
-            className={`prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:max-w-full [&_.katex-display_>.base]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-8 [&_.footnotes]:pt-4 [&_.footnotes]:border-t [&_.footnotes_ol]:text-sm [&_.footnotes_li]:my-1 ${
-              message.role === 'user' ? 'text-primary-foreground' : 'text-foreground'
-            } ${
-              message.role === 'user'
-                ? '[&_.footnotes]:border-primary-foreground/30 [&_a[href^="#fn"]]:text-primary-foreground [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary-foreground [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
-                : '[&_.footnotes]:border-border [&_a[href^="#fn"]]:text-primary [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
-            }`}
-            remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
-            rehypePlugins={[
-              rehypeRaw,
-              ...((katexPlugin && (message.latexRendered ?? true)) ? [[
-                katexPlugin,
-                {
-                  errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
-                  throwOnError: false,
-                  displayMode: false,
-                  strict: false,
-                  trust: true,
-                  // Add silent error handling to avoid console noise
-                  errorCallback: (error: string, latex: string) => {
-                    // Only show detailed errors in development environment
-                    if (process.env.NODE_ENV === 'development') {
-                      console.warn('KaTeX rendering error in main content:', error, 'for LaTeX:', latex);
+          <div className={`prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:max-w-full [&_.katex-display_>.base]:overflow-x-auto [&_sup]:text-[0.75em] [&_sup]:align-[0.1em] [&_sup]:leading-[0] [&_sub]:text-[0.75em] [&_sub]:align-[-0.2em] [&_sub]:leading-[0] [&_mark]:bg-yellow-200 [&_mark]:dark:bg-yellow-800 [&_u]:underline [&_del]:line-through [&_ins]:underline [&_ins]:decoration-green-500 [&_.footnotes]:mt-8 [&_.footnotes]:pt-4 [&_.footnotes]:border-t [&_.footnotes_ol]:text-sm [&_.footnotes_li]:my-1 ${
+            message.role === 'user' ? 'text-primary-foreground' : 'text-foreground'
+          } ${
+            message.role === 'user'
+              ? '[&_.footnotes]:border-primary-foreground/30 [&_a[href^="#fn"]]:text-primary-foreground [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary-foreground [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
+              : '[&_.footnotes]:border-border [&_a[href^="#fn"]]:text-primary [&_a[href^="#fn"]]:no-underline [&_a[href^="#fn"]]:hover:underline [&_a[href^="#fnref"]]:text-primary [&_a[href^="#fnref"]]:no-underline [&_a[href^="#fnref"]]:hover:underline'
+          }`}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
+              rehypePlugins={[
+                rehypeRaw,
+                ...((katexPlugin && (message.latexRendered ?? true)) ? [[
+                  katexPlugin,
+                  {
+                    errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
+                    throwOnError: false,
+                    displayMode: false,
+                    strict: false,
+                    trust: true,
+                    // Add silent error handling to avoid console noise
+                    errorCallback: (error: string, latex: string) => {
+                      // Only show detailed errors in development environment
+                      if (process.env.NODE_ENV === 'development') {
+                        console.warn('KaTeX rendering error in main content:', error, 'for LaTeX:', latex);
+                      }
                     }
                   }
-                }
-              ] as any] : []),
-              rehypeReact
-            ]}
-            skipHtml={false}
-            components={mainMarkdownComponents}
-          >
-            {finalDisplayContent}
-          </ReactMarkdown>
+                ] as any] : []),
+                rehypeReact
+              ]}
+              skipHtml={false}
+              components={mainMarkdownComponents}
+            >
+              {finalDisplayContent}
+            </ReactMarkdown>
+          </div>
         </div>
       )}
-      {(() => {
+      {/* Loading indicator - only show in active tab */}
+      {isTabActive && (() => {
         // More comprehensive loading state check
         const hasVisibleContent = finalDisplayContent && finalDisplayContent.trim() !== '';
         const isLoadingState = !hasVisibleContent && !isThinking && !thinkingTime;
-        return isLoadingState && <LoaderIcon className="animate-spin duration-2000" />;
+        return isLoadingState && <LoaderIcon className="animate-spin duration-2000" />
       })()}
     </div>
   )

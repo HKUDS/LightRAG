@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios'
 import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
 
 // Types
@@ -24,6 +25,33 @@ export type LightragGraphType = {
   edges: LightragEdgeType[]
 }
 
+export type LightragQueueStatus = {
+  available: boolean
+  queue_name?: string
+  max_async?: number
+  max_queue_size?: number
+  queued?: number
+  running?: number
+  in_flight?: number
+  worker_count?: number
+  initialized?: boolean
+  submitted_total?: number
+  completed_total?: number
+  failed_total?: number
+  cancelled_total?: number
+  rejected_total?: number
+}
+
+export type LightragRoleLLMConfig = {
+  binding?: string | null
+  model?: string | null
+  host?: string | null
+  max_async?: number
+  timeout?: number
+  has_model_kwargs?: boolean
+  metadata?: Record<string, any>
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -40,26 +68,70 @@ export type LightragStatus = {
     graph_storage: string
     vector_storage: string
     workspace?: string
+    storage_workspaces?: {
+      kv_storage?: string | null
+      doc_status_storage?: string | null
+      graph_storage?: string | null
+      vector_storage?: string | null
+    }
     max_graph_nodes?: string
     enable_rerank?: boolean
     rerank_binding?: string | null
     rerank_model?: string | null
     rerank_binding_host?: string | null
+    rerank_max_async?: number
+    rerank_timeout?: number
     summary_language: string
     force_llm_summary_on_merge: boolean
     max_parallel_insert: number
     max_async: number
+    llm_timeout?: number
     embedding_func_max_async: number
     embedding_batch_num: number
+    embedding_timeout?: number
     cosine_threshold: number
     min_rerank_score: number
     related_chunk_number: number
+    role_llm_config?: Record<string, LightragRoleLLMConfig>
+    vlm_process_enable?: boolean
+    parser_routing?: string
+    mineru?: {
+      endpoint: string
+      api_mode: 'official' | 'local' | null
+      options: {
+        language?: string
+        enable_table?: boolean
+        enable_formula?: boolean
+        model_version?: string
+        is_ocr?: boolean
+        local_backend?: string
+        local_parse_method?: string
+        local_image_analysis?: boolean
+      }
+    }
+    docling?: {
+      endpoint: string
+      options: {
+        do_ocr?: boolean
+        force_ocr?: boolean
+        ocr_engine?: string
+        ocr_lang?: string
+        do_formula_enrichment?: boolean
+      }
+    }
   }
   update_status?: Record<string, any>
   core_version?: string
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
   pipeline_busy: boolean
+  pipeline_active?: boolean
+  pipeline_scanning?: boolean
+  pipeline_destructive_busy?: boolean
+  pipeline_pending_enqueues?: number
+  llm_queue_status?: Record<string, LightragQueueStatus>
+  embedding_queue_status?: LightragQueueStatus
+  rerank_queue_status?: LightragQueueStatus
   keyed_locks?: {
     process_id: number
     cleanup_performed: {
@@ -143,14 +215,35 @@ export type QueryResponse = {
   response: string
 }
 
+export type EntityUpdateResponse = {
+  status: string
+  message: string
+  data: Record<string, any>
+  operation_summary?: {
+    merged: boolean
+    merge_status: 'success' | 'failed' | 'not_attempted'
+    merge_error: string | null
+    operation_status: 'success' | 'partial_success' | 'failure'
+    target_entity: string | null
+    final_entity?: string | null
+    renamed?: boolean
+  }
+}
+
 export type DocActionResponse = {
-  status: 'success' | 'partial_success' | 'failure' | 'duplicated'
+  status: 'success' | 'partial_success' | 'failure'
   message: string
   track_id?: string
 }
 
 export type ScanResponse = {
-  status: 'scanning_started'
+  status: 'scanning_started' | 'scanning_skipped_pipeline_busy'
+  message: string
+  track_id: string
+}
+
+export type ReprocessFailedResponse = {
+  status: 'reprocessing_started'
   message: string
   track_id: string
 }
@@ -161,7 +254,14 @@ export type DeleteDocResponse = {
   doc_id: string
 }
 
-export type DocStatus = 'pending' | 'processing' | 'processed' | 'failed'
+export type DocStatus =
+  | 'pending'
+  | 'parsing'
+  | 'analyzing'
+  | 'processing'
+  | 'preprocessed'
+  | 'processed'
+  | 'failed'
 
 export type DocStatusResponse = {
   id: string
@@ -178,7 +278,7 @@ export type DocStatusResponse = {
 }
 
 export type DocsStatusesResponse = {
-  statuses: Record<DocStatus, DocStatusResponse[]>
+  statuses: Partial<Record<DocStatus, DocStatusResponse[]>>
 }
 
 export type TrackStatusResponse = {
@@ -190,6 +290,7 @@ export type TrackStatusResponse = {
 
 export type DocumentsRequest = {
   status_filter?: DocStatus | null
+  status_filters?: DocStatus[] | null
   page: number
   page_size: number
   sort_field: 'created_at' | 'updated_at' | 'id' | 'file_path'
@@ -236,6 +337,7 @@ export type PipelineStatusResponse = {
   batchs: number
   cur_batch: number
   request_pending: boolean
+  cancellation_requested?: boolean
   latest_message: string
   history_messages?: string[]
   update_status?: Record<string, any>
@@ -263,8 +365,62 @@ const axiosInstance = axios.create({
   }
 })
 
+// ========== Token Management ==========
+// Prevent multiple requests from triggering token refresh simultaneously
+let isRefreshingGuestToken = false;
+let refreshTokenPromise: Promise<string> | null = null;
+
+// Silent refresh for guest token
+const silentRefreshGuestToken = async (): Promise<string> => {
+  // If already refreshing, return the same Promise
+  if (isRefreshingGuestToken && refreshTokenPromise) {
+    return refreshTokenPromise;
+  }
+
+  isRefreshingGuestToken = true;
+  refreshTokenPromise = (async () => {
+    try {
+      // Call /auth-status to get new guest token
+      const response = await axios.get('/auth-status', {
+        baseURL: backendBaseUrl,
+        // This request must skip the interceptor to avoid adding expired token
+        headers: { 'X-Skip-Interceptor': 'true' }
+      });
+
+      if (response.data.access_token && !response.data.auth_configured) {
+        const newToken = response.data.access_token;
+        // Update localStorage
+        localStorage.setItem('LIGHTRAG-API-TOKEN', newToken);
+        // Update auth state
+        useAuthStore.getState().login(
+          newToken,
+          true,
+          response.data.core_version,
+          response.data.api_version,
+          response.data.webui_title || null,
+          response.data.webui_description || null
+        );
+        return newToken;
+      } else {
+        throw new Error('Failed to get guest token');
+      }
+    } finally {
+      isRefreshingGuestToken = false;
+      refreshTokenPromise = null;
+    }
+  })();
+
+  return refreshTokenPromise;
+};
+
 // Interceptor: add api key and check authentication
 axiosInstance.interceptors.request.use((config) => {
+  // Skip interceptor for token refresh requests
+  if (config.headers['X-Skip-Interceptor']) {
+    delete config.headers['X-Skip-Interceptor'];
+    return config;
+  }
+
   const apiKey = useSettingsStore.getState().apiKey
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
 
@@ -278,20 +434,88 @@ axiosInstance.interceptors.request.use((config) => {
   return config
 })
 
-// Interceptor：hanle error
+// Interceptor：handle token renewal and authentication errors
 axiosInstance.interceptors.response.use(
-  (response) => response,
-  (error: AxiosError) => {
+  (response) => {
+    // ========== Check for new token from backend ==========
+    const newToken = response.headers['x-new-token'];
+    if (newToken) {
+      localStorage.setItem('LIGHTRAG-API-TOKEN', newToken);
+
+      // Optional: log in development mode
+      if (import.meta.env.DEV) {
+        console.log('[Auth] Token auto-renewed by backend');
+      }
+
+      // Update auth state with renewal tracking
+      try {
+        const payload = JSON.parse(atob(newToken.split('.')[1]));
+        const authStore = useAuthStore.getState();
+        if (authStore.isAuthenticated) {
+          // Track token renewal time and expiration
+          const renewalTime = Date.now();
+          const expiresAt = payload.exp ? payload.exp * 1000 : 0;
+          authStore.setTokenRenewal(renewalTime, expiresAt);
+
+          // Update username (usually unchanged, but just in case)
+          const newUsername = payload.sub;
+          if (newUsername && newUsername !== authStore.username) {
+            // Need to add setUsername method or just update via login
+            // For now, we'll skip username update as it's rare
+          }
+        }
+      } catch (error) {
+        console.warn('[Auth] Failed to parse renewed token:', error);
+      }
+    }
+    // ========== End of token renewal check ==========
+
+    return response;
+  },
+  async (error: AxiosError) => {
     if (error.response) {
       if (error.response?.status === 401) {
-        // For login API, throw error directly
-        if (error.config?.url?.includes('/login')) {
+        const originalRequest = error.config;
+
+        // 1. For login API, throw error directly
+        if (originalRequest?.url?.includes('/login')) {
           throw error;
         }
-        // For other APIs, navigate to login page
-        navigationService.navigateToLogin();
 
-        // return a reject Promise
+        // 2. Prevent infinite retry
+        if (originalRequest && (originalRequest as any)._retry) {
+          navigationService.navigateToLogin();
+          return Promise.reject(new Error('Authentication required'));
+        }
+
+        // 3. Check if in guest mode
+        const authStore = useAuthStore.getState();
+        const currentToken = localStorage.getItem('LIGHTRAG-API-TOKEN');
+        const isGuest = currentToken && authStore.isGuestMode;
+
+        // 4. Guest mode: silent refresh and retry
+        if (isGuest && originalRequest) {
+          try {
+            const newToken = await silentRefreshGuestToken();
+
+            // Mark as retried to prevent infinite loop
+            (originalRequest as any)._retry = true;
+
+            // Update token in request headers
+            originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
+
+            // Retry original request
+            return axiosInstance(originalRequest);
+          } catch (refreshError) {
+            console.error('Failed to refresh guest token:', refreshError);
+            // Refresh failed, navigate to login
+            navigationService.navigateToLogin();
+            return Promise.reject(new Error('Failed to refresh authentication'));
+          }
+        }
+
+        // 5. Non-guest mode: navigate to login page
+        navigationService.navigateToLogin();
         return Promise.reject(new Error('Authentication required'));
       }
       throw new Error(
@@ -353,6 +577,11 @@ export const scanNewDocuments = async (): Promise<ScanResponse> => {
   return response.data
 }
 
+export const reprocessFailedDocuments = async (): Promise<ReprocessFailedResponse> => {
+  const response = await axiosInstance.post('/documents/reprocess_failed')
+  return response.data
+}
+
 export const getDocumentsScanProgress = async (): Promise<LightragDocumentsScanProgress> => {
   const response = await axiosInstance.get('/documents/scan-progress')
   return response.data
@@ -391,7 +620,88 @@ export const queryTextStream = async (
     if (!response.ok) {
       // Handle 401 Unauthorized error specifically
       if (response.status === 401) {
-        // For consistency with axios interceptor, navigate to login page
+        // Check if in guest mode
+        const authStore = useAuthStore.getState();
+        const currentToken = localStorage.getItem('LIGHTRAG-API-TOKEN');
+        const isGuest = currentToken && authStore.isGuestMode;
+
+        if (isGuest) {
+          try {
+            // Silent refresh token for guest mode
+            const newToken = await silentRefreshGuestToken();
+
+            // Retry stream request with new token
+            const retryHeaders = { ...headers };
+            retryHeaders['Authorization'] = `Bearer ${newToken}`;
+
+            const retryResponse = await fetch(`${backendBaseUrl}/query/stream`, {
+              method: 'POST',
+              headers: retryHeaders,
+              body: JSON.stringify(request),
+            });
+
+            if (!retryResponse.ok) {
+              throw new Error(`HTTP error! status: ${retryResponse.status}`);
+            }
+
+            // Retry successful, process stream response
+            // Re-execute the stream processing logic with retryResponse
+            if (!retryResponse.body) {
+              throw new Error('Response body is null');
+            }
+
+            const reader = retryResponse.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                if (line.trim()) {
+                  try {
+                    const parsed = JSON.parse(line);
+                    if (parsed.response) {
+                      onChunk(parsed.response);
+                    } else if (parsed.error) {
+                      onError?.(parsed.error);
+                    }
+                  } catch (parseError) {
+                    console.error('Failed to parse JSON:', parseError, 'Line:', line);
+                    onError?.(`JSON parse error: ${parseError}`);
+                  }
+                }
+              }
+            }
+
+            // Process any remaining data in buffer
+            if (buffer.trim()) {
+              try {
+                const parsed = JSON.parse(buffer);
+                if (parsed.response) {
+                  onChunk(parsed.response);
+                } else if (parsed.error) {
+                  onError?.(parsed.error);
+                }
+              } catch (parseError) {
+                console.error('Failed to parse final buffer:', parseError);
+              }
+            }
+
+            return; // Successfully completed retry
+          } catch (refreshError) {
+            console.error('Failed to refresh guest token for streaming:', refreshError);
+            navigationService.navigateToLogin();
+            throw new Error('Failed to refresh authentication', { cause: refreshError });
+          }
+        }
+
+        // Non-guest mode: navigate to login page
         navigationService.navigateToLogin();
 
         // Create a specific authentication error
@@ -489,27 +799,27 @@ export const queryTextStream = async (
       let userMessage = message;
 
       switch (statusCode) {
-      case 403:
-        userMessage = 'You do not have permission to access this resource (403 Forbidden)';
-        console.error('Permission denied for stream request:', message);
-        break;
-      case 404:
-        userMessage = 'The requested resource does not exist (404 Not Found)';
-        console.error('Resource not found for stream request:', message);
-        break;
-      case 429:
-        userMessage = 'Too many requests, please try again later (429 Too Many Requests)';
-        console.error('Rate limited for stream request:', message);
-        break;
-      case 500:
-      case 502:
-      case 503:
-      case 504:
-        userMessage = `Server error, please try again later (${statusCode})`;
-        console.error('Server error for stream request:', message);
-        break;
-      default:
-        console.error('Stream request failed with status code:', statusCode, message);
+        case 403:
+          userMessage = 'You do not have permission to access this resource (403 Forbidden)';
+          console.error('Permission denied for stream request:', message);
+          break;
+        case 404:
+          userMessage = 'The requested resource does not exist (404 Not Found)';
+          console.error('Resource not found for stream request:', message);
+          break;
+        case 429:
+          userMessage = 'Too many requests, please try again later (429 Too Many Requests)';
+          console.error('Rate limited for stream request:', message);
+          break;
+        case 500:
+        case 502:
+        case 503:
+        case 504:
+          userMessage = `Server error, please try again later (${statusCode})`;
+          console.error('Server error for stream request:', message);
+          break;
+        default:
+          console.error('Stream request failed with status code:', statusCode, message);
       }
 
       if (onError) {
@@ -607,9 +917,13 @@ export const clearCache = async (): Promise<{
   return response.data
 }
 
-export const deleteDocuments = async (docIds: string[], deleteFile: boolean = false): Promise<DeleteDocResponse> => {
+export const deleteDocuments = async (
+  docIds: string[],
+  deleteFile: boolean = false,
+  deleteLLMCache: boolean = false
+): Promise<DeleteDocResponse> => {
   const response = await axiosInstance.delete('/documents/delete_document', {
-    data: { doc_ids: docIds, delete_file: deleteFile }
+    data: { doc_ids: docIds, delete_file: deleteFile, delete_llm_cache: deleteLLMCache }
   })
   return response.data
 }
@@ -625,7 +939,8 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
     });
 
     // Check if response is HTML (which indicates a redirect or wrong endpoint)
-    const contentType = response.headers['content-type'] || '';
+    const contentTypeHeader = response.headers['content-type'];
+    const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
     if (contentType.includes('text/html')) {
       console.warn('Received HTML response instead of JSON for auth-status endpoint');
       return {
@@ -676,15 +991,22 @@ export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
   return response.data
 }
 
+export const cancelPipeline = async (): Promise<{
+  status: 'cancellation_requested' | 'not_busy'
+  message: string
+}> => {
+  const response = await axiosInstance.post('/documents/cancel_pipeline')
+  return response.data
+}
+
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {
-  const formData = new FormData();
+  const formData = new URLSearchParams();
   formData.append('username', username);
   formData.append('password', password);
+  formData.append('grant_type', 'password');
 
   const response = await axiosInstance.post('/login', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    }
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
   });
 
   return response.data;
@@ -695,17 +1017,20 @@ export const loginToServer = async (username: string, password: string): Promise
  * @param entityName The name of the entity to update
  * @param updatedData Dictionary containing updated attributes
  * @param allowRename Whether to allow renaming the entity (default: false)
+ * @param allowMerge Whether to merge into an existing entity when renaming to a duplicate name
  * @returns Promise with the updated entity information
  */
 export const updateEntity = async (
   entityName: string,
   updatedData: Record<string, any>,
-  allowRename: boolean = false
-): Promise<DocActionResponse> => {
+  allowRename: boolean = false,
+  allowMerge: boolean = false
+): Promise<EntityUpdateResponse> => {
   const response = await axiosInstance.post('/graph/entity/edit', {
     entity_name: entityName,
     updated_data: updatedData,
-    allow_rename: allowRename
+    allow_rename: allowRename,
+    allow_merge: allowMerge
   })
   return response.data
 }
@@ -755,14 +1080,176 @@ export const getTrackStatus = async (trackId: string): Promise<TrackStatusRespon
   return response.data
 }
 
+type InFlightPaginatedDocumentRequest = {
+  controller: AbortController
+  promise: Promise<PaginatedDocsResponse>
+  subscriberCount: number
+}
+
+const getPaginatedDocumentsRequestKey = (request: DocumentsRequest): string =>
+  JSON.stringify(request)
+
+// Deduplicate in-flight paginated document requests with identical parameters.
+// This prevents duplicate backend calls caused by overlapping timers/effects or
+// React StrictMode double-mount behavior in development.
+const inFlightPaginatedDocumentRequests = new Map<
+  string,
+  InFlightPaginatedDocumentRequest
+>()
+
+const releasePaginatedDocumentSubscriber = (
+  requestKey: string,
+  requestEntry: InFlightPaginatedDocumentRequest,
+  abortIfLastSubscriber: boolean
+): void => {
+  requestEntry.subscriberCount = Math.max(0, requestEntry.subscriberCount - 1)
+
+  if (requestEntry.subscriberCount !== 0) {
+    return
+  }
+
+  if (inFlightPaginatedDocumentRequests.get(requestKey) === requestEntry) {
+    inFlightPaginatedDocumentRequests.delete(requestKey)
+  }
+
+  if (abortIfLastSubscriber) {
+    requestEntry.controller.abort()
+  }
+}
+
+const subscribeToPaginatedDocumentsRequest = (
+  request: DocumentsRequest
+): {
+  requestKey: string
+  requestEntry: InFlightPaginatedDocumentRequest
+  release: (abortIfLastSubscriber: boolean) => void
+} => {
+  const requestKey = getPaginatedDocumentsRequestKey(request)
+  let requestEntry = inFlightPaginatedDocumentRequests.get(requestKey)
+
+  if (!requestEntry) {
+    const controller = new AbortController()
+    requestEntry = {
+      controller,
+      subscriberCount: 0,
+      promise: paginatedDocumentsPost(request, controller)
+        .finally(() => {
+          if (inFlightPaginatedDocumentRequests.get(requestKey) === requestEntry) {
+            inFlightPaginatedDocumentRequests.delete(requestKey)
+          }
+        })
+    }
+    inFlightPaginatedDocumentRequests.set(requestKey, requestEntry)
+  }
+
+  requestEntry.subscriberCount += 1
+
+  let released = false
+  const release = (abortIfLastSubscriber: boolean): void => {
+    if (released) {
+      return
+    }
+    released = true
+    releasePaginatedDocumentSubscriber(
+      requestKey,
+      requestEntry,
+      abortIfLastSubscriber
+    )
+  }
+
+  return {
+    requestKey,
+    requestEntry,
+    release
+  }
+}
+
+const defaultPaginatedDocumentsPost = async (
+  request: DocumentsRequest,
+  controller: AbortController
+): Promise<PaginatedDocsResponse> => {
+  const response = await axiosInstance.post('/documents/paginated', request, {
+    signal: controller.signal
+  })
+  return response.data
+}
+
+let paginatedDocumentsPost = defaultPaginatedDocumentsPost
+
+export const abortDocumentsPaginated = (request: DocumentsRequest): void => {
+  const requestKey = getPaginatedDocumentsRequestKey(request)
+  const inFlightRequest = inFlightPaginatedDocumentRequests.get(requestKey)
+
+  if (!inFlightRequest) {
+    return
+  }
+
+  inFlightPaginatedDocumentRequests.delete(requestKey)
+  inFlightRequest.controller.abort()
+}
+
+export const __resetPaginatedDocumentRequestsForTests = (): void => {
+  for (const { controller } of inFlightPaginatedDocumentRequests.values()) {
+    controller.abort()
+  }
+  inFlightPaginatedDocumentRequests.clear()
+  paginatedDocumentsPost = defaultPaginatedDocumentsPost
+}
+
+export const __setPaginatedDocumentsPostForTests = (
+  post: typeof defaultPaginatedDocumentsPost
+): void => {
+  paginatedDocumentsPost = post
+}
+
 /**
  * Get documents with pagination support
  * @param request The pagination request parameters
  * @returns Promise with paginated documents response
  */
 export const getDocumentsPaginated = async (request: DocumentsRequest): Promise<PaginatedDocsResponse> => {
-  const response = await axiosInstance.post('/documents/paginated', request)
-  return response.data
+  const { requestEntry, release } = subscribeToPaginatedDocumentsRequest(request)
+
+  try {
+    return await requestEntry.promise
+  } finally {
+    release(false)
+  }
+}
+
+export const getDocumentsPaginatedWithTimeout = (
+  request: DocumentsRequest,
+  timeoutMs: number = 30000,
+  errorMsg: string = 'Document fetch timeout'
+): Promise<PaginatedDocsResponse> => {
+  const { requestEntry, release } = subscribeToPaginatedDocumentsRequest(request)
+
+  return new Promise<PaginatedDocsResponse>((resolve, reject) => {
+    let timedOut = false
+    const timeoutId = setTimeout(() => {
+      timedOut = true
+      release(true)
+      reject(new Error(errorMsg))
+    }, timeoutMs)
+
+    requestEntry.promise
+      .then(response => {
+        if (timedOut) {
+          return
+        }
+        clearTimeout(timeoutId)
+        release(false)
+        resolve(response)
+      })
+      .catch(error => {
+        if (timedOut) {
+          return
+        }
+        clearTimeout(timeoutId)
+        release(false)
+        reject(error)
+      })
+  })
 }
 
 /**

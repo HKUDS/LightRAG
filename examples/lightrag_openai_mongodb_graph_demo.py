@@ -4,7 +4,6 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 #########
 # Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
@@ -27,7 +26,11 @@ EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192))
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embed(
+    # Note: openai_embed is decorated with @wrap_embedding_func_with_attrs,
+    # which wraps it in an EmbeddingFunc. Using .func accesses the original
+    # unwrapped function to avoid double wrapping when we create our own
+    # EmbeddingFunc with custom configuration in create_embedding_function_instance().
+    return await openai_embed.func(
         texts,
         model=EMBEDDING_MODEL,
     )
@@ -61,9 +64,7 @@ async def initialize_rag():
         log_level="DEBUG",
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 

@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import { forwardRef, useCallback, useEffect, useState } from 'react'
+import { forwardRef, useCallback, useState } from 'react'
 import { NumericFormat, NumericFormatProps } from 'react-number-format'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
@@ -42,6 +42,14 @@ const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
   ) => {
     const [value, setValue] = useState<number | undefined>(controlledValue ?? defaultValue)
 
+    // Sync local state when the controlled value changes (e.g. parent resets the field).
+    // Render-time comparison avoids cascading renders flagged by react-hooks/set-state-in-effect.
+    const [previousControlledValue, setPreviousControlledValue] = useState(controlledValue)
+    if (controlledValue !== previousControlledValue) {
+      setPreviousControlledValue(controlledValue)
+      if (controlledValue !== undefined) setValue(controlledValue)
+    }
+
     const handleIncrement = useCallback(() => {
       setValue((prev) =>
         prev === undefined ? (stepper ?? 1) : Math.min(prev + (stepper ?? 1), max)
@@ -53,12 +61,6 @@ const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         prev === undefined ? -(stepper ?? 1) : Math.max(prev - (stepper ?? 1), min)
       )
     }, [stepper, min])
-
-    useEffect(() => {
-      if (controlledValue !== undefined) {
-        setValue(controlledValue)
-      }
-    }, [controlledValue])
 
     const handleChange = (values: { value: string; floatValue: number | undefined }) => {
       const newValue = values.floatValue === undefined ? undefined : values.floatValue

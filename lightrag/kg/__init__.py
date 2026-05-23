@@ -5,6 +5,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisKVStorage",
             "PGKVStorage",
             "MongoKVStorage",
+            "OpenSearchKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
     },
@@ -15,6 +16,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGGraphStorage",
             "MongoGraphStorage",
             "MemgraphStorage",
+            "OpenSearchGraphStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
     },
@@ -26,6 +28,7 @@ STORAGE_IMPLEMENTATIONS = {
             "FaissVectorDBStorage",
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
+            "OpenSearchVectorDBStorage",
             # "ChromaVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
@@ -36,6 +39,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisDocStatusStorage",
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
+            "OpenSearchDocStatusStorage",
         ],
         "required_methods": ["get_docs_by_status"],
     },
@@ -45,13 +49,19 @@ STORAGE_IMPLEMENTATIONS = {
 STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     # KV Storage Implementations
     "JsonKVStorage": [],
-    "MongoKVStorage": [],
+    "MongoKVStorage": [
+        "MONGO_URI",
+        "MONGO_DATABASE",
+    ],
     "RedisKVStorage": ["REDIS_URI"],
     "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     # Graph Storage Implementations
     "NetworkXStorage": [],
     "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
-    "MongoGraphStorage": [],
+    "MongoGraphStorage": [
+        "MONGO_URI",
+        "MONGO_DATABASE",
+    ],
     "MemgraphStorage": ["MEMGRAPH_URI"],
     "AGEStorage": [
         "AGE_POSTGRES_DB",
@@ -65,17 +75,39 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     ],
     # Vector Storage Implementations
     "NanoVectorDBStorage": [],
-    "MilvusVectorDBStorage": [],
-    "ChromaVectorDBStorage": [],
+    "MilvusVectorDBStorage": [
+        "MILVUS_URI",
+        "MILVUS_DB_NAME",
+    ],
+    # "ChromaVectorDBStorage": [],
     "PGVectorStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     "FaissVectorDBStorage": [],
     "QdrantVectorDBStorage": ["QDRANT_URL"],  # QDRANT_API_KEY has default value None
-    "MongoVectorDBStorage": [],
+    "MongoVectorDBStorage": [
+        "MONGO_URI",
+        "MONGO_DATABASE",
+    ],
     # Document Status Storage Implementations
     "JsonDocStatusStorage": [],
     "RedisDocStatusStorage": ["REDIS_URI"],
     "PGDocStatusStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
-    "MongoDocStatusStorage": [],
+    "MongoDocStatusStorage": [
+        "MONGO_URI",
+        "MONGO_DATABASE",
+    ],
+    # OpenSearch Storage Implementations
+    "OpenSearchKVStorage": [
+        "OPENSEARCH_HOSTS",
+    ],
+    "OpenSearchDocStatusStorage": [
+        "OPENSEARCH_HOSTS",
+    ],
+    "OpenSearchGraphStorage": [
+        "OPENSEARCH_HOSTS",
+    ],
+    "OpenSearchVectorDBStorage": [
+        "OPENSEARCH_HOSTS",
+    ],
 }
 
 # Storage implementation module mapping
@@ -101,6 +133,10 @@ STORAGES = {
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
     "MemgraphStorage": ".kg.memgraph_impl",
+    "OpenSearchKVStorage": ".kg.opensearch_impl",
+    "OpenSearchDocStatusStorage": ".kg.opensearch_impl",
+    "OpenSearchGraphStorage": ".kg.opensearch_impl",
+    "OpenSearchVectorDBStorage": ".kg.opensearch_impl",
 }
 
 

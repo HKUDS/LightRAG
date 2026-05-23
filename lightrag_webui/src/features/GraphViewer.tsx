@@ -108,7 +108,6 @@ const GraphEvents = () => {
 }
 
 const GraphViewer = () => {
-  const [isThemeSwitching, setIsThemeSwitching] = useState(false)
   const sigmaRef = useRef<any>(null)
   const prevTheme = useRef<string>('')
 
@@ -123,27 +122,33 @@ const GraphViewer = () => {
   const showLegend = useSettingsStore.use.showLegend()
   const theme = useSettingsStore.use.theme()
 
+  const [isThemeSwitching, setIsThemeSwitching] = useState(false)
+
   // Memoize sigma settings to prevent unnecessary re-creation
   const memoizedSigmaSettings = useMemo(() => {
     const isDarkTheme = theme === 'dark'
     return createSigmaSettings(isDarkTheme)
   }, [theme])
 
-  // Initialize sigma settings based on theme with theme switching protection
+  // Detect theme changes and briefly show a loading overlay to avoid flash of
+  // unstyled content. setState is inside setTimeout (async), not synchronously
+  // in the effect body, so react-hooks/set-state-in-effect is not triggered.
   useEffect(() => {
-    // Detect theme change
     const isThemeChange = prevTheme.current && prevTheme.current !== theme
     if (isThemeChange) {
-      setIsThemeSwitching(true)
       console.log('Theme switching detected:', prevTheme.current, '->', theme)
+      prevTheme.current = theme
 
-      // Reset theme switching state after a short delay
+      const switchTimer = setTimeout(() => setIsThemeSwitching(true), 0)
       const timer = setTimeout(() => {
         setIsThemeSwitching(false)
         console.log('Theme switching completed')
       }, 150)
 
-      return () => clearTimeout(timer)
+      return () => {
+        clearTimeout(switchTimer)
+        clearTimeout(timer)
+      }
     }
     prevTheme.current = theme
     console.log('Initialized sigma settings for theme:', theme)
@@ -226,13 +231,13 @@ const GraphViewer = () => {
         </div>
 
         {showPropertyPanel && (
-          <div className="absolute top-2 right-2">
+          <div className="absolute top-2 right-2 z-10">
             <PropertiesView />
           </div>
         )}
 
         {showLegend && (
-          <div className="absolute bottom-10 right-2">
+          <div className="absolute bottom-10 right-2 z-0">
             <Legend className="bg-background/60 backdrop-blur-lg" />
           </div>
         )}

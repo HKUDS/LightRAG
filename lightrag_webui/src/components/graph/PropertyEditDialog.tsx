@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Dialog,
@@ -9,14 +8,19 @@ import {
   DialogDescription
 } from '@/components/ui/Dialog'
 import Button from '@/components/ui/Button'
+import Checkbox from '@/components/ui/Checkbox'
 
 interface PropertyEditDialogProps {
   isOpen: boolean
   onClose: () => void
-  onSave: (value: string) => void
+  onSave: () => void | Promise<void>
   propertyName: string
-  initialValue: string
+  value: string
+  allowMerge: boolean
+  onValueChange: (value: string) => void
+  onAllowMergeChange: (allowMerge: boolean) => void
   isSubmitting?: boolean
+  errorMessage?: string | null
 }
 
 /**
@@ -28,20 +32,14 @@ const PropertyEditDialog = ({
   onClose,
   onSave,
   propertyName,
-  initialValue,
-  isSubmitting = false
+  value,
+  allowMerge,
+  onValueChange,
+  onAllowMergeChange,
+  isSubmitting = false,
+  errorMessage = null
 }: PropertyEditDialogProps) => {
   const { t } = useTranslation()
-  const [value, setValue] = useState('')
-  // Add error state to display save failure messages
-  const [error, setError] = useState<string | null>(null)
-
-  // Initialize value when dialog opens
-  useEffect(() => {
-    if (isOpen) {
-      setValue(initialValue)
-    }
-  }, [isOpen, initialValue])
 
   // Get translated property name
   const getPropertyNameTranslation = (name: string) => {
@@ -53,51 +51,41 @@ const PropertyEditDialog = ({
   // Get textarea configuration based on property name
   const getTextareaConfig = (propertyName: string) => {
     switch (propertyName) {
-    case 'description':
-      return {
+      case 'description':
+        return {
         // No rows attribute for description to allow auto-sizing
-        className: 'max-h-[50vh] min-h-[10em] resize-y', // Maximum height 70% of viewport, minimum height ~20 lines, allow vertical resizing
-        style: {
-          height: '70vh', // Set initial height to 70% of viewport
-          minHeight: '20em', // Minimum height ~20 lines
-          resize: 'vertical' as const // Allow vertical resizing, using 'as const' to fix type
-        }
-      };
-    case 'entity_id':
-      return {
-        rows: 2,
-        className: '',
-        style: {}
-      };
-    case 'keywords':
-      return {
-        rows: 4,
-        className: '',
-        style: {}
-      };
-    default:
-      return {
-        rows: 5,
-        className: '',
-        style: {}
-      };
+          className: 'max-h-[50vh] min-h-[10em] resize-y', // Maximum height 70% of viewport, minimum height ~20 lines, allow vertical resizing
+          style: {
+            height: '70vh', // Set initial height to 70% of viewport
+            minHeight: '20em', // Minimum height ~20 lines
+            resize: 'vertical' as const // Allow vertical resizing, using 'as const' to fix type
+          }
+        };
+      case 'entity_id':
+        return {
+          rows: 2,
+          className: '',
+          style: {}
+        };
+      case 'keywords':
+        return {
+          rows: 4,
+          className: '',
+          style: {}
+        };
+      default:
+        return {
+          rows: 5,
+          className: '',
+          style: {}
+        };
     }
   };
 
   const handleSave = async () => {
-    if (value.trim() !== '') {
-      // Clear previous error messages
-      setError(null)
-      try {
-        await onSave(value)
-        onClose()
-      } catch (error) {
-        console.error('Save error:', error)
-        // Set error message to state for UI display
-        setError(typeof error === 'object' && error !== null
-          ? (error as Error).message || t('common.saveFailed')
-          : t('common.saveFailed'))
-      }
+    const trimmedValue = value.trim()
+    if (trimmedValue !== '') {
+      await onSave()
     }
   }
 
@@ -116,9 +104,9 @@ const PropertyEditDialog = ({
         </DialogHeader>
 
         {/* Display error message if save fails */}
-        {error && (
-          <div className="bg-destructive/15 text-destructive px-4 py-2 rounded-md text-sm mt-2">
-            {error}
+        {errorMessage && (
+          <div className="bg-destructive/15 text-destructive px-4 py-2 rounded-md text-sm">
+            {errorMessage}
           </div>
         )}
 
@@ -129,7 +117,7 @@ const PropertyEditDialog = ({
             return propertyName === 'description' ? (
               <textarea
                 value={value}
-                onChange={(e) => setValue(e.target.value)}
+                onChange={(e) => onValueChange(e.target.value)}
                 className={`border-input focus-visible:ring-ring flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${config.className}`}
                 style={config.style}
                 disabled={isSubmitting}
@@ -137,7 +125,7 @@ const PropertyEditDialog = ({
             ) : (
               <textarea
                 value={value}
-                onChange={(e) => setValue(e.target.value)}
+                onChange={(e) => onValueChange(e.target.value)}
                 rows={config.rows}
                 className={`border-input focus-visible:ring-ring flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${config.className}`}
                 disabled={isSubmitting}
@@ -145,6 +133,25 @@ const PropertyEditDialog = ({
             );
           })()}
         </div>
+
+        {propertyName === 'entity_id' && (
+          <div className="rounded-md border border-border bg-muted/20 p-3">
+            <label className="flex items-start gap-2 text-sm font-medium">
+              <Checkbox
+                id="allow-merge"
+                checked={allowMerge}
+                disabled={isSubmitting}
+                onCheckedChange={(checked) => onAllowMergeChange(checked === true)}
+              />
+              <div>
+                <span>{t('graphPanel.propertiesView.mergeOptionLabel')}</span>
+                <p className="text-xs font-normal text-muted-foreground">
+                  {t('graphPanel.propertiesView.mergeOptionDescription')}
+                </p>
+              </div>
+            </label>
+          </div>
+        )}
 
         <DialogFooter>
           <Button

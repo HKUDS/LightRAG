@@ -15,7 +15,7 @@ from lightrag.utils import (
 from lightrag.base import BaseVectorStorage
 from nano_vectordb import NanoVectorDB
 from .shared_storage import (
-    get_storage_lock,
+    get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
@@ -25,6 +25,7 @@ from .shared_storage import (
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
     def __post_init__(self):
+        self._validate_embedding_func()
         # Initialize basic attributes
         self._client = None
         self._storage_lock = None
@@ -47,7 +48,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         else:
             # Default behavior when workspace is empty
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             workspace_dir = working_dir
 
         os.makedirs(workspace_dir, exist_ok=True)
@@ -65,9 +66,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self.storage_updated = await get_update_flag(
+            self.namespace, workspace=self.workspace
+        )
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock(enable_logging=False)
+        self._storage_lock = get_namespace_lock(
+            self.namespace, workspace=self.workspace
+        )
 
     async def _get_client(self):
         """Check if the storage should be reloaded"""
@@ -115,7 +120,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         ]
 
         # Execute embedding outside of lock to avoid long lock times
-        embedding_tasks = [self.embedding_func(batch) for batch in batches]
+        embedding_tasks = [
+            self.embedding_func(batch, context="document") for batch in batches
+        ]
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         embeddings = np.concatenate(embeddings_list)
@@ -145,7 +152,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         else:
             # Execute embedding outside of lock to avoid improve cocurrent
             embedding = await self.embedding_func(
-                [query], _priority=5
+                [query], context="query", _priority=5
             )  # higher priority for query
             embedding = embedding[0]
 
@@ -184,9 +191,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
         try:
             client = await self._get_client()
+            # Record count before deletion
+            before_count = len(client)
+
             client.delete(ids)
+
+            # Calculate actual deleted count
+            after_count = len(client)
+            deleted_count = before_count - after_count
+
             logger.debug(
-                f"[{self.workspace}] Successfully deleted {len(ids)} vectors from {self.namespace}"
+                f"[{self.workspace}] Successfully deleted {deleted_count} vectors from {self.namespace}"
             )
         except Exception as e:
             logger.error(
@@ -280,7 +295,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # Save data to disk
                 self._client.save()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
                 return True  # Return success
@@ -326,14 +341,25 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         client = await self._get_client()
         results = client.get(ids)
-        return [
-            {
+        result_map: dict[str, dict[str, Any]] = {}
+
+        for dp in results:
+            if not dp:
+                continue
+            record = {
                 **{k: v for k, v in dp.items() if k != "vector"},
                 "id": dp.get("__id__"),
                 "created_at": dp.get("__created_at__"),
             }
-            for dp in results
-        ]
+            key = record.get("id")
+            if key is not None:
+                result_map[str(key)] = record
+
+        ordered_results: list[dict[str, Any] | None] = []
+        for requested_id in ids:
+            ordered_results.append(result_map.get(str(requested_id)))
+
+        return ordered_results
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         """Get vectors by their IDs, returning only ID and vector data for efficiency
@@ -391,7 +417,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 )
 
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
 

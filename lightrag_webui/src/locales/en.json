@@ -13,6 +13,7 @@
     "api": "API",
     "projectRepository": "Project Repository",
     "logout": "Logout",
+    "frontendNeedsRebuild": "Frontend needs rebuild",
     "themeToggle": {
       "switchToLight": "Switch to light theme",
       "switchToDark": "Switch to dark theme"
@@ -70,6 +71,7 @@
       "confirmButton": "YES",
       "deleteFileOption": "Also delete uploaded files",
       "deleteFileTooltip": "Check this option to also delete the corresponding uploaded files on the server",
+      "deleteLLMCacheOption": "Also delete extracted LLM cache",
       "success": "Document deletion pipeline started successfully",
       "failed": "Delete Documents Failed:\n{{message}}",
       "error": "Delete Documents Failed:\n{{error}}",
@@ -97,7 +99,7 @@
         "error": "Some files failed to upload"
       },
       "generalError": "Upload Failed\n{{error}}",
-      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Supported types: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",
@@ -113,11 +115,11 @@
     },
     "documentManager": {
       "title": "Document Management",
-      "scanButton": "Scan",
-      "scanTooltip": "Scan documents in input folder",
+      "scanButton": "Scan/Retry",
+      "scanTooltip": "Scan and process documents in input folder, and also reprocess all failed documents",
       "refreshTooltip": "Reset document list",
-      "pipelineStatusButton": "Pipeline Status",
-      "pipelineStatusTooltip": "View pipeline status",
+      "pipelineStatusButton": "Pipeline",
+      "pipelineStatusTooltip": "View document processing pipeline status",
       "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
       "emptyTitle": "No Documents",
@@ -134,9 +136,20 @@
         "metadata": "Metadata",
         "select": "Select"
       },
+      "filters": {
+        "all": "All",
+        "completed": "Completed",
+        "analyzing": "Analyzing",
+        "processing": "Processing",
+        "pending": "Pending",
+        "failed": "Failed"
+      },
       "status": {
         "all": "All",
         "completed": "Completed",
+        "preprocessed": "Preprocessed",
+        "parsing": "Parsing",
+        "analyzing": "Analyzing",
         "processing": "Processing",
         "pending": "Pending",
         "failed": "Failed"
@@ -150,20 +163,39 @@
       "showButton": "Show",
       "hideButton": "Hide",
       "showFileNameTooltip": "Show file name",
-      "hideFileNameTooltip": "Hide file name"
+      "hideFileNameTooltip": "Hide file name",
+      "details": {
+        "title": "Status Details",
+        "openTooltip": "View status details",
+        "content": "Details",
+        "copyButton": "Copy",
+        "copyTooltip": "Copy status details",
+        "copySuccess": "Status details copied",
+        "copyFailed": "Failed to copy status details"
+      }
     },
     "pipelineStatus": {
       "title": "Pipeline Status",
       "busy": "Pipeline Busy",
       "requestPending": "Request Pending",
+      "cancellationRequested": "Cancellation Requested",
       "jobName": "Job Name",
       "startTime": "Start Time",
       "progress": "Progress",
-      "unit": "batch",
-      "latestMessage": "Latest Message",
-      "historyMessages": "History Messages",
+      "unit": "Batch",
+      "pipelineMessages": "Pipeline Messages",
+      "cancelButton": "Cancel",
+      "cancelTooltip": "Cancel pipeline processing",
+      "cancelConfirmTitle": "Confirm Pipeline Cancellation",
+      "cancelConfirmDescription": "This will interrupt the ongoing pipeline processing. Are you sure you want to continue?",
+      "cancelConfirmButton": "Confirm Cancellation",
+      "cancelInProgress": "Cancellation in progress...",
+      "pipelineNotRunning": "Pipeline not running",
+      "cancelSuccess": "Pipeline cancellation requested",
+      "cancelFailed": "Failed to cancel pipeline\n{{error}}",
+      "cancelNotBusy": "Pipeline is not running, no need to cancel",
       "errors": {
-        "fetchFailed": "Failed to get pipeline status\n{{error}}"
+        "fetchFailed": "Failed to fetch pipeline status\n{{error}}"
       }
     }
   },
@@ -262,11 +294,12 @@
     "statusCard": {
       "unavailable": "Status information unavailable",
       "serverInfo": "Server Info",
-      "workingDirectory": "Working Directory",
       "inputDirectory": "Input Directory",
-      "maxParallelInsert": "Concurrent Doc Processing",
-      "summarySettings": "Summary Settings",
-      "llmConfig": "LLM Configuration",
+      "parser": "Parser",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Other Settings",
+      "llmConfig": "Model Configuration",
       "llmBinding": "LLM Binding",
       "llmBindingHost": "LLM Endpoint",
       "llmModel": "LLM Model",
@@ -280,12 +313,10 @@
       "graphStorage": "Graph Storage",
       "vectorStorage": "Vector Storage",
       "workspace": "Workspace",
-      "maxGraphNodes": "Max Graph Nodes",
       "rerankerConfig": "Reranker Configuration",
       "rerankerBindingHost": "Reranker Endpoint",
       "rerankerModel": "Reranker Model",
-      "lockStatus": "Lock Status",
-      "threshold": "Threshold"
+      "lockStatus": "Lock Status"
     },
     "propertiesView": {
       "editProperty": "Edit {{property}}",
@@ -293,11 +324,24 @@
       "errors": {
         "duplicateName": "Node name already exists",
         "updateFailed": "Failed to update node",
-        "tryAgainLater": "Please try again later"
+        "tryAgainLater": "Please try again later",
+        "updateSuccessButMergeFailed": "Properties updated, but merge failed: {{error}}",
+        "mergeFailed": "Merge failed: {{error}}"
       },
       "success": {
         "entityUpdated": "Node updated successfully",
-        "relationUpdated": "Relation updated successfully"
+        "relationUpdated": "Relation updated successfully",
+        "entityMerged": "Nodes merged successfully"
+      },
+      "mergeOptionLabel": "Automatically merge when a duplicate name is found",
+      "mergeOptionDescription": "If enabled, renaming to an existing name will merge this node into the existing one instead of failing.",
+      "mergeDialog": {
+        "title": "Node merged",
+        "description": "\"{{source}}\" has been merged into \"{{target}}\".",
+        "refreshHint": "Refresh the graph to load the latest structure.",
+        "keepCurrentStart": "Refresh and keep current start node",
+        "useMergedStart": "Refresh and use merged node",
+        "refreshing": "Refreshing graph..."
       },
       "node": {
         "title": "Node",
@@ -307,7 +351,7 @@
         "properties": "Properties",
         "relationships": "Relations(within subgraph)",
         "expandNode": "Expand Node",
-        "pruneNode": "Prune Node",
+        "pruneNode": "Hide Node",
         "deleteAllNodesError": "Refuse to delete all nodes in the graph",
         "nodesRemoved": "{{count}} nodes removed, including orphan nodes",
         "noNewNodes": "No expandable nodes found",
@@ -315,9 +359,9 @@
           "description": "Description",
           "entity_id": "Name",
           "entity_type": "Type",
-          "source_id": "SrcID",
+          "source_id": "C-ID",
           "Neighbour": "Neigh",
-          "file_path": "Source",
+          "file_path": "File",
           "keywords": "Keys",
           "weight": "Weight"
         }
@@ -333,14 +377,14 @@
     },
     "search": {
       "placeholder": "Search nodes in page...",
-      "message": "And {count} others"
+      "message": "And {{count}} others"
     },
     "graphLabels": {
       "selectTooltip": "Get subgraph of a node (label)",
       "noLabels": "No matching nodes found",
       "label": "Search node name",
       "placeholder": "Search node name...",
-      "andOthers": "And {count} others",
+      "andOthers": "And {{count}} others",
       "refreshGlobalTooltip": "Refresh global graph data and reset search history",
       "refreshCurrentLabelTooltip": "Refresh current page graph data",
       "refreshingTooltip": "Refreshing data..."

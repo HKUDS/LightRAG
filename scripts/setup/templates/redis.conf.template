@@ -1,0 +1,36 @@
+# redis.conf - setup-managed default for the bundled Redis service
+
+# Network settings
+bind 0.0.0.0
+port 6379
+protected-mode no
+
+# General settings
+daemonize no
+loglevel warning
+logfile "/data/redis.log"
+dir /data
+
+# RDB persistence
+save 900 1
+save 300 10
+save 60 1000
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+
+# AOF persistence
+appendonly yes
+appendfilename "appendonly.aof"
+appendfsync everysec
+no-appendfsync-on-rewrite no
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+
+# Client limits
+maxclients 10000
+
+# Memory management
+maxmemory 4gb
+maxmemory-policy noeviction

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import Button from '@/components/ui/Button'
 import {
   Dialog,
@@ -44,23 +44,26 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
   const [confirmText, setConfirmText] = useState('')
   const [deleteFile, setDeleteFile] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteLLMCache, setDeleteLLMCache] = useState(false)
   const isConfirmEnabled = confirmText.toLowerCase() === 'yes' && !isDeleting
 
-  // Reset state when dialog closes
-  useEffect(() => {
-    if (!open) {
+  // Reset state when dialog closes - handled in onOpenChange to avoid setState in effect
+  const handleOpenChange = useCallback((newOpen: boolean) => {
+    setOpen(newOpen)
+    if (!newOpen) {
       setConfirmText('')
       setDeleteFile(false)
+      setDeleteLLMCache(false)
       setIsDeleting(false)
     }
-  }, [open])
+  }, [])
 
   const handleDelete = useCallback(async () => {
     if (!isConfirmEnabled || selectedDocIds.length === 0) return
 
     setIsDeleting(true)
     try {
-      const result = await deleteDocuments(selectedDocIds, deleteFile)
+      const result = await deleteDocuments(selectedDocIds, deleteFile, deleteLLMCache)
 
       if (result.status === 'deletion_started') {
         toast.success(t('documentPanel.deleteDocuments.success', { count: selectedDocIds.length }))
@@ -87,17 +90,17 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
       }
 
       // Close dialog after successful operation
-      setOpen(false)
+      handleOpenChange(false)
     } catch (err) {
       toast.error(t('documentPanel.deleteDocuments.error', { error: errorMessage(err) }))
       setConfirmText('')
     } finally {
       setIsDeleting(false)
     }
-  }, [isConfirmEnabled, selectedDocIds, deleteFile, setOpen, t, onDocumentsDeleted])
+  }, [isConfirmEnabled, selectedDocIds, deleteFile, deleteLLMCache, handleOpenChange, t, onDocumentsDeleted])
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button
           variant="destructive"
@@ -155,10 +158,24 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
               {t('documentPanel.deleteDocuments.deleteFileOption')}
             </Label>
           </div>
+
+          <div className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              id="delete-llm-cache"
+              checked={deleteLLMCache}
+              onChange={(e) => setDeleteLLMCache(e.target.checked)}
+              disabled={isDeleting}
+              className="h-4 w-4 text-red-600 focus:ring-red-500 border-gray-300 rounded"
+            />
+            <Label htmlFor="delete-llm-cache" className="text-sm font-medium cursor-pointer">
+              {t('documentPanel.deleteDocuments.deleteLLMCacheOption')}
+            </Label>
+          </div>
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)} disabled={isDeleting}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={isDeleting}>
             {t('common.cancel')}
           </Button>
           <Button

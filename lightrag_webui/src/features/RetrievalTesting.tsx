@@ -103,6 +103,10 @@ const parseCOTContent = (content: string) => {
 
 export default function RetrievalTesting() {
   const { t } = useTranslation()
+  // Get current tab to determine if this tab is active (for performance optimization)
+  const currentTab = useSettingsStore.use.currentTab()
+  const isRetrievalTabActive = currentTab === 'retrieval'
+
   const [messages, setMessages] = useState<MessageWithError[]>(() => {
     try {
       const history = useSettingsStore.getState().retrievalHistory || []
@@ -353,6 +357,7 @@ export default function RetrievalTesting() {
       const queryParams = {
         ...state.querySettings,
         query: actualQuery,
+        response_type: 'Multiple Paragraphs',
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
             .filter((m) => m.isError !== true)
@@ -617,20 +622,21 @@ export default function RetrievalTesting() {
     useSettingsStore.getState().setRetrievalHistory([])
   }, [setMessages])
 
+  // Disable auto-scroll when the user clicks inside the messages container.
+  // The ref mutation pattern is intentional and matches how it's mutated elsewhere
+  // (wheel/scroll handlers in the effect above); the linter flags it here regardless.
+  const handleMessagesContainerClick = useCallback(() => {
+    if (shouldFollowScrollRef.current) {
+      // eslint-disable-next-line react-hooks/immutability
+      shouldFollowScrollRef.current = false;
+    }
+  }, [])
+
   // Handle copying message content with robust clipboard support
   const handleCopyMessage = useCallback(async (message: MessageWithError) => {
-    let contentToCopy = '';
-
-    if (message.role === 'user') {
-      // User messages: copy original content
-      contentToCopy = message.content || '';
-    } else {
-      // Assistant messages: prefer processed display content, fallback to original content
-      const finalDisplayContent = message.displayContent !== undefined
-        ? message.displayContent
-        : (message.content || '');
-      contentToCopy = finalDisplayContent;
-    }
+    const contentToCopy = message.role === 'user'
+      ? (message.content || '')
+      : (message.displayContent !== undefined ? message.displayContent : (message.content || ''));
 
     if (!contentToCopy.trim()) {
       toast.error(t('retrievePanel.chatMessage.copyEmpty', 'No content to copy'));
@@ -686,11 +692,7 @@ export default function RetrievalTesting() {
           <div
             ref={messagesContainerRef}
             className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2"
-            onClick={() => {
-              if (shouldFollowScrollRef.current) {
-                shouldFollowScrollRef.current = false;
-              }
-            }}
+            onClick={handleMessagesContainerClick}
           >
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               {messages.length === 0 ? (
@@ -716,7 +718,7 @@ export default function RetrievalTesting() {
                           <CopyIcon className="size-4" />
                         </Button>
                       )}
-                      <ChatMessage message={message} />
+                      <ChatMessage message={message} isTabActive={isRetrievalTabActive} />
                       {message.role === 'assistant' && (
                         <Button
                           onClick={() => handleCopyMessage(message)}

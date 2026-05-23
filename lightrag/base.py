@@ -19,7 +19,6 @@ from typing import (
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
 from .constants import (
-    GRAPH_FIELD_SEP,
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -146,10 +145,18 @@ class QueryParam:
     history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
+    # TODO(v1.5.0): remove model_func together with the override branches in
+    # operate.py (_warn_deprecated_query_model_func call sites) and the
+    # `model_func_override` path in utils.get_llm_cache_identity.
     model_func: Callable[..., object] | None = None
-    """Optional override for the LLM model function to use for this specific query.
-    If provided, this will be used instead of the global model function.
-    This allows using different models for different query modes.
+    """Deprecated optional override for the LLM model function.
+    Use role_llm_configs at initialization or LightRAG.aupdate_llm_role_config() /
+    LightRAG.update_llm_role_config() for runtime role LLM changes instead.
+    Kept for backward compatibility with direct Python callers.
+
+    Note: when set, the LLM cache key collapses to a single "override" identity,
+    so swapping the override across calls will reuse stale cached responses.
+    Use aupdate_llm_role_config() for cache-correct model swaps.
     """
 
     user_prompt: str | None = None
@@ -220,6 +227,44 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
     cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
+
+    def _validate_embedding_func(self):
+        """Validate that embedding_func is provided.
+
+        This method should be called at the beginning of __post_init__
+        in all vector storage implementations.
+
+        Raises:
+            ValueError: If embedding_func is None
+        """
+        if self.embedding_func is None:
+            raise ValueError(
+                "embedding_func is required for vector storage. "
+                "Please provide a valid EmbeddingFunc instance."
+            )
+
+    def _generate_collection_suffix(self) -> str | None:
+        """Generates collection/table suffix from embedding_func.
+
+        Return suffix if model_name exists in embedding_func, otherwise return None.
+        Note: embedding_func is guaranteed to exist (validated in __post_init__).
+
+        Returns:
+            str | None: Suffix string e.g. "text_embedding_3_large_3072d", or None if model_name not available
+        """
+        import re
+
+        # Check if model_name exists (model_name is optional in EmbeddingFunc)
+        model_name = getattr(self.embedding_func, "model_name", None)
+        if not model_name:
+            return None
+
+        # embedding_dim is required in EmbeddingFunc
+        embedding_dim = self.embedding_func.embedding_dim
+
+        # Generate suffix: clean model name and append dimension
+        safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
+        return f"{safe_model_name}_{embedding_dim}d"
 
     @abstractmethod
     async def query(
@@ -353,6 +398,14 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
         Returns:
             None
+        """
+
+    @abstractmethod
+    async def is_empty(self) -> bool:
+        """Check if the storage is empty
+
+        Returns:
+            bool: True if storage contains no data, False otherwise
         """
 
 
@@ -521,56 +574,6 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         return result
 
     @abstractmethod
-    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all nodes that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids (list[str]): A list of chunk IDs to find associated nodes for.
-
-        Returns:
-            list[dict]: A list of nodes, where each node is a dictionary of its properties.
-                        An empty list if no matching nodes are found.
-        """
-
-    @abstractmethod
-    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Get all edges that are associated with the given chunk_ids.
-
-        Args:
-            chunk_ids (list[str]): A list of chunk IDs to find associated edges for.
-
-        Returns:
-            list[dict]: A list of edges, where each edge is a dictionary of its properties.
-                        An empty list if no matching edges are found.
-        """
-        # Default implementation iterates through all nodes and their edges, which is inefficient.
-        # This method should be overridden by subclasses for better performance.
-        all_edges = []
-        all_labels = await self.get_all_labels()
-        processed_edges = set()
-
-        for label in all_labels:
-            edges = await self.get_node_edges(label)
-            if edges:
-                for src_id, tgt_id in edges:
-                    # Avoid processing the same edge twice in an undirected graph
-                    edge_tuple = tuple(sorted((src_id, tgt_id)))
-                    if edge_tuple in processed_edges:
-                        continue
-                    processed_edges.add(edge_tuple)
-
-                    edge = await self.get_edge(src_id, tgt_id)
-                    if edge and "source_id" in edge:
-                        source_ids = set(edge["source_id"].split(GRAPH_FIELD_SEP))
-                        if not source_ids.isdisjoint(chunk_ids):
-                            # Add source and target to the edge dict for easier processing later
-                            edge_with_nodes = edge.copy()
-                            edge_with_nodes["source"] = src_id
-                            edge_with_nodes["target"] = tgt_id
-                            all_edges.append(edge_with_nodes)
-        return all_edges
-
-    @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert a new node or update an existing node in the graph.
 
@@ -583,6 +586,53 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             node_id: The ID of the node to insert or update
             node_data: A dictionary of node properties
         """
+
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Insert or update multiple nodes in a single batch call.
+
+        Default implementation falls back to calling upsert_node() serially.
+        Override in storage backends that support native batch operations for
+        better performance when importing large knowledge graphs.
+
+        Args:
+            nodes: List of (node_id, node_data) tuples.
+        """
+        for node_id, node_data in nodes:
+            await self.upsert_node(node_id, node_data=node_data)
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        """Check existence of multiple nodes in a single batch call.
+
+        Default implementation falls back to calling has_node() serially.
+        Override in storage backends that support native batch operations for
+        better performance when importing large knowledge graphs.
+
+        Args:
+            node_ids: List of node IDs to check.
+
+        Returns:
+            Set of node_ids that exist in the graph.
+        """
+        existing: set[str] = set()
+        for node_id in node_ids:
+            if await self.has_node(node_id):
+                existing.add(node_id)
+        return existing
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Insert or update multiple edges in a single batch call.
+
+        Default implementation falls back to calling upsert_edge() serially.
+        Override in storage backends that support native batch operations for
+        better performance when importing large knowledge graphs.
+
+        Args:
+            edges: List of (source_node_id, target_node_id, edge_data) tuples.
+        """
+        for source_node_id, target_node_id, edge_data in edges:
+            await self.upsert_edge(source_node_id, target_node_id, edge_data=edge_data)
 
     @abstractmethod
     async def upsert_edge(
@@ -640,10 +690,10 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             edges: List of edges to be deleted, each edge is a (source, target) tuple
         """
 
-    # TODO: deprecated
     @abstractmethod
     async def get_all_labels(self) -> list[str]:
-        """Get all labels in the graph.
+        """Get all labels(entity names) in the graph.
+        Do not use this method for large graph, use get_popular_labels or search_labels instead.
 
         Returns:
             A list of all node labels in the graph, sorted alphabetically
@@ -657,7 +707,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
 
         Args:
-            node_label: Label of the starting node，* means all nodes
+            node_label: Label(entity name) of the starting node，* means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
             max_nodes: Maxiumu nodes to return, Defaults to 1000（BFS if possible)
 
@@ -685,7 +735,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
-        """Get popular labels by node degree (most connected entities)
+        """Get popular labels(entity names) by node degree (most connected entities)
 
         Args:
             limit: Maximum number of labels to return
@@ -696,7 +746,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
-        """Search labels with fuzzy matching
+        """Search labels(entity names) with fuzzy matching
 
         Args:
             query: Search query string
@@ -708,10 +758,16 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
 
 class DocStatus(str, Enum):
-    """Document processing status"""
+    """Document processing status.
+    Pipeline order: PENDING -> PARSING -> ANALYZING (optional) -> PROCESSING -> PROCESSED | FAILED.
+    PREPROCESSED is deprecated, kept for backward compatibility.
+    """
 
     PENDING = "pending"
-    PROCESSING = "processing"
+    PARSING = "parsing"  # Phase 1: content extraction (parse_native/mineru/docling)
+    ANALYZING = "analyzing"  # Phase 2: multimodal analysis (VLM)
+    PROCESSING = "processing"  # Phase 3: entity/relation extraction
+    PREPROCESSED = "preprocessed"  # Deprecated: use ANALYZING in new pipeline
     PROCESSED = "processed"
     FAILED = "failed"
 
@@ -725,7 +781,13 @@ class DocProcessingStatus:
     content_length: int
     """Total length of document"""
     file_path: str
-    """File path of the document"""
+    """Canonical basename of the document.
+
+    Always a hint-stripped basename (e.g. ``abc.docx``) or the literal
+    ``"unknown_source"`` sentinel; never carries directory components or
+    parser ``[hint]`` segments. UI display, filename-based dedup, and
+    citation paths all share this value.
+    """
     status: DocStatus
     """Current processing status"""
     created_at: str
@@ -742,11 +804,52 @@ class DocProcessingStatus:
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""
+    multimodal_processed: bool | None = field(default=None, repr=False)
+    content_hash: str | None = None
+    """MD5 hash of the underlying document content (raw text or source file).
+
+    Used together with file_path basename for duplicate detection. Empty for
+    pending_parse records whose content has not been extracted yet.
+    """
+    """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
+
+    def __post_init__(self):
+        """
+        Handle status conversion based on multimodal_processed field.
+
+        Business rules:
+        - If multimodal_processed is False and status is PROCESSED,
+          then change status to PREPROCESSED
+        - The multimodal_processed field is kept (with repr=False) for internal use and debugging
+        """
+        # Apply status conversion logic
+        if self.multimodal_processed is not None:
+            if (
+                self.multimodal_processed is False
+                and self.status == DocStatus.PROCESSED
+            ):
+                self.status = DocStatus.PREPROCESSED
 
 
 @dataclass
 class DocStatusStorage(BaseKVStorage, ABC):
     """Base class for document status storage"""
+
+    @staticmethod
+    def resolve_status_filter_values(
+        status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
+    ) -> set[str] | None:
+        """Normalize single- and multi-status filters into comparable values.
+
+        `status_filters` takes precedence over `status_filter`. Empty multi-status
+        filters are treated as no filter for backward-compatible request handling.
+        """
+        if status_filters:
+            return {status.value for status in status_filters}
+        if status_filter is not None:
+            return {status_filter.value}
+        return None
 
     @abstractmethod
     async def get_status_counts(self) -> dict[str, int]:
@@ -759,6 +862,12 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """Get all documents with a specific status"""
 
     @abstractmethod
+    async def get_docs_by_statuses(
+        self, statuses: list[DocStatus]
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents matching any of the given statuses"""
+
+    @abstractmethod
     async def get_docs_by_track_id(
         self, track_id: str
     ) -> dict[str, DocProcessingStatus]:
@@ -768,6 +877,7 @@ class DocStatusStorage(BaseKVStorage, ABC):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -776,7 +886,8 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """Get documents with pagination support
 
         Args:
-            status_filter: Filter by document status, None for all statuses
+            status_filter: Legacy single-status filter, ignored when status_filters is set
+            status_filters: Filter by multiple document statuses, None for all statuses
             page: Page number (1-based)
             page_size: Number of documents per page (10-200)
             sort_field: Field to sort by ('created_at', 'updated_at', 'id')
@@ -806,6 +917,38 @@ class DocStatusStorage(BaseKVStorage, ABC):
             Returns the same format as get_by_ids method
         """
 
+    @abstractmethod
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Get document by canonical file basename.
+
+        Used for filename-based deduplication. Callers must pass the canonical
+        basename; storage implementations only compare against the canonical
+        ``file_path`` persisted by the business layer.
+
+        Args:
+            basename: The filename basename to search for (e.g. "report.pdf").
+
+        Returns:
+            (doc_id, doc_data) when a matching record exists, otherwise None.
+        """
+
+    @abstractmethod
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Get document by content_hash field.
+
+        Used for content-hash deduplication of full documents.
+
+        Args:
+            content_hash: The content hash value to search for.
+
+        Returns:
+            (doc_id, doc_data) when a matching record exists, otherwise None.
+        """
+
 
 class StoragesStatus(str, Enum):
     """Storages status"""
@@ -820,7 +963,7 @@ class StoragesStatus(str, Enum):
 class DeletionResult:
     """Represents the result of a deletion operation."""
 
-    status: Literal["success", "not_found", "fail"]
+    status: Literal["success", "not_found", "not_allowed", "fail"]
     doc_id: str
     message: str
     status_code: int = 200

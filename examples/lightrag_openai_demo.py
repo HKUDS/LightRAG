@@ -4,7 +4,6 @@ import logging
 import logging.config
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
-from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import logger, set_verbose_debug
 
 WORKING_DIR = "./dickens"
@@ -84,8 +83,7 @@ async def initialize_rag():
         llm_model_func=gpt_4o_mini_complete,
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
 
     return rag
 

@@ -15,6 +15,9 @@ interface DataTableProps<TData, TValue> {
 }
 
 export default function DataTable<TData, TValue>({ columns, data }: DataTableProps<TData, TValue>) {
+  // TanStack Table returns unstable functions by design; keep this wrapper out of the
+  // incompatible-library warning rather than pretending it is compiler-safe.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data,
     columns,

@@ -18,6 +18,26 @@ import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
 import { RotateCcw } from 'lucide-react'
 
+const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
+  <TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          className="mr-1 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          title={title}
+        >
+          <RotateCcw className="h-3 w-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="left">
+        <p>{title}</p>
+      </TooltipContent>
+    </Tooltip>
+  </TooltipProvider>
+)
+
 export default function QuerySettings() {
   const { t } = useTranslation()
   const querySettings = useSettingsStore((state) => state.querySettings)
@@ -40,7 +60,6 @@ export default function QuerySettings() {
   // Default values for reset functionality
   const defaultValues = useMemo(() => ({
     mode: 'mix' as QueryMode,
-    response_type: 'Multiple Paragraphs',
     top_k: 40,
     chunk_top_k: 20,
     max_entity_tokens: 6000,
@@ -51,27 +70,6 @@ export default function QuerySettings() {
   const handleReset = useCallback((key: keyof typeof defaultValues) => {
     handleChange(key, defaultValues[key])
   }, [handleChange, defaultValues])
-
-  // Reset button component
-  const ResetButton = ({ onClick, title }: { onClick: () => void; title: string }) => (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={onClick}
-            className="mr-1 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            title={title}
-          >
-            <RotateCcw className="h-3 w-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="left">
-          <p>{title}</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
 
   return (
     <Card className="flex shrink-0 flex-col w-[280px]">
@@ -149,46 +147,6 @@ export default function QuerySettings() {
                 <ResetButton
                   onClick={() => handleReset('mode')}
                   title="Reset to default (Mix)"
-                />
-              </div>
-            </>
-
-            {/* Response Format */}
-            <>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <label htmlFor="response_format_select" className="ml-1 cursor-help">
-                      {t('retrievePanel.querySettings.responseFormat')}
-                    </label>
-                  </TooltipTrigger>
-                  <TooltipContent side="left">
-                    <p>{t('retrievePanel.querySettings.responseFormatTooltip')}</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-              <div className="flex items-center gap-1">
-                <Select
-                  value={querySettings.response_type}
-                  onValueChange={(v) => handleChange('response_type', v)}
-                >
-                  <SelectTrigger
-                    id="response_format_select"
-                    className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="Multiple Paragraphs">{t('retrievePanel.querySettings.responseFormatOptions.multipleParagraphs')}</SelectItem>
-                      <SelectItem value="Single Paragraph">{t('retrievePanel.querySettings.responseFormatOptions.singleParagraph')}</SelectItem>
-                      <SelectItem value="Bullet Points">{t('retrievePanel.querySettings.responseFormatOptions.bulletPoints')}</SelectItem>
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <ResetButton
-                  onClick={() => handleReset('response_type')}
-                  title="Reset to default (Multiple Paragraphs)"
                 />
               </div>
             </>

@@ -10,7 +10,7 @@ from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
 
 from .shared_storage import (
-    get_storage_lock,
+    get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
@@ -28,6 +28,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
     """
 
     def __post_init__(self):
+        self._validate_embedding_func()
         # Grab config values if available
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
@@ -42,13 +43,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
 
         else:
             # Default behavior when workspace is empty
-            self.final_namespace = self.namespace
-            self.workspace = "_"
             workspace_dir = working_dir
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._faiss_index_file = os.path.join(
@@ -73,9 +72,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self.storage_updated = await get_update_flag(
+            self.namespace, workspace=self.workspace
+        )
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = get_namespace_lock(
+            self.namespace, workspace=self.workspace
+        )
 
     async def _get_index(self):
         """Check if the shtorage should be reloaded"""
@@ -134,7 +137,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
-        embedding_tasks = [self.embedding_func(batch) for batch in batches]
+        embedding_tasks = [
+            self.embedding_func(batch, context="document") for batch in batches
+        ]
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         # Flatten the list of arrays
@@ -189,7 +194,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             embedding = np.array([query_embedding], dtype=np.float32)
         else:
             embedding = await self.embedding_func(
-                [query], _priority=5
+                [query], context="query", _priority=5
             )  # higher priority for query
             # embedding is shape (1, dim)
             embedding = np.array(embedding, dtype=np.float32)
@@ -315,9 +320,21 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Rebuild the index
         vectors_to_keep = []
         new_id_to_meta = {}
-        for new_fid, old_fid in enumerate(keep_fids):
+        for old_fid in keep_fids:
             vec_meta = self._id_to_meta[old_fid]
-            vectors_to_keep.append(vec_meta["__vector__"])  # stored as list
+            if "__vector__" in vec_meta:
+                vec = vec_meta["__vector__"]
+            elif old_fid < self._index.ntotal:
+                vec = self._index.reconstruct(old_fid).tolist()
+                vec_meta["__vector__"] = vec
+            else:
+                logger.warning(
+                    f"[{self.workspace}] Skipping fid={old_fid} during rebuild: "
+                    f"no vector and fid exceeds index size ({self._index.ntotal})"
+                )
+                continue
+            new_fid = len(vectors_to_keep)
+            vectors_to_keep.append(vec)
             new_id_to_meta[new_fid] = vec_meta
 
         async with self._storage_lock:
@@ -335,15 +352,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
         faiss.write_index(self._index, self._faiss_index_file)
 
-        # Save metadata dict to JSON. Convert all keys to strings for JSON storage.
-        # _id_to_meta is { int: { '__id__': doc_id, '__vector__': [float,...], ... } }
-        # We'll keep the int -> dict, but JSON requires string keys.
+        # Save metadata dict to JSON, excluding __vector__ since vectors are
+        # already stored in the Faiss index file and can be reconstructed on load.
         serializable_dict = {}
         for fid, meta in self._id_to_meta.items():
-            serializable_dict[str(fid)] = meta
+            filtered_meta = {k: v for k, v in meta.items() if k != "__vector__"}
+            serializable_dict[str(fid)] = filtered_meta
 
-        with open(self._meta_file, "w", encoding="utf-8") as f:
+        # Atomic write: write to temp file first, then rename to reduce
+        # mismatch risk between index and meta files on crash.
+        tmp_meta_file = self._meta_file + ".tmp"
+        with open(tmp_meta_file, "w", encoding="utf-8") as f:
             json.dump(serializable_dict, f)
+        os.replace(tmp_meta_file, self._meta_file)
 
     def _load_faiss_index(self):
         """
@@ -356,23 +377,46 @@ class FaissVectorDBStorage(BaseVectorStorage):
             )
             return
 
+        dim_mismatch = False
         try:
             # Load the Faiss index
             self._index = faiss.read_index(self._faiss_index_file)
+
+            # Verify dimension consistency between loaded index and embedding function
+            if self._index.d != self._dim:
+                error_msg = (
+                    f"Dimension mismatch: loaded Faiss index has dimension {self._index.d}, "
+                    f"but embedding function expects dimension {self._dim}. "
+                    f"Please ensure the embedding model matches the stored index or rebuild the index."
+                )
+                logger.error(error_msg)
+                dim_mismatch = True
+                raise ValueError(error_msg)
+
             # Load metadata
             with open(self._meta_file, "r", encoding="utf-8") as f:
                 stored_dict = json.load(f)
 
-            # Convert string keys back to int
+            # Convert string keys back to int and reconstruct vectors from index
             self._id_to_meta = {}
             for fid_str, meta in stored_dict.items():
                 fid = int(fid_str)
+                if fid >= self._index.ntotal:
+                    logger.warning(
+                        f"[{self.workspace}] Skipping metadata row fid={fid}: "
+                        f"exceeds index size ({self._index.ntotal})"
+                    )
+                    continue
+                if "__vector__" not in meta:
+                    meta["__vector__"] = self._index.reconstruct(fid).tolist()
                 self._id_to_meta[fid] = meta
 
             logger.info(
                 f"[{self.workspace}] Faiss index loaded with {self._index.ntotal} vectors from {self._faiss_index_file}"
             )
         except Exception as e:
+            if dim_mismatch:
+                raise
             logger.error(
                 f"[{self.workspace}] Failed to load Faiss index or metadata: {e}"
             )
@@ -400,7 +444,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Save data to disk
                 self._save_faiss_index()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
             except Exception as e:
@@ -450,23 +494,23 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if not ids:
             return []
 
-        results = []
+        results: list[dict[str, Any] | None] = []
         for id in ids:
+            record = None
             fid = self._find_faiss_id_by_custom_id(id)
             if fid is not None:
-                metadata = self._id_to_meta.get(fid, {})
+                metadata = self._id_to_meta.get(fid)
                 if metadata:
                     # Filter out __vector__ from metadata to avoid returning large vector data
                     filtered_metadata = {
                         k: v for k, v in metadata.items() if k != "__vector__"
                     }
-                    results.append(
-                        {
-                            **filtered_metadata,
-                            "id": metadata.get("__id__"),
-                            "created_at": metadata.get("__created_at__"),
-                        }
-                    )
+                    record = {
+                        **filtered_metadata,
+                        "id": metadata.get("__id__"),
+                        "created_at": metadata.get("__created_at__"),
+                    }
+            results.append(record)
 
         return results
 
@@ -527,7 +571,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._load_faiss_index()
 
                 # Notify other processes
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 self.storage_updated.value = False
 
                 logger.info(

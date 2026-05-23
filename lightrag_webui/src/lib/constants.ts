@@ -1,7 +1,9 @@
 import { ButtonVariantType } from '@/components/ui/Button'
+import { normalizeApiPrefix, normalizeWebuiPrefix } from '@/lib/pathPrefix'
+import { getRuntimeApiPrefix, getRuntimeWebuiPrefix } from '@/lib/runtimeConfig'
 
-export const backendBaseUrl = ''
-export const webuiPrefix = '/webui/'
+export const backendBaseUrl = normalizeApiPrefix(getRuntimeApiPrefix())
+export const webuiPrefix = normalizeWebuiPrefix(getRuntimeWebuiPrefix())
 
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 
@@ -15,7 +17,8 @@ export const nodeBorderColorSelected = '#F57F17'
 
 export const edgeColorDarkTheme = '#888888'
 export const edgeColorSelected = '#F57F17'
-export const edgeColorHighlighted = '#FFFFFF'
+export const edgeColorHighlightedDarkTheme = '#F57F17'
+export const edgeColorHighlightedLightTheme = '#F57F17'
 
 export const searchResultLimit = 50
 export const labelListLimit = 100
@@ -43,7 +46,8 @@ export const supportedFileTypes = {
   'text/plain': [
     '.txt',
     '.md',
-    '.rtf',  //# Rich Text Format
+    '.mdx', // # MDX (Markdown + JSX)
+    '.rtf', // # Rich Text Format
     '.odt', // # OpenDocument Text
     '.tex', // # LaTeX
     '.epub', // # Electronic Publication
@@ -62,7 +66,9 @@ export const supportedFileTypes = {
     '.bat', // # Batch files
     '.sh', // # Shell scripts
     '.c', // # C source code
+    '.h', // # C header
     '.cpp', // # C++ source code
+    '.hpp', // # C++ header
     '.py', // # Python source code
     '.java', // # Java source code
     '.js', // # JavaScript source code
@@ -72,7 +78,7 @@ export const supportedFileTypes = {
     '.rb', // # Ruby source code
     '.php', // # PHP source code
     '.css', // # Cascading Style Sheets
-    '.scss',  //# Sassy CSS
+    '.scss', // # Sassy CSS
     '.less'
   ],
   'application/pdf': ['.pdf'],

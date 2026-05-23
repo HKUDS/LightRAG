@@ -3,11 +3,11 @@ import asyncio
 import inspect
 import logging
 import logging.config
+from functools import partial
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.llm.ollama import ollama_embed
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from dotenv import load_dotenv
 
@@ -109,20 +109,22 @@ async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
+        # Note: ollama_embed is decorated with @wrap_embedding_func_with_attrs,
+        # which wraps it in an EmbeddingFunc. Using .func accesses the original
+        # unwrapped function to avoid double wrapping when we create our own
+        # EmbeddingFunc with custom configuration (embedding_dim, max_token_size).
         embedding_func=EmbeddingFunc(
             embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
             max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "8192")),
-            func=lambda texts: ollama_embed(
-                texts,
+            func=partial(
+                ollama_embed.func,  # Access the unwrapped function to avoid double EmbeddingFunc wrapping
                 embed_model=os.getenv("EMBEDDING_MODEL", "bge-m3:latest"),
                 host=os.getenv("EMBEDDING_BINDING_HOST", "http://localhost:11434"),
             ),
         ),
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 

@@ -1,104 +1,121 @@
-# pip install -q -U google-genai to use gemini as a client
+"""
+LightRAG Demo with Google Gemini Models
+
+This example demonstrates how to use LightRAG with Google's Gemini 2.0 Flash model
+for text generation and the text-embedding-004 model for embeddings.
+
+Prerequisites:
+    1. Set GEMINI_API_KEY environment variable:
+       export GEMINI_API_KEY='your-actual-api-key'
+
+    2. Prepare a text file named 'book.txt' in the current directory
+       (or modify BOOK_FILE constant to point to your text file)
+
+Usage:
+    python examples/lightrag_gemini_demo.py
+"""
 
 import os
-import numpy as np
-from google import genai
-from google.genai import types
-from dotenv import load_dotenv
-from lightrag.utils import EmbeddingFunc
-from lightrag import LightRAG, QueryParam
-from sentence_transformers import SentenceTransformer
-from lightrag.kg.shared_storage import initialize_pipeline_status
-
 import asyncio
 import nest_asyncio
+import numpy as np
 
-# Apply nest_asyncio to solve event loop issues
+from lightrag import LightRAG, QueryParam
+from lightrag.llm.gemini import gemini_model_complete, gemini_embed
+from lightrag.utils import wrap_embedding_func_with_attrs
+
 nest_asyncio.apply()
 
-load_dotenv()
-gemini_api_key = os.getenv("GEMINI_API_KEY")
+WORKING_DIR = "./rag_storage"
+BOOK_FILE = "./book.txt"
 
-WORKING_DIR = "./dickens"
-
-if os.path.exists(WORKING_DIR):
-    import shutil
-
-    shutil.rmtree(WORKING_DIR)
-
-os.mkdir(WORKING_DIR)
-
-
-async def llm_model_func(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
-) -> str:
-    # 1. Initialize the GenAI Client with your Gemini API Key
-    client = genai.Client(api_key=gemini_api_key)
-
-    # 2. Combine prompts: system prompt, history, and user prompt
-    if history_messages is None:
-        history_messages = []
-
-    combined_prompt = ""
-    if system_prompt:
-        combined_prompt += f"{system_prompt}\n"
-
-    for msg in history_messages:
-        # Each msg is expected to be a dict: {"role": "...", "content": "..."}
-        combined_prompt += f"{msg['role']}: {msg['content']}\n"
-
-    # Finally, add the new user prompt
-    combined_prompt += f"user: {prompt}"
-
-    # 3. Call the Gemini model
-    response = client.models.generate_content(
-        model="gemini-1.5-flash",
-        contents=[combined_prompt],
-        config=types.GenerateContentConfig(max_output_tokens=500, temperature=0.1),
+# Validate API key
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError(
+        "GEMINI_API_KEY environment variable is not set. "
+        "Please set it with: export GEMINI_API_KEY='your-api-key'"
     )
 
-    # 4. Return the response text
-    return response.text
+if not os.path.exists(WORKING_DIR):
+    os.mkdir(WORKING_DIR)
 
 
+# --------------------------------------------------
+# LLM function
+# --------------------------------------------------
+async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+    return await gemini_model_complete(
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        api_key=GEMINI_API_KEY,
+        model_name="gemini-2.0-flash",
+        **kwargs,
+    )
+
+
+# --------------------------------------------------
+# Embedding function
+# --------------------------------------------------
+@wrap_embedding_func_with_attrs(
+    embedding_dim=768,
+    send_dimensions=True,
+    max_token_size=2048,
+    model_name="models/text-embedding-004",
+)
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    embeddings = model.encode(texts, convert_to_numpy=True)
-    return embeddings
+    return await gemini_embed.func(
+        texts, api_key=GEMINI_API_KEY, model="models/text-embedding-004"
+    )
 
 
+# --------------------------------------------------
+# Initialize RAG
+# --------------------------------------------------
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=384,
-            max_token_size=8192,
-            func=embedding_func,
-        ),
+        embedding_func=embedding_func,
+        llm_model_name="gemini-2.0-flash",
     )
 
+    # 🔑 REQUIRED
     await rag.initialize_storages()
-    await initialize_pipeline_status()
-
     return rag
 
 
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
 def main():
-    # Initialize RAG instance
+    # Validate book file exists
+    if not os.path.exists(BOOK_FILE):
+        raise FileNotFoundError(
+            f"'{BOOK_FILE}' not found. "
+            "Please provide a text file to index in the current directory."
+        )
+
     rag = asyncio.run(initialize_rag())
-    file_path = "story.txt"
-    with open(file_path, "r") as file:
-        text = file.read()
 
-    rag.insert(text)
+    # Insert text
+    with open(BOOK_FILE, "r", encoding="utf-8") as f:
+        rag.insert(f.read())
 
-    response = rag.query(
-        query="What is the main theme of the story?",
-        param=QueryParam(mode="hybrid", top_k=5, response_type="single line"),
-    )
+    query = "What are the top themes?"
 
-    print(response)
+    print("\nNaive Search:")
+    print(rag.query(query, param=QueryParam(mode="naive")))
+
+    print("\nLocal Search:")
+    print(rag.query(query, param=QueryParam(mode="local")))
+
+    print("\nGlobal Search:")
+    print(rag.query(query, param=QueryParam(mode="global")))
+
+    print("\nHybrid Search:")
+    print(rag.query(query, param=QueryParam(mode="hybrid")))
 
 
 if __name__ == "__main__":

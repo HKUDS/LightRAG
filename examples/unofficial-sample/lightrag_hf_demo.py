@@ -4,7 +4,6 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.hf import hf_model_complete, hf_embed
 from lightrag.utils import EmbeddingFunc
 from transformers import AutoModel, AutoTokenizer
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 import asyncio
 import nest_asyncio
@@ -37,9 +36,7 @@ async def initialize_rag():
         ),
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 

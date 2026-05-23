@@ -1,3 +1,8 @@
+; DEPRECATION WARNING:
+; `config.ini` support will be removed in a future release.
+; Please move your configuration to `.env` or environment variables.
+; This file is kept only as a temporary compatibility example.
+
 [neo4j]
 uri = neo4j+s://xxxxxxxx.databases.neo4j.io
 username = neo4j
@@ -28,10 +33,20 @@ password = your_password
 database = your_database
 # workspace = default
 max_connections = 12
-vector_index_type = HNSW        # HNSW or IVFFLAT
+vector_index_type = HNSW        # HNSW, IVFFLAT or VCHORDRQ
 hnsw_m = 16
 hnsw_ef = 64
 ivfflat_lists = 100
+vchordrq_build_options =
+vchordrq_probes =
+vchordrq_epsilon = 1.9
 
 [memgraph]
 uri = bolt://localhost:7687
+
+[milvus]
+uri = http://localhost:19530
+db_name = lightrag
+# user = root
+# password = your_password
+# token = your_token

@@ -1,9 +1,12 @@
 from __future__ import annotations
 import weakref
 
+import sys
+
 import asyncio
 import html
 import csv
+import inspect
 import json
 import logging
 import logging.handlers
@@ -11,11 +14,23 @@ import os
 import re
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from hashlib import md5
-from typing import Any, Protocol, Callable, TYPE_CHECKING, List, Optional
+from pathlib import Path
+from typing import (
+    Any,
+    Protocol,
+    Callable,
+    TYPE_CHECKING,
+    List,
+    Optional,
+    Iterable,
+    Sequence,
+    Collection,
+)
 import numpy as np
 from dotenv import load_dotenv
 
@@ -25,8 +40,41 @@ from lightrag.constants import (
     DEFAULT_LOG_FILENAME,
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_MAX_FILE_PATH_LENGTH,
+    DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    VALID_SOURCE_IDS_LIMIT_METHODS,
+    SOURCE_IDS_LIMIT_METHOD_FIFO,
+    PARSED_DIR_NAME,
 )
+
+# Precompile regex pattern for JSON sanitization (module-level, compiled once)
+_SURROGATE_PATTERN = re.compile(r"[\uD800-\uDFFF\uFFFE\uFFFF]")
+_CONTROL_CHAR_PATTERN_ALL = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+
+
+class SafeStreamHandler(logging.StreamHandler):
+    """StreamHandler that gracefully handles closed streams during shutdown.
+
+    This handler prevents "ValueError: I/O operation on closed file" errors
+    that can occur when pytest or other test frameworks close stdout/stderr
+    before Python's logging cleanup runs.
+    """
+
+    def flush(self):
+        """Flush the stream, ignoring errors if the stream is closed."""
+        try:
+            super().flush()
+        except (ValueError, OSError):
+            # Stream is closed or otherwise unavailable, silently ignore
+            pass
+
+    def close(self):
+        """Close the handler, ignoring errors if the stream is already closed."""
+        try:
+            super().close()
+        except (ValueError, OSError):
+            # Stream is closed or otherwise unavailable, silently ignore
+            pass
+
 
 # Initialize logger with basic configuration
 logger = logging.getLogger("lightrag")
@@ -35,7 +83,7 @@ logger.setLevel(logging.INFO)
 
 # Add console handler if no handlers exist
 if not logger.handlers:
-    console_handler = logging.StreamHandler()
+    console_handler = SafeStreamHandler()
     console_handler.setLevel(logging.INFO)
     formatter = logging.Formatter("%(levelname)s: %(message)s")
     console_handler.setFormatter(formatter)
@@ -43,6 +91,33 @@ if not logger.handlers:
 
 # Set httpx logging level to WARNING
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def _patch_ascii_colors_console_handler() -> None:
+    """Prevent ascii_colors from printing flush errors during interpreter exit."""
+
+    try:
+        from ascii_colors import ConsoleHandler
+    except ImportError:
+        return
+
+    if getattr(ConsoleHandler, "_lightrag_patched", False):
+        return
+
+    original_handle_error = ConsoleHandler.handle_error
+
+    def _safe_handle_error(self, message: str) -> None:  # type: ignore[override]
+        exc_type, _, _ = sys.exc_info()
+        if exc_type in (ValueError, OSError) and "close" in message.lower():
+            return
+        original_handle_error(self, message)
+
+    ConsoleHandler.handle_error = _safe_handle_error  # type: ignore[assignment]
+    ConsoleHandler._lightrag_patched = True  # type: ignore[attr-defined]
+
+
+_patch_ascii_colors_console_handler()
+
 
 # Global import for pypinyin with startup-time logging
 try:
@@ -65,6 +140,9 @@ async def safe_vdb_operation_with_exception(
     max_retries: int = 3,
     retry_delay: float = 0.2,
     logger_func: Optional[Callable] = None,
+    timeout_seconds: float | None = None,
+    log_start: bool = False,
+    success_log_threshold_seconds: float = 10.0,
 ) -> None:
     """
     Safely execute vector database operations with retry mechanism and exception handling.
@@ -79,6 +157,9 @@ async def safe_vdb_operation_with_exception(
         max_retries: Maximum number of retry attempts
         retry_delay: Delay between retries in seconds
         logger_func: Logger function to use for error messages
+        timeout_seconds: Optional timeout for a single operation attempt
+        log_start: Whether to emit start/success logs for each attempt
+        success_log_threshold_seconds: Log successful attempts when duration exceeds this threshold
 
     Raises:
         Exception: When operation fails after all retry attempts
@@ -86,20 +167,80 @@ async def safe_vdb_operation_with_exception(
     log_func = logger_func or logger.warning
 
     for attempt in range(max_retries):
+        start_ts = time.perf_counter()
+        attempt_label = f"{attempt + 1}/{max_retries}"
         try:
-            await operation()
+            if log_start:
+                logger.info(
+                    "VDB %s start for %s (attempt %s, timeout=%s)",
+                    operation_name,
+                    entity_name or "<unknown>",
+                    attempt_label,
+                    f"{timeout_seconds:.1f}s"
+                    if timeout_seconds is not None
+                    else "none",
+                )
+
+            if timeout_seconds is not None and timeout_seconds > 0:
+                await asyncio.wait_for(operation(), timeout=timeout_seconds)
+            else:
+                await operation()
+
+            elapsed = time.perf_counter() - start_ts
+            if log_start or elapsed >= success_log_threshold_seconds:
+                logger.info(
+                    "VDB %s success for %s in %.2fs (attempt %s)",
+                    operation_name,
+                    entity_name or "<unknown>",
+                    elapsed,
+                    attempt_label,
+                )
             return  # Success, return immediately
-        except Exception as e:
+        except asyncio.TimeoutError as e:
+            elapsed = time.perf_counter() - start_ts
+            timeout_msg = (
+                f"VDB {operation_name} timeout for {entity_name or '<unknown>'} "
+                f"after {elapsed:.2f}s (attempt {attempt_label}, timeout={timeout_seconds}s)"
+            )
             if attempt >= max_retries - 1:
-                error_msg = f"VDB {operation_name} failed for {entity_name} after {max_retries} attempts: {e}"
+                log_func(timeout_msg)
+                raise TimeoutError(timeout_msg) from e
+            log_func(f"{timeout_msg}, retrying...")
+            if retry_delay > 0:
+                await asyncio.sleep(retry_delay)
+        except Exception as e:
+            elapsed = time.perf_counter() - start_ts
+            if attempt >= max_retries - 1:
+                error_msg = (
+                    f"VDB {operation_name} failed for {entity_name or '<unknown>'} "
+                    f"after {max_retries} attempts in {elapsed:.2f}s: {e}"
+                )
                 log_func(error_msg)
                 raise Exception(error_msg) from e
             else:
                 log_func(
-                    f"VDB {operation_name} attempt {attempt + 1} failed for {entity_name}: {e}, retrying..."
+                    f"VDB {operation_name} attempt {attempt + 1} failed for "
+                    f"{entity_name or '<unknown>'} after {elapsed:.2f}s: {e}, retrying..."
                 )
                 if retry_delay > 0:
                     await asyncio.sleep(retry_delay)
+
+
+def parse_optional_float(raw: str | None) -> float | None:
+    """Decode env strings (or any text) into ``float | None``.
+
+    Empty string and the literal ``"None"`` (case-insensitive) collapse
+    to ``None`` so users can leave a knob un-set in ``.env`` and have
+    the consuming code fall back to its own default.  Any other
+    non-numeric value raises :class:`ValueError` so misconfigured envs
+    fail loudly at parse time rather than silently downstream.
+    """
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped or stripped.lower() == "none":
+        return None
+    return float(stripped)
 
 
 def get_env_value(
@@ -164,6 +305,9 @@ if TYPE_CHECKING:
 load_dotenv(dotenv_path=".env", override=False)
 
 VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
+PERFORMANCE_TIMING_LOGS = (
+    os.getenv("LIGHTRAG_PERFORMANCE_TIMING_LOGS", "false").lower() == "true"
+)
 
 
 def verbose_debug(msg: str, *args, **kwargs):
@@ -197,6 +341,12 @@ def set_verbose_debug(enabled: bool):
     """Enable or disable verbose debug output"""
     global VERBOSE_DEBUG
     VERBOSE_DEBUG = enabled
+
+
+def performance_timing_log(msg: str, *args, **kwargs):
+    """Emit targeted performance timing logs only when explicitly enabled."""
+    if PERFORMANCE_TIMING_LOGS:
+        logger.info(msg, *args, **kwargs)
 
 
 statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
@@ -271,8 +421,8 @@ def setup_logger(
     logger_instance.handlers = []  # Clear existing handlers
     logger_instance.propagate = False
 
-    # Add console handler
-    console_handler = logging.StreamHandler()
+    # Add console handler with safe stream handling
+    console_handler = SafeStreamHandler()
     console_handler.setFormatter(simple_formatter)
     console_handler.setLevel(level)
     logger_instance.addHandler(console_handler)
@@ -338,12 +488,143 @@ class TaskState:
 
 @dataclass
 class EmbeddingFunc:
+    """Embedding function wrapper with dimension validation
+
+    This class wraps an embedding function to ensure that the output embeddings have the correct dimension.
+    If wrapped multiple times, the inner wrappers will be automatically unwrapped to prevent
+    configuration conflicts where inner wrapper settings would override outer wrapper settings.
+
+    Using functools.partial for parameter binding:
+        A common pattern is to use functools.partial to pre-bind model and host parameters
+        to an embedding function. When the base embedding function is already decorated with
+        @wrap_embedding_func_with_attrs (e.g., ollama_embed), use `.func` to access the
+        original unwrapped function to avoid double wrapping:
+
+        Example:
+            from functools import partial
+
+            # ❌ Wrong - causes double wrapping (inner EmbeddingFunc still executes)
+            func=partial(ollama_embed, embed_model="bge-m3:latest", host="http://localhost:11434")
+
+            # ✅ Correct - access the unwrapped function via .func
+            func=partial(ollama_embed.func, embed_model="bge-m3:latest", host="http://localhost:11434")
+
+    Context-aware embedding:
+        The wrapper supports passing a 'context' parameter to distinguish between query and document
+        embeddings. This allows wrapped functions to apply different processing (e.g., prefixes,
+        different models) based on the context:
+
+        Example:
+            embeddings = await embed_func(texts, context="document")  # For indexing
+            embeddings = await embed_func([query], context="query")   # For search
+
+    Args:
+        embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
+        func: The actual embedding function to wrap
+        max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
+        send_dimensions: Whether to inject embedding_dim argument to underlying function
+        model_name: Model name for implementing workspace data isolation in vector DB
+        supports_asymmetric: Whether the underlying function supports context parameter so it can be injected
+    """
+
     embedding_dim: int
     func: callable
-    max_token_size: int | None = None  # deprecated keep it for compatible only
+    max_token_size: int | None = None
+    send_dimensions: bool = False
+    model_name: str | None = (
+        None  # Model name for implementing workspace data isolation in vector DB
+    )
+    supports_asymmetric: bool = (
+        False  # Whether underlying function accepts context parameter
+    )
+
+    def __post_init__(self):
+        """Unwrap nested EmbeddingFunc to prevent double wrapping issues.
+
+        When an EmbeddingFunc wraps another EmbeddingFunc, the inner wrapper's
+        __call__ preprocessing would override the outer wrapper's settings.
+        This method detects and unwraps nested EmbeddingFunc instances to ensure
+        that only the outermost wrapper's configuration is applied.
+        """
+        # Check if func is already an EmbeddingFunc instance and unwrap it
+        max_unwrap_depth = 3  # Safety limit to prevent infinite loops
+        unwrap_count = 0
+        while isinstance(self.func, EmbeddingFunc):
+            unwrap_count += 1
+            if unwrap_count > max_unwrap_depth:
+                raise ValueError(
+                    f"EmbeddingFunc unwrap depth exceeded {max_unwrap_depth}. "
+                    "Possible circular reference detected."
+                )
+            # Unwrap to get the original function
+            self.func = self.func.func
+
+        if unwrap_count > 0:
+            logger.warning(
+                f"Detected nested EmbeddingFunc wrapping (depth: {unwrap_count}), "
+                "auto-unwrapped to prevent configuration conflicts. "
+                "Consider using .func to access the unwrapped function directly."
+            )
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
-        return await self.func(*args, **kwargs)
+        # Only inject embedding_dim when send_dimensions is True
+        if self.send_dimensions:
+            # Check if user provided embedding_dim parameter
+            if "embedding_dim" in kwargs:
+                user_provided_dim = kwargs["embedding_dim"]
+                # If user's value differs from class attribute, output warning
+                if (
+                    user_provided_dim is not None
+                    and user_provided_dim != self.embedding_dim
+                ):
+                    logger.warning(
+                        f"Ignoring user-provided embedding_dim={user_provided_dim}, "
+                        f"using declared embedding_dim={self.embedding_dim} from decorator"
+                    )
+
+            # Inject embedding_dim from decorator
+            kwargs["embedding_dim"] = self.embedding_dim
+
+        # Remove context parameter if underlying function does not support asymmetric embedding
+        if "context" in kwargs and not self.supports_asymmetric:
+            # Log when a user-provided context is ignored due to lack of support
+            logger.debug(
+                "Context parameter was provided but supports_asymmetric=False. The context value has been ignored."
+            )
+            kwargs.pop("context")
+
+        # Check if underlying function supports max_token_size and inject if not provided
+        if self.max_token_size is not None and "max_token_size" not in kwargs:
+            sig = inspect.signature(self.func)
+            if "max_token_size" in sig.parameters:
+                kwargs["max_token_size"] = self.max_token_size
+
+        # Call the actual embedding function
+        result = await self.func(*args, **kwargs)
+
+        # Validate embedding dimensions using total element count
+        total_elements = result.size  # Total number of elements in the numpy array
+        expected_dim = self.embedding_dim
+
+        # Check if total elements can be evenly divided by embedding_dim
+        if total_elements % expected_dim != 0:
+            raise ValueError(
+                f"Embedding dimension mismatch detected: "
+                f"total elements ({total_elements}) cannot be evenly divided by "
+                f"expected dimension ({expected_dim}). "
+            )
+
+        # Optional: Verify vector count matches input text count
+        actual_vectors = total_elements // expected_dim
+        if args and isinstance(args[0], (list, tuple)):
+            expected_vectors = len(args[0])
+            if actual_vectors != expected_vectors:
+                raise ValueError(
+                    f"Vector count mismatch: "
+                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
+                )
+
+        return result
 
 
 def compute_args_hash(*args: Any) -> str:
@@ -367,6 +648,91 @@ def compute_args_hash(*args: Any) -> str:
         return md5(safe_bytes).hexdigest()
 
 
+def _serialize_cache_variant(value: Any) -> str:
+    """Serialize cache-affecting options to a stable string for hash inputs."""
+    if value is None:
+        return ""
+
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        try:
+            value = value.model_dump(mode="json")
+        except TypeError:
+            value = value.model_dump()
+
+    if hasattr(value, "model_json_schema") and callable(value.model_json_schema):
+        value = value.model_json_schema()
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=repr,
+        )
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def get_llm_cache_identity(
+    global_config: dict[str, Any] | None,
+    role: str,
+    model_func_override: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Get the non-secret LLM identity used to partition LLM cache keys.
+
+    Includes ``role``, ``binding``, ``model``, and ``host``. Deliberately excludes
+    ``api_key`` and ``provider_options`` so cache keys remain non-secret and safe
+    to persist.
+
+    When ``model_func_override`` is set (the deprecated ``QueryParam.model_func``
+    path), the identity collapses to ``{role, override}`` and does not partition
+    by the underlying model — callers swapping overrides will hit shared cache
+    entries. Use ``LightRAG.aupdate_llm_role_config()`` for cache-correct swaps.
+    """
+    if model_func_override is not None:
+        return {
+            "role": role,
+            "override": "query_param.model_func",
+        }
+
+    config = global_config or {}
+    identities = config.get("llm_cache_identities")
+    if isinstance(identities, dict):
+        identity = identities.get(role)
+        if isinstance(identity, dict):
+            return dict(identity)
+
+    return {
+        "role": role,
+        "binding": None,
+        "model": config.get("llm_model_name"),
+        "host": None,
+    }
+
+
+def serialize_llm_cache_identity(identity: Any) -> str:
+    """Serialize an LLM cache identity for inclusion in hash inputs."""
+    return _serialize_cache_variant(identity)
+
+
+def _validate_cached_response_format(response_format: Any | None) -> None:
+    """Reject structured-output modes that the cache wrapper does not support."""
+    if response_format is None:
+        return
+
+    if (
+        isinstance(response_format, dict)
+        and response_format.get("type") == "json_object"
+    ):
+        return
+
+    raise ValueError(
+        "use_llm_func_with_cache only supports response_format={'type': 'json_object'}; "
+        "json_schema and typed response_format values must not be passed through the cache wrapper."
+    )
+
+
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
     """
     Compute a unique ID for a given content string.
@@ -374,6 +740,72 @@ def compute_mdhash_id(content: str, prefix: str = "") -> str:
     The ID is a combination of the given prefix and the MD5 hash of the content string.
     """
     return prefix + compute_args_hash(content)
+
+
+def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
+    """Generate a unique filename in target_dir, adding numeric suffixes on conflict.
+
+    Tries the original name first, then `{stem}_001{ext}` ... `{stem}_999{ext}`,
+    falling back to a timestamp-suffixed name if all numeric slots are taken.
+    """
+    original_path = Path(original_name)
+    base_name = original_path.stem
+    extension = original_path.suffix
+
+    if not (target_dir / original_name).exists():
+        return original_name
+
+    for i in range(1, 1000):
+        new_name = f"{base_name}_{i:03d}{extension}"
+        if not (target_dir / new_name).exists():
+            return new_name
+
+    return f"{base_name}_{int(time.time())}{extension}"
+
+
+async def move_file_to_parsed_dir(
+    file_path: Path,
+    *,
+    skip_if_already_parsed: bool = False,
+) -> Path | None:
+    """Move a processed source file into its sibling __parsed__ directory.
+
+    Returns the new path on success, the input path if `skip_if_already_parsed`
+    is set and the file already lives in a `__parsed__` directory, or None if
+    the source no longer exists.
+    """
+    if not file_path.exists() or not file_path.is_file():
+        return None
+    if skip_if_already_parsed and file_path.parent.name == PARSED_DIR_NAME:
+        return file_path
+
+    parsed_dir = file_path.parent / PARSED_DIR_NAME
+    await asyncio.to_thread(parsed_dir.mkdir, parents=True, exist_ok=True)
+
+    unique_filename = get_unique_filename_in_parsed(parsed_dir, file_path.name)
+    target_path = parsed_dir / unique_filename
+    await asyncio.to_thread(file_path.rename, target_path)
+    logger.debug(
+        f"Moved file to parsed directory: {file_path.name} -> {unique_filename}"
+    )
+    return target_path
+
+
+def make_relation_vdb_ids(src_entity: str, tgt_entity: str) -> list[str]:
+    """Return candidate relation VDB IDs for an undirected edge.
+
+    The normalized ID is returned first for all new writes. The reverse-order ID is
+    kept as a compatibility fallback for historical custom-KG imports that hashed
+    the relation using the original endpoint order.
+    """
+    normalized_src, normalized_tgt = sorted((src_entity, tgt_entity))
+    relation_ids = [compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")]
+    reverse_relation_id = compute_mdhash_id(
+        normalized_tgt + normalized_src, prefix="rel-"
+    )
+    if reverse_relation_id not in relation_ids:
+        relation_ids.append(reverse_relation_id)
+    return relation_ids
 
 
 def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
@@ -486,6 +918,7 @@ def priority_limit_async_func_call(
         counter = 0
         shutdown_event = asyncio.Event()
         initialized = False
+        accepting_new_tasks = True
         worker_health_check_task = None
 
         # Enhanced task state management
@@ -493,6 +926,11 @@ def priority_limit_async_func_call(
         task_states_lock = asyncio.Lock()
         active_futures = weakref.WeakSet()
         reinit_count = 0
+        submitted_total = 0
+        completed_total = 0
+        failed_total = 0
+        cancelled_total = 0
+        rejected_total = 0
 
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
@@ -713,31 +1151,83 @@ def priority_limit_async_func_call(
                     f"{queue_name}: {workers_needed} new workers initialized {timeout_str}"
                 )
 
-        async def shutdown():
-            """Gracefully shut down all workers and cleanup resources"""
+        async def get_queue_stats():
+            """Return a best-effort snapshot of queue and worker state."""
+            async with task_states_lock:
+                running = sum(
+                    1
+                    for task_state in task_states.values()
+                    if task_state.worker_started and not task_state.future.done()
+                )
+                in_flight = len(task_states)
+
+            active_workers = len([task for task in tasks if not task.done()])
+            return {
+                "queue_name": queue_name,
+                "max_async": max_size,
+                "max_queue_size": max_queue_size,
+                "queued": queue.qsize(),
+                "running": running,
+                "in_flight": in_flight,
+                "worker_count": active_workers,
+                "initialized": initialized,
+                "submitted_total": submitted_total,
+                "completed_total": completed_total,
+                "failed_total": failed_total,
+                "cancelled_total": cancelled_total,
+                "rejected_total": rejected_total,
+            }
+
+        async def shutdown(graceful: bool = True, timeout: float | None = None):
+            """Shut down workers and cleanup resources.
+
+            Graceful mode stops new submissions and drains queued/running
+            work; if the drain exceeds ``timeout`` (defaulting to
+            ``max_task_duration`` or 30s), it falls through to forced
+            cancellation so shutdown never blocks indefinitely.
+            """
+            nonlocal accepting_new_tasks, initialized, worker_health_check_task
             logger.info(f"{queue_name}: Shutting down priority queue workers")
 
+            accepting_new_tasks = False
+
+            drain_timed_out = False
+            if graceful:
+                effective_timeout = timeout
+                if effective_timeout is None:
+                    effective_timeout = (
+                        max_task_duration if max_task_duration is not None else 30.0
+                    )
+                try:
+                    await asyncio.wait_for(queue.join(), timeout=effective_timeout)
+                except asyncio.TimeoutError:
+                    drain_timed_out = True
+                    logger.warning(
+                        f"{queue_name}: Graceful drain timed out after "
+                        f"{effective_timeout}s; cancelling pending work"
+                    )
+
+            if not graceful or drain_timed_out:
+                # Cancel all active futures
+                for future in list(active_futures):
+                    if not future.done():
+                        future.cancel()
+
+                # Cancel all pending tasks
+                async with task_states_lock:
+                    for task_id, task_state in list(task_states.items()):
+                        if not task_state.future.done():
+                            task_state.future.cancel()
+                    task_states.clear()
+
+                while True:
+                    try:
+                        queue.get_nowait()
+                        queue.task_done()
+                    except asyncio.QueueEmpty:
+                        break
+
             shutdown_event.set()
-
-            # Cancel all active futures
-            for future in list(active_futures):
-                if not future.done():
-                    future.cancel()
-
-            # Cancel all pending tasks
-            async with task_states_lock:
-                for task_id, task_state in list(task_states.items()):
-                    if not task_state.future.done():
-                        task_state.future.cancel()
-                task_states.clear()
-
-            # Wait for queue to empty with timeout
-            try:
-                await asyncio.wait_for(queue.join(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"{queue_name}: Timeout waiting for queue to empty during shutdown"
-                )
 
             # Cancel worker tasks
             for task in list(tasks):
@@ -755,6 +1245,8 @@ def priority_limit_async_func_call(
                     await worker_health_check_task
                 except asyncio.CancelledError:
                     pass
+            worker_health_check_task = None
+            initialized = False
 
             logger.info(f"{queue_name}: Priority queue workers shutdown complete")
 
@@ -780,6 +1272,12 @@ def priority_limit_async_func_call(
                 QueueFullError: If the queue is full and waiting times out
                 Any exception raised by the decorated function
             """
+            nonlocal submitted_total, completed_total, cancelled_total, failed_total
+            nonlocal rejected_total
+            if not accepting_new_tasks:
+                rejected_total += 1
+                raise RuntimeError(f"{queue_name}: Queue is shutting down")
+
             await ensure_workers()
 
             # Generate unique task ID
@@ -806,6 +1304,9 @@ def priority_limit_async_func_call(
 
                 # Queue the task with timeout handling
                 try:
+                    if not accepting_new_tasks:
+                        rejected_total += 1
+                        raise RuntimeError(f"{queue_name}: Queue is shutting down")
                     if _queue_timeout is not None:
                         await asyncio.wait_for(
                             queue.put(
@@ -817,6 +1318,7 @@ def priority_limit_async_func_call(
                         await queue.put(
                             (_priority, current_count, task_id, args, kwargs)
                         )
+                    submitted_total += 1
                 except asyncio.TimeoutError:
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
@@ -830,9 +1332,11 @@ def priority_limit_async_func_call(
                 # Wait for result with timeout handling
                 try:
                     if _timeout is not None:
-                        return await asyncio.wait_for(future, _timeout)
+                        result = await asyncio.wait_for(future, _timeout)
                     else:
-                        return await future
+                        result = await future
+                    completed_total += 1
+                    return result
                 except asyncio.TimeoutError:
                     # This is user-level timeout (asyncio.wait_for caused)
                     # Mark cancellation request
@@ -853,15 +1357,24 @@ def priority_limit_async_func_call(
                     ):
                         await asyncio.sleep(0.1)
 
+                    cancelled_total += 1
                     raise TimeoutError(
                         f"{queue_name}: User timeout after {_timeout} seconds"
                     )
                 except WorkerTimeoutError as e:
                     # This is Worker-level timeout, directly propagate exception information
+                    failed_total += 1
                     raise TimeoutError(f"{queue_name}: {str(e)}")
                 except HealthCheckTimeoutError as e:
                     # This is Health Check-level timeout, directly propagate exception information
+                    failed_total += 1
                     raise TimeoutError(f"{queue_name}: {str(e)}")
+                except asyncio.CancelledError:
+                    cancelled_total += 1
+                    raise
+                except Exception:
+                    failed_total += 1
+                    raise
 
             finally:
                 # Ensure cleanup
@@ -871,6 +1384,7 @@ def priority_limit_async_func_call(
 
         # Add shutdown method to decorated function
         wait_func.shutdown = shutdown
+        wait_func.get_queue_stats = get_queue_stats
 
         return wait_func
 
@@ -878,10 +1392,91 @@ def priority_limit_async_func_call(
 
 
 def wrap_embedding_func_with_attrs(**kwargs):
-    """Wrap a function with attributes"""
+    """Decorator to add embedding dimension and token limit attributes to embedding functions.
+
+    This decorator wraps an async embedding function and returns an EmbeddingFunc instance
+    that automatically handles dimension parameter injection and attribute management.
+
+    WARNING: DO NOT apply this decorator to wrapper functions that call other
+    decorated embedding functions. This will cause double decoration and parameter
+    injection conflicts.
+
+    Correct usage patterns:
+
+    1. Direct decoration:
+        ```python
+        @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192, model_name="my_embedding_model")
+        async def my_embed(texts, embedding_dim=None):
+            # Direct implementation
+            return embeddings
+        ```
+    2. Double decoration:
+        ```python
+        @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192, model_name="my_embedding_model")
+        @retry(...)
+        async def my_embed(texts, ...):
+            # Base implementation
+            pass
+
+        @wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=4096, model_name="another_embedding_model")
+        # Note: No @retry here!
+        async def my_new_embed(texts, ...):
+            # CRITICAL: Call .func to access unwrapped function
+            return await my_embed.func(texts, ...)  # ✅ Correct
+            # return await my_embed(texts, ...)     # ❌ Wrong - double decoration!
+        ```
+    3. Context-aware decoration:
+        ```python
+        @wrap_embedding_func_with_attrs(
+            embedding_dim=1536,
+            model_name="my_embedding_model",
+            supports_asymmetric=True
+        )
+        async def my_embed(texts, context="document"):
+            # Apply different prefixes based on context
+            if context == "query":
+                texts = ["search_query: " + t for t in texts]
+            elif context == "document":
+                texts = ["search_document: " + t for t in texts]
+            return embeddings
+        ```
+
+    The decorated function becomes an EmbeddingFunc instance with:
+    - embedding_dim: The embedding dimension
+    - max_token_size: Maximum token limit (optional)
+    - model_name: Model name (optional)
+    - supports_asymmetric: Whether context parameter is supported (optional)
+    - func: The original unwrapped function (access via .func)
+    - __call__: Wrapper that injects embedding_dim parameter and context
+
+    Args:
+        embedding_dim: The dimension of embedding vectors
+        max_token_size: Maximum number of tokens (optional)
+        send_dimensions: Whether to pass embedding_dim as a keyword argument (for models with configurable embedding dimensions).
+        supports_asymmetric: Whether the function supports context parameter (optional).
+            If omitted, this is auto-detected from the wrapped function's signature
+            (set to True iff the function accepts a ``context`` parameter).
+
+    Returns:
+        A decorator that wraps the function as an EmbeddingFunc instance
+    """
 
     def final_decro(func) -> EmbeddingFunc:
-        new_func = EmbeddingFunc(**kwargs, func=func)
+        embedding_kwargs = dict(kwargs)
+        # Auto-detect supports_asymmetric from the wrapped function's signature
+        # if the caller did not declare it explicitly. Without this, any user or
+        # third-party embed function that accepts a `context` parameter but
+        # forgets to set ``supports_asymmetric=True`` would have its `context`
+        # silently dropped by ``EmbeddingFunc.__call__``, defeating the
+        # task-aware embedding feature.
+        if "supports_asymmetric" not in embedding_kwargs:
+            try:
+                sig = inspect.signature(func)
+                embedding_kwargs["supports_asymmetric"] = "context" in sig.parameters
+            except (TypeError, ValueError):
+                # inspect.signature can fail for builtins; fall back to False.
+                embedding_kwargs["supports_asymmetric"] = False
+        new_func = EmbeddingFunc(**embedding_kwargs, func=func)
         return new_func
 
     return final_decro
@@ -894,9 +1489,123 @@ def load_json(file_name):
         return json.load(f)
 
 
+def _sanitize_string_for_json(text: str) -> str:
+    """Remove characters that cannot be encoded in UTF-8 for JSON serialization.
+
+    Uses regex for optimal performance with zero-copy optimization for clean strings.
+    Fast detection path for clean strings (99% of cases) with efficient removal for dirty strings.
+
+    Args:
+        text: String to sanitize
+
+    Returns:
+        Original string if clean (zero-copy), sanitized string if dirty
+    """
+    if not text:
+        return text
+
+    # Fast path: Check if sanitization is needed using C-level regex search
+    if not _SURROGATE_PATTERN.search(text):
+        return text  # Zero-copy for clean strings - most common case
+
+    # Slow path: Remove problematic characters using C-level regex substitution
+    return _SURROGATE_PATTERN.sub("", text)
+
+
+class SanitizingJSONEncoder(json.JSONEncoder):
+    """
+    Custom JSON encoder that sanitizes data during serialization.
+
+    This encoder cleans strings during the encoding process without creating
+    a full copy of the data structure, making it memory-efficient for large datasets.
+    """
+
+    def encode(self, o):
+        """Override encode method to handle simple string cases"""
+        if isinstance(o, str):
+            return json.encoder.encode_basestring(_sanitize_string_for_json(o))
+        return super().encode(o)
+
+    def iterencode(self, o, _one_shot=False):
+        """
+        Override iterencode to sanitize strings during serialization.
+        This is the core method that handles complex nested structures.
+        """
+        # Preprocess: sanitize all strings in the object
+        sanitized = self._sanitize_for_encoding(o)
+
+        # Call parent's iterencode with sanitized data
+        for chunk in super().iterencode(sanitized, _one_shot):
+            yield chunk
+
+    def _sanitize_for_encoding(self, obj):
+        """
+        Recursively sanitize strings in an object.
+        Creates new objects only when necessary to avoid deep copies.
+
+        Args:
+            obj: Object to sanitize
+
+        Returns:
+            Sanitized object with cleaned strings
+        """
+        if isinstance(obj, str):
+            return _sanitize_string_for_json(obj)
+
+        elif isinstance(obj, dict):
+            # Create new dict with sanitized keys and values
+            new_dict = {}
+            for k, v in obj.items():
+                clean_k = _sanitize_string_for_json(k) if isinstance(k, str) else k
+                clean_v = self._sanitize_for_encoding(v)
+                new_dict[clean_k] = clean_v
+            return new_dict
+
+        elif isinstance(obj, (list, tuple)):
+            # Sanitize list/tuple elements
+            cleaned = [self._sanitize_for_encoding(item) for item in obj]
+            return type(obj)(cleaned) if isinstance(obj, tuple) else cleaned
+
+        else:
+            # Numbers, booleans, None, etc. remain unchanged
+            return obj
+
+
 def write_json(json_obj, file_name):
+    """
+    Write JSON data to file with optimized sanitization strategy.
+
+    This function uses a two-stage approach:
+    1. Fast path: Try direct serialization (works for clean data ~99% of time)
+    2. Slow path: Use custom encoder that sanitizes during serialization
+
+    The custom encoder approach avoids creating a deep copy of the data,
+    making it memory-efficient. When sanitization occurs, the caller should
+    reload the cleaned data from the file to update shared memory.
+
+    Args:
+        json_obj: Object to serialize (may be a shallow copy from shared memory)
+        file_name: Output file path
+
+    Returns:
+        bool: True if sanitization was applied (caller should reload data),
+              False if direct write succeeded (no reload needed)
+    """
+    try:
+        # Strategy 1: Fast path - try direct serialization
+        with open(file_name, "w", encoding="utf-8") as f:
+            json.dump(json_obj, f, indent=2, ensure_ascii=False)
+        return False  # No sanitization needed, no reload required
+
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        logger.debug(f"Direct JSON write failed, using sanitizing encoder: {e}")
+
+    # Strategy 2: Use custom encoder (sanitizes during serialization, zero memory copy)
     with open(file_name, "w", encoding="utf-8") as f:
-        json.dump(json_obj, f, indent=2, ensure_ascii=False)
+        json.dump(json_obj, f, indent=2, ensure_ascii=False, cls=SanitizingJSONEncoder)
+
+    logger.info(f"JSON sanitization applied during write: {file_name}")
+    return True  # Sanitization applied, reload recommended
 
 
 class TokenizerInterface(Protocol):
@@ -939,7 +1648,24 @@ class Tokenizer:
         Returns:
             A list of integer tokens.
         """
-        return self.tokenizer.encode(content)
+        try:
+            return self.tokenizer.encode(content)
+        except ValueError as e:
+            # tiktoken (and some other tokenizers) raise ValueError when the
+            # content contains literal special-token strings such as
+            # "<|endoftext|>", because by default disallowed_special is the
+            # full set of special tokens. This crashes document indexing on
+            # any user content that happens to contain those strings — common
+            # in documentation, notes, or model output captured in source
+            # corpora. Retry with disallowed_special=() so the tokens are
+            # encoded as ordinary text. Tokenizers that don't accept the
+            # kwarg fall through and re-raise the original error.
+            if "special token" not in str(e):
+                raise
+            try:
+                return self.tokenizer.encode(content, disallowed_special=())
+            except TypeError:
+                raise e
 
     def decode(self, tokens: List[int]) -> str:
         """
@@ -1019,6 +1745,164 @@ def truncate_list_by_token_size(
         if tokens > max_token_size:
             return list_data[:i]
     return list_data
+
+
+def normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
+    """Return a list of non-empty strings from raw_values.
+
+    Non-string elements are dropped and logged as warnings. If raw_values is
+    not a list, an empty list is returned.
+    """
+    if not isinstance(raw_values, list):
+        return []
+    result = []
+    for i, value in enumerate(raw_values):
+        if isinstance(value, str) and value:
+            result.append(value)
+        else:
+            logger.warning(
+                "Non-string element dropped from list%s at index %d: %r",
+                f" ({context})" if context else "",
+                i,
+                value,
+            )
+    return result
+
+
+def split_text_units_for_hard_fallback(text: str) -> list[str]:
+    """Split text into sentence/paragraph-like units for fallback chunking."""
+    if not text:
+        return []
+    units: list[str] = []
+    for para in text.split("\n\n"):
+        p = para.strip()
+        if not p:
+            continue
+        for sentence in re.split(r"(?<=[。！？；.!?])", p):
+            s = sentence.strip()
+            if s:
+                units.append(s)
+    return units if units else [text]
+
+
+def split_text_by_token_limit(
+    text: str, tokenizer: Tokenizer, max_tokens: int
+) -> list[str]:
+    """Split text by token limit with sentence-first, token-window fallback."""
+    if not text:
+        return []
+
+    try:
+        total_tokens = len(tokenizer.encode(text))
+    except Exception:
+        total_tokens = 0
+
+    if total_tokens > 0 and total_tokens <= max_tokens:
+        return [text]
+
+    units = split_text_units_for_hard_fallback(text)
+    out: list[str] = []
+    cur_parts: list[str] = []
+    cur_tokens = 0
+
+    for unit in units:
+        try:
+            unit_tokens = len(tokenizer.encode(unit))
+        except Exception:
+            unit_tokens = 0
+
+        # Sentence itself is oversize: token-window split directly.
+        if unit_tokens > max_tokens:
+            if cur_parts:
+                out.append("\n\n".join(cur_parts))
+                cur_parts = []
+                cur_tokens = 0
+
+            token_ids = tokenizer.encode(unit)
+            for start in range(0, len(token_ids), max_tokens):
+                piece = tokenizer.decode(token_ids[start : start + max_tokens]).strip()
+                if piece:
+                    out.append(piece)
+            continue
+
+        if cur_parts and cur_tokens + unit_tokens > max_tokens:
+            out.append("\n\n".join(cur_parts))
+            cur_parts = [unit]
+            cur_tokens = unit_tokens
+        else:
+            cur_parts.append(unit)
+            cur_tokens += unit_tokens
+
+    if cur_parts:
+        out.append("\n\n".join(cur_parts))
+
+    return [x for x in out if x.strip()]
+
+
+def enforce_chunk_token_limit_before_embedding(
+    chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    tokenizer: Tokenizer,
+    max_tokens: int,
+) -> list[dict[str, Any]]:
+    """Hard fallback split before embedding while preserving heading hierarchy."""
+    if max_tokens <= 0:
+        return list(chunking_result)
+
+    normalized: list[dict[str, Any]] = []
+
+    for dp in chunking_result:
+        if not isinstance(dp, dict):
+            continue
+
+        content = dp.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            continue
+
+        try:
+            token_count = len(tokenizer.encode(content))
+        except Exception:
+            token_count = (
+                dp.get("tokens", 0) if isinstance(dp.get("tokens"), int) else 0
+            )
+
+        if token_count <= max_tokens:
+            ndp = dict(dp)
+            ndp["tokens"] = token_count if token_count > 0 else ndp.get("tokens", 0)
+            normalized.append(ndp)
+            continue
+
+        pieces = split_text_by_token_limit(content, tokenizer, max_tokens)
+        if not pieces:
+            ndp = dict(dp)
+            ndp["tokens"] = token_count
+            normalized.append(ndp)
+            continue
+
+        base_chunk_id = dp.get("chunk_id")
+        total_parts = len(pieces)
+        for i, piece in enumerate(pieces, 1):
+            new_dp = dict(dp)
+            new_dp["content"] = piece
+            try:
+                new_dp["tokens"] = len(tokenizer.encode(piece))
+            except Exception:
+                new_dp["tokens"] = max(1, int(len(piece) * 0.5))
+
+            # Shallow-copy preserves the nested heading dict and sidecar
+            # block from the source chunk; only the payload (content/tokens
+            # /chunk_id) is rewritten per split slice.
+            if isinstance(base_chunk_id, str) and base_chunk_id.strip():
+                new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
+
+            new_dp["split_type"] = "hard_fallback"
+            new_dp["split_part"] = i
+            new_dp["split_total"] = total_parts
+            normalized.append(new_dp)
+
+    # Rebuild order index to keep continuity after splitting.
+    for idx, item in enumerate(normalized):
+        item["chunk_order_index"] = idx
+    return normalized
 
 
 def cosine_similarity(v1, v2):
@@ -1152,6 +2036,16 @@ def exists_func(obj, func_name: str) -> bool:
         return False
 
 
+async def _cooperative_yield(iteration: int, every: int = 64) -> None:
+    """Periodically yield control to the event loop during CPU-heavy async loops.
+
+    Call inside long synchronous-style loops to prevent event loop starvation
+    in single-worker deployments. Yields every `every` iterations.
+    """
+    if iteration > 0 and iteration % every == 0:
+        await asyncio.sleep(0)
+
+
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     """
     Ensure that there is always an event loop available.
@@ -1257,8 +2151,11 @@ async def aexport_data(
 
                 # Optional: Get vector database information
                 if include_vector_data:
-                    rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
-                    vector_data = await relationships_vdb.get_by_id(rel_id)
+                    vector_data = None
+                    for rel_id in make_relation_vdb_ids(src_entity, tgt_entity):
+                        vector_data = await relationships_vdb.get_by_id(rel_id)
+                        if vector_data is not None:
+                            break
                     relation_info["vector_data"] = vector_data
 
                 relation_row = {
@@ -1472,8 +2369,7 @@ async def aexport_data(
 
     else:
         raise ValueError(
-            f"Unsupported file format: {file_format}. "
-            f"Choose from: csv, excel, md, txt"
+            f"Unsupported file format: {file_format}. Choose from: csv, excel, md, txt"
         )
     if file_format is not None:
         print(f"Data exported to: {output_path} with format: {file_format}")
@@ -1584,11 +2480,19 @@ async def update_chunk_cache_list(
 
 
 def remove_think_tags(text: str) -> str:
-    """Remove <think>...</think> tags from the text
-    Remove  orphon ...</think> tags from the text also"""
-    return re.sub(
-        r"^(<think>.*?</think>|.*</think>)", "", text, flags=re.DOTALL
-    ).strip()
+    """Remove <think>...</think> tags and their content from the text.
+
+    Handles two cases:
+    1. Complete <think>...</think> blocks anywhere in the text.
+    2. Orphaned </think> at the very start (e.g., from streaming that begins
+       mid-think-block), removing everything before and including it.
+    """
+    # First, remove orphaned </think> prefix (content before first </think>
+    # when there is no preceding <think> tag)
+    text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
+    # Then remove all complete <think>...</think> blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return text.strip()
 
 
 async def use_llm_func_with_cache(
@@ -1601,6 +2505,9 @@ async def use_llm_func_with_cache(
     cache_type: str = "extract",
     chunk_id: str | None = None,
     cache_keys_collector: list = None,
+    response_format: Any | None = None,
+    entity_extraction: bool = False,
+    llm_cache_identity: Any | None = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -1619,12 +2526,33 @@ async def use_llm_func_with_cache(
         chunk_id: Chunk identifier to store in cache
         text_chunks_storage: Text chunks storage to update llm_cache_list
         cache_keys_collector: Optional list to collect cache keys for batch processing
+        response_format: Structured output control forwarded to the LLM provider.
+            Providers translate this to their native structured-output surface
+            (OpenAI response_format, Ollama format, Gemini response_mime_type/schema).
+            ``{"type": "json_object"}`` requests JSON output; typed/schema payloads
+            trigger schema-constrained output where supported; ``None`` leaves
+            output unconstrained. Providers that do not support structured output
+            safely strip this argument.
+        entity_extraction: Deprecated. When True and ``response_format`` is not
+            provided, maps to ``{"type": "json_object"}``. Prefer passing
+            ``response_format`` directly.
+        llm_cache_identity: Non-secret model/provider identity used to partition
+            cache entries across role model, binding, or host changes.
 
     Returns:
         tuple[str, int]: (LLM response text, timestamp)
             - For cache hits: (content, cache_create_time)
             - For cache misses: (content, current_timestamp)
     """
+    if entity_extraction and response_format is None:
+        warnings.warn(
+            "use_llm_func_with_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        response_format = {"type": "json_object"}
+    _validate_cached_response_format(response_format)
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
     safe_user_prompt = sanitize_text_for_encoding(user_prompt)
     safe_system_prompt = (
@@ -1654,7 +2582,15 @@ async def use_llm_func_with_cache(
             prompt_parts.append(history)
         _prompt = "\n".join(prompt_parts)
 
-        arg_hash = compute_args_hash(_prompt)
+        response_format_key = _serialize_cache_variant(response_format)
+        llm_identity_key = serialize_llm_cache_identity(llm_cache_identity)
+        arg_hash = compute_args_hash(
+            _prompt,
+            "\n<response_format>\n",
+            response_format_key,
+            "\n<llm_identity>\n",
+            llm_identity_key,
+        )
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)
 
@@ -1683,6 +2619,8 @@ async def use_llm_func_with_cache(
             kwargs["history_messages"] = safe_history_messages
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if response_format is not None:
+            kwargs["response_format"] = response_format
 
         res: str = await use_llm_func(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
@@ -1717,6 +2655,8 @@ async def use_llm_func_with_cache(
         kwargs["history_messages"] = safe_history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    if response_format is not None:
+        kwargs["response_format"] = response_format
 
     try:
         res = await use_llm_func(
@@ -1784,7 +2724,7 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     - Filter out short numeric-only text (length < 3 and only digits/dots)
     - remove_inner_quotes = True
         remove Chinese quotes
-        remove English queotes in and around chinese
+        remove English quotes in and around chinese
         Convert non-breaking spaces to regular spaces
         Convert narrow non-breaking spaces after non-digits to regular spaces
 
@@ -1896,8 +2836,6 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
         return all(c.isdigit() or c == "." for c in text) and "." in text
 
     if len(name) < 6 and should_filter_by_dots(name):
-        # Filter out mixed numeric and dot content with length < 6
-        return ""
         # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
         return ""
 
@@ -1921,75 +2859,28 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
 
     Returns:
         Sanitized text that can be safely encoded as UTF-8
-
-    Raises:
-        ValueError: When text contains uncleanable encoding issues that cannot be safely processed
     """
     if not text:
         return text
 
-    try:
-        # First, strip whitespace
-        text = text.strip()
+    # First, strip whitespace
+    text = text.strip()
 
-        # Early return if text is empty after basic cleaning
-        if not text:
-            return text
+    # Early return if text is empty after basic cleaning
+    if not text:
+        return text
 
-        # Try to encode/decode to catch any encoding issues early
-        text.encode("utf-8")
+    # 1. html.unescape first to catch entities that might become surrogates or control chars
+    text = html.unescape(text)
 
-        # Remove or replace surrogate characters (U+D800 to U+DFFF)
-        # These are the main cause of the encoding error
-        sanitized = ""
-        for char in text:
-            code_point = ord(char)
-            # Check for surrogate characters
-            if 0xD800 <= code_point <= 0xDFFF:
-                # Replace surrogate with replacement character
-                sanitized += replacement_char
-                continue
-            # Check for other problematic characters
-            elif code_point == 0xFFFE or code_point == 0xFFFF:
-                # These are non-characters in Unicode
-                sanitized += replacement_char
-                continue
-            else:
-                sanitized += char
+    # 2. Use pre-compiled regex to clean surrogates and non-characters in one pass
+    # This replaces the slow manual loop and initial .encode() check
+    text = _SURROGATE_PATTERN.sub(replacement_char, text)
 
-        # Additional cleanup: remove null bytes and other control characters that might cause issues
-        # (but preserve common whitespace like \t, \n, \r)
-        sanitized = re.sub(
-            r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", replacement_char, sanitized
-        )
+    # 3. Remove control characters but preserve common whitespace (\t, \n, \r)
+    text = _CONTROL_CHAR_PATTERN_ALL.sub(replacement_char, text)
 
-        # Test final encoding to ensure it's safe
-        sanitized.encode("utf-8")
-
-        # Unescape HTML escapes
-        sanitized = html.unescape(sanitized)
-
-        # Remove control characters but preserve common whitespace (\t, \n, \r)
-        sanitized = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]", "", sanitized)
-
-        return sanitized.strip()
-
-    except UnicodeEncodeError as e:
-        # Critical change: Don't return placeholder, raise exception for caller to handle
-        error_msg = f"Text contains uncleanable UTF-8 encoding issues: {str(e)[:100]}"
-        logger.error(f"Text sanitization failed: {error_msg}")
-        raise ValueError(error_msg) from e
-
-    except Exception as e:
-        logger.error(f"Text sanitization: Unexpected error: {str(e)}")
-        # For other exceptions, if no encoding issues detected, return original text
-        try:
-            text.encode("utf-8")
-            return text
-        except UnicodeEncodeError:
-            raise ValueError(
-                f"Text sanitization failed with unexpected error: {str(e)}"
-            ) from e
+    return text.strip()
 
 
 def check_storage_env_vars(storage_name: str) -> None:
@@ -2147,7 +3038,7 @@ async def pick_by_vector_similarity(
     try:
         # Use pre-computed query embedding if provided, otherwise compute it
         if query_embedding is None:
-            query_embedding = await embedding_func([query])
+            query_embedding = await embedding_func([query], context="query")
             query_embedding = query_embedding[
                 0
             ]  # Extract first embedding from batch result
@@ -2466,63 +3357,156 @@ async def process_chunks_unified(
     return final_chunks
 
 
-def build_file_path(already_file_paths, data_list, target):
-    """Build file path string with UTF-8 byte length limit and deduplication
+def normalize_source_ids_limit_method(method: str | None) -> str:
+    """Normalize the source ID limiting strategy and fall back to default when invalid."""
+
+    if not method:
+        return DEFAULT_SOURCE_IDS_LIMIT_METHOD
+
+    normalized = method.upper()
+    if normalized not in VALID_SOURCE_IDS_LIMIT_METHODS:
+        logger.warning(
+            "Unknown SOURCE_IDS_LIMIT_METHOD '%s', falling back to %s",
+            method,
+            DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+        )
+        return DEFAULT_SOURCE_IDS_LIMIT_METHOD
+
+    return normalized
+
+
+def merge_source_ids(
+    existing_ids: Iterable[str] | None, new_ids: Iterable[str] | None
+) -> list[str]:
+    """Merge two iterables of source IDs while preserving order and removing duplicates."""
+
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for sequence in (existing_ids, new_ids):
+        if not sequence:
+            continue
+        for source_id in sequence:
+            if not source_id:
+                continue
+            if source_id not in seen:
+                seen.add(source_id)
+                merged.append(source_id)
+
+    return merged
+
+
+def apply_source_ids_limit(
+    source_ids: Sequence[str],
+    limit: int,
+    method: str,
+    *,
+    identifier: str | None = None,
+) -> list[str]:
+    """Apply a limit strategy to a sequence of source IDs."""
+
+    if limit <= 0:
+        return []
+
+    source_ids_list = list(source_ids)
+    if len(source_ids_list) <= limit:
+        return source_ids_list
+
+    normalized_method = normalize_source_ids_limit_method(method)
+
+    if normalized_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+        truncated = source_ids_list[-limit:]
+    else:  # IGNORE_NEW
+        truncated = source_ids_list[:limit]
+
+    if identifier and len(truncated) < len(source_ids_list):
+        logger.debug(
+            "Source_id truncated: %s | %s keeping %s of %s entries",
+            identifier,
+            normalized_method,
+            len(truncated),
+            len(source_ids_list),
+        )
+
+    return truncated
+
+
+def compute_incremental_chunk_ids(
+    existing_full_chunk_ids: list[str],
+    old_chunk_ids: list[str],
+    new_chunk_ids: list[str],
+) -> list[str]:
+    """
+    Compute incrementally updated chunk IDs based on changes.
+
+    This function applies delta changes (additions and removals) to an existing
+    list of chunk IDs while maintaining order and ensuring deduplication.
+    Delta additions from new_chunk_ids are placed at the end.
 
     Args:
-        already_file_paths: List of existing file paths
-        data_list: List of data items containing file_path
-        target: Target name for logging warnings
+        existing_full_chunk_ids: Complete list of existing chunk IDs from storage
+        old_chunk_ids: Previous chunk IDs from source_id (chunks being replaced)
+        new_chunk_ids: New chunk IDs from updated source_id (chunks being added)
 
     Returns:
-        str: Combined file paths separated by GRAPH_FIELD_SEP
+        Updated list of chunk IDs with deduplication
+
+    Example:
+        >>> existing = ['chunk-1', 'chunk-2', 'chunk-3']
+        >>> old = ['chunk-1', 'chunk-2']
+        >>> new = ['chunk-2', 'chunk-4']
+        >>> compute_incremental_chunk_ids(existing, old, new)
+        ['chunk-3', 'chunk-2', 'chunk-4']
     """
-    # set: deduplication
-    file_paths_set = {fp for fp in already_file_paths if fp}
+    # Calculate changes
+    chunks_to_remove = set(old_chunk_ids) - set(new_chunk_ids)
+    chunks_to_add = set(new_chunk_ids) - set(old_chunk_ids)
 
-    # string: filter empty value and keep file order in already_file_paths
-    file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
+    # Apply changes to full chunk_ids
+    # Step 1: Remove chunks that are no longer needed
+    updated_chunk_ids = [
+        cid for cid in existing_full_chunk_ids if cid not in chunks_to_remove
+    ]
 
-    # Check if initial file_paths already exceeds byte length limit
-    if len(file_paths.encode("utf-8")) >= DEFAULT_MAX_FILE_PATH_LENGTH:
-        logger.warning(
-            f"Initial file_paths already exceeds {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
-            f"current size: {len(file_paths.encode('utf-8'))} bytes"
-        )
+    # Step 2: Add new chunks (preserving order from new_chunk_ids)
+    # Note: 'cid not in updated_chunk_ids' check ensures deduplication
+    for cid in new_chunk_ids:
+        if cid in chunks_to_add and cid not in updated_chunk_ids:
+            updated_chunk_ids.append(cid)
 
-    # ignored file_paths
-    file_paths_ignore = ""
-    # add file_paths
-    for dp in data_list:
-        cur_file_path = dp.get("file_path")
-        # empty
-        if not cur_file_path:
-            continue
+    return updated_chunk_ids
 
-        # skip duplicate item
-        if cur_file_path in file_paths_set:
-            continue
-        # add
-        file_paths_set.add(cur_file_path)
 
-        # check the UTF-8 byte length
-        new_addition = GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
-        if (
-            len(file_paths.encode("utf-8")) + len(new_addition.encode("utf-8"))
-            < DEFAULT_MAX_FILE_PATH_LENGTH - 5
-        ):
-            # append
-            file_paths += new_addition
-        else:
-            # ignore
-            file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
+def subtract_source_ids(
+    source_ids: Iterable[str],
+    ids_to_remove: Collection[str],
+) -> list[str]:
+    """Remove a collection of IDs from an ordered iterable while preserving order."""
 
-    if file_paths_ignore:
-        logger.warning(
-            f"File paths exceed {DEFAULT_MAX_FILE_PATH_LENGTH} bytes for {target}, "
-            f"ignoring file path: {file_paths_ignore}"
-        )
-    return file_paths
+    removal_set = set(ids_to_remove)
+    if not removal_set:
+        return [source_id for source_id in source_ids if source_id]
+
+    return [
+        source_id
+        for source_id in source_ids
+        if source_id and source_id not in removal_set
+    ]
+
+
+def make_relation_chunk_key(src: str, tgt: str) -> str:
+    """Create a deterministic storage key for relation chunk tracking."""
+
+    return GRAPH_FIELD_SEP.join(sorted((src, tgt)))
+
+
+def parse_relation_chunk_key(key: str) -> tuple[str, str]:
+    """Parse a relation chunk storage key back into its entity pair."""
+
+    parts = key.split(GRAPH_FIELD_SEP)
+    if len(parts) != 2:
+        raise ValueError(f"Invalid relation chunk key: {key}")
+    return parts[0], parts[1]
 
 
 def generate_track_id(prefix: str = "upload") -> str:
@@ -2612,9 +3596,9 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <X|#|> -> <|#|>, <|#|Y> -> <|#|>, <X|#|Y> -> <|#|>, <||#||> -> <|#|>, <||#> -> <|#|> (one extra characters outside pipes)
+    # Fix: <X|#|> -> <|#|>, <|#|Y> -> <|#|>, <X|#|Y> -> <|#|>, <||#||> -> <|#|> (one extra characters outside pipes)
     record = re.sub(
-        rf"<.?\|{escaped_delimiter_core}\|*?>",
+        rf"<.?\|{escaped_delimiter_core}\|.?>",
         tuple_delimiter,
         record,
     )
@@ -2634,7 +3618,6 @@ def fix_tuple_delimiter_corruption(
     )
 
     # Fix: <|#| -> <|#|>, <|#|| -> <|#|> (missing closing >)
-
     record = re.sub(
         rf"<\|{escaped_delimiter_core}\|+(?!>)",
         tuple_delimiter,
@@ -2644,6 +3627,13 @@ def fix_tuple_delimiter_corruption(
     # Fix <|#: -> <|#|> (missing closing >)
     record = re.sub(
         rf"<\|{escaped_delimiter_core}:(?!>)",
+        tuple_delimiter,
+        record,
+    )
+
+    # Fix: <||#> -> <|#|> (double pipe at start, missing pipe at end)
+    record = re.sub(
+        rf"<\|+{escaped_delimiter_core}>",
         tuple_delimiter,
         record,
     )
@@ -2711,13 +3701,12 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
         else:
             # Method 2: If no args, try single parameter construction.
             return type(original_exception)(f"{prefix}: {str(original_exception)}")
-    except (TypeError, ValueError, AttributeError) as construct_error:
+    except (TypeError, ValueError, AttributeError):
         # Method 3: If reconstruction fails, wrap it in a RuntimeError.
         # This is the safest fallback, as attempting to create the same type
         # with a single string can fail if the constructor requires multiple arguments.
         return RuntimeError(
-            f"{prefix}: {type(original_exception).__name__}: {str(original_exception)} "
-            f"(Original exception could not be reconstructed: {construct_error})"
+            f"{prefix}: {type(original_exception).__name__}: {str(original_exception)}"
         )
 
 

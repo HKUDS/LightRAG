@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import Button from './Button'
 import Input from './Input'
@@ -40,10 +40,13 @@ export default function PaginationControls({
   const { t } = useTranslation()
   const [inputPage, setInputPage] = useState(currentPage.toString())
 
-  // Update input when currentPage changes
-  useEffect(() => {
+  // Sync input when currentPage changes externally (render-time comparison
+  // avoids cascading renders flagged by react-hooks/set-state-in-effect).
+  const [previousCurrentPage, setPreviousCurrentPage] = useState(currentPage)
+  if (currentPage !== previousCurrentPage) {
+    setPreviousCurrentPage(currentPage)
     setInputPage(currentPage.toString())
-  }, [currentPage])
+  }
 
   // Handle page input change with debouncing
   const handlePageInputChange = useCallback((value: string) => {

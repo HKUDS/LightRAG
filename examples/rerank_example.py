@@ -15,9 +15,12 @@ Configuration Required:
     EMBEDDING_BINDING_HOST
     EMBEDDING_BINDING_API_KEY
 3. Set your vLLM deployed AI rerank model setting with env vars:
-    RERANK_MODEL
-    RERANK_BINDING_HOST
+    RERANK_BINDING=cohere
+    RERANK_MODEL (e.g., answerai-colbert-small-v1 or rerank-v3.5)
+    RERANK_BINDING_HOST (e.g., https://api.cohere.com/v2/rerank or LiteLLM proxy)
     RERANK_BINDING_API_KEY
+    RERANK_ENABLE_CHUNKING=true (optional, for models with token limits)
+    RERANK_MAX_TOKENS_PER_DOC=480 (optional, default 4096)
 
 Note: Rerank is controlled per query via the 'enable_rerank' parameter (default: True)
 """
@@ -29,7 +32,6 @@ import numpy as np
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc, setup_logger
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 from functools import partial
 from lightrag.rerank import cohere_rerank
@@ -67,9 +69,11 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 
 rerank_model_func = partial(
     cohere_rerank,
-    model=os.getenv("RERANK_MODEL"),
+    model=os.getenv("RERANK_MODEL", "rerank-v3.5"),
     api_key=os.getenv("RERANK_BINDING_API_KEY"),
-    base_url=os.getenv("RERANK_BINDING_HOST"),
+    base_url=os.getenv("RERANK_BINDING_HOST", "https://api.cohere.com/v2/rerank"),
+    enable_chunking=os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true",
+    max_tokens_per_doc=int(os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")),
 )
 
 
@@ -94,9 +98,7 @@ async def create_rag_with_rerank():
         rerank_model_func=rerank_model_func,
     )
 
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-
+    await rag.initialize_storages()  # Auto-initializes pipeline_status
     return rag
 
 

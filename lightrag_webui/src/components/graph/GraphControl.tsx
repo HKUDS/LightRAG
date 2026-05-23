@@ -70,8 +70,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
           sigma.setGraph(sigmaGraph as unknown as AbstractGraph<NodeType, EdgeType>);
           console.log('Binding graph to sigma instance');
         } else {
-          (sigma as any).graph = sigmaGraph;
-          console.warn('Simgma missing setGraph function, set graph property directly');
+          console.error('Sigma missing setGraph function — unexpected: sigma v3 should always have setGraph');
         }
       } catch (error) {
         console.error('Error setting graph on sigma instance:', error);
@@ -302,6 +301,10 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
         if (!disableHoverEffect) {
           const _focusedNode = focusedNode || selectedNode
+          // Choose edge highlight color based on theme
+          const edgeHighlightColor = isDarkTheme
+            ? Constants.edgeColorHighlightedDarkTheme
+            : Constants.edgeColorHighlightedLightTheme
 
           if (_focusedNode && graph.hasNode(_focusedNode)) {
             try {
@@ -311,7 +314,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
                 }
               } else {
                 if (graph.extremities(edge).includes(_focusedNode)) {
-                  newData.color = Constants.edgeColorHighlighted
+                  newData.color = edgeHighlightColor
                 }
               }
             } catch (error) {
@@ -326,7 +329,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
               if (edge === _selectedEdge) {
                 newData.color = Constants.edgeColorSelected
               } else if (edge === _focusedEdge) {
-                newData.color = Constants.edgeColorHighlighted
+                newData.color = edgeHighlightColor
               } else if (hideUnselectedEdges) {
                 newData.hidden = true
               }

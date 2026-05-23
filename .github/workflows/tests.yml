@@ -1,0 +1,56 @@
+name: Offline Unit Tests
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  offline-tests:
+    name: Offline Tests
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.14']
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip packages
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[api]"
+        pip install pytest pytest-asyncio
+
+    - name: Run offline tests
+      run: |
+        # Run only tests marked as 'offline' (no external dependencies)
+        # Integration tests requiring databases/APIs are skipped by default
+        pytest tests/ -m offline -v --tb=short
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-results-py${{ matrix.python-version }}
+        path: |
+          .pytest_cache/
+          test-results.xml
+        retention-days: 7
