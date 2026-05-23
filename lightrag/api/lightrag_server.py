@@ -348,6 +348,20 @@ def _inject_swagger_theme(html: str, theme: str) -> str:
           html[data-lightrag-docs-dark="1"] .swagger-ui .model-toggle::after {{
             filter: invert(1);
           }}
+
+          /* Per-operation Authorize lock icon. Swagger renders it via
+             `<symbol id="locked|unlocked">` whose <path> has no fill attr
+             and no currentColor reference; Swagger's CSS also never sets
+             fill on .authorization__btn svg, leaving the path at the SVG
+             default (black). Set fill on the outer <svg> — fill is inherited
+             through <use> into the referenced symbol because the path itself
+             is unstyled, so one declaration colors both locked and unlocked
+             states. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .authorization__btn svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .authorization__btn .locked,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .authorization__btn .unlocked {{
+            fill: #e5e7eb;
+          }}
         </style>
         """
     ).strip()
