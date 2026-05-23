@@ -294,10 +294,11 @@
     "statusCard": {
       "unavailable": "Thông tin trạng thái không khả dụng",
       "serverInfo": "Thông Tin Máy Chủ",
-      "workingDirectory": "Thư Mục Làm Việc",
       "inputDirectory": "Thư Mục Đầu Vào",
+      "parser": "Bộ Phân Tích",
+      "mineru": "MinerU",
+      "docling": "Docling",
       "otherSettings": "Cài Đặt Khác",
-      "summarySettings": "Cài Đặt Tóm Tắt",
       "llmConfig": "Cấu Hình Mô Hình",
       "llmBinding": "LLM Binding",
       "llmBindingHost": "Điểm Cuối LLM",
@@ -315,8 +316,7 @@
       "rerankerConfig": "Cấu Hình Reranker",
       "rerankerBindingHost": "Điểm Cuối Reranker",
       "rerankerModel": "Mô Hình Reranker",
-      "lockStatus": "Trạng Thái Khóa",
-      "threshold": "Ngưỡng"
+      "lockStatus": "Trạng Thái Khóa"
     },
     "propertiesView": {
       "editProperty": "Chỉnh Sửa {{property}}",

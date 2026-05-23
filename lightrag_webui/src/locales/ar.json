@@ -294,10 +294,11 @@
     "statusCard": {
       "unavailable": "معلومات الحالة غير متوفرة",
       "serverInfo": "معلومات الخادم",
-      "workingDirectory": "دليل العمل",
       "inputDirectory": "دليل الإدخال",
+      "parser": "المحلل",
+      "mineru": "MinerU",
+      "docling": "Docling",
       "otherSettings": "إعدادات أخرى",
-      "summarySettings": "إعدادات الملخص",
       "llmConfig": "تكوين النموذج",
       "llmBinding": "ربط نموذج اللغة الكبير",
       "llmBindingHost": "نقطة نهاية نموذج اللغة الكبير",
@@ -315,8 +316,7 @@
       "rerankerConfig": "تكوين إعادة الترتيب",
       "rerankerBindingHost": "نقطة نهاية إعادة الترتيب",
       "rerankerModel": "نموذج إعادة الترتيب",
-      "lockStatus": "حالة القفل",
-      "threshold": "العتبة"
+      "lockStatus": "حالة القفل"
     },
     "propertiesView": {
       "editProperty": "تعديل {{property}}",

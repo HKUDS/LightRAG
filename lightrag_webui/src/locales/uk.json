@@ -294,10 +294,11 @@
     "statusCard": {
       "unavailable": "Інформація про статус недоступна",
       "serverInfo": "Інформація про сервер",
-      "workingDirectory": "Робоча директорія",
       "inputDirectory": "Вхідна директорія",
+      "parser": "Парсер",
+      "mineru": "MinerU",
+      "docling": "Docling",
       "otherSettings": "Інші налаштування",
-      "summarySettings": "Налаштування резюме",
       "llmConfig": "Конфігурація моделі",
       "llmBinding": "Прив'язка LLM",
       "llmBindingHost": "Кінцева точка LLM",
@@ -315,8 +316,7 @@
       "rerankerConfig": "Конфігурація реранкера",
       "rerankerBindingHost": "Кінцева точка реранкера",
       "rerankerModel": "Модель реранкера",
-      "lockStatus": "Статус блокування",
-      "threshold": "Поріг"
+      "lockStatus": "Статус блокування"
     },
     "propertiesView": {
       "editProperty": "Редагувати {{property}}",

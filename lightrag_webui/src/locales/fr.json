@@ -294,10 +294,11 @@
     "statusCard": {
       "unavailable": "Informations sur l'état indisponibles",
       "serverInfo": "Informations du serveur",
-      "workingDirectory": "Répertoire de travail",
       "inputDirectory": "Répertoire d'entrée",
+      "parser": "Analyseur",
+      "mineru": "MinerU",
+      "docling": "Docling",
       "otherSettings": "Autres paramètres",
-      "summarySettings": "Paramètres de résumé",
       "llmConfig": "Configuration du modèle",
       "llmBinding": "Liaison du modèle de langage",
       "llmBindingHost": "Point de terminaison LLM",
@@ -315,8 +316,7 @@
       "rerankerConfig": "Configuration du reclassement",
       "rerankerBindingHost": "Point de terminaison de reclassement",
       "rerankerModel": "Modèle de reclassement",
-      "lockStatus": "État des verrous",
-      "threshold": "Seuil"
+      "lockStatus": "État des verrous"
     },
     "propertiesView": {
       "editProperty": "Modifier {{property}}",
