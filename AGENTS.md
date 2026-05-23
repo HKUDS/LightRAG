@@ -274,6 +274,10 @@ result = await rag.aquery(
 )
 ```
 
+## Frontend Debugging via Playwright
+
+For WebUI bugs whose symptoms only surface in the rendered DOM — layout/overflow/scrollbar issues, transient flashes, third-party libraries attaching helpers to `<body>` outside React's tree, or end-to-end verification of a fix — drive the running dev server (`http://localhost:5173`) with the `document-skills:webapp-testing` skill instead of reasoning from source alone. Seed state directly via `localStorage` (persist key `settings-storage`, schema in `lightrag_webui/src/stores/settings.ts`) to skip live LLM calls. Use `wait_until="domcontentloaded"` plus a selector wait — Vite dev's long-lived polling makes `networkidle` time out.
+
 ## Configuration
 
 ### .env Configuration
