@@ -1,5 +1,6 @@
 import glob
 import os
+import stat
 import threading
 import time
 from collections import deque
@@ -60,6 +61,18 @@ class NetworkXStorage(BaseGraphStorage):
             f".{threading.get_ident()}.{time.time_ns()}"
         )
         nx.write_graphml(graph, tmp)
+        # Preserve dst permissions across the rename. os.replace swaps the
+        # inode, so without this the new file inherits umask defaults and
+        # any intentional restriction (e.g. chmod 0600) on the prior
+        # snapshot is silently widened — a behavior regression vs the
+        # original in-place nx.write_graphml.
+        if os.path.exists(file_name):
+            try:
+                os.chmod(tmp, stat.S_IMODE(os.stat(file_name).st_mode))
+            except OSError as e:
+                logger.warning(
+                    f"[{workspace}] Could not preserve mode of {file_name}: {e}"
+                )
         os.replace(tmp, file_name)
 
     @staticmethod
@@ -68,7 +81,13 @@ class NetworkXStorage(BaseGraphStorage):
         # .tmp.<pid>.<tid>.<ns> sibling behind. Reap any sibling older than
         # _TMP_REAP_AGE_SECONDS — newer ones may belong to a concurrent live
         # writer in another process.
-        pattern = f"{file_name}.tmp.*"
+        #
+        # glob.escape: file_name comes from working_dir + namespace and can
+        # legitimately contain glob metacharacters (e.g. workspace "[v2]" or
+        # "*", which are valid on POSIX). A bare f-string concat would then
+        # silently miss the real orphan and potentially match unrelated
+        # siblings — including tmp files belonging to other storage types.
+        pattern = glob.escape(file_name) + ".tmp.*"
         now = time.time()
         for path in glob.glob(pattern):
             try:
