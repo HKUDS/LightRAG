@@ -4,7 +4,7 @@ LightRAG FastAPI Server
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
@@ -15,6 +15,7 @@ import re
 import logging
 import logging.config
 import sys
+import textwrap
 import uvicorn
 import pipmaster as pm
 from typing import Any
@@ -81,6 +82,298 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
+
+
+def _inject_swagger_theme(html: str, theme: str) -> str:
+    if theme not in {"dark", "light"}:
+        theme = "auto"
+
+    # The script resolves dark / light / (auto + prefers-color-scheme) into a
+    # single boolean attribute `data-lightrag-docs-dark` on <html>. CSS below
+    # only matches when that attribute is present, so light/auto-light paths
+    # leave Swagger UI's default palette untouched.
+    theme_snippet = textwrap.dedent(
+        f"""
+        <script>
+          (function () {{
+            var ALLOWED = {{ dark: 1, light: 1, auto: 1 }};
+            var currentTheme = {json.dumps(theme)};
+            var mql = window.matchMedia('(prefers-color-scheme: dark)');
+            function resolveDark(value) {{
+              if (value === 'dark') return true;
+              if (value === 'auto') return mql.matches;
+              return false;
+            }}
+            function apply(value) {{
+              currentTheme = ALLOWED[value] ? value : 'auto';
+              var root = document.documentElement;
+              if (resolveDark(currentTheme)) {{
+                root.setAttribute('data-lightrag-docs-dark', '1');
+              }} else {{
+                root.removeAttribute('data-lightrag-docs-dark');
+              }}
+            }}
+            apply(currentTheme);
+            // Re-resolve when the OS theme flips while `theme=auto` is active.
+            var onMqlChange = function () {{ apply(currentTheme); }};
+            if (mql.addEventListener) mql.addEventListener('change', onMqlChange);
+            else if (mql.addListener) mql.addListener(onMqlChange);
+            window.addEventListener('message', function (event) {{
+              var data = event.data;
+              if (!data || data.type !== 'lightrag:set-docs-theme') return;
+              apply(data.theme);
+            }});
+          }})();
+        </script>
+        <style>
+          html[data-lightrag-docs-dark="1"] {{
+            color-scheme: dark;
+          }}
+
+          html[data-lightrag-docs-dark="1"] body,
+          html[data-lightrag-docs-dark="1"] .swagger-ui,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .scheme-container,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-box,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .dialog-ux .modal-ux,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container {{
+            background: #0f172a;
+            color: #e5e7eb;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .info .title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock-tag,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock .opblock-summary-description,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .parameter__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .parameter__type,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .response-col_status,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .response-col_description,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container h4,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container label,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .markdown p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .markdown li,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .renderedMarkdown p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .renderedMarkdown li,
+          html[data-lightrag-docs-dark="1"] .swagger-ui table thead tr th,
+          html[data-lightrag-docs-dark="1"] .swagger-ui table tbody tr td,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li button.tablinks {{
+            color: #e5e7eb;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock-description-wrapper p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock-external-docs-wrapper p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .response-col_links {{
+            color: #cbd5f5;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui input,
+          html[data-lightrag-docs-dark="1"] .swagger-ui textarea,
+          html[data-lightrag-docs-dark="1"] .swagger-ui select {{
+            background: #020617;
+            border-color: #334155;
+            color: #f8fafc;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .markdown code,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .renderedMarkdown code,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .highlight-code,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .highlight-code pre,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .microlight,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .body-param__example,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .example,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-example pre {{
+            background: #020617;
+            color: #e2e8f0;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui table thead tr th,
+          html[data-lightrag-docs-dark="1"] .swagger-ui table tbody tr td {{
+            border-color: #334155;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li.active button.tablinks,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li.tabitem.active {{
+            color: #f8fafc;
+            border-bottom-color: #34d399;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .btn.authorize,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-wrapper .authorize {{
+            background: #064e3b;
+            border-color: #34d399;
+            color: #d1fae5;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .btn.authorize svg {{
+            fill: #d1fae5;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .dialog-ux .modal-ux,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .scheme-container,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock {{
+            border-color: #334155;
+            box-shadow: none;
+          }}
+
+          /* Schemas panel: section.models contains its own grey-on-grey
+             buttons (`Schemas` header, each model row, "Expand all") that
+             ignore the top-level body color. Force the whole subtree to
+             use surface backgrounds and bright text. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models.is-open,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .model-container,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-box {{
+            background: #111827;
+            border-color: #334155;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 a,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 span,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .model-toggle,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .model-title__text,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .property,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .prop-name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .prop-type,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .prop-format,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .expand-operation,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .expand-operation span {{
+            color: #e5e7eb;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-toggle::after,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .expand-operation svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-accordion__icon svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-accordion__icon svg path {{
+            fill: #e5e7eb;
+          }}
+
+          /* The "Expand all" pill and per-row toggle buttons inherit a light
+             grey background from Swagger; clear it so they don't punch a
+             pale rectangle into the dark panel. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .expand-operation,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control button {{
+            background: transparent;
+          }}
+
+          /* Swagger's new JSON Schema 2020-12 renderer hard-codes light-mode
+             greys (#505050 / #3b4151 / #afaeae / #6b6b6b) on every title,
+             keyword, attribute and json-viewer node — completely independent
+             from the .model / .swagger-ui ancestors we already restyled.
+             Override the whole renderer subtree so model/property names,
+             types, and the per-row "Expand all" button stay readable. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-property .json-schema-2020-12__title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-expand-deep-button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-accordion,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__name--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__attribute,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__attribute--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__name--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--const .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--const .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--default .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--default .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--enum .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--enum .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--examples .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--examples .json-schema-2020-12-json-viewer__value {{
+            color: #e5e7eb;
+          }}
+
+          /* Secondary / extension / description text — keep them visible but
+             dimmer than primary titles. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__name--secondary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value--secondary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__name--extension,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value--extension,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--description,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__name--secondary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value--secondary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__name--extension,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value--extension,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer-extension-keyword .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer-extension-keyword .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__attribute--muted {{
+            color: #cbd5f5;
+          }}
+
+          /* The deep-expand button inside each schemas row has its own
+             background and shouldn't paint a pale capsule on dark surface. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-expand-deep-button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-accordion {{
+            background-color: transparent;
+          }}
+
+          /* Restore Swagger's red warning palette. The broad keyword__value /
+             __attribute / json-viewer__value overrides above otherwise win
+             the cascade over `.json-schema-2020-12-*--warning` (higher
+             specificity), flattening deprecated/schema-warning markers into
+             plain text. Re-declared *after* the generic rules so equal-
+             specificity selectors lose to these explicit ones. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value--warning,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value--warning,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__attribute--warning {{
+            color: #fca5a5;
+            border-color: #fca5a5;
+          }}
+
+          /* `.model-toggle::after` paints its caret with a `background:url(
+             data:image/svg+xml,…<path d=…/>)` embedded SVG whose path has no
+             fill attribute and no currentColor reference — `fill` rules can't
+             touch it. Invert the rendered pixels so the black arrow flips to
+             white on the dark schema surface. The glyph is single-color, so
+             invert has no perceptible side effect. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-toggle::after {{
+            filter: invert(1);
+          }}
+
+          /* Per-operation Authorize lock icon. Swagger renders it via
+             `<symbol id="locked|unlocked">` whose <path> has no fill attr
+             and no currentColor reference; Swagger's CSS also never sets
+             fill on .authorization__btn svg, leaving the path at the SVG
+             default (black). Set fill on the outer <svg> — fill is inherited
+             through <use> into the referenced symbol because the path itself
+             is unstyled, so one declaration colors both locked and unlocked
+             states. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .authorization__btn svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .authorization__btn .locked,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .authorization__btn .unlocked {{
+            fill: #e5e7eb;
+          }}
+        </style>
+        """
+    ).strip()
+
+    needle = "</head>"
+    if needle not in html:
+        logger.warning(
+            "Swagger UI HTML missing </head> tag; theme patch was skipped. "
+            "FastAPI's swagger template may have changed."
+        )
+        return html
+    return html.replace(needle, f"{theme_snippet}\n{needle}", 1)
 
 
 # Fixed WebUI mount path. Used as `app.mount(WEBUI_PATH, ...)` and as the
@@ -1726,9 +2019,9 @@ def create_app(args):
 
     # Custom Swagger UI endpoint for offline support
     @app.get("/docs", include_in_schema=False)
-    async def custom_swagger_ui_html():
+    async def custom_swagger_ui_html(request: Request):
         """Custom Swagger UI HTML with local static files"""
-        return get_swagger_ui_html(
+        response = get_swagger_ui_html(
             openapi_url=app.openapi_url,
             title=app.title + " - Swagger UI",
             oauth2_redirect_url="/docs/oauth2-redirect",
@@ -1737,6 +2030,11 @@ def create_app(args):
             swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
             swagger_ui_parameters=app.swagger_ui_parameters,
         )
+        html = response.body.decode("utf-8")
+        html = _inject_swagger_theme(
+            html, request.query_params.get("theme", "auto").lower()
+        )
+        return HTMLResponse(content=html)
 
     @app.get("/docs/oauth2-redirect", include_in_schema=False)
     async def swagger_ui_redirect():
