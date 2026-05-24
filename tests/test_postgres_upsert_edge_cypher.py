@@ -319,13 +319,13 @@ async def test_upsert_edge_does_not_retry_non_transient_errors(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_upsert_edges_batch_iterates_in_sorted_order():
-    """upsert_edges_batch must call upsert_edge in canonical (LEAST, GREATEST)
+    """upsert_edges_batch calls upsert_edge in canonical (LEAST, GREATEST)
     order regardless of insertion order.
 
-    The per-edge advisory lock keys hash the sorted endpoint pair. If two
-    concurrent batches iterated in different orders (Python dict iteration is
-    insertion order, not sorted order), they could acquire the lock objects
-    in opposite sequences and deadlock on PostgreSQL.
+    upsert_edge opens an independent transaction per call and releases the
+    advisory lock on commit, so this iteration order is not a deadlock fix
+    — but a deterministic order matches the dedup key already used above
+    and keeps logs / replays reproducible across callers.
     """
     storage = make_graph_storage()
 

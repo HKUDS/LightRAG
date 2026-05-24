@@ -5747,11 +5747,12 @@ class PGGraphStorage(BaseGraphStorage):
             deduped_edges.pop(edge_key, None)
             deduped_edges[edge_key] = (src, tgt, edge_data)
 
-        # Iterate in canonical (LEAST, GREATEST) order so concurrent
-        # upsert_edges_batch calls always acquire the per-edge advisory locks
-        # in the same global order. Without this, dict insertion-order could
-        # let two batches acquire locks for {A,B} and {C,D} in opposite
-        # sequences and deadlock on each other in PostgreSQL.
+        # Iterate in canonical (LEAST, GREATEST) order rather than dict
+        # insertion order. upsert_edge opens an independent transaction per
+        # call and releases the advisory lock on commit, so this is not a
+        # deadlock fix — but a deterministic iteration order makes logs and
+        # replays reproducible across callers, and matches the dedup key
+        # already used above.
         for edge_key in sorted(deduped_edges):
             src, tgt, edge_data = deduped_edges[edge_key]
             await self.upsert_edge(src, tgt, edge_data=edge_data)

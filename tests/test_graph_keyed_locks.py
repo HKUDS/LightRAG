@@ -1,17 +1,18 @@
 """
-Regression tests for the keyed-lock extension on entity-mutation paths.
+Pin the business-layer keyed-lock contracts on the entity-mutation paths.
 
-`aedit_entity` (rename) and `adelete_by_entity` both rewrite or detach every
-incident edge of the target entity. The doc-ingest pipeline
-(`operate.py:_locked_process_edges`) locks edges under `sorted([src, tgt])`
-keys, so a lock set of only {entity_name} (or {entity_name, new_entity_name})
-lives in a disjoint partition from those per-edge locks and would race against
-concurrent edge writes.
+`get_storage_keyed_lock(keys, namespace=...)` acquires one mutex per key in
+the given namespace, so identical key strings share the same mutex across
+callers. Locking `[entity_name]` is therefore already enough to mutually
+exclude any concurrent edge write that names the same entity in
+`sorted([src, tgt])` — no need to enumerate incident edges here.
 
-The fix pre-fetches each entity's edges outside the lock, extends the lock
-set to cover every other endpoint, and acquires all keys atomically. These
-tests pin the extension by spying on `get_storage_keyed_lock` and asserting
-the `keys` argument it receives.
+These tests pin:
+- `aedit_entity` locks {old, new} on rename, {entity_name} otherwise.
+- `adelete_by_entity` locks {entity_name}.
+- `ainsert_custom_kg` locks every entity name plus every relationship
+  endpoint that the batch will write, sharing the doc-ingest namespace.
+- An empty `ainsert_custom_kg` batch skips the lock entirely.
 """
 
 from contextlib import asynccontextmanager
@@ -28,9 +29,8 @@ import pytest
 def _make_keyed_lock_spy():
     """Return (spy_callable, captured_calls_list).
 
-    The spy returns an async context manager so `async with get_storage_keyed_lock(...)`
-    just yields. Each invocation appends {"keys": ..., "namespace": ...} to the
-    captured list.
+    Spy yields a no-op async context manager and records every invocation's
+    `keys` / `namespace` arguments.
     """
     captured: list[dict] = []
 
@@ -46,19 +46,18 @@ def _make_keyed_lock_spy():
 
 
 def _make_graph_mock(
-    edges_for_entity: list[tuple[str, str]],
+    edges_for_entity: list[tuple[str, str]] | None = None,
     *,
     existing_entity: str = "X",
 ):
-    """Minimal `chunk_entity_relation_graph` mock for aedit / adelete.
+    """Minimal `chunk_entity_relation_graph` mock.
 
     `has_node` returns True only for `existing_entity` so a rename target
     (e.g. "Y") is treated as not-yet-existing — otherwise aedit_entity would
-    short-circuit with "Entity name 'Y' already exists" before reaching the
-    upsert path.
+    short-circuit with "Entity name 'Y' already exists".
     """
     graph = MagicMock()
-    graph.get_node_edges = AsyncMock(return_value=edges_for_entity)
+    graph.get_node_edges = AsyncMock(return_value=edges_for_entity or [])
     graph.has_node = AsyncMock(side_effect=lambda name: name == existing_entity)
     graph.get_node = AsyncMock(
         return_value={
@@ -107,27 +106,21 @@ def _make_vdb_mock(workspace: str = ""):
 
 
 @pytest.mark.asyncio
-async def test_aedit_entity_rename_locks_extend_to_edge_endpoints():
-    """When renaming X -> Y, the lock set must include every other endpoint
-    of X's edges (A, B in this fixture), not just {X, Y}.
-
-    Without this, the doc-ingest pipeline can hold sorted([X, A]) or
-    sorted([Y, A]) edge locks at the same time aedit_entity is rewriting
-    those edges, since {X, Y} and sorted([X, A]) live in disjoint key
-    partitions within the same namespace.
-    """
+async def test_aedit_entity_rename_locks_old_and_new_names():
+    """Renaming X -> Y locks only {X, Y}. The doc-ingest pipeline uses the
+    same namespace and acquires per-key mutexes, so locking the entity name
+    already excludes any sorted([X, *]) or sorted([Y, *]) edge lock — no
+    need to enumerate incident edges here."""
     from lightrag import utils_graph
 
     spy, captured = _make_keyed_lock_spy()
-    graph = _make_graph_mock(edges_for_entity=[("X", "A"), ("B", "X")])
+    graph = _make_graph_mock()
     entities_vdb = _make_vdb_mock(workspace="ws1")
     relationships_vdb = _make_vdb_mock(workspace="ws1")
 
-    # Stop the actual edit work from running too far — we only care about the
-    # lock arguments. Patching get_node also blocks _edit_entity_impl from
-    # walking past the lock with a sentinel exception that we catch below.
-    sentinel = RuntimeError("stop after lock acquisition")
-    graph.upsert_node.side_effect = sentinel
+    # Short-circuit before the rename actually runs — we only care about the
+    # lock arguments.
+    graph.upsert_node.side_effect = RuntimeError("stop after lock acquisition")
 
     with patch.object(utils_graph, "get_storage_keyed_lock", spy):
         with pytest.raises(RuntimeError, match="stop after lock acquisition"):
@@ -140,30 +133,25 @@ async def test_aedit_entity_rename_locks_extend_to_edge_endpoints():
                 allow_rename=True,
             )
 
-    # Exactly one lock acquisition happened.
     assert len(captured) == 1
-    call = captured[0]
+    assert captured[0]["keys"] == ["X", "Y"]
+    assert captured[0]["namespace"] == "ws1:GraphDB"
 
-    # Namespace pinned to workspace-aware form.
-    assert call["namespace"] == "ws1:GraphDB"
-
-    # Keys: {X, Y} ∪ {A, B} from get_node_edges, sorted.
-    assert call["keys"] == ["A", "B", "X", "Y"]
+    # No pre-fetch of incident edges — that would only add I/O.
+    graph.get_node_edges.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_aedit_entity_non_rename_keeps_single_entity_lock():
-    """Non-rename edits don't touch edges, so the lock set stays at just the
-    entity name — no need to extend or pre-fetch edges."""
+async def test_aedit_entity_non_rename_locks_single_entity_name():
+    """Non-rename edits lock just the entity name."""
     from lightrag import utils_graph
 
     spy, captured = _make_keyed_lock_spy()
-    graph = _make_graph_mock(edges_for_entity=[])
+    graph = _make_graph_mock()
     entities_vdb = _make_vdb_mock(workspace="")
     relationships_vdb = _make_vdb_mock(workspace="")
 
-    sentinel = RuntimeError("stop after lock acquisition")
-    graph.upsert_node.side_effect = sentinel
+    graph.upsert_node.side_effect = RuntimeError("stop after lock acquisition")
 
     with patch.object(utils_graph, "get_storage_keyed_lock", spy):
         with pytest.raises(RuntimeError, match="stop after lock acquisition"):
@@ -180,42 +168,7 @@ async def test_aedit_entity_non_rename_keeps_single_entity_lock():
     assert captured[0]["keys"] == ["X"]
     # Empty workspace falls back to the bare "GraphDB" namespace.
     assert captured[0]["namespace"] == "GraphDB"
-
-    # No need to pre-fetch edges when not renaming — the implementation only
-    # walks get_node_edges inside the rename branch.
     graph.get_node_edges.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_aedit_entity_rename_tolerates_edge_fetch_failure():
-    """If pre-fetching edges fails (storage hiccup), the rename still
-    proceeds with the narrower {entity, new_entity} lock set, logging a
-    warning. The PG advisory lock is the final safety net here."""
-    from lightrag import utils_graph
-
-    spy, captured = _make_keyed_lock_spy()
-    graph = _make_graph_mock(edges_for_entity=[])
-    graph.get_node_edges.side_effect = RuntimeError("simulated storage error")
-    entities_vdb = _make_vdb_mock(workspace="")
-    relationships_vdb = _make_vdb_mock(workspace="")
-
-    sentinel = RuntimeError("stop after lock acquisition")
-    graph.upsert_node.side_effect = sentinel
-
-    with patch.object(utils_graph, "get_storage_keyed_lock", spy):
-        with pytest.raises(RuntimeError, match="stop after lock acquisition"):
-            await utils_graph.aedit_entity(
-                chunk_entity_relation_graph=graph,
-                entities_vdb=entities_vdb,
-                relationships_vdb=relationships_vdb,
-                entity_name="X",
-                updated_data={"entity_name": "Y", "description": "renamed"},
-                allow_rename=True,
-            )
-
-    assert len(captured) == 1
-    # Falls back to the narrow set when pre-fetch fails.
-    assert captured[0]["keys"] == ["X", "Y"]
 
 
 # ---------------------------------------------------------------------------
@@ -224,9 +177,8 @@ async def test_aedit_entity_rename_tolerates_edge_fetch_failure():
 
 
 @pytest.mark.asyncio
-async def test_adelete_by_entity_locks_extend_to_edge_endpoints():
-    """`delete_node` detaches every incident edge, so the lock set must
-    include every other endpoint."""
+async def test_adelete_by_entity_locks_single_entity_name():
+    """Entity delete locks just the entity name."""
     from lightrag import utils_graph
 
     spy, captured = _make_keyed_lock_spy()
@@ -242,53 +194,13 @@ async def test_adelete_by_entity_locks_extend_to_edge_endpoints():
             entity_name="X",
         )
 
-    # Deletion ran to completion since all mocks return defaults.
-    assert result.status == "success"
-
-    assert len(captured) == 1
-    call = captured[0]
-    assert call["namespace"] == "ws1:GraphDB"
-    # {X} ∪ {Y, Z} from get_node_edges (called pre-lock for set extension), sorted.
-    assert call["keys"] == ["X", "Y", "Z"]
-
-    # get_node_edges is called twice: once pre-lock (for set extension), once
-    # inside the lock (the authoritative read used by the cleanup code).
-    assert graph.get_node_edges.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_adelete_by_entity_tolerates_edge_fetch_failure():
-    """Pre-fetch failure falls back to the narrow {entity_name} lock; the
-    delete still proceeds via the second (inside-lock) get_node_edges."""
-    from lightrag import utils_graph
-
-    spy, captured = _make_keyed_lock_spy()
-    graph = _make_graph_mock(edges_for_entity=[("X", "Y")])
-
-    call_outcomes = [RuntimeError("simulated storage error"), [("X", "Y")]]
-
-    async def flaky_get_node_edges(_name):
-        outcome = call_outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
-
-    graph.get_node_edges = AsyncMock(side_effect=flaky_get_node_edges)
-    entities_vdb = _make_vdb_mock(workspace="")
-    relationships_vdb = _make_vdb_mock(workspace="")
-
-    with patch.object(utils_graph, "get_storage_keyed_lock", spy):
-        result = await utils_graph.adelete_by_entity(
-            chunk_entity_relation_graph=graph,
-            entities_vdb=entities_vdb,
-            relationships_vdb=relationships_vdb,
-            entity_name="X",
-        )
-
     assert result.status == "success"
     assert len(captured) == 1
-    # Narrow fallback when pre-fetch fails.
     assert captured[0]["keys"] == ["X"]
+    assert captured[0]["namespace"] == "ws1:GraphDB"
+    # get_node_edges runs exactly once, inside the lock, to drive cleanup —
+    # not as a pre-fetch for lock-set extension.
+    assert graph.get_node_edges.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -323,31 +235,24 @@ class _LockCaptured(RuntimeError):
 
 
 @pytest.mark.asyncio
-async def test_ainsert_custom_kg_locks_extend_to_every_endpoint():
+async def test_ainsert_custom_kg_locks_every_entity_and_endpoint():
     """ainsert_custom_kg must hold a single coarse-grained keyed lock whose
     key set covers every entity name plus every relationship endpoint in the
-    batch — sharing the namespace with the doc-ingest pipeline so a
-    concurrent insert_custom_kg call on overlapping entities serialises
-    properly instead of racing.
+    batch — sharing the doc-ingest namespace so concurrent callers on
+    overlapping entities serialise instead of racing.
     """
     from lightrag import lightrag as lightrag_module
     from lightrag.lightrag import LightRAG
 
-    # Build a bare LightRAG shell without running __init__ — we only need a
-    # handful of attributes for ainsert_custom_kg to walk far enough to
-    # acquire the keyed lock.
     rag = LightRAG.__new__(LightRAG)
     rag.workspace = "ws1"
     rag.tokenizer = MagicMock()
     rag.tokenizer.encode = lambda _content: []
     rag.chunks_vdb = _make_vdb_mock(workspace="ws1")
     rag.text_chunks = _make_vdb_mock(workspace="ws1")
-    rag.chunk_entity_relation_graph = _make_graph_mock(edges_for_entity=[])
+    rag.chunk_entity_relation_graph = _make_graph_mock()
     rag.entities_vdb = _make_vdb_mock(workspace="ws1")
     rag.relationships_vdb = _make_vdb_mock(workspace="ws1")
-    # The finally-block calls _insert_done() which walks several storages we
-    # haven't stubbed; replace it wholesale since we only care about the lock
-    # arguments.
     rag._insert_done = AsyncMock(return_value=None)
 
     lock_spy = _AbortOnEnterLock()
@@ -396,23 +301,23 @@ async def test_ainsert_custom_kg_locks_extend_to_every_endpoint():
         with pytest.raises(_LockCaptured):
             await rag.ainsert_custom_kg(custom_kg)
 
-    # Exactly one keyed lock acquisition attempted.
     assert len(lock_spy.captured) == 1
     call = lock_spy.captured[0]
 
-    # Namespace pinned to workspace-aware form, matching the doc-ingest pipeline.
+    # Namespace matches the doc-ingest pipeline so the same key strings
+    # mutually exclude across paths.
     assert call["namespace"] == "ws1:GraphDB"
 
-    # Keys: union of entity names ({Alice, Bob}) and every relationship
-    # endpoint ({Alice, Bob, Carol}), sorted.
+    # Union of entity names ({Alice, Bob}) and every relationship endpoint
+    # ({Alice, Bob, Carol}), sorted.
     assert call["keys"] == ["Alice", "Bob", "Carol"]
 
 
 @pytest.mark.asyncio
 async def test_ainsert_custom_kg_empty_batch_skips_keyed_lock():
     """A custom_kg with no entities or relationships has nothing for the
-    business-layer keyed lock to serialise, so it must not acquire one — the
-    chunk-only path still works."""
+    business-layer keyed lock to serialise on — no lock is acquired and the
+    chunk-only path still completes."""
     from lightrag import lightrag as lightrag_module
     from lightrag.lightrag import LightRAG
 
@@ -422,7 +327,7 @@ async def test_ainsert_custom_kg_empty_batch_skips_keyed_lock():
     rag.tokenizer.encode = lambda _content: []
     rag.chunks_vdb = _make_vdb_mock(workspace="")
     rag.text_chunks = _make_vdb_mock(workspace="")
-    rag.chunk_entity_relation_graph = _make_graph_mock(edges_for_entity=[])
+    rag.chunk_entity_relation_graph = _make_graph_mock()
     rag.entities_vdb = _make_vdb_mock(workspace="")
     rag.relationships_vdb = _make_vdb_mock(workspace="")
     rag._insert_done = AsyncMock(return_value=None)
@@ -430,7 +335,6 @@ async def test_ainsert_custom_kg_empty_batch_skips_keyed_lock():
     lock_spy = _AbortOnEnterLock()
 
     with patch.object(lightrag_module, "get_storage_keyed_lock", lock_spy):
-        # No exception expected — the with-block is skipped entirely.
         await rag.ainsert_custom_kg({"chunks": [], "entities": [], "relationships": []})
 
     assert lock_spy.captured == []

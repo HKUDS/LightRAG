@@ -1540,17 +1540,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 deduped_relationships.pop(relation_key, None)
                 deduped_relationships[relation_key] = relationship_data
 
-            # Coarse-grained keyed lock covering every entity that this batch
-            # touches — entity nodes, every relationship endpoint, and any
-            # placeholder nodes we'll auto-create. The doc-ingest pipeline
-            # (operate.py:_locked_process_edges / _locked_process_entity_name)
-            # locks the same namespace per-entity / per-edge-pair; sharing the
-            # namespace lets a concurrent insert_custom_kg block on those
-            # locks instead of racing them. Two concurrent custom-KG inserts
-            # of the same (src, tgt) likewise collide on the endpoint locks.
-            #
-            # Falls back to a coarse single-entity name when the batch is empty
-            # of entities and edges so the with-block still has a valid key.
+            # Coarse-grained keyed lock covering every entity name and every
+            # relationship endpoint this batch will write. Keys collide with
+            # the per-entity and sorted([src, tgt]) edge locks held by the
+            # doc-ingest pipeline (operate.py:_locked_process_entity_name and
+            # _locked_process_edges) in the same namespace, so a concurrent
+            # insert_custom_kg waits behind an in-flight document ingest
+            # rather than racing it. Two concurrent custom-KG inserts that
+            # touch overlapping entities likewise mutually exclude here.
+            # An empty batch skips the lock entirely — nothing to serialise on.
             lock_key_set: set[str] = {entity_name for entity_name, _ in entity_nodes}
             for relationship_data in deduped_relationships.values():
                 lock_key_set.add(relationship_data["src_id"])
