@@ -136,10 +136,20 @@
         "metadata": "Metadaten",
         "select": "Auswählen"
       },
+      "filters": {
+        "all": "Alle",
+        "completed": "Abgeschlossen",
+        "analyzing": "Wird analysiert",
+        "processing": "Verarbeitung",
+        "pending": "Ausstehend",
+        "failed": "Fehlgeschlagen"
+      },
       "status": {
         "all": "Alle",
         "completed": "Abgeschlossen",
         "preprocessed": "Vorverarbeitet",
+        "parsing": "Wird geparst",
+        "analyzing": "Wird analysiert",
         "processing": "Verarbeitung",
         "pending": "Ausstehend",
         "failed": "Fehlgeschlagen"
@@ -284,11 +294,12 @@
     "statusCard": {
       "unavailable": "Statusinformationen nicht verfügbar",
       "serverInfo": "Server-Informationen",
-      "workingDirectory": "Arbeitsverzeichnis",
       "inputDirectory": "Eingabeverzeichnis",
-      "maxParallelInsert": "Gleichzeitige Dokumentenverarbeitung",
-      "summarySettings": "Zusammenfassungseinstellungen",
-      "llmConfig": "LLM-Konfiguration",
+      "parser": "Parser",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Weitere Einstellungen",
+      "llmConfig": "Modellkonfiguration",
       "llmBinding": "LLM-Bindung",
       "llmBindingHost": "LLM-Endpunkt",
       "llmModel": "LLM-Modell",
@@ -302,12 +313,10 @@
       "graphStorage": "Graph-Speicher",
       "vectorStorage": "Vektor-Speicher",
       "workspace": "Arbeitsbereich",
-      "maxGraphNodes": "Maximale Graph-Knotenanzahl",
       "rerankerConfig": "Reranker-Konfiguration",
       "rerankerBindingHost": "Reranker-Endpunkt",
       "rerankerModel": "Reranker-Modell",
-      "lockStatus": "Sperrstatus",
-      "threshold": "Schwellenwert"
+      "lockStatus": "Sperrstatus"
     },
     "propertiesView": {
       "editProperty": "{{property}} bearbeiten",

@@ -136,10 +136,20 @@
         "metadata": "メタデータ",
         "select": "選択"
       },
+      "filters": {
+        "all": "すべて",
+        "completed": "完了",
+        "analyzing": "分析中",
+        "processing": "処理中",
+        "pending": "保留中",
+        "failed": "失敗"
+      },
       "status": {
         "all": "すべて",
         "completed": "完了",
         "preprocessed": "前処理済み",
+        "parsing": "解析中",
+        "analyzing": "分析中",
         "processing": "処理中",
         "pending": "保留中",
         "failed": "失敗"
@@ -284,11 +294,12 @@
     "statusCard": {
       "unavailable": "ステータス情報が利用できません",
       "serverInfo": "サーバー情報",
-      "workingDirectory": "作業ディレクトリ",
       "inputDirectory": "入力ディレクトリ",
-      "maxParallelInsert": "同時ドキュメント処理",
-      "summarySettings": "概要設定",
-      "llmConfig": "LLM設定",
+      "parser": "パーサー",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "その他の設定",
+      "llmConfig": "モデル設定",
       "llmBinding": "LLMバインディング",
       "llmBindingHost": "LLMエンドポイント",
       "llmModel": "LLMモデル",
@@ -302,12 +313,10 @@
       "graphStorage": "グラフストレージ",
       "vectorStorage": "ベクトルストレージ",
       "workspace": "ワークスペース",
-      "maxGraphNodes": "最大グラフノード数",
       "rerankerConfig": "リランカー設定",
       "rerankerBindingHost": "リランカーエンドポイント",
       "rerankerModel": "リランカーモデル",
-      "lockStatus": "ロックステータス",
-      "threshold": "しきい値"
+      "lockStatus": "ロックステータス"
     },
     "propertiesView": {
       "editProperty": "{{property}}を編集",

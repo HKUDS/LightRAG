@@ -136,10 +136,20 @@
         "metadata": "Метадані",
         "select": "Вибрати"
       },
+      "filters": {
+        "all": "Усі",
+        "completed": "Завершено",
+        "analyzing": "Аналіз",
+        "processing": "Обробка",
+        "pending": "Очікування",
+        "failed": "Помилка"
+      },
       "status": {
         "all": "Всі",
         "completed": "Завершено",
         "preprocessed": "Попередньо оброблено",
+        "parsing": "Розбір",
+        "analyzing": "Аналіз",
         "processing": "Обробка",
         "pending": "Очікування",
         "failed": "Невдало"
@@ -284,11 +294,12 @@
     "statusCard": {
       "unavailable": "Інформація про статус недоступна",
       "serverInfo": "Інформація про сервер",
-      "workingDirectory": "Робоча директорія",
       "inputDirectory": "Вхідна директорія",
-      "maxParallelInsert": "Паралельна обробка документів",
-      "summarySettings": "Налаштування резюме",
-      "llmConfig": "Конфігурація LLM",
+      "parser": "Парсер",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Інші налаштування",
+      "llmConfig": "Конфігурація моделі",
       "llmBinding": "Прив'язка LLM",
       "llmBindingHost": "Кінцева точка LLM",
       "llmModel": "Модель LLM",
@@ -302,12 +313,10 @@
       "graphStorage": "Сховище графа",
       "vectorStorage": "Векторне сховище",
       "workspace": "Робочий простір",
-      "maxGraphNodes": "Максимальна кількість вузлів графа",
       "rerankerConfig": "Конфігурація реранкера",
       "rerankerBindingHost": "Кінцева точка реранкера",
       "rerankerModel": "Модель реранкера",
-      "lockStatus": "Статус блокування",
-      "threshold": "Поріг"
+      "lockStatus": "Статус блокування"
     },
     "propertiesView": {
       "editProperty": "Редагувати {{property}}",

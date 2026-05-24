@@ -136,10 +136,20 @@
         "metadata": "البيانات الوصفية",
         "select": "اختيار"
       },
+      "filters": {
+        "all": "الكل",
+        "completed": "مكتمل",
+        "analyzing": "جارٍ التحليل",
+        "processing": "قيد المعالجة",
+        "pending": "معلق",
+        "failed": "فشل"
+      },
       "status": {
         "all": "الكل",
         "completed": "مكتمل",
         "preprocessed": "مُعالج مسبقًا",
+        "parsing": "جارٍ التحليل الأولي",
+        "analyzing": "جارٍ التحليل",
         "processing": "قيد المعالجة",
         "pending": "معلق",
         "failed": "فشل"
@@ -284,11 +294,12 @@
     "statusCard": {
       "unavailable": "معلومات الحالة غير متوفرة",
       "serverInfo": "معلومات الخادم",
-      "workingDirectory": "دليل العمل",
       "inputDirectory": "دليل الإدخال",
-      "maxParallelInsert": "معالجة المستندات المتزامنة",
-      "summarySettings": "إعدادات الملخص",
-      "llmConfig": "تكوين نموذج اللغة الكبير",
+      "parser": "المحلل",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "إعدادات أخرى",
+      "llmConfig": "تكوين النموذج",
       "llmBinding": "ربط نموذج اللغة الكبير",
       "llmBindingHost": "نقطة نهاية نموذج اللغة الكبير",
       "llmModel": "نموذج اللغة الكبير",
@@ -302,12 +313,10 @@
       "graphStorage": "تخزين الرسم البياني",
       "vectorStorage": "تخزين المتجهات",
       "workspace": "مساحة العمل",
-      "maxGraphNodes": "الحد الأقصى لعقد الرسم البياني",
       "rerankerConfig": "تكوين إعادة الترتيب",
       "rerankerBindingHost": "نقطة نهاية إعادة الترتيب",
       "rerankerModel": "نموذج إعادة الترتيب",
-      "lockStatus": "حالة القفل",
-      "threshold": "العتبة"
+      "lockStatus": "حالة القفل"
     },
     "propertiesView": {
       "editProperty": "تعديل {{property}}",

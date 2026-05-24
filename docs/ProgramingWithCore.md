@@ -92,7 +92,7 @@ Notes:
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
-| **addon_params** | `dict` | Additional parameters, e.g., `{"language": "Simplified Chinese", "entity_types": ["organization", "person", "location", "event"]}`: sets example limit, entity/relation extraction output language | language: English` |
+| **addon_params** | `dict` | Runtime knobs for extraction. Supported keys: `language` (output language for entity/relation summaries), `entity_type_prompt_file` (file name — not a path — of a YAML profile loaded from `PROMPT_DIR/entity_type`; `PROMPT_DIR` defaults to `./prompts`), `entity_types_guidance` (inline override that wins over the file profile). | `{"language": "English", "entity_type_prompt_file": ""}` |
 | **embedding_cache_config** | `dict` | Configuration for question-answer caching. Contains three parameters: `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers. `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM. `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
 
@@ -149,9 +149,14 @@ class QueryParam:
     """
 
     model_func: Callable[..., object] | None = None
-    """Optional override for the LLM model function to use for this specific query.
-    If provided, this will be used instead of the global model function.
-    This allows using different models for different query modes.
+    """Deprecated optional override for the LLM model function.
+    Use role-specific LLM configuration at initialization or
+    await rag.aupdate_llm_role_config("query" | "keyword", ...) for runtime
+    LLM changes instead. Kept for backward compatibility with direct Python callers.
+
+    Note: when set, the LLM cache key collapses to a single "override" identity,
+    so swapping the override across calls will reuse stale cached responses.
+    Use aupdate_llm_role_config() for cache-correct model swaps.
     """
 
     user_prompt: str | None = None

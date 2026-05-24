@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "drawings": {
+    "im-eeee555566667777eeee555566667777-0001": {
+      "id": "im-eeee555566667777eeee555566667777-0001",
+      "blockid": "8caba9870df85b9357e9521a70d82225",
+      "heading": "Combined",
+      "format": "png",
+      "path": "combo.blocks.assets/pic.png",
+      "src": "docx://img",
+      "caption": "",
+      "footnotes": []
+    }
+  }
+}

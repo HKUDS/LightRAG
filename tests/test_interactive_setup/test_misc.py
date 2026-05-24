@@ -257,17 +257,24 @@ printf 'COMPOSE=%s\\n' "$(find_generated_compose_file)\"
     assert values["COMPOSE"] == str(tmp_path / "docker-compose.development.yml")
 
 
-def test_switching_both_providers_off_bedrock_clears_saved_aws_credentials(
+def test_switching_both_providers_off_bedrock_preserves_saved_aws_credentials(
     tmp_path: Path,
 ) -> None:
-    """Reruns should not keep stale AWS Bedrock secrets in regenerated `.env` files."""
+    """Switching LLM/Embedding away from Bedrock must preserve user-set AWS_* values.
+
+    AWS credentials are process-level SDK settings and may be used by code paths
+    outside the active LLM/embedding binding (S3, SecretsManager, etc.), so the
+    wizard must not erase them just because the active binding is no longer
+    ``bedrock``. Only the explicit ``collect_bedrock_credentials`` ambient branch
+    is allowed to clear them.
+    """
     write_text_lines(
         tmp_path / ".env",
         [
-            "LLM_BINDING=aws_bedrock",
+            "LLM_BINDING=bedrock",
             "LLM_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0",
             "LLM_BINDING_HOST=https://bedrock.amazonaws.com",
-            "EMBEDDING_BINDING=aws_bedrock",
+            "EMBEDDING_BINDING=bedrock",
             "EMBEDDING_MODEL=amazon.titan-embed-text-v2:0",
             "EMBEDDING_DIM=1024",
             "EMBEDDING_BINDING_HOST=https://bedrock.amazonaws.com",
@@ -310,25 +317,23 @@ collect_llm_config
 collect_embedding_config
 generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env.generated"
 
-printf 'AWS_ACCESS_KEY_ID_SET=%s\\n' "${{ENV_VALUES[AWS_ACCESS_KEY_ID]+set}}"
-printf 'AWS_SECRET_ACCESS_KEY_SET=%s\\n' "${{ENV_VALUES[AWS_SECRET_ACCESS_KEY]+set}}"
-printf 'AWS_SESSION_TOKEN_SET=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]+set}}"
-printf 'AWS_REGION_SET=%s\\n' "${{ENV_VALUES[AWS_REGION]+set}}\"
+printf 'AWS_ACCESS_KEY_ID=%s\\n' "${{ENV_VALUES[AWS_ACCESS_KEY_ID]-}}"
+printf 'AWS_SECRET_ACCESS_KEY=%s\\n' "${{ENV_VALUES[AWS_SECRET_ACCESS_KEY]-}}"
+printf 'AWS_SESSION_TOKEN=%s\\n' "${{ENV_VALUES[AWS_SESSION_TOKEN]-}}"
+printf 'AWS_REGION=%s\\n' "${{ENV_VALUES[AWS_REGION]-}}"
 """)
     values = parse_lines(output)
     generated_lines = (
         (tmp_path / ".env.generated").read_text(encoding="utf-8").splitlines()
     )
-    assert values["AWS_ACCESS_KEY_ID_SET"] == ""
-    assert values["AWS_SECRET_ACCESS_KEY_SET"] == ""
-    assert values["AWS_SESSION_TOKEN_SET"] == ""
-    assert values["AWS_REGION_SET"] == ""
-    assert not any(line.startswith("AWS_ACCESS_KEY_ID=") for line in generated_lines)
-    assert not any(
-        line.startswith("AWS_SECRET_ACCESS_KEY=") for line in generated_lines
-    )
-    assert not any(line.startswith("AWS_SESSION_TOKEN=") for line in generated_lines)
-    assert not any(line.startswith("AWS_REGION=") for line in generated_lines)
+    assert values["AWS_ACCESS_KEY_ID"] == "AKIAOLDKEY"
+    assert values["AWS_SECRET_ACCESS_KEY"] == "oldsecretvalue"
+    assert values["AWS_SESSION_TOKEN"] == "oldsess"
+    assert values["AWS_REGION"] == "us-east-1"
+    assert "AWS_ACCESS_KEY_ID=AKIAOLDKEY" in generated_lines
+    assert "AWS_SECRET_ACCESS_KEY=oldsecretvalue" in generated_lines
+    assert "AWS_SESSION_TOKEN=oldsess" in generated_lines
+    assert "AWS_REGION=us-east-1" in generated_lines
 
 
 def test_load_existing_env_forces_cohere_binding_for_vllm_rerank(

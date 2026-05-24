@@ -632,6 +632,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                             "status": {"type": "keyword"},
                             "file_path": {"type": "keyword"},
                             "track_id": {"type": "keyword"},
+                            "content_hash": {"type": "keyword"},
                             "created_at": {"type": "date"},
                             "updated_at": {"type": "date"},
                         },
@@ -649,12 +650,45 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 )
             else:
                 await _verify_mirrored_id_mapping(self.client, self._index_name)
+                await self._ensure_content_hash_mapping()
         except RequestError as e:
             if "resource_already_exists_exception" not in str(e):
                 raise
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error creating doc status index: {e}")
             raise
+
+    async def _ensure_content_hash_mapping(self) -> None:
+        """Add the content_hash keyword mapping to a pre-existing doc status index.
+
+        Indices created by older LightRAG releases lack content_hash entirely.
+        put_mapping is idempotent for new fields, so this is safe to call every
+        startup; we only fail loudly when the cluster reports a mapping conflict
+        (which would indicate dynamic mapping already coerced content_hash to a
+        different type).
+        """
+        try:
+            mapping = await self.client.indices.get_mapping(index=self._index_name)
+        except OpenSearchException:
+            return
+        props = (
+            mapping.get(self._index_name, {}).get("mappings", {}).get("properties", {})
+        )
+        if "content_hash" in props:
+            return
+        try:
+            await self.client.indices.put_mapping(
+                index=self._index_name,
+                body={"properties": {"content_hash": {"type": "keyword"}}},
+            )
+            logger.info(
+                f"[{self.workspace}] Added content_hash keyword mapping to {self._index_name}"
+            )
+        except OpenSearchException as e:
+            logger.warning(
+                f"[{self.workspace}] Failed to add content_hash mapping to "
+                f"{self._index_name}: {e}"
+            )
 
     async def finalize(self):
         """Release the OpenSearch client connection."""
@@ -845,6 +879,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
     async def get_docs_paginated(
         self,
         status_filter: DocStatus | None = None,
+        status_filters: list[DocStatus] | None = None,
         page: int = 1,
         page_size: int = 50,
         sort_field: str = "updated_at",
@@ -853,6 +888,10 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         """Get documents with pagination using PIT + search_after."""
         if not self._index_ready:
             return [], 0
+        status_filter_values = self.resolve_status_filter_values(
+            status_filter=status_filter,
+            status_filters=status_filters,
+        )
         page = max(1, page)
         page_size = max(10, min(200, page_size))
         if sort_field == "id":
@@ -862,8 +901,11 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         sort_order = "asc" if sort_direction.lower() == "asc" else "desc"
 
         query = {"match_all": {}}
-        if status_filter is not None:
-            query = {"term": {"status": status_filter.value}}
+        if status_filter_values is not None:
+            if len(status_filter_values) == 1:
+                query = {"term": {"status": next(iter(status_filter_values))}}
+            else:
+                query = {"terms": {"status": sorted(status_filter_values)}}
 
         skip_count = (page - 1) * page_size
 
@@ -977,6 +1019,68 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 self._mark_index_missing()
                 return None
             logger.error(f"[{self.workspace}] Error getting doc by file_path: {e}")
+            return None
+
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose canonical basename matches.
+
+        The caller is responsible for passing an already-canonical basename;
+        stored ``file_path`` values are canonicalized by the business layer, so
+        this lookup performs an exact term query against the file_path keyword
+        field.
+        """
+        if not basename:
+            return None
+        if basename == "unknown_source":
+            return None
+        if not self._index_ready:
+            return None
+        try:
+            body = {"query": {"term": {"file_path": basename}}, "size": 1}
+            response = await self.client.search(index=self._index_name, body=body)
+            hits = response["hits"]["hits"]
+            if not hits:
+                return None
+            hit = hits[0]
+            doc = hit["_source"]
+            return hit["_id"], doc
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return None
+            logger.error(f"[{self.workspace}] Error getting doc by file_basename: {e}")
+            return None
+
+    async def get_doc_by_content_hash(
+        self, content_hash: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find an existing record whose content_hash field matches.
+
+        Uses the content_hash keyword mapping created by
+        ``_create_index_if_not_exists`` / ``_ensure_content_hash_mapping``.
+        Empty values short-circuit so legacy rows without the field cannot
+        accidentally match via type coercion.
+        """
+        if not content_hash:
+            return None
+        if not self._index_ready:
+            return None
+        try:
+            body = {"query": {"term": {"content_hash": content_hash}}, "size": 1}
+            response = await self.client.search(index=self._index_name, body=body)
+            hits = response["hits"]["hits"]
+            if not hits:
+                return None
+            hit = hits[0]
+            doc = hit["_source"]
+            return hit["_id"], doc
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return None
+            logger.error(f"[{self.workspace}] Error getting doc by content_hash: {e}")
             return None
 
     async def index_done_callback(self) -> None:
@@ -2299,8 +2403,25 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     @staticmethod
     def _escape_ppl(value: str) -> str:
-        """Escape a string for safe inclusion in a PPL single-quoted literal."""
-        return value.replace("\\", "\\\\").replace("'", "\\'")
+        """Escape a string for safe inclusion in a PPL single-quoted literal.
+
+        Escapes backslashes, single quotes, and control characters that could
+        interfere with PPL query parsing.
+        """
+        value = value.replace("\\", "\\\\").replace("'", "\\'")
+        # Strip control characters that could break the PPL string literal
+        value = value.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+        return value
+
+    @staticmethod
+    def _escape_wildcard(value: str) -> str:
+        """Escape OpenSearch wildcard special characters in user input.
+
+        Escapes \\, *, and ? so they are treated as literal characters
+        rather than wildcard operators, preventing DoS via expensive patterns.
+        """
+        # Escape backslash first, then wildcard metacharacters
+        return value.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
 
     async def _bfs_subgraph(
         self, start_label: str, max_depth: int, max_nodes: int
@@ -2524,7 +2645,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                             {
                                 "wildcard": {
                                     "entity_id": {
-                                        "value": f"*{query.lower()}*",
+                                        "value": f"*{self._escape_wildcard(query.lower())}*",
                                         "case_insensitive": True,
                                         "boost": 2,
                                     }
