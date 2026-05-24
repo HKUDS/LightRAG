@@ -1,5 +1,5 @@
 import importlib
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -100,7 +100,9 @@ async def test_graph_upsert_edge_passes_timing_label():
         embedding_func=AsyncMock(),
     )
     storage.graph_name = "test_graph"
-    storage._query = AsyncMock(return_value=[])
+    # upsert_edge drives the lock + cypher via db._run_with_retry, not _query.
+    storage.db = MagicMock()
+    storage.db._run_with_retry = AsyncMock(return_value=None)
 
     await storage.upsert_edge(
         "node-1",
@@ -111,7 +113,7 @@ async def test_graph_upsert_edge_passes_timing_label():
         },
     )
 
-    assert storage._query.await_args.kwargs["timing_label"] == (
+    assert storage.db._run_with_retry.await_args.kwargs["timing_label"] == (
         "test_ws PGGraphStorage.upsert_edge"
     )
 
