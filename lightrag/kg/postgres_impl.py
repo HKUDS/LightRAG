@@ -5747,7 +5747,14 @@ class PGGraphStorage(BaseGraphStorage):
             deduped_edges.pop(edge_key, None)
             deduped_edges[edge_key] = (src, tgt, edge_data)
 
-        for src, tgt, edge_data in deduped_edges.values():
+        # Iterate in canonical (LEAST, GREATEST) order rather than dict
+        # insertion order. upsert_edge opens an independent transaction per
+        # call and releases the advisory lock on commit, so this is not a
+        # deadlock fix — but a deterministic iteration order makes logs and
+        # replays reproducible across callers, and matches the dedup key
+        # already used above.
+        for edge_key in sorted(deduped_edges):
+            src, tgt, edge_data = deduped_edges[edge_key]
             await self.upsert_edge(src, tgt, edge_data=edge_data)
 
     async def delete_node(self, node_id: str) -> None:

@@ -84,6 +84,7 @@ from lightrag.kg.shared_storage import (
     get_default_workspace,
     set_default_workspace,
     get_namespace_lock,
+    get_storage_keyed_lock,
 )
 
 from lightrag.base import (
@@ -1529,10 +1530,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 all_entities_data.append(node_data_copy)
                 update_storage = True
 
-            # Batch insert entities (reduces N serial awaits to 1)
-            if entity_nodes:
-                await self.chunk_entity_relation_graph.upsert_nodes_batch(entity_nodes)
-
             # Relationship storage is undirected, so keep only the last update
             # for each endpoint pair regardless of order.
             deduped_relationships: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1543,130 +1540,170 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 deduped_relationships.pop(relation_key, None)
                 deduped_relationships[relation_key] = relationship_data
 
-            # Insert relationships into knowledge graph (batch for performance)
-            all_relationships_data: list[dict[str, str]] = []
-            edge_list: list[tuple[str, str, dict[str, str]]] = []
-
-            # Batch check which relationship endpoints exist (1 await instead of 2M)
-            needed_node_ids: set[str] = set()
+            # Coarse-grained keyed lock covering every entity name and every
+            # relationship endpoint this batch will write. Keys collide with
+            # the per-entity and sorted([src, tgt]) edge locks held by the
+            # doc-ingest pipeline (operate.py:_locked_process_entity_name and
+            # _locked_process_edges) in the same namespace, so a concurrent
+            # insert_custom_kg waits behind an in-flight document ingest
+            # rather than racing it. Two concurrent custom-KG inserts that
+            # touch overlapping entities likewise mutually exclude here.
+            # An empty batch skips the lock entirely — nothing to serialise on.
+            lock_key_set: set[str] = {entity_name for entity_name, _ in entity_nodes}
             for relationship_data in deduped_relationships.values():
-                needed_node_ids.add(relationship_data["src_id"])
-                needed_node_ids.add(relationship_data["tgt_id"])
+                lock_key_set.add(relationship_data["src_id"])
+                lock_key_set.add(relationship_data["tgt_id"])
 
-            existing_nodes = await self.chunk_entity_relation_graph.has_nodes_batch(
-                list(needed_node_ids)
-            )
+            workspace = self.workspace or ""
+            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
 
-            # Create missing nodes in batch
-            missing_nodes: list[tuple[str, dict[str, str]]] = []
-            for relationship_data in deduped_relationships.values():
-                src_id = relationship_data["src_id"]
-                tgt_id = relationship_data["tgt_id"]
-                source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
-                source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
-                file_path = normalize_document_file_path(
-                    relationship_data.get("file_path", "custom_kg")
-                )
-
-                if source_id == "UNKNOWN":
-                    logger.warning(
-                        f"Relationship from '{src_id}' to '{tgt_id}' has an UNKNOWN source_id. Please check the source mapping."
+            async def _do_graph_and_vdb_writes() -> None:
+                # Batch insert entities (reduces N serial awaits to 1)
+                if entity_nodes:
+                    await self.chunk_entity_relation_graph.upsert_nodes_batch(
+                        entity_nodes
                     )
 
-                for need_insert_id in [src_id, tgt_id]:
-                    if need_insert_id not in existing_nodes:
-                        missing_nodes.append(
-                            (
-                                need_insert_id,
-                                {
-                                    "entity_id": need_insert_id,
-                                    "source_id": source_id,
-                                    "description": "UNKNOWN",
-                                    "entity_type": "UNKNOWN",
-                                    "file_path": file_path,
-                                    "created_at": int(time.time()),
-                                },
-                            )
+                # Insert relationships into knowledge graph (batch for performance)
+                all_relationships_data: list[dict[str, str]] = []
+                edge_list: list[tuple[str, str, dict[str, str]]] = []
+
+                # Batch check which relationship endpoints exist (1 await instead of 2M)
+                needed_node_ids: set[str] = set()
+                for relationship_data in deduped_relationships.values():
+                    needed_node_ids.add(relationship_data["src_id"])
+                    needed_node_ids.add(relationship_data["tgt_id"])
+
+                existing_nodes = await self.chunk_entity_relation_graph.has_nodes_batch(
+                    list(needed_node_ids)
+                )
+
+                # Create missing nodes in batch
+                missing_nodes: list[tuple[str, dict[str, str]]] = []
+                for relationship_data in deduped_relationships.values():
+                    src_id = relationship_data["src_id"]
+                    tgt_id = relationship_data["tgt_id"]
+                    source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
+                    source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+                    file_path = normalize_document_file_path(
+                        relationship_data.get("file_path", "custom_kg")
+                    )
+
+                    if source_id == "UNKNOWN":
+                        logger.warning(
+                            f"Relationship from '{src_id}' to '{tgt_id}' has an UNKNOWN source_id. Please check the source mapping."
                         )
-                        existing_nodes.add(need_insert_id)
 
-                normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
+                    for need_insert_id in [src_id, tgt_id]:
+                        if need_insert_id not in existing_nodes:
+                            missing_nodes.append(
+                                (
+                                    need_insert_id,
+                                    {
+                                        "entity_id": need_insert_id,
+                                        "source_id": source_id,
+                                        "description": "UNKNOWN",
+                                        "entity_type": "UNKNOWN",
+                                        "file_path": file_path,
+                                        "created_at": int(time.time()),
+                                    },
+                                )
+                            )
+                            existing_nodes.add(need_insert_id)
 
-                edge_data = {
-                    "weight": relationship_data.get("weight", 1.0),
-                    "description": relationship_data["description"],
-                    "keywords": relationship_data["keywords"],
-                    "source_id": source_id,
-                    "file_path": file_path,
-                    "created_at": int(time.time()),
-                }
-                edge_list.append((src_id, tgt_id, edge_data))
+                    normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
-                all_relationships_data.append(
-                    {
-                        "src_id": normalized_src_id,
-                        "tgt_id": normalized_tgt_id,
+                    edge_data = {
+                        "weight": relationship_data.get("weight", 1.0),
                         "description": relationship_data["description"],
                         "keywords": relationship_data["keywords"],
                         "source_id": source_id,
-                        "weight": relationship_data.get("weight", 1.0),
                         "file_path": file_path,
                         "created_at": int(time.time()),
                     }
-                )
-                update_storage = True
+                    edge_list.append((src_id, tgt_id, edge_data))
 
-            # Batch insert missing placeholder nodes
-            if missing_nodes:
-                await self.chunk_entity_relation_graph.upsert_nodes_batch(missing_nodes)
+                    all_relationships_data.append(
+                        {
+                            "src_id": normalized_src_id,
+                            "tgt_id": normalized_tgt_id,
+                            "description": relationship_data["description"],
+                            "keywords": relationship_data["keywords"],
+                            "source_id": source_id,
+                            "weight": relationship_data.get("weight", 1.0),
+                            "file_path": file_path,
+                            "created_at": int(time.time()),
+                        }
+                    )
 
-            # Batch insert edges
-            if edge_list:
-                await self.chunk_entity_relation_graph.upsert_edges_batch(edge_list)
+                # Batch insert missing placeholder nodes
+                if missing_nodes:
+                    await self.chunk_entity_relation_graph.upsert_nodes_batch(
+                        missing_nodes
+                    )
 
-            # Insert entities and relationships into vector storage (parallel)
-            data_for_entities_vdb = {
-                compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                    "content": dp["entity_name"] + "\n" + dp["description"],
-                    "entity_name": dp["entity_name"],
-                    "source_id": dp["source_id"],
-                    "description": dp["description"],
-                    "entity_type": dp["entity_type"],
-                    "file_path": dp.get("file_path", "custom_kg"),
+                # Batch insert edges
+                if edge_list:
+                    await self.chunk_entity_relation_graph.upsert_edges_batch(edge_list)
+
+                # Insert entities and relationships into vector storage (parallel)
+                data_for_entities_vdb = {
+                    compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
+                        "content": dp["entity_name"] + "\n" + dp["description"],
+                        "entity_name": dp["entity_name"],
+                        "source_id": dp["source_id"],
+                        "description": dp["description"],
+                        "entity_type": dp["entity_type"],
+                        "file_path": dp.get("file_path", "custom_kg"),
+                    }
+                    for dp in all_entities_data
                 }
-                for dp in all_entities_data
-            }
 
-            data_for_rels_vdb = {
-                compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
-                    "src_id": dp["src_id"],
-                    "tgt_id": dp["tgt_id"],
-                    "source_id": dp["source_id"],
-                    "content": f"{dp['keywords']}\t{dp['src_id']}\n{dp['tgt_id']}\n{dp['description']}",
-                    "keywords": dp["keywords"],
-                    "description": dp["description"],
-                    "weight": dp["weight"],
-                    "file_path": dp.get("file_path", "custom_kg"),
-                }
-                for dp in all_relationships_data
-            }
-
-            legacy_rel_ids_to_delete = sorted(
-                {
-                    rel_id
+                data_for_rels_vdb = {
+                    compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
+                        "src_id": dp["src_id"],
+                        "tgt_id": dp["tgt_id"],
+                        "source_id": dp["source_id"],
+                        "content": f"{dp['keywords']}\t{dp['src_id']}\n{dp['tgt_id']}\n{dp['description']}",
+                        "keywords": dp["keywords"],
+                        "description": dp["description"],
+                        "weight": dp["weight"],
+                        "file_path": dp.get("file_path", "custom_kg"),
+                    }
                     for dp in all_relationships_data
-                    for rel_id in make_relation_vdb_ids(dp["src_id"], dp["tgt_id"])[1:]
                 }
-            )
 
-            # Parallel VDB upserts (was serial in original)
-            await asyncio.gather(
-                self.entities_vdb.upsert(data_for_entities_vdb),
-                self.relationships_vdb.upsert(data_for_rels_vdb),
-            )
+                legacy_rel_ids_to_delete = sorted(
+                    {
+                        rel_id
+                        for dp in all_relationships_data
+                        for rel_id in make_relation_vdb_ids(dp["src_id"], dp["tgt_id"])[
+                            1:
+                        ]
+                    }
+                )
 
-            if legacy_rel_ids_to_delete:
-                await self.relationships_vdb.delete(legacy_rel_ids_to_delete)
+                # Parallel VDB upserts (was serial in original)
+                await asyncio.gather(
+                    self.entities_vdb.upsert(data_for_entities_vdb),
+                    self.relationships_vdb.upsert(data_for_rels_vdb),
+                )
+
+                if legacy_rel_ids_to_delete:
+                    await self.relationships_vdb.delete(legacy_rel_ids_to_delete)
+
+            if lock_key_set:
+                if entity_nodes or deduped_relationships:
+                    update_storage = True
+                async with get_storage_keyed_lock(
+                    sorted(lock_key_set),
+                    namespace=namespace,
+                    enable_logging=False,
+                ):
+                    await _do_graph_and_vdb_writes()
+            else:
+                # No entities, no relationships — nothing to serialise on.
+                await _do_graph_and_vdb_writes()
 
         except Exception as e:
             logger.error(f"Error in ainsert_custom_kg: {e}")

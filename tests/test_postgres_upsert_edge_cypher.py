@@ -315,3 +315,65 @@ async def test_upsert_edge_does_not_retry_non_transient_errors(monkeypatch):
     assert excinfo.value.__cause__ is boom
     assert _is_transient_graph_write_error(excinfo.value) is False
     assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_edges_batch_iterates_in_sorted_order():
+    """upsert_edges_batch calls upsert_edge in canonical (LEAST, GREATEST)
+    order regardless of insertion order.
+
+    upsert_edge opens an independent transaction per call and releases the
+    advisory lock on commit, so this iteration order is not a deadlock fix
+    — but a deterministic order matches the dedup key already used above
+    and keeps logs / replays reproducible across callers.
+    """
+    storage = make_graph_storage()
+
+    captured: list[tuple[str, str]] = []
+
+    async def fake_upsert_edge(src, tgt, edge_data):  # noqa: ARG001
+        captured.append((src, tgt))
+
+    storage.upsert_edge = AsyncMock(side_effect=fake_upsert_edge)
+
+    # Insertion order intentionally non-canonical: B-A, C-A, D-A.
+    await storage.upsert_edges_batch(
+        [
+            ("B", "A", {"weight": "1"}),
+            ("C", "A", {"weight": "2"}),
+            ("D", "A", {"weight": "3"}),
+        ]
+    )
+
+    # Edge keys after canonicalisation: (A,B), (A,C), (A,D). The values
+    # preserve the caller's original orientation per pair, but the iteration
+    # visits them in sorted-key order.
+    canonical_keys = [tuple(sorted(pair)) for pair in captured]
+    assert canonical_keys == sorted(canonical_keys)
+    assert canonical_keys == [("A", "B"), ("A", "C"), ("A", "D")]
+
+
+@pytest.mark.asyncio
+async def test_upsert_edges_batch_dedupes_last_write_wins():
+    """Reciprocal duplicates collapse to a single upsert with the LATEST
+    edge_data, regardless of which orientation arrives last — preserves the
+    historical serial-fallback semantics documented on the method."""
+    storage = make_graph_storage()
+
+    captured: list[tuple[str, str, dict]] = []
+
+    async def fake_upsert_edge(src, tgt, edge_data):
+        captured.append((src, tgt, edge_data))
+
+    storage.upsert_edge = AsyncMock(side_effect=fake_upsert_edge)
+
+    await storage.upsert_edges_batch(
+        [
+            ("A", "B", {"weight": "first"}),
+            ("B", "A", {"weight": "second"}),  # reciprocal, wins
+        ]
+    )
+
+    assert len(captured) == 1
+    # Orientation = last write's caller order; edge_data = last write's payload.
+    assert captured[0] == ("B", "A", {"weight": "second"})
