@@ -76,7 +76,7 @@ api = [
     "aiofiles",
     "ascii_colors",
     "distro",
-    "fastapi",
+    "fastapi>=0.108",  # 0.108 adds FastAPI.__call__ scope["root_path"] override; api_prefix relies on it
     "httpcore",
     "httpx>=0.28.1",
     "jiter",

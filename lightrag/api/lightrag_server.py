@@ -385,6 +385,60 @@ def _inject_swagger_theme(html: str, theme: str) -> str:
 WEBUI_PATH = "/webui"
 
 
+def _normalize_api_prefix(value: str | None) -> str:
+    """Canonicalize an API prefix before handing it to FastAPI's ``root_path``.
+
+    Strips surrounding whitespace, ensures a leading slash, drops a trailing
+    slash, and treats empty/"/" as "no prefix". Raw CLI/env input like
+    ``"site01"`` or ``"/site01/"`` would otherwise feed an invalid form to
+    FastAPI and to the WebUI prefix injection.
+    """
+    if value is None:
+        return ""
+    value = value.strip()
+    if not value or value == "/":
+        return ""
+    if not value.startswith("/"):
+        value = "/" + value
+    return value.rstrip("/")
+
+
+class _RootPathNormalizationMiddleware:
+    """Make Mount sub-apps work when the reverse proxy strips the API prefix.
+
+    When ``LIGHTRAG_API_PREFIX=/site01`` and nginx strips ``/site01`` before
+    forwarding, the backend sees ``scope["path"]="/webui/"`` while FastAPI's
+    ``__call__`` sets ``scope["root_path"]="/site01"``. Starlette's outer
+    Mount.matches still hits via ``get_route_path`` 's fallback branch (path
+    not starting with root_path is returned unchanged), but it mutates the
+    child scope to ``root_path="/site01/webui"`` without touching
+    ``scope["path"]``. The inner ``StaticFiles.get_path`` then sees a
+    non-overlapping pair and falls through to a literal ``webui`` filename
+    lookup → 404 on the actual file system.
+
+    Prepending ``root_path`` to a non-prefixed ``scope["path"]`` restores the
+    canonical ASGI form (path always contains root_path), matching what a
+    verbatim-forwarding proxy produces natively. Plain Routes are unaffected
+    because their handlers do not redo nested ``get_route_path`` resolution.
+
+    See docs/MultiSiteDeployment.md for the deployment modes this enables.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") in ("http", "websocket"):
+            root_path = scope.get("root_path", "")
+            path = scope.get("path", "")
+            if root_path and not path.startswith(root_path):
+                scope = {**scope, "path": root_path + path}
+                raw_path = scope.get("raw_path")
+                if isinstance(raw_path, (bytes, bytearray)):
+                    scope["raw_path"] = root_path.encode("ascii") + bytes(raw_path)
+        await self.app(scope, receive, send)
+
+
 def _clean_workspace_value(value: Any) -> str | None:
     if value is None:
         return None
@@ -843,20 +897,8 @@ def create_app(args):
         + "\n\n[View ReDoc documentation](/redoc)"
     )
 
-    # Normalize the API prefix from CLI/env. Strip surrounding whitespace,
-    # strip a trailing slash, and treat empty/"/" as "no prefix". A leading
-    # slash is ensured. The WebUI mount path is fixed at "/webui" — see
+    # The WebUI mount path is fixed at "/webui" — see
     # docs/MultiSiteDeployment.md for the rationale.
-    def _normalize_api_prefix(value: str | None) -> str:
-        if value is None:
-            return ""
-        value = value.strip()
-        if not value or value == "/":
-            return ""
-        if not value.startswith("/"):
-            value = "/" + value
-        return value.rstrip("/")
-
     api_prefix = _normalize_api_prefix(getattr(args, "api_prefix", None))
     webui_path = WEBUI_PATH
 
@@ -917,6 +959,13 @@ def create_app(args):
         if origins_str == "*":
             return ["*"]
         return [origin.strip() for origin in origins_str.split(",")]
+
+    # Normalize scope["path"] for proxy-strip deployments so the WebUI
+    # Mount (and any other Mount) routes correctly. Added before CORS so it
+    # runs first in the middleware stack — see _RootPathNormalizationMiddleware
+    # docstring.
+    if api_prefix:
+        app.add_middleware(_RootPathNormalizationMiddleware)
 
     # Add CORS middleware
     app.add_middleware(
@@ -2560,13 +2609,14 @@ def main():
     # Create application instance directly instead of using factory function
     app = create_app(global_args)
 
-    # Start Uvicorn in single process mode
+    # Start Uvicorn in single process mode. Do not pass root_path here;
+    # the prefix lives only on FastAPI's app.root_path. See
+    # docs/MultiSiteDeployment.md.
     uvicorn_config = {
         "app": app,  # Pass application instance directly instead of string path
         "host": global_args.host,
         "port": global_args.port,
         "log_config": None,  # Disable default config
-        "root_path": global_args.api_prefix if global_args.api_prefix else "", #properly pass api prefix to uvicorn
     }
 
     if global_args.ssl:
