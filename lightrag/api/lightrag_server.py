@@ -4,7 +4,7 @@ LightRAG FastAPI Server
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
@@ -15,8 +15,10 @@ import re
 import logging
 import logging.config
 import sys
+import textwrap
 import uvicorn
 import pipmaster as pm
+from typing import Any
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pathlib import Path
@@ -37,21 +39,23 @@ from .config import (
     PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS,
 )
 from lightrag.utils import get_env_value
-from lightrag import LightRAG, __version__ as core_version
+from lightrag import LightRAG, ROLES, RoleLLMConfig, __version__ as core_version
 from lightrag.api import __api_version__
-from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_EMBEDDING_TIMEOUT,
 )
 from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
 )
+from lightrag.parser.routing import (
+    parser_rules_from_env,
+    validate_parser_routing_config,
+)
+from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
@@ -80,6 +84,298 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 auth_configured = bool(auth_handler.accounts)
 
 
+def _inject_swagger_theme(html: str, theme: str) -> str:
+    if theme not in {"dark", "light"}:
+        theme = "auto"
+
+    # The script resolves dark / light / (auto + prefers-color-scheme) into a
+    # single boolean attribute `data-lightrag-docs-dark` on <html>. CSS below
+    # only matches when that attribute is present, so light/auto-light paths
+    # leave Swagger UI's default palette untouched.
+    theme_snippet = textwrap.dedent(
+        f"""
+        <script>
+          (function () {{
+            var ALLOWED = {{ dark: 1, light: 1, auto: 1 }};
+            var currentTheme = {json.dumps(theme)};
+            var mql = window.matchMedia('(prefers-color-scheme: dark)');
+            function resolveDark(value) {{
+              if (value === 'dark') return true;
+              if (value === 'auto') return mql.matches;
+              return false;
+            }}
+            function apply(value) {{
+              currentTheme = ALLOWED[value] ? value : 'auto';
+              var root = document.documentElement;
+              if (resolveDark(currentTheme)) {{
+                root.setAttribute('data-lightrag-docs-dark', '1');
+              }} else {{
+                root.removeAttribute('data-lightrag-docs-dark');
+              }}
+            }}
+            apply(currentTheme);
+            // Re-resolve when the OS theme flips while `theme=auto` is active.
+            var onMqlChange = function () {{ apply(currentTheme); }};
+            if (mql.addEventListener) mql.addEventListener('change', onMqlChange);
+            else if (mql.addListener) mql.addListener(onMqlChange);
+            window.addEventListener('message', function (event) {{
+              var data = event.data;
+              if (!data || data.type !== 'lightrag:set-docs-theme') return;
+              apply(data.theme);
+            }});
+          }})();
+        </script>
+        <style>
+          html[data-lightrag-docs-dark="1"] {{
+            color-scheme: dark;
+          }}
+
+          html[data-lightrag-docs-dark="1"] body,
+          html[data-lightrag-docs-dark="1"] .swagger-ui,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .scheme-container,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-box,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .dialog-ux .modal-ux,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container {{
+            background: #0f172a;
+            color: #e5e7eb;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .info .title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock-tag,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock .opblock-summary-description,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .parameter__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .parameter__type,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .response-col_status,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .response-col_description,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container h4,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container label,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-container p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .markdown p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .markdown li,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .renderedMarkdown p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .renderedMarkdown li,
+          html[data-lightrag-docs-dark="1"] .swagger-ui table thead tr th,
+          html[data-lightrag-docs-dark="1"] .swagger-ui table tbody tr td,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li button.tablinks {{
+            color: #e5e7eb;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock-description-wrapper p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock-external-docs-wrapper p,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .response-col_links {{
+            color: #cbd5f5;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui input,
+          html[data-lightrag-docs-dark="1"] .swagger-ui textarea,
+          html[data-lightrag-docs-dark="1"] .swagger-ui select {{
+            background: #020617;
+            border-color: #334155;
+            color: #f8fafc;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .markdown code,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .renderedMarkdown code,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .highlight-code,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .highlight-code pre,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .microlight,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .body-param__example,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .example,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-example pre {{
+            background: #020617;
+            color: #e2e8f0;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui table thead tr th,
+          html[data-lightrag-docs-dark="1"] .swagger-ui table tbody tr td {{
+            border-color: #334155;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li.active button.tablinks,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .tab li.tabitem.active {{
+            color: #f8fafc;
+            border-bottom-color: #34d399;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .btn.authorize,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .auth-wrapper .authorize {{
+            background: #064e3b;
+            border-color: #34d399;
+            color: #d1fae5;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .btn.authorize svg {{
+            fill: #d1fae5;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui .dialog-ux .modal-ux,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .scheme-container,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .opblock {{
+            border-color: #334155;
+            box-shadow: none;
+          }}
+
+          /* Schemas panel: section.models contains its own grey-on-grey
+             buttons (`Schemas` header, each model row, "Expand all") that
+             ignore the top-level body color. Force the whole subtree to
+             use surface backgrounds and bright text. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models.is-open,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .model-container,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-box {{
+            background: #111827;
+            border-color: #334155;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 a,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 span,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .model-toggle,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .model-title__text,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .property,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .prop-name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .prop-type,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model .prop-format,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .expand-operation,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .expand-operation span {{
+            color: #e5e7eb;
+          }}
+
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-toggle::after,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .expand-operation svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-accordion__icon svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-accordion__icon svg path {{
+            fill: #e5e7eb;
+          }}
+
+          /* The "Expand all" pill and per-row toggle buttons inherit a light
+             grey background from Swagger; clear it so they don't punch a
+             pale rectangle into the dark panel. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .expand-operation,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models h4 button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui section.models .models-control button {{
+            background: transparent;
+          }}
+
+          /* Swagger's new JSON Schema 2020-12 renderer hard-codes light-mode
+             greys (#505050 / #3b4151 / #afaeae / #6b6b6b) on every title,
+             keyword, attribute and json-viewer node — completely independent
+             from the .model / .swagger-ui ancestors we already restyled.
+             Override the whole renderer subtree so model/property names,
+             types, and the per-row "Expand all" button stay readable. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-property .json-schema-2020-12__title,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-expand-deep-button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-accordion,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__name--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__attribute,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__attribute--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__name--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value--primary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--const .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--const .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--default .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--default .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--enum .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--enum .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--examples .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--examples .json-schema-2020-12-json-viewer__value {{
+            color: #e5e7eb;
+          }}
+
+          /* Secondary / extension / description text — keep them visible but
+             dimmer than primary titles. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__name--secondary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value--secondary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__name--extension,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value--extension,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword--description,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__name--secondary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value--secondary,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__name--extension,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value--extension,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer-extension-keyword .json-schema-2020-12-json-viewer__name,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer-extension-keyword .json-schema-2020-12-json-viewer__value,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__attribute--muted {{
+            color: #cbd5f5;
+          }}
+
+          /* The deep-expand button inside each schemas row has its own
+             background and shouldn't paint a pale capsule on dark surface. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-expand-deep-button,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-accordion {{
+            background-color: transparent;
+          }}
+
+          /* Restore Swagger's red warning palette. The broad keyword__value /
+             __attribute / json-viewer__value overrides above otherwise win
+             the cascade over `.json-schema-2020-12-*--warning` (higher
+             specificity), flattening deprecated/schema-warning markers into
+             plain text. Re-declared *after* the generic rules so equal-
+             specificity selectors lose to these explicit ones. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-keyword__value--warning,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12-json-viewer__value--warning,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .json-schema-2020-12__attribute--warning {{
+            color: #fca5a5;
+            border-color: #fca5a5;
+          }}
+
+          /* `.model-toggle::after` paints its caret with a `background:url(
+             data:image/svg+xml,…<path d=…/>)` embedded SVG whose path has no
+             fill attribute and no currentColor reference — `fill` rules can't
+             touch it. Invert the rendered pixels so the black arrow flips to
+             white on the dark schema surface. The glyph is single-color, so
+             invert has no perceptible side effect. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .model-toggle::after {{
+            filter: invert(1);
+          }}
+
+          /* Per-operation Authorize lock icon. Swagger renders it via
+             `<symbol id="locked|unlocked">` whose <path> has no fill attr
+             and no currentColor reference; Swagger's CSS also never sets
+             fill on .authorization__btn svg, leaving the path at the SVG
+             default (black). Set fill on the outer <svg> — fill is inherited
+             through <use> into the referenced symbol because the path itself
+             is unstyled, so one declaration colors both locked and unlocked
+             states. */
+          html[data-lightrag-docs-dark="1"] .swagger-ui .authorization__btn svg,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .authorization__btn .locked,
+          html[data-lightrag-docs-dark="1"] .swagger-ui .authorization__btn .unlocked {{
+            fill: #e5e7eb;
+          }}
+        </style>
+        """
+    ).strip()
+
+    needle = "</head>"
+    if needle not in html:
+        logger.warning(
+            "Swagger UI HTML missing </head> tag; theme patch was skipped. "
+            "FastAPI's swagger template may have changed."
+        )
+        return html
+    return html.replace(needle, f"{theme_snippet}\n{needle}", 1)
+
+
 # Fixed WebUI mount path. Used as `app.mount(WEBUI_PATH, ...)` and as the
 # in-app component of `webuiPrefix` injected into window.__LIGHTRAG_CONFIG__
 # (which the browser sees as `LIGHTRAG_API_PREFIX + WEBUI_PATH + "/"`).
@@ -87,6 +383,157 @@ auth_configured = bool(auth_handler.accounts)
 # and matches how LightRAG is deployed in practice. See
 # docs/MultiSiteDeployment.md.
 WEBUI_PATH = "/webui"
+
+
+def _normalize_api_prefix(value: str | None) -> str:
+    """Canonicalize an API prefix before handing it to FastAPI's ``root_path``.
+
+    Strips surrounding whitespace, ensures a leading slash, drops a trailing
+    slash, and treats empty/"/" as "no prefix". Raw CLI/env input like
+    ``"site01"`` or ``"/site01/"`` would otherwise feed an invalid form to
+    FastAPI and to the WebUI prefix injection.
+    """
+    if value is None:
+        return ""
+    value = value.strip()
+    if not value or value == "/":
+        return ""
+    if not value.startswith("/"):
+        value = "/" + value
+    return value.rstrip("/")
+
+
+class _RootPathNormalizationMiddleware:
+    """Make Mount sub-apps work when the reverse proxy strips the API prefix.
+
+    When ``LIGHTRAG_API_PREFIX=/site01`` and nginx strips ``/site01`` before
+    forwarding, the backend sees ``scope["path"]="/webui/"`` while FastAPI's
+    ``__call__`` sets ``scope["root_path"]="/site01"``. Starlette's outer
+    Mount.matches still hits via ``get_route_path`` 's fallback branch (path
+    not starting with root_path is returned unchanged), but it mutates the
+    child scope to ``root_path="/site01/webui"`` without touching
+    ``scope["path"]``. The inner ``StaticFiles.get_path`` then sees a
+    non-overlapping pair and falls through to a literal ``webui`` filename
+    lookup → 404 on the actual file system.
+
+    Prepending ``root_path`` to a non-prefixed ``scope["path"]`` restores the
+    canonical ASGI form (path always contains root_path), matching what a
+    verbatim-forwarding proxy produces natively. Plain Routes are unaffected
+    because their handlers do not redo nested ``get_route_path`` resolution.
+
+    See docs/MultiSiteDeployment.md for the deployment modes this enables.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") in ("http", "websocket"):
+            root_path = scope.get("root_path", "")
+            path = scope.get("path", "")
+            if root_path and not path.startswith(root_path):
+                scope = {**scope, "path": root_path + path}
+                raw_path = scope.get("raw_path")
+                if isinstance(raw_path, (bytes, bytearray)):
+                    scope["raw_path"] = root_path.encode("ascii") + bytes(raw_path)
+        await self.app(scope, receive, send)
+
+
+def _clean_workspace_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _get_storage_workspace(storage: Any) -> str | None:
+    if storage is None:
+        return None
+
+    effective_workspace = _clean_workspace_value(
+        getattr(storage, "effective_workspace", None)
+    )
+    if effective_workspace:
+        return effective_workspace
+
+    final_namespace = _clean_workspace_value(getattr(storage, "final_namespace", None))
+    namespace = _clean_workspace_value(getattr(storage, "namespace", None))
+    if final_namespace and namespace:
+        suffix = f"_{namespace}"
+        if final_namespace.endswith(suffix):
+            workspace = final_namespace[: -len(suffix)]
+            if workspace:
+                return workspace
+
+    return _clean_workspace_value(getattr(storage, "workspace", None))
+
+
+def _get_storage_workspaces(rag: Any) -> dict[str, str | None]:
+    return {
+        "kv_storage": _get_storage_workspace(getattr(rag, "full_docs", None)),
+        "doc_status_storage": _get_storage_workspace(getattr(rag, "doc_status", None)),
+        "graph_storage": _get_storage_workspace(
+            getattr(rag, "chunk_entity_relation_graph", None)
+        ),
+        "vector_storage": _get_storage_workspace(getattr(rag, "entities_vdb", None)),
+    }
+
+
+def _build_mineru_status() -> dict[str, Any]:
+    """Snapshot MinerU-related env vars for the /health endpoint.
+
+    Reads env directly (no MinerURawClient instantiation — that has
+    side effects like token validation). Reuses MinerUParserOptions to
+    share defaulting logic with the actual parser path.
+    """
+    api_mode_raw = os.getenv("MINERU_API_MODE", "").strip().lower()
+    api_mode: str | None = api_mode_raw or None
+    endpoint = ""
+    if api_mode == "official":
+        endpoint = os.getenv("MINERU_OFFICIAL_ENDPOINT", "").strip()
+    elif api_mode == "local":
+        endpoint = os.getenv("MINERU_LOCAL_ENDPOINT", "").strip()
+
+    options: dict[str, Any] = {}
+    if api_mode in ("official", "local"):
+        try:
+            opts = MinerUParserOptions.from_env(api_mode=api_mode)
+        except Exception:
+            opts = None
+        if opts is not None:
+            options = {
+                "language": opts.language,
+                "enable_table": opts.enable_table,
+                "enable_formula": opts.enable_formula,
+            }
+            if opts.api_mode == "official":
+                options["model_version"] = opts.model_version
+                options["is_ocr"] = opts.is_ocr
+            else:
+                options["local_backend"] = opts.local_backend
+                options["local_parse_method"] = opts.local_parse_method
+                options["local_image_analysis"] = opts.local_image_analysis
+
+    return {"endpoint": endpoint, "api_mode": api_mode, "options": options}
+
+
+def _build_docling_status() -> dict[str, Any]:
+    """Snapshot Docling-related env vars for the /health endpoint."""
+    endpoint = os.getenv("DOCLING_ENDPOINT", "").strip()
+    if not endpoint:
+        return {"endpoint": "", "options": {}}
+    return {
+        "endpoint": endpoint,
+        "options": {
+            "do_ocr": get_env_value("DOCLING_DO_OCR", True, bool),
+            "force_ocr": get_env_value("DOCLING_FORCE_OCR", True, bool),
+            "ocr_engine": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
+            "ocr_lang": os.getenv("DOCLING_OCR_LANG", "").strip(),
+            "do_formula_enrichment": get_env_value(
+                "DOCLING_DO_FORMULA_ENRICHMENT", False, bool
+            ),
+        },
+    }
 
 
 class LLMConfigCache:
@@ -101,6 +548,7 @@ class LLMConfigCache:
         self.gemini_embedding_options = None
         self.ollama_llm_options = None
         self.ollama_embedding_options = None
+        self.bedrock_llm_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
         if args.llm_binding in ["openai", "azure_openai"]:
@@ -114,6 +562,12 @@ class LLMConfigCache:
 
             self.gemini_llm_options = GeminiLLMOptions.options_dict(args)
             logger.info(f"Gemini LLM Options: {self.gemini_llm_options}")
+
+        if args.llm_binding == "bedrock":
+            from lightrag.llm.binding_options import BedrockLLMOptions
+
+            self.bedrock_llm_options = BedrockLLMOptions.options_dict(args)
+            logger.info(f"Bedrock LLM Options: {self.bedrock_llm_options}")
 
         # Only initialize and log Ollama LLM options when using Ollama LLM binding
         if args.llm_binding == "ollama":
@@ -161,6 +615,52 @@ class LLMConfigCache:
                     "GeminiEmbeddingOptions not available, using default configuration"
                 )
                 self.gemini_embedding_options = {}
+
+
+_PROVIDER_LOG_LABELS = {
+    "azure_openai": "Azure OpenAI",
+    "bedrock": "Bedrock",
+    "gemini": "Gemini",
+    "lollms": "Lollms",
+    "ollama": "Ollama",
+    "openai": "OpenAI",
+}
+
+
+def _provider_log_label(binding: Any) -> str:
+    binding_name = str(binding)
+    return _PROVIDER_LOG_LABELS.get(
+        binding_name, binding_name.replace("_", " ").title()
+    )
+
+
+def _log_role_provider_options(rag: Any) -> None:
+    """Log sanitized provider options for every role LLM."""
+    try:
+        role_configs = rag.get_llm_role_config()
+    except Exception as e:
+        logger.warning(f"Failed to read role LLM configuration for logging: {e}")
+        return
+
+    logger.info("Role LLM Option:")
+
+    for spec in ROLES:
+        role_config = role_configs.get(spec.name)
+        if not isinstance(role_config, dict):
+            continue
+
+        metadata = role_config.get("metadata") or {}
+        binding = role_config.get("binding") or metadata.get("binding")
+        if not binding:
+            continue
+
+        provider_options = metadata.get("provider_options") or {}
+        logger.info(
+            " - %s: %s %s",
+            spec.name,
+            _provider_log_label(binding),
+            provider_options,
+        )
 
 
 def check_frontend_build():
@@ -304,6 +804,7 @@ def create_app(args):
     # Setup logging
     logger.setLevel(args.log_level)
     set_verbose_debug(args.verbose)
+    validate_parser_routing_config()
 
     # Create configuration cache (this will output configuration logs)
     config_cache = LLMConfigCache(args)
@@ -314,7 +815,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
-        "aws_bedrock",
+        "bedrock",
         "gemini",
     ]:
         raise Exception("llm binding not supported")
@@ -324,7 +825,7 @@ def create_app(args):
         "ollama",
         "openai",
         "azure_openai",
-        "aws_bedrock",
+        "bedrock",
         "jina",
         "gemini",
         "voyageai",
@@ -396,20 +897,8 @@ def create_app(args):
         + "\n\n[View ReDoc documentation](/redoc)"
     )
 
-    # Normalize the API prefix from CLI/env. Strip surrounding whitespace,
-    # strip a trailing slash, and treat empty/"/" as "no prefix". A leading
-    # slash is ensured. The WebUI mount path is fixed at "/webui" — see
+    # The WebUI mount path is fixed at "/webui" — see
     # docs/MultiSiteDeployment.md for the rationale.
-    def _normalize_api_prefix(value: str | None) -> str:
-        if value is None:
-            return ""
-        value = value.strip()
-        if not value or value == "/":
-            return ""
-        if not value.startswith("/"):
-            value = "/" + value
-        return value.rstrip("/")
-
     api_prefix = _normalize_api_prefix(getattr(args, "api_prefix", None))
     webui_path = WEBUI_PATH
 
@@ -471,6 +960,13 @@ def create_app(args):
             return ["*"]
         return [origin.strip() for origin in origins_str.split(",")]
 
+    # Normalize scope["path"] for proxy-strip deployments so the WebUI
+    # Mount (and any other Mount) routes correctly. Added before CORS so it
+    # runs first in the middleware stack — see _RootPathNormalizationMiddleware
+    # docstring.
+    if api_prefix:
+        app.add_middleware(_RootPathNormalizationMiddleware)
+
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
@@ -528,18 +1024,17 @@ def create_app(args):
             prompt,
             system_prompt=None,
             history_messages=None,
-            keyword_extraction=False,
             **kwargs,
         ) -> str:
             from lightrag.llm.openai import openai_complete_if_cache
 
-            keyword_extraction = kwargs.pop("keyword_extraction", None)
-            if keyword_extraction:
-                kwargs["response_format"] = GPTKeywordExtractionFormat
             if history_messages is None:
                 history_messages = []
 
-            # Use pre-processed configuration to avoid repeated parsing
+            # Use pre-processed configuration to avoid repeated parsing.
+            # response_format and legacy keyword_extraction/entity_extraction
+            # flags flow through **kwargs; openai_complete_if_cache handles
+            # the deprecation shim for the legacy booleans.
             kwargs["timeout"] = llm_timeout
             if config_cache.openai_llm_options:
                 kwargs.update(config_cache.openai_llm_options)
@@ -565,18 +1060,15 @@ def create_app(args):
             prompt,
             system_prompt=None,
             history_messages=None,
-            keyword_extraction=False,
             **kwargs,
         ) -> str:
             from lightrag.llm.azure_openai import azure_openai_complete_if_cache
 
-            keyword_extraction = kwargs.pop("keyword_extraction", None)
-            if keyword_extraction:
-                kwargs["response_format"] = GPTKeywordExtractionFormat
             if history_messages is None:
                 history_messages = []
 
-            # Use pre-processed configuration to avoid repeated parsing
+            # response_format and legacy extraction booleans flow through kwargs
+            # to azure_openai_complete_if_cache, which handles deprecation shims.
             kwargs["timeout"] = llm_timeout
             if config_cache.openai_llm_options:
                 kwargs.update(config_cache.openai_llm_options)
@@ -603,7 +1095,6 @@ def create_app(args):
             prompt,
             system_prompt=None,
             history_messages=None,
-            keyword_extraction=False,
             **kwargs,
         ) -> str:
             from lightrag.llm.gemini import gemini_complete_if_cache
@@ -611,7 +1102,8 @@ def create_app(args):
             if history_messages is None:
                 history_messages = []
 
-            # Use pre-processed configuration to avoid repeated parsing
+            # response_format and legacy extraction booleans flow through kwargs
+            # to gemini_complete_if_cache, which handles deprecation shims.
             kwargs["timeout"] = llm_timeout
             if (
                 config_cache.gemini_llm_options is not None
@@ -626,7 +1118,6 @@ def create_app(args):
                 history_messages=history_messages,
                 api_key=args.llm_binding_api_key,
                 base_url=args.llm_binding_host,
-                keyword_extraction=keyword_extraction,
                 **kwargs,
             )
 
@@ -646,7 +1137,7 @@ def create_app(args):
                 from lightrag.llm.ollama import ollama_model_complete
 
                 return ollama_model_complete
-            elif binding == "aws_bedrock":
+            elif binding == "bedrock":
                 return bedrock_model_complete  # Already defined locally
             elif binding == "azure_openai":
                 # Use optimized function with pre-processed configuration
@@ -678,6 +1169,303 @@ def create_app(args):
                 }
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} options: {e}")
+        return {}
+
+    def resolve_role_llm_settings(
+        role: str, override_meta: dict | None = None
+    ) -> dict[str, Any]:
+        attr = role.lower()
+        override_meta = override_meta or {}
+
+        role_binding = (
+            override_meta.get("binding")
+            or getattr(args, f"{attr}_llm_binding", None)
+            or args.llm_binding
+        )
+        role_model = (
+            override_meta.get("model")
+            or getattr(args, f"{attr}_llm_model", None)
+            or args.llm_model
+        )
+        role_host = (
+            override_meta.get("host")
+            or getattr(args, f"{attr}_llm_binding_host", None)
+            or args.llm_binding_host
+        )
+        explicit_role_apikey = override_meta.get("api_key") or getattr(
+            args, f"{attr}_llm_binding_api_key", None
+        )
+        if role_binding == "bedrock":
+            if explicit_role_apikey:
+                raise ValueError(
+                    f"Bedrock role '{role}' does not support role-specific "
+                    "LLM_BINDING_API_KEY; use role-specific SigV4 AWS_* "
+                    "variables or process-level AWS_BEARER_TOKEN_BEDROCK."
+                )
+            role_apikey = None
+        else:
+            role_apikey = explicit_role_apikey or args.llm_binding_api_key
+        role_timeout = (
+            override_meta.get("timeout")
+            or getattr(args, f"{attr}_llm_timeout", None)
+            or llm_timeout
+        )
+        role_max_async = override_meta.get("max_async")
+        if role_max_async is None:
+            role_max_async = getattr(args, f"{attr}_llm_max_async", None)
+        is_cross_provider = role_binding != args.llm_binding
+
+        role_provider_options = override_meta.get("provider_options")
+        if role_provider_options is None:
+            if role_binding in ["openai", "azure_openai"]:
+                from lightrag.llm.binding_options import OpenAILLMOptions
+
+                role_provider_options = OpenAILLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding == "gemini":
+                from lightrag.llm.binding_options import GeminiLLMOptions
+
+                role_provider_options = GeminiLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding in ["lollms", "ollama"]:
+                from lightrag.llm.binding_options import OllamaLLMOptions
+
+                role_provider_options = OllamaLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            elif role_binding == "bedrock":
+                from lightrag.llm.binding_options import BedrockLLMOptions
+
+                role_provider_options = BedrockLLMOptions.options_dict_for_role(
+                    args, role, is_cross_provider
+                )
+            else:
+                role_provider_options = {}
+
+        bedrock_aws_options = {}
+        if role_binding == "bedrock":
+            override_bedrock_aws_options = override_meta.get("bedrock_aws_options", {})
+            bedrock_aws_options = {
+                "aws_region": override_meta.get("aws_region")
+                or override_bedrock_aws_options.get("aws_region")
+                or getattr(args, f"{attr}_aws_region", None)
+                or getattr(args, "aws_region", None),
+                "aws_access_key_id": override_meta.get("aws_access_key_id")
+                or override_bedrock_aws_options.get("aws_access_key_id")
+                or getattr(args, f"{attr}_aws_access_key_id", None)
+                or getattr(args, "aws_access_key_id", None),
+                "aws_secret_access_key": override_meta.get("aws_secret_access_key")
+                or override_bedrock_aws_options.get("aws_secret_access_key")
+                or getattr(args, f"{attr}_aws_secret_access_key", None)
+                or getattr(args, "aws_secret_access_key", None),
+                "aws_session_token": override_meta.get("aws_session_token")
+                or override_bedrock_aws_options.get("aws_session_token")
+                or getattr(args, f"{attr}_aws_session_token", None)
+                or getattr(args, "aws_session_token", None),
+            }
+
+        return {
+            "binding": role_binding,
+            "model": role_model,
+            "host": role_host,
+            "api_key": role_apikey,
+            "timeout": role_timeout,
+            "max_async": role_max_async,
+            "provider_options": role_provider_options,
+            "is_cross_provider": is_cross_provider,
+            "bedrock_aws_options": bedrock_aws_options,
+        }
+
+    def create_role_llm_func(role: str, override_meta: dict | None = None):
+        """Create an independent raw LLM function for a role."""
+        settings = resolve_role_llm_settings(role, override_meta)
+        role_binding = settings["binding"]
+        role_model = settings["model"]
+        role_host = settings["host"]
+        role_apikey = settings["api_key"]
+        role_timeout = settings["timeout"]
+        role_provider_options = settings["provider_options"]
+        bedrock_aws_options = settings["bedrock_aws_options"]
+
+        try:
+            if role_binding == "ollama":
+                from lightrag.llm.ollama import _ollama_model_if_cache
+
+                async def role_ollama_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    enable_cot: bool = False,
+                    **kwargs,
+                ):
+                    # response_format and legacy extraction booleans flow
+                    # through kwargs to _ollama_model_if_cache, which handles
+                    # the deprecation shim and emits a single warning.
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs.setdefault("options", dict(role_provider_options))
+                    return await _ollama_model_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        enable_cot=enable_cot,
+                        host=role_host,
+                        timeout=role_timeout,
+                        api_key=role_apikey,
+                        **kwargs,
+                    )
+
+                return role_ollama_complete
+            if role_binding == "lollms":
+                from lightrag.llm.lollms import lollms_model_if_cache
+
+                async def role_lollms_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    enable_cot: bool = False,
+                    **kwargs,
+                ):
+                    # response_format and legacy extraction booleans flow
+                    # through kwargs to lollms_model_if_cache, which drops
+                    # them and emits deprecation warnings when booleans are set.
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs = {**role_provider_options, **kwargs}
+                    return await lollms_model_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        enable_cot=enable_cot,
+                        base_url=role_host,
+                        api_key=role_apikey,
+                        timeout=role_timeout,
+                        **kwargs,
+                    )
+
+                return role_lollms_complete
+            if role_binding == "bedrock":
+                from lightrag.llm.bedrock import bedrock_complete_if_cache
+
+                async def role_bedrock_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    if role_provider_options:
+                        kwargs = {**role_provider_options, **kwargs}
+                    return await bedrock_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        endpoint_url=role_host,
+                        **bedrock_aws_options,
+                        **kwargs,
+                    )
+
+                return role_bedrock_complete
+            if role_binding == "azure_openai":
+                from lightrag.llm.azure_openai import azure_openai_complete_if_cache
+
+                async def role_azure_openai_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = role_timeout
+                    if role_provider_options:
+                        kwargs.update(role_provider_options)
+                    return await azure_openai_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        base_url=role_host,
+                        api_key=role_apikey or os.getenv("AZURE_OPENAI_API_KEY"),
+                        api_version=os.getenv(
+                            "AZURE_OPENAI_API_VERSION", "2024-08-01-preview"
+                        ),
+                        **kwargs,
+                    )
+
+                return role_azure_openai_complete
+            if role_binding == "gemini":
+                from lightrag.llm.gemini import gemini_complete_if_cache
+
+                async def role_gemini_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = role_timeout
+                    if role_provider_options and "generation_config" not in kwargs:
+                        kwargs["generation_config"] = dict(role_provider_options)
+                    return await gemini_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        api_key=role_apikey,
+                        base_url=role_host,
+                        **kwargs,
+                    )
+
+                return role_gemini_complete
+
+            from lightrag.llm.openai import openai_complete_if_cache
+
+            async def role_openai_complete(
+                prompt,
+                system_prompt=None,
+                history_messages=None,
+                **kwargs,
+            ) -> str:
+                if history_messages is None:
+                    history_messages = []
+                kwargs["timeout"] = role_timeout
+                if role_provider_options:
+                    kwargs.update(role_provider_options)
+                return await openai_complete_if_cache(
+                    role_model,
+                    prompt,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages,
+                    base_url=role_host,
+                    api_key=role_apikey,
+                    **kwargs,
+                )
+
+            return role_openai_complete
+        except ImportError as e:
+            raise Exception(f"Failed to create LLM for role '{role}': {e}")
+
+    def create_role_llm_model_kwargs(
+        role: str, override_meta: dict | None = None
+    ) -> dict[str, Any] | None:
+        """Create role-specific kwargs for runtime wrapper injection.
+
+        Role functions built above already encapsulate provider host/model/api_key/options,
+        so we intentionally return an empty dict here to prevent base kwargs inheritance
+        from polluting cross-provider role calls.
+        """
+        _ = role
+        _ = override_meta
         return {}
 
     def create_optimized_embedding_function(
@@ -739,7 +1527,7 @@ def create_app(args):
                 from lightrag.llm.azure_openai import azure_openai_embed
 
                 provider_func = azure_openai_embed
-            elif binding == "aws_bedrock":
+            elif binding == "bedrock":
                 from lightrag.llm.bedrock import bedrock_embed
 
                 provider_func = bedrock_embed
@@ -860,7 +1648,7 @@ def create_app(args):
                         if document_prefix:
                             kwargs["document_prefix"] = document_prefix
                     return await actual_func(**kwargs)
-                elif binding == "aws_bedrock":
+                elif binding == "bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
 
                     actual_func = (
@@ -869,7 +1657,17 @@ def create_app(args):
                         else bedrock_embed
                     )
                     # Pass model only if provided, let function use its default otherwise
-                    kwargs = {"texts": texts}
+                    kwargs = {
+                        "texts": texts,
+                        "aws_region": getattr(args, "aws_region", None),
+                        "aws_access_key_id": getattr(args, "aws_access_key_id", None),
+                        "aws_secret_access_key": getattr(
+                            args, "aws_secret_access_key", None
+                        ),
+                        "aws_session_token": getattr(args, "aws_session_token", None),
+                    }
+                    if host is not None:
+                        kwargs["endpoint_url"] = host
                     if model:
                         kwargs["model"] = model
                     return await actual_func(**kwargs)
@@ -996,35 +1794,37 @@ def create_app(args):
 
         return embedding_func_instance
 
-    llm_timeout = get_env_value("LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT, int)
-    embedding_timeout = get_env_value(
-        "EMBEDDING_TIMEOUT", DEFAULT_EMBEDDING_TIMEOUT, int
-    )
+    llm_timeout = args.llm_timeout
+    embedding_timeout = args.embedding_timeout
 
     async def bedrock_model_complete(
         prompt,
         system_prompt=None,
         history_messages=None,
-        keyword_extraction=False,
         **kwargs,
     ) -> str:
         # Lazy import
         from lightrag.llm.bedrock import bedrock_complete_if_cache
 
-        keyword_extraction = kwargs.pop("keyword_extraction", None)
-        if keyword_extraction:
-            kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
 
-        # Use global temperature for Bedrock
-        kwargs["temperature"] = get_env_value("BEDROCK_LLM_TEMPERATURE", 1.0, float)
+        # Bedrock Converse API has no JSON mode; response_format and the legacy
+        # extraction booleans flow through kwargs to bedrock_complete_if_cache,
+        # which drops them and emits deprecation warnings when booleans are set.
+        if config_cache.bedrock_llm_options:
+            kwargs = {**config_cache.bedrock_llm_options, **kwargs}
 
         return await bedrock_complete_if_cache(
             args.llm_model,
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            endpoint_url=args.llm_binding_host,
+            aws_region=getattr(args, "aws_region", None),
+            aws_access_key_id=getattr(args, "aws_access_key_id", None),
+            aws_secret_access_key=getattr(args, "aws_secret_access_key", None),
+            aws_session_token=getattr(args, "aws_session_token", None),
             **kwargs,
         )
 
@@ -1037,7 +1837,9 @@ def create_app(args):
         binding=args.embedding_binding,
         model=args.embedding_model,
         host=args.embedding_binding_host,
-        api_key=args.embedding_binding_api_key,
+        api_key=None
+        if args.embedding_binding == "bedrock"
+        else args.embedding_binding_api_key,
         args=args,
         document_prefix=args.embedding_document_prefix,
         query_prefix=args.embedding_query_prefix,
@@ -1163,6 +1965,22 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
+    # LightRAG.__post_init__ normalizes addon_params and backfills env-based defaults
+    # (SUMMARY_LANGUAGE, ENTITY_TYPE_PROMPT_FILE, ...), so we only need to pass the
+    # API-level overrides here.
+    addon_params = {
+        "language": args.summary_language,
+    }
+
+    role_llm_configs = {
+        spec.name: {
+            **resolve_role_llm_settings(spec.name),
+            "func": create_role_llm_func(spec.name),
+            "kwargs": create_role_llm_model_kwargs(spec.name),
+        }
+        for spec in ROLES
+    }
+
     # Initialize RAG with unified configuration
     try:
         rag = LightRAG(
@@ -1190,18 +2008,52 @@ def create_app(args):
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
+            vlm_process_enable=args.vlm_process_enable,
             rerank_model_func=rerank_model_func,
+            rerank_model_max_async=args.rerank_max_async,
+            default_rerank_timeout=args.rerank_timeout,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
-            addon_params={
-                "language": args.summary_language,
-                "entity_types": args.entity_types,
-            },
+            addon_params=addon_params,
             ollama_server_infos=ollama_server_infos,
+            role_llm_configs={
+                spec.name: RoleLLMConfig(
+                    func=role_llm_configs[spec.name]["func"],
+                    kwargs=role_llm_configs[spec.name]["kwargs"],
+                    max_async=role_llm_configs[spec.name]["max_async"],
+                    timeout=role_llm_configs[spec.name]["timeout"],
+                    metadata={
+                        "base_binding": args.llm_binding,
+                        "binding": role_llm_configs[spec.name]["binding"],
+                        "model": role_llm_configs[spec.name]["model"],
+                        "host": role_llm_configs[spec.name]["host"],
+                        "api_key": role_llm_configs[spec.name]["api_key"],
+                        "provider_options": role_llm_configs[spec.name][
+                            "provider_options"
+                        ],
+                        "bedrock_aws_options": role_llm_configs[spec.name][
+                            "bedrock_aws_options"
+                        ],
+                        "is_cross_provider": role_llm_configs[spec.name][
+                            "is_cross_provider"
+                        ],
+                    },
+                )
+                for spec in ROLES
+            },
         )
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
+
+    _log_role_provider_options(rag)
+
+    rag.register_role_llm_builder(
+        lambda role, meta: (
+            create_role_llm_func(role, meta),
+            create_role_llm_model_kwargs(role, meta),
+        )
+    )
 
     # Add routes
     # root_path is set on the app for reverse proxy support;
@@ -1216,9 +2068,9 @@ def create_app(args):
 
     # Custom Swagger UI endpoint for offline support
     @app.get("/docs", include_in_schema=False)
-    async def custom_swagger_ui_html():
+    async def custom_swagger_ui_html(request: Request):
         """Custom Swagger UI HTML with local static files"""
-        return get_swagger_ui_html(
+        response = get_swagger_ui_html(
             openapi_url=app.openapi_url,
             title=app.title + " - Swagger UI",
             oauth2_redirect_url="/docs/oauth2-redirect",
@@ -1227,6 +2079,11 @@ def create_app(args):
             swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
             swagger_ui_parameters=app.swagger_ui_parameters,
         )
+        html = response.body.decode("utf-8")
+        html = _inject_swagger_theme(
+            html, request.query_params.get("theme", "auto").lower()
+        )
+        return HTMLResponse(content=html)
 
     @app.get("/docs/oauth2-redirect", include_in_schema=False)
     async def swagger_ui_redirect():
@@ -1334,6 +2191,29 @@ def create_app(args):
                                 "embedding_binding": "openai",
                                 "embedding_model": "text-embedding-ada-002",
                                 "workspace": "default",
+                                "storage_workspaces": {
+                                    "kv_storage": "default",
+                                    "doc_status_storage": "default",
+                                    "graph_storage": "default",
+                                    "vector_storage": "default",
+                                },
+                                "parser_routing": "pdf:mineru",
+                                "mineru": {
+                                    "endpoint": "http://localhost:8080",
+                                    "api_mode": "local",
+                                    "options": {
+                                        "language": "ch",
+                                        "enable_table": True,
+                                        "enable_formula": True,
+                                        "local_backend": "pipeline",
+                                        "local_parse_method": "auto",
+                                        "local_image_analysis": False,
+                                    },
+                                },
+                                "docling": {
+                                    "endpoint": "",
+                                    "options": {},
+                                },
                             },
                             "auth_mode": "enabled",
                             "pipeline_busy": False,
@@ -1354,6 +2234,21 @@ def create_app(args):
                 workspace = default_workspace
             pipeline_status = await get_namespace_data(
                 "pipeline_status", workspace=workspace
+            )
+
+            pipeline_busy = bool(pipeline_status.get("busy", False))
+            pipeline_scanning = bool(pipeline_status.get("scanning", False))
+            pipeline_destructive_busy = bool(
+                pipeline_status.get("destructive_busy", False)
+            )
+            pipeline_pending_enqueues = int(
+                pipeline_status.get("pending_enqueues", 0) or 0
+            )
+            pipeline_active = (
+                pipeline_busy
+                or pipeline_scanning
+                or pipeline_destructive_busy
+                or pipeline_pending_enqueues > 0
             )
 
             if not auth_configured:
@@ -1386,7 +2281,9 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
+                    "vlm_process_enable": args.vlm_process_enable,
                     "workspace": default_workspace,
+                    "storage_workspaces": _get_storage_workspaces(rag),
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
@@ -1395,6 +2292,8 @@ def create_app(args):
                     "rerank_binding_host": args.rerank_binding_host
                     if rerank_model_func
                     else None,
+                    "rerank_max_async": args.rerank_max_async,
+                    "rerank_timeout": args.rerank_timeout,
                     # Environment variable status (requested configuration)
                     "summary_language": args.summary_language,
                     "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
@@ -1403,12 +2302,26 @@ def create_app(args):
                     "min_rerank_score": args.min_rerank_score,
                     "related_chunk_number": args.related_chunk_number,
                     "max_async": args.max_async,
+                    "llm_timeout": args.llm_timeout,
                     "embedding_func_max_async": args.embedding_func_max_async,
                     "embedding_batch_num": args.embedding_batch_num,
+                    "embedding_timeout": args.embedding_timeout,
+                    "role_llm_config": rag.get_llm_role_config(),
+                    # Parser routing snapshot — surfaced in the WebUI status card
+                    "parser_routing": parser_rules_from_env(),
+                    "mineru": _build_mineru_status(),
+                    "docling": _build_docling_status(),
                 },
                 "auth_mode": auth_mode,
-                "pipeline_busy": pipeline_status.get("busy", False),
+                "pipeline_busy": pipeline_busy,
+                "pipeline_active": pipeline_active,
+                "pipeline_scanning": pipeline_scanning,
+                "pipeline_destructive_busy": pipeline_destructive_busy,
+                "pipeline_pending_enqueues": pipeline_pending_enqueues,
                 "keyed_locks": keyed_lock_info,
+                "llm_queue_status": await rag.get_llm_queue_status(include_base=True),
+                "embedding_queue_status": await rag.get_embedding_queue_status(),
+                "rerank_queue_status": await rag.get_rerank_queue_status(),
                 "core_version": core_version,
                 "api_version": api_version_display,
                 "webui_title": webui_title,
@@ -1696,7 +2609,9 @@ def main():
     # Create application instance directly instead of using factory function
     app = create_app(global_args)
 
-    # Start Uvicorn in single process mode
+    # Start Uvicorn in single process mode. Do not pass root_path here;
+    # the prefix lives only on FastAPI's app.root_path. See
+    # docs/MultiSiteDeployment.md.
     uvicorn_config = {
         "app": app,  # Pass application instance directly instead of string path
         "host": global_args.host,

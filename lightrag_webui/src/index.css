@@ -198,6 +198,20 @@
   white-space: nowrap;
 }
 
+/* Mermaid v11 attaches helper elements directly to <body> outside React's tree:
+   1) A transient <div id="dmermaid-…"> render scratchpad (~150px tall, lives
+      ~500ms during render) used for layout measurement.
+   2) A persistent <div class="mermaidTooltip"> shared across renders.
+   Both default to position:absolute with no top/left, so they land in body's
+   normal flow below <main h-screen> and inflate documentElement.scrollHeight,
+   producing a page-level scrollbar that flashes during render and persists
+   afterwards across Tab switches. Force fixed so they don't contribute to
+   page scroll dimensions. */
+.mermaidTooltip,
+body > [id^="dmermaid-"] {
+  position: fixed !important;
+}
+
 /* Improve KaTeX error display */
 .katex .katex-error {
   background-color: rgba(255, 0, 0, 0.1);

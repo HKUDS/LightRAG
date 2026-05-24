@@ -73,11 +73,20 @@ and in-app links.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `LIGHTRAG_API_PREFIX` | `""` | Reverse-proxy prefix that the upstream proxy strips before forwarding to FastAPI. Passed to FastAPI as `root_path`. |
+| `LIGHTRAG_API_PREFIX` | `""` | Reverse-proxy mount prefix. The backend accepts both strip and verbatim forwarding — pick whichever fits your proxy stack. Passed to FastAPI as `root_path`. |
 
 The WebUI is always mounted at `/webui` server-side. `window.__LIGHTRAG_CONFIG__.webuiPrefix` is computed as `LIGHTRAG_API_PREFIX + "/webui/"` and injected for the SPA — you do **not** set it yourself.
 
 There are no longer any frontend `VITE_API_PREFIX` / `VITE_WEBUI_PREFIX` variables. Setting them has no effect (they are ignored by the build).
+
+### Forwarding modes: strip and verbatim both work
+
+After setting `LIGHTRAG_API_PREFIX=/site01`, the backend resolves all routes correctly under either forwarding style:
+
+- **Strip** — proxy removes the prefix, backend sees `/webui/` and `/documents/foo`. The nginx example below uses this style.
+- **Verbatim** — proxy forwards the request unchanged, backend sees `/site01/webui/` and `/site01/documents/foo`. The Vite dev flow ([Scenario 2](#scenario-2--simulate-a-site-prefix)) and any non-rewriting proxy use this style.
+
+A small ASGI middleware in `create_app` prepends `root_path` to `scope["path"]` whenever the path does not already include it, so plain Routes and Mount sub-apps (the WebUI's `StaticFiles`) both resolve identically in either mode. You do not need to standardize on one — both coexist on the same backend without configuration toggles.
 
 ---
 

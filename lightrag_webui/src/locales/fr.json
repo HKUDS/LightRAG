@@ -136,10 +136,20 @@
         "metadata": "Métadonnées",
         "select": "Sélectionner"
       },
+      "filters": {
+        "all": "Tous",
+        "completed": "Terminé",
+        "analyzing": "Analyse en cours",
+        "processing": "En traitement",
+        "pending": "En attente",
+        "failed": "Échec"
+      },
       "status": {
         "all": "Tous",
         "completed": "Terminé",
         "preprocessed": "Prétraité",
+        "parsing": "Analyse syntaxique",
+        "analyzing": "Analyse en cours",
         "processing": "En traitement",
         "pending": "En attente",
         "failed": "Échoué"
@@ -284,11 +294,12 @@
     "statusCard": {
       "unavailable": "Informations sur l'état indisponibles",
       "serverInfo": "Informations du serveur",
-      "workingDirectory": "Répertoire de travail",
       "inputDirectory": "Répertoire d'entrée",
-      "maxParallelInsert": "Traitement simultané des documents",
-      "summarySettings": "Paramètres de résumé",
-      "llmConfig": "Configuration du modèle de langage",
+      "parser": "Analyseur",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Autres paramètres",
+      "llmConfig": "Configuration du modèle",
       "llmBinding": "Liaison du modèle de langage",
       "llmBindingHost": "Point de terminaison LLM",
       "llmModel": "Modèle de langage",
@@ -302,12 +313,10 @@
       "graphStorage": "Stockage du graphe",
       "vectorStorage": "Stockage vectoriel",
       "workspace": "Espace de travail",
-      "maxGraphNodes": "Nombre maximum de nœuds du graphe",
       "rerankerConfig": "Configuration du reclassement",
       "rerankerBindingHost": "Point de terminaison de reclassement",
       "rerankerModel": "Modèle de reclassement",
-      "lockStatus": "État des verrous",
-      "threshold": "Seuil"
+      "lockStatus": "État des verrous"
     },
     "propertiesView": {
       "editProperty": "Modifier {{property}}",

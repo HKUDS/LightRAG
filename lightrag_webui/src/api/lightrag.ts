@@ -25,6 +25,33 @@ export type LightragGraphType = {
   edges: LightragEdgeType[]
 }
 
+export type LightragQueueStatus = {
+  available: boolean
+  queue_name?: string
+  max_async?: number
+  max_queue_size?: number
+  queued?: number
+  running?: number
+  in_flight?: number
+  worker_count?: number
+  initialized?: boolean
+  submitted_total?: number
+  completed_total?: number
+  failed_total?: number
+  cancelled_total?: number
+  rejected_total?: number
+}
+
+export type LightragRoleLLMConfig = {
+  binding?: string | null
+  model?: string | null
+  host?: string | null
+  max_async?: number
+  timeout?: number
+  has_model_kwargs?: boolean
+  metadata?: Record<string, any>
+}
+
 export type LightragStatus = {
   status: 'healthy'
   working_directory: string
@@ -41,26 +68,70 @@ export type LightragStatus = {
     graph_storage: string
     vector_storage: string
     workspace?: string
+    storage_workspaces?: {
+      kv_storage?: string | null
+      doc_status_storage?: string | null
+      graph_storage?: string | null
+      vector_storage?: string | null
+    }
     max_graph_nodes?: string
     enable_rerank?: boolean
     rerank_binding?: string | null
     rerank_model?: string | null
     rerank_binding_host?: string | null
+    rerank_max_async?: number
+    rerank_timeout?: number
     summary_language: string
     force_llm_summary_on_merge: boolean
     max_parallel_insert: number
     max_async: number
+    llm_timeout?: number
     embedding_func_max_async: number
     embedding_batch_num: number
+    embedding_timeout?: number
     cosine_threshold: number
     min_rerank_score: number
     related_chunk_number: number
+    role_llm_config?: Record<string, LightragRoleLLMConfig>
+    vlm_process_enable?: boolean
+    parser_routing?: string
+    mineru?: {
+      endpoint: string
+      api_mode: 'official' | 'local' | null
+      options: {
+        language?: string
+        enable_table?: boolean
+        enable_formula?: boolean
+        model_version?: string
+        is_ocr?: boolean
+        local_backend?: string
+        local_parse_method?: string
+        local_image_analysis?: boolean
+      }
+    }
+    docling?: {
+      endpoint: string
+      options: {
+        do_ocr?: boolean
+        force_ocr?: boolean
+        ocr_engine?: string
+        ocr_lang?: string
+        do_formula_enrichment?: boolean
+      }
+    }
   }
   update_status?: Record<string, any>
   core_version?: string
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
   pipeline_busy: boolean
+  pipeline_active?: boolean
+  pipeline_scanning?: boolean
+  pipeline_destructive_busy?: boolean
+  pipeline_pending_enqueues?: number
+  llm_queue_status?: Record<string, LightragQueueStatus>
+  embedding_queue_status?: LightragQueueStatus
+  rerank_queue_status?: LightragQueueStatus
   keyed_locks?: {
     process_id: number
     cleanup_performed: {
@@ -160,13 +231,13 @@ export type EntityUpdateResponse = {
 }
 
 export type DocActionResponse = {
-  status: 'success' | 'partial_success' | 'failure' | 'duplicated'
+  status: 'success' | 'partial_success' | 'failure'
   message: string
   track_id?: string
 }
 
 export type ScanResponse = {
-  status: 'scanning_started'
+  status: 'scanning_started' | 'scanning_skipped_pipeline_busy'
   message: string
   track_id: string
 }
@@ -183,7 +254,14 @@ export type DeleteDocResponse = {
   doc_id: string
 }
 
-export type DocStatus = 'pending' | 'processing' | 'preprocessed' | 'processed' | 'failed'
+export type DocStatus =
+  | 'pending'
+  | 'parsing'
+  | 'analyzing'
+  | 'processing'
+  | 'preprocessed'
+  | 'processed'
+  | 'failed'
 
 export type DocStatusResponse = {
   id: string
@@ -200,7 +278,7 @@ export type DocStatusResponse = {
 }
 
 export type DocsStatusesResponse = {
-  statuses: Record<DocStatus, DocStatusResponse[]>
+  statuses: Partial<Record<DocStatus, DocStatusResponse[]>>
 }
 
 export type TrackStatusResponse = {
@@ -212,6 +290,7 @@ export type TrackStatusResponse = {
 
 export type DocumentsRequest = {
   status_filter?: DocStatus | null
+  status_filters?: DocStatus[] | null
   page: number
   page_size: number
   sort_field: 'created_at' | 'updated_at' | 'id' | 'file_path'
@@ -860,7 +939,8 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
     });
 
     // Check if response is HTML (which indicates a redirect or wrong endpoint)
-    const contentType = String(response.headers['content-type'] ?? '');
+    const contentTypeHeader = response.headers['content-type'];
+    const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
     if (contentType.includes('text/html')) {
       console.warn('Received HTML response instead of JSON for auth-status endpoint');
       return {

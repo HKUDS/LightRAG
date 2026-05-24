@@ -452,3 +452,204 @@ class TestRuntimeConfigInjection:
         cache_control = response.headers.get("cache-control", "")
         assert "no-cache" in cache_control
         assert "no-store" in cache_control
+
+
+class TestUvicornRootPathSemantics:
+    """Lock in the deployment contract that both proxy-strip and verbatim
+    forwarding work through FastAPI's app-level ``root_path`` plus a
+    ``_RootPathNormalizationMiddleware`` — without ever passing
+    ``root_path`` through to uvicorn/gunicorn.
+
+    Background:
+
+      - uvicorn builds ``scope["path"] = uvicorn.root_path + <incoming http
+        path>`` and ``scope["root_path"] = uvicorn.root_path``
+        (uvicorn/protocols/http/h11_impl.py).
+      - FastAPI's ``__call__`` overrides ``scope["root_path"]`` from
+        ``app.root_path`` but does NOT touch ``scope["path"]``
+        (fastapi/applications.py:1131-1134).
+      - Starlette's ``Mount.matches`` mutates the child scope's root_path
+        to ``original + matched_path`` and again leaves ``scope["path"]``
+        untouched (starlette/routing.py:401-432). The inner sub-app
+        (e.g. StaticFiles) then sees ``scope["path"]`` and
+        ``scope["root_path"]`` that do not overlap, and 404s.
+
+    Concrete failure mode without the middleware (proxy strips /site01,
+    backend sees ``/webui/``):
+
+        outer get_route_path:  /webui/ does not start with /site01 → /webui/
+        Mount.matches:         path_regex "^/webui/(?P<path>.*)$" matches
+                               child scope.root_path = /site01/webui
+                               child scope.path      = /webui/  (unchanged)
+        StaticFiles.get_path:  /webui/ does not start with /site01/webui →
+                               returns /webui/ → looked up as filename
+                               "webui" inside the webui static dir → 404
+
+    ``_RootPathNormalizationMiddleware`` runs before routing and prepends
+    ``root_path`` to ``scope["path"]`` whenever the latter does not already
+    start with it. This makes both modes converge to the canonical ASGI
+    form (path always contains root_path) without requiring uvicorn's
+    --root-path — which would break verbatim mode by double-prefixing.
+    """
+
+    @staticmethod
+    async def _call_with_scope(app, http_path, *, uvicorn_root_path=""):
+        """Drive the ASGI app the way uvicorn would.
+
+        Simulates uvicorn's scope construction so we can catch the
+        path-doubling bug that TestClient hides.
+        """
+        full_path = uvicorn_root_path + http_path
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "root_path": uvicorn_root_path,
+            "path": full_path,
+            "raw_path": full_path.encode("ascii"),
+            "query_string": b"",
+            "headers": [],
+            "state": {},
+        }
+        status = {"code": None}
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                status["code"] = message["status"]
+
+        await app(scope, receive, send)
+        return status["code"]
+
+    def _build_app_with_prefix(self, prefix):
+        original_argv = sys.argv.copy()
+        try:
+            sys.argv = ["lightrag-server", "--api-prefix", prefix]
+            from lightrag.api.config import parse_args
+            from lightrag.api.lightrag_server import create_app
+
+            args = parse_args()
+            with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+                mock_rag.return_value = MagicMock()
+                return create_app(args)
+        finally:
+            sys.argv = original_argv
+
+    @pytest.mark.asyncio
+    async def test_route_strip_mode_matches(self):
+        """Plain Route, proxy-strip mode: backend receives /openapi.json."""
+        app = self._build_app_with_prefix("/site01")
+        status = await self._call_with_scope(app, "/openapi.json")
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_route_verbatim_mode_matches(self):
+        """Plain Route, verbatim mode: backend receives /site01/openapi.json.
+
+        Locks in the contract that PR #3128's original fix broke: setting
+        uvicorn root_path would have made this case 404 by doubling the
+        prefix in scope["path"].
+        """
+        app = self._build_app_with_prefix("/site01")
+        status = await self._call_with_scope(app, "/site01/openapi.json")
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_mount_strip_mode_matches(self):
+        """WebUI Mount, proxy-strip mode: backend receives /webui/.
+
+        This is the bug the middleware fixes. Without normalization,
+        StaticFiles.get_path sees path=/webui/ and root_path=/site01/webui
+        (mutated by Mount.matches) and serves the literal "webui" filename
+        lookup → 404. With normalization, scope.path becomes
+        /site01/webui/ before routing and the lookup resolves to
+        index.html.
+        """
+        app = self._build_app_with_prefix("/site01")
+        status = await self._call_with_scope(app, "/webui/")
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_mount_verbatim_mode_matches(self):
+        """WebUI Mount, verbatim mode: backend receives /site01/webui/.
+
+        Already canonical; the middleware is a no-op for this case. The
+        test guards against accidentally regressing verbatim while fixing
+        strip — symmetric to test_route_verbatim_mode_matches but exercises
+        the Mount path with its nested ``get_route_path`` resolution.
+        """
+        app = self._build_app_with_prefix("/site01")
+        status = await self._call_with_scope(app, "/site01/webui/")
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_simulated_uvicorn_root_path_breaks_verbatim(self):
+        """Document the failure mode that the revert prevents.
+
+        If uvicorn's root_path were also "/site01", uvicorn would build
+        scope.path = "/site01" + "/site01/openapi.json". Starlette strips
+        one prefix; the remaining "/site01/openapi.json" has no route.
+        """
+        app = self._build_app_with_prefix("/site01")
+        status = await self._call_with_scope(
+            app, "/site01/openapi.json", uvicorn_root_path="/site01"
+        )
+        assert status == 404
+
+    def test_launcher_does_not_pass_root_path_to_uvicorn(self, monkeypatch, tmp_path):
+        """Guard against re-adding root_path to the uvicorn launcher kwargs.
+
+        Mocks uvicorn.run and exercises lightrag_server.main() far enough
+        to capture the config dict, then asserts root_path is absent.
+        """
+        monkeypatch.setenv("LIGHTRAG_API_PREFIX", "/site01")
+        monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+
+        from lightrag.api import lightrag_server
+
+        captured = {}
+
+        def fake_run(**kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(lightrag_server, "uvicorn", MagicMock(run=fake_run))
+        monkeypatch.setattr(lightrag_server, "check_env_file", lambda: True)
+        monkeypatch.setattr(
+            lightrag_server, "check_and_install_dependencies", lambda: None
+        )
+        monkeypatch.setattr(lightrag_server, "configure_logging", lambda: None)
+        monkeypatch.setattr(lightrag_server, "update_uvicorn_mode_config", lambda: None)
+        monkeypatch.setattr(lightrag_server, "display_splash_screen", lambda *_: None)
+        with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+            mock_rag.return_value = MagicMock()
+            # Re-parse args under the patched env so global_args picks up the prefix.
+            from lightrag.api.config import parse_args, global_args as _ga
+
+            new_args = parse_args()
+            for attr in vars(new_args):
+                setattr(_ga, attr, getattr(new_args, attr))
+
+            lightrag_server.main()
+
+        assert "root_path" not in captured, (
+            "uvicorn_config must not include root_path; rely on FastAPI's "
+            "app-level root_path only — see TestUvicornRootPathSemantics docstring."
+        )
+
+    def test_gunicorn_uses_upstream_uvicorn_worker(self):
+        """Symmetric guard for the multi-worker launcher.
+
+        gunicorn_config.worker_class must remain the upstream
+        ``uvicorn.workers.UvicornWorker`` — a custom subclass injecting
+        root_path via CONFIG_KWARGS would re-introduce the same
+        path-doubling regression in worker processes.
+        """
+        from lightrag.api import gunicorn_config
+
+        assert gunicorn_config.worker_class == "uvicorn.workers.UvicornWorker"

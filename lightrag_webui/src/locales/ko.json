@@ -136,10 +136,20 @@
         "metadata": "메타데이터",
         "select": "선택"
       },
+      "filters": {
+        "all": "전체",
+        "completed": "완료",
+        "analyzing": "분석 중",
+        "processing": "처리 중",
+        "pending": "대기 중",
+        "failed": "실패"
+      },
       "status": {
         "all": "전체",
         "completed": "완료",
         "preprocessed": "전처리 완료",
+        "parsing": "파싱 중",
+        "analyzing": "분석 중",
         "processing": "처리 중",
         "pending": "대기 중",
         "failed": "실패"
@@ -284,11 +294,12 @@
     "statusCard": {
       "unavailable": "상태 정보를 사용할 수 없음",
       "serverInfo": "서버 정보",
-      "workingDirectory": "작업 디렉토리",
       "inputDirectory": "입력 디렉토리",
-      "maxParallelInsert": "동시 문서 처리",
-      "summarySettings": "요약 설정",
-      "llmConfig": "LLM 구성",
+      "parser": "파서",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "기타 설정",
+      "llmConfig": "모델 구성",
       "llmBinding": "LLM 바인딩",
       "llmBindingHost": "LLM 엔드포인트",
       "llmModel": "LLM 모델",
@@ -302,12 +313,10 @@
       "graphStorage": "그래프 스토리지",
       "vectorStorage": "벡터 스토리지",
       "workspace": "작업 공간",
-      "maxGraphNodes": "최대 그래프 노드",
       "rerankerConfig": "Reranker 구성",
       "rerankerBindingHost": "Reranker 엔드포인트",
       "rerankerModel": "Reranker 모델",
-      "lockStatus": "잠금 상태",
-      "threshold": "임계값"
+      "lockStatus": "잠금 상태"
     },
     "propertiesView": {
       "editProperty": "{{property}} 수정",

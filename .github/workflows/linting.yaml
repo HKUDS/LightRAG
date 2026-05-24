@@ -70,7 +70,7 @@ jobs:
                 EOF
 
             - name: Comment on PR with fix instructions
-              if: failure() && steps.pre-commit.outcome == 'failure' && github.event_name == 'pull_request'
+              if: failure() && steps.pre-commit.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
               uses: actions/github-script@v9
               with:
                 script: |
