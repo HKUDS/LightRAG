@@ -86,8 +86,32 @@ async def adelete_by_entity(
     # Use keyed lock for entity to ensure atomic graph and vector db operations
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+
+    # delete_node() detaches every incident edge, so the lock set must cover
+    # every (entity_name, other) endpoint — otherwise the doc-ingest pipeline
+    # (which locks edges under sorted([src, tgt]) keys) lives in a disjoint
+    # partition and can race against this delete on the same edge.
+    #
+    # A short race window exists between this pre-fetch and lock acquisition;
+    # the storage-layer advisory lock in upsert_edge is the final safety net
+    # against duplicate DIRECTED rows for edges that appear in that window.
+    lock_key_set: set[str] = {entity_name}
+    try:
+        prefetched_edges = await chunk_entity_relation_graph.get_node_edges(entity_name)
+    except Exception as edge_fetch_error:
+        logger.warning(
+            f"Entity Delete: failed to pre-fetch edges for `{entity_name}` "
+            f"(lock-set extension): {edge_fetch_error}"
+        )
+        prefetched_edges = None
+    if prefetched_edges:
+        for src, tgt in prefetched_edges:
+            lock_key_set.add(src)
+            lock_key_set.add(tgt)
+    lock_keys = sorted(lock_key_set)
+
     async with get_storage_keyed_lock(
-        [entity_name], namespace=namespace, enable_logging=False
+        lock_keys, namespace=namespace, enable_logging=False
     ):
         try:
             # Check if the entity exists
@@ -99,7 +123,8 @@ async def adelete_by_entity(
                     message=f"Entity '{entity_name}' not found.",
                     status_code=404,
                 )
-            # Retrieve related relationships before deleting the node
+            # Re-fetch related relationships inside the lock so the count and
+            # downstream cleanup reflect any edges added during the race window.
             edges = await chunk_entity_relation_graph.get_node_edges(entity_name)
             related_relations_count = len(edges) if edges else 0
 
@@ -585,10 +610,39 @@ async def aedit_entity(
     new_entity_name = updated_data.get("entity_name", entity_name)
     is_renaming = new_entity_name != entity_name
 
-    lock_keys = sorted({entity_name, new_entity_name}) if is_renaming else [entity_name]
-
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+
+    # When renaming, _edit_entity_impl rewrites every (entity_name, other)
+    # edge as (new_entity_name, other). The doc-ingest pipeline locks edges
+    # under sorted([src, tgt]) keys (operate.py:_locked_process_edges), so a
+    # lock set of just {entity_name, new_entity_name} lives in a disjoint
+    # partition from the per-edge locks and can race against concurrent edge
+    # writes. Pre-fetch the edges here, extend the lock set to cover every
+    # other endpoint, and acquire all keys atomically.
+    #
+    # A short race window exists between this pre-fetch and lock acquisition:
+    # a new edge might appear whose other endpoint is not in lock_keys. The
+    # storage-layer advisory lock inside PGGraphStorage.upsert_edge is the
+    # final safety net against duplicate DIRECTED rows in that case, and the
+    # rename loop re-fetches edges inside the lock anyway.
+    lock_key_set: set[str] = {entity_name, new_entity_name}
+    if is_renaming:
+        try:
+            prefetched_edges = await chunk_entity_relation_graph.get_node_edges(
+                entity_name
+            )
+        except Exception as edge_fetch_error:
+            logger.warning(
+                f"Entity Edit: failed to pre-fetch edges for `{entity_name}` "
+                f"(rename lock-set extension): {edge_fetch_error}"
+            )
+            prefetched_edges = None
+        if prefetched_edges:
+            for src, tgt in prefetched_edges:
+                lock_key_set.add(src)
+                lock_key_set.add(tgt)
+    lock_keys = sorted(lock_key_set) if is_renaming else [entity_name]
 
     operation_summary: dict[str, Any] = {
         "merged": False,

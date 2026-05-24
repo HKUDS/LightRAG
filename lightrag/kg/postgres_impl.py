@@ -5747,7 +5747,13 @@ class PGGraphStorage(BaseGraphStorage):
             deduped_edges.pop(edge_key, None)
             deduped_edges[edge_key] = (src, tgt, edge_data)
 
-        for src, tgt, edge_data in deduped_edges.values():
+        # Iterate in canonical (LEAST, GREATEST) order so concurrent
+        # upsert_edges_batch calls always acquire the per-edge advisory locks
+        # in the same global order. Without this, dict insertion-order could
+        # let two batches acquire locks for {A,B} and {C,D} in opposite
+        # sequences and deadlock on each other in PostgreSQL.
+        for edge_key in sorted(deduped_edges):
+            src, tgt, edge_data = deduped_edges[edge_key]
             await self.upsert_edge(src, tgt, edge_data=edge_data)
 
     async def delete_node(self, node_id: str) -> None:
