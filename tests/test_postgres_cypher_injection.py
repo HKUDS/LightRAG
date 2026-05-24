@@ -237,7 +237,8 @@ async def test_upsert_edge_uses_parameterized_cypher():
     # Raw node IDs are positional params on the lock, never interpolated.
     assert "Alice" not in lock_sql
     assert "Bob" not in lock_sql
-    assert calls[0]["args"] == ("Alice", "Bob")
+    # graph_name flows as $1, the endpoint pair as $2/$3.
+    assert calls[0]["args"] == ("test_graph", "Alice", "Bob")
 
     cypher_call = calls[1]
     cypher_sql = cypher_call["sql"]
@@ -271,8 +272,8 @@ async def test_upsert_edge_injection_payload():
         assert injection_src not in call["sql"]
         assert injection_tgt not in call["sql"]
 
-    # Lock statement passes raw IDs as positional params.
-    assert calls[0]["args"] == (injection_src, injection_tgt)
+    # Lock statement passes graph_name + raw IDs as positional params.
+    assert calls[0]["args"] == ("test_graph", injection_src, injection_tgt)
 
     # Cypher params arrive as a single positional agtype JSON arg.
     params = json.loads(calls[1]["args"][0])
@@ -290,8 +291,9 @@ async def test_upsert_edge_unicode_entity_ids():
         storage, src, tgt, {"description": "\u8def\u7ebf"}
     )
 
-    # Lock statement carries the raw IDs as positional params, not interpolated.
-    assert calls[0]["args"] == (src, tgt)
+    # Lock statement carries graph_name + raw IDs as positional params, not
+    # interpolated.
+    assert calls[0]["args"] == ("test_graph", src, tgt)
     assert src not in calls[0]["sql"]
     assert tgt not in calls[0]["sql"]
 

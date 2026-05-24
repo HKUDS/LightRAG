@@ -5587,14 +5587,18 @@ class PGGraphStorage(BaseGraphStorage):
         # writers — two transactions upserting the same pair could both observe no
         # existing edge and both CREATE one, leaving duplicate DIRECTED rows that
         # inflate degree counts and duplicate relations. We serialise per logical
-        # edge with a transaction-scoped advisory lock keyed on the ordered
-        # (src_id, tgt_id) pair (so {A,B} and {B,A} collide — the OPTIONAL MATCH is
-        # undirected). AGE refuses to plan a join against a cypher() call that
-        # contains a CREATE clause ("cypher create clause cannot be rescanned"),
-        # so we cannot use a CTE for the lock. Instead we open an explicit
-        # transaction and run two statements on the same connection: the lock
-        # acquisition first, then the cypher upsert. The lock is released when
-        # the transaction commits.
+        # edge with a transaction-scoped advisory lock keyed on
+        # (graph_name, ordered (src_id, tgt_id)) so:
+        #   - {A,B} and {B,A} collide on the same lock (the OPTIONAL MATCH is
+        #     undirected), and
+        #   - the same (A,B) pair in different AGE graphs / workspaces does NOT
+        #     collide. pg_advisory_xact_lock is database-wide, and we don't want
+        #     independent tenants to serialise each other's ingestion.
+        # AGE refuses to plan a join against a cypher() call that contains a
+        # CREATE clause ("cypher create clause cannot be rescanned"), so we cannot
+        # use a CTE for the lock. Instead we open an explicit transaction and run
+        # two statements on the same connection: the lock acquisition first, then
+        # the cypher upsert. The lock is released when the transaction commits.
         props_literal = self._format_properties(edge_data) if edge_data else "{}"
         cypher_query = f"""MATCH (source:base {{entity_id: $src_id}})
                      WITH source
@@ -5609,7 +5613,8 @@ class PGGraphStorage(BaseGraphStorage):
         lock_sql = (
             "SELECT pg_advisory_xact_lock("
             "  hashtextextended("
-            "    LEAST($1::text, $2::text) || E'\\x01' || GREATEST($1::text, $2::text),"
+            "    $1::text || E'\\x01' ||"
+            "    LEAST($2::text, $3::text) || E'\\x01' || GREATEST($2::text, $3::text),"
             "    0"
             "  )"
             ")"
@@ -5635,7 +5640,9 @@ class PGGraphStorage(BaseGraphStorage):
 
         async def _operation(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
-                await connection.execute(lock_sql, source_node_id, target_node_id)
+                await connection.execute(
+                    lock_sql, self.graph_name, source_node_id, target_node_id
+                )
                 await connection.execute(cypher_sql, params_json)
 
         try:
