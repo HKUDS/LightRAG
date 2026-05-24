@@ -1894,7 +1894,7 @@ inject_lightrag_bind_mounts() {
       if [[ "$line" =~ ^[[:space:]]{4}[^[:space:]-] || "$line" =~ ^[[:space:]]{2}[^[:space:]] || "$line" =~ ^(volumes|networks): ]]; then
         if [[ "$inserted" == "no" ]]; then
           for mount in "${mounts[@]}"; do
-            printf '      - "%s"\n' "$mount" >> "$tmp_file"
+            printf '      - %s\n' "$mount" >> "$tmp_file"
           done
           inserted="yes"
         fi
@@ -1904,7 +1904,7 @@ inject_lightrag_bind_mounts() {
       if [[ "$inserted" == "no" ]]; then
         printf '    volumes:\n' >> "$tmp_file"
         for mount in "${mounts[@]}"; do
-          printf '      - "%s"\n' "$mount" >> "$tmp_file"
+          printf '      - %s\n' "$mount" >> "$tmp_file"
         done
         inserted="yes"
       fi
@@ -1926,7 +1926,7 @@ inject_lightrag_bind_mounts() {
       printf '    volumes:\n' >> "$tmp_file"
     fi
     for mount in "${mounts[@]}"; do
-      printf '      - "%s"\n' "$mount" >> "$tmp_file"
+      printf '      - %s\n' "$mount" >> "$tmp_file"
     done
   fi
 
