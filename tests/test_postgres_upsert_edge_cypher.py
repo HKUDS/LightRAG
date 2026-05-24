@@ -11,7 +11,14 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from lightrag.kg.postgres_impl import PGGraphStorage
+import asyncpg
+from tenacity import wait_none
+
+from lightrag.kg.postgres_impl import (
+    PGGraphQueryException,
+    PGGraphStorage,
+    _is_transient_graph_write_error,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -235,3 +242,76 @@ async def test_upsert_edge_lock_key_is_endpoint_order_independent():
             "Bob",
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_wraps_transient_errors_for_retry(monkeypatch):
+    """Query-level transient errors must be wrapped in PGGraphQueryException so
+    the outer @retry predicate can identify them and retry.
+
+    Regression: when upsert_edge was moved off self._query onto
+    self.db._run_with_retry (to run the advisory lock + cypher in one
+    transaction), the _query exception-wrapping path was bypassed. A raw
+    asyncpg.DeadlockDetectedError surfacing from connection.execute would
+    therefore fail _is_transient_graph_write_error's first guard
+    (isinstance(exc, PGGraphQueryException)) and skip the retry loop, silently
+    degrading concurrent ingestion under contention. This test pins the
+    wrapping back in place and asserts the retry loop actually fires.
+    """
+    # Make the retry loop fire with zero backoff so the test stays fast.
+    monkeypatch.setattr(PGGraphStorage.upsert_edge.retry, "wait", wait_none())
+
+    storage = make_graph_storage()
+    deadlock = asyncpg.exceptions.DeadlockDetectedError("simulated deadlock")
+
+    call_count = 0
+
+    async def fake_run_with_retry(_operation, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise deadlock
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+
+    with pytest.raises(PGGraphQueryException) as excinfo:
+        await storage.upsert_edge("Alice", "Bob", {"weight": "1.0"})
+
+    # The original asyncpg exception is preserved as __cause__ so the predicate
+    # can introspect it via exc.__cause__.
+    assert excinfo.value.__cause__ is deadlock
+    # And the predicate now recognises this exception as retryable.
+    assert _is_transient_graph_write_error(excinfo.value) is True
+    # Retried up to stop_after_attempt(3) — proves the wrapping actually
+    # engages the @retry loop rather than failing fast on the first attempt.
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_does_not_retry_non_transient_errors(monkeypatch):
+    """Non-transient errors must not be retried by the @retry loop.
+
+    The wrapping in upsert_edge unconditionally re-raises as
+    PGGraphQueryException, but _is_transient_graph_write_error only returns
+    True for a small set of asyncpg transient causes. A plain ValueError
+    bubbling out of _run_with_retry should fail fast, not loop 3 times.
+    """
+    monkeypatch.setattr(PGGraphStorage.upsert_edge.retry, "wait", wait_none())
+
+    storage = make_graph_storage()
+    boom = ValueError("not a transient db error")
+
+    call_count = 0
+
+    async def fake_run_with_retry(_operation, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise boom
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+
+    with pytest.raises(PGGraphQueryException) as excinfo:
+        await storage.upsert_edge("Alice", "Bob", {"weight": "1.0"})
+
+    assert excinfo.value.__cause__ is boom
+    assert _is_transient_graph_write_error(excinfo.value) is False
+    assert call_count == 1

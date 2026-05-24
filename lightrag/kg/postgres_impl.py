@@ -5660,7 +5660,7 @@ class PGGraphStorage(BaseGraphStorage):
                 target_node_id,
             )
 
-        except Exception:
+        except Exception as e:
             performance_timing_log(
                 "[%s] total failed after %.4fs source_node_id=%s target_node_id=%s",
                 timing_label,
@@ -5671,7 +5671,27 @@ class PGGraphStorage(BaseGraphStorage):
             logger.error(
                 f"[{self.workspace}] POSTGRES, upsert_edge error on edge: `{source_node_id}`-`{target_node_id}`"
             )
-            raise
+            # Re-raise as PGGraphQueryException so the outer @retry's
+            # _is_transient_graph_write_error predicate can inspect __cause__ and
+            # retry on DeadlockDetectedError / SerializationError /
+            # LockNotAvailableError / QueryCanceledError — mirrors what _query
+            # does for upsert_node and the rest of the AGE write paths. Without
+            # this wrapping, query-level transient errors from connection.execute
+            # would surface as raw asyncpg exceptions, fail isinstance() in the
+            # predicate, and skip retries.
+            if isinstance(e, PGGraphQueryException):
+                raise
+            raise PGGraphQueryException(
+                {
+                    "message": (
+                        f"Error executing graph upsert_edge: "
+                        f"`{source_node_id}`-`{target_node_id}`"
+                    ),
+                    "wrapped": cypher_sql,
+                    "detail": repr(e),
+                    "error_type": e.__class__.__name__,
+                }
+            ) from e
 
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes while preserving input-order semantics.
