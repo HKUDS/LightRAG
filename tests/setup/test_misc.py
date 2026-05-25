@@ -1324,6 +1324,58 @@ detect_managed_root_services "{tmp_path}/docker-compose.final.yml\"
     assert output.splitlines() == ["milvus", "neo4j"]
 
 
+def test_detect_managed_root_services_groups_opensearch_dashboards_under_opensearch(
+    tmp_path: Path,
+) -> None:
+    """opensearch-dashboards must collapse to the opensearch root so orphan dashboards blocks don't masquerade as external services."""
+    write_text_lines(
+        tmp_path / "docker-compose.final.yml",
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  opensearch:",
+            "    image: opensearchproject/opensearch:3",
+            "  dashboards:",
+            "    image: opensearchproject/opensearch-dashboards:3",
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+detect_managed_root_services "{tmp_path}/docker-compose.final.yml\"
+""")
+    assert output.splitlines() == ["opensearch"]
+
+
+def test_compose_has_non_wizard_services_ignores_orphan_dashboards(
+    tmp_path: Path,
+) -> None:
+    """A leftover opensearch-dashboards alone must not be treated as an external service that blocks the host-mode prompt."""
+    compose_file = tmp_path / "docker-compose.final.yml"
+    write_text_lines(
+        compose_file,
+        [
+            "services:",
+            "  lightrag:",
+            "    image: example/lightrag:test",
+            "  dashboards:",
+            "    image: opensearchproject/opensearch-dashboards:3",
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+if compose_has_non_wizard_services "{compose_file}"; then
+  printf 'RESULT=non_wizard_detected\\n'
+else
+  printf 'RESULT=wizard_only\\n'
+fi
+""")
+    values = parse_lines(output)
+    assert values["RESULT"] == "wizard_only"
+
+
 def test_finalize_server_setup_allows_risky_security_config_and_security_check_reports_it(
     tmp_path: Path,
 ) -> None:
