@@ -1,3 +1,4 @@
+import glob
 import os
 import time
 import asyncio
@@ -6,6 +7,7 @@ import json
 import numpy as np
 from dataclasses import dataclass
 
+from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
 
@@ -66,6 +68,17 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Keep a local store for metadata, IDs, etc.
         # Maps <int faiss_id> → metadata (including your original ID).
         self._id_to_meta = {}
+
+        # Sweep orphan tmp siblings left behind by hard kills mid-save.
+        # The meta file also needs an extra pattern: legacy versions of this
+        # storage wrote a fixed "<meta>.tmp" suffix without further dot-segments,
+        # which the default ".tmp.*" pattern does not match.
+        reap_orphan_tmp_files(self._faiss_index_file, self.workspace or "_")
+        reap_orphan_tmp_files(
+            self._meta_file,
+            self.workspace or "_",
+            extra_patterns=(glob.escape(self._meta_file) + ".tmp",),
+        )
 
         self._load_faiss_index()
 
@@ -349,8 +362,17 @@ class FaissVectorDBStorage(BaseVectorStorage):
     def _save_faiss_index(self):
         """
         Save the current Faiss index + metadata to disk so it can persist across runs.
+
+        Each file lands via a per-writer tmp + os.replace so a crash mid-write
+        leaves the prior snapshot intact. Cross-file consistency between the
+        .index and .meta.json (the two renames are not joint) is intentionally
+        out of scope here.
         """
-        faiss.write_index(self._index, self._faiss_index_file)
+        atomic_write(
+            self._faiss_index_file,
+            lambda tmp: faiss.write_index(self._index, tmp),
+            self.workspace or "_",
+        )
 
         # Save metadata dict to JSON, excluding __vector__ since vectors are
         # already stored in the Faiss index file and can be reconstructed on load.
@@ -359,12 +381,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
             filtered_meta = {k: v for k, v in meta.items() if k != "__vector__"}
             serializable_dict[str(fid)] = filtered_meta
 
-        # Atomic write: write to temp file first, then rename to reduce
-        # mismatch risk between index and meta files on crash.
-        tmp_meta_file = self._meta_file + ".tmp"
-        with open(tmp_meta_file, "w", encoding="utf-8") as f:
-            json.dump(serializable_dict, f)
-        os.replace(tmp_meta_file, self._meta_file)
+        def _write_meta(tmp: str) -> None:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(serializable_dict, f)
+
+        atomic_write(self._meta_file, _write_meta, self.workspace or "_")
 
     def _load_faiss_index(self):
         """

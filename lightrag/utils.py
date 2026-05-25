@@ -1583,6 +1583,10 @@ def write_json(json_obj, file_name):
     making it memory-efficient. When sanitization occurs, the caller should
     reload the cleaned data from the file to update shared memory.
 
+    Writes are atomic: both the fast path and the sanitizing fallback land
+    in the same per-writer tmp sibling, and only the final ``os.replace``
+    publishes the file. A crash mid-write leaves the prior snapshot intact.
+
     Args:
         json_obj: Object to serialize (may be a shallow copy from shared memory)
         file_name: Output file path
@@ -1591,21 +1595,36 @@ def write_json(json_obj, file_name):
         bool: True if sanitization was applied (caller should reload data),
               False if direct write succeeded (no reload needed)
     """
-    try:
-        # Strategy 1: Fast path - try direct serialization
-        with open(file_name, "w", encoding="utf-8") as f:
-            json.dump(json_obj, f, indent=2, ensure_ascii=False)
-        return False  # No sanitization needed, no reload required
+    from lightrag.file_atomic import atomic_write
 
-    except (UnicodeEncodeError, UnicodeDecodeError) as e:
-        logger.debug(f"Direct JSON write failed, using sanitizing encoder: {e}")
+    sanitized = False
 
-    # Strategy 2: Use custom encoder (sanitizes during serialization, zero memory copy)
-    with open(file_name, "w", encoding="utf-8") as f:
-        json.dump(json_obj, f, indent=2, ensure_ascii=False, cls=SanitizingJSONEncoder)
+    def _do_write(tmp_path: str) -> None:
+        nonlocal sanitized
+        try:
+            # Strategy 1: Fast path - try direct serialization.
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(json_obj, f, indent=2, ensure_ascii=False)
+        except (UnicodeEncodeError, UnicodeDecodeError) as e:
+            logger.debug(f"Direct JSON write failed, using sanitizing encoder: {e}")
+            # Strategy 2: Use sanitizing encoder (zero-copy). Reusing the
+            # same tmp path keeps the operation single-rename even on the
+            # slow path.
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    json_obj,
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                    cls=SanitizingJSONEncoder,
+                )
+            sanitized = True
 
-    logger.info(f"JSON sanitization applied during write: {file_name}")
-    return True  # Sanitization applied, reload recommended
+    atomic_write(file_name, _do_write)
+
+    if sanitized:
+        logger.info(f"JSON sanitization applied during write: {file_name}")
+    return sanitized
 
 
 class TokenizerInterface(Protocol):
