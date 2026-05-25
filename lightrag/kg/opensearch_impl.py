@@ -460,26 +460,34 @@ class OpenSearchKVStorage(BaseKVStorage):
     async def finalize(self):
         """Flush pending writes and release the OpenSearch client connection.
 
-        Raises ``RuntimeError`` if the buffer still contains pending ops
-        after the final flush attempt -- e.g. because retryable bulk
-        failures (5xx) left rows behind. The client is released either
-        way so we don't leak a connection on shutdown, but the caller
-        must learn that buffered data did not reach OpenSearch.
+        Regular flush failures (any ``Exception``) are captured so they
+        can be re-surfaced as a ``RuntimeError`` that names the unflushed
+        buffer counts -- otherwise ``LightRAG.finalize_storages()`` would
+        log the storage as successfully finalized while writes silently
+        failed to reach OpenSearch.
+
+        ``BaseException`` subclasses other than ``Exception`` (notably
+        ``asyncio.CancelledError`` / ``KeyboardInterrupt`` / ``SystemExit``)
+        are NOT caught: they propagate through the ``finally`` block so
+        shutdown cancellation is honoured and not silently swallowed.
+        The client is released in ``finally`` so it does not leak whether
+        the flush succeeded, failed, or was cancelled.
         """
-        flush_error: BaseException | None = None
+        flush_error: Exception | None = None
         try:
-            await self._flush_pending_kv_ops()
-        except BaseException as e:
-            # _flush_pending_kv_ops leaves the buffers intact on raise;
-            # capture the error so we can re-surface it after the client
-            # is released (we still must not leak the connection).
-            flush_error = e
+            try:
+                await self._flush_pending_kv_ops()
+            except Exception as e:
+                # _flush_pending_kv_ops leaves the buffers intact on raise.
+                flush_error = e
+        finally:
+            if self.client is not None:
+                await ClientManager.release_client(self.client)
+                self.client = None
 
-        if self.client is not None:
-            await ClientManager.release_client(self.client)
-            self.client = None
-
-        # Snapshot remaining buffer state to report concrete counts.
+        # Reached only when no BaseException propagated through the
+        # finally above. Snapshot remaining buffer state to report
+        # concrete counts.
         pending_upserts = len(self._pending_upserts)
         pending_deletes = len(self._pending_kv_deletes)
 
@@ -3239,21 +3247,29 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
     async def finalize(self):
         """Flush pending writes and release the OpenSearch client connection.
 
-        Raises ``RuntimeError`` if the buffer still contains pending ops
-        after the final flush attempt -- e.g. because retryable bulk
-        failures (5xx) left rows behind. The client is released either
-        way so we don't leak a connection on shutdown, but the caller
-        must learn that buffered data did not reach OpenSearch.
-        """
-        flush_error: BaseException | None = None
-        try:
-            await self._flush_pending_vector_ops()
-        except BaseException as e:
-            flush_error = e
+        Regular flush failures (any ``Exception``) are captured so they
+        can be re-surfaced as a ``RuntimeError`` that names the unflushed
+        buffer counts -- otherwise ``LightRAG.finalize_storages()`` would
+        log the storage as successfully finalized while writes silently
+        failed to reach OpenSearch.
 
-        if self.client is not None:
-            await ClientManager.release_client(self.client)
-            self.client = None
+        ``BaseException`` subclasses other than ``Exception`` (notably
+        ``asyncio.CancelledError`` / ``KeyboardInterrupt`` / ``SystemExit``)
+        are NOT caught: they propagate through the ``finally`` block so
+        shutdown cancellation is honoured and not silently swallowed.
+        The client is released in ``finally`` so it does not leak whether
+        the flush succeeded, failed, or was cancelled.
+        """
+        flush_error: Exception | None = None
+        try:
+            try:
+                await self._flush_pending_vector_ops()
+            except Exception as e:
+                flush_error = e
+        finally:
+            if self.client is not None:
+                await ClientManager.release_client(self.client)
+                self.client = None
 
         pending_docs = len(self._pending_vector_docs)
         pending_deletes = len(self._pending_vector_deletes)

@@ -997,6 +997,33 @@ class TestKVStorageBatching:
                     assert s.client is None
 
     @pytest.mark.asyncio
+    async def test_kv_finalize_propagates_cancellation(
+        self, global_config, embed_func, mock_client
+    ):
+        """asyncio.CancelledError raised during the final flush must
+        propagate UN-wrapped so the shutdown sequence honours the
+        cancellation signal. The client is still released (finally
+        block) before the cancellation continues.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch.object(
+                ClientManager, "release_client", new_callable=AsyncMock
+            ) as mock_release:
+                with patch(
+                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                    new_callable=AsyncMock,
+                ) as mock_bulk:
+                    mock_bulk.side_effect = asyncio.CancelledError()
+                    s = self._make(global_config, embed_func)
+                    await s.initialize()
+                    await s.upsert({"k1": {"content": "stuck"}})
+                    with pytest.raises(asyncio.CancelledError):
+                        await s.finalize()
+                    # finally block still released the client.
+                    mock_release.assert_awaited_once()
+                    assert s.client is None
+
+    @pytest.mark.asyncio
     async def test_kv_drop_discards_buffers_and_serialises_with_flush(
         self, global_config, embed_func, mock_client
     ):
@@ -3421,6 +3448,32 @@ class TestVectorStorageBatching:
                     with pytest.raises(RuntimeError) as exc_info:
                         await s.finalize()
                     assert isinstance(exc_info.value.__cause__, OpenSearchException)
+                    mock_release.assert_awaited_once()
+                    assert s.client is None
+
+    @pytest.mark.asyncio
+    async def test_vector_finalize_propagates_cancellation(
+        self, global_config, embed_func, mock_client
+    ):
+        """asyncio.CancelledError raised during the final flush must
+        propagate UN-wrapped so the shutdown sequence honours the
+        cancellation signal. The client is still released (finally
+        block) before the cancellation continues.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch.object(
+                ClientManager, "release_client", new_callable=AsyncMock
+            ) as mock_release:
+                with patch(
+                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                    new_callable=AsyncMock,
+                ) as mock_bulk:
+                    mock_bulk.side_effect = asyncio.CancelledError()
+                    s = self._make(global_config, embed_func)
+                    await s.initialize()
+                    await s.upsert({"v1": {"content": "stuck"}})
+                    with pytest.raises(asyncio.CancelledError):
+                        await s.finalize()
                     mock_release.assert_awaited_once()
                     assert s.client is None
 
