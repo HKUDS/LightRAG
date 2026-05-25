@@ -5,7 +5,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
-def _load_gemini_module(monkeypatch):
+def _load_gemini_module(monkeypatch, request):
     fake_pm = SimpleNamespace(
         is_installed=lambda name: True,
         install=lambda name: None,
@@ -44,7 +44,34 @@ def _load_gemini_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "google.genai", SimpleNamespace(types=fake_types))
     monkeypatch.setitem(sys.modules, "google.api_core", fake_google_api_core)
     monkeypatch.setitem(sys.modules, "google.api_core.exceptions", fake_api_exceptions)
+
+    # Force a fresh import of lightrag.llm.gemini against the fakes above,
+    # and restore the original module (or absence) on teardown — otherwise
+    # subsequent tests (e.g. tests/llm/test_asymmetric_embedding.py) inherit
+    # this stubbed `genai.types` namespace and break with AttributeError on
+    # types.EmbedContentConfig. Note: clearing sys.modules alone is not
+    # enough — Python also caches the submodule as an attribute on the parent
+    # package, and `from lightrag.llm import gemini` resolves via that
+    # attribute. Both pointers must be cleared.
+    parent = sys.modules.get("lightrag.llm")
+    original_gemini = sys.modules.get("lightrag.llm.gemini")
+    original_parent_attr = getattr(parent, "gemini", None) if parent else None
     sys.modules.pop("lightrag.llm.gemini", None)
+    if parent is not None and hasattr(parent, "gemini"):
+        delattr(parent, "gemini")
+
+    def _restore_gemini():
+        if original_gemini is not None:
+            sys.modules["lightrag.llm.gemini"] = original_gemini
+        else:
+            sys.modules.pop("lightrag.llm.gemini", None)
+        if parent is not None:
+            if original_parent_attr is not None:
+                parent.gemini = original_parent_attr
+            elif hasattr(parent, "gemini"):
+                delattr(parent, "gemini")
+
+    request.addfinalizer(_restore_gemini)
 
     return importlib.import_module("lightrag.llm.gemini")
 
@@ -69,8 +96,10 @@ def _make_fake_gemini_response(regular_text="", thought_text=""):
 
 
 @pytest.mark.offline
-def test_gemini_maps_schema_response_format_to_response_json_schema(monkeypatch):
-    gemini_module = _load_gemini_module(monkeypatch)
+def test_gemini_maps_schema_response_format_to_response_json_schema(
+    monkeypatch, request
+):
+    gemini_module = _load_gemini_module(monkeypatch, request)
 
     schema = {
         "type": "object",
@@ -89,8 +118,8 @@ def test_gemini_maps_schema_response_format_to_response_json_schema(monkeypatch)
 
 
 @pytest.mark.offline
-def test_gemini_unwraps_openai_json_schema_wrapper(monkeypatch):
-    gemini_module = _load_gemini_module(monkeypatch)
+def test_gemini_unwraps_openai_json_schema_wrapper(monkeypatch, request):
+    gemini_module = _load_gemini_module(monkeypatch, request)
 
     schema = {
         "type": "object",
@@ -116,8 +145,8 @@ def test_gemini_unwraps_openai_json_schema_wrapper(monkeypatch):
 
 
 @pytest.mark.offline
-def test_gemini_rejects_typed_response_format(monkeypatch):
-    gemini_module = _load_gemini_module(monkeypatch)
+def test_gemini_rejects_typed_response_format(monkeypatch, request):
+    gemini_module = _load_gemini_module(monkeypatch, request)
 
     class FakeSchemaModel:
         pass
@@ -127,8 +156,10 @@ def test_gemini_rejects_typed_response_format(monkeypatch):
 
 
 @pytest.mark.offline
-def test_gemini_default_service_root_is_not_treated_as_custom_base_url(monkeypatch):
-    gemini_module = _load_gemini_module(monkeypatch)
+def test_gemini_default_service_root_is_not_treated_as_custom_base_url(
+    monkeypatch, request
+):
+    gemini_module = _load_gemini_module(monkeypatch, request)
     gemini_module._get_gemini_client.cache_clear()
     monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
 
@@ -144,8 +175,8 @@ def test_gemini_default_service_root_is_not_treated_as_custom_base_url(monkeypat
 
 
 @pytest.mark.offline
-def test_gemini_custom_base_url_is_preserved(monkeypatch):
-    gemini_module = _load_gemini_module(monkeypatch)
+def test_gemini_custom_base_url_is_preserved(monkeypatch, request):
+    gemini_module = _load_gemini_module(monkeypatch, request)
     gemini_module._get_gemini_client.cache_clear()
     monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
 
@@ -163,8 +194,8 @@ def test_gemini_custom_base_url_is_preserved(monkeypatch):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_gemini_streaming_structured_output_disables_cot(monkeypatch):
-    gemini_module = _load_gemini_module(monkeypatch)
+async def test_gemini_streaming_structured_output_disables_cot(monkeypatch, request):
+    gemini_module = _load_gemini_module(monkeypatch, request)
 
     fake_stream_response = _make_fake_gemini_response(
         regular_text='{"answer":"ok"}',
