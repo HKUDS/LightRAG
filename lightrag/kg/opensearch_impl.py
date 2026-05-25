@@ -579,9 +579,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                     continue
                 pending = self._pending_upserts.get(doc_id)
                 if pending is not None:
-                    buffered[doc_id] = self._materialize_pending_kv_doc(
-                        doc_id, pending
-                    )
+                    buffered[doc_id] = self._materialize_pending_kv_doc(doc_id, pending)
                     continue
                 remaining.append(doc_id)
             index_ready = self._index_ready
@@ -604,9 +602,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                 if _is_missing_index_error(e):
                     self._mark_index_missing()
                 else:
-                    logger.error(
-                        f"[{self.workspace}] Error getting documents: {e}"
-                    )
+                    logger.error(f"[{self.workspace}] Error getting documents: {e}")
 
         return [
             buffered[doc_id] if doc_id in buffered else doc_map.get(doc_id)
@@ -870,9 +866,7 @@ class OpenSearchKVStorage(BaseKVStorage):
             try:
                 try:
                     await self.client.indices.delete(index=self._index_name)
-                    logger.info(
-                        f"[{self.workspace}] Dropped index: {self._index_name}"
-                    )
+                    logger.info(f"[{self.workspace}] Dropped index: {self._index_name}")
                 except NotFoundError:
                     logger.info(
                         f"[{self.workspace}] Index already missing during drop: {self._index_name}"
@@ -888,9 +882,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                 return {"status": "error", "message": str(e)}
             except Exception as e:
                 self._mark_index_missing()
-                logger.error(
-                    f"[{self.workspace}] Unexpected error dropping index: {e}"
-                )
+                logger.error(f"[{self.workspace}] Unexpected error dropping index: {e}")
                 return {"status": "error", "message": str(e)}
 
 

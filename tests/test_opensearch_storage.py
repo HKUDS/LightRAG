@@ -966,9 +966,9 @@ class TestKVStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert not drop_delete_started.is_set(), (
-                    "indices.delete should be blocked behind the flush lock"
-                )
+                assert (
+                    not drop_delete_started.is_set()
+                ), "indices.delete should be blocked behind the flush lock"
                 assert not drop_task.done()
                 flush_can_finish.set()
                 await flush_task
@@ -1062,9 +1062,9 @@ class TestKVStorageBatching:
                 )
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert not concurrent_task.done(), (
-                    "concurrent upsert should be blocked by the flush lock"
-                )
+                assert (
+                    not concurrent_task.done()
+                ), "concurrent upsert should be blocked by the flush lock"
                 assert "k2" not in s._pending_upserts
 
                 flush_can_finish.set()
