@@ -2,9 +2,15 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from qdrant_client import models
 
-from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
+pytest.importorskip(
+    "qdrant_client",
+    reason="qdrant-client is required for Qdrant storage tests",
+)
+
+from qdrant_client import models  # noqa: E402
+
+from lightrag.kg.qdrant_impl import QdrantVectorDBStorage  # noqa: E402
 
 
 def _make_point(point_id: str, content: str) -> models.PointStruct:

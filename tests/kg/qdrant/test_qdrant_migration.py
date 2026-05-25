@@ -1,9 +1,15 @@
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 import numpy as np
-from qdrant_client import models
-from lightrag.utils import EmbeddingFunc
-from lightrag.kg.qdrant_impl import QdrantVectorDBStorage
+
+pytest.importorskip(
+    "qdrant_client",
+    reason="qdrant-client is required for Qdrant storage tests",
+)
+
+from qdrant_client import models  # noqa: E402
+from lightrag.utils import EmbeddingFunc  # noqa: E402
+from lightrag.kg.qdrant_impl import QdrantVectorDBStorage  # noqa: E402
 
 
 # Mock QdrantClient
