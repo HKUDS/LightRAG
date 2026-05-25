@@ -1747,6 +1747,38 @@ generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
     assert expected_image in generated_compose
 
 
+def test_generate_docker_compose_pairs_dashboards_with_opensearch(
+    tmp_path: Path,
+) -> None:
+    """Generating the opensearch service block must always emit a paired dashboards service so it remains under wizard management."""
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    write_text_lines(
+        tmp_path / "docker-compose.yml",
+        ["services:", "  lightrag:", "    image: example/lightrag:test"],
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+add_docker_service opensearch
+
+generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+""")
+    generated_compose = (tmp_path / "docker-compose.final.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "  opensearch:" in generated_compose
+    assert "  dashboards:" in generated_compose
+    assert "opensearchproject/opensearch-dashboards:3" in generated_compose
+    assert "OPENSEARCH_HOSTS: '[\"https://opensearch:9200\"]'" in generated_compose
+    assert "condition: service_healthy" in generated_compose
+
+
 def test_generate_docker_compose_omits_config_ini_mount_from_base_template(
     tmp_path: Path,
 ) -> None:

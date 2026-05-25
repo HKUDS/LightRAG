@@ -25,3 +25,26 @@
       start_period: 30s
     stop_grace_period: 30s
     restart: unless-stopped
+
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:3
+    environment:
+      OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: "${OPENSEARCH_PASSWORD:?missing}"
+      OPENSEARCH_SSL_VERIFICATIONMODE: none
+    # ports:
+    #   - "5601:5601"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$(printf ''%04X'' 5601)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    stop_grace_period: 30s
+    restart: unless-stopped
