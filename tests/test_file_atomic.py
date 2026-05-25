@@ -2,7 +2,8 @@
 
 These tests cover the helper in isolation. End-to-end coverage of the
 individual storage backends that build on it lives in
-``test_networkx_atomic_write.py`` and ``test_kg_atomic_writes.py``.
+``test_networkx_atomic_write.py``, ``test_atomic_write_write_json.py``,
+``test_atomic_write_faiss.py``, and ``test_atomic_write_nano.py``.
 """
 
 import os

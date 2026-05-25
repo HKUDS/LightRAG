@@ -34,6 +34,7 @@ from unittest.mock import patch
 import networkx as nx
 import pytest
 
+from lightrag.file_atomic import TMP_REAP_AGE_SECONDS, reap_orphan_tmp_files
 from lightrag.kg.networkx_impl import NetworkXStorage
 
 
@@ -111,7 +112,7 @@ def test_write_nx_graph_crash_preserves_prior_snapshot(tmp_path):
 
 @pytest.mark.offline
 def test_reap_orphan_tmp_files_respects_age_threshold(tmp_path):
-    """`_reap_orphan_tmp_files` must delete tmp siblings older than the
+    """`reap_orphan_tmp_files` must delete tmp siblings older than the
     threshold and leave younger ones (potentially belonging to a live
     concurrent writer) untouched."""
     dst = str(tmp_path / "graph_reap.graphml")
@@ -124,11 +125,10 @@ def test_reap_orphan_tmp_files_respects_age_threshold(tmp_path):
             fh.write("partial xml")
 
     # Age old_tmp past the threshold; leave young_tmp and unrelated fresh.
-    threshold = NetworkXStorage._TMP_REAP_AGE_SECONDS
-    aged_mtime = time.time() - (threshold + 60)
+    aged_mtime = time.time() - (TMP_REAP_AGE_SECONDS + 60)
     os.utime(old_tmp, (aged_mtime, aged_mtime))
 
-    NetworkXStorage._reap_orphan_tmp_files(dst, workspace="reap")
+    reap_orphan_tmp_files(dst, workspace="reap")
 
     assert not os.path.exists(old_tmp), "Aged orphan should have been reaped"
     assert os.path.exists(young_tmp), "Fresh tmp may be in-flight — must not be reaped"
@@ -180,11 +180,11 @@ def test_reap_orphan_tmp_files_handles_glob_metacharacters(tmp_path):
 
     # Age both past the threshold so age is not the discriminator here —
     # the only thing protecting the decoy is correct pattern escaping.
-    aged_mtime = time.time() - (NetworkXStorage._TMP_REAP_AGE_SECONDS + 60)
+    aged_mtime = time.time() - (TMP_REAP_AGE_SECONDS + 60)
     for p in (real_orphan, decoy):
         os.utime(p, (aged_mtime, aged_mtime))
 
-    NetworkXStorage._reap_orphan_tmp_files(dst, workspace="meta")
+    reap_orphan_tmp_files(dst, workspace="meta")
 
     assert not os.path.exists(
         real_orphan

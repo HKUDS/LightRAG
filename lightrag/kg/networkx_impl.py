@@ -3,11 +3,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import final
 
-from lightrag.file_atomic import (
-    TMP_REAP_AGE_SECONDS,
-    atomic_write,
-    reap_orphan_tmp_files,
-)
+from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
 from lightrag.base import BaseGraphStorage
@@ -35,11 +31,6 @@ class NetworkXStorage(BaseGraphStorage):
             return nx.read_graphml(file_name)
         return None
 
-    # Re-exported for backwards compatibility with callers/tests that
-    # imported the threshold off the class. The source of truth lives in
-    # `lightrag.file_atomic`.
-    _TMP_REAP_AGE_SECONDS = TMP_REAP_AGE_SECONDS
-
     @staticmethod
     def write_nx_graph(graph: nx.Graph, file_name, workspace="_"):
         logger.info(
@@ -50,13 +41,6 @@ class NetworkXStorage(BaseGraphStorage):
             lambda tmp: nx.write_graphml(graph, tmp),
             workspace,
         )
-
-    @staticmethod
-    def _reap_orphan_tmp_files(file_name: str, workspace: str = "_") -> None:
-        # Kept as a static method so external callers / existing tests that
-        # invoke `NetworkXStorage._reap_orphan_tmp_files(...)` keep working;
-        # delegates to the shared helper.
-        reap_orphan_tmp_files(file_name, workspace)
 
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
@@ -76,9 +60,7 @@ class NetworkXStorage(BaseGraphStorage):
         self.storage_updated = None
         self._graph = None
 
-        NetworkXStorage._reap_orphan_tmp_files(
-            self._graphml_xml_file, workspace=self.workspace or "_"
-        )
+        reap_orphan_tmp_files(self._graphml_xml_file, workspace=self.workspace or "_")
 
         # Load initial graph
         preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)

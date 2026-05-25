@@ -52,7 +52,7 @@ def tmp_path_for(file_name: str) -> str:
     directory, or multiple threads inside one process — cannot trample each
     other's in-flight tmp and leave a "no such file" rename error behind.
     """
-    return f"{file_name}.tmp.{os.getpid()}" f".{threading.get_ident()}.{time.time_ns()}"
+    return f"{file_name}.tmp.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}"
 
 
 def _preserve_mode(tmp: str, dst: str, workspace: str) -> None:
