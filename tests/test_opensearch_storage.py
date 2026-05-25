@@ -936,6 +936,67 @@ class TestKVStorageBatching:
                 assert s.client is None
 
     @pytest.mark.asyncio
+    async def test_kv_finalize_raises_when_retryable_buffer_remains(
+        self, global_config, embed_func, mock_client
+    ):
+        """finalize() must surface a RuntimeError when retryable bulk
+        failures left rows buffered, otherwise the upstream
+        finalize_storages() call would log the storage as successfully
+        finalized while writes are silently lost.
+
+        The client is still released so we don't leak a connection on
+        shutdown.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch.object(
+                ClientManager, "release_client", new_callable=AsyncMock
+            ) as mock_release:
+                with patch(
+                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                    new_callable=AsyncMock,
+                ) as mock_bulk:
+                    # 503 is retryable; flush keeps it in the buffer.
+                    mock_bulk.return_value = (
+                        0,
+                        [{"index": {"_id": "k1", "status": 503, "error": "down"}}],
+                    )
+                    s = self._make(global_config, embed_func)
+                    await s.initialize()
+                    await s.upsert({"k1": {"content": "stuck"}})
+                    with pytest.raises(RuntimeError, match="pending upserts"):
+                        await s.finalize()
+                    # Client released regardless of the failure.
+                    mock_release.assert_awaited_once()
+                    assert s.client is None
+
+    @pytest.mark.asyncio
+    async def test_kv_finalize_propagates_flush_exception(
+        self, global_config, embed_func, mock_client
+    ):
+        """If async_bulk itself raises, finalize() still releases the
+        client and wraps the original error in a RuntimeError that
+        names the unflushed buffer counts.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch.object(
+                ClientManager, "release_client", new_callable=AsyncMock
+            ) as mock_release:
+                with patch(
+                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                    new_callable=AsyncMock,
+                ) as mock_bulk:
+                    mock_bulk.side_effect = OpenSearchException("connection reset")
+                    s = self._make(global_config, embed_func)
+                    await s.initialize()
+                    await s.upsert({"k1": {"content": "stuck"}})
+                    with pytest.raises(RuntimeError) as exc_info:
+                        await s.finalize()
+                    # Wrapped: cause is the original OpenSearchException.
+                    assert isinstance(exc_info.value.__cause__, OpenSearchException)
+                    mock_release.assert_awaited_once()
+                    assert s.client is None
+
+    @pytest.mark.asyncio
     async def test_kv_drop_discards_buffers_and_serialises_with_flush(
         self, global_config, embed_func, mock_client
     ):
@@ -3305,6 +3366,63 @@ class TestVectorStorageBatching:
                 await s.finalize()
                 mock_bulk.assert_awaited_once()
                 assert s.client is None
+
+    @pytest.mark.asyncio
+    async def test_vector_finalize_raises_when_retryable_buffer_remains(
+        self, global_config, embed_func, mock_client
+    ):
+        """finalize() must surface a RuntimeError when retryable bulk
+        failures left vector rows buffered, otherwise the upstream
+        finalize_storages() call would log the storage as successfully
+        finalized while writes are silently lost.
+
+        The client is still released regardless to avoid connection leak.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch.object(
+                ClientManager, "release_client", new_callable=AsyncMock
+            ) as mock_release:
+                with patch(
+                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                    new_callable=AsyncMock,
+                ) as mock_bulk:
+                    mock_bulk.return_value = (
+                        0,
+                        [{"index": {"_id": "v1", "status": 503, "error": "down"}}],
+                    )
+                    s = self._make(global_config, embed_func)
+                    await s.initialize()
+                    await s.upsert({"v1": {"content": "stuck"}})
+                    with pytest.raises(RuntimeError, match="pending upserts"):
+                        await s.finalize()
+                    mock_release.assert_awaited_once()
+                    assert s.client is None
+
+    @pytest.mark.asyncio
+    async def test_vector_finalize_propagates_flush_exception(
+        self, global_config, embed_func, mock_client
+    ):
+        """If async_bulk raises during the final flush, finalize() still
+        releases the client and wraps the original error in a RuntimeError
+        that names the unflushed buffer counts.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch.object(
+                ClientManager, "release_client", new_callable=AsyncMock
+            ) as mock_release:
+                with patch(
+                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                    new_callable=AsyncMock,
+                ) as mock_bulk:
+                    mock_bulk.side_effect = OpenSearchException("connection reset")
+                    s = self._make(global_config, embed_func)
+                    await s.initialize()
+                    await s.upsert({"v1": {"content": "stuck"}})
+                    with pytest.raises(RuntimeError) as exc_info:
+                        await s.finalize()
+                    assert isinstance(exc_info.value.__cause__, OpenSearchException)
+                    mock_release.assert_awaited_once()
+                    assert s.client is None
 
     @pytest.mark.asyncio
     async def test_drop_discards_pending_buffers(

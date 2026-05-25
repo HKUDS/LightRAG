@@ -458,13 +458,45 @@ class OpenSearchKVStorage(BaseKVStorage):
             raise
 
     async def finalize(self):
-        """Flush pending writes and release the OpenSearch client connection."""
+        """Flush pending writes and release the OpenSearch client connection.
+
+        Raises ``RuntimeError`` if the buffer still contains pending ops
+        after the final flush attempt -- e.g. because retryable bulk
+        failures (5xx) left rows behind. The client is released either
+        way so we don't leak a connection on shutdown, but the caller
+        must learn that buffered data did not reach OpenSearch.
+        """
+        flush_error: BaseException | None = None
         try:
             await self._flush_pending_kv_ops()
-        finally:
-            if self.client is not None:
-                await ClientManager.release_client(self.client)
-                self.client = None
+        except BaseException as e:
+            # _flush_pending_kv_ops leaves the buffers intact on raise;
+            # capture the error so we can re-surface it after the client
+            # is released (we still must not leak the connection).
+            flush_error = e
+
+        if self.client is not None:
+            await ClientManager.release_client(self.client)
+            self.client = None
+
+        # Snapshot remaining buffer state to report concrete counts.
+        pending_upserts = len(self._pending_upserts)
+        pending_deletes = len(self._pending_kv_deletes)
+
+        if flush_error is not None:
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearchKVStorage.finalize() flush "
+                f"raised; {pending_upserts} pending upserts and "
+                f"{pending_deletes} pending deletes were left buffered "
+                f"(client released, data lost)"
+            ) from flush_error
+        if pending_upserts or pending_deletes:
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearchKVStorage.finalize() left "
+                f"{pending_upserts} pending upserts and {pending_deletes} "
+                f"pending deletes buffered after final flush attempt "
+                f"(transient bulk failure); these writes have been lost"
+            )
 
     async def _iter_raw_docs(
         self, batch_size: int = 1000
@@ -3205,13 +3237,41 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             raise
 
     async def finalize(self):
-        """Release the OpenSearch client connection."""
+        """Flush pending writes and release the OpenSearch client connection.
+
+        Raises ``RuntimeError`` if the buffer still contains pending ops
+        after the final flush attempt -- e.g. because retryable bulk
+        failures (5xx) left rows behind. The client is released either
+        way so we don't leak a connection on shutdown, but the caller
+        must learn that buffered data did not reach OpenSearch.
+        """
+        flush_error: BaseException | None = None
         try:
             await self._flush_pending_vector_ops()
-        finally:
-            if self.client is not None:
-                await ClientManager.release_client(self.client)
-                self.client = None
+        except BaseException as e:
+            flush_error = e
+
+        if self.client is not None:
+            await ClientManager.release_client(self.client)
+            self.client = None
+
+        pending_docs = len(self._pending_vector_docs)
+        pending_deletes = len(self._pending_vector_deletes)
+
+        if flush_error is not None:
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearchVectorDBStorage.finalize() "
+                f"flush raised; {pending_docs} pending upserts and "
+                f"{pending_deletes} pending deletes were left buffered "
+                f"(client released, data lost)"
+            ) from flush_error
+        if pending_docs or pending_deletes:
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearchVectorDBStorage.finalize() "
+                f"left {pending_docs} pending upserts and {pending_deletes} "
+                f"pending deletes buffered after final flush attempt "
+                f"(transient bulk failure); these writes have been lost"
+            )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Generate embeddings and buffer vector docs for batched flush.
