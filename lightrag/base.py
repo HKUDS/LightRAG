@@ -287,6 +287,16 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
+
+        Multi-worker note:
+            Backends that buffer writes in process memory (e.g.
+            OpenSearchVectorDBStorage as of #3043) keep the buffer
+            process-local. In a multi-worker deployment (e.g.
+            lightrag-gunicorn) other workers will not observe these writes
+            until the writing worker has called index_done_callback().
+            Callers that depend on cross-worker read-after-write visibility
+            must explicitly await index_done_callback() before relying on
+            reads from another worker.
         """
 
     @abstractmethod
@@ -297,6 +307,9 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
+
+        Multi-worker note: see ``upsert`` -- buffered tombstones are
+        process-local until index_done_callback() runs.
         """
 
     @abstractmethod
@@ -307,6 +320,11 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
+
+        Multi-worker note: see ``upsert`` -- backends may prune their
+        in-process buffer in addition to issuing a server-side delete,
+        so cross-worker visibility still follows the index_done_callback
+        contract.
         """
 
     @abstractmethod
@@ -341,6 +359,9 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
+
+        Multi-worker note: see ``upsert`` -- buffered tombstones are
+        process-local until index_done_callback() runs.
 
         Args:
             ids: List of vector IDs to be deleted
