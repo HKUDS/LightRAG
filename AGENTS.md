@@ -141,7 +141,10 @@ bun test src/api/lightrag.test.ts  # Single test file
 
 ### Testing
 
-Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above.
+- Use mock-based tests for external services (Redis, httpx, etc.) — do not depend on live services in unit tests.
+- Add regression tests for every bug fix.
+- Run the full test suite (or relevant subset) and report pass counts before declaring done.
+- Backend tests use pytest; frontend unit tests use Bun's built-in runner — see *WebUI* above.
 
 ```bash
 # Preferred for fresh shells and automation; resolves PYTHON, venv, uv, .venv, venv, python, python3
