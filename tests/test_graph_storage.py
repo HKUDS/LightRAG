@@ -22,8 +22,10 @@ import pytest
 from dotenv import load_dotenv
 from ascii_colors import ASCIIColors
 
-# Add the project root directory to the Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the project root directory to the front of the Python path so this
+# script always exercises the checked-out source tree, not a stale installed
+# lightrag package from the active virtualenv.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lightrag.types import KnowledgeGraph
 from lightrag.kg import (
