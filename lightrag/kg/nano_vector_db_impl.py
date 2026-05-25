@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import time
 
+from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -57,6 +58,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
 
         self._max_batch_size = self.global_config["embedding_batch_num"]
+
+        # Sweep orphan tmp siblings left behind by hard kills mid-save before
+        # NanoVectorDB opens the target file.
+        reap_orphan_tmp_files(self._client_file_name, self.workspace or "_")
 
         self._client = NanoVectorDB(
             self.embedding_func.embedding_dim,
@@ -292,8 +297,23 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # Acquire lock and perform persistence
         async with self._storage_lock:
             try:
-                # Save data to disk
-                self._client.save()
+                # Save data to disk atomically. NanoVectorDB.save() always
+                # writes to whatever path is in `self._client.storage_file`,
+                # so we temporarily redirect it to the per-writer tmp and let
+                # atomic_write own the rename. The original path is restored
+                # on every path (success and exception) so subsequent reads
+                # against the client continue to point at the real file.
+                def _save_atomic(tmp: str) -> None:
+                    original = self._client.storage_file
+                    self._client.storage_file = tmp
+                    try:
+                        self._client.save()
+                    finally:
+                        self._client.storage_file = original
+
+                atomic_write(
+                    self._client_file_name, _save_atomic, self.workspace or "_"
+                )
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading

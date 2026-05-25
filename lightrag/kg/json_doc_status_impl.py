@@ -7,6 +7,7 @@ from lightrag.base import (
     DocStatus,
     DocStatusStorage,
 )
+from lightrag.file_atomic import reap_orphan_tmp_files
 from lightrag.utils import (
     _cooperative_yield,
     load_json,
@@ -46,6 +47,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         self._data = None
         self._storage_lock = None
         self.storage_updated = None
+
+        reap_orphan_tmp_files(self._file_name, self.workspace or "_")
 
     async def initialize(self):
         """Initialize storage data"""
