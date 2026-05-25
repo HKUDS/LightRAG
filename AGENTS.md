@@ -160,8 +160,11 @@ bun test src/api/lightrag.test.ts  # Single test file
 - `tests/`: main test suite, mirrors feature folders. Place new tests under the subdirectory matching the module under test:
   - `tests/api/{auth,config,routes}/` for FastAPI server tests (auth/token, config loading, route handlers); top-level `tests/api/` for app-wide concerns (path prefixes, Ollama-compatible endpoint).
   - `tests/chunker/`, `tests/evaluation/`, `tests/extraction/` for the like-named modules.
-  - `tests/kg/<backend>/` (e.g. `postgres/`, `opensearch/`, `milvus/`, `faiss/`, `json/`, `neo4j/`, `networkx/`, `nano/`, `memgraph/`, `mongo/`, `qdrant/`, `redis/`) for backend-specific storage tests; `tests/kg/` root for cross-backend tests (`test_graph_storage`, `test_batch_graph_operations`, `test_unified_lock_safety`, `test_file_atomic`).
-  - `tests/llm/<provider>/` (e.g. `bedrock/`, `gemini/`, `ollama/`, `openai/`, `voyageai/`, `zhipu/`) for provider-specific behavior; `tests/llm/` root for cross-provider concerns (embedding, VLM, cache, role).
+  - `tests/kg/<backend>/` for backend-specific storage tests. Backends whose name collides with a top-level PyPI/stdlib package use a suffixed directory so `sys.path` shadowing can't happen when a script is launched directly via `python tests/kg/...`:
+    - Plain name: `postgres/`, `opensearch/`, `milvus/`, `nano/`, `memgraph/`, `mongo/`, `qdrant/`.
+    - Suffixed name: `faiss_impl/`, `json_kv/`, `neo4j_impl/`, `networkx_impl/`, `redis_impl/`.
+    - `tests/kg/` root holds cross-backend tests (`test_graph_storage`, `test_batch_graph_operations`, `test_unified_lock_safety`, `test_file_atomic`).
+  - `tests/llm/<provider>/` for provider-specific behavior. Same suffix convention applies: plain `bedrock/`, `gemini/`, `zhipu/`; suffixed `ollama_impl/`, `openai_impl/`, `voyageai_impl/`. `tests/llm/` root holds cross-provider concerns (embedding, VLM, cache, role).
   - `tests/parser/`, `tests/parser/docx/`, `tests/parser/external/{mineru,docling}/` for parser implementations.
   - `tests/pipeline/` for ingestion pipeline and doc-status behavior (including `test_pipeline_*`, `test_doc_status_*`, `test_multimodal_*`, `test_graph_keyed_locks`).
   - `tests/sidecar/`, `tests/setup/`, `tests/workspace/` for the like-named cross-cutting concerns.
