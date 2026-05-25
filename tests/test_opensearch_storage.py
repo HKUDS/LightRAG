@@ -5,6 +5,8 @@ All tests use mocks — no running OpenSearch instance required.
 Run with: pytest tests/test_opensearch_storage.py -v
 """
 
+import asyncio
+
 import pytest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
@@ -56,6 +58,30 @@ def patch_data_init_lock():
     with patch(
         "lightrag.kg.opensearch_impl.get_data_init_lock", side_effect=_mock_lock_factory
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def patch_namespace_lock():
+    """Patch get_namespace_lock to return real asyncio.Lock instances.
+
+    Returning a real Lock (not a no-op) preserves the in-process blocking
+    semantics the storage relies on, so concurrent flush / read / write
+    tests can observe actual serialization. Locks are cached per
+    (namespace, workspace) tuple so multiple calls from the same storage
+    pick up the same Lock instance.
+    """
+    cache: dict[tuple[str, str | None], asyncio.Lock] = {}
+
+    def factory(namespace, workspace=None, enable_logging=False):
+        key = (namespace, workspace or "")
+        lock = cache.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            cache[key] = lock
+        return lock
+
+    with patch("lightrag.kg.opensearch_impl.get_namespace_lock", side_effect=factory):
         yield
 
 
@@ -2352,6 +2378,7 @@ class TestVectorStorage:
     async def test_upsert_generates_embeddings(
         self, global_config, embed_func, mock_client
     ):
+        """Embeddings are generated eagerly during upsert; bulk write is deferred to flush."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -2365,10 +2392,17 @@ class TestVectorStorage:
                         "v2": {"content": "world"},
                     }
                 )
+                # Upsert buffers; no bulk write yet.
+                mock_bulk.assert_not_awaited()
+                assert set(s._pending_vector_docs.keys()) == {"v1", "v2"}
+                assert "vector" in s._pending_vector_docs["v1"]
+                assert len(s._pending_vector_docs["v1"]["vector"]) == 128
+                # Flush triggers a single bulk call with both docs.
+                await s.index_done_callback()
+                mock_bulk.assert_awaited_once()
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 2
-                assert "vector" in actions[0]["_source"]
-                assert len(actions[0]["_source"]["vector"]) == 128
+                assert all(a["_op_type"] == "index" for a in actions)
 
     @pytest.mark.asyncio
     async def test_query_cosine_score_conversion(
@@ -2478,8 +2512,12 @@ class TestVectorStorage:
             doc = await s.get_by_id("v1")
             assert doc["id"] == "v1"
             assert doc["content"] == "hello"
+            # vector field is stripped on the mget path to match NanoVectorDB
+            assert "vector" not in doc
             mock_client.mget.assert_awaited_once_with(
-                index=s._index_name, body={"ids": ["v1"]}
+                index=s._index_name,
+                body={"ids": ["v1"]},
+                _source_excludes=["vector"],
             )
 
     @pytest.mark.asyncio
@@ -2531,6 +2569,7 @@ class TestVectorStorage:
 
     @pytest.mark.asyncio
     async def test_delete(self, global_config, embed_func, mock_client):
+        """delete() buffers ids; the actual bulk delete fires on flush."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -2539,17 +2578,24 @@ class TestVectorStorage:
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.delete(["v1", "v2"])
+                mock_bulk.assert_not_awaited()
+                assert s._pending_vector_deletes == {"v1", "v2"}
+                await s.index_done_callback()
+                mock_bulk.assert_awaited_once()
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 2
                 assert all(a["_op_type"] == "delete" for a in actions)
 
     @pytest.mark.asyncio
     async def test_delete_entity(self, global_config, embed_func, mock_client):
+        """delete_entity buffers a tombstone for the computed mdhash id."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.delete_entity("Alice")
-            mock_client.delete.assert_awaited_once()
+            # No direct client.delete call -- delete is buffered for batched flush.
+            mock_client.delete.assert_not_awaited()
+            assert len(s._pending_vector_deletes) == 1
 
     @pytest.mark.asyncio
     async def test_delete_entity_relation(self, global_config, embed_func, mock_client):
@@ -2647,6 +2693,727 @@ class TestVectorStorage:
             assert await s.query("test", top_k=5) == []
             assert s._index_ready is False
             assert mock_client.search.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Vector storage write batching (issue #2785)
+# ---------------------------------------------------------------------------
+
+
+class TestVectorStorageBatching:
+    """Tests for the buffered upsert/delete + flush behaviour added for #2785."""
+
+    def _make(self, global_config, embed_func, workspace="test"):
+        return OpenSearchVectorDBStorage(
+            namespace="entities",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+            meta_fields={"content", "entity_name", "src_id", "tgt_id"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_repeated_upserts_flush_in_single_bulk_call(
+        self, global_config, embed_func, mock_client
+    ):
+        """Many small upsert() calls collapse to one async_bulk on flush."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (5, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                for i in range(5):
+                    await s.upsert({f"v{i}": {"content": f"doc {i}"}})
+                mock_bulk.assert_not_awaited()
+                await s.index_done_callback()
+                mock_bulk.assert_awaited_once()
+                actions = mock_bulk.call_args[0][1]
+                assert len(actions) == 5
+                assert {a["_id"] for a in actions} == {f"v{i}" for i in range(5)}
+
+    @pytest.mark.asyncio
+    async def test_upsert_overwrites_pending_doc_for_same_id(
+        self, global_config, embed_func, mock_client
+    ):
+        """Upserting the same id twice keeps only the latest payload."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "first"}})
+                await s.upsert({"v1": {"content": "second"}})
+                await s.index_done_callback()
+                actions = mock_bulk.call_args[0][1]
+                assert len(actions) == 1
+                assert actions[0]["_source"]["content"] == "second"
+
+    @pytest.mark.asyncio
+    async def test_delete_cancels_pending_upsert(
+        self, global_config, embed_func, mock_client
+    ):
+        """A delete after a buffered upsert removes the upsert from the buffer."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "doomed"}})
+                await s.delete(["v1"])
+                assert "v1" not in s._pending_vector_docs
+                assert "v1" in s._pending_vector_deletes
+                await s.index_done_callback()
+                actions = mock_bulk.call_args[0][1]
+                assert len(actions) == 1
+                assert actions[0]["_op_type"] == "delete"
+
+    @pytest.mark.asyncio
+    async def test_upsert_cancels_pending_delete(
+        self, global_config, embed_func, mock_client
+    ):
+        """An upsert after a buffered delete removes the tombstone."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.delete(["v1"])
+                await s.upsert({"v1": {"content": "resurrected"}})
+                assert "v1" not in s._pending_vector_deletes
+                assert "v1" in s._pending_vector_docs
+                await s.index_done_callback()
+                actions = mock_bulk.call_args[0][1]
+                assert len(actions) == 1
+                assert actions[0]["_op_type"] == "index"
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_reads_pending_buffer(
+        self, global_config, embed_func, mock_client
+    ):
+        """Buffered upserts are visible to get_by_id without hitting OpenSearch."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert({"v1": {"content": "buffered"}})
+            doc = await s.get_by_id("v1")
+            assert doc is not None
+            assert doc["id"] == "v1"
+            assert doc["content"] == "buffered"
+            # Vector field is hidden from get_by_id results, mirroring the
+            # _source excludes used by query().
+            assert "vector" not in doc
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_returns_none_for_pending_delete(
+        self, global_config, embed_func, mock_client
+    ):
+        """A pending tombstone shadows any persisted doc."""
+        mock_client.mget = AsyncMock()  # would be wrong to invoke
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.delete(["v1"])
+            assert await s.get_by_id("v1") is None
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_by_ids_merges_buffer_and_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """get_by_ids returns buffered docs and falls back to mget for the rest."""
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {"_id": "v2", "found": True, "_source": {"content": "from_index"}},
+                ]
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert({"v1": {"content": "buffered"}})
+            docs = await s.get_by_ids(["v1", "v2"])
+            assert docs[0]["content"] == "buffered"
+            assert docs[1]["content"] == "from_index"
+            # Only the unbuffered id is requested from OpenSearch,
+            # and vector is excluded server-side.
+            mock_client.mget.assert_awaited_once_with(
+                index=s._index_name,
+                body={"ids": ["v2"]},
+                _source_excludes=["vector"],
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_vectors_by_ids_uses_buffer(
+        self, global_config, embed_func, mock_client
+    ):
+        """get_vectors_by_ids returns buffered embeddings without an mget roundtrip."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert({"v1": {"content": "x"}})
+            vecs = await s.get_vectors_by_ids(["v1"])
+            assert "v1" in vecs
+            assert len(vecs["v1"]) == 128
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_finalize_flushes_pending_ops(
+        self, global_config, embed_func, mock_client
+    ):
+        """finalize() flushes buffered writes before releasing the client."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "to flush"}})
+                await s.finalize()
+                mock_bulk.assert_awaited_once()
+                assert s.client is None
+
+    @pytest.mark.asyncio
+    async def test_drop_discards_pending_buffers(
+        self, global_config, embed_func, mock_client
+    ):
+        """drop() throws away pending writes; nothing is flushed to a deleted index."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "doomed"}})
+                await s.delete(["v2"])
+                await s.drop()
+                assert s._pending_vector_docs == {}
+                assert s._pending_vector_deletes == set()
+                mock_bulk.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_flush_entries_retained_for_retry(
+        self, global_config, embed_func, mock_client
+    ):
+        """Transient (5xx) per-doc failures stay buffered for the next flush."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                # First flush: v1 succeeds, v2 fails with 503 (retryable).
+                mock_bulk.return_value = (
+                    1,
+                    [{"index": {"_id": "v2", "status": 503, "error": "down"}}],
+                )
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert(
+                    {
+                        "v1": {"content": "ok"},
+                        "v2": {"content": "boom"},
+                    }
+                )
+                await s.index_done_callback()
+                # v1 cleared, v2 retained for retry.
+                assert "v1" not in s._pending_vector_docs
+                assert "v2" in s._pending_vector_docs
+
+    @pytest.mark.asyncio
+    async def test_delete_entity_relation_prunes_pending_buffer(
+        self, global_config, embed_func, mock_client
+    ):
+        """Pending docs whose src_id/tgt_id match the entity are dropped before delete_by_query."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert(
+                    {
+                        "rel-1": {
+                            "content": "Alice -> Bob",
+                            "src_id": "Alice",
+                            "tgt_id": "Bob",
+                        },
+                        "rel-2": {
+                            "content": "Carol -> Dave",
+                            "src_id": "Carol",
+                            "tgt_id": "Dave",
+                        },
+                    }
+                )
+                await s.delete_entity_relation("Alice")
+                assert "rel-1" not in s._pending_vector_docs
+                assert "rel-2" in s._pending_vector_docs
+                mock_client.delete_by_query.assert_awaited_once()
+
+    def test_extract_bulk_failed_ids_classifies_by_status(self):
+        from lightrag.kg.opensearch_impl import _extract_bulk_failed_ids
+
+        # No failures -> empty containers.
+        retryable, non_retryable = _extract_bulk_failed_ids(None)
+        assert retryable == set()
+        assert non_retryable == []
+        retryable, non_retryable = _extract_bulk_failed_ids([])
+        assert retryable == set()
+        assert non_retryable == []
+
+        retryable, non_retryable = _extract_bulk_failed_ids(
+            [
+                # Retryable: 5xx server error.
+                {"index": {"_id": "r-500", "status": 500}},
+                # Retryable: rate-limited.
+                {"index": {"_id": "r-429", "status": 429}},
+                # Retryable: missing status (network / parse failure).
+                {"create": {"_id": "r-none"}},
+                # Non-retryable: bad request with dict-shape error.
+                {
+                    "index": {
+                        "_id": "n-400",
+                        "status": 400,
+                        "error": {
+                            "type": "mapper_parsing_exception",
+                            "reason": "vector must be array",
+                        },
+                    }
+                },
+                # Non-retryable: not found on update (doc disappeared).
+                {"update": {"_id": "n-404", "status": 404, "error": "not found"}},
+                # Special case: delete of missing doc -> dropped from BOTH
+                # sets, since the row is already gone.
+                {"delete": {"_id": "drop-404", "status": 404}},
+                # Malformed entries are skipped silently.
+                "garbage",
+                {"update": {}},
+            ]
+        )
+        assert retryable == {"r-500", "r-429", "r-none"}
+
+        non_retryable_ids = {op.doc_id for op in non_retryable}
+        assert non_retryable_ids == {"n-400", "n-404"}
+
+        by_id = {op.doc_id: op for op in non_retryable}
+        # dict-shape error is summarised via "reason"
+        assert by_id["n-400"].op == "index"
+        assert by_id["n-400"].status == 400
+        assert "vector must be array" in by_id["n-400"].error
+        # string-shape error is passed through
+        assert by_id["n-404"].op == "update"
+        assert by_id["n-404"].status == 404
+        assert by_id["n-404"].error == "not found"
+
+    def test_extract_bulk_failed_ids_truncates_long_errors(self):
+        from lightrag.kg.opensearch_impl import (
+            _extract_bulk_failed_ids,
+            _BULK_ERROR_SUMMARY_MAX_LEN,
+        )
+
+        long_reason = "x" * 1000
+        _, non_retryable = _extract_bulk_failed_ids(
+            [
+                {
+                    "index": {
+                        "_id": "n-400",
+                        "status": 400,
+                        "error": {"reason": long_reason},
+                    }
+                }
+            ]
+        )
+        assert len(non_retryable) == 1
+        assert len(non_retryable[0].error) <= _BULK_ERROR_SUMMARY_MAX_LEN
+        assert non_retryable[0].error.endswith("...")
+
+    @pytest.mark.asyncio
+    async def test_failed_flush_drops_non_retryable_entries(
+        self, global_config, embed_func, mock_client
+    ):
+        """4xx (non-429) failures are dropped, not perpetually retried."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                # v1 fails permanently (400 mapping error); v2 fails
+                # transiently (503).
+                mock_bulk.return_value = (
+                    0,
+                    [
+                        {"index": {"_id": "v1", "status": 400, "error": "bad mapping"}},
+                        {"index": {"_id": "v2", "status": 503, "error": "down"}},
+                    ],
+                )
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert(
+                    {"v1": {"content": "bad"}, "v2": {"content": "transient"}}
+                )
+                await s.index_done_callback()
+                # v1 is dropped (non-retryable), v2 is retained (retryable).
+                assert "v1" not in s._pending_vector_docs
+                assert "v2" in s._pending_vector_docs
+
+    @pytest.mark.asyncio
+    async def test_concurrent_writes_during_flush_are_serialised(
+        self, global_config, embed_func, mock_client
+    ):
+        """All buffer writes acquire the namespace lock, so an upsert issued
+        while a flush is in flight is blocked until the flush completes and
+        then lands in the live buffer for the next flush.
+        """
+        flush_started = asyncio.Event()
+        flush_can_finish = asyncio.Event()
+
+        async def slow_bulk(client, actions, raise_on_error=False, **kwargs):
+            flush_started.set()
+            await flush_can_finish.wait()
+            return (len(actions), [])
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch("lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk):
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "first"}})
+
+                flush_task = asyncio.create_task(s.index_done_callback())
+                await flush_started.wait()
+                # The flush is holding the lock and awaiting async_bulk.
+                # Issue a concurrent upsert via create_task so we can
+                # assert it is blocked (a direct await would deadlock the
+                # single-threaded event loop on the lock acquisition).
+                concurrent_task = asyncio.create_task(
+                    s.upsert({"v2": {"content": "concurrent"}})
+                )
+                # Yield so the concurrent task gets a chance to start its
+                # embedding computation and arrive at the lock.
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                assert (
+                    not concurrent_task.done()
+                ), "concurrent upsert should be blocked by the flush lock"
+                # v2 must not be visible in the buffer yet.
+                assert "v2" not in s._pending_vector_docs
+
+                # Release the bulk call; flush completes and the concurrent
+                # upsert then finally writes v2 into the (now-empty) buffer.
+                flush_can_finish.set()
+                await flush_task
+                await concurrent_task
+
+                assert "v1" not in s._pending_vector_docs
+                assert "v2" in s._pending_vector_docs
+
+    @pytest.mark.asyncio
+    async def test_concurrent_delete_during_flush_supersedes_retried_upsert(
+        self, global_config, embed_func, mock_client
+    ):
+        """A delete that lands after a flush retains a transient failure
+        wins over the retried upsert for the same id.
+
+        Under the lock-everywhere model the delete runs strictly after the
+        flush; the merge-back of the retryable v1 upsert is then cancelled
+        by the delete in a single, sequential pass.
+        """
+        flush_started = asyncio.Event()
+        flush_can_finish = asyncio.Event()
+
+        async def slow_bulk(client, actions, raise_on_error=False, **kwargs):
+            flush_started.set()
+            await flush_can_finish.wait()
+            # Report v1's upsert as a transient failure so the flush
+            # leaves it in the buffer for retry.
+            return (
+                0,
+                [{"index": {"_id": "v1", "status": 503, "error": "down"}}],
+            )
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch("lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk):
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "first"}})
+
+                flush_task = asyncio.create_task(s.index_done_callback())
+                await flush_started.wait()
+                # Issue the concurrent delete; it queues behind the lock.
+                delete_task = asyncio.create_task(s.delete(["v1"]))
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                assert (
+                    not delete_task.done()
+                ), "concurrent delete should be blocked by the flush lock"
+
+                flush_can_finish.set()
+                await flush_task
+                await delete_task
+
+                # The retry left v1 in the docs buffer; the subsequent
+                # delete then cancelled that upsert and replaced it with a
+                # tombstone.
+                assert "v1" not in s._pending_vector_docs
+                assert "v1" in s._pending_vector_deletes
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_strips_vector_from_mget_path(
+        self, global_config, embed_func, mock_client
+    ):
+        """The mget fallback path returns the same shape as NanoVectorDB:
+        no ``vector`` key, and the server-side _source_excludes is set so the
+        embedding never crosses the wire in the first place.
+        """
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {
+                        "_id": "v1",
+                        "found": True,
+                        # defensive: server-side excludes might be ignored
+                        # in misconfigured indices; we still pop client-side.
+                        "_source": {"content": "from_index", "vector": [0.1] * 128},
+                    }
+                ]
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            # No upsert: buffer empty, falls through to mget.
+            doc = await s.get_by_id("v1")
+            assert doc is not None
+            assert doc["id"] == "v1"
+            assert doc["content"] == "from_index"
+            assert "vector" not in doc
+            mock_client.mget.assert_awaited_once_with(
+                index=s._index_name,
+                body={"ids": ["v1"]},
+                _source_excludes=["vector"],
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_by_ids_strips_vector_from_mget_path(
+        self, global_config, embed_func, mock_client
+    ):
+        """get_by_ids strips vector on the fallback path and forwards
+        _source_excludes to mget."""
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {
+                        "_id": "v1",
+                        "found": True,
+                        "_source": {"content": "a", "vector": [0.1] * 128},
+                    },
+                    {
+                        "_id": "v2",
+                        "found": True,
+                        "_source": {"content": "b", "vector": [0.2] * 128},
+                    },
+                ]
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            docs = await s.get_by_ids(["v1", "v2"])
+            assert all(d is not None for d in docs)
+            assert all("vector" not in d for d in docs)
+            assert docs[0]["content"] == "a"
+            assert docs[1]["content"] == "b"
+            mock_client.mget.assert_awaited_once_with(
+                index=s._index_name,
+                body={"ids": ["v1", "v2"]},
+                _source_excludes=["vector"],
+            )
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_logs_sample_ids(
+        self, global_config, embed_func, mock_client, caplog
+    ):
+        """Non-retryable bulk failures log a sample with id/status/error."""
+        import logging as _logging
+
+        failed = [
+            {
+                "index": {
+                    "_id": f"v{i}",
+                    "status": 400,
+                    "error": {
+                        "type": "mapper_parsing_exception",
+                        "reason": f"bad field {i}",
+                    },
+                }
+            }
+            for i in range(6)
+        ]
+        # lightrag logger has propagate=False, so caplog's root handler
+        # would miss these records. Re-enable propagation just for this
+        # test so caplog can capture the warning we emit.
+        lightrag_logger = _logging.getLogger("lightrag")
+        original_propagate = lightrag_logger.propagate
+        lightrag_logger.propagate = True
+        try:
+            with patch.object(ClientManager, "get_client", return_value=mock_client):
+                with patch(
+                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                    new_callable=AsyncMock,
+                ) as mock_bulk:
+                    mock_bulk.return_value = (0, failed)
+                    s = self._make(global_config, embed_func)
+                    await s.initialize()
+                    await s.upsert({f"v{i}": {"content": f"d{i}"} for i in range(6)})
+                    with caplog.at_level("WARNING", logger="lightrag"):
+                        await s.index_done_callback()
+        finally:
+            lightrag_logger.propagate = original_propagate
+        warning_text = "\n".join(
+            rec.message for rec in caplog.records if rec.levelname == "WARNING"
+        )
+        # Sample contains the first 5 ids with op/status/reason text.
+        for i in range(5):
+            assert f"v{i}" in warning_text
+        assert "status=400" in warning_text
+        assert "bad field" in warning_text
+        # 6 permanent failures reported in aggregate.
+        assert "6 vector ops" in warning_text
+
+    @pytest.mark.asyncio
+    async def test_index_done_callback_flushes_when_index_recreated(
+        self, global_config, embed_func, mock_client
+    ):
+        """If the index was marked missing after writes were buffered, the
+        callback must still flush — _flush_pending_vector_ops recreates the
+        index via _ensure_index_ready before issuing the bulk call.
+        """
+        # Sequence the indices.exists results so the second _create
+        # invocation actually creates the index again.
+        exists_responses = [False, False]
+        mock_client.indices.exists = AsyncMock(
+            side_effect=lambda **kw: exists_responses.pop(0)
+            if exists_responses
+            else False
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "ok"}})
+                # Simulate the index disappearing (e.g. via a read 404)
+                # AFTER the write was buffered.
+                s._mark_index_missing()
+                await s.index_done_callback()
+                # The buffer was flushed, even though _index_ready was
+                # False at callback entry.
+                mock_bulk.assert_awaited_once()
+                assert s._pending_vector_docs == {}
+                # The index was recreated as part of flush.
+                assert mock_client.indices.create.await_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_delete_entity_relation_serialised_with_flush(
+        self, global_config, embed_func, mock_client
+    ):
+        """delete_entity_relation runs entirely under the flush lock, so it
+        cannot race with an in-flight bulk indexing operation."""
+        flush_started = asyncio.Event()
+        flush_can_finish = asyncio.Event()
+        delete_started = asyncio.Event()
+
+        async def slow_bulk(client, actions, raise_on_error=False, **kwargs):
+            flush_started.set()
+            await flush_can_finish.wait()
+            return (len(actions), [])
+
+        async def watch_delete_by_query(**kwargs):
+            delete_started.set()
+            return {"deleted": 0}
+
+        mock_client.delete_by_query = AsyncMock(side_effect=watch_delete_by_query)
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch("lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk):
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert(
+                    {
+                        "rel-1": {
+                            "content": "X",
+                            "src_id": "Alice",
+                            "tgt_id": "Bob",
+                        }
+                    }
+                )
+
+                flush_task = asyncio.create_task(s.index_done_callback())
+                await flush_started.wait()
+                # delete_by_query must NOT fire while bulk is still in flight.
+                rel_task = asyncio.create_task(s.delete_entity_relation("Alice"))
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                assert (
+                    not delete_started.is_set()
+                ), "delete_by_query should be blocked behind the flush lock"
+                assert not rel_task.done()
+
+                flush_can_finish.set()
+                await flush_task
+                await rel_task
+                assert delete_started.is_set()
+
+    @pytest.mark.asyncio
+    async def test_drop_serialised_with_flush(
+        self, global_config, embed_func, mock_client
+    ):
+        """drop must serialise with an in-flight flush; the index delete
+        cannot land while bulk indexing is mid-request.
+        """
+        flush_started = asyncio.Event()
+        flush_can_finish = asyncio.Event()
+        drop_delete_started = asyncio.Event()
+
+        async def slow_bulk(client, actions, raise_on_error=False, **kwargs):
+            flush_started.set()
+            await flush_can_finish.wait()
+            return (len(actions), [])
+
+        async def watch_indices_delete(**kwargs):
+            drop_delete_started.set()
+
+        mock_client.indices.delete = AsyncMock(side_effect=watch_indices_delete)
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch("lightrag.kg.opensearch_impl.helpers.async_bulk", new=slow_bulk):
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "x"}})
+
+                flush_task = asyncio.create_task(s.index_done_callback())
+                await flush_started.wait()
+                drop_task = asyncio.create_task(s.drop())
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                assert (
+                    not drop_delete_started.is_set()
+                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_task.done()
+
+                flush_can_finish.set()
+                await flush_task
+                await drop_task
+                assert drop_delete_started.is_set()
 
 
 # ---------------------------------------------------------------------------
