@@ -715,7 +715,7 @@ curl -sk -u admin:<custom-admin-password> https://localhost:9200/_cat/plugins?v
 
 3. Run unit tests (no OpenSearch required — uses mocks):
 ```bash
-python -m pytest tests/test_opensearch_storage.py -v
+python -m pytest tests/kg/opensearch_impl/test_opensearch_storage.py -v
 ```
 
 4. Run the OpenSearch storage demo:

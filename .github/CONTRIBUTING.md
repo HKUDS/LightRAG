@@ -96,7 +96,7 @@ python -m pytest tests
 python -m pytest tests --run-integration
 
 # Run a specific test file
-python -m pytest tests/test_lightrag.py
+python -m pytest tests/chunker/test_chunking.py
 
 # Keep test artifacts for debugging
 python -m pytest tests --keep-artifacts
