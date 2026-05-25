@@ -419,8 +419,11 @@ _managed_service_root_name() {
   local service_name="$1"
 
   case "$service_name" in
-    postgres|neo4j|mongodb|redis|qdrant|memgraph|opensearch|vllm-embed|vllm-rerank)
+    postgres|neo4j|mongodb|redis|qdrant|memgraph|vllm-embed|vllm-rerank)
       printf '%s' "$service_name"
+      ;;
+    opensearch|dashboards)
+      printf 'opensearch'
       ;;
     milvus|milvus-etcd|milvus-minio)
       printf 'milvus'
