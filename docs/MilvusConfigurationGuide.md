@@ -156,13 +156,13 @@ The configuration via `vector_db_storage_cls_kwargs` is thoroughly tested:
 
 ```bash
 # Run all kwargs bridge tests
-python -m pytest tests/kg/milvus/test_milvus_kwargs_bridge.py -v
+python -m pytest tests/kg/milvus_impl/test_milvus_kwargs_bridge.py -v
 
 # Test RAGAnything integration scenario specifically
-python -m pytest tests/kg/milvus/test_milvus_kwargs_bridge.py::TestMilvusKwargsParameterBridge::test_raganything_framework_integration_scenario -v
+python -m pytest tests/kg/milvus_impl/test_milvus_kwargs_bridge.py::TestMilvusKwargsParameterBridge::test_raganything_framework_integration_scenario -v
 
 # Test all parameters support
-python -m pytest tests/kg/milvus/test_milvus_kwargs_bridge.py::TestMilvusKwargsParameterBridge::test_all_milvus_parameters_supported_via_kwargs -v
+python -m pytest tests/kg/milvus_impl/test_milvus_kwargs_bridge.py::TestMilvusKwargsParameterBridge::test_all_milvus_parameters_supported_via_kwargs -v
 ```
 
 ## Examples
@@ -191,7 +191,7 @@ See `examples/milvus_kwargs_configuration_demo.py` for a complete working exampl
 
 ## References
 
-- Test Suite: `tests/kg/milvus/test_milvus_kwargs_bridge.py`
+- Test Suite: `tests/kg/milvus_impl/test_milvus_kwargs_bridge.py`
 - Implementation: `lightrag/kg/milvus_impl.py` (lines 1237-1272)
 - Example: `examples/milvus_kwargs_configuration_demo.py`
 - MilvusIndexConfig: `lightrag/kg/milvus_impl.py` (lines 75-303)

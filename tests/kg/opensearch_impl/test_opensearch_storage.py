@@ -2,7 +2,7 @@
 Unit tests for OpenSearch storage implementations.
 
 All tests use mocks — no running OpenSearch instance required.
-Run with: pytest tests/kg/opensearch/test_opensearch_storage.py -v
+Run with: pytest tests/kg/opensearch_impl/test_opensearch_storage.py -v
 """
 
 import asyncio

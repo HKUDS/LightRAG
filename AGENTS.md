@@ -160,11 +160,8 @@ bun test src/api/lightrag.test.ts  # Single test file
 - `tests/`: main test suite, mirrors feature folders. Place new tests under the subdirectory matching the module under test:
   - `tests/api/{auth,config,routes}/` for FastAPI server tests (auth/token, config loading, route handlers); top-level `tests/api/` for app-wide concerns (path prefixes, Ollama-compatible endpoint).
   - `tests/chunker/`, `tests/evaluation/`, `tests/extraction/` for the like-named modules.
-  - `tests/kg/<backend>/` for backend-specific storage tests. Backends whose name collides with a top-level PyPI/stdlib package use a suffixed directory so `sys.path` shadowing can't happen when a script is launched directly via `python tests/kg/...`:
-    - Plain name: `postgres/`, `opensearch/`, `milvus/`, `nano/`, `memgraph/`, `mongo/`, `qdrant/`.
-    - Suffixed name: `faiss_impl/`, `json_kv/`, `neo4j_impl/`, `networkx_impl/`, `redis_impl/`.
-    - `tests/kg/` root holds cross-backend tests (`test_graph_storage`, `test_batch_graph_operations`, `test_unified_lock_safety`, `test_file_atomic`).
-  - `tests/llm/<provider>/` for provider-specific behavior. Same suffix convention applies: plain `bedrock/`, `gemini/`, `zhipu/`; suffixed `ollama_impl/`, `openai_impl/`, `voyageai_impl/`. `tests/llm/` root holds cross-provider concerns (embedding, VLM, cache, role).
+  - `tests/kg/<backend>_impl/` for backend-specific storage tests, mirroring the `lightrag/kg/<backend>_impl.py` file naming. The `_impl` suffix on every subdirectory keeps the layout uniform and avoids `sys.path` shadowing on names that overlap with top-level PyPI/stdlib packages (`faiss`, `json`, `neo4j`, `networkx`, `redis`) when a test is launched directly via `python tests/kg/...`. Current backends: `faiss_impl/`, `json_impl/`, `memgraph_impl/`, `milvus_impl/`, `mongo_impl/`, `nano_impl/`, `neo4j_impl/`, `networkx_impl/`, `opensearch_impl/`, `postgres_impl/`, `qdrant_impl/`, `redis_impl/`. `tests/kg/` root holds cross-backend tests (`test_graph_storage`, `test_batch_graph_operations`, `test_unified_lock_safety`, `test_file_atomic`).
+  - `tests/llm/<provider>_impl/` for provider-specific behavior, same `_impl` convention: `bedrock_impl/`, `gemini_impl/`, `ollama_impl/`, `openai_impl/`, `voyageai_impl/`, `zhipu_impl/`. `tests/llm/` root holds cross-provider concerns (embedding, VLM, cache, role).
   - `tests/parser/`, `tests/parser/docx/`, `tests/parser/external/{mineru,docling}/` for parser implementations.
   - `tests/pipeline/` for ingestion pipeline and doc-status behavior (including `test_pipeline_*`, `test_doc_status_*`, `test_multimodal_*`, `test_graph_keyed_locks`).
   - `tests/sidecar/`, `tests/setup/`, `tests/workspace/` for the like-named cross-cutting concerns.

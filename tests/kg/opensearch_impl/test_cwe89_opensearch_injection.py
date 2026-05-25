@@ -8,7 +8,7 @@ The test validates that:
 2. PPL escape handles control characters and additional metacharacters beyond
    just backslash and single-quote.
 
-Run with: pytest tests/kg/opensearch/test_cwe89_opensearch_injection.py -v
+Run with: pytest tests/kg/opensearch_impl/test_cwe89_opensearch_injection.py -v
 """
 
 import re
