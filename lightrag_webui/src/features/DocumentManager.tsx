@@ -142,12 +142,49 @@ const formatMetadata = (metadata: Record<string, any>): string => {
     }
   }
 
-  // Format JSON and remove outer braces and indentation
-  const jsonStr = JSON.stringify(formattedMetadata, null, 2);
-  const lines = jsonStr.split('\n');
-  // Remove first line ({) and last line (}), and remove leading indentation (2 spaces)
-  return lines.slice(1, -1)
-    .map(line => line.replace(/^ {2}/, ''))
+  const formatValue = (value: any, indent = 0): string => {
+    if (value === null) return 'null';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '[]';
+      return `[${value
+        .map(item => {
+          if (item === null) return 'null';
+          if (typeof item === 'object') return JSON.stringify(item);
+          return String(item);
+        })
+        .join(', ')}]`;
+    }
+
+    if (typeof value === 'object') {
+      const entries = Object.entries(value);
+      if (entries.length === 0) return '{}';
+      return entries
+        .map(([key, child]) => {
+          const renderedChild = formatValue(child, indent + 1);
+          const prefix = '  '.repeat(indent);
+          if (typeof child === 'object' && child !== null && !Array.isArray(child)) {
+            return `${prefix}${key}:\n${renderedChild}`;
+          }
+          return `${prefix}${key}: ${renderedChild}`;
+        })
+        .join('\n');
+    }
+
+    return String(value);
+  };
+
+  return Object.entries(formattedMetadata)
+    .map(([key, value]) => {
+      const rendered = formatValue(value, 1);
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        return `${key}:\n${rendered}`;
+      }
+      return `${key}: ${rendered}`;
+    })
     .join('\n');
 };
 
