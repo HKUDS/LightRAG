@@ -385,6 +385,18 @@ class OpenSearchKVStorage(BaseKVStorage):
         self.workspace, self.final_namespace, self._index_name = _build_index_name(
             self.workspace, self.namespace
         )
+        # Pending writes are flushed via _flush_pending_kv_ops() during
+        # index_done_callback() / finalize(). Buffering many small upsert()
+        # invocations into a single async_bulk roundtrip avoids the per-call
+        # HTTP overhead profiled in issue #2785; the lock-everywhere model
+        # mirrors what #3043 introduced for OpenSearchVectorDBStorage.
+        self._pending_upserts: dict[str, dict[str, Any]] = {}
+        self._pending_kv_deletes: set[str] = set()
+        # Namespace-keyed lock (multi-process aware) is assigned in
+        # initialize(). All buffer reads / writes and the flush itself
+        # acquire this lock so an in-flight flush cannot interleave with
+        # concurrent get_by_id / upsert / delete on the same workspace.
+        self._flush_lock = None
 
     async def initialize(self):
         """Initialize client connection and create index if needed."""
@@ -395,6 +407,10 @@ class OpenSearchKVStorage(BaseKVStorage):
             self._index_ready = True
             logger.debug(
                 f"[{self.workspace}] OpenSearch KV storage initialized: {self._index_name}"
+            )
+        if self._flush_lock is None:
+            self._flush_lock = get_namespace_lock(
+                self.namespace, workspace=self.workspace
             )
 
     async def _ensure_index_ready(self):
@@ -442,10 +458,53 @@ class OpenSearchKVStorage(BaseKVStorage):
             raise
 
     async def finalize(self):
-        """Release the OpenSearch client connection."""
-        if self.client is not None:
-            await ClientManager.release_client(self.client)
-            self.client = None
+        """Flush pending writes and release the OpenSearch client connection.
+
+        Regular flush failures (any ``Exception``) are captured so they
+        can be re-surfaced as a ``RuntimeError`` that names the unflushed
+        buffer counts -- otherwise ``LightRAG.finalize_storages()`` would
+        log the storage as successfully finalized while writes silently
+        failed to reach OpenSearch.
+
+        ``BaseException`` subclasses other than ``Exception`` (notably
+        ``asyncio.CancelledError`` / ``KeyboardInterrupt`` / ``SystemExit``)
+        are NOT caught: they propagate through the ``finally`` block so
+        shutdown cancellation is honoured and not silently swallowed.
+        The client is released in ``finally`` so it does not leak whether
+        the flush succeeded, failed, or was cancelled.
+        """
+        flush_error: Exception | None = None
+        try:
+            try:
+                await self._flush_pending_kv_ops()
+            except Exception as e:
+                # _flush_pending_kv_ops leaves the buffers intact on raise.
+                flush_error = e
+        finally:
+            if self.client is not None:
+                await ClientManager.release_client(self.client)
+                self.client = None
+
+        # Reached only when no BaseException propagated through the
+        # finally above. Snapshot remaining buffer state to report
+        # concrete counts.
+        pending_upserts = len(self._pending_upserts)
+        pending_deletes = len(self._pending_kv_deletes)
+
+        if flush_error is not None:
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearchKVStorage.finalize() flush "
+                f"raised; {pending_upserts} pending upserts and "
+                f"{pending_deletes} pending deletes were left buffered "
+                f"(client released, data lost)"
+            ) from flush_error
+        if pending_upserts or pending_deletes:
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearchKVStorage.finalize() left "
+                f"{pending_upserts} pending upserts and {pending_deletes} "
+                f"pending deletes buffered after final flush attempt "
+                f"(transient bulk failure); these writes have been lost"
+            )
 
     async def _iter_raw_docs(
         self, batch_size: int = 1000
@@ -493,10 +552,38 @@ class OpenSearchKVStorage(BaseKVStorage):
             logger.error(f"[{self.workspace}] Error scanning documents: {e}")
             raise
 
+    def _materialize_pending_kv_doc(
+        self, doc_id: str, source: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Return a get_by_id-shaped view of a buffered upsert.
+
+        Mirrors the post-processing applied to mget hits: drops the
+        ``__mirrored_id`` PIT sort key, attaches the ``_id`` field and
+        ensures ``create_time`` / ``update_time`` defaults are populated.
+        The buffer entry itself is not mutated.
+        """
+        doc = {k: v for k, v in source.items() if k != "__mirrored_id"}
+        doc["_id"] = doc_id
+        doc.setdefault("create_time", 0)
+        doc.setdefault("update_time", 0)
+        return doc
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        """Get a document by its ID, or None if not found."""
-        if not self._index_ready:
-            return None
+        """Get a document by its ID, with read-your-writes against the buffer.
+
+        Priority: pending delete (tombstone) → pending upsert (buffered
+        write) → OpenSearch via mget. The buffered path strips
+        ``__mirrored_id`` so the returned dict has the same shape as the
+        mget path.
+        """
+        async with self._flush_lock:
+            if id in self._pending_kv_deletes:
+                return None
+            pending = self._pending_upserts.get(id)
+            if pending is not None:
+                return self._materialize_pending_kv_doc(id, pending)
+            if not self._index_ready:
+                return None
         try:
             response = await _mget_optional_doc(self.client, self._index_name, id)
             if response is None:
@@ -515,85 +602,263 @@ class OpenSearchKVStorage(BaseKVStorage):
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get multiple documents by IDs, preserving input order."""
-        if not self._index_ready:
-            return [None] * len(ids)
-        try:
-            response = await self.client.mget(index=self._index_name, body={"ids": ids})
-            doc_map = {}
-            for doc in response["docs"]:
-                if doc.get("found"):
-                    data = doc["_source"]
-                    data.pop("__mirrored_id", None)
-                    data["_id"] = doc["_id"]
-                    data.setdefault("create_time", 0)
-                    data.setdefault("update_time", 0)
-                    doc_map[doc["_id"]] = data
-            return [doc_map.get(id) for id in ids]
-        except OpenSearchException as e:
-            if _is_missing_index_error(e):
-                self._mark_index_missing()
-                return [None] * len(ids)
-            logger.error(f"[{self.workspace}] Error getting documents: {e}")
-            return [None] * len(ids)
+        """Get multiple documents by IDs (read-your-writes), preserving order.
+
+        Buffer is consulted under the lock with the same three-tier
+        priority as ``get_by_id``; remaining ids fall through to mget
+        outside the lock so the network call does not stall the flush.
+        """
+        if not ids:
+            return []
+        buffered: dict[str, dict[str, Any] | None] = {}
+        remaining: list[str] = []
+        async with self._flush_lock:
+            for doc_id in ids:
+                if doc_id in self._pending_kv_deletes:
+                    buffered[doc_id] = None
+                    continue
+                pending = self._pending_upserts.get(doc_id)
+                if pending is not None:
+                    buffered[doc_id] = self._materialize_pending_kv_doc(doc_id, pending)
+                    continue
+                remaining.append(doc_id)
+            index_ready = self._index_ready
+
+        doc_map: dict[str, dict[str, Any] | None] = {}
+        if remaining and index_ready:
+            try:
+                response = await self.client.mget(
+                    index=self._index_name, body={"ids": remaining}
+                )
+                for doc in response["docs"]:
+                    if doc.get("found"):
+                        data = doc["_source"]
+                        data.pop("__mirrored_id", None)
+                        data["_id"] = doc["_id"]
+                        data.setdefault("create_time", 0)
+                        data.setdefault("update_time", 0)
+                        doc_map[doc["_id"]] = data
+            except OpenSearchException as e:
+                if _is_missing_index_error(e):
+                    self._mark_index_missing()
+                else:
+                    logger.error(f"[{self.workspace}] Error getting documents: {e}")
+
+        return [
+            buffered[doc_id] if doc_id in buffered else doc_map.get(doc_id)
+            for doc_id in ids
+        ]
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
-        """Return the subset of keys that do not exist in storage."""
-        if not self._index_ready:
-            return keys
+        """Return the subset of keys that do not exist in storage.
+
+        Buffer-aware: buffered upserts count as "exists" (and so are
+        removed from the missing set), buffered deletes count as
+        "missing" and are NOT queried via mget (a persisted-but-pending-
+        delete row would otherwise be misclassified as existing).
+        """
+        async with self._flush_lock:
+            pending_upserts = set(self._pending_upserts)
+            pending_deletes = set(self._pending_kv_deletes)
+            index_ready = self._index_ready
+
+        # Buffered upserts shadow OpenSearch -- they will exist after flush.
+        to_check = keys - pending_upserts - pending_deletes
+        if not to_check:
+            # All keys are accounted for by the buffer alone.
+            return keys - pending_upserts
+        if not index_ready:
+            return keys - pending_upserts
         try:
             response = await self.client.mget(
-                index=self._index_name, body={"ids": list(keys)}, _source=False
+                index=self._index_name,
+                body={"ids": list(to_check)},
+                _source=False,
             )
-            existing_ids = {doc["_id"] for doc in response["docs"] if doc.get("found")}
-            return keys - existing_ids
+            existing_on_server = {
+                doc["_id"] for doc in response["docs"] if doc.get("found")
+            }
+            return (keys - pending_upserts) - existing_on_server
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
-                return keys
+                return keys - pending_upserts
             logger.error(f"[{self.workspace}] Error filtering keys: {e}")
-            return keys
+            return keys - pending_upserts
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Insert or update documents with automatic timestamping."""
+        """Buffer documents for batched flush.
+
+        Time-stamping and ``__mirrored_id`` injection happen eagerly so the
+        persisted shape matches what reads expect; the actual ``async_bulk``
+        call is deferred to ``_flush_pending_kv_ops()`` invoked from
+        ``index_done_callback`` / ``finalize``.
+
+        Multi-worker note: the buffer is process-local. Other workers will
+        not see these writes until ``index_done_callback()`` flushes them.
+        """
         if not data:
             return
         await self._ensure_index_ready()
         logger.debug(
-            f"[{self.workspace}] Upserting {len(data)} documents to {self.namespace}"
+            f"[{self.workspace}] Buffering {len(data)} documents for {self.namespace}"
         )
         current_time = int(time.time())
-        actions = []
+
+        # Construct sources outside the lock (no IO; just dict shuffling)
+        # so we hold the lock only for the buffer-swap step.
+        prepared: list[tuple[str, dict[str, Any]]] = []
         for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
             doc_data["update_time"] = current_time
             doc_data.setdefault("create_time", current_time)
             source = {k: v for k, v in doc_data.items() if k != "_id"}
             source["__mirrored_id"] = doc_id
-            actions.append(
-                {
-                    "_op_type": "index",
-                    "_index": self._index_name,
-                    "_id": doc_id,
-                    "_source": source,
-                }
-            )
+            prepared.append((doc_id, source))
             await _cooperative_yield(i)
-        try:
-            # No per-operation refresh: immediate reads use ID-based mget (translog),
-            # search visibility is guaranteed after index_done_callback() batch refresh.
-            success, failed = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False
-            )
-            if failed:
-                logger.warning(
-                    f"[{self.workspace}] {len(failed)} documents failed to upsert"
+
+        # Buffer: an upsert cancels any pending delete on the same id.
+        async with self._flush_lock:
+            for doc_id, source in prepared:
+                self._pending_kv_deletes.discard(doc_id)
+                self._pending_upserts[doc_id] = source
+
+    async def delete(self, ids: list[str]) -> None:
+        """Buffer document deletes for batched flush.
+
+        A delete cancels any pending upsert on the same id; the actual
+        bulk delete is performed by ``_flush_pending_kv_ops`` during the
+        next ``index_done_callback`` / ``finalize`` call.
+
+        ``_index_ready`` is intentionally NOT checked here: even if the
+        index has been marked missing, the buffered upsert (if any) must
+        still be invalidated, otherwise a subsequent flush would resurrect
+        a logically-deleted key.
+        """
+        if not ids:
+            return
+        if isinstance(ids, set):
+            ids = list(ids)
+        async with self._flush_lock:
+            for doc_id in ids:
+                self._pending_upserts.pop(doc_id, None)
+                self._pending_kv_deletes.add(doc_id)
+        logger.debug(
+            f"[{self.workspace}] Buffered delete for {len(ids)} documents in {self.namespace}"
+        )
+
+    async def _flush_pending_kv_ops(self) -> None:
+        """Flush buffered upserts + deletes via a single async_bulk call.
+
+        Concurrency contract: the entire flush runs under ``_flush_lock``;
+        ``upsert`` / ``delete`` / reads / ``drop`` all acquire the same lock
+        so an in-flight flush cannot interleave with concurrent buffer
+        mutations.
+
+        Failure handling mirrors the Vector-side helper:
+          * If ``_ensure_index_ready`` raises, the buffers are left intact
+            and the next flush retries.
+          * If ``async_bulk`` raises, the buffers are left intact.
+          * Per-doc retryable failures (408 / 429 / 5xx) stay in the buffer.
+          * Per-doc non-retryable failures (most 4xx) are cleared and a
+            sample is logged at WARNING with op / id / status / error.
+        """
+        async with self._flush_lock:
+            if not self._pending_upserts and not self._pending_kv_deletes:
+                return
+            if self.client is None:
+                return
+
+            await self._ensure_index_ready()
+
+            pending_upserts = self._pending_upserts
+            pending_deletes = self._pending_kv_deletes
+
+            # Deletes come first so that a delete followed (in time) by an
+            # upsert on the same id is still observable as an index after
+            # the bulk completes; we also dedupe via the set/dict already.
+            actions: list[dict[str, Any]] = []
+            for doc_id in pending_deletes:
+                actions.append(
+                    {
+                        "_op_type": "delete",
+                        "_index": self._index_name,
+                        "_id": doc_id,
+                    }
                 )
-        except OpenSearchException as e:
-            logger.error(f"[{self.workspace}] Error upserting documents: {e}")
-            raise
+            for doc_id, source in pending_upserts.items():
+                actions.append(
+                    {
+                        "_op_type": "index",
+                        "_index": self._index_name,
+                        "_id": doc_id,
+                        "_source": source,
+                    }
+                )
+
+            try:
+                success, failed = await helpers.async_bulk(
+                    self.client, actions, raise_on_error=False
+                )
+            except OpenSearchException as e:
+                logger.error(
+                    f"[{self.workspace}] Error flushing KV ops "
+                    f"(upserts={len(pending_upserts)}, "
+                    f"deletes={len(pending_deletes)}): {e}"
+                )
+                raise
+
+            retryable_ids, non_retryable_ops = _extract_bulk_failed_ids(failed)
+            non_retryable_ids = {op.doc_id for op in non_retryable_ops}
+
+            # Clear successful + non-retryable entries; keep retryable ones.
+            for doc_id in list(pending_upserts.keys()):
+                if doc_id not in retryable_ids:
+                    pending_upserts.pop(doc_id, None)
+            new_deletes: set[str] = set()
+            for doc_id in pending_deletes:
+                if doc_id in retryable_ids:
+                    new_deletes.add(doc_id)
+            pending_deletes.clear()
+            pending_deletes.update(new_deletes)
+
+            if retryable_ids:
+                logger.warning(
+                    f"[{self.workspace}] {len(retryable_ids)} KV ops will "
+                    f"retry on the next flush (transient failure)"
+                )
+            if non_retryable_ops:
+                sample = non_retryable_ops[:5]
+                sample_text = ", ".join(
+                    f"{op.op}/{op.doc_id}/status={op.status}/{op.error}"
+                    for op in sample
+                )
+                logger.warning(
+                    f"[{self.workspace}] {len(non_retryable_ops)} KV ops "
+                    f"failed permanently and were dropped (non-retryable status). "
+                    f"Sample: {sample_text}"
+                )
+                if len(non_retryable_ops) > len(sample):
+                    logger.debug(
+                        f"[{self.workspace}] Remaining permanent failures: "
+                        + ", ".join(
+                            f"{op.op}/{op.doc_id}/status={op.status}/{op.error}"
+                            for op in non_retryable_ops[len(sample) :]
+                        )
+                    )
+            logger.debug(
+                f"[{self.workspace}] Flushed KV ops: {success} ok, "
+                f"retry={len(retryable_ids)}, dropped={len(non_retryable_ids)}"
+            )
 
     async def index_done_callback(self) -> None:
-        """Refresh index to make recently indexed documents searchable."""
+        """Flush pending KV ops and refresh the index for search visibility.
+
+        Flush runs first so a previously-missing index gets recreated by
+        ``_flush_pending_kv_ops`` (via ``_ensure_index_ready``) before any
+        buffered writes are abandoned. The refresh step is skipped only
+        when the index is still not ready after the flush attempt.
+        """
+        await self._flush_pending_kv_ops()
         if not self._index_ready:
             return
         try:
@@ -606,8 +871,19 @@ class OpenSearchKVStorage(BaseKVStorage):
             pass
 
     async def is_empty(self) -> bool:
-        """Return True if the index contains no documents."""
-        if not self._index_ready:
+        """Return True if the index (plus pending buffer) contains no docs.
+
+        Buffer-aware: a pending upsert makes is_empty False immediately,
+        avoiding the counterintuitive "I just upserted but is_empty
+        returned True" case. Pending deletes alone are not enough to flip
+        the answer because we cannot tell whether other persisted rows
+        survive without flushing.
+        """
+        async with self._flush_lock:
+            if self._pending_upserts:
+                return False
+            index_ready = self._index_ready
+        if not index_ready:
             return True
         try:
             response = await self.client.count(index=self._index_name)
@@ -617,53 +893,37 @@ class OpenSearchKVStorage(BaseKVStorage):
                 self._mark_index_missing()
             return True
 
-    async def delete(self, ids: list[str]) -> None:
-        """Delete documents by their IDs."""
-        if not ids:
-            return
-        if not self._index_ready:
-            return
-        if isinstance(ids, set):
-            ids = list(ids)
-        try:
-            # No per-operation refresh: immediate reads use ID-based mget (translog),
-            # search visibility is guaranteed after index_done_callback() batch refresh.
-            actions = [
-                {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
-                for doc_id in ids
-            ]
-            success, _ = await helpers.async_bulk(
-                self.client, actions, raise_on_error=False
-            )
-            logger.info(
-                f"[{self.workspace}] Deleted {success} documents from {self.namespace}"
-            )
-        except OpenSearchException as e:
-            if _is_missing_index_error(e):
-                self._mark_index_missing()
-                return
-            logger.error(f"[{self.workspace}] Error deleting documents: {e}")
-
     async def drop(self) -> dict[str, str]:
-        """Delete the entire index."""
-        try:
+        """Delete the entire index, discarding pending buffers.
+
+        Runs entirely under ``_flush_lock`` so a concurrent flush / upsert
+        cannot land writes against an index that is being deleted.
+        """
+        async with self._flush_lock:
+            # Pending writes are meaningless once the index is dropped.
+            self._pending_upserts.clear()
+            self._pending_kv_deletes.clear()
             try:
-                await self.client.indices.delete(index=self._index_name)
-                logger.info(f"[{self.workspace}] Dropped index: {self._index_name}")
-            except NotFoundError:
-                logger.info(
-                    f"[{self.workspace}] Index already missing during drop: {self._index_name}"
-                )
-            self._mark_index_missing()
-            return {"status": "success", "message": f"Index {self._index_name} dropped"}
-        except OpenSearchException as e:
-            self._mark_index_missing()
-            logger.error(f"[{self.workspace}] Error dropping index: {e}")
-            return {"status": "error", "message": str(e)}
-        except Exception as e:
-            self._mark_index_missing()
-            logger.error(f"[{self.workspace}] Unexpected error dropping index: {e}")
-            return {"status": "error", "message": str(e)}
+                try:
+                    await self.client.indices.delete(index=self._index_name)
+                    logger.info(f"[{self.workspace}] Dropped index: {self._index_name}")
+                except NotFoundError:
+                    logger.info(
+                        f"[{self.workspace}] Index already missing during drop: {self._index_name}"
+                    )
+                self._mark_index_missing()
+                return {
+                    "status": "success",
+                    "message": f"Index {self._index_name} dropped",
+                }
+            except OpenSearchException as e:
+                self._mark_index_missing()
+                logger.error(f"[{self.workspace}] Error dropping index: {e}")
+                return {"status": "error", "message": str(e)}
+            except Exception as e:
+                self._mark_index_missing()
+                logger.error(f"[{self.workspace}] Unexpected error dropping index: {e}")
+                return {"status": "error", "message": str(e)}
 
 
 @final
@@ -2985,13 +3245,49 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             raise
 
     async def finalize(self):
-        """Release the OpenSearch client connection."""
+        """Flush pending writes and release the OpenSearch client connection.
+
+        Regular flush failures (any ``Exception``) are captured so they
+        can be re-surfaced as a ``RuntimeError`` that names the unflushed
+        buffer counts -- otherwise ``LightRAG.finalize_storages()`` would
+        log the storage as successfully finalized while writes silently
+        failed to reach OpenSearch.
+
+        ``BaseException`` subclasses other than ``Exception`` (notably
+        ``asyncio.CancelledError`` / ``KeyboardInterrupt`` / ``SystemExit``)
+        are NOT caught: they propagate through the ``finally`` block so
+        shutdown cancellation is honoured and not silently swallowed.
+        The client is released in ``finally`` so it does not leak whether
+        the flush succeeded, failed, or was cancelled.
+        """
+        flush_error: Exception | None = None
         try:
-            await self._flush_pending_vector_ops()
+            try:
+                await self._flush_pending_vector_ops()
+            except Exception as e:
+                flush_error = e
         finally:
             if self.client is not None:
                 await ClientManager.release_client(self.client)
                 self.client = None
+
+        pending_docs = len(self._pending_vector_docs)
+        pending_deletes = len(self._pending_vector_deletes)
+
+        if flush_error is not None:
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearchVectorDBStorage.finalize() "
+                f"flush raised; {pending_docs} pending upserts and "
+                f"{pending_deletes} pending deletes were left buffered "
+                f"(client released, data lost)"
+            ) from flush_error
+        if pending_docs or pending_deletes:
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearchVectorDBStorage.finalize() "
+                f"left {pending_docs} pending upserts and {pending_deletes} "
+                f"pending deletes buffered after final flush attempt "
+                f"(transient bulk failure); these writes have been lost"
+            )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Generate embeddings and buffer vector docs for batched flush.

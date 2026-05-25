@@ -404,6 +404,17 @@ class BaseKVStorage(StorageNameSpace, ABC):
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
+
+        Multi-worker note:
+            Backends that buffer writes in process memory (e.g.
+            OpenSearchKVStorage as of the KV-batching change derived from
+            #2822) keep the buffer process-local. In a multi-worker
+            deployment (e.g. lightrag-gunicorn) other workers will not
+            observe these writes until the writing worker has called
+            index_done_callback(). Callers that depend on cross-worker
+            read-after-write visibility must explicitly await
+            index_done_callback() before relying on reads from another
+            worker.
         """
 
     @abstractmethod
@@ -413,6 +424,9 @@ class BaseKVStorage(StorageNameSpace, ABC):
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
+
+        Multi-worker note: see ``upsert`` -- buffered tombstones are
+        process-local until index_done_callback() runs.
 
         Args:
             ids (list[str]): List of document IDs to be deleted from storage
