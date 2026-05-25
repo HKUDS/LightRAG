@@ -95,8 +95,8 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
     assert values["PROMPT_LOG"] == "PostgreSQL host"
 
 
-def test_collect_postgres_config_prompts_for_existing_docker_credentials() -> None:
-    """Docker PostgreSQL should preserve editability when old `.env` creds already exist."""
+def test_collect_postgres_config_forces_rag_credentials_even_with_existing_docker_credentials() -> None:
+    """Docker PostgreSQL should always force 'rag' credentials even when old `.env` creds already exist."""
     values = run_bash_lines(f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -110,14 +110,12 @@ prompt_with_default() {{
   printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
   case "$1" in
     "PostgreSQL host") printf 'localhost' ;;
-    "PostgreSQL user") printf 'updated-user' ;;
-    "PostgreSQL database") printf 'updated-db' ;;
     *) printf '%s' "$2" ;;
   esac
 }}
 prompt_secret_with_default() {{
   printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
-  printf 'updated-password'
+  printf '%s' "$2"
 }}
 
 ORIGINAL_ENV_VALUES[POSTGRES_USER]="existing-user"
@@ -131,12 +129,12 @@ printf 'POSTGRES_PASSWORD=%s\\n' "${{ENV_VALUES[POSTGRES_PASSWORD]}}"
 printf 'POSTGRES_DATABASE=%s\\n' "${{ENV_VALUES[POSTGRES_DATABASE]}}"
 printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
 """)
-    assert values["POSTGRES_USER"] == "updated-user"
-    assert values["POSTGRES_PASSWORD"] == "updated-password"
-    assert values["POSTGRES_DATABASE"] == "updated-db"
+    assert values["POSTGRES_USER"] == "rag"
+    assert values["POSTGRES_PASSWORD"] == "rag"
+    assert values["POSTGRES_DATABASE"] == "rag"
     assert (
         values["PROMPT_LOG"]
-        == "PostgreSQL host[localhost]|PostgreSQL user[existing-user]|PostgreSQL password: [existing-password]|PostgreSQL database[existing-db]"
+        == "PostgreSQL host[localhost]"
     )
 
 

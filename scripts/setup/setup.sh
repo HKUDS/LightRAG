@@ -1342,16 +1342,14 @@ collect_postgres_config() {
   existing_user="${ORIGINAL_ENV_VALUES[POSTGRES_USER]-${ENV_VALUES[POSTGRES_USER]:-}}"
   existing_password="${ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]-${ENV_VALUES[POSTGRES_PASSWORD]:-}}"
   existing_database="${ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]-${ENV_VALUES[POSTGRES_DATABASE]:-}}"
-  if [[ "$use_docker" == "yes" && -z "$existing_user" && -z "$existing_password" ]]; then
+  if [[ "$use_docker" == "yes" ]]; then
     user="rag"
     password="rag"
-  else
-    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
-    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
-  fi
-  if [[ "$use_docker" == "yes" && -z "$existing_database" ]]; then
     database="rag"
+    log_info "PostgreSQL running locally via Docker requires pre-configured image credentials: User='rag', DB='rag'."
   else
+    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-postgres}")"
+    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-}")"
     database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
   fi
 
