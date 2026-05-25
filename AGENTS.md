@@ -11,7 +11,7 @@ Top-level directories:
 - **lightrag/**: Core Python package — see *Module Layout* below.
 - **lightrag_webui/**: React 19 + TypeScript client (Bun + Vite + Tailwind). UI components in `src/`.
 - **scripts/**: `test.sh` (preferred test runner), `setup/` interactive environment wizard (use `make env-*` rather than calling `setup.sh` directly — see *Configuration > Setup Wizard Outputs*), and release tooling.
-- **tests/** and root-level `test_*.py`: Pytest coverage. Working datasets stay in `inputs/`, `rag_storage/`, and `temp/`; deployment collateral lives in `docs/`, `k8s-deploy/`, and compose files.
+- **tests/**: Pytest coverage, organized into subdirectories that mirror `lightrag/` (see *Testing* below for layout). Working datasets stay in `inputs/`, `rag_storage/`, and `temp/`; deployment collateral lives in `docs/`, `k8s-deploy/`, and compose files.
 
 ### Module Layout (`lightrag/`)
 
@@ -151,13 +151,21 @@ bun test src/api/lightrag.test.ts  # Single test file
 ./scripts/test.sh tests
 
 # Run specific test file
-./scripts/test.sh test_graph_storage.py
+./scripts/test.sh tests/kg/test_graph_storage.py
 
 # Run with custom workers
 ./scripts/test.sh tests --test-workers 4
 ```
 
-- `tests/`: main test suite (mirrors feature folders); root-level `test_*.py` for specific integration tests.
+- `tests/`: main test suite, mirrors feature folders. Place new tests under the subdirectory matching the module under test:
+  - `tests/api/{auth,config,routes}/` for FastAPI server tests (auth/token, config loading, route handlers); top-level `tests/api/` for app-wide concerns (path prefixes, Ollama-compatible endpoint).
+  - `tests/chunker/`, `tests/evaluation/`, `tests/extraction/` for the like-named modules.
+  - `tests/kg/<backend>/` (e.g. `postgres/`, `opensearch/`, `milvus/`, `faiss/`, `json/`, `neo4j/`, `networkx/`, `nano/`, `memgraph/`, `mongo/`, `qdrant/`, `redis/`) for backend-specific storage tests; `tests/kg/` root for cross-backend tests (`test_graph_storage`, `test_batch_graph_operations`, `test_unified_lock_safety`, `test_file_atomic`).
+  - `tests/llm/<provider>/` (e.g. `bedrock/`, `gemini/`, `ollama/`, `openai/`, `voyageai/`, `zhipu/`) for provider-specific behavior; `tests/llm/` root for cross-provider concerns (embedding, VLM, cache, role).
+  - `tests/parser/`, `tests/parser/docx/`, `tests/parser/external/{mineru,docling}/` for parser implementations.
+  - `tests/pipeline/` for ingestion pipeline and doc-status behavior (including `test_pipeline_*`, `test_doc_status_*`, `test_multimodal_*`, `test_graph_keyed_locks`).
+  - `tests/sidecar/`, `tests/setup/`, `tests/workspace/` for the like-named cross-cutting concerns.
+  - When adding a new backend or LLM provider, create a new subdirectory plus an empty `__init__.py` rather than dropping the file in the parent directory root.
 - Markers (see `tests/pytest.ini`): `offline`, `integration`, `requires_db`, `requires_api`. Integration tests are skipped by default via `-m "not integration"`.
 - Integration env vars: `LIGHTRAG_RUN_INTEGRATION=true`, `LIGHTRAG_KEEP_ARTIFACTS=true`, `LIGHTRAG_TEST_WORKERS=4`, plus storage-specific connection strings.
 
