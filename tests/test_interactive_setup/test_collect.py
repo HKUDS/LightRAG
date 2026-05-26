@@ -95,7 +95,9 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
     assert values["PROMPT_LOG"] == "PostgreSQL host"
 
 
-def test_collect_postgres_config_forces_rag_credentials_even_with_existing_docker_credentials() -> None:
+def test_collect_postgres_config_forces_rag_credentials_even_with_existing_docker_credentials() -> (
+    None
+):
     """Docker PostgreSQL should always force 'rag' credentials even when old `.env` creds already exist."""
     values = run_bash_lines(f"""
 set -euo pipefail
@@ -132,10 +134,7 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
     assert values["POSTGRES_USER"] == "rag"
     assert values["POSTGRES_PASSWORD"] == "rag"
     assert values["POSTGRES_DATABASE"] == "rag"
-    assert (
-        values["PROMPT_LOG"]
-        == "PostgreSQL host[localhost]"
-    )
+    assert values["PROMPT_LOG"] == "PostgreSQL host[localhost]"
 
 
 def test_collect_postgres_config_still_prompts_for_host_credentials() -> None:

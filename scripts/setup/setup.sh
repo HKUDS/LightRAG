@@ -1348,8 +1348,8 @@ collect_postgres_config() {
     database="rag"
     log_info "PostgreSQL running locally via Docker requires pre-configured image credentials: User='rag', DB='rag'."
   else
-    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-postgres}")"
-    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-}")"
+    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
+    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
     database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
   fi
 
