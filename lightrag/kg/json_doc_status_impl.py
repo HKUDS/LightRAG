@@ -30,7 +30,49 @@ from .shared_storage import (
 @final
 @dataclass
 class JsonDocStatusStorage(DocStatusStorage):
-    """JSON implementation of document status storage"""
+    """JSON-file-backed document-status storage, sharing memory across processes.
+
+    Uses the **same shared-memory + dirty-flag protocol** as
+    ``JsonKVStorage`` — see that class's docstring for the canonical
+    description of:
+        * how ``self._data`` is a cross-process
+          ``multiprocessing.Manager().dict()`` proxy obtained via
+          ``get_namespace_data``;
+        * how ``try_initialize_namespace`` ensures exactly one process
+          reads the JSON file on first init;
+        * how ``set_all_update_flags`` marks dirty state (semantics
+          *reversed* from the file-backed classes
+          ``NanoVectorDBStorage`` / ``FaissVectorDBStorage`` /
+          ``NetworkXStorage``);
+        * how ``index_done_callback`` flushes and calls
+          ``clear_all_update_flags``;
+        * why ``_storage_lock`` wraps **every** ``self._data`` access
+          (not just commit / reload).
+
+    Differences from ``JsonKVStorage`` (in this class only):
+        * ``upsert`` calls ``index_done_callback`` synchronously after
+          mutating shared memory, so doc-status changes hit disk
+          immediately rather than being deferred to the pipeline's
+          batched ``_insert_done()``. Rationale: doc-status is the
+          recovery anchor for the ingest pipeline — if the process
+          crashes after an in-memory upsert but before the next batch
+          commit, the doc must still be visible as PENDING/PROCESSING
+          on restart. The other writes (``delete``, ``drop``) follow
+          the standard deferred-commit pattern.
+        * Pre-upsert preparation (``chunks_list`` default) runs
+          *outside* the lock because it only mutates the caller-
+          supplied dict, not the shared store.
+        * Read methods are richer (``get_docs_by_status`` /
+          ``get_docs_by_track_id`` / ``get_docs_paginated`` /
+          ``get_doc_by_file_path`` / etc.), but they all follow the
+          same "acquire ``_storage_lock``, scan ``self._data``, copy
+          values out before returning" template.
+
+    Non-pipeline write paths:
+        * ``drop`` — destructive, **not** serialized; the caller must
+          hold the pipeline ``busy`` reservation (the
+          ``/documents/clear`` endpoint does this).
+    """
 
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
@@ -51,7 +93,13 @@ class JsonDocStatusStorage(DocStatusStorage):
         reap_orphan_tmp_files(self._file_name, self.workspace or "_")
 
     async def initialize(self):
-        """Initialize storage data"""
+        """Bind to the shared namespace dict and load from disk on first init.
+
+        Same protocol as ``JsonKVStorage.initialize``: a global init
+        lock (``try_initialize_namespace``) elects one process to read
+        the JSON file into the shared ``self._data``; other processes
+        skip the read and see the same shared dict.
+        """
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
         )
@@ -175,6 +223,13 @@ class JsonDocStatusStorage(DocStatusStorage):
         return result
 
     async def index_done_callback(self) -> None:
+        """Flush dirty shared memory to disk and clear all dirty flags.
+
+        Identical commit protocol to ``JsonKVStorage.index_done_callback``
+        (snapshot the shared dict → ``write_json`` → if sanitization
+        happened reload the cleaned data → ``clear_all_update_flags``).
+        See ``JsonKVStorage`` docstring for details.
+        """
         async with self._storage_lock:
             if self.storage_updated.value:
                 data_dict = (
@@ -200,10 +255,26 @@ class JsonDocStatusStorage(DocStatusStorage):
                 await clear_all_update_flags(self.namespace, workspace=self.workspace)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """
-        Importance notes for in-memory storage:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed
+        """Insert/update doc-status records and **persist immediately**.
+
+        Differs from ``JsonKVStorage.upsert`` in that it calls
+        ``index_done_callback`` synchronously at the end, so changes
+        are flushed to disk before this coroutine returns. Rationale:
+        doc-status is the recovery anchor for the ingest pipeline — if
+        the process crashes after an in-memory upsert but before the
+        next batch commit, the doc must still be visible as
+        PENDING/PROCESSING on restart.
+
+        Steps:
+            1. Pre-process the caller's dict (default ``chunks_list``)
+               **outside** the lock — only mutates the caller-supplied
+               value dicts, not shared state.
+            2. Under ``_storage_lock``, ``self._data.update(data)`` and
+               ``set_all_update_flags`` to mark every process dirty.
+            3. Await ``index_done_callback`` for an immediate flush.
+
+        See ``JsonKVStorage`` class docstring for the shared-memory +
+        dirty-flag protocol that underpins step 2.
         """
         if not data:
             return
@@ -360,17 +431,19 @@ class JsonDocStatusStorage(DocStatusStorage):
         return counts
 
     async def delete(self, doc_ids: list[str]) -> None:
-        """Delete specific records from storage by their IDs
+        """Remove doc-status records from shared memory.
 
-        Importance notes for in-memory storage:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed
+        Unlike ``upsert``, ``delete`` does **not** force an immediate
+        flush — it follows the standard deferred-commit pattern.
+        Persistence happens at the next ``index_done_callback``
+        (driven by the pipeline's ``_insert_done()`` at end of batch).
+
+        Only calls ``set_all_update_flags`` if at least one key was
+        actually present (avoids creating spurious dirty state for
+        no-op deletes).
 
         Args:
-            ids (list[str]): List of document IDs to be deleted from storage
-
-        Returns:
-            None
+            doc_ids: List of document IDs to be deleted from storage
         """
         async with self._storage_lock:
             any_deleted = False
@@ -441,12 +514,22 @@ class JsonDocStatusStorage(DocStatusStorage):
         return None
 
     async def drop(self) -> dict[str, str]:
-        """Drop all document status data from storage and clean up resources
+        """Clear shared memory and immediately persist the empty state.
 
         This method will:
-        1. Clear all document status data from memory
-        2. Update flags to notify other processes
-        3. Trigger index_done_callback to save the empty state
+            1. Clear the shared ``self._data`` dict under
+               ``_storage_lock`` (visible to all processes immediately).
+            2. ``set_all_update_flags`` so every process knows there is
+               dirty state pending persistence.
+            3. Call ``index_done_callback`` synchronously to flush the
+               empty state to disk and clear the dirty flags.
+
+        Caller contract:
+            ``drop`` is destructive and **not** serialized by this
+            storage class. The caller must hold the pipeline ``busy``
+            reservation (the ``/documents/clear`` endpoint does this)
+            before invoking it. See class docstring,
+            *Non-pipeline write paths*.
 
         Returns:
             dict[str, str]: Operation status and message

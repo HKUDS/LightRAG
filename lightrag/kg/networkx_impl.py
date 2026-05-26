@@ -25,6 +25,102 @@ load_dotenv(dotenv_path=".env", override=False)
 @final
 @dataclass
 class NetworkXStorage(BaseGraphStorage):
+    """File-backed knowledge-graph storage built on ``networkx.Graph``.
+
+    Storage model:
+        A single ``networkx.Graph`` instance lives in process memory; its
+        full state is serialized to one GraphML file at
+        ``working_dir/[workspace/]graph_<namespace>.graphml``. That GraphML
+        file is the **only** cross-process synchronization surface — there
+        is no shared memory, no message bus, and no network channel
+        between processes. Cross-process visibility is mediated by (a) an
+        atomic file write at commit time and (b) a per-namespace
+        ``storage_updated`` flag distributed through
+        ``lightrag.kg.shared_storage``.
+
+    Concurrency invariants (the code in this file is correct *only* while
+    all three hold):
+        1. **Single writer per workspace.** The document pipeline's
+           ``busy`` / ``destructive_busy`` flags (see ``AGENTS.md``
+           *Pipeline concurrency contract*) guarantee at most one process
+           performs ``upsert_*`` / ``delete_*`` / ``remove_*`` /
+           ``index_done_callback`` at any time. Every other process is
+           read-only.
+        2. **Eventual consistency is sufficient.** Read-only processes
+           only need to observe the writer's data *after* the writer's
+           ``index_done_callback`` completes. Reads landing in the gap
+           between a writer's in-memory mutation and its commit may
+           legitimately return the pre-update snapshot.
+        3. **networkx operations are fully synchronous.** Under a
+           single-threaded asyncio event loop, ``graph.add_node`` /
+           ``graph.remove_node`` / ``graph.degree`` / etc. cannot be
+           preempted by another coroutine, which gives them implicit
+           mutual exclusion over ``self._graph``. This is why the methods
+           below don't have to hold ``_storage_lock`` while calling into
+           ``graph``.
+
+    Cross-process sync protocol (identical in shape to
+    ``NanoVectorDBStorage`` — see that class's docstring for the canonical
+    description):
+        Writer side (``index_done_callback``):
+            1. ``write_nx_graph`` atomically writes the GraphML file
+               (``atomic_write`` lays a tmp file beside the target and
+               renames it into place — readers either see the previous
+               file in full or the new file in full, never a torn write).
+            2. ``set_all_update_flags`` flips every process's
+               ``storage_updated`` flag (including the writer's own).
+            3. Immediately reset the writer's own flag to ``False`` so
+               the next call to ``_get_graph`` does not trigger a
+               self-reload of the data this process just wrote.
+        Reader side (any method that goes through ``_get_graph``):
+            1. Inside ``_storage_lock``, observe
+               ``storage_updated.value is True``.
+            2. **Fully reload** ``self._graph`` from disk via
+               ``load_nx_graph``. networkx GraphML has no incremental
+               sync API, so the entire file is re-parsed.
+            3. Reset the reader's own flag.
+
+    Lock scope:
+        ``_storage_lock`` is a per-``(namespace, workspace)`` keyed lock
+        spanning both intra-process coroutines and inter-process workers.
+        It wraps only the *reload* and *commit* critical sections, not
+        every ``graph.xxx`` call. Operating on ``graph`` outside the lock
+        is safe today *because of invariant (3)* — if either premise is
+        ever broken (e.g. ``graph.xxx`` is moved to a thread pool, or
+        networkx is swapped for an async graph library), the lock scope
+        must be widened to cover the mutation/read itself.
+
+    Implementation differences from ``NanoVectorDBStorage`` (same design,
+    different surface):
+        * No ``client_storage`` property — there is no equivalent live
+          reference being exposed to callers, so NanoVectorDB's
+          "do-not-retain-across-await" caveat does not apply here.
+        * ``write_nx_graph`` passes the tmp path directly to
+          ``nx.write_graphml``, so the writer needs no equivalent of
+          NanoVectorDB's "temporarily reassign ``storage_file``" trick.
+        * Mutation surface is finer-grained (``upsert_node`` /
+          ``upsert_edge`` / ``upsert_nodes_batch`` /
+          ``upsert_edges_batch`` / ``delete_node`` / ``remove_nodes`` /
+          ``remove_edges``); each goes through ``_get_graph`` once and
+          then operates synchronously on ``self._graph``.
+
+    Non-pipeline write paths:
+        The pipeline's ``busy`` gate serializes mutation calls reached
+        through the document ingestion and purge flows. The following
+        entry points are **not** serialized by the pipeline gate and
+        must be guarded externally:
+            * ``drop`` — currently gated by the API layer (the
+              ``/documents/clear`` endpoint takes the pipeline busy
+              reservation before invoking it).
+            * ``delete_node`` / ``remove_nodes`` / ``remove_edges`` /
+              ``upsert_node`` / ``upsert_edge`` when invoked from
+              ``utils_graph.py`` admin flows (``adelete_by_entity`` /
+              ``adelete_by_relation`` / entity-edit flows). These flows
+              are currently not exposed in the WebUI; any future caller
+              must arrange single-writer serialization the same way the
+              pipeline does.
+    """
+
     @staticmethod
     def load_nx_graph(file_name) -> nx.Graph:
         if os.path.exists(file_name):
@@ -86,8 +182,27 @@ class NetworkXStorage(BaseGraphStorage):
         )
 
     async def _get_graph(self):
-        """Check if the storage should be reloaded"""
-        # Acquire lock to prevent concurrent read and write
+        """Return the live ``networkx.Graph``, reloading from disk if needed.
+
+        This is the **single entry point** every public method funnels
+        through to obtain ``self._graph``. It is also the **only place
+        readers transition to a fresher on-disk snapshot**: when another
+        process has committed (via ``index_done_callback``) and flipped
+        this process's ``storage_updated`` flag, the next call here
+        rebuilds ``self._graph`` by re-parsing the entire GraphML file.
+        networkx has no incremental sync API — the reload is
+        unconditionally a full file reload.
+
+        Under the *Single writer* invariant (see class docstring), the
+        reload branch never fires in the writer process: the writer
+        resets its own flag at the end of every ``index_done_callback``.
+        The branch exists for readers.
+
+        ``_storage_lock`` is held during the check-and-reload to (a)
+        serialize concurrent reload attempts by sibling coroutines in
+        the same process and (b) interlock with ``index_done_callback``
+        so a reader cannot observe a partially-saved file.
+        """
         async with self._storage_lock:
             # Check if data needs to be reloaded
             if self.storage_updated.value:
@@ -140,11 +255,16 @@ class NetworkXStorage(BaseGraphStorage):
         return None
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
-        """
-        Importance notes:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. Only one process should updating the storage at a time before index_done_callback,
-           KG-storage-log should be used to avoid data corruption
+        """Insert or update a single node; persistence is deferred.
+
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. In ``lightrag.py`` this
+            is handled by ``_insert_done()`` at the end of the document
+            batch. Callers outside the pipeline must persist explicitly.
+
+        Correctness relies on the class docstring *Lock scope* invariant
+        (synchronous networkx ops + single-writer pipeline gate).
         """
         graph = await self._get_graph()
         graph.add_node(node_id, **node_data)
@@ -152,11 +272,14 @@ class NetworkXStorage(BaseGraphStorage):
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        """
-        Importance notes:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. Only one process should updating the storage at a time before index_done_callback,
-           KG-storage-log should be used to avoid data corruption
+        """Insert or update a single edge; persistence is deferred.
+
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. Callers outside the
+            pipeline must persist explicitly.
+
+        Correctness relies on the class docstring *Lock scope* invariant.
         """
         graph = await self._get_graph()
         graph.add_edge(source_node_id, target_node_id, **edge_data)
@@ -166,6 +289,11 @@ class NetworkXStorage(BaseGraphStorage):
 
         Much faster than calling upsert_node() in a loop for large imports
         because it avoids per-call async event loop overhead.
+
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. Callers outside the
+            pipeline must persist explicitly.
 
         Args:
             nodes: List of (node_id, node_data) tuples.
@@ -188,6 +316,11 @@ class NetworkXStorage(BaseGraphStorage):
     ) -> None:
         """Batch insert/update multiple edges in a single call.
 
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. Callers outside the
+            pipeline must persist explicitly.
+
         Args:
             edges: List of (source_id, target_id, edge_data) tuples.
         """
@@ -196,11 +329,17 @@ class NetworkXStorage(BaseGraphStorage):
             graph.add_edge(src, tgt, **edge_data)
 
     async def delete_node(self, node_id: str) -> None:
-        """
-        Importance notes:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. Only one process should updating the storage at a time before index_done_callback,
-           KG-storage-log should be used to avoid data corruption
+        """Remove a single node from the graph; persistence is deferred.
+
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. Callers outside the
+            pipeline must persist explicitly.
+
+        Pipeline-gating depends on the caller: invocations from the
+        document purge flow are serialized by ``pipeline busy``;
+        invocations from ``utils_graph.py`` admin flows are **not** —
+        see class docstring *Non-pipeline write paths*.
         """
         graph = await self._get_graph()
         if graph.has_node(node_id):
@@ -212,12 +351,15 @@ class NetworkXStorage(BaseGraphStorage):
             )
 
     async def remove_nodes(self, nodes: list[str]):
-        """Delete multiple nodes
+        """Delete multiple nodes from the graph.
 
-        Importance notes:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. Only one process should updating the storage at a time before index_done_callback,
-           KG-storage-log should be used to avoid data corruption
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. Callers outside the
+            pipeline must persist explicitly.
+
+        Pipeline-gating depends on the caller — see ``delete_node`` and
+        class docstring *Non-pipeline write paths*.
 
         Args:
             nodes: List of node IDs to be deleted
@@ -228,12 +370,15 @@ class NetworkXStorage(BaseGraphStorage):
                 graph.remove_node(node)
 
     async def remove_edges(self, edges: list[tuple[str, str]]):
-        """Delete multiple edges
+        """Delete multiple edges from the graph.
 
-        Importance notes:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. Only one process should updating the storage at a time before index_done_callback,
-           KG-storage-log should be used to avoid data corruption
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. Callers outside the
+            pipeline must persist explicitly.
+
+        Pipeline-gating depends on the caller — see ``delete_node`` and
+        class docstring *Non-pipeline write paths*.
 
         Args:
             edges: List of edges to be deleted, each edge is a (source, target) tuple
@@ -545,7 +690,29 @@ class NetworkXStorage(BaseGraphStorage):
         return all_edges
 
     async def index_done_callback(self) -> bool:
-        """Save data to disk"""
+        """Commit in-memory graph to disk and notify other processes.
+
+        This is the writer's **commit point** in the cross-process sync
+        protocol (see class docstring). Two effects, in order:
+            1. ``write_nx_graph`` atomically writes the GraphML file
+               (``atomic_write`` swaps a tmp file into place).
+            2. ``set_all_update_flags`` flips every registered process's
+               ``storage_updated`` flag, then we immediately reset our
+               own flag to ``False`` so the writer does not self-reload
+               on the next call to ``_get_graph``.
+
+        Two-block structure (intentional, do not collapse):
+            * **First ``async with``** — early-return path for a
+              hypothetical second writer. Under the current single-writer
+              pipeline contract (class docstring, invariant 1) the
+              ``storage_updated.value`` check is permanently ``False`` in
+              the writer, so this branch is **dead code in production**.
+              It is kept as defensive scaffolding for any future
+              relaxation of the single-writer invariant; removing it
+              would silently re-enable lost-write bugs the moment a
+              second writer is introduced.
+            * **Second ``async with``** — the actual save + notify.
+        """
         async with self._storage_lock:
             # Check if storage was updated by another process
             if self.storage_updated.value:
@@ -579,13 +746,22 @@ class NetworkXStorage(BaseGraphStorage):
         return True
 
     async def drop(self) -> dict[str, str]:
-        """Drop all graph data from storage and clean up resources
+        """Drop all graph data from storage and reinitialize the graph.
 
         This method will:
         1. Remove the graph storage file if it exists
-        2. Reset the graph to an empty state
+        2. Reset the graph to an empty ``nx.Graph()``
         3. Update flags to notify other processes
-        4. Changes is persisted to disk immediately
+        4. Changes are persisted to disk immediately
+
+        Caller contract:
+            ``drop`` is destructive and **not** serialized by this storage
+            class. The caller must hold the pipeline ``busy`` reservation
+            (the ``/documents/clear`` endpoint does this) before invoking
+            it — running ``drop`` concurrently with an active document
+            pipeline will tear down storage out from under the writer and
+            silently lose data. See class docstring,
+            *Non-pipeline write paths*.
 
         Returns:
             dict[str, str]: Operation status and message
