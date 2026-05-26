@@ -2540,6 +2540,10 @@ class _PipelineMixin:
             # marker; strip it so the chunking path is identical to raw.
             # blocks_path is still resolved for downstream multimodal
             # sidecar reads (_build_mm_chunks_from_sidecars).
+            # No re-parse happens here — content + sidecar are reused from a
+            # prior parse, so this is semantically a cache-hit and mirrors
+            # the parse_mineru / parse_docling raw-bundle skip path by
+            # setting ``parse_stage_skipped``.
             merged_text = strip_lightrag_doc_prefix(
                 content_data.get("content"), doc_format
             )
@@ -2553,6 +2557,7 @@ class _PipelineMixin:
                 "parse_format": doc_format,
                 "content": merged_text,
                 "blocks_path": blocks_path,
+                "parse_stage_skipped": True,
             }
 
         if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
@@ -2707,12 +2712,17 @@ class _PipelineMixin:
                 }
             return result
 
+        # FULL_DOCS_FORMAT_RAW: no parser ran — the content was supplied
+        # at insert time and we pass it through verbatim. Mark as skipped
+        # so post-mortem doesn't credit the worker with a synthetic parse
+        # duration (mirrors the LIGHTRAG-format branch above).
         return {
             "doc_id": doc_id,
             "file_path": file_path,
             "parse_format": FULL_DOCS_FORMAT_RAW,
             "content": content_data.get("content", ""),
             "blocks_path": "",
+            "parse_stage_skipped": True,
         }
 
     async def parse_mineru(

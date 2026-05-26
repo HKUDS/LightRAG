@@ -455,13 +455,14 @@ def test_doc_status_metadata_survives_processed_transition(tmp_path):
                 f"process_options dropped during state-machine transitions; "
                 f"final metadata: {metadata!r}"
             )
-            # parse_native on raw text always runs (no cache), so the
-            # cache-miss branch must stamp parsing_end_time and leave
-            # parse_stage_skipped unset.
+            # parse_native on FULL_DOCS_FORMAT_RAW does not actually parse —
+            # it passes content through verbatim — so the skip branch fires
+            # and ``parsing_end_time`` stays absent. ``parse_stage_skipped``
+            # is the cache-hit / no-parse-work sentinel (same field used by
+            # parse_mineru / parse_docling for raw-bundle cache hits).
             assert isinstance(metadata.get("parsing_start_time"), int)
-            assert isinstance(metadata.get("parsing_end_time"), int)
-            assert metadata["parsing_end_time"] >= metadata["parsing_start_time"]
-            assert "parse_stage_skipped" not in metadata
+            assert metadata.get("parse_stage_skipped") is True
+            assert "parsing_end_time" not in metadata
             # parse_native on raw content returns blocks_path="", which makes
             # analyze_multimodal take the "no blocks_path" early-return branch
             # and set analyzing_stage_skipped=True (no analyzing_end_time).
