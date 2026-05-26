@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "編輯{{property}}",
+      "editLockedByPipeline": "流水線正忙,暫時無法編輯",
       "editPropertyDescription": "在下方文字區域編輯屬性值。",
       "errors": {
         "duplicateName": "節點名稱已存在",

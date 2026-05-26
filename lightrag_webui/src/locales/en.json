@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "Edit {{property}}",
+      "editLockedByPipeline": "Pipeline is busy; editing disabled",
       "editPropertyDescription": "Edit the property value in the text area below.",
       "errors": {
         "duplicateName": "Node name already exists",

@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "Редагувати {{property}}",
+      "editLockedByPipeline": "Конвеєр зайнятий; редагування вимкнено",
       "editPropertyDescription": "Редагуйте значення властивості в текстовій області нижче.",
       "errors": {
         "duplicateName": "Ім'я вузла вже існує",

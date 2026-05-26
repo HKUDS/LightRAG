@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "Редактировать {{property}}",
+      "editLockedByPipeline": "Конвейер занят; редактирование отключено",
       "editPropertyDescription": "Отредактируйте значение свойства в текстовой области ниже.",
       "errors": {
         "duplicateName": "Имя узла уже существует",
