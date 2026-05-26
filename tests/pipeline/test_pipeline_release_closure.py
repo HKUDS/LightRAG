@@ -340,6 +340,76 @@ def test_doc_status_metadata_carry_over_helper():
     )
 
 
+@pytest.mark.offline
+def test_carry_over_keys_grouped_by_stage():
+    """Strict tuple-equality guard on ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
+
+    The tuple order is the WebUI ``DocumentStatusDetailsDialog`` render order,
+    so per-stage fields must stay grouped (parse-stage trio then analyze-stage
+    trio). Locking the order here forces any future field addition to update
+    this assertion alongside the tuple, preventing silent regressions in the
+    dialog's timeline-ordered display.
+    """
+    from lightrag.utils_pipeline import _DOC_STATUS_METADATA_CARRY_OVER_KEYS
+
+    assert _DOC_STATUS_METADATA_CARRY_OVER_KEYS == (
+        "process_options",
+        "source_file_name",
+        "parse_warnings",
+        "chunk_opts",
+        "parsing_start_time",
+        "parsing_end_time",
+        "parse_stage_skipped",
+        "analyzing_start_time",
+        "analyzing_end_time",
+        "analyzing_stage_skipped",
+    )
+
+
+@pytest.mark.offline
+def test_carry_over_helper_propagates_end_times_and_skipped():
+    """Stage-end timestamps and skipped flags must survive carry-over so the
+    PROCESSING / PROCESSED / FAILED upserts keep them visible for post-mortem
+    stage-duration analysis.
+    """
+    from lightrag.utils_pipeline import doc_status_transition_metadata
+
+    class _StubStatusDoc:
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+    md = doc_status_transition_metadata(
+        _StubStatusDoc(
+            {
+                "parsing_start_time": 1700000000,
+                "parsing_end_time": 1700000010,
+                "analyzing_start_time": 1700000020,
+                "analyzing_end_time": 1700000050,
+            }
+        )
+    )
+    assert md == {
+        "parsing_start_time": 1700000000,
+        "parsing_end_time": 1700000010,
+        "analyzing_start_time": 1700000020,
+        "analyzing_end_time": 1700000050,
+    }
+
+    # Skipped flags (bool True) also survive carry-over.
+    md = doc_status_transition_metadata(
+        _StubStatusDoc(
+            {
+                "parse_stage_skipped": True,
+                "analyzing_stage_skipped": True,
+            }
+        )
+    )
+    assert md == {
+        "parse_stage_skipped": True,
+        "analyzing_stage_skipped": True,
+    }
+
+
 def _status_value_text(status):
     """Helper: extract the value of a DocStatus enum or raw status string."""
     if hasattr(status, "value"):
@@ -383,6 +453,74 @@ def test_doc_status_metadata_survives_processed_transition(tmp_path):
             metadata = final_status.get("metadata") or {}
             assert metadata.get("process_options") == "iet!", (
                 f"process_options dropped during state-machine transitions; "
+                f"final metadata: {metadata!r}"
+            )
+            # parse_native on raw text always runs (no cache), so the
+            # cache-miss branch must stamp parsing_end_time and leave
+            # parse_stage_skipped unset.
+            assert isinstance(metadata.get("parsing_start_time"), int)
+            assert isinstance(metadata.get("parsing_end_time"), int)
+            assert metadata["parsing_end_time"] >= metadata["parsing_start_time"]
+            assert "parse_stage_skipped" not in metadata
+            # parse_native on raw content returns blocks_path="", which makes
+            # analyze_multimodal take the "no blocks_path" early-return branch
+            # and set analyzing_stage_skipped=True (no analyzing_end_time).
+            assert isinstance(metadata.get("analyzing_start_time"), int)
+            assert metadata.get("analyzing_stage_skipped") is True
+            assert "analyzing_end_time" not in metadata
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_analyze_soft_failure_writes_neither_end_time_nor_skipped(tmp_path):
+    """If ``analyze_multimodal`` returns without setting either the
+    ``multimodal_processed`` (completion) or ``analyzing_stage_skipped``
+    (user/config skip) sentinel — e.g. the generic ``except Exception``
+    soft-swallow path or a malformed-sidecar early return — the worker must
+    treat the attempt as a soft failure and leave BOTH fields absent. This
+    distinguishes "analyze actually completed" from "analyze attempted but
+    bailed" without falsely claiming a duration.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            original_analyze_multimodal = rag.analyze_multimodal
+
+            async def _soft_failing_analyze(*args, **kwargs):
+                result = await original_analyze_multimodal(*args, **kwargs)
+                # Strip both sentinels: simulate analyze_multimodal returning
+                # parsed_data after the generic except Exception soft-swallow.
+                result.pop("analyzing_stage_skipped", None)
+                result.pop("multimodal_processed", None)
+                return result
+
+            rag.analyze_multimodal = _soft_failing_analyze  # type: ignore[assignment]
+
+            await rag.apipeline_enqueue_documents(
+                "Soft-fail body for analyze stage.",
+                file_paths="analyze_soft_fail.txt",
+                track_id="track-analyze-softfail",
+                process_options="iet!",
+            )
+            doc_id = compute_mdhash_id("analyze_soft_fail.txt", prefix="doc-")
+            await rag.apipeline_process_enqueue_documents()
+
+            final_status = await rag.doc_status.get_by_id(doc_id)
+            assert final_status is not None
+            assert _status_value_text(final_status.get("status")) == "processed"
+            metadata = final_status.get("metadata") or {}
+            assert isinstance(metadata.get("analyzing_start_time"), int)
+            assert "analyzing_end_time" not in metadata, (
+                f"soft-failed analyze incorrectly stamped analyzing_end_time; "
+                f"final metadata: {metadata!r}"
+            )
+            assert "analyzing_stage_skipped" not in metadata, (
+                f"soft-failed analyze incorrectly stamped analyzing_stage_skipped; "
                 f"final metadata: {metadata!r}"
             )
         finally:

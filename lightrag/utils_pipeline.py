@@ -188,9 +188,29 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # stamped at the entry of ``_parse_worker`` / ``_analyze_worker`` (mirrors
 # the existing ``processing_start_time`` set when entering PROCESSING) so
 # per-stage durations can be derived from doc_status post-mortem.
+# ``parsing_end_time`` is the paired Unix epoch seconds stamped by
+# ``_parse_worker`` when the parse stage actually runs (cache-miss branch,
+# covering ``parse_native`` too which has no cache concept). Absent on
+# cache-hit attempts (``parse_stage_skipped`` is set instead).
+# ``analyzing_end_time`` is the paired Unix epoch seconds stamped by
+# ``_analyze_worker`` only when ``analyze_multimodal`` returns with
+# ``multimodal_processed=True`` (the explicit "fully completed" sentinel).
+# It is intentionally NOT stamped on soft-swallowed exception paths or on
+# malformed/empty sidecar early returns inside ``analyze_multimodal``, so
+# operators can distinguish "analyze actually completed" from "analyze
+# attempted but bailed".
 # ``parse_stage_skipped`` is written by ``parse_mineru`` / ``parse_docling``
 # when the raw bundle cache is valid and the parse stage round trip is
 # skipped; absence == not skipped (e.g. native parser, or cache miss).
+# ``analyzing_stage_skipped`` is its analyze-stage counterpart, written by
+# ``analyze_multimodal``'s three user/config early-return branches (no
+# blocks_path, blocks file missing, or user opted out of every i/t/e
+# modality). Soft-swallowed exception paths are intentionally NOT considered
+# "skipped" — they write neither end_time nor skipped (failure is its own
+# state, captured via the FAILED transition's ``error_msg``).
+# Within each stage, the ``*_end_time`` and ``*_stage_skipped`` fields are
+# mutually exclusive (at most one is written per attempt; both may be
+# absent if analyze soft-failed).
 # ``source_file_name`` records the original pending-parse source basename used
 # by parser workers; it is intentionally separate from canonical ``file_path``.
 #
@@ -206,8 +226,11 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "parse_warnings",
     "chunk_opts",
     "parsing_start_time",
+    "parsing_end_time",
     "parse_stage_skipped",
     "analyzing_start_time",
+    "analyzing_end_time",
+    "analyzing_stage_skipped",
 )
 
 

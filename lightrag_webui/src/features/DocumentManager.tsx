@@ -121,10 +121,24 @@ const formatMetadata = (metadata: Record<string, any>): string => {
     }
   }
 
+  if (formattedMetadata.parsing_end_time && typeof formattedMetadata.parsing_end_time === 'number') {
+    const date = new Date(formattedMetadata.parsing_end_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.parsing_end_time = date.toLocaleString();
+    }
+  }
+
   if (formattedMetadata.analyzing_start_time && typeof formattedMetadata.analyzing_start_time === 'number') {
     const date = new Date(formattedMetadata.analyzing_start_time * 1000);
     if (!isNaN(date.getTime())) {
       formattedMetadata.analyzing_start_time = date.toLocaleString();
+    }
+  }
+
+  if (formattedMetadata.analyzing_end_time && typeof formattedMetadata.analyzing_end_time === 'number') {
+    const date = new Date(formattedMetadata.analyzing_end_time * 1000);
+    if (!isNaN(date.getTime())) {
+      formattedMetadata.analyzing_end_time = date.toLocaleString();
     }
   }
 
