@@ -1,5 +1,5 @@
   postgres:
-    image: gzdaniel/postgres-for-rag:16.6
+    image: gzdaniel/postgres-for-rag:pg18-age-pgvector
     ports:
       - "5432:5432"
     volumes:
