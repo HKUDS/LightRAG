@@ -1485,16 +1485,24 @@ class _PipelineMixin:
                 if not isinstance(status_doc_w.metadata, dict):
                     status_doc_w.metadata = {}
                 # Drop stale per-attempt fields from any prior failed/retried
-                # attempt before stamping the new parsing_start_time.
-                # ``analyzing_start_time`` and ``parse_stage_skipped`` are
-                # downstream of this point and would otherwise be carried
-                # forward via carry-over, skewing stage-duration metrics and
-                # the raw-cache-hit signal for the new attempt. The cache-hit
-                # mirror block below only re-writes ``parse_stage_skipped``
-                # when the parser actually returns a hit, so cache-miss
-                # retries land with the field absent (= not skipped).
-                status_doc_w.metadata.pop("analyzing_start_time", None)
-                status_doc_w.metadata.pop("parse_stage_skipped", None)
+                # attempt before stamping the new parsing_start_time. All of
+                # these are written by either this worker (cache-hit /
+                # cache-miss branches below) or the downstream analyze worker,
+                # and would otherwise be carried forward via carry-over,
+                # skewing stage-duration metrics and the raw-cache-hit /
+                # skipped signals for the new attempt. The cache-hit mirror
+                # block only writes ``parse_stage_skipped`` when the parser
+                # actually returns a hit; the cache-miss branch only writes
+                # ``parsing_end_time`` when parse actually runs; the analyze
+                # worker writes its pair on re-entry.
+                for _stale_key in (
+                    "parsing_end_time",
+                    "parse_stage_skipped",
+                    "analyzing_start_time",
+                    "analyzing_end_time",
+                    "analyzing_stage_skipped",
+                ):
+                    status_doc_w.metadata.pop(_stale_key, None)
                 status_doc_w.metadata["parsing_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
                     doc_id=doc_id_w,
@@ -1531,13 +1539,17 @@ class _PipelineMixin:
                     status_doc_w.metadata["parse_warnings"] = parse_warnings_payload_w
 
                 # Mirror raw-bundle cache-hit flag from mineru/docling so the
-                # next upsert (ANALYZING) carries it into doc_status; absence
-                # means the parse stage actually ran. Only ``True`` is written
-                # so cache-miss documents stay clean.
+                # next upsert (ANALYZING) carries it into doc_status; cache-
+                # miss runs (including parse_native, which has no cache
+                # concept) stamp ``parsing_end_time`` instead so post-mortem
+                # can derive the parse-stage duration. The two fields are
+                # mutually exclusive per attempt.
+                if not isinstance(status_doc_w.metadata, dict):
+                    status_doc_w.metadata = {}
                 if parsed_data_w.get("parse_stage_skipped"):
-                    if not isinstance(status_doc_w.metadata, dict):
-                        status_doc_w.metadata = {}
                     status_doc_w.metadata["parse_stage_skipped"] = True
+                else:
+                    status_doc_w.metadata["parsing_end_time"] = int(time.time())
 
                 # parse_* may have patched content_hash for
                 # pending_parse → raw transitions.
@@ -1646,6 +1658,27 @@ class _PipelineMixin:
                     pipeline_status=ctx.pipeline_status,
                     pipeline_status_lock=ctx.pipeline_status_lock,
                 )
+                # Mirror analyze-stage outcome as a 3-way decision so the
+                # ``analyzing_end_time`` stamp only ever lands on attempts
+                # that genuinely completed:
+                #   - ``analyzing_stage_skipped`` (set by analyze_multimodal at
+                #     its three early-return branches: no blocks_path, blocks
+                #     file missing, no i/t/e options) → user/config skipped;
+                #     stamp the skipped flag.
+                #   - ``multimodal_processed`` (set by analyze_multimodal only
+                #     after the full processing loop succeeds) → genuine
+                #     completion; stamp ``analyzing_end_time``.
+                #   - Neither flag → analyze_multimodal soft-swallowed an
+                #     exception (generic ``except Exception``) or hit a
+                #     malformed/empty sidecar early return. Failure is not a
+                #     skip AND not a completion, so write neither field.
+                # The skipped/end_time pair is mutually exclusive.
+                if not isinstance(status_doc_w.metadata, dict):
+                    status_doc_w.metadata = {}
+                if analyzed.pop("analyzing_stage_skipped", False):
+                    status_doc_w.metadata["analyzing_stage_skipped"] = True
+                elif analyzed.get("multimodal_processed"):
+                    status_doc_w.metadata["analyzing_end_time"] = int(time.time())
                 await ctx.q_process.put((doc_id_w, status_doc_w, analyzed))
             except PipelineCancelledException:
                 # In-flight cancellation surfaced from analyze_multimodal
@@ -2507,6 +2540,10 @@ class _PipelineMixin:
             # marker; strip it so the chunking path is identical to raw.
             # blocks_path is still resolved for downstream multimodal
             # sidecar reads (_build_mm_chunks_from_sidecars).
+            # No re-parse happens here — content + sidecar are reused from a
+            # prior parse, so this is semantically a cache-hit and mirrors
+            # the parse_mineru / parse_docling raw-bundle skip path by
+            # setting ``parse_stage_skipped``.
             merged_text = strip_lightrag_doc_prefix(
                 content_data.get("content"), doc_format
             )
@@ -2520,6 +2557,7 @@ class _PipelineMixin:
                 "parse_format": doc_format,
                 "content": merged_text,
                 "blocks_path": blocks_path,
+                "parse_stage_skipped": True,
             }
 
         if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
@@ -2674,12 +2712,17 @@ class _PipelineMixin:
                 }
             return result
 
+        # FULL_DOCS_FORMAT_RAW: no parser ran — the content was supplied
+        # at insert time and we pass it through verbatim. Mark as skipped
+        # so post-mortem doesn't credit the worker with a synthetic parse
+        # duration (mirrors the LIGHTRAG-format branch above).
         return {
             "doc_id": doc_id,
             "file_path": file_path,
             "parse_format": FULL_DOCS_FORMAT_RAW,
             "content": content_data.get("content", ""),
             "blocks_path": "",
+            "parse_stage_skipped": True,
         }
 
     async def parse_mineru(
@@ -3632,10 +3675,12 @@ class _PipelineMixin:
 
         blocks_path = parsed_data.get("blocks_path")
         if not blocks_path:
+            parsed_data["analyzing_stage_skipped"] = True
             return parsed_data
 
         block_file = Path(blocks_path)
         if not block_file.exists():
+            parsed_data["analyzing_stage_skipped"] = True
             return parsed_data
 
         # Resolve which modalities the user opted into for this document.
@@ -3657,6 +3702,7 @@ class _PipelineMixin:
                 f"[analyze_multimodal] no i/t/e options set for d-id: {doc_id}; "
                 f"skipping VLM analysis"
             )
+            parsed_data["analyzing_stage_skipped"] = True
             return parsed_data
 
         # Diagnose opt-in vs sidecar mismatch up-front so users investigating
