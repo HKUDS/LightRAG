@@ -1063,6 +1063,54 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
     return True
 
 
+async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
+    """Refuse the request with HTTP 409 when the document pipeline is busy.
+
+    Intended for short, fine-grained graph mutations (entity/relation
+    edit/create/delete/merge). Reads ``pipeline_status['busy']`` under
+    the namespace lock and raises immediately on contention -- it does
+    NOT set any flag, so it cannot block the pipeline itself.
+
+    ``busy`` is set by the processing loop and by destructive jobs
+    (``/documents/clear`` / per-doc delete). Both paths concurrently
+    write the same graph storages that these endpoints mutate, so a
+    409 here mirrors the existing UI guard and tells clients to wait.
+
+    A narrow race remains between this check and the underlying graph
+    write: if the pipeline transitions to busy in that window, the
+    per-edge/-node locks inside the storage layer are the last line of
+    defense. That trade-off is deliberate -- holding ``busy`` here
+    would serialise every UI edit against document ingestion, which is
+    a worse user-visible failure mode than tolerating the race.
+
+    No-op (returns silently) when ``pipeline_status`` was never
+    bootstrapped, matching the behaviour of ``_acquire_destructive_busy``
+    so test rigs without a real shared-storage Manager keep working.
+    """
+    from lightrag.exceptions import PipelineNotInitializedError
+    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+
+    try:
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+    except PipelineNotInitializedError:
+        return
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
+    async with pipeline_status_lock:
+        if pipeline_status.get("busy"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Pipeline is busy with another operation. "
+                    "Wait for the running job to finish before editing "
+                    "the knowledge graph."
+                ),
+            )
+
+
 async def _acquire_destructive_busy(rag: LightRAG) -> tuple[bool, str | None]:
     """Atomically reserve the destructive busy slot for ``/documents/clear``
     or ``/documents/delete_document``.
@@ -3748,6 +3796,7 @@ def create_document_routes(
             HTTPException: If the entity is not found (404) or an error occurs (500).
         """
         try:
+            await check_pipeline_busy_or_raise(rag)
             result = await rag.adelete_by_entity(entity_name=request.entity_name)
             if result.status == "not_found":
                 raise HTTPException(status_code=404, detail=result.message)
@@ -3783,6 +3832,7 @@ def create_document_routes(
             HTTPException: If the relation is not found (404) or an error occurs (500).
         """
         try:
+            await check_pipeline_busy_or_raise(rag)
             result = await rag.adelete_by_relation(
                 source_entity=request.source_entity,
                 target_entity=request.target_entity,
