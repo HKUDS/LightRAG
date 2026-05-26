@@ -1859,10 +1859,10 @@ env_storage_flow
     assert "env_file:" not in generated_compose
 
 
-def test_env_storage_flow_uses_rag_defaults_for_empty_postgres_docker_credentials(
+def test_env_storage_flow_uses_host_defaults_for_empty_postgres_docker_credentials(
     tmp_path: Path,
 ) -> None:
-    """env-storage should write bundled postgres credentials when old `.env` creds are empty."""
+    """env-storage should write the host-mode postgres defaults when old `.env` creds are empty."""
     env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(
@@ -1934,10 +1934,10 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
     )
     assert "POSTGRES_USER=rag" in generated_env
     assert "POSTGRES_PASSWORD=rag" in generated_env
-    assert "POSTGRES_DATABASE=rag" in generated_env
+    assert "POSTGRES_DATABASE=lightrag" in generated_env
     assert 'POSTGRES_USER: "rag"' in generated_compose
     assert 'POSTGRES_PASSWORD: "rag"' in generated_compose
-    assert 'POSTGRES_DB: "rag"' in generated_compose
+    assert 'POSTGRES_DB: "lightrag"' in generated_compose
 
 
 def test_env_storage_flow_preserves_existing_postgres_image_during_rewrite(
