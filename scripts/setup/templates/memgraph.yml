@@ -1,7 +1,7 @@
   memgraph:
     image: memgraph/memgraph:latest
-    # ports:
-    #   - "${MEMGRAPH_BOLT_PORT:-7687}:7687"
+    ports:
+      - "${MEMGRAPH_BOLT_PORT:-7687}:7687"
     volumes:
       - memgraph_data:/var/lib/memgraph
     healthcheck:

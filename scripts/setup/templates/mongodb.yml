@@ -1,8 +1,8 @@
   mongodb:
     hostname: mongodb
     image: mongodb/mongodb-atlas-local:8
-    # ports:
-    #   - "27017:27017"
+    ports:
+      - "27017:27017"
     volumes:
       - mongo_data:/data/db
       - mongo_config_data:/data/configdb
