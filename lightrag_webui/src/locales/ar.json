@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "تعديل {{property}}",
+      "editLockedByPipeline": "خط الأنابيب مشغول؛ تم تعطيل التحرير",
       "editPropertyDescription": "قم بتحرير قيمة الخاصية في منطقة النص أدناه.",
       "errors": {
         "duplicateName": "اسم العقدة موجود بالفعل",

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
+from .document_routes import check_pipeline_busy_or_raise
 
 
 class EntityUpdateRequest(BaseModel):
@@ -357,6 +358,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
+            await check_pipeline_busy_or_raise(rag)
             result = await rag.aedit_entity(
                 entity_name=request.entity_name,
                 updated_data=request.updated_data,
@@ -399,6 +401,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "data": entity_data,
                 "operation_summary": operation_summary,
             }
+        except HTTPException:
+            raise
         except ValueError as ve:
             logger.error(
                 f"Validation error updating entity '{request.entity_name}': {str(ve)}"
@@ -422,6 +426,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             Dict: Updated relation information
         """
         try:
+            await check_pipeline_busy_or_raise(rag)
             result = await rag.aedit_relation(
                 source_entity=request.source_id,
                 target_entity=request.target_id,
@@ -432,6 +437,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "message": "Relation updated successfully",
                 "data": result,
             }
+        except HTTPException:
+            raise
         except ValueError as ve:
             logger.error(
                 f"Validation error updating relation between '{request.source_id}' and '{request.target_id}': {str(ve)}"
@@ -492,6 +499,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
+            await check_pipeline_busy_or_raise(rag)
             # Use the proper acreate_entity method which handles:
             # - Graph lock for concurrency
             # - Vector embedding creation in entities_vdb
@@ -507,6 +515,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "message": f"Entity '{request.entity_name}' created successfully",
                 "data": result,
             }
+        except HTTPException:
+            raise
         except ValueError as ve:
             logger.error(
                 f"Validation error creating entity '{request.entity_name}': {str(ve)}"
@@ -577,6 +587,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
+            await check_pipeline_busy_or_raise(rag)
             # Use the proper acreate_relation method which handles:
             # - Graph lock for concurrency
             # - Entity existence validation
@@ -594,6 +605,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "message": f"Relation created successfully between '{request.source_entity}' and '{request.target_entity}'",
                 "data": result,
             }
+        except HTTPException:
+            raise
         except ValueError as ve:
             logger.error(
                 f"Validation error creating relation between '{request.source_entity}' and '{request.target_entity}': {str(ve)}"
@@ -666,6 +679,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             - This operation cannot be undone, so verify entity names before merging
         """
         try:
+            await check_pipeline_busy_or_raise(rag)
             result = await rag.amerge_entities(
                 source_entities=request.entities_to_change,
                 target_entity=request.entity_to_change_into,
@@ -675,6 +689,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "message": f"Successfully merged {len(request.entities_to_change)} entities into '{request.entity_to_change_into}'",
                 "data": result,
             }
+        except HTTPException:
+            raise
         except ValueError as ve:
             logger.error(
                 f"Validation error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {str(ve)}"

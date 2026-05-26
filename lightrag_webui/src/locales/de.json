@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "{{property}} bearbeiten",
+      "editLockedByPipeline": "Pipeline ist ausgelastet; Bearbeitung deaktiviert",
       "editPropertyDescription": "Bearbeiten Sie den Eigenschaftswert im Textbereich unten.",
       "errors": {
         "duplicateName": "Knotenname existiert bereits",

@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "{{property}}を編集",
+      "editLockedByPipeline": "パイプライン処理中のため、編集できません",
       "editPropertyDescription": "下のテキストエリアでプロパティ値を編集してください。",
       "errors": {
         "duplicateName": "ノード名が既に存在します",

@@ -32,6 +32,7 @@ interface EditablePropertyRowProps {
   onValueChange?: (newValue: any) => void  // Optional callback when value changes
   isEditable?: boolean         // Whether this property can be edited
   tooltip?: string             // Optional tooltip to display on hover
+  pipelineBusy?: boolean       // When true, hide edit entry & disable save (pipeline writing)
 }
 
 /**
@@ -51,7 +52,8 @@ const EditablePropertyRow = ({
   targetId,
   onValueChange,
   isEditable = false,
-  tooltip
+  tooltip,
+  pipelineBusy = false
 }: EditablePropertyRowProps) => {
   const { t } = useTranslation()
   const [isEditing, setIsEditing] = useState(false)
@@ -76,6 +78,7 @@ const EditablePropertyRow = ({
   }
 
   const handleEditClick = () => {
+    if (pipelineBusy) return
     if (isEditable && !isEditing) {
       setDraftValue(String(currentValue))
       setDraftAllowMerge(false)
@@ -275,7 +278,7 @@ const EditablePropertyRow = ({
   return (
     <div className="flex items-center gap-1 overflow-hidden">
       <PropertyName name={name} />
-      <EditIcon onClick={handleEditClick} />:
+      {!pipelineBusy && <EditIcon onClick={handleEditClick} />}:
       <PropertyValue
         value={currentValue}
         onClick={onClick}
@@ -292,6 +295,7 @@ const EditablePropertyRow = ({
         onAllowMergeChange={setDraftAllowMerge}
         isSubmitting={isSubmitting}
         errorMessage={errorMessage}
+        disableSave={pipelineBusy}
       />
 
       <MergeDialog

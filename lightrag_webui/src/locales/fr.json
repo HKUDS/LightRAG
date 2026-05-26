@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "Modifier {{property}}",
+      "editLockedByPipeline": "Le pipeline est occupé ; modification désactivée",
       "editPropertyDescription": "Modifiez la valeur de la propriété dans la zone de texte ci-dessous.",
       "errors": {
         "duplicateName": "Le nom du nœud existe déjà",

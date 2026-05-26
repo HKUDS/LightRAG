@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "Chỉnh Sửa {{property}}",
+      "editLockedByPipeline": "Pipeline đang bận; chỉnh sửa đã bị tắt",
       "editPropertyDescription": "Chỉnh sửa giá trị thuộc tính trong vùng văn bản bên dưới.",
       "errors": {
         "duplicateName": "Tên nút đã tồn tại",

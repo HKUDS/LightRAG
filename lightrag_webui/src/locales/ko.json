@@ -320,6 +320,7 @@
     },
     "propertiesView": {
       "editProperty": "{{property}} 수정",
+      "editLockedByPipeline": "파이프라인 사용 중 - 편집이 비활성화되었습니다",
       "editPropertyDescription": "아래 텍스트 영역에서 속성 값을 수정하세요.",
       "errors": {
         "duplicateName": "노드 이름이 이미 존재합니다",
