@@ -2156,7 +2156,7 @@ confirm_required_yes_no() {{ return 0; }}
 env_storage_flow
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: gzdaniel/postgres-for-rag:16.6" in result
+    assert "image: gzdaniel/postgres-for-rag:pg18-age-pgvector" in result
     assert 'POSTGRES_USER: "updated-user"' in result
 
 
@@ -2220,7 +2220,7 @@ confirm_required_yes_no() {{ return 0; }}
 env_storage_flow
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: gzdaniel/postgres-for-rag:16.6" in result
+    assert "image: gzdaniel/postgres-for-rag:pg18-age-pgvector" in result
     assert "image: neo4j:5-community" in result
     assert "registry.example.com/postgres-for-rag:patched" not in result
     assert "registry.example.com/neo4j:custom" not in result
@@ -2239,7 +2239,7 @@ def test_env_storage_flow_backs_up_existing_compose_before_rewrite(
                 "    environment:",
                 '      LEGACY_SETTING: "1"',
                 "  postgres:",
-                "    image: gzdaniel/postgres-for-rag:16.6",
+                "    image: gzdaniel/postgres-for-rag:pg18-age-pgvector",
             ]
         )
         + "\n"

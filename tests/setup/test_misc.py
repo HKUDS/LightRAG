@@ -871,7 +871,7 @@ def test_switching_to_non_docker_storage_removes_stale_services_from_compose(
                 "  lightrag:",
                 "    image: example/lightrag:test",
                 "  postgres:",
-                "    image: gzdaniel/postgres-for-rag:16.6",
+                "    image: gzdaniel/postgres-for-rag:pg18-age-pgvector",
                 "  neo4j:",
                 "    image: neo4j:5.26.21-community",
                 "  sidecar:",
