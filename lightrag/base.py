@@ -10,7 +10,6 @@ from typing import (
     Literal,
     TypedDict,
     TypeVar,
-    Callable,
     Optional,
     Dict,
     List,
@@ -24,7 +23,6 @@ from .constants import (
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
-    DEFAULT_HISTORY_TURNS,
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_OLLAMA_MODEL_SIZE,
@@ -139,24 +137,6 @@ class QueryParam:
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
-    """
-
-    # TODO: deprecated. No longer used in the codebase, all conversation_history messages is send to LLM
-    history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
-    """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
-
-    # TODO(v1.5.0): remove model_func together with the override branches in
-    # operate.py (_warn_deprecated_query_model_func call sites) and the
-    # `model_func_override` path in utils.get_llm_cache_identity.
-    model_func: Callable[..., object] | None = None
-    """Deprecated optional override for the LLM model function.
-    Use role_llm_configs at initialization or LightRAG.aupdate_llm_role_config() /
-    LightRAG.update_llm_role_config() for runtime role LLM changes instead.
-    Kept for backward compatibility with direct Python callers.
-
-    Note: when set, the LLM cache key collapses to a single "override" identity,
-    so swapping the override across calls will reuse stale cached responses.
-    Use aupdate_llm_role_config() for cache-correct model swaps.
     """
 
     user_prompt: str | None = None

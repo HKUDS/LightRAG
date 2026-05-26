@@ -96,11 +96,11 @@ def test_parse_keywords_payload_warns_when_json_repair_is_used():
 async def test_extract_keywords_only_accepts_empty_keyword_cache_without_requery():
     async def should_not_run(*_args, **_kwargs):
         raise AssertionError(
-            "model_func should not be called on a valid empty cache hit"
+            "keyword LLM should not be called on a valid empty cache hit"
         )
 
-    param = QueryParam(model_func=should_not_run)
-    global_config = {"addon_params": {"language": "en"}}
+    param = QueryParam()
+    global_config = _keyword_global_config("model-a", keyword_func=should_not_run)
 
     with patch(
         "lightrag.operate.handle_cache",
@@ -153,26 +153,3 @@ async def test_extract_keywords_only_partitions_cache_by_keyword_llm_identity():
     assert second_ll == ["rag"]
     assert calls == 2
     assert len(cache._store) == 2
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_extract_keywords_only_warns_for_deprecated_model_func():
-    calls = 0
-
-    async def keyword_model(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        return '{"high_level_keywords":["ai"],"low_level_keywords":["rag"]}'
-
-    with pytest.warns(DeprecationWarning, match="QueryParam.model_func"):
-        hl_keywords, ll_keywords = await extract_keywords_only(
-            "hello",
-            QueryParam(model_func=keyword_model),
-            _keyword_global_config("model-a"),
-            hashing_kv=None,
-        )
-
-    assert hl_keywords == ["ai"]
-    assert ll_keywords == ["rag"]
-    assert calls == 1

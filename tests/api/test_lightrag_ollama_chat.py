@@ -230,7 +230,6 @@ def create_chat_request_data(
         stream: Whether to use streaming response
         model: Model name
         conversation_history: List of previous conversation messages
-        history_turns: Number of history turns to include
     Returns:
         Dictionary containing complete chat request data
     """
