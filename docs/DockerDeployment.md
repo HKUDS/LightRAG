@@ -21,12 +21,12 @@ cd LightRAG
 
 ```bash
 # Linux/MacOS
-cp .env.example .env
+cp env.example .env
 # Edit .env with your preferred configuration
 ```
 ```powershell
 # Windows PowerShell
-Copy-Item .env.example .env
+Copy-Item env.example .env
 # Edit .env with your preferred configuration
 ```
 
@@ -239,6 +239,8 @@ This keeps generated host mounts under the same `./data` root used by the defaul
 
 The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:pg18-age-pgvector`. This image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup.
 
+The image no longer ships fixed credentials; on first start it creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables. The setup wizard prompts for these values (defaulting to `rag` / `rag` / `lightrag`) and injects them into the generated `docker-compose.final.yml`, so you can choose any user, password, and database name.
+
 **Important Note**: If PGGraphStorage is not required for vector storage, you may replace the upper docker image with the latest official pgvector image `pgvector/pgvector:pg18`. Please note that data file formats are incompatible across different PostgreSQL major versions; once this Docker image is deployed, it cannot be rolled back to a previous version.
 
 #### Build the PostgreSQL image
@@ -286,7 +288,7 @@ docker compose up
 
 ### Offline deployment
 
-Software packages requiring `transformers`, `torch`, or `cuda` will is not preinstalled in the dokcer images. Consequently, document extraction tools such as Docling, as well as local LLM models like Hugging Face and LMDeploy, can not be used in an off line enviroment. These high-compute-resource-demanding services should not be integrated into LightRAG. Docling will be decoupled and deployed as a standalone service.
+Software packages requiring `transformers`, `torch`, or `cuda` are not preinstalled in the docker images. Consequently, document extraction tools such as Docling, as well as local LLM models like Hugging Face and LMDeploy, cannot be used in an offline environment. These high-compute-resource-demanding services should not be integrated into LightRAG. Docling will be decoupled and deployed as a standalone service.
 
 ## 📦 Build Docker Images
 

@@ -1339,21 +1339,15 @@ collect_postgres_config() {
     set_compose_override "POSTGRES_PORT" ""
   fi
 
+  # The bundled postgres image creates its user/password/database from the
+  # POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB env vars on first start, so docker
+  # and host deployments share the same prompts and defaults (rag/rag/lightrag).
   existing_user="${ORIGINAL_ENV_VALUES[POSTGRES_USER]-${ENV_VALUES[POSTGRES_USER]:-}}"
   existing_password="${ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]-${ENV_VALUES[POSTGRES_PASSWORD]:-}}"
   existing_database="${ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]-${ENV_VALUES[POSTGRES_DATABASE]:-}}"
-  if [[ "$use_docker" == "yes" && -z "$existing_user" && -z "$existing_password" ]]; then
-    user="rag"
-    password="rag"
-  else
-    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
-    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
-  fi
-  if [[ "$use_docker" == "yes" && -z "$existing_database" ]]; then
-    database="rag"
-  else
-    database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
-  fi
+  user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
+  password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
+  database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
 
   ENV_VALUES["POSTGRES_HOST"]="$host"
   ENV_VALUES["POSTGRES_PORT"]="$port"

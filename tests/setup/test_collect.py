@@ -36,6 +36,7 @@ prompt_with_default() {{
     *) printf '%s' "$2" ;;
   esac
 }}
+prompt_secret_with_default() {{ printf '%s' "$2"; }}
 mask_sensitive_input() {{ printf 'supersecret'; }}
 
 collect_postgres_config yes
@@ -53,10 +54,10 @@ printf 'DOCKER_SERVICE=%s\\n' "${{DOCKER_SERVICES[0]}}\"
     assert values["DOCKER_SERVICE"] == "postgres"
 
 
-def test_collect_postgres_config_uses_rag_defaults_without_prompt_for_empty_docker_credentials() -> (
+def test_collect_postgres_config_prompts_with_host_defaults_for_empty_docker_credentials() -> (
     None
 ):
-    """Docker PostgreSQL should auto-fill bundled credentials when old `.env` creds are empty."""
+    """Docker PostgreSQL should prompt for editable creds using the host-mode defaults."""
     values = run_bash_lines(f"""
 set -euo pipefail
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -67,14 +68,14 @@ PROMPT_LOG_FILE="$(mktemp)"
 
 confirm_default_yes() {{ return 0; }}
 prompt_with_default() {{
-  printf '%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf '%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
   case "$1" in
     "PostgreSQL host") printf 'localhost' ;;
     *) printf '%s' "$2" ;;
   esac
 }}
 prompt_secret_with_default() {{
-  printf 'secret:%s\\n' "$1" >> "$PROMPT_LOG_FILE"
+  printf 'secret:%s[%s]\\n' "$1" "$2" >> "$PROMPT_LOG_FILE"
   printf '%s' "$2"
 }}
 
@@ -91,8 +92,11 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
 """)
     assert values["POSTGRES_USER"] == "rag"
     assert values["POSTGRES_PASSWORD"] == "rag"
-    assert values["POSTGRES_DATABASE"] == "rag"
-    assert values["PROMPT_LOG"] == "PostgreSQL host"
+    assert values["POSTGRES_DATABASE"] == "lightrag"
+    assert (
+        values["PROMPT_LOG"]
+        == "PostgreSQL host[localhost]|PostgreSQL user[rag]|secret:PostgreSQL password: [rag]|PostgreSQL database[lightrag]"
+    )
 
 
 def test_collect_postgres_config_prompts_for_existing_docker_credentials() -> None:
