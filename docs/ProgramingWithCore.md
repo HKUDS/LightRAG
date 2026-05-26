@@ -92,8 +92,136 @@ Notes:
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
-| **addon_params** | `dict` | Runtime knobs for extraction. Supported keys: `language` (output language for entity/relation summaries), `entity_type_prompt_file` (file name — not a path — of a YAML profile loaded from `PROMPT_DIR/entity_type`; `PROMPT_DIR` defaults to `./prompts`), `entity_types_guidance` (inline override that wins over the file profile). | `{"language": "English", "entity_type_prompt_file": ""}` |
+| **addon_params** | `dict` | Runtime knobs for extraction prompts and chunking. See [addon_params](#addon_params). | Env-backed defaults from `SUMMARY_LANGUAGE`, `ENTITY_TYPE_PROMPT_FILE`, and `CHUNK_*` |
 | **embedding_cache_config** | `dict` | Configuration for question-answer caching. Contains three parameters: `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers. `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM. `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
+
+
+## addon_params
+
+`addon_params` is a live configuration mapping on each `LightRAG` instance. LightRAG currently reads the fields below; unknown custom keys may remain in the dict, but core LightRAG behavior does not use them.
+
+### Supported Fields
+
+| Field | Value | Purpose |
+|---|---|---|
+| `language` | Non-empty string. Defaults to `SUMMARY_LANGUAGE`, then `English`. | Output language used in entity and relationship extraction, entity/relation summaries, keyword extraction, and multimodal analysis prompts. |
+| `entity_type_prompt_file` | `.yml` or `.yaml` file name only. Loaded from `${PROMPT_DIR:-./prompts}/entity_type`. | Loads an entity extraction prompt profile. The profile can define `entity_types_guidance`, `entity_extraction_examples`, and `entity_extraction_json_examples`. The active extraction mode must have matching examples: text mode needs `entity_extraction_examples`; JSON mode needs `entity_extraction_json_examples`. |
+| `entity_types_guidance` | Non-empty string. | Inline entity type guidance injected into extraction prompts. This overrides both the prompt profile file and the built-in default guidance. |
+| `chunker` | Dict with F/R/V/P chunking settings. | Runtime baseline for chunker parameters. Each document gets a slim `chunk_options` snapshot at enqueue time; later edits affect only future enqueues. |
+
+Compact `chunker` shape:
+
+```jsonc
+{
+  "chunk_token_size": 1200,
+  "fixed_token": {
+    "chunk_overlap_token_size": 100,
+    "split_by_character": null,
+    "split_by_character_only": false
+  },
+  "recursive_character": {
+    "chunk_token_size": 1200,
+    "chunk_overlap_token_size": 100,
+    "separators": ["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""]
+  },
+  "semantic_vector": {
+    "chunk_token_size": 1200,
+    "breakpoint_threshold_type": "percentile",
+    "breakpoint_threshold_amount": null,
+    "buffer_size": 1,
+    "sentence_split_regex": "(?<=[.?!])\\s+|(?<=[。？！])"
+  },
+  "paragraph_semantic": {
+    "chunk_token_size": 2000,
+    "chunk_overlap_token_size": 100
+  }
+}
+```
+
+### Initialization
+
+When you create a `LightRAG` object, `addon_params` is normalized before storage initialization:
+
+- If `addon_params` is omitted, LightRAG builds defaults from `SUMMARY_LANGUAGE`, `ENTITY_TYPE_PROMPT_FILE`, and the chunker-related `CHUNK_*` environment variables.
+- If you pass a partial dict, missing `language`, `entity_type_prompt_file`, and `chunker` values are still backfilled from the same env-backed defaults.
+- `entity_type_prompt_file` and `entity_types_guidance` are resolved into a cached entity extraction prompt profile during construction.
+- `chunk_token_size` and `chunk_overlap_token_size` constructor arguments are overlaid into `addon_params["chunker"]` only for slots that were not already set by explicit `addon_params` or strategy-specific env vars.
+
+Example:
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    embedding_func=embedding_func,
+    addon_params={
+        "language": "Chinese",
+        "entity_type_prompt_file": "entity_type_prompt.sample.yml",
+        "entity_types_guidance": "- Paper: academic papers, reports, and preprints",
+        "chunker": {
+            "chunk_token_size": 1000,
+            "recursive_character": {
+                "separators": ["\n\n", "\n", "。", "！", "？", " "]
+            }
+        },
+    },
+)
+await rag.initialize_storages()
+```
+
+### Updating After Creation
+
+`rag.addon_params` is an observable mapping. Top-level updates mark the derived prompt cache dirty; the cache is refreshed the next time LightRAG builds runtime config for extraction or query work.
+
+Update one field:
+
+```python
+rag.addon_params["language"] = "Chinese"
+rag.addon_params["entity_types_guidance"] = "- Dataset: structured research data"
+```
+
+Replace the whole mapping:
+
+```python
+rag.addon_params = {
+    "language": "German",
+    "entity_type_prompt_file": "domain_profile.yml",
+}
+```
+
+Replacing `rag.addon_params` creates a new observable mapping. If you kept an old reference, discard it and re-read `rag.addon_params` before making more changes.
+
+Change F-strategy fixed-token splitting defaults for future documents:
+
+```python
+rag.addon_params["chunker"]["fixed_token"]["split_by_character"] = "\n\n"
+rag.addon_params["chunker"]["fixed_token"]["split_by_character_only"] = True
+```
+
+`split_by_character` pre-splits text by the given separator before token-window chunking. When `split_by_character_only` is `True`, an oversized segment raises an error instead of being split again by token size.
+
+Change R-strategy recursive splitting defaults for future documents:
+
+```python
+rag.addon_params["chunker"]["recursive_character"]["separators"] = [
+    "\n\n",
+    "\n",
+    "###",
+    "。",
+    "！",
+    "？",
+    " ",
+]
+```
+
+Nested `chunker` edits are read when future documents are enqueued. Documents already enqueued keep their persisted `chunk_options` snapshot.
+
+### Notes and Precedence
+
+- Entity type guidance precedence is: `addon_params["entity_types_guidance"]` > `entity_type_prompt_file` profile > built-in default guidance.
+- Chunker precedence is: explicit `addon_params["chunker"]` values > strategy-specific `CHUNK_*` env vars > legacy constructor fields (`chunk_token_size`, `chunk_overlap_token_size`) > legacy env vars (`CHUNK_SIZE`, `CHUNK_OVERLAP_SIZE`).
+- `paragraph_semantic.chunk_token_size` is independent: if it is not explicit, it uses `CHUNK_P_SIZE`, then the built-in default `2000`; it does not inherit the top-level `chunk_token_size`.
+- `enable_multimodal_pipeline` is deprecated and ignored if passed in `addon_params`. Use per-document `process_options` such as `i`, `t`, and `e` to control multimodal processing.
 
 
 ## QueryParam
