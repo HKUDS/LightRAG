@@ -5,7 +5,6 @@ from pathlib import Path
 import asyncio
 import json
 import re
-import warnings
 import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
@@ -80,16 +79,6 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
-
-
-def _warn_deprecated_query_model_func(context: str) -> None:
-    warnings.warn(
-        "QueryParam.model_func is deprecated and will be removed at v1.5.0. "
-        "Use LightRAG.aupdate_llm_role_config() instead. "
-        f"Deprecated override used for {context}.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
 
 
 def _get_relationship_vdb_timeout_seconds(global_config: dict[str, Any]) -> float:
@@ -3701,15 +3690,9 @@ async def kg_query(
     if not query:
         return QueryResult(content=PROMPTS["fail_response"])
 
-    if query_param.model_func:
-        use_model_func = query_param.model_func
-    else:
-        use_model_func = global_config["role_llm_funcs"]["query"]
-        # Apply higher priority (5) to query relation LLM function
-        use_model_func = partial(use_model_func, _priority=5)
-    llm_cache_identity = get_llm_cache_identity(
-        global_config, "query", query_param.model_func
-    )
+    # Apply higher priority (5) to query relation LLM function
+    use_model_func = partial(global_config["role_llm_funcs"]["query"], _priority=5)
+    llm_cache_identity = get_llm_cache_identity(global_config, "query")
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
@@ -3813,8 +3796,6 @@ async def kg_query(
         )
         response = cached_response
     else:
-        if query_param.model_func:
-            _warn_deprecated_query_model_func("KG query generation")
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
@@ -4049,9 +4030,7 @@ async def extract_keywords_only(
         language = addon_params.get("language", DEFAULT_SUMMARY_LANGUAGE)
 
     # 2. Handle cache if needed - add cache type for keywords
-    llm_cache_identity = get_llm_cache_identity(
-        global_config, "keyword", param.model_func
-    )
+    llm_cache_identity = get_llm_cache_identity(global_config, "keyword")
     args_hash = compute_args_hash(
         param.mode,
         text,
@@ -4088,13 +4067,8 @@ async def extract_keywords_only(
     )
 
     # 4. Call the LLM for keyword extraction
-    if param.model_func:
-        _warn_deprecated_query_model_func("keyword extraction")
-        use_model_func = param.model_func
-    else:
-        use_model_func = global_config["role_llm_funcs"]["keyword"]
-        # Apply higher priority (5) to query relation LLM function
-        use_model_func = partial(use_model_func, _priority=5)
+    # Apply higher priority (5) to query relation LLM function
+    use_model_func = partial(global_config["role_llm_funcs"]["keyword"], _priority=5)
 
     result = await use_model_func(kw_prompt, response_format={"type": "json_object"})
 
@@ -5604,15 +5578,9 @@ async def naive_query(
     if not query:
         return QueryResult(content=PROMPTS["fail_response"])
 
-    if query_param.model_func:
-        use_model_func = query_param.model_func
-    else:
-        use_model_func = global_config["role_llm_funcs"]["query"]
-        # Apply higher priority (5) to query relation LLM function
-        use_model_func = partial(use_model_func, _priority=5)
-    llm_cache_identity = get_llm_cache_identity(
-        global_config, "query", query_param.model_func
-    )
+    # Apply higher priority (5) to query relation LLM function
+    use_model_func = partial(global_config["role_llm_funcs"]["query"], _priority=5)
+    llm_cache_identity = get_llm_cache_identity(global_config, "query")
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     if not tokenizer:
@@ -5769,8 +5737,6 @@ async def naive_query(
         )
         response = cached_response
     else:
-        if query_param.model_func:
-            _warn_deprecated_query_model_func("naive query generation")
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,

@@ -108,7 +108,6 @@ from lightrag.operate import (
     kg_query,
     naive_query,
     rebuild_knowledge_from_chunks,
-    _warn_deprecated_query_model_func,
 )
 from lightrag.utils_pipeline import normalize_document_file_path
 from lightrag.constants import GRAPH_FIELD_SEP
@@ -1748,7 +1747,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Args:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
-                If param.model_func is provided, it will be used instead of the global model.
             system_prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
@@ -1916,8 +1914,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             hl_keywords=param.hl_keywords,
             ll_keywords=param.ll_keywords,
             conversation_history=param.conversation_history,
-            history_turns=param.history_turns,
-            model_func=param.model_func,
             user_prompt=param.user_prompt,
             enable_rerank=param.enable_rerank,
         )
@@ -2046,13 +2042,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
-                if param.model_func:
-                    _warn_deprecated_query_model_func("bypass query generation")
-                use_llm_func = (
-                    param.model_func or global_config["role_llm_funcs"]["query"]
-                )
                 # Apply higher priority (8) to entity/relation summary tasks
-                use_llm_func = partial(use_llm_func, _priority=8)
+                use_llm_func = partial(
+                    global_config["role_llm_funcs"]["query"], _priority=8
+                )
 
                 param.stream = True if param.stream is None else param.stream
                 response = await use_llm_func(

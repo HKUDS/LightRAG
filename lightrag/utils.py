@@ -677,25 +677,13 @@ def _serialize_cache_variant(value: Any) -> str:
 def get_llm_cache_identity(
     global_config: dict[str, Any] | None,
     role: str,
-    model_func_override: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Get the non-secret LLM identity used to partition LLM cache keys.
 
     Includes ``role``, ``binding``, ``model``, and ``host``. Deliberately excludes
     ``api_key`` and ``provider_options`` so cache keys remain non-secret and safe
     to persist.
-
-    When ``model_func_override`` is set (the deprecated ``QueryParam.model_func``
-    path), the identity collapses to ``{role, override}`` and does not partition
-    by the underlying model — callers swapping overrides will hit shared cache
-    entries. Use ``LightRAG.aupdate_llm_role_config()`` for cache-correct swaps.
     """
-    if model_func_override is not None:
-        return {
-            "role": role,
-            "override": "query_param.model_func",
-        }
-
     config = global_config or {}
     identities = config.get("llm_cache_identities")
     if isinstance(identities, dict):

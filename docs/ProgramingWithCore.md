@@ -148,17 +148,6 @@ class QueryParam:
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    model_func: Callable[..., object] | None = None
-    """Deprecated optional override for the LLM model function.
-    Use role-specific LLM configuration at initialization or
-    await rag.aupdate_llm_role_config("query" | "keyword", ...) for runtime
-    LLM changes instead. Kept for backward compatibility with direct Python callers.
-
-    Note: when set, the LLM cache key collapses to a single "override" identity,
-    so swapping the override across calls will reuse stale cached responses.
-    Use aupdate_llm_role_config() for cache-correct model swaps.
-    """
-
     user_prompt: str | None = None
     """User-provided prompt for the query.
     Addition instructions for LLM. If provided, this will be inject into the prompt template.
