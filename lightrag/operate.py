@@ -3691,9 +3691,7 @@ async def kg_query(
         return QueryResult(content=PROMPTS["fail_response"])
 
     # Apply higher priority (5) to query relation LLM function
-    use_model_func = partial(
-        global_config["role_llm_funcs"]["query"], _priority=5
-    )
+    use_model_func = partial(global_config["role_llm_funcs"]["query"], _priority=5)
     llm_cache_identity = get_llm_cache_identity(global_config, "query")
 
     hl_keywords, ll_keywords = await get_keywords_from_query(
@@ -4070,9 +4068,7 @@ async def extract_keywords_only(
 
     # 4. Call the LLM for keyword extraction
     # Apply higher priority (5) to query relation LLM function
-    use_model_func = partial(
-        global_config["role_llm_funcs"]["keyword"], _priority=5
-    )
+    use_model_func = partial(global_config["role_llm_funcs"]["keyword"], _priority=5)
 
     result = await use_model_func(kw_prompt, response_format={"type": "json_object"})
 
@@ -5583,9 +5579,7 @@ async def naive_query(
         return QueryResult(content=PROMPTS["fail_response"])
 
     # Apply higher priority (5) to query relation LLM function
-    use_model_func = partial(
-        global_config["role_llm_funcs"]["query"], _priority=5
-    )
+    use_model_func = partial(global_config["role_llm_funcs"]["query"], _priority=5)
     llm_cache_identity = get_llm_cache_identity(global_config, "query")
 
     tokenizer: Tokenizer = global_config["tokenizer"]
