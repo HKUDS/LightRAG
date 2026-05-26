@@ -24,9 +24,110 @@ import faiss  # type: ignore
 @final
 @dataclass
 class FaissVectorDBStorage(BaseVectorStorage):
-    """
-    A Faiss-based Vector DB Storage for LightRAG.
-    Uses cosine similarity by storing normalized vectors in a Faiss index with inner product search.
+    """Faiss-backed vector storage for LightRAG.
+
+    Uses cosine similarity by storing L2-normalized vectors in an
+    ``IndexFlatIP`` (inner-product search on normalized vectors == cosine).
+
+    Storage model:
+        Two on-disk files per ``(workspace, namespace)``:
+            * ``working_dir/[workspace/]faiss_index_<namespace>.index`` —
+              the Faiss index (binary, written by ``faiss.write_index``).
+            * ``…<namespace>.index.meta.json`` — the ``_id_to_meta`` dict
+              serialized as JSON, **without** the ``__vector__`` field
+              (vectors are reconstructed from the Faiss index on load).
+        In memory the storage is split across two fields:
+            * ``self._index`` — the Faiss index.
+            * ``self._id_to_meta`` — ``dict[int_faiss_id, metadata]``.
+        Both files are the **only** cross-process synchronization surface
+        — there is no shared memory between processes. Cross-process
+        visibility is mediated by (a) per-file atomic writes and (b) a
+        per-namespace ``storage_updated`` flag distributed through
+        ``lightrag.kg.shared_storage``.
+
+        **Cross-file atomicity is not guaranteed**: the two ``atomic_write``
+        renames in ``_save_faiss_index`` are independent, so a crash
+        between them can leave ``.index`` and ``.meta.json`` referring to
+        different snapshots. ``_load_faiss_index`` tolerates this by
+        skipping metadata rows whose ``fid`` exceeds ``self._index.ntotal``.
+
+    Concurrency invariants (the code here is correct *only* while all
+    three hold):
+        1. **Single writer per workspace.** The document pipeline's
+           ``busy`` / ``destructive_busy`` flags (see ``AGENTS.md``
+           *Pipeline concurrency contract*) guarantee at most one process
+           performs ``upsert`` / ``delete`` / ``index_done_callback`` at
+           any time. Every other process is read-only.
+        2. **Eventual consistency is sufficient.** Read-only processes
+           only need to observe the writer's data *after* the writer's
+           ``index_done_callback`` completes. Reads in the gap between a
+           writer's in-memory mutation and its commit may legitimately
+           return the pre-update snapshot.
+        3. **Faiss + dict mutations are synchronous.** Under a
+           single-threaded asyncio event loop, ``index.add`` /
+           ``index.search`` / ``self._id_to_meta`` mutations cannot be
+           preempted by another coroutine, which gives them implicit
+           mutual exclusion. This is why most methods don't hold
+           ``_storage_lock`` while touching ``self._index`` /
+           ``self._id_to_meta``.
+
+    Cross-process sync protocol:
+        Writer side (``index_done_callback``):
+            1. ``_save_faiss_index`` writes both files atomically (per
+               file; cross-file atomicity is best-effort, see above).
+            2. ``set_all_update_flags`` flips every process's
+               ``storage_updated`` flag (including the writer's own).
+            3. Reset the writer's own flag to ``False`` so the next
+               ``_get_index`` does not trigger a self-reload of what we
+               just wrote.
+        Reader side (any method that goes through ``_get_index``):
+            1. Inside ``_storage_lock``, observe
+               ``storage_updated.value is True``.
+            2. **Fully reload**: re-init ``self._index`` from
+               ``IndexFlatIP``, clear ``self._id_to_meta``, then call
+               ``_load_faiss_index`` to re-parse both files. Faiss has no
+               incremental sync API.
+            3. Reset the reader's own flag.
+
+    Lock scope:
+        ``_storage_lock`` is a per-``(namespace, workspace)`` keyed lock
+        spanning both intra-process coroutines and inter-process workers.
+        It wraps:
+            * ``_get_index`` reload checks.
+            * The two critical sections in ``index_done_callback``.
+            * The rebuild inside ``_remove_faiss_ids`` (which mutates
+              ``self._index`` and ``self._id_to_meta`` together).
+            * The entire ``drop`` body.
+        It does **not** wrap routine ``index.search`` /
+        ``self._id_to_meta`` reads or the ``index.add`` /
+        ``self._id_to_meta.update`` mutations in ``upsert`` — those rely
+        on invariant (3) above. If either premise is broken (e.g.
+        Faiss calls moved to a thread pool), the lock scope must be
+        widened.
+
+    Caveat — methods that read ``_id_to_meta`` *without* going through
+    ``_get_index``:
+        ``client_storage`` (synchronous property), ``delete``,
+        ``delete_entity_relation``, ``get_by_id``, ``get_by_ids``,
+        ``get_vectors_by_ids``, and ``_find_faiss_id_by_custom_id``
+        directly read ``self._id_to_meta`` without first calling
+        ``_get_index``. In a reader process that has not yet observed a
+        commit (no recent ``_get_index`` call), these can return data
+        from before a writer's most recent ``index_done_callback``. This
+        is consistent with invariant (2) but is a stricter staleness
+        bound than NanoVectorDB's equivalents, which always funnel
+        through ``_get_client`` first.
+
+    Non-pipeline write paths:
+        The pipeline ``busy`` gate serializes ``upsert`` / ``delete`` /
+        ``index_done_callback`` called from document ingestion and purge.
+        The following entry points are **not** serialized by the pipeline
+        and must be guarded externally:
+            * ``drop`` — gated by the API layer (``/documents/clear``
+              takes the pipeline busy reservation before invoking it).
+            * ``delete_entity`` / ``delete_entity_relation`` — currently
+              not exposed in the WebUI. Any future caller must arrange
+              single-writer serialization the same way the pipeline does.
     """
 
     def __post_init__(self):
@@ -94,8 +195,33 @@ class FaissVectorDBStorage(BaseVectorStorage):
         )
 
     async def _get_index(self):
-        """Check if the shtorage should be reloaded"""
-        # Acquire lock to prevent concurrent read and write
+        """Return the live Faiss index, reloading from disk if needed.
+
+        This is the entry point through which ``upsert`` and ``query``
+        fetch ``self._index``. When another process has committed (via
+        ``index_done_callback``) and flipped this process's
+        ``storage_updated`` flag, the next call here rebuilds *both*
+        ``self._index`` and ``self._id_to_meta`` by re-reading the
+        ``.index`` + ``.meta.json`` pair from disk. Faiss has no
+        incremental sync API — the reload is unconditionally a full
+        file reload.
+
+        Under the *Single writer* invariant (see class docstring), the
+        reload branch never fires in the writer process: the writer
+        resets its own flag at the end of every ``index_done_callback``.
+        The branch exists for readers.
+
+        Note that several methods (``client_storage``, ``delete``,
+        ``delete_entity_relation``, ``get_by_*``) read
+        ``self._id_to_meta`` directly without funnelling through this
+        method — see class docstring *Caveat* for the staleness
+        implications.
+
+        ``_storage_lock`` is held during the check-and-reload to (a)
+        serialize concurrent reload attempts by sibling coroutines and
+        (b) interlock with ``index_done_callback`` so a reader cannot
+        observe a partially-saved file pair.
+        """
         async with self._storage_lock:
             # Check if storage was updated by another process
             if self.storage_updated.value:
@@ -110,20 +236,33 @@ class FaissVectorDBStorage(BaseVectorStorage):
             return self._index
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """
-        Insert or update vectors in the Faiss index.
+        """Insert or update vectors in the Faiss index; persistence is deferred.
 
-        data: {
-           "custom_id_1": {
-               "content": <text>,
-               ...metadata...
-           },
-           "custom_id_2": {
-               "content": <text>,
-               ...metadata...
-           },
-           ...
-        }
+        ``data`` shape::
+
+            {
+                "custom_id_1": {"content": <text>, ...metadata...},
+                "custom_id_2": {"content": <text>, ...metadata...},
+                ...
+            }
+
+        Persistence:
+            Changes live only in this process's memory until the next
+            ``index_done_callback``. Cross-process readers will not see
+            them until that commit fires (see class docstring,
+            *Cross-process sync protocol*).
+
+        Concurrency:
+            The embedding step runs **outside** ``_storage_lock`` on
+            purpose — it can issue network / GPU calls and we don't want
+            to hold the per-namespace lock for that latency. The
+            existing-id lookup (``_find_faiss_id_by_custom_id``) and
+            the rebuild path (``_remove_faiss_ids``) run *before*
+            ``_get_index`` is called; ``_remove_faiss_ids`` takes the
+            lock itself for its rebuild. The final ``index.add`` and
+            ``self._id_to_meta.update`` mutations are unlocked and rely
+            on the class docstring *Lock scope* invariant (synchronous
+            Faiss ops + single-writer pipeline gate).
         """
         logger.debug(
             f"[{self.workspace}] FAISS: Inserting {len(data)} to {self.namespace}"
@@ -247,17 +386,37 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
     @property
     def client_storage(self):
-        # Return whatever structure LightRAG might need for debugging
+        """Return a snapshot view of the metadata dict for debugging.
+
+        The outer list is a fresh shallow copy taken at access time, but
+        each element is still a **live reference** into
+        ``self._id_to_meta``; callers must not mutate them and must not
+        retain them across operations that may rebuild the index
+        (``upsert`` / ``delete`` / ``_remove_faiss_ids`` /
+        ``_get_index`` reload), since a rebuild swaps ``self._index``
+        and replaces ``self._id_to_meta`` with a new dict.
+
+        This property is **synchronous and does not call** ``_get_index``,
+        so in a reader process it can return data older than the latest
+        committed snapshot until some other method triggers a reload —
+        see class docstring *Caveat*.
+        """
         return {"data": list(self._id_to_meta.values())}
 
     async def delete(self, ids: list[str]):
-        """
-        Delete vectors for the provided custom IDs.
+        """Delete vectors for the provided custom IDs.
 
-        Importance notes:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. Only one process should updating the storage at a time before index_done_callback,
-           KG-storage-log should be used to avoid data corruption
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. In ``lightrag.py`` this
+            is handled by ``_insert_done()`` at the end of the document
+            batch. Callers outside the pipeline must persist explicitly.
+
+        Note: the id-resolution step ``_find_faiss_id_by_custom_id`` reads
+        ``self._id_to_meta`` directly without going through
+        ``_get_index``; the actual rebuild happens inside
+        ``_remove_faiss_ids`` under ``_storage_lock``. See class
+        docstring *Caveat*.
         """
         logger.debug(
             f"[{self.workspace}] Deleting {len(ids)} vectors from {self.namespace}"
@@ -275,11 +434,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
         )
 
     async def delete_entity(self, entity_name: str) -> None:
-        """
-        Importance notes:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. Only one process should updating the storage at a time before index_done_callback,
-           KG-storage-log should be used to avoid data corruption
+        """Delete the vector associated with a single entity name.
+
+        Thin wrapper over ``delete([entity_id])`` where ``entity_id`` is
+        ``compute_mdhash_id(entity_name, prefix="ent-")``.
+
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. Callers outside the
+            pipeline must persist explicitly.
+
+        **Not pipeline-gated** — see class docstring
+        *Non-pipeline write paths*. The caller is responsible for
+        ensuring single-writer serialization.
         """
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         logger.debug(
@@ -288,11 +455,27 @@ class FaissVectorDBStorage(BaseVectorStorage):
         await self.delete([entity_id])
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """
-        Importance notes:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. Only one process should updating the storage at a time before index_done_callback,
-           KG-storage-log should be used to avoid data corruption
+        """Delete every relation vector incident to ``entity_name``.
+
+        Scans ``self._id_to_meta`` for entries whose ``src_id`` or
+        ``tgt_id`` matches and rebuilds the index via
+        ``_remove_faiss_ids``.
+
+        Persistence:
+            Changes are in-memory only; cross-process visibility requires
+            a subsequent ``index_done_callback``. Callers outside the
+            pipeline must persist explicitly.
+
+        Note: the scan reads ``self._id_to_meta`` directly without going
+        through ``_get_index``. In a reader process this can miss
+        relations added by a writer whose commit has not yet been
+        observed locally; the actual rebuild happens inside
+        ``_remove_faiss_ids`` under ``_storage_lock``. See class
+        docstring *Caveat*.
+
+        **Not pipeline-gated** — see class docstring
+        *Non-pipeline write paths*. The caller is responsible for
+        ensuring single-writer serialization.
         """
         logger.debug(f"[{self.workspace}] Searching relations for entity {entity_name}")
         relations = []
@@ -446,6 +629,31 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._id_to_meta = {}
 
     async def index_done_callback(self) -> None:
+        """Commit in-memory state to disk and notify other processes.
+
+        This is the writer's **commit point** in the cross-process sync
+        protocol (see class docstring). Two effects, in order:
+            1. ``_save_faiss_index`` atomically writes ``.index`` and
+               ``.meta.json`` (per file; cross-file atomicity is *not*
+               guaranteed — see ``_save_faiss_index`` and class docstring
+               *Storage model*).
+            2. ``set_all_update_flags`` flips every registered process's
+               ``storage_updated`` flag, then we immediately reset our
+               own flag to ``False`` so the writer does not self-reload
+               on the next call to ``_get_index``.
+
+        Two-block structure (intentional, do not collapse):
+            * **First ``async with``** — early-return path for a
+              hypothetical second writer. Under the current single-writer
+              pipeline contract (class docstring, invariant 1) the
+              ``storage_updated.value`` check is permanently ``False`` in
+              the writer, so this branch is **dead code in production**.
+              It is kept as defensive scaffolding for any future
+              relaxation of the single-writer invariant; removing it
+              would silently re-enable lost-write bugs the moment a
+              second writer is introduced.
+            * **Second ``async with``** — the actual save + notify.
+        """
         async with self._storage_lock:
             # Check if storage was updated by another process
             if self.storage_updated.value:
@@ -561,15 +769,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
         return vectors_dict
 
     async def drop(self) -> dict[str, str]:
-        """Drop all vector data from storage and clean up resources
+        """Drop all vector data from storage and reinitialize the index.
 
         This method will:
-        1. Remove the vector database storage file if it exists
-        2. Reinitialize the vector database client
-        3. Update flags to notify other processes
-        4. Changes is persisted to disk immediately
+            1. Reset ``self._index`` to a fresh ``IndexFlatIP`` and clear
+               ``self._id_to_meta``.
+            2. Remove both on-disk files (``.index`` and ``.meta.json``)
+               if they exist.
+            3. Notify other processes via ``set_all_update_flags`` and
+               reset the writer's own flag.
 
-        This method will remove all vectors from the Faiss index and delete the storage files.
+        Caller contract:
+            ``drop`` is destructive and **not** serialized by this storage
+            class. The caller must hold the pipeline ``busy`` reservation
+            (the ``/documents/clear`` endpoint does this) before invoking
+            it — running ``drop`` concurrently with an active document
+            pipeline will tear down storage out from under the writer and
+            silently lose data. See class docstring,
+            *Non-pipeline write paths*.
 
         Returns:
             dict[str, str]: Operation status and message
