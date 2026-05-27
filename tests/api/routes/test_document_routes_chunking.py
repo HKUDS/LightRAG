@@ -268,7 +268,9 @@ def test_resolve_allows_amount_over_100_with_inherited_std_type():
     # inherited from addon_params. std/iqr have no (0, 100] ceiling, so this
     # must NOT be rejected (the request model deferred the check here).
     addon = {
-        "chunker": {"semantic_vector": {"breakpoint_threshold_type": "standard_deviation"}}
+        "chunker": {
+            "semantic_vector": {"breakpoint_threshold_type": "standard_deviation"}
+        }
     }
     cfg = TextChunkingConfig.model_validate(
         {"strategy": "semantic_vector", "params": {"breakpoint_threshold_amount": 150}}
@@ -284,7 +286,9 @@ def test_resolve_allows_amount_over_100_with_inherited_std_type():
 def test_resolve_rejects_amount_over_100_with_inherited_percentile_type():
     # Same partial override, but the effective (inherited) type is percentile,
     # which feeds np.percentile and requires the (0, 100] ceiling.
-    addon = {"chunker": {"semantic_vector": {"breakpoint_threshold_type": "percentile"}}}
+    addon = {
+        "chunker": {"semantic_vector": {"breakpoint_threshold_type": "percentile"}}
+    }
     cfg = TextChunkingConfig.model_validate(
         {"strategy": "semantic_vector", "params": {"breakpoint_threshold_amount": 150}}
     )
@@ -450,7 +454,9 @@ def test_insert_text_allows_amount_override_inheriting_std_type(monkeypatch):
     # overrides only breakpoint_threshold_amount (> 100). This must be
     # accepted (not 422), since std has no (0, 100] ceiling.
     addon = {
-        "chunker": {"semantic_vector": {"breakpoint_threshold_type": "standard_deviation"}}
+        "chunker": {
+            "semantic_vector": {"breakpoint_threshold_type": "standard_deviation"}
+        }
     }
     client, captured = _make_client(monkeypatch, addon_params=addon)
     resp = client.post(
@@ -470,7 +476,9 @@ def test_insert_text_allows_amount_override_inheriting_std_type(monkeypatch):
 
 
 def test_insert_text_rejects_amount_over_100_inheriting_percentile_type(monkeypatch):
-    addon = {"chunker": {"semantic_vector": {"breakpoint_threshold_type": "percentile"}}}
+    addon = {
+        "chunker": {"semantic_vector": {"breakpoint_threshold_type": "percentile"}}
+    }
     client, captured = _make_client(monkeypatch, addon_params=addon)
     resp = client.post(
         "/documents/text",
