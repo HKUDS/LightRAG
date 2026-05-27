@@ -18,9 +18,16 @@ class DummyRAG:
     def __init__(self):
         self.enqueued_calls = []
         self.processed = False
+        # _resolve_text_chunking reads addon_params; {} -> default chunker config.
+        self.addon_params = {}
 
     async def apipeline_enqueue_documents(
-        self, input, file_paths=None, track_id=None, process_options=None
+        self,
+        input,
+        file_paths=None,
+        track_id=None,
+        process_options=None,
+        chunk_options=None,
     ):
         self.enqueued_calls.append(
             {
@@ -28,6 +35,7 @@ class DummyRAG:
                 "file_paths": file_paths,
                 "track_id": track_id,
                 "process_options": process_options,
+                "chunk_options": chunk_options,
             }
         )
 
@@ -86,14 +94,15 @@ async def test_pipeline_index_texts_normalizes_file_sources_to_basename():
         track_id="track-1",
     )
 
-    assert rag.enqueued_calls == [
-        {
-            "input": ["alpha"],
-            "file_paths": ["alpha.txt"],
-            "track_id": "track-1",
-            "process_options": PROCESS_OPTION_CHUNK_FIXED,
-        }
-    ]
+    assert len(rag.enqueued_calls) == 1
+    call = rag.enqueued_calls[0]
+    assert call["input"] == ["alpha"]
+    assert call["file_paths"] == ["alpha.txt"]
+    assert call["track_id"] == "track-1"
+    assert call["process_options"] == PROCESS_OPTION_CHUNK_FIXED
+    # No chunking config supplied -> default F snapshot from addon_params.
+    assert isinstance(call["chunk_options"], dict)
+    assert "fixed_token" in call["chunk_options"]
     assert rag.processed is True
 
 

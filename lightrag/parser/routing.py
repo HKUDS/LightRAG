@@ -276,10 +276,10 @@ def default_chunker_config() -> dict[str, Any]:
     them straight into the chunker call).
 
     Provenance / precedence note: this function reads only
-    *strategy-specific* env vars (``CHUNK_F_OVERLAP_SIZE``,
-    ``CHUNK_R_SIZE``, ``CHUNK_R_OVERLAP_SIZE``, ``CHUNK_R_SEPARATORS``,
-    ``CHUNK_V_SIZE``, ``CHUNK_V_*``, ``CHUNK_P_SIZE``,
-    ``CHUNK_P_OVERLAP_SIZE``,
+    *strategy-specific* env vars (``CHUNK_F_SIZE``,
+    ``CHUNK_F_OVERLAP_SIZE``, ``CHUNK_R_SIZE``, ``CHUNK_R_OVERLAP_SIZE``,
+    ``CHUNK_R_SEPARATORS``, ``CHUNK_V_SIZE``, ``CHUNK_V_*``,
+    ``CHUNK_P_SIZE``, ``CHUNK_P_OVERLAP_SIZE``,
     ``CHUNK_F_SPLIT_BY_CHARACTER``…).  It does **not** read the legacy
     top-level envs ``CHUNK_SIZE`` / ``CHUNK_OVERLAP_SIZE``, and it
     deliberately **omits** ``chunk_overlap_token_size`` from a strategy
@@ -363,10 +363,15 @@ def default_chunker_config() -> dict[str, Any]:
         int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE
     )
 
-    # R/V strategies likewise carry their own optional ``chunk_token_size``
-    # overrides (recursive character splitting may want a smaller target,
-    # semantic-vector clustering a larger advisory ceiling).  Same
-    # slot-absent convention as P.
+    # F/R/V strategies likewise carry their own optional ``chunk_token_size``
+    # overrides (fixed-token may want a deployment-specific window, recursive
+    # character splitting a smaller target, semantic-vector clustering a larger
+    # advisory ceiling).  Same slot-absent convention as P: leave the slot
+    # absent when the env is unset so the strategy inherits the top-level
+    # ``chunk_token_size`` fallback at consumption time.
+    f_size_raw = os.getenv("CHUNK_F_SIZE")
+    if f_size_raw is not None:
+        config["fixed_token"]["chunk_token_size"] = int(f_size_raw)
     r_size_raw = os.getenv("CHUNK_R_SIZE")
     if r_size_raw is not None:
         config["recursive_character"]["chunk_token_size"] = int(r_size_raw)

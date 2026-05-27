@@ -115,6 +115,7 @@ Compact `chunker` shape:
 {
   "chunk_token_size": 1200,
   "fixed_token": {
+    "chunk_token_size": 1200,
     "chunk_overlap_token_size": 100,
     "split_by_character": null,
     "split_by_character_only": false
@@ -220,7 +221,8 @@ Nested `chunker` edits are read when future documents are enqueued. Documents al
 
 - Entity type guidance precedence is: `addon_params["entity_types_guidance"]` > `entity_type_prompt_file` profile > built-in default guidance.
 - Chunker precedence is: explicit `addon_params["chunker"]` values > strategy-specific `CHUNK_*` env vars > legacy constructor fields (`chunk_token_size`, `chunk_overlap_token_size`) > legacy env vars (`CHUNK_SIZE`, `CHUNK_OVERLAP_SIZE`).
-- `paragraph_semantic.chunk_token_size` is independent: if it is not explicit, it uses `CHUNK_P_SIZE`, then the built-in default `2000`; it does not inherit the top-level `chunk_token_size`.
+- Per-strategy `chunk_token_size`: every strategy reads `chunk_token_size` from its own sub-dict first and falls back to the top-level `chunk_token_size` when its sub-dict doesn't set one. F, R, and V can each seed their sub-dict value from a dedicated env var (`CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE`) or set it explicitly in `addon_params`; when neither is set they inherit the top-level value.
+- `paragraph_semantic.chunk_token_size` is the exception: unlike F/R/V it never inherits the top-level `chunk_token_size`; if not explicit it uses `CHUNK_P_SIZE`, then the built-in default `2000`.
 - `enable_multimodal_pipeline` is deprecated and ignored if passed in `addon_params`. Use per-document `process_options` such as `i`, `t`, and `e` to control multimodal processing.
 
 

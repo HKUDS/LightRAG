@@ -81,6 +81,8 @@ class _FakeRag:
         self.final_status = final_status
         self.enqueued = []
         self.errors = []
+        # _resolve_text_chunking reads addon_params; {} -> default chunker config.
+        self.addon_params = {}
 
     async def apipeline_enqueue_documents(
         self,
@@ -91,6 +93,7 @@ class _FakeRag:
         docs_format=None,
         parse_engine=None,
         process_options=None,
+        chunk_options=None,
         from_scan=False,
     ):
         item = {
@@ -100,6 +103,7 @@ class _FakeRag:
             "docs_format": docs_format,
             "parse_engine": parse_engine,
             "process_options": process_options,
+            "chunk_options": chunk_options,
             "from_scan": from_scan,
         }
         self.enqueued.append(item)
@@ -358,6 +362,7 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
             "docs_format": None,
             "parse_engine": "legacy",
             "process_options": PROCESS_OPTION_CHUNK_FIXED,
+            "chunk_options": None,
             "from_scan": False,
         }
     ]
@@ -383,6 +388,7 @@ async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
             "docs_format": None,
             "parse_engine": "legacy",
             "process_options": PROCESS_OPTION_CHUNK_FIXED,
+            "chunk_options": None,
             "from_scan": False,
         }
     ]
@@ -444,6 +450,7 @@ async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
             "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parse_engine": "mineru",
             "process_options": PROCESS_OPTION_CHUNK_FIXED,
+            "chunk_options": None,
             "from_scan": False,
         }
     ]
@@ -472,6 +479,7 @@ async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
             "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parse_engine": "native",
             "process_options": "iet",
+            "chunk_options": None,
             "from_scan": False,
         }
     ]
@@ -557,17 +565,18 @@ async def test_pipeline_index_texts_sets_api_default_process_options():
         track_id="track-texts",
     )
 
-    assert rag.enqueued == [
-        {
-            "input": ["first text", "second text"],
-            "file_path": ["first.txt", "second.txt"],
-            "track_id": "track-texts",
-            "docs_format": None,
-            "parse_engine": None,
-            "process_options": PROCESS_OPTION_CHUNK_FIXED,
-            "from_scan": False,
-        }
-    ]
+    assert len(rag.enqueued) == 1
+    item = rag.enqueued[0]
+    assert item["input"] == ["first text", "second text"]
+    assert item["file_path"] == ["first.txt", "second.txt"]
+    assert item["track_id"] == "track-texts"
+    assert item["docs_format"] is None
+    assert item["parse_engine"] is None
+    assert item["process_options"] == PROCESS_OPTION_CHUNK_FIXED
+    assert item["from_scan"] is False
+    # No chunking config -> default F snapshot is still passed through.
+    assert isinstance(item["chunk_options"], dict)
+    assert "fixed_token" in item["chunk_options"]
 
 
 async def test_scan_processed_same_name_archives_with_unique_name(
