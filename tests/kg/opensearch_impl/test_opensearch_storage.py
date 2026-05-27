@@ -112,6 +112,27 @@ class MockEmbeddingFunc:
         return np.random.rand(len(texts), self.embedding_dim).astype(np.float32)
 
 
+class CountingEmbeddingFunc(MockEmbeddingFunc):
+    """Embedding test double that records calls and can fail a fixed number of times."""
+
+    def __init__(self, dim=128, fail_times=0):
+        super().__init__(dim=dim)
+        self.fail_times = fail_times
+        self.call_count = 0
+        self.batches: list[list[str]] = []
+        self.texts: list[str] = []
+
+    async def __call__(self, texts, **kwargs):
+        self.call_count += 1
+        batch = list(texts)
+        self.batches.append(batch)
+        self.texts.extend(batch)
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise RuntimeError("embedding failed")
+        return await super().__call__(texts, **kwargs)
+
+
 @pytest.fixture
 def global_config():
     """Standard global config fixture for all storage tests."""
@@ -2889,7 +2910,8 @@ class TestVectorStorage:
     async def test_upsert_generates_embeddings(
         self, global_config, embed_func, mock_client
     ):
-        """Embeddings are generated eagerly during upsert; bulk write is deferred to flush."""
+        """Embeddings are deferred until flush; upsert only buffers payloads."""
+        embed_func = CountingEmbeddingFunc()
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -2905,15 +2927,17 @@ class TestVectorStorage:
                 )
                 # Upsert buffers; no bulk write yet.
                 mock_bulk.assert_not_awaited()
+                assert embed_func.call_count == 0
                 assert set(s._pending_vector_docs.keys()) == {"v1", "v2"}
-                assert "vector" in s._pending_vector_docs["v1"]
-                assert len(s._pending_vector_docs["v1"]["vector"]) == 128
-                # Flush triggers a single bulk call with both docs.
+                assert s._pending_vector_docs["v1"].vector is None
+                # Flush embeds and triggers a single bulk call with both docs.
                 await s.index_done_callback()
+                assert embed_func.call_count == 1
                 mock_bulk.assert_awaited_once()
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 2
                 assert all(a["_op_type"] == "index" for a in actions)
+                assert all("vector" in a["_source"] for a in actions)
 
     @pytest.mark.asyncio
     async def test_query_cosine_score_conversion(
@@ -3228,6 +3252,7 @@ class TestVectorStorageBatching:
         self, global_config, embed_func, mock_client
     ):
         """Many small upsert() calls collapse to one async_bulk on flush."""
+        embed_func = CountingEmbeddingFunc()
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -3238,17 +3263,45 @@ class TestVectorStorageBatching:
                 for i in range(5):
                     await s.upsert({f"v{i}": {"content": f"doc {i}"}})
                 mock_bulk.assert_not_awaited()
+                assert embed_func.call_count == 0
                 await s.index_done_callback()
+                assert embed_func.call_count == 1
+                assert embed_func.batches == [[f"doc {i}" for i in range(5)]]
                 mock_bulk.assert_awaited_once()
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 5
                 assert {a["_id"] for a in actions} == {f"v{i}" for i in range(5)}
 
     @pytest.mark.asyncio
+    async def test_deferred_embeddings_respect_batch_size(
+        self, global_config, embed_func, mock_client
+    ):
+        """Flush batches deferred embeddings by embedding_batch_num."""
+        embed_func = CountingEmbeddingFunc()
+        config = {**global_config, "embedding_batch_num": 2}
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (5, [])
+                s = self._make(config, embed_func)
+                await s.initialize()
+                for i in range(5):
+                    await s.upsert({f"v{i}": {"content": f"doc {i}"}})
+                await s.index_done_callback()
+                assert embed_func.batches == [
+                    ["doc 0", "doc 1"],
+                    ["doc 2", "doc 3"],
+                    ["doc 4"],
+                ]
+                mock_bulk.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_upsert_overwrites_pending_doc_for_same_id(
         self, global_config, embed_func, mock_client
     ):
         """Upserting the same id twice keeps only the latest payload."""
+        embed_func = CountingEmbeddingFunc()
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -3259,6 +3312,8 @@ class TestVectorStorageBatching:
                 await s.upsert({"v1": {"content": "first"}})
                 await s.upsert({"v1": {"content": "second"}})
                 await s.index_done_callback()
+                assert embed_func.call_count == 1
+                assert embed_func.texts == ["second"]
                 actions = mock_bulk.call_args[0][1]
                 assert len(actions) == 1
                 assert actions[0]["_source"]["content"] == "second"
@@ -3368,14 +3423,38 @@ class TestVectorStorageBatching:
         self, global_config, embed_func, mock_client
     ):
         """get_vectors_by_ids returns buffered embeddings without an mget roundtrip."""
+        embed_func = CountingEmbeddingFunc()
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.upsert({"v1": {"content": "x"}})
+            assert embed_func.call_count == 0
             vecs = await s.get_vectors_by_ids(["v1"])
             assert "v1" in vecs
             assert len(vecs["v1"]) == 128
+            assert embed_func.call_count == 1
+            assert s._pending_vector_docs["v1"].vector == vecs["v1"]
             mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_lazy_get_vectors_cache_is_reused_by_flush(
+        self, global_config, embed_func, mock_client
+    ):
+        """A lazy pending-vector read should not force a second embedding during flush."""
+        embed_func = CountingEmbeddingFunc()
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "x"}})
+                vecs = await s.get_vectors_by_ids(["v1"])
+                await s.index_done_callback()
+                assert embed_func.call_count == 1
+                actions = mock_bulk.call_args[0][1]
+                assert actions[0]["_source"]["vector"] == vecs["v1"]
 
     @pytest.mark.asyncio
     async def test_finalize_flushes_pending_ops(
@@ -3500,15 +3579,19 @@ class TestVectorStorageBatching:
         self, global_config, embed_func, mock_client
     ):
         """Transient (5xx) per-doc failures stay buffered for the next flush."""
+        embed_func = CountingEmbeddingFunc()
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
             ) as mock_bulk:
                 # First flush: v1 succeeds, v2 fails with 503 (retryable).
-                mock_bulk.return_value = (
-                    1,
-                    [{"index": {"_id": "v2", "status": 503, "error": "down"}}],
-                )
+                mock_bulk.side_effect = [
+                    (
+                        1,
+                        [{"index": {"_id": "v2", "status": 503, "error": "down"}}],
+                    ),
+                    (1, []),
+                ]
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.upsert(
@@ -3521,6 +3604,64 @@ class TestVectorStorageBatching:
                 # v1 cleared, v2 retained for retry.
                 assert "v1" not in s._pending_vector_docs
                 assert "v2" in s._pending_vector_docs
+                assert s._pending_vector_docs["v2"].vector is not None
+                assert embed_func.call_count == 1
+
+                await s.index_done_callback()
+                assert "v2" not in s._pending_vector_docs
+                assert embed_func.call_count == 1
+                assert mock_bulk.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_embedding_failure_leaves_pending_for_retry(
+        self, global_config, embed_func, mock_client
+    ):
+        """Embedding failures behave like flush failures: buffers stay intact."""
+        embed_func = CountingEmbeddingFunc(fail_times=1)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "retry me"}})
+
+                with pytest.raises(RuntimeError, match="embedding failed"):
+                    await s.index_done_callback()
+                mock_bulk.assert_not_awaited()
+                assert "v1" in s._pending_vector_docs
+                assert s._pending_vector_docs["v1"].vector is None
+
+                await s.index_done_callback()
+                mock_bulk.assert_awaited_once()
+                assert "v1" not in s._pending_vector_docs
+                assert embed_func.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_finalize_wraps_embedding_failure(
+        self, global_config, embed_func, mock_client
+    ):
+        """finalize() reports pending buffers when deferred embedding fails."""
+        embed_func = CountingEmbeddingFunc(fail_times=1)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch.object(
+                ClientManager, "release_client", new_callable=AsyncMock
+            ) as mock_release:
+                with patch(
+                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                    new_callable=AsyncMock,
+                ) as mock_bulk:
+                    s = self._make(global_config, embed_func)
+                    await s.initialize()
+                    await s.upsert({"v1": {"content": "stuck"}})
+                    with pytest.raises(RuntimeError, match="pending upserts"):
+                        await s.finalize()
+                    mock_bulk.assert_not_awaited()
+                    mock_release.assert_awaited_once()
+                    assert s.client is None
+                    assert "v1" in s._pending_vector_docs
+                    assert s._pending_vector_docs["v1"].vector is None
 
     @pytest.mark.asyncio
     async def test_delete_entity_relation_prunes_pending_buffer(
@@ -4005,6 +4146,51 @@ class TestVectorStorageBatching:
                 assert not drop_task.done()
 
                 flush_can_finish.set()
+                await flush_task
+                await drop_task
+                assert drop_delete_started.is_set()
+
+    @pytest.mark.asyncio
+    async def test_drop_serialised_with_flush_embedding_phase(
+        self, global_config, mock_client
+    ):
+        """drop must also wait while deferred embedding runs under the flush lock."""
+        embedding_started = asyncio.Event()
+        embedding_can_finish = asyncio.Event()
+        drop_delete_started = asyncio.Event()
+
+        class GatedEmbeddingFunc(MockEmbeddingFunc):
+            async def __call__(self, texts, **kwargs):
+                embedding_started.set()
+                await embedding_can_finish.wait()
+                return await super().__call__(texts, **kwargs)
+
+        async def watch_indices_delete(**kwargs):
+            drop_delete_started.set()
+
+        mock_client.indices.delete = AsyncMock(side_effect=watch_indices_delete)
+        embed_func = GatedEmbeddingFunc()
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({"v1": {"content": "x"}})
+
+                flush_task = asyncio.create_task(s.index_done_callback())
+                await embedding_started.wait()
+                drop_task = asyncio.create_task(s.drop())
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                assert (
+                    not drop_delete_started.is_set()
+                ), "indices.delete should be blocked during deferred embedding"
+                assert not drop_task.done()
+
+                embedding_can_finish.set()
                 await flush_task
                 await drop_task
                 assert drop_delete_started.is_set()
