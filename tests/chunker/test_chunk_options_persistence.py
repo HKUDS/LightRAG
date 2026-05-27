@@ -1499,3 +1499,56 @@ def test_ainsert_legacy_path_honors_f_size_env(tmp_path, monkeypatch):
         "ainsert legacy chunking_func must receive CHUNK_F_SIZE-derived size, "
         f"not the global CHUNK_SIZE; got {captured!r}"
     )
+
+
+@pytest.mark.offline
+def test_partial_chunker_config_still_picks_up_size_env(tmp_path, monkeypatch):
+    """A partial ``addon_params['chunker']`` skips ``default_chunker_config``
+    (``normalize_addon_params`` only defaults the whole ``chunker`` key when
+    absent), so ``_apply_chunk_size_overlay`` must mirror the strategy
+    size-env seeding — otherwise ``CHUNK_F_SIZE`` / ``CHUNK_R_SIZE`` /
+    ``CHUNK_V_SIZE`` are silently ignored for partial configs.
+    """
+    monkeypatch.setenv("CHUNK_F_SIZE", "640")
+    monkeypatch.setenv("CHUNK_R_SIZE", "777")
+    monkeypatch.setenv("CHUNK_V_SIZE", "888")
+
+    # Partial config: only F's split_by_character is supplied; every
+    # chunk_token_size slot is absent and must be backfilled from env.
+    rag = _new_rag(
+        tmp_path,
+        addon_params={"chunker": {"fixed_token": {"split_by_character": "\n"}}},
+    )
+    chunker = rag.addon_params["chunker"]
+    assert chunker["fixed_token"]["chunk_token_size"] == 640
+    # Explicit caller value preserved alongside the env-backfilled size.
+    assert chunker["fixed_token"]["split_by_character"] == "\n"
+    assert chunker["recursive_character"]["chunk_token_size"] == 777
+    assert chunker["semantic_vector"]["chunk_token_size"] == 888
+
+
+@pytest.mark.offline
+def test_partial_chunker_config_explicit_size_beats_env(tmp_path, monkeypatch):
+    """An explicit ``fixed_token.chunk_token_size`` in a partial config wins
+    over ``CHUNK_F_SIZE`` (tier 1 > tier 2)."""
+    monkeypatch.setenv("CHUNK_F_SIZE", "640")
+    rag = _new_rag(
+        tmp_path,
+        addon_params={"chunker": {"fixed_token": {"chunk_token_size": 320}}},
+    )
+    assert rag.addon_params["chunker"]["fixed_token"]["chunk_token_size"] == 320
+
+
+@pytest.mark.offline
+def test_partial_chunker_config_no_size_env_leaves_slot_absent(tmp_path, monkeypatch):
+    """Without a size env, the slot stays absent so the strategy inherits the
+    top-level chunk_token_size at consumption time (no behavior change)."""
+    monkeypatch.delenv("CHUNK_F_SIZE", raising=False)
+    monkeypatch.delenv("CHUNK_R_SIZE", raising=False)
+    rag = _new_rag(
+        tmp_path,
+        addon_params={"chunker": {"recursive_character": {"separators": ["X"]}}},
+    )
+    chunker = rag.addon_params["chunker"]
+    assert "chunk_token_size" not in chunker["recursive_character"]
+    assert "chunk_token_size" not in chunker["fixed_token"]
