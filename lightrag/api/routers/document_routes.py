@@ -22,7 +22,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
@@ -32,11 +32,16 @@ from lightrag.constants import (
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_FIXED,
+    PROCESS_OPTION_CHUNK_PARAGRAH,
+    PROCESS_OPTION_CHUNK_RECURSIVE,
+    PROCESS_OPTION_CHUNK_VECTOR,
 )
 from lightrag.parser.routing import (
     FilenameParserHintError,
     canonicalize_parser_hinted_basename,
+    chunk_strategy_key,
     filename_parser_hint,
+    resolve_chunk_options,
     resolve_file_parser_directives,
 )
 from lightrag.utils import (
@@ -232,12 +237,128 @@ class CancelPipelineResponse(BaseModel):
     )
 
 
+TextChunkingStrategy = Literal[
+    "fixed_token",
+    "recursive_character",
+    "semantic_vector",
+    "paragraph_semantic",
+]
+
+
+class _StrictChunkParams(BaseModel):
+    """Base for per-strategy chunking params.
+
+    ``strict=True`` rejects the Pydantic-v2 lax coercions that would
+    otherwise let malformed requests through and fail later in the
+    background chunker: bool-as-int (``true`` -> 1), numeric strings
+    (``"5"`` -> 5), float-as-int.  ``extra="forbid"`` turns unknown keys
+    into a 422 (replacing a hand-rolled allow-list).  ``chunk_token_size``
+    is shared by every strategy; ``None`` means "not supplied — fall back
+    to ``addon_params``/env default at process time".
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    chunk_token_size: Optional[int] = Field(default=None, ge=1)
+
+
+class _OverlapChunkParams(_StrictChunkParams):
+    chunk_overlap_token_size: Optional[int] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _overlap_lt_size(self) -> "_OverlapChunkParams":
+        # Only enforceable when BOTH are explicit; when chunk_token_size
+        # is None the effective size is resolved from addon_params/env at
+        # process time and can't be compared against here.
+        if (
+            self.chunk_token_size is not None
+            and self.chunk_overlap_token_size is not None
+            and self.chunk_overlap_token_size >= self.chunk_token_size
+        ):
+            raise ValueError("chunk_overlap_token_size must be < chunk_token_size")
+        return self
+
+
+class FixedTokenChunkParams(_OverlapChunkParams):
+    split_by_character: Optional[str] = None
+    split_by_character_only: Optional[bool] = None
+
+
+class RecursiveCharacterChunkParams(_OverlapChunkParams):
+    separators: Optional[list[str]] = None
+
+
+class ParagraphSemanticChunkParams(_OverlapChunkParams):
+    pass
+
+
+class SemanticVectorChunkParams(_StrictChunkParams):
+    # Enum verified against the installed langchain_experimental
+    # (text_splitter.py ``BreakpointThresholdType``), not from memory.
+    breakpoint_threshold_type: Optional[
+        Literal["percentile", "standard_deviation", "interquartile", "gradient"]
+    ] = None
+    breakpoint_threshold_amount: Optional[float] = None
+    buffer_size: Optional[int] = Field(default=None, ge=1)
+    sentence_split_regex: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _amount_in_range(self) -> "SemanticVectorChunkParams":
+        amt = self.breakpoint_threshold_amount
+        if amt is None:
+            return self
+        if amt <= 0:
+            raise ValueError("breakpoint_threshold_amount must be > 0")
+        # percentile/gradient feed np.percentile, which requires q in
+        # [0, 100]; an out-of-range value would crash in the background.
+        kind = self.breakpoint_threshold_type or "percentile"
+        if kind in ("percentile", "gradient") and amt > 100:
+            raise ValueError(
+                "breakpoint_threshold_amount must be within (0, 100] "
+                "for percentile/gradient"
+            )
+        return self
+
+
+_CHUNKING_PARAMS_MODEL: dict[str, type[_StrictChunkParams]] = {
+    "fixed_token": FixedTokenChunkParams,
+    "recursive_character": RecursiveCharacterChunkParams,
+    "semantic_vector": SemanticVectorChunkParams,
+    "paragraph_semantic": ParagraphSemanticChunkParams,
+}
+
+
+class TextChunkingConfig(BaseModel):
+    """Chunking strategy + strategy-specific params for a text insert.
+
+    Validation is delegated to the per-strategy typed model so unknown
+    keys, wrong types, and out-of-range values all raise synchronously
+    during request parsing (HTTP 422) — never later in the background
+    indexing task, where the HTTP response has already been sent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: TextChunkingStrategy = "fixed_token"
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_params(self) -> "TextChunkingConfig":
+        typed = _CHUNKING_PARAMS_MODEL[self.strategy].model_validate(self.params)
+        # Normalize down to exactly the keys the caller supplied (validated
+        # + coerced) so the enqueue-time merge overrides only what was set.
+        self.params = typed.model_dump(exclude_unset=True)
+        return self
+
+
 class InsertTextRequest(BaseModel):
     """Request model for inserting a single text document
 
     Attributes:
         text: The text content to be inserted into the RAG system
         file_source: Source of the text (optional)
+        chunking: Optional chunking strategy + params; omit to keep the
+            default fixed-token behavior and addon_params defaults.
     """
 
     text: str = Field(
@@ -246,6 +367,10 @@ class InsertTextRequest(BaseModel):
     )
     file_source: Optional[str] = Field(
         default=None, min_length=0, description="File Source"
+    )
+    chunking: Optional[TextChunkingConfig] = Field(
+        default=None,
+        description="Chunking strategy and params; omit for default fixed-token chunking",
     )
 
     @field_validator("text", mode="after")
@@ -263,6 +388,15 @@ class InsertTextRequest(BaseModel):
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
+                "chunking": {
+                    "strategy": "fixed_token",
+                    "params": {
+                        "chunk_token_size": 1200,
+                        "chunk_overlap_token_size": 100,
+                        "split_by_character": "\n\n",
+                        "split_by_character_only": True,
+                    },
+                },
             }
         }
     )
@@ -282,6 +416,10 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: Optional[list[str]] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    chunking: Optional[TextChunkingConfig] = Field(
+        default=None,
+        description="Shared chunking strategy and params for all texts; omit for default fixed-token chunking",
     )
 
     @field_validator("texts", mode="after")
@@ -309,6 +447,10 @@ class InsertTextsRequest(BaseModel):
                 "file_sources": [
                     "First file source (optional)",
                 ],
+                "chunking": {
+                    "strategy": "recursive_character",
+                    "params": {"chunk_token_size": 1000},
+                },
             }
         }
     )
@@ -2164,11 +2306,94 @@ async def pipeline_index_files(
         logger.error(traceback.format_exc())
 
 
+_STRATEGY_TO_PROCESS_OPTION: Dict[str, str] = {
+    "fixed_token": PROCESS_OPTION_CHUNK_FIXED,
+    "recursive_character": PROCESS_OPTION_CHUNK_RECURSIVE,
+    "semantic_vector": PROCESS_OPTION_CHUNK_VECTOR,
+    "paragraph_semantic": PROCESS_OPTION_CHUNK_PARAGRAH,
+}
+
+
+def _resolve_text_chunking(
+    chunking: Optional[TextChunkingConfig], rag: LightRAG
+) -> tuple[str, dict]:
+    """Freeze a ``chunking`` request into ``(process_options, chunk_options)``.
+
+    When ``chunking`` is ``None`` this reproduces today's behavior exactly:
+    fixed-token strategy with the snapshot built from
+    ``rag.addon_params['chunker']``.
+
+    Otherwise the validated, strategy-specific params are merged into the
+    selected strategy's sub-dict. ``chunk_token_size`` rides along inside
+    ``params`` like any other key — every strategy (F included, after the
+    ``process_single_document`` cleanup) reads its size from its own
+    sub-dict, with the top-level snapshot value as the shared fallback.
+
+    Raises:
+        ValueError: when the request lowers ``chunk_token_size`` below the
+            *effective* ``chunk_overlap_token_size``.  The overlap is often
+            inherited from ``addon_params``/env (the overlay fills
+            ``fixed_token``/``recursive_character``/``paragraph_semantic``
+            overlap with ``CHUNK_*_OVERLAP_SIZE`` / ``CHUNK_OVERLAP_SIZE``),
+            so this can only be checked here against the resolved snapshot,
+            not in the request model.  Callers on the request path invoke
+            this synchronously so the failure surfaces as HTTP 422 before any
+            background work is scheduled.
+    """
+    if chunking is None:
+        # No request-driven config: reproduce today's behavior verbatim,
+        # including not introducing new validation on the default path.
+        process_options = PROCESS_OPTION_CHUNK_FIXED
+        return process_options, resolve_chunk_options(
+            rag.addon_params, process_options=process_options
+        )
+
+    process_options = _STRATEGY_TO_PROCESS_OPTION[chunking.strategy]
+    chunk_options = resolve_chunk_options(
+        rag.addon_params, process_options=process_options
+    )
+    strategy_key = chunk_strategy_key(process_options)
+    chunk_options[strategy_key].update(chunking.params)
+    _validate_effective_chunk_overlap(chunk_options, strategy_key, chunking.strategy)
+    return process_options, chunk_options
+
+
+def _validate_effective_chunk_overlap(
+    chunk_options: dict, strategy_key: str, strategy_name: str
+) -> None:
+    """Reject a resolved snapshot whose overlap is >= its chunk size.
+
+    Operates on the fully-resolved ``chunk_options`` so it catches the case
+    the request model cannot: ``chunk_token_size`` supplied in the request
+    while ``chunk_overlap_token_size`` is inherited from addon_params/env
+    (e.g. ``chunk_token_size=50`` with the default overlap ``100``).  The
+    effective size is the strategy sub-dict value, falling back to the
+    top-level snapshot size; the effective overlap is the sub-dict value
+    (``semantic_vector`` carries none, so it is skipped).
+    """
+    sub = chunk_options.get(strategy_key) or {}
+    overlap = sub.get("chunk_overlap_token_size")
+    if overlap is None:
+        return
+    size = sub.get("chunk_token_size")
+    if size is None:
+        size = chunk_options.get("chunk_token_size")
+    if size is not None and overlap >= size:
+        raise ValueError(
+            f"chunking for strategy '{strategy_name}': effective "
+            f"chunk_overlap_token_size ({overlap}) must be < chunk_token_size "
+            f"({size}). The overlap is inherited from addon_params/env when "
+            f"not set in the request; raise chunk_token_size or lower "
+            f"chunk_overlap_token_size."
+        )
+
+
 async def pipeline_index_texts(
     rag: LightRAG,
     texts: List[str],
     file_sources: List[str] = None,
     track_id: str = None,
+    chunking: Optional[TextChunkingConfig] = None,
 ):
     """Index a list of texts with track_id
 
@@ -2177,6 +2402,8 @@ async def pipeline_index_texts(
         texts: The texts to index
         file_sources: Sources of the texts
         track_id: Optional tracking ID
+        chunking: Optional chunking strategy + params (already validated by
+            the request model); when None, default fixed-token chunking is used
     """
     if not texts:
         return
@@ -2190,11 +2417,13 @@ async def pipeline_index_texts(
     if len(set(normalized_file_sources)) != len(normalized_file_sources):
         raise ValueError("File sources must be unique by filename")
 
+    process_options, chunk_options = _resolve_text_chunking(chunking, rag)
     await rag.apipeline_enqueue_documents(
         input=texts,
         file_paths=normalized_file_sources,
         track_id=track_id,
-        process_options=PROCESS_OPTION_CHUNK_FIXED,
+        process_options=process_options,
+        chunk_options=chunk_options,
     )
     await rag.apipeline_process_enqueue_documents()
 
@@ -3080,6 +3309,16 @@ def create_document_routes(
                     ),
                 )
 
+            # Resolve + validate chunking synchronously so an invalid
+            # effective config (e.g. chunk_token_size below the inherited
+            # overlap) fails with HTTP 422 here, before any background work is
+            # scheduled. pipeline_index_texts re-resolves from the same
+            # addon_params inside the task.
+            try:
+                _resolve_text_chunking(request.chunking, rag)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
@@ -3090,6 +3329,7 @@ def create_document_routes(
                         [request.text],
                         file_sources=[normalized_file_source],
                         track_id=track_id,
+                        chunking=request.chunking,
                     )
                 finally:
                     await _release_enqueue_slot(rag)
@@ -3193,6 +3433,16 @@ def create_document_routes(
                         ),
                     )
 
+            # Resolve + validate the shared chunking synchronously so an
+            # invalid effective config (e.g. chunk_token_size below the
+            # inherited overlap) fails with HTTP 422 here, before any
+            # background work is scheduled. pipeline_index_texts re-resolves
+            # from the same addon_params inside the task.
+            try:
+                _resolve_text_chunking(request.chunking, rag)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
@@ -3203,6 +3453,7 @@ def create_document_routes(
                         request.texts,
                         file_sources=normalized_file_sources,
                         track_id=track_id,
+                        chunking=request.chunking,
                     )
                 finally:
                     await _release_enqueue_slot(rag)

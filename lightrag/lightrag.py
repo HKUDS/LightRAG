@@ -662,12 +662,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         1. ``addon_params['chunker']`` explicit (user-supplied dict that
            already carries the key).
-        2. Strategy-specific env (``CHUNK_F_OVERLAP_SIZE`` /
-           ``CHUNK_R_OVERLAP_SIZE`` / ``CHUNK_P_OVERLAP_SIZE`` — already pre-filled by
+        2. Strategy-specific env (``CHUNK_F_SIZE`` / ``CHUNK_R_SIZE`` /
+           ``CHUNK_V_SIZE`` for per-strategy ``chunk_token_size``;
+           ``CHUNK_F_OVERLAP_SIZE`` / ``CHUNK_R_OVERLAP_SIZE`` /
+           ``CHUNK_P_OVERLAP_SIZE`` for overlap — all pre-filled into the
+           strategy sub-dict by
            :func:`lightrag.parser.routing.default_chunker_config` *only*
-           when the env var is set).  No strategy-specific top-level
-           ``CHUNK_*_SIZE`` exists today; if added later, plug it in
-           between this tier and the legacy ctor tier.
+           when the env var is set).  No strategy env feeds the
+           *top-level* ``chunk_token_size`` slot; that chain stays
+           addon_params > legacy ctor > ``CHUNK_SIZE``.
         3. Legacy constructor field
            (``LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)``).
            Strategy-agnostic; only fills slots that were not already set
@@ -1272,7 +1275,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
     ) -> str:
-        """Async Insert documents with checkpoint support
+        """Async insert documents with checkpoint support (fixed-token chunking only).
+
+        SDK convenience entry point. It **always** chunks with the fixed-token
+        (F) strategy: ``process_options`` is intentionally not passed, so the
+        document runs the F chunker. ``split_by_character`` /
+        ``split_by_character_only`` are F-strategy runtime args; the rest of
+        the F config (``chunk_token_size`` / ``chunk_overlap_token_size``,
+        seeded from ``CHUNK_F_SIZE`` / ``CHUNK_SIZE`` etc.) comes from
+        ``addon_params['chunker']['fixed_token']``. ``ainsert`` cannot select
+        the recursive-character (R), semantic-vector (V), or paragraph-semantic
+        (P) strategies.
+
+        The LightRAG **server / REST API does not call this method** — it
+        ingests via :meth:`apipeline_enqueue_documents` +
+        :meth:`apipeline_process_enqueue_documents` with a per-document
+        ``process_options`` selector, which is how F/R/V/P are chosen there.
+        To use R/V/P (or pass an explicit per-document ``chunk_options``) from
+        the SDK, call those two methods directly with ``process_options=…``
+        instead of ``ainsert``.
 
         Args:
             input: Single document string or list of document strings

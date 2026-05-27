@@ -358,6 +358,7 @@ All variables in the table below are read into `addon_params["chunker"]` once wh
 |---|---|---|---|
 | `CHUNK_SIZE` | `1200` | int | Legacy top-level `chunk_token_size` fallback; lower priority than strategy-specific env and the SDK path setting of `addon_params["chunker"]["chunk_token_size"]` |
 | `CHUNK_OVERLAP_SIZE` | `100` | int | Legacy overlap fallback; filled when a strategy has neither a specific env (`CHUNK_F_OVERLAP_SIZE` / `CHUNK_R_OVERLAP_SIZE` / `CHUNK_P_OVERLAP_SIZE`) nor the SDK path's `LightRAG(chunk_overlap_token_size=…)` |
+| `CHUNK_F_SIZE` | unset | int | F strategy-specific `chunk_token_size`; higher than the top-level legacy fallback (`CHUNK_SIZE` and the SDK path's `LightRAG(chunk_token_size=…)`). When unset, F inherits the top-level resolved value. |
 | `CHUNK_F_OVERLAP_SIZE` | unset | int | F strategy-specific overlap; higher than the legacy constructor field and `CHUNK_OVERLAP_SIZE` |
 | `CHUNK_F_SPLIT_BY_CHARACTER` | (unset = `null`) | str? | F pre-split separator; `null` / empty string = split by token window only |
 | `CHUNK_F_SPLIT_BY_CHARACTER_ONLY` | `false` | bool | F strict mode: no secondary token split; raise error when oversized |
@@ -372,14 +373,14 @@ All variables in the table below are read into `addon_params["chunker"]` once wh
 | `CHUNK_P_SIZE` | `2000` (`DEFAULT_CHUNK_P_SIZE`) | int | P strategy-specific `chunk_token_size`. Unlike R/V, P does NOT inherit the top-level `CHUNK_SIZE` / `LightRAG(chunk_token_size=…)` when unset — paragraph-semantic merging needs more headroom than the global default to keep related paragraphs together, so the slot always carries `DEFAULT_CHUNK_P_SIZE` (2000) instead. |
 | `CHUNK_P_OVERLAP_SIZE` | unset | int | P strategy-specific overlap; higher than the legacy constructor field and `CHUNK_OVERLAP_SIZE`. Used for text overlap when long body text within the same JSONL content line falls back to R, and as the per-side budget for bridging text copied into the adjacent large-table chunks. |
 
-P's internal ratio constants are algorithmic scales and are automatically derived in proportion to `chunk_token_size`. P always uses an independent `chunk_token_size` decoupled from the global chain — even when `CHUNK_P_SIZE` is unset, P falls back to `DEFAULT_CHUNK_P_SIZE` (2000) rather than the global `CHUNK_SIZE`, because paragraph-semantic merging needs more headroom than the global default to keep related paragraphs together. Use `CHUNK_P_SIZE` to override that default per deployment. `CHUNK_P_OVERLAP_SIZE` only affects P's internal plain-text fallback and table bridging context; it does not let table row-level slices overlap each other. `CHUNK_R_SIZE` / `CHUNK_V_SIZE` work differently — when unset they DO fall back to the top-level `chunk_token_size` (R prefers a smaller target to better split sentences, while V — as an advisory ceiling — typically wants to be enlarged to reduce over-splitting).
+P's internal ratio constants are algorithmic scales and are automatically derived in proportion to `chunk_token_size`. P always uses an independent `chunk_token_size` decoupled from the global chain — even when `CHUNK_P_SIZE` is unset, P falls back to `DEFAULT_CHUNK_P_SIZE` (2000) rather than the global `CHUNK_SIZE`, because paragraph-semantic merging needs more headroom than the global default to keep related paragraphs together. Use `CHUNK_P_SIZE` to override that default per deployment. `CHUNK_P_OVERLAP_SIZE` only affects P's internal plain-text fallback and table bridging context; it does not let table row-level slices overlap each other. `CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` work differently — when unset they DO fall back to the top-level `chunk_token_size` (F is the default global window, R prefers a smaller target to better split sentences, while V — as an advisory ceiling — typically wants to be enlarged to reduce over-splitting).
 
 ### 3.3 Priority Chain
 
 The final value of each chunking slot is resolved by a specificity-ordered chain (high → low):
 
 1. **`addon_params["chunker"]` explicit value** — field values explicitly written at construction time or set at runtime via the SDK path (see §8.3). Server-only deployments usually don't hit this tier. Most direct; wins everything.
-2. **Strategy-specific env** — e.g., `CHUNK_F_OVERLAP_SIZE` / `CHUNK_R_OVERLAP_SIZE` / `CHUNK_P_OVERLAP_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` / `CHUNK_P_SIZE` (there is no strategy-specific `CHUNK_F_SIZE` yet; F reuses the top-level `chunk_token_size`). Filled only when the slot is not already occupied by ①.
+2. **Strategy-specific env** — `CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` (per-strategy `chunk_token_size`), `CHUNK_F_OVERLAP_SIZE` / `CHUNK_R_OVERLAP_SIZE` / `CHUNK_P_OVERLAP_SIZE` (overlap), `CHUNK_P_SIZE` (P-specific). When the corresponding size env is unset, F/R/V inherit the top-level `chunk_token_size`. Filled only when the slot is not already occupied by ①.
 3. **Legacy constructor fields** — `LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)`; only effective on the SDK path, see §8.2. Strategy-agnostic, "coarse-grained default", fills only the slots still empty.
 4. **Legacy env** — `CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`. Final fallback.
 
@@ -403,6 +404,7 @@ Three layers of semantic guarantee:
 {
   "chunk_token_size": 1200,                                   // common token cap
   "fixed_token": {                                            // F-specific
+    "chunk_token_size": 1200,                                 // optional; when omitted, inherits the top-level chunk_token_size (seedable via CHUNK_F_SIZE)
     "chunk_overlap_token_size": 100,
     "split_by_character": null,
     "split_by_character_only": false
