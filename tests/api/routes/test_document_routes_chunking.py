@@ -94,6 +94,11 @@ _ALL_STRATEGY_KEYS = {
                 "breakpoint_threshold_amount": 150,
             },
         },
+        {
+            # malformed regex must be compiled/rejected at parse time
+            "strategy": "semantic_vector",
+            "params": {"sentence_split_regex": "("},
+        },
         # cross-field
         {
             "strategy": "fixed_token",
@@ -146,6 +151,16 @@ def test_chunking_config_amount_over_100_without_type_is_deferred():
         {"strategy": "semantic_vector", "params": {"breakpoint_threshold_amount": 150}}
     )
     assert cfg.params == {"breakpoint_threshold_amount": 150.0}
+
+
+def test_chunking_config_accepts_valid_sentence_split_regex():
+    cfg = TextChunkingConfig.model_validate(
+        {
+            "strategy": "semantic_vector",
+            "params": {"sentence_split_regex": r"(?<=[.?!])\s+"},
+        }
+    )
+    assert cfg.params == {"sentence_split_regex": r"(?<=[.?!])\s+"}
 
 
 def test_chunking_config_drops_explicit_null():
@@ -527,6 +542,25 @@ def test_insert_text_rejects_amount_over_100_inheriting_percentile_type(monkeypa
     )
     assert resp.status_code == 422
     assert "breakpoint_threshold_amount" in resp.json()["detail"]
+    assert captured == {}
+
+
+def test_insert_text_rejects_malformed_sentence_split_regex(monkeypatch):
+    # Malformed regex must 422 at request parse time, before scheduling.
+    client, captured = _make_client(monkeypatch)
+    resp = client.post(
+        "/documents/text",
+        headers=_HEADERS,
+        json={
+            "text": "hello",
+            "file_source": "a.md",
+            "chunking": {
+                "strategy": "semantic_vector",
+                "params": {"sentence_split_regex": "("},
+            },
+        },
+    )
+    assert resp.status_code == 422
     assert captured == {}
 
 

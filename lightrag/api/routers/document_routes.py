@@ -302,6 +302,22 @@ class SemanticVectorChunkParams(_StrictChunkParams):
     buffer_size: Optional[int] = Field(default=None, ge=1)
     sentence_split_regex: Optional[str] = None
 
+    @field_validator("sentence_split_regex")
+    @classmethod
+    def _valid_sentence_split_regex(cls, v: Optional[str]) -> Optional[str]:
+        # The value is fed to LangChain's SemanticChunker and compiled during
+        # split_text. A malformed pattern (e.g. "(") would only blow up in the
+        # background, so compile it here to reject synchronously (HTTP 422).
+        if v is None:
+            return v
+        try:
+            re.compile(v)
+        except re.error as exc:
+            raise ValueError(
+                f"sentence_split_regex is not a valid regular expression: {exc}"
+            ) from exc
+        return v
+
     @model_validator(mode="after")
     def _amount_in_range(self) -> "SemanticVectorChunkParams":
         amt = self.breakpoint_threshold_amount
