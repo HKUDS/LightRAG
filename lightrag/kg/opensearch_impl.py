@@ -3598,8 +3598,10 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 return None
             pending = self._pending_vector_docs.get(id)
             if pending is not None:
+                # pending.source is built in upsert from created_at + meta_fields
+                # and never carries the embedding, so no "vector" strip is needed
+                # here (unlike the mget path below, which excludes it server-side).
                 doc = dict(pending.source)
-                doc.pop("vector", None)
                 doc["id"] = id
                 return doc
             if not self._index_ready:
@@ -3641,8 +3643,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     continue
                 pending = self._pending_vector_docs.get(doc_id)
                 if pending is not None:
+                    # pending.source never carries the embedding; see get_by_id.
                     doc = dict(pending.source)
-                    doc.pop("vector", None)
                     doc["id"] = doc_id
                     buffered[doc_id] = doc
                     continue
