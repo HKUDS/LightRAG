@@ -148,6 +148,26 @@ def test_chunking_config_amount_over_100_without_type_is_deferred():
     assert cfg.params == {"breakpoint_threshold_amount": 150.0}
 
 
+def test_chunking_config_drops_explicit_null():
+    # Explicit null means "inherit the default" (every param field is
+    # Optional/None=inherit), so it must be dropped — not merged over the
+    # resolved default, which would later make the chunker do int(None).
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "fixed_token", "params": {"chunk_token_size": None}}
+    )
+    assert cfg.params == {}
+
+
+def test_chunking_config_keeps_real_value_drops_sibling_null():
+    cfg = TextChunkingConfig.model_validate(
+        {
+            "strategy": "fixed_token",
+            "params": {"chunk_token_size": 500, "split_by_character": None},
+        }
+    )
+    assert cfg.params == {"chunk_token_size": 500}
+
+
 def test_insert_text_request_rejects_malformed_chunking():
     with pytest.raises(ValidationError):
         InsertTextRequest.model_validate(
@@ -294,6 +314,19 @@ def test_resolve_rejects_amount_over_100_with_inherited_percentile_type():
     )
     with pytest.raises(ValueError, match="breakpoint_threshold_amount"):
         _resolve_text_chunking(cfg, _stub_rag(addon))
+
+
+def test_resolve_null_size_does_not_erase_inherited_default(monkeypatch):
+    # An explicit null in the request must not overwrite the resolved size
+    # with None (which would make the chunker do int(None) in the background).
+    monkeypatch.setenv("CHUNK_F_SIZE", "640")
+    addon = {"chunker": default_chunker_config()}
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "fixed_token", "params": {"chunk_token_size": None}}
+    )
+    _, chunk_options = _resolve_text_chunking(cfg, _stub_rag(addon))
+    # null dropped by the model -> inherited CHUNK_F_SIZE survives, no None.
+    assert chunk_options["fixed_token"]["chunk_token_size"] == 640
 
 
 # ---------------------------------------------------------------------------
@@ -495,3 +528,24 @@ def test_insert_text_rejects_amount_over_100_inheriting_percentile_type(monkeypa
     assert resp.status_code == 422
     assert "breakpoint_threshold_amount" in resp.json()["detail"]
     assert captured == {}
+
+
+def test_insert_text_drops_explicit_null_param(monkeypatch):
+    # "chunk_token_size": null must be treated as "inherit" (dropped), so the
+    # request succeeds and the forwarded params carry no None that would later
+    # crash the chunker with int(None).
+    client, captured = _make_client(monkeypatch)
+    resp = client.post(
+        "/documents/text",
+        headers=_HEADERS,
+        json={
+            "text": "hello",
+            "file_source": "a.md",
+            "chunking": {
+                "strategy": "fixed_token",
+                "params": {"chunk_token_size": None, "chunk_overlap_token_size": 50},
+            },
+        },
+    )
+    assert resp.status_code == 200
+    assert captured["chunking"].params == {"chunk_overlap_token_size": 50}

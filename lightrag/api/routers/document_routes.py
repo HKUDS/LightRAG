@@ -353,9 +353,14 @@ class TextChunkingConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_params(self) -> "TextChunkingConfig":
         typed = _CHUNKING_PARAMS_MODEL[self.strategy].model_validate(self.params)
-        # Normalize down to exactly the keys the caller supplied (validated
-        # + coerced) so the enqueue-time merge overrides only what was set.
-        self.params = typed.model_dump(exclude_unset=True)
+        # Normalize down to exactly the keys the caller supplied with a real
+        # value (validated + coerced) so the enqueue-time merge overrides only
+        # what was set. ``exclude_none`` additionally drops explicit nulls:
+        # every param field means "inherit the addon_params/env default" when
+        # None, so an explicit ``"chunk_token_size": null`` must NOT be merged
+        # over the resolved default — otherwise the route would 200 and the
+        # background chunker would do ``int(None)`` and fail the document.
+        self.params = typed.model_dump(exclude_unset=True, exclude_none=True)
         return self
 
 
