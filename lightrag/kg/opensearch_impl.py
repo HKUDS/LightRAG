@@ -86,6 +86,15 @@ class _FailedBulkOp:
     error: str
 
 
+@dataclass
+class _PendingVectorDoc:
+    """Buffered vector upsert waiting for embedding and/or bulk flush."""
+
+    source: dict[str, Any]
+    content: str
+    vector: list[float] | None = None
+
+
 def _summarize_bulk_error(error: Any) -> str:
     """Turn an opensearch-py per-action ``error`` payload into a short string.
 
@@ -3124,7 +3133,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         # Pending writes are flushed via _flush_pending_vector_ops() during
         # index_done_callback() / finalize(). This batches many small upsert()
         # invocations into a single async_bulk roundtrip. See issue #2785.
-        self._pending_vector_docs: dict[str, dict[str, Any]] = {}
+        self._pending_vector_docs: dict[str, _PendingVectorDoc] = {}
         self._pending_vector_deletes: set[str] = set()
         # Namespace-keyed lock (multi-process safe) is initialised in
         # initialize(). All buffer reads / writes and any destructive server
@@ -3290,7 +3299,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Generate embeddings and buffer vector docs for batched flush.
+        """Buffer vector docs for embedding and batched flush.
 
         Docs are buffered in ``self._pending_vector_docs`` and flushed in a
         single ``async_bulk`` call during ``index_done_callback()`` /
@@ -3300,9 +3309,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         backends ("changes will be persisted during the next
         index_done_callback").
 
-        The embedding computation is performed outside the namespace lock to
-        avoid blocking concurrent reads while remote embedding calls are in
-        flight; only the final buffer-write loop holds the lock.
+        Embedding is deferred to the flush path so repeated upserts of the
+        same id and many small upsert calls can be embedded once in a single
+        batch. Flush holds the namespace lock while embedding and bulk
+        indexing so cross-worker destructive mutations cannot interleave with
+        partially-flushed vector writes.
         """
         if not data:
             return
@@ -3312,56 +3323,46 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         )
         current_time = int(time.time())
 
-        list_data = []
+        pending_docs: list[tuple[str, _PendingVectorDoc]] = []
         for i, (k, v) in enumerate(data.items(), start=1):
-            list_data.append(
-                {
-                    "_id": k,
-                    "created_at": current_time,
-                    **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
-                }
+            content = v["content"]
+            source = {
+                "created_at": current_time,
+                **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+            }
+            pending_docs.append(
+                (
+                    k,
+                    _PendingVectorDoc(
+                        source=source,
+                        content=content,
+                    ),
+                )
             )
-            await _cooperative_yield(i)
-        contents = [v["content"] for v in data.values()]
-
-        batches = [
-            contents[i : i + self._max_batch_size]
-            for i in range(0, len(contents), self._max_batch_size)
-        ]
-        # Run embeddings outside the lock to avoid blocking reads on slow
-        # remote embedding providers.
-        embeddings_list = await asyncio.gather(
-            *[self.embedding_func(batch, context="document") for batch in batches]
-        )
-        embeddings = np.concatenate(embeddings_list)
-        assert len(embeddings) == len(
-            list_data
-        ), f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
-        for i, doc in enumerate(list_data, start=1):
-            doc["vector"] = embeddings[i - 1].tolist()
             await _cooperative_yield(i)
 
         # Buffer: an upsert overrides a pending delete on the same id.
         async with self._flush_lock:
-            for doc in list_data:
-                doc_id = doc["_id"]
+            for doc_id, pending_doc in pending_docs:
                 self._pending_vector_deletes.discard(doc_id)
-                self._pending_vector_docs[doc_id] = {
-                    k: v for k, v in doc.items() if k != "_id"
-                }
+                self._pending_vector_docs[doc_id] = pending_doc
 
     async def _flush_pending_vector_ops(self) -> None:
         """Flush buffered vector upserts and deletes via a single async_bulk call.
 
-        Concurrency contract: the entire flush runs under ``_flush_lock``
-        (a ``get_namespace_lock`` instance) and so do all buffer reads /
-        writes and destructive server mutations on this storage. That keeps
-        the operation sequential within the process and orders concurrent
-        cross-worker flushes against the same OpenSearch index.
+        Concurrency contract: the entire flush, including deferred embedding,
+        runs under ``_flush_lock`` (a ``get_namespace_lock`` instance), and so
+        do all buffer reads / writes and destructive server mutations on this
+        storage. That keeps the operation sequential within the process and
+        orders concurrent cross-worker flushes against the same OpenSearch
+        index.
 
         Failure handling:
           * If ``_ensure_index_ready`` raises, the buffers are left intact
             and the next flush will retry.
+          * If embedding raises, the buffers are left intact and the next
+            flush will retry. Model providers already retry internally, so
+            this is treated like a persistence failure.
           * If ``async_bulk`` itself raises (network / parse error), the
             buffers are left intact and the next flush will retry. Index
             ops are idempotent on ``_id`` and a re-issued delete on a
@@ -3383,10 +3384,43 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             # buffers untouched and bubbles up to the caller.
             await self._ensure_index_ready()
 
-            # Build the action list directly from the live buffers; the
-            # lock guarantees nothing else mutates them concurrently.
             pending_docs = self._pending_vector_docs
             pending_deletes = self._pending_vector_deletes
+
+            docs_to_embed = [
+                (doc_id, pending_doc)
+                for doc_id, pending_doc in pending_docs.items()
+                if pending_doc.vector is None
+            ]
+            if docs_to_embed:
+                contents = [pending_doc.content for _, pending_doc in docs_to_embed]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error embedding pending vector ops "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
+                embeddings = np.concatenate(embeddings_list)
+                assert len(embeddings) == len(docs_to_embed), (
+                    f"Embedding count mismatch: expected {len(docs_to_embed)}, "
+                    f"got {len(embeddings)}"
+                )
+                for i, ((_, pending_doc), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
+                    pending_doc.vector = embedding.tolist()
+                    await _cooperative_yield(i)
 
             actions: list[dict[str, Any]] = []
             for doc_id in pending_deletes:
@@ -3397,15 +3431,24 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                         "_id": doc_id,
                     }
                 )
-            for doc_id, source in pending_docs.items():
+            committed_doc_ids: set[str] = set()
+            for doc_id, pending_doc in pending_docs.items():
+                if pending_doc.vector is None:
+                    continue
+                committed_doc_ids.add(doc_id)
                 actions.append(
                     {
                         "_op_type": "index",
                         "_index": self._index_name,
                         "_id": doc_id,
-                        "_source": source,
+                        "_source": {
+                            **pending_doc.source,
+                            "vector": pending_doc.vector,
+                        },
                     }
                 )
+            if not actions:
+                return
 
             try:
                 # No per-operation refresh: search visibility is established
@@ -3428,7 +3471,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
             # Clear successful and non-retryable entries; keep retryable ones
             # in place for the next flush.
-            for doc_id in list(pending_docs.keys()):
+            for doc_id in committed_doc_ids:
                 if doc_id not in retryable_ids:
                     pending_docs.pop(doc_id, None)
             new_deletes: set[str] = set()
@@ -3555,7 +3598,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 return None
             pending = self._pending_vector_docs.get(id)
             if pending is not None:
-                doc = {k: v for k, v in pending.items() if k != "vector"}
+                doc = dict(pending.source)
+                doc.pop("vector", None)
                 doc["id"] = id
                 return doc
             if not self._index_ready:
@@ -3597,7 +3641,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     continue
                 pending = self._pending_vector_docs.get(doc_id)
                 if pending is not None:
-                    doc = {k: v for k, v in pending.items() if k != "vector"}
+                    doc = dict(pending.source)
+                    doc.pop("vector", None)
                     doc["id"] = doc_id
                     buffered[doc_id] = doc
                     continue
@@ -3638,15 +3683,47 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         result: dict[str, list[float]] = {}
         remaining: list[str] = []
         async with self._flush_lock:
+            docs_to_embed: list[tuple[str, _PendingVectorDoc]] = []
             for doc_id in ids:
                 if doc_id in self._pending_vector_deletes:
                     continue
                 pending = self._pending_vector_docs.get(doc_id)
-                if pending is not None and "vector" in pending:
-                    result[doc_id] = pending["vector"]
+                if pending is not None:
+                    if pending.vector is None:
+                        docs_to_embed.append((doc_id, pending))
+                    else:
+                        result[doc_id] = pending.vector
                     continue
                 remaining.append(doc_id)
             index_ready = self._index_ready
+
+            if docs_to_embed:
+                contents = [pending_doc.content for _, pending_doc in docs_to_embed]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error lazily embedding pending vectors "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
+                embeddings = np.concatenate(embeddings_list)
+                assert len(embeddings) == len(docs_to_embed), (
+                    f"Embedding count mismatch: expected {len(docs_to_embed)}, "
+                    f"got {len(embeddings)}"
+                )
+                for (doc_id, pending_doc), embedding in zip(docs_to_embed, embeddings):
+                    pending_doc.vector = embedding.tolist()
+                    result[doc_id] = pending_doc.vector
 
         if not remaining:
             return result
@@ -3709,7 +3786,8 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             for doc_id in [
                 k
                 for k, v in self._pending_vector_docs.items()
-                if v.get("src_id") == entity_name or v.get("tgt_id") == entity_name
+                if v.source.get("src_id") == entity_name
+                or v.source.get("tgt_id") == entity_name
             ]:
                 self._pending_vector_docs.pop(doc_id, None)
 
