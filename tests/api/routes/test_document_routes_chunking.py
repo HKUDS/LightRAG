@@ -86,8 +86,13 @@ _ALL_STRATEGY_KEYS = {
             "params": {"breakpoint_threshold_amount": 0},
         },
         {
+            # > 100 with an explicit percentile/gradient type is rejected at
+            # parse time (both fields present, no inheritance ambiguity).
             "strategy": "semantic_vector",
-            "params": {"breakpoint_threshold_amount": 150},
+            "params": {
+                "breakpoint_threshold_type": "percentile",
+                "breakpoint_threshold_amount": 150,
+            },
         },
         # cross-field
         {
@@ -131,6 +136,16 @@ def test_chunking_config_amount_in_range_for_std_deviation():
         }
     )
     assert cfg.params["breakpoint_threshold_amount"] == 3.5
+
+
+def test_chunking_config_amount_over_100_without_type_is_deferred():
+    # Type omitted -> the (0, 100] ceiling cannot be decided at parse time
+    # (the effective type may be inherited), so the model must NOT assume
+    # percentile and reject. _resolve_text_chunking applies the ceiling later.
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "semantic_vector", "params": {"breakpoint_threshold_amount": 150}}
+    )
+    assert cfg.params == {"breakpoint_threshold_amount": 150.0}
 
 
 def test_insert_text_request_rejects_malformed_chunking():
@@ -246,6 +261,35 @@ def test_resolve_allows_size_above_inherited_overlap(monkeypatch):
     )
     _, chunk_options = _resolve_text_chunking(cfg, _stub_rag(addon))
     assert chunk_options["fixed_token"]["chunk_token_size"] == 400
+
+
+def test_resolve_allows_amount_over_100_with_inherited_std_type():
+    # Request overrides only the amount; the standard_deviation type is
+    # inherited from addon_params. std/iqr have no (0, 100] ceiling, so this
+    # must NOT be rejected (the request model deferred the check here).
+    addon = {
+        "chunker": {"semantic_vector": {"breakpoint_threshold_type": "standard_deviation"}}
+    }
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "semantic_vector", "params": {"breakpoint_threshold_amount": 150}}
+    )
+    _, chunk_options = _resolve_text_chunking(cfg, _stub_rag(addon))
+    assert chunk_options["semantic_vector"]["breakpoint_threshold_amount"] == 150
+    assert (
+        chunk_options["semantic_vector"]["breakpoint_threshold_type"]
+        == "standard_deviation"
+    )
+
+
+def test_resolve_rejects_amount_over_100_with_inherited_percentile_type():
+    # Same partial override, but the effective (inherited) type is percentile,
+    # which feeds np.percentile and requires the (0, 100] ceiling.
+    addon = {"chunker": {"semantic_vector": {"breakpoint_threshold_type": "percentile"}}}
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "semantic_vector", "params": {"breakpoint_threshold_amount": 150}}
+    )
+    with pytest.raises(ValueError, match="breakpoint_threshold_amount"):
+        _resolve_text_chunking(cfg, _stub_rag(addon))
 
 
 # ---------------------------------------------------------------------------
@@ -398,4 +442,48 @@ def test_insert_text_returns_422_when_size_below_inherited_overlap(monkeypatch):
     assert resp.status_code == 422
     assert "chunk_overlap_token_size" in resp.json()["detail"]
     # Rejected synchronously: background indexing never scheduled.
+    assert captured == {}
+
+
+def test_insert_text_allows_amount_override_inheriting_std_type(monkeypatch):
+    # Reviewer scenario: deployment sets standard_deviation; a request
+    # overrides only breakpoint_threshold_amount (> 100). This must be
+    # accepted (not 422), since std has no (0, 100] ceiling.
+    addon = {
+        "chunker": {"semantic_vector": {"breakpoint_threshold_type": "standard_deviation"}}
+    }
+    client, captured = _make_client(monkeypatch, addon_params=addon)
+    resp = client.post(
+        "/documents/text",
+        headers=_HEADERS,
+        json={
+            "text": "hello",
+            "file_source": "a.md",
+            "chunking": {
+                "strategy": "semantic_vector",
+                "params": {"breakpoint_threshold_amount": 150},
+            },
+        },
+    )
+    assert resp.status_code == 200
+    assert captured["chunking"].params == {"breakpoint_threshold_amount": 150.0}
+
+
+def test_insert_text_rejects_amount_over_100_inheriting_percentile_type(monkeypatch):
+    addon = {"chunker": {"semantic_vector": {"breakpoint_threshold_type": "percentile"}}}
+    client, captured = _make_client(monkeypatch, addon_params=addon)
+    resp = client.post(
+        "/documents/text",
+        headers=_HEADERS,
+        json={
+            "text": "hello",
+            "file_source": "a.md",
+            "chunking": {
+                "strategy": "semantic_vector",
+                "params": {"breakpoint_threshold_amount": 150},
+            },
+        },
+    )
+    assert resp.status_code == 422
+    assert "breakpoint_threshold_amount" in resp.json()["detail"]
     assert captured == {}

@@ -307,12 +307,20 @@ class SemanticVectorChunkParams(_StrictChunkParams):
         amt = self.breakpoint_threshold_amount
         if amt is None:
             return self
+        # ``> 0`` is type-independent (every threshold type wants a positive
+        # magnitude), so it is safe to enforce at parse time.
         if amt <= 0:
             raise ValueError("breakpoint_threshold_amount must be > 0")
-        # percentile/gradient feed np.percentile, which requires q in
-        # [0, 100]; an out-of-range value would crash in the background.
-        kind = self.breakpoint_threshold_type or "percentile"
-        if kind in ("percentile", "gradient") and amt > 100:
+        # The ``(0, 100]`` ceiling is percentile/gradient-specific (those feed
+        # np.percentile, which requires q in [0, 100]). It depends on the
+        # threshold TYPE, so only enforce it here when the type is supplied in
+        # the SAME request. When the type is omitted, the effective type is
+        # resolved from addon_params/env later — assuming "percentile" here
+        # would wrongly 422 a partial override that inherits
+        # standard_deviation/interquartile (which allow amounts > 100). The
+        # ceiling against the merged type is applied by
+        # ``_validate_effective_semantic_amount`` in ``_resolve_text_chunking``.
+        if self.breakpoint_threshold_type in ("percentile", "gradient") and amt > 100:
             raise ValueError(
                 "breakpoint_threshold_amount must be within (0, 100] "
                 "for percentile/gradient"
@@ -2355,6 +2363,7 @@ def _resolve_text_chunking(
     strategy_key = chunk_strategy_key(process_options)
     chunk_options[strategy_key].update(chunking.params)
     _validate_effective_chunk_overlap(chunk_options, strategy_key, chunking.strategy)
+    _validate_effective_semantic_amount(chunk_options, strategy_key)
     return process_options, chunk_options
 
 
@@ -2385,6 +2394,34 @@ def _validate_effective_chunk_overlap(
             f"({size}). The overlap is inherited from addon_params/env when "
             f"not set in the request; raise chunk_token_size or lower "
             f"chunk_overlap_token_size."
+        )
+
+
+def _validate_effective_semantic_amount(chunk_options: dict, strategy_key: str) -> None:
+    """Reject a resolved semantic_vector snapshot whose breakpoint amount
+    exceeds the percentile/gradient ceiling.
+
+    Uses the *effective* ``breakpoint_threshold_type`` from the merged
+    snapshot — the request model cannot, because the type may be inherited
+    from ``addon_params``/``CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`` while the
+    request overrides only ``breakpoint_threshold_amount``. ``percentile`` /
+    ``gradient`` feed ``np.percentile`` (q must be in ``[0, 100]``);
+    ``standard_deviation`` / ``interquartile`` are multipliers with no upper
+    bound, so a request amount > 100 is valid for them.
+    """
+    if strategy_key != "semantic_vector":
+        return
+    sub = chunk_options.get(strategy_key) or {}
+    amt = sub.get("breakpoint_threshold_amount")
+    if amt is None:
+        return
+    kind = sub.get("breakpoint_threshold_type") or "percentile"
+    if kind in ("percentile", "gradient") and amt > 100:
+        raise ValueError(
+            f"chunking for strategy 'semantic_vector': "
+            f"breakpoint_threshold_amount ({amt}) must be within (0, 100] for "
+            f"breakpoint_threshold_type '{kind}'. The type is inherited from "
+            f"addon_params/env when not set in the request."
         )
 
 
