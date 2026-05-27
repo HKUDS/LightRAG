@@ -298,6 +298,11 @@ class SemanticVectorChunkParams(_StrictChunkParams):
     breakpoint_threshold_type: Optional[
         Literal["percentile", "standard_deviation", "interquartile", "gradient"]
     ] = None
+    # A strict ``float`` field still accepts an ``int`` (e.g. JSON ``95``) and
+    # widens it losslessly to ``95.0`` — strict only rejects ``str`` / ``bool``
+    # here, which is exactly what we want. Do NOT relax strict (that would let
+    # numeric strings through) or switch to ``int | float`` (that would stop
+    # normalizing ints to float). Locked by tests in test_document_routes_chunking.
     breakpoint_threshold_amount: Optional[float] = None
     buffer_size: Optional[int] = Field(default=None, ge=1)
     sentence_split_regex: Optional[str] = None

@@ -86,6 +86,16 @@ _ALL_STRATEGY_KEYS = {
             "params": {"breakpoint_threshold_amount": 0},
         },
         {
+            # strict float rejects strings (no lax numeric-string coercion)
+            "strategy": "semantic_vector",
+            "params": {"breakpoint_threshold_amount": "95"},
+        },
+        {
+            # strict float rejects bool (bool is an int subclass, undesirable here)
+            "strategy": "semantic_vector",
+            "params": {"breakpoint_threshold_amount": True},
+        },
+        {
             # > 100 with an explicit percentile/gradient type is rejected at
             # parse time (both fields present, no inheritance ambiguity).
             "strategy": "semantic_vector",
@@ -151,6 +161,23 @@ def test_chunking_config_amount_over_100_without_type_is_deferred():
         {"strategy": "semantic_vector", "params": {"breakpoint_threshold_amount": 150}}
     )
     assert cfg.params == {"breakpoint_threshold_amount": 150.0}
+
+
+def test_chunking_config_accepts_int_amount_widened_to_float():
+    # Strict float accepts an int (JSON 95) and widens it to 95.0 — the common
+    # documented threshold magnitude. (str/bool are rejected; see the
+    # rejection matrix above.) Exercised via both python and JSON validation
+    # modes so the FastAPI request path (which parses JSON) stays covered.
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "semantic_vector", "params": {"breakpoint_threshold_amount": 95}}
+    )
+    assert cfg.params == {"breakpoint_threshold_amount": 95.0}
+    assert isinstance(cfg.params["breakpoint_threshold_amount"], float)
+
+    cfg_json = TextChunkingConfig.model_validate_json(
+        '{"strategy": "semantic_vector", "params": {"breakpoint_threshold_amount": 95}}'
+    )
+    assert cfg_json.params == {"breakpoint_threshold_amount": 95.0}
 
 
 def test_chunking_config_accepts_valid_sentence_split_regex():
