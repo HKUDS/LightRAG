@@ -2402,6 +2402,20 @@ def _validate_effective_chunk_overlap(
     (``semantic_vector`` carries none, so it is skipped).
     """
     sub = chunk_options.get(strategy_key) or {}
+    # Fixed-token delimiter-only mode (split_by_character set AND
+    # split_by_character_only=True) never applies overlap:
+    # chunking_by_token_size only validates each delimiter segment against
+    # chunk_token_size and raises on an oversize segment — the overlap field
+    # is unused. Enforcing overlap < size there would wrongly 422 a valid
+    # request such as paragraph splitting with a small chunk_token_size.
+    # (split_by_character_only is itself a no-op when split_by_character is
+    # falsy, so both must be effective for overlap to be skipped.)
+    if (
+        strategy_key == "fixed_token"
+        and sub.get("split_by_character")
+        and sub.get("split_by_character_only")
+    ):
+        return
     overlap = sub.get("chunk_overlap_token_size")
     if overlap is None:
         return

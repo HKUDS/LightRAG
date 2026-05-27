@@ -298,6 +298,42 @@ def test_resolve_allows_size_above_inherited_overlap(monkeypatch):
     assert chunk_options["fixed_token"]["chunk_token_size"] == 400
 
 
+def test_resolve_skips_overlap_check_for_delimiter_only(monkeypatch):
+    # Delimiter-only fixed-token chunking never uses overlap, so a small
+    # chunk_token_size below the inherited overlap must NOT be rejected.
+    monkeypatch.setenv("CHUNK_F_OVERLAP_SIZE", "100")
+    addon = {"chunker": default_chunker_config()}
+    cfg = TextChunkingConfig.model_validate(
+        {
+            "strategy": "fixed_token",
+            "params": {
+                "split_by_character": "\n\n",
+                "split_by_character_only": True,
+                "chunk_token_size": 50,
+            },
+        }
+    )
+    _, chunk_options = _resolve_text_chunking(cfg, _stub_rag(addon))
+    assert chunk_options["fixed_token"]["chunk_token_size"] == 50
+
+
+def test_resolve_enforces_overlap_when_only_flag_without_delimiter(monkeypatch):
+    # split_by_character_only is a no-op without split_by_character: the chunker
+    # falls back to normal token windowing, which DOES use overlap — so the
+    # overlap < size check must still fire here.
+    monkeypatch.setenv("CHUNK_F_OVERLAP_SIZE", "100")
+    monkeypatch.delenv("CHUNK_F_SPLIT_BY_CHARACTER", raising=False)
+    addon = {"chunker": default_chunker_config()}
+    cfg = TextChunkingConfig.model_validate(
+        {
+            "strategy": "fixed_token",
+            "params": {"split_by_character_only": True, "chunk_token_size": 50},
+        }
+    )
+    with pytest.raises(ValueError, match="chunk_overlap_token_size"):
+        _resolve_text_chunking(cfg, _stub_rag(addon))
+
+
 def test_resolve_allows_amount_over_100_with_inherited_std_type():
     # Request overrides only the amount; the standard_deviation type is
     # inherited from addon_params. std/iqr have no (0, 100] ceiling, so this
@@ -583,3 +619,28 @@ def test_insert_text_drops_explicit_null_param(monkeypatch):
     )
     assert resp.status_code == 200
     assert captured["chunking"].params == {"chunk_overlap_token_size": 50}
+
+
+def test_insert_text_allows_small_size_for_delimiter_only(monkeypatch):
+    # Paragraph splitting with a small chunk_token_size: overlap is inherited
+    # (100) but unused in delimiter-only mode, so this must succeed, not 422.
+    addon = {"chunker": {"fixed_token": {"chunk_overlap_token_size": 100}}}
+    client, captured = _make_client(monkeypatch, addon_params=addon)
+    resp = client.post(
+        "/documents/text",
+        headers=_HEADERS,
+        json={
+            "text": "hello",
+            "file_source": "a.md",
+            "chunking": {
+                "strategy": "fixed_token",
+                "params": {
+                    "split_by_character": "\n\n",
+                    "split_by_character_only": True,
+                    "chunk_token_size": 50,
+                },
+            },
+        },
+    )
+    assert resp.status_code == 200
+    assert captured["chunking"].params["chunk_token_size"] == 50
