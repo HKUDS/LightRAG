@@ -16,6 +16,8 @@ from openai import (
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
+    InternalServerError,
+    BadRequestError,
 )
 from tenacity import (
     retry,
@@ -71,6 +73,19 @@ load_dotenv(dotenv_path=".env", override=False)
 
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""
+
+    pass
+
+
+class TransientBadRequestError(Exception):
+    """Wrapper to trigger retry on transient HTTP 400 errors.
+
+    Some 400s are not genuine client errors: the OpenAI API (or a proxy in
+    front of it) intermittently returns "We could not parse the JSON body of
+    your request" when the request body is corrupted/truncated in transit.
+    These succeed on retry, so we re-raise them as this retryable type while
+    letting genuine 400s (bad params, content policy, etc.) fail fast.
+    """
 
     pass
 
@@ -216,6 +231,11 @@ def create_openai_async_client(
         | retry_if_exception_type(APIConnectionError)
         | retry_if_exception_type(APITimeoutError)
         | retry_if_exception_type(InvalidResponseError)
+        # Retry transient HTTP 5xx (OpenAI "500 server_error", proxy "upstream
+        # connect error"). InternalServerError covers all status >= 500.
+        | retry_if_exception_type(InternalServerError)
+        # Retry transient "could not parse JSON body" 400s (see handler below).
+        | retry_if_exception_type(TransientBadRequestError)
     ),
 )
 async def openai_complete_if_cache(
@@ -436,6 +456,18 @@ async def openai_complete_if_cache(
             await openai_async_client.close()
         except Exception as close_error:
             logger.warning(f"Failed to close OpenAI client: {close_error}")
+        raise
+    except BadRequestError as e:
+        # A "could not parse JSON body" 400 is transient (corrupted/truncated
+        # request body in transit) and succeeds on retry; re-raise it as a
+        # retryable type. Genuine 400s (bad params, content policy) fail fast.
+        if "could not parse" in str(e).lower():
+            logger.warning(f"Transient JSON-parse 400 from OpenAI, will retry: {e}")
+            try:
+                await openai_async_client.close()
+            except Exception as close_error:
+                logger.warning(f"Failed to close OpenAI client: {close_error}")
+            raise TransientBadRequestError(str(e)) from e
         raise
     except Exception as e:
         body = getattr(e, "body", None)
@@ -849,6 +881,8 @@ async def nvidia_openai_complete(
         retry_if_exception_type(RateLimitError)
         | retry_if_exception_type(APIConnectionError)
         | retry_if_exception_type(APITimeoutError)
+        # Retry transient HTTP 5xx (OpenAI 500 / proxy upstream errors).
+        | retry_if_exception_type(InternalServerError)
     ),
 )
 async def openai_embed(
