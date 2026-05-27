@@ -3357,6 +3357,16 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         orders concurrent cross-worker flushes against the same OpenSearch
         index.
 
+        Embedding deliberately runs *inside* this lock (not in ``upsert`` or
+        lock-free): it makes deferred embedding and bulk indexing atomic
+        against concurrent upserts and destructive mutations (``drop`` /
+        ``delete_entity_relation``). This is what lets
+        ``index_done_callback`` / ``finalize`` promise that every buffered
+        vector is embedded and persisted on return. Moving embedding out of
+        the lock to avoid blocking reads would let a destructive op
+        interleave between embed and bulk and resurrect or drop vectors out
+        of order -- do not do it.
+
         Failure handling:
           * If ``_ensure_index_ready`` raises, the buffers are left intact
             and the next flush will retry.
@@ -3412,10 +3422,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     )
                     raise
                 embeddings = np.concatenate(embeddings_list)
-                assert len(embeddings) == len(docs_to_embed), (
-                    f"Embedding count mismatch: expected {len(docs_to_embed)}, "
-                    f"got {len(embeddings)}"
-                )
+                # Explicit check (not assert): a count mismatch would silently
+                # truncate via zip() under `python -O`, mis-pairing vectors with
+                # docs. Raise instead so buffers stay intact for the next flush.
+                if len(embeddings) != len(docs_to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
+                    )
                 for i, ((_, pending_doc), embedding) in enumerate(
                     zip(docs_to_embed, embeddings), start=1
                 ):
@@ -3570,6 +3584,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         before any buffered writes are abandoned. The refresh step is
         skipped only when the index is still not ready after the flush
         attempt -- refreshing a half-built index is pointless.
+
+        Durability contract: each call embeds and bulk-indexes the *entire*
+        pending buffer in one shot. Deferred embedding runs inside
+        ``_flush_pending_vector_ops``'s ``_flush_lock`` section (not in
+        ``upsert``) precisely so this callback can guarantee every buffered
+        vector is embedded and flushed together; only transient per-doc
+        failures stay buffered for the next flush. Do not move embedding
+        out of the lock -- see ``_flush_pending_vector_ops`` for why.
         """
         await self._flush_pending_vector_ops()
         if not self._index_ready:
@@ -3719,13 +3741,18 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     )
                     raise
                 embeddings = np.concatenate(embeddings_list)
-                assert len(embeddings) == len(docs_to_embed), (
-                    f"Embedding count mismatch: expected {len(docs_to_embed)}, "
-                    f"got {len(embeddings)}"
-                )
-                for (doc_id, pending_doc), embedding in zip(docs_to_embed, embeddings):
+                # Explicit check (not assert): see _flush_pending_vector_ops.
+                if len(embeddings) != len(docs_to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
+                    )
+                for i, ((doc_id, pending_doc), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
                     pending_doc.vector = embedding.tolist()
                     result[doc_id] = pending_doc.vector
+                    await _cooperative_yield(i)
 
         if not remaining:
             return result
