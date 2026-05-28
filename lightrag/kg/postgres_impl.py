@@ -3990,8 +3990,13 @@ class PGVectorStorage(BaseVectorStorage):
         same namespace, and — only after the SQL succeeds — prunes the
         matching pending docs and any pending delete that would otherwise
         re-fire. If the SQL raises, the buffer is left untouched so a
-        subsequent ``index_done_callback()`` flush can still observe and
-        retry the pending state instead of silently losing it.
+        subsequent retry can still observe the pending state instead of
+        silently losing it, and the exception is logged and re-raised so
+        the caller (e.g. ``adelete_by_entity``) short-circuits before
+        ``_persist_graph_updates()`` flushes those preserved pending
+        upserts back into the table. Matches the cross-backend contract
+        documented on the Qdrant / Milvus / Mongo implementations: "server-
+        side failures are re-raised; the caller decides whether to retry."
 
         The SQL predicate is kept (rather than ``self.delete([ent_id])``) as
         a safety net for legacy rows whose ``id`` may not equal
@@ -4041,7 +4046,11 @@ class PGVectorStorage(BaseVectorStorage):
                 f"[{self.workspace}] Successfully deleted entity {entity_name}"
             )
         except Exception as e:
+            # Re-raise so the caller can short-circuit and skip the
+            # subsequent flush; otherwise the pending upsert we just
+            # preserved would be persisted back, undoing the delete.
             logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
+            raise
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete all relation vectors where ``entity_name`` is src or tgt.
@@ -4057,9 +4066,15 @@ class PGVectorStorage(BaseVectorStorage):
             re-inserted after that point — even if it would have created a
             new edge. This matches the "delete all relations touching this
             entity" intent. If the SQL raises, the pending docs are left
-            untouched so a subsequent ``index_done_callback()`` flush can
-            still observe and retry them. Callers that need to rename or
-            re-link the entity must re-issue the relation upserts after
+            untouched so a subsequent retry can still observe them, and
+            the exception is logged and re-raised so the caller (e.g.
+            ``adelete_by_entity``) short-circuits before
+            ``_persist_graph_updates()`` flushes those preserved pending
+            upserts back into the table. Matches the cross-backend
+            contract documented on the Qdrant / Milvus / Mongo
+            implementations: "server-side failures are re-raised; the
+            caller decides whether to retry." Callers that need to rename
+            or re-link the entity must re-issue the relation upserts after
             this call.
         """
         if self._flush_lock is None:
@@ -4101,9 +4116,14 @@ class PGVectorStorage(BaseVectorStorage):
                 f"[{self.workspace}] Successfully deleted relations for entity {entity_name}"
             )
         except Exception as e:
+            # Re-raise so the caller can short-circuit and skip the
+            # subsequent flush; otherwise the pending relation upserts
+            # we just preserved would be persisted back, undoing the
+            # delete.
             logger.error(
                 f"[{self.workspace}] Error deleting relations for entity {entity_name}: {e}"
             )
+            raise
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID with read-your-writes against the buffer.
