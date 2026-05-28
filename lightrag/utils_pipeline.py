@@ -140,19 +140,52 @@ def resolve_doc_file_path(
 
 
 def normalize_document_file_path(file_path: Any) -> str:
-    """Return the canonical basename stored as ``file_path``.
+    """Return the canonical document path stored as ``file_path``.
 
     Strips any supported ``[hint]`` segment so ``abc.docx`` and
-    ``abc.[native-iet].docx`` map to the same key. Collapses placeholders to
-    ``"unknown_source"``. Idempotent.
+    ``abc.[native-iet].docx`` map to the same key.  When the input
+    is a relative path with subdirectories (e.g. ``subdir/abc.docx``),
+    the directory part is preserved so files with the same basename in
+    different subdirectories are treated as distinct documents.
+    Absolute paths are reduced to just the basename (backward-compatible
+    behavior for uploads and direct API calls).  Collapses placeholders
+    to ``"unknown_source"``.  Idempotent.
     """
     source = str(file_path or "").strip()
     if source in PLACEHOLDER_DOCUMENT_SOURCES:
         return "unknown_source"
-    canonical = canonicalize_parser_hinted_basename(source).strip()
-    if canonical in PLACEHOLDER_DOCUMENT_SOURCES:
+
+    p = Path(source)
+    basename = p.name
+
+    # Strip parser hint from the basename part only
+    from lightrag.parser.routing import _filename_hint_match
+
+    found = _filename_hint_match(source)
+    if found:
+        m, _, _ = found
+        hintless_basename = f"{basename[: m.start()]}{m.group(2)}"
+    else:
+        hintless_basename = basename
+
+    # Decide whether to preserve directory structure.
+    parent = p.parent
+    parent_str = str(parent)
+    is_absolute = source.startswith("/") or source.startswith("\\")
+    is_windows_abs = len(source) >= 3 and source[1] == ":"
+    has_real_parent = parent_str not in (".", "", "/", "\\")
+
+    if has_real_parent and not is_absolute and not is_windows_abs:
+        # Relative path with subdirectory — preserve it
+        result = str(parent / hintless_basename)
+    else:
+        # Absolute path or pure filename — backward-compatible: basename only
+        result = hintless_basename
+
+    result = result.strip()
+    if result in PLACEHOLDER_DOCUMENT_SOURCES:
         return "unknown_source"
-    return canonical or "unknown_source"
+    return result or "unknown_source"
 
 
 # Back-compat alias retained until call sites that import the old name are

@@ -1052,14 +1052,57 @@ class DocumentManager:
         self.input_dir.mkdir(parents=True, exist_ok=True)
 
     def scan_directory_for_new_files(self) -> List[Path]:
-        """Scan input directory for new files"""
+        """Scan input directory for new files (recursive, supports subdirectories)
+
+        Uses ``rglob`` (equivalent to ``**/*``) to discover files in nested
+        subdirectories.  Files under ``__parsed__`` directories are excluded
+        since those have already been processed and archived.
+        """
+        from lightrag.constants import PARSED_DIR_NAME
+
         new_files = []
+        skipped_parsed = 0
         for ext in self.supported_extensions:
-            logger.debug(f"Scanning for {ext} files in {self.input_dir}")
-            for file_path in self.input_dir.glob(f"*{ext}"):
+            logger.debug(f"Scanning for {ext} files under {self.input_dir}")
+            for file_path in self.input_dir.rglob(f"*{ext}"):
+                if not file_path.is_file():
+                    continue
+                # Skip files inside __parsed__ directories
+                if PARSED_DIR_NAME in file_path.parts:
+                    skipped_parsed += 1
+                    continue
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)
+        if skipped_parsed:
+            logger.debug(
+                f"Skipped {skipped_parsed} files inside {PARSED_DIR_NAME} "
+                "directories during scan"
+            )
         return new_files
+
+    def get_document_identity(self, file_path: Path) -> str:
+        """Return a canonical document identity string for a file path.
+
+        Uses the file's path relative to ``input_dir`` so that files with the
+        same basename in different subdirectories are treated as distinct
+        documents.  In the common case (file is directly under ``input_dir``)
+        this returns just the normalized basename, preserving backward
+        compatibility.
+        """
+        try:
+            rel = file_path.relative_to(self.input_dir)
+        except ValueError:
+            # File is outside input_dir (e.g. uploaded via /upload); fall
+            # back to bare basename.
+            from lightrag.parser.routing import canonicalize_parser_hinted_basename
+
+            return canonicalize_parser_hinted_basename(file_path) or "unknown_source"
+
+        # Preserve subdirectory path as the identity, with parser hint stripped
+        from lightrag.parser.routing import canonicalize_parser_hinted_basename
+
+        stripped = canonicalize_parser_hinted_basename(rel)
+        return str(Path(rel.parent, stripped)) if stripped else "unknown_source"
 
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
@@ -1822,6 +1865,7 @@ async def pipeline_enqueue_file(
     file_path: Path,
     track_id: str = None,
     from_scan: bool = False,
+    input_dir: Path | None = None,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1833,6 +1877,11 @@ async def pipeline_enqueue_file(
             which already holds ``pipeline_status["scanning"]``.  Forwarded to
             ``apipeline_enqueue_documents`` so the scan can enqueue the files
             it just discovered without tripping the scanning guard there.
+        input_dir: Optional base input directory. When provided and
+            ``file_path`` is inside it, the file's path relative to
+            ``input_dir`` is used as the document identity so that files
+            with the same name in different subdirectories are treated as
+            distinct documents.
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1875,8 +1924,20 @@ async def pipeline_enqueue_file(
         api_process_options = process_options or PROCESS_OPTION_CHUNK_FIXED
         if extraction_engine != PARSER_ENGINE_LEGACY:
             try:
+                # Compute the file path for document identity.
+                # When input_dir is provided and file_path is inside it,
+                # use the relative path so subdirectory files get distinct
+                # identities (e.g. "subdir/doc1.md" vs "doc1.md").
+                if input_dir is not None:
+                    try:
+                        identity = str(file_path.relative_to(input_dir))
+                    except ValueError:
+                        identity = str(file_path)
+                else:
+                    identity = str(file_path)
+
                 enqueue_kwargs = {
-                    "file_paths": str(file_path),
+                    "file_paths": identity,
                     "track_id": track_id,
                     "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
                     "parse_engine": extraction_engine,
@@ -2275,16 +2336,25 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+async def pipeline_index_file(
+    rag: LightRAG,
+    file_path: Path,
+    track_id: str = None,
+    input_dir: Path | None = None,
+):
     """Index a file with track_id
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        input_dir: Optional base input directory, forwarded to
+            ``pipeline_enqueue_file``.
     """
     try:
-        success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+        success, _ = await pipeline_enqueue_file(
+            rag, file_path, track_id, input_dir=input_dir
+        )
         if success:
             await rag.apipeline_process_enqueue_documents()
 
@@ -2298,6 +2368,7 @@ async def pipeline_index_files(
     file_paths: List[Path],
     track_id: str = None,
     from_scan: bool = False,
+    input_dir: Path | None = None,
 ):
     """Index multiple files sequentially to avoid high CPU load
 
@@ -2310,6 +2381,8 @@ async def pipeline_index_files(
             calls bypass the scanning guard inside
             ``apipeline_enqueue_documents`` (whose ``scanning`` flag the
             scan task itself owns).
+        input_dir: Optional base input directory, forwarded to
+            ``pipeline_enqueue_file``.
     """
     if not file_paths:
         return
@@ -2328,6 +2401,7 @@ async def pipeline_index_files(
                 file_path,
                 track_id,
                 from_scan=from_scan,
+                input_dir=input_dir,
             )
             if success:
                 enqueued = True
@@ -2554,7 +2628,7 @@ async def run_scanning_process(
             for file_path in sorted(
                 new_files, key=lambda p: get_pinyin_sort_key(str(p))
             ):
-                canonical_name = normalize_file_path(str(file_path))
+                canonical_name = doc_manager.get_document_identity(file_path)
                 files_by_canonical_name.setdefault(canonical_name, []).append(file_path)
 
             unique_files: list[Path] = []
@@ -2606,13 +2680,13 @@ async def run_scanning_process(
 
             for file_path in unique_files:
                 filename = file_path.name
-                # Inline the canonical-basename lookup so we keep both the
-                # doc_id and the data: the FAILED-without-full_docs sub-case
-                # below needs the doc_id to delete the stale stub.
-                basename = normalize_file_path(str(file_path))
+                # Use the document identity (relative path from input_dir)
+                # for lookup so files with the same name in different
+                # subdirectories are treated as distinct documents.
+                identity = doc_manager.get_document_identity(file_path)
                 existing_match = (
-                    await rag.doc_status.get_doc_by_file_basename(basename)
-                    if basename != UNKNOWN_FILE_SOURCE
+                    await rag.doc_status.get_doc_by_file_basename(identity)
+                    if identity != UNKNOWN_FILE_SOURCE
                     else None
                 )
                 existing_doc_id, existing_doc_data = (
@@ -2699,6 +2773,7 @@ async def run_scanning_process(
                     new_files,
                     track_id,
                     from_scan=True,
+                    input_dir=doc_manager.input_dir,
                 )
 
             # Resume targets must always trigger the pipeline explicitly:
