@@ -210,6 +210,29 @@ async def test_delete_reloads_stale_client_before_mutating(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_finalize_reloads_stale_client_before_flushing(tmp_path):
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    stale_finalizer = _make_storage(tmp_path, embed)
+    await writer.initialize()
+    await stale_finalizer.initialize()
+
+    await writer.upsert({"id1": {"content": "alpha"}})
+    assert await writer.index_done_callback() is True
+    assert stale_finalizer.storage_updated.value is True
+
+    await stale_finalizer.upsert({"id2": {"content": "beta"}})
+    await stale_finalizer.finalize()
+
+    reader = _make_storage(tmp_path, embed)
+    await reader.initialize()
+    rows = await reader.get_by_ids(["id1", "id2"])
+    assert [row["id"] for row in rows] == ["id1", "id2"]
+    assert stale_finalizer._pending_upserts == {}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_read_your_writes_and_query_after_flush(tmp_path):
     embed = _CountingEmbed()
     storage = _make_storage(tmp_path, embed)

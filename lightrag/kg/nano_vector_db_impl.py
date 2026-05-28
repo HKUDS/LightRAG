@@ -817,6 +817,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         async with self._storage_lock:
             if not self._pending_upserts:
                 return
+            self._reload_client_from_disk_locked(for_write=True)
             await self._flush_pending_locked()
             self._save_to_disk_locked()
             await set_all_update_flags(self.namespace, workspace=self.workspace)
