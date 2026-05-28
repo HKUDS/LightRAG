@@ -326,6 +326,82 @@ async def test_delete_entity_relation_prunes_pending_buffer():
 
 
 @pytest.mark.asyncio
+async def test_delete_entity_relation_diverges_when_buffer_overwrites_persisted():
+    """Pins the deferred ↔ eager semantic divergence documented on
+    ``delete_entity_relation``.
+
+    Scenario: a persisted row ``rel-X-Y`` has ``src_id="X" / tgt_id="Y"``,
+    and a pending upsert is about to rewrite that same id so it would
+    instead carry ``src_id="A" / tgt_id="B"``. A call to
+    ``delete_entity_relation("A")`` arrives before the buffer is flushed.
+
+    Expected (deferred mode, current implementation):
+      * server-side filter ``src_id == "A" or tgt_id == "A"`` does NOT
+        match the persisted row (its src/tgt are still X/Y), so the
+        server-side delete is a no-op;
+      * the buffered upsert IS pruned (its buffered src/tgt match);
+      * net effect: persisted ``rel-X-Y`` (old values) survives and the
+        pending overwrite is lost.
+
+    Under eager ordering (upsert → flush → delete) the persisted row
+    would have been rewritten first and then matched by the filter, so
+    the final state would have been a deleted ``rel-X-Y``. This test
+    locks in the divergence so a future refactor can't silently change
+    it without touching the docstring.
+    """
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+
+    # Buffered upsert rewriting an (assumed) already-persisted rel-X-Y
+    # so that its new src/tgt would match entity "A".
+    await s.upsert(
+        {"rel-X-Y": {"content": "A → B", "src_id": "A", "tgt_id": "B"}}
+    )
+    assert "rel-X-Y" in s._pending_vector_docs
+
+    # Server still sees the OLD persisted row (src_id="X" / tgt_id="Y"),
+    # so a filter on entity "A" returns nothing.
+    s._client.query.return_value = []
+
+    await s.delete_entity_relation("A")
+
+    # Buffered overwrite is pruned (matches buffered src/tgt view) …
+    assert "rel-X-Y" not in s._pending_vector_docs
+    # … but the server-side delete is not issued, because the filter
+    # didn't match the persisted row's actual src/tgt.
+    s._client.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_entity_relation_eager_ordering_matches_persisted():
+    """Counterpart to the divergence test: if the caller flushes before
+    invoking ``delete_entity_relation``, the persisted row reflects the
+    buffered overwrite and the server-side filter catches it.
+
+    This documents the recommended workaround called out in the
+    ``delete_entity_relation`` docstring: ``index_done_callback()`` first
+    when eager-equivalent semantics are required.
+    """
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+
+    await s.upsert(
+        {"rel-X-Y": {"content": "A → B", "src_id": "A", "tgt_id": "B"}}
+    )
+    await s.index_done_callback()  # buffered upsert is now persisted
+    assert s._pending_vector_docs == {}
+    s._client.upsert.assert_called_once()
+
+    # With the row persisted, the server filter on entity "A" now hits.
+    s._client.query.return_value = [{"id": "rel-X-Y"}]
+
+    await s.delete_entity_relation("A")
+
+    s._client.delete.assert_called_once()
+    assert s._client.delete.call_args.kwargs["pks"] == ["rel-X-Y"]
+
+
+@pytest.mark.asyncio
 async def test_get_by_id_reads_pending_buffer_without_vector():
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)

@@ -1689,6 +1689,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         + delete cannot interleave with an in-flight bulk upsert.
         Server-side failures are re-raised (no log-and-swallow): the caller
         decides whether to retry.
+
+        Semantic note (deferred-buffer ↔ persisted divergence): pruning only
+        consults the *current* buffered ``src_id`` / ``tgt_id`` view; we do
+        not re-read the persisted row a buffered upsert is about to
+        overwrite. So if a pending upsert is rewriting an already-persisted
+        ``rel-X-Y`` so that its new ``src_id`` / ``tgt_id`` matches
+        ``entity_name`` while the persisted row's do not (or vice versa),
+        the persisted row will not be deleted by the server-side filter and
+        the pending overwrite is dropped — i.e. the final state can diverge
+        from the eager-flush ordering (upsert → flush → delete). Callers
+        that require eager-equivalent semantics should call
+        ``index_done_callback()`` before ``delete_entity_relation``.
         """
         async with self._flush_lock:
             # Prune matching docs from the pending upsert buffer.
