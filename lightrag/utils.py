@@ -3710,11 +3710,15 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
             return type(original_exception)(f"{prefix}: {str(original_exception)}")
     except Exception:
         # Method 3: If reconstruction fails for any reason, wrap it in a
-        # RuntimeError preserving the original type name and message. Many SDK
-        # exceptions cannot be rebuilt from their args alone because their
-        # constructor signatures differ — e.g. json.JSONDecodeError requires
-        # (msg, doc, pos) and openai.APIStatusError/BadRequestError require
-        # keyword-only (response, body). The original exception and its full
+        # RuntimeError preserving the original type name and message. This is a
+        # defensive catch-all: most known failures already surface as TypeError
+        # (e.g. json.JSONDecodeError needs (msg, doc, pos) and
+        # openai.APIStatusError/BadRequestError need keyword-only
+        # (response, body), so rebuilding from args alone raises TypeError), but
+        # an exotic constructor could raise something else (KeyError, a
+        # validation error, ...). Catching `Exception` guarantees this helper
+        # never raises while prefixing — `KeyboardInterrupt`/`SystemExit` are
+        # BaseException and still propagate. The original exception and its full
         # traceback are preserved by the caller's `raise ... from original`.
         return RuntimeError(
             f"{prefix}: {type(original_exception).__name__}: {str(original_exception)}"

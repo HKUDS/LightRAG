@@ -468,6 +468,11 @@ async def openai_complete_if_cache(
             await openai_async_client.close()
         except Exception as close_error:
             logger.warning(f"Failed to close OpenAI client: {close_error}")
+        # Heuristic: match on the provider's error wording. It can drift across
+        # providers/proxies or localization, and a genuinely malformed request
+        # body (e.g. invalid user-supplied JSON) could also surface this text —
+        # in that case we simply retry 3x and still fail fast. We accept that
+        # "retry too much" trade-off to recover the common transient case.
         if "could not parse" in str(e).lower():
             logger.warning(f"Transient JSON-parse 400 from OpenAI, will retry: {e}")
             raise TransientBadRequestError(str(e)) from e
