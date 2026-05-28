@@ -905,18 +905,35 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         scroll + delete cannot interleave with an in-flight bulk upsert.
         Server-side failures are re-raised (no log-and-swallow): the
         caller decides whether to retry.
+
+        Buffer semantics — post-prune with caller short-circuit contract:
+            Matching pending upserts in ``_pending_vector_docs`` are
+            pruned **only after** the server-side scroll+delete loop
+            completes fully. If any iteration raises, the pending buffer
+            is left intact so a higher-level failure does not silently
+            drop buffered relation vectors that the user never told us
+            to discard. The trade-off is that partial server-side
+            deletes plus preserved pending upserts can re-insert deleted
+            relations on the next flush — correctness therefore relies
+            on the caller short-circuiting before ``index_done_callback``
+            can run. The single in-tree caller ``adelete_by_entity``
+            in ``utils_graph.py`` honors this: its ``except`` clause
+            skips both ``delete_node`` and ``_persist_graph_updates``,
+            so on failure the graph and the pending buffer stay
+            consistent with the "delete never happened" state and the
+            operation converges on the next retry.
         """
         async with self._flush_lock:
-            # Prune matching docs from the pending upsert buffer.
-            for doc_id in [
-                k
-                for k, v in self._pending_vector_docs.items()
-                if v.source.get("src_id") == entity_name
-                or v.source.get("tgt_id") == entity_name
-            ]:
-                self._pending_vector_docs.pop(doc_id, None)
-
             if self._client is None:
+                # pre-init / post-finalize: only buffer state remains, so
+                # apply the delete intent there.
+                for doc_id in [
+                    k
+                    for k, v in self._pending_vector_docs.items()
+                    if v.source.get("src_id") == entity_name
+                    or v.source.get("tgt_id") == entity_name
+                ]:
+                    self._pending_vector_docs.pop(doc_id, None)
                 return
 
             relation_filter = models.Filter(
@@ -960,6 +977,19 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 if next_offset is None:
                     break
                 offset = next_offset
+
+            # Server-side scroll+delete fully succeeded — safe to prune
+            # matching pending relation upserts so the next flush won't
+            # re-upsert the just-deleted relations. If the loop above
+            # raised, this prune is skipped and the buffer state stays
+            # available for the caller's retry path.
+            for doc_id in [
+                k
+                for k, v in self._pending_vector_docs.items()
+                if v.source.get("src_id") == entity_name
+                or v.source.get("tgt_id") == entity_name
+            ]:
+                self._pending_vector_docs.pop(doc_id, None)
 
             if total_deleted > 0:
                 logger.debug(

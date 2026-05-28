@@ -3804,9 +3804,25 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         cannot interleave with an in-flight bulk indexing of a related doc.
         Buffered upserts that match are pruned in-memory; persisted rows are
         removed via the server-side ``delete_by_query``.
+
+        Buffer semantics — post-prune with caller short-circuit contract:
+            Matching pending upserts are pruned **only after** the
+            server-side ``delete_by_query`` succeeds (or returns the
+            equivalent of "index already missing"). On any other server
+            failure the exception is re-raised and the pending buffer
+            stays intact so a higher-level retry can still observe the
+            buffered relation vectors. Correctness relies on the caller
+            short-circuiting before ``index_done_callback`` can run;
+            ``adelete_by_entity`` in ``utils_graph.py`` honors this.
+
+            Previously this method pre-pruned the buffer and swallowed
+            ``OpenSearchException`` into a ``logger.error`` — that
+            combination silently dropped both the buffered relation
+            vectors and the server-side failure signal, leaving the
+            caller's graph + vector store permanently inconsistent.
         """
-        async with self._flush_lock:
-            # Prune matching docs from the pending upsert buffer.
+
+        def _prune_pending() -> None:
             for doc_id in [
                 k
                 for k, v in self._pending_vector_docs.items()
@@ -3815,33 +3831,48 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             ]:
                 self._pending_vector_docs.pop(doc_id, None)
 
+        async with self._flush_lock:
             if not self._index_ready:
+                # No server state to mutate; buffer prune is the only
+                # delete intent we can record.
+                _prune_pending()
                 return
-            try:
-                body = {
-                    "query": {
-                        "bool": {
-                            "should": [
-                                {"term": {"src_id": entity_name}},
-                                {"term": {"tgt_id": entity_name}},
-                            ]
-                        }
+
+            body = {
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"term": {"src_id": entity_name}},
+                            {"term": {"tgt_id": entity_name}},
+                        ]
                     }
                 }
+            }
+            try:
                 # conflicts="proceed" tolerates stale search view after refresh removal.
                 await self.client.delete_by_query(
                     index=self._index_name, body=body, params={"conflicts": "proceed"}
                 )
-                logger.debug(
-                    f"[{self.workspace}] Deleted relations for entity {entity_name}"
-                )
             except OpenSearchException as e:
                 if _is_missing_index_error(e):
+                    # Index gone is equivalent to "all rows already
+                    # deleted" — safe to prune pending and treat as
+                    # success.
                     self._mark_index_missing()
+                    _prune_pending()
                     return
                 logger.error(
                     f"[{self.workspace}] Error deleting relations for {entity_name}: {e}"
                 )
+                raise
+
+            # Server-side delete succeeded — safe to prune the pending
+            # buffer so subsequent flushes don't re-upsert the deleted
+            # relations.
+            _prune_pending()
+            logger.debug(
+                f"[{self.workspace}] Deleted relations for entity {entity_name}"
+            )
 
     async def drop(self) -> dict[str, str]:
         """Delete and recreate the vector index, discarding pending buffers.

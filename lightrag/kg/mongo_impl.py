@@ -2658,9 +2658,17 @@ class MongoVectorDBStorage(BaseVectorStorage):
         + delete cannot interleave with an in-flight bulk write. Server-side
         failures are re-raised (no log-and-swallow): the caller decides
         whether to retry.
+
+        Buffer semantics — post-prune with caller short-circuit contract:
+            Matching pending upserts in ``_pending_vector_docs`` are
+            pruned **only after** the server-side ``delete_many``
+            succeeds. On failure the pending buffer stays intact and
+            the exception propagates so the caller (``adelete_by_entity``
+            in ``utils_graph.py``) can short-circuit before
+            ``_persist_graph_updates`` flushes a half-cleaned buffer.
         """
-        async with self._flush_lock:
-            # Prune matching docs from the pending upsert buffer.
+
+        def _prune_pending() -> None:
             for doc_id in [
                 k
                 for k, v in self._pending_vector_docs.items()
@@ -2669,7 +2677,11 @@ class MongoVectorDBStorage(BaseVectorStorage):
             ]:
                 self._pending_vector_docs.pop(doc_id, None)
 
+        async with self._flush_lock:
             if self._data is None:
+                # No server state to mutate; buffer prune is the only
+                # delete intent we can record.
+                _prune_pending()
                 return
 
             # _id is the only field we need from the find; project to keep
@@ -2681,6 +2693,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
             relations = await relations_cursor.to_list(length=None)
 
             if not relations:
+                # No server rows to delete — still safe to prune any
+                # pending upserts so they can't re-create the relation.
+                _prune_pending()
                 logger.debug(
                     f"[{self.workspace}] No relations found for entity {entity_name}"
                 )
@@ -2688,6 +2703,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
             relation_ids = [relation["_id"] for relation in relations]
             await self._data.delete_many({"_id": {"$in": relation_ids}})
+            # Server-side delete succeeded — safe to prune the pending
+            # buffer so subsequent flushes don't re-upsert the deleted
+            # relations.
+            _prune_pending()
             logger.debug(
                 f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
             )

@@ -1694,6 +1694,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         Server-side failures are re-raised (no log-and-swallow): the caller
         decides whether to retry.
 
+        Buffer semantics — post-prune with caller short-circuit contract:
+            Matching pending upserts in ``_pending_vector_docs`` are
+            pruned **only after** the server-side query + delete
+            succeeds. On failure the pending buffer stays intact and
+            the exception propagates so the caller (``adelete_by_entity``
+            in ``utils_graph.py``) can short-circuit before
+            ``_persist_graph_updates`` flushes a half-cleaned buffer.
+
         Semantic note (deferred-buffer ↔ persisted divergence): pruning only
         consults the *current* buffered ``src_id`` / ``tgt_id`` view; we do
         not re-read the persisted row a buffered upsert is about to
@@ -1706,8 +1714,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         that require eager-equivalent semantics should call
         ``index_done_callback()`` before ``delete_entity_relation``.
         """
-        async with self._flush_lock:
-            # Prune matching docs from the pending upsert buffer.
+
+        def _prune_pending() -> None:
             for doc_id in [
                 k
                 for k, v in self._pending_vector_docs.items()
@@ -1716,7 +1724,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             ]:
                 self._pending_vector_docs.pop(doc_id, None)
 
+        async with self._flush_lock:
             if self._client is None:
+                # No server state to mutate; buffer prune is the only
+                # delete intent we can record.
+                _prune_pending()
                 return
 
             self._ensure_collection_loaded()
@@ -1729,6 +1741,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             )
 
             if not results:
+                # No server rows to delete — still safe to prune any
+                # pending upserts so they can't re-create the relation.
+                _prune_pending()
                 logger.debug(
                     f"[{self.workspace}] No relations found for entity {entity_name}"
                 )
@@ -1736,6 +1751,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             relation_ids = [item["id"] for item in results]
             self._client.delete(collection_name=self.final_namespace, pks=relation_ids)
+            # Server-side delete succeeded — safe to prune the pending
+            # buffer so subsequent flushes don't re-upsert the deleted
+            # relations.
+            _prune_pending()
             logger.debug(
                 f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
             )
