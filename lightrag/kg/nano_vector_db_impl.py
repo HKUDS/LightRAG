@@ -195,6 +195,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # it never duplicates rows already written to the client. Flushed
         # under _storage_lock by _flush_pending_locked().
         self._pending_upserts: dict[str, _PendingNanoDoc] = {}
+        # True when self._client has materialized changes that have not been
+        # successfully saved to disk yet. This lets finalize retry a save even
+        # after a previous flush cleared the pending buffer.
+        self._client_dirty = False
 
     async def initialize(self):
         """Initialize storage data"""
@@ -358,6 +362,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             list_data.append(record)
 
         self._client.upsert(datas=list_data)
+        self._client_dirty = True
 
         # Clear only the entries we just flushed (an upsert that arrived after
         # the snapshot would have re-set vector=None and must not be dropped).
@@ -469,6 +474,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # Calculate actual deleted count
                 after_count = len(self._client)
                 deleted_count = before_count - after_count
+                if deleted_count:
+                    self._client_dirty = True
 
             logger.debug(
                 f"[{self.workspace}] Successfully deleted {deleted_count} vectors from {self.namespace}"
@@ -507,6 +514,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 )
                 if self._client.get([entity_id]):
                     self._client.delete([entity_id])
+                    self._client_dirty = True
                     deleted = True
                 else:
                     deleted = False
@@ -559,6 +567,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 ]
                 if ids_to_delete:
                     self._client.delete(ids_to_delete)
+                    self._client_dirty = True
 
             total = len(pending_ids) + len(ids_to_delete)
             if total:
@@ -612,6 +621,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
+                self._client_dirty = False
                 return True  # Return success
             except Exception as e:
                 logger.error(
@@ -791,6 +801,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     self.embedding_func.embedding_dim,
                     storage_file=self._client_file_name,
                 )
+                self._client_dirty = False
 
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
@@ -815,13 +826,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
         recorded (``finalize_storages`` logs it as an error).
         """
         async with self._storage_lock:
-            if not self._pending_upserts:
+            if not self._pending_upserts and not self._client_dirty:
                 return
-            self._reload_client_from_disk_locked(for_write=True)
-            await self._flush_pending_locked()
+            if self._pending_upserts:
+                self._reload_client_from_disk_locked(for_write=True)
+                await self._flush_pending_locked()
             self._save_to_disk_locked()
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
+            self._client_dirty = False
             leftover = len(self._pending_upserts)
 
         if leftover:

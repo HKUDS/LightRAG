@@ -266,3 +266,41 @@ async def test_finalize_flushes_pending(tmp_path):
     assert embed.call_count == 1
     assert storage._pending_upserts == {}
     assert len(storage._client) == 1
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_finalize_retries_save_after_flush_failure(tmp_path):
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    original_save = storage._save_to_disk_locked
+    save_calls = 0
+
+    def fail_once():
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 1:
+            raise OSError("boom")
+        original_save()
+
+    storage._save_to_disk_locked = fail_once
+
+    with pytest.raises(OSError, match="boom"):
+        await storage.finalize()
+
+    assert storage._pending_upserts == {}
+    assert storage._client_dirty is True
+
+    await storage.finalize()
+
+    assert save_calls == 2
+    assert storage._client_dirty is False
+
+    reader = _make_storage(tmp_path, embed)
+    await reader.initialize()
+    hit = await reader.get_by_id("id1")
+    assert hit is not None and hit["id"] == "id1"
