@@ -3039,11 +3039,16 @@ class PGKVStorage(BaseKVStorage):
 
 @dataclass
 class _PendingPGVectorDoc:
-    """Buffered PG vector upsert awaiting embedding and batched flush."""
+    """Buffered PG vector upsert awaiting embedding and batched flush.
+
+    ``vector`` is stored as a numpy ndarray (typically float32 from the
+    embedding function) once embedded; pgvector's asyncpg codec accepts
+    ndarray directly so no per-flush conversion is needed.
+    """
 
     item: dict[str, Any]
     created_at: datetime.datetime
-    vector: list[float] | None = None
+    vector: np.ndarray | None = None
 
 
 @final
@@ -3563,9 +3568,30 @@ class PGVectorStorage(BaseVectorStorage):
 
         Captures regular ``Exception`` from the flush so it can be re-raised
         as a ``RuntimeError`` naming the unflushed buffer counts after the
-        client is released. ``BaseException`` (cancellation, shutdown) is
-        intentionally NOT caught so it can propagate through ``finally``.
+        client is released. ``BaseException`` (``CancelledError``,
+        ``KeyboardInterrupt``, ``SystemExit``) is intentionally NOT caught
+        so it can propagate through ``finally`` — the buffer-count reframing
+        below is skipped in that case (the propagating exception already
+        signals shutdown; conflating it with "left N pending" would be
+        misleading).
+
+        Idempotency:
+            Re-entry after a successful or failed first call is a no-op for
+            the flush (client is already released), but still raises if
+            buffers remain non-empty so the operator sees the data-loss
+            signal again.
         """
+        if self.db is None:
+            pending_docs = len(self._pending_vector_docs)
+            pending_deletes = len(self._pending_vector_deletes)
+            if pending_docs or pending_deletes:
+                raise RuntimeError(
+                    f"[{self.workspace}] PGVectorStorage.finalize() re-entry: "
+                    f"client already released; {pending_docs} pending upserts "
+                    f"and {pending_deletes} pending deletes cannot be flushed"
+                )
+            return
+
         flush_error: Exception | None = None
         try:
             try:
@@ -3693,13 +3719,22 @@ class PGVectorStorage(BaseVectorStorage):
             LightRAG's pipeline is the normal write path for graph/vector
             mutations and guarantees a single writer process per workspace.
             This storage follows the same deferred-embedding contract as
-            OpenSearchVectorDBStorage: the pending buffer is process-local,
-            and cross-worker visibility requires the writing worker to call
-            index_done_callback().
+            OpenSearchVectorDBStorage: the pending buffer is process-local.
+            Committed PG rows are immediately visible across workers, but
+            *buffered* writes are not — readers in other workers will not
+            see them until the writing worker calls index_done_callback().
 
             Non-pipeline writers must provide equivalent single-writer
             serialization and must flush explicitly before depending on
             reads from another worker.
+
+        Memory expectation:
+            Pending docs (raw ``content`` strings, plus cached float32
+            vectors once embedded) accumulate in process memory until the
+            next ``index_done_callback()`` / ``finalize()``. This matches
+            the OpenSearch/Nano/Faiss contract. Callers performing very
+            large ingests should flush periodically (every N upserts) to
+            cap working-set size.
         """
         if not data:
             return
@@ -3813,7 +3848,7 @@ class PGVectorStorage(BaseVectorStorage):
                 for i, ((_, pending_doc), embedding) in enumerate(
                     zip(docs_to_embed, embeddings), start=1
                 ):
-                    pending_doc.vector = embedding.tolist()
+                    pending_doc.vector = embedding
                     await _cooperative_yield(i)
 
             # --- Build batch tuples ------------------------------------------
@@ -3840,14 +3875,14 @@ class PGVectorStorage(BaseVectorStorage):
                         f"[{self.workspace}] Pending vector for id={doc_id} "
                         f"missing after embedding phase"
                     )
-                # Convert cached list[float] to numpy float32 right before
-                # the executemany; pgvector's asyncpg codec accepts both
-                # list and ndarray but ndarray is the safer path. Keep the
-                # cache as list[float] so it stays JSON-friendly for retry.
+                # Coerce to float32 ndarray if not already (defensive; the
+                # embedding func typically returns float32 but a custom
+                # provider may return float64 — pgvector wants float32).
                 item = dict(pending_doc.item)
-                item["__vector__"] = np.asarray(
-                    pending_doc.vector, dtype=np.float32
-                )
+                vector = pending_doc.vector
+                if not isinstance(vector, np.ndarray) or vector.dtype != np.float32:
+                    vector = np.asarray(vector, dtype=np.float32)
+                item["__vector__"] = vector
                 upsert_sql, values = build_tuple(item, pending_doc.created_at)
                 batch_values.append(values)
                 await _cooperative_yield(i)
@@ -3875,9 +3910,18 @@ class PGVectorStorage(BaseVectorStorage):
                             delete_sql, self.workspace, pending_delete_ids
                         )
 
-            await self.db._run_with_retry(
-                _flush_batch, timing_label=timing_label
-            )
+            try:
+                await self.db._run_with_retry(
+                    _flush_batch, timing_label=timing_label
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[{self.workspace}] PGVectorStorage flush failed; "
+                    f"buffer preserved for retry "
+                    f"({len(batch_values)} upserts, "
+                    f"{len(pending_delete_ids)} deletes left pending): {e}"
+                )
+                raise
 
             # Success: clear committed buffers. Cached vectors live on
             # those records and are GC'd with them.
@@ -3957,6 +4001,12 @@ class PGVectorStorage(BaseVectorStorage):
         a safety net for legacy rows whose ``id`` may not equal
         ``compute_mdhash_id(entity_name, prefix="ent-")``.
         """
+        if self._flush_lock is None:
+            logger.warning(
+                f"[{self.workspace}] PGVectorStorage.delete_entity called before "
+                f"initialize(); ignoring delete for entity '{entity_name}'"
+            )
+            return
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         try:
             async with self._flush_lock:
@@ -3995,7 +4045,22 @@ class PGVectorStorage(BaseVectorStorage):
         Predicate-based; runs immediately. The whole method holds
         ``_flush_lock`` so it cannot interleave with a flush of buffered
         relation upserts.
+
+        Buffer semantics:
+            Any pending relation upsert whose ``src_id`` or ``tgt_id``
+            matches ``entity_name`` is pruned from ``_pending_vector_docs``
+            and will NOT be re-inserted after the SQL predicate delete —
+            even if it would have created a new edge. This matches the
+            "delete all relations touching this entity" intent. Callers
+            that need to rename or re-link the entity must re-issue the
+            relation upserts after this call.
         """
+        if self._flush_lock is None:
+            logger.warning(
+                f"[{self.workspace}] PGVectorStorage.delete_entity_relation called "
+                f"before initialize(); ignoring delete for entity '{entity_name}'"
+            )
+            return
         try:
             async with self._flush_lock:
                 # Prune pending relationship docs matching the predicate.
@@ -4130,14 +4195,22 @@ class PGVectorStorage(BaseVectorStorage):
         caches the result on the pending record (so the next flush reuses
         it), and falls through to a parameterized SQL query for ids not in
         the buffer.
+
+        Embedding I/O runs *outside* ``_flush_lock`` so a slow embedding
+        provider cannot block concurrent ``upsert`` / ``delete`` / read
+        calls on this storage. The lock is re-acquired briefly to cache
+        the result, and the pending record's identity is re-checked first
+        — if a concurrent ``upsert`` / ``delete`` / ``drop`` replaced or
+        removed the record, the embedding is returned to the caller but
+        not cached on the new/missing record (rare, accepted trade-off).
         """
         if not ids:
             return {}
 
         result: dict[str, list[float]] = {}
         remaining: list[str] = []
+        docs_to_embed: list[tuple[str, _PendingPGVectorDoc]] = []
         async with self._flush_lock:
-            docs_to_embed: list[tuple[str, _PendingPGVectorDoc]] = []
             for doc_id in ids:
                 if doc_id in self._pending_vector_deletes:
                     continue
@@ -4146,36 +4219,42 @@ class PGVectorStorage(BaseVectorStorage):
                     if pending.vector is None:
                         docs_to_embed.append((doc_id, pending))
                     else:
-                        result[doc_id] = pending.vector
+                        result[doc_id] = pending.vector.tolist()
                     continue
                 remaining.append(doc_id)
 
-            if docs_to_embed:
-                contents = [
-                    pending_doc.item["content"]
-                    for _, pending_doc in docs_to_embed
+        if docs_to_embed:
+            contents = [
+                pending_doc.item["content"] for _, pending_doc in docs_to_embed
+            ]
+            batches = [
+                contents[i : i + self._max_batch_size]
+                for i in range(0, len(contents), self._max_batch_size)
+            ]
+            embeddings_list = await asyncio.gather(
+                *[
+                    self.embedding_func(batch, context="document")
+                    for batch in batches
                 ]
-                batches = [
-                    contents[i : i + self._max_batch_size]
-                    for i in range(0, len(contents), self._max_batch_size)
-                ]
-                embeddings_list = await asyncio.gather(
-                    *[
-                        self.embedding_func(batch, context="document")
-                        for batch in batches
-                    ]
+            )
+            embeddings = np.concatenate(embeddings_list)
+            if len(embeddings) != len(docs_to_embed):
+                raise RuntimeError(
+                    f"[{self.workspace}] Embedding count mismatch: "
+                    f"expected {len(docs_to_embed)}, got {len(embeddings)}"
                 )
-                embeddings = np.concatenate(embeddings_list)
-                if len(embeddings) != len(docs_to_embed):
-                    raise RuntimeError(
-                        f"[{self.workspace}] Embedding count mismatch: "
-                        f"expected {len(docs_to_embed)}, got {len(embeddings)}"
-                    )
-                for i, ((doc_id, pending_doc), embedding) in enumerate(
+
+            # Re-acquire the lock just long enough to cache results on the
+            # same record (identity check avoids clobbering a concurrent
+            # re-upsert that swapped in a new _PendingPGVectorDoc).
+            async with self._flush_lock:
+                for i, ((doc_id, original_pending), embedding) in enumerate(
                     zip(docs_to_embed, embeddings), start=1
                 ):
-                    pending_doc.vector = embedding.tolist()
-                    result[doc_id] = pending_doc.vector
+                    current = self._pending_vector_docs.get(doc_id)
+                    if current is original_pending:
+                        current.vector = embedding
+                    result[doc_id] = embedding.tolist()
                     await _cooperative_yield(i)
 
         if not remaining:

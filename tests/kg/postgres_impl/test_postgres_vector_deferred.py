@@ -570,3 +570,201 @@ async def test_empty_inputs_are_noops():
     await storage.index_done_callback()
     assert storage._retry_call_count["n"] == 0
     assert storage._counting_embed.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 16. delete_entity serializes against an in-flight flush via _flush_lock
+# ---------------------------------------------------------------------------
+
+
+class _GatedEmbed:
+    """Embedding func that blocks on a gate so a flush can be paused mid-call."""
+
+    def __init__(self, dim: int = 3):
+        self.embedding_dim = dim
+        self.max_token_size = 512
+        self.model_name = "test_model"
+        self.gate = asyncio.Event()
+        self.entered = asyncio.Event()
+        self.call_count = 0
+
+    async def __call__(self, texts, **kwargs):
+        self.call_count += 1
+        self.entered.set()
+        await self.gate.wait()
+        return np.array([[1.0, 0.0, 0.0] for _ in texts], dtype=np.float32)
+
+
+@pytest.mark.asyncio
+async def test_delete_entity_serializes_against_in_flight_flush():
+    """A `delete_entity` issued while a flush is mid-embedding must wait for
+    the flush's lock to release before its SQL predicate runs — otherwise the
+    flush could persist the entity row a microsecond after the predicate
+    deleted it. This pins the lock-then-SQL contract in the source.
+    """
+    embed = _GatedEmbed()
+    storage = _make_storage(namespace=NameSpace.VECTOR_STORE_ENTITIES, embed=embed)
+
+    entity_id = compute_mdhash_id("Alice", prefix="ent-")
+    await storage.upsert({entity_id: _entity_data(name="Alice")})
+
+    flush_task = asyncio.create_task(storage.index_done_callback())
+
+    # Wait until the flush is blocked inside the embedding call (it now holds
+    # _flush_lock).
+    await asyncio.wait_for(embed.entered.wait(), timeout=1.0)
+
+    # Kick off delete_entity; it must block on the same lock.
+    delete_task = asyncio.create_task(storage.delete_entity("Alice"))
+
+    # Give the event loop a few turns to confirm delete_entity is blocked.
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not delete_task.done(), (
+        "delete_entity should be waiting on _flush_lock while flush holds it"
+    )
+
+    # Unblock the flush; both should complete.
+    embed.gate.set()
+    await asyncio.wait_for(flush_task, timeout=1.0)
+    await asyncio.wait_for(delete_task, timeout=1.0)
+
+    # Flush ran its executemany, then delete_entity ran its predicate SQL.
+    assert len(storage._captured_executemany) == 1
+    storage.db.execute.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 17. Deletes-only flush: no executemany, single ANY($2) DELETE
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deletes_only_flush_skips_executemany():
+    """A flush that has only buffered deletes (no upserts) must still issue
+    the parameterized DELETE under the transaction, and must NOT call
+    executemany with an empty batch.
+    """
+    storage = _make_storage()
+    await storage.delete(["c1", "c2", "c3"])
+    assert storage._pending_vector_docs == {}
+    assert len(storage._pending_vector_deletes) == 3
+
+    await storage.index_done_callback()
+
+    # No embedding was needed.
+    assert storage._counting_embed.call_count == 0
+    # No upsert executemany ran.
+    assert storage._captured_executemany == []
+    # Exactly one parameterized DELETE under the transaction.
+    assert len(storage._captured_execute) == 1
+    sql, args = storage._captured_execute[0]
+    assert "DELETE FROM" in sql
+    assert "id = ANY($2)" in sql
+    assert args[0] == "test_ws"
+    assert sorted(args[1]) == ["c1", "c2", "c3"]
+    # Buffers cleared on success.
+    assert storage._pending_vector_deletes == set()
+
+
+# ---------------------------------------------------------------------------
+# 18. Embedding count mismatch raises and preserves the buffer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_embedding_count_mismatch_raises_and_preserves_buffer():
+    """The in-flush ``len(embeddings) != len(docs_to_embed)`` check is
+    defense-in-depth against an embedding provider that bypasses the
+    ``EmbeddingFunc`` wrapper validation. Bypass the wrapper by replacing
+    ``storage.embedding_func`` with a bare async callable that returns
+    fewer rows than requested.
+    """
+    storage = _make_storage(embedding_batch_num=10)
+
+    async def short_embed(texts, **kwargs):
+        rows = max(0, len(list(texts)) - 1)
+        return np.array(
+            [[1.0, 0.0, 0.0] for _ in range(rows)], dtype=np.float32
+        )
+
+    storage.embedding_func = short_embed
+
+    await storage.upsert({"c1": _chunk_data(content="a")})
+    await storage.upsert({"c2": _chunk_data(content="b")})
+
+    with pytest.raises(RuntimeError, match="Embedding count mismatch"):
+        await storage.index_done_callback()
+
+    # Buffer survives the mismatch; nothing was persisted.
+    assert {"c1", "c2"} == set(storage._pending_vector_docs.keys())
+    assert storage._retry_call_count["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 19. delete_entity discards a matching pending delete for the same hash id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_entity_discards_matching_pending_delete():
+    """If both `delete()` (which buffers a tombstone) and `delete_entity()`
+    fire for the same entity, the pending tombstone for the entity's hash id
+    must be discarded — the predicate SQL covers it and we don't want a
+    redundant ANY-DELETE for the same id in the next flush.
+    """
+    storage = _make_storage(namespace=NameSpace.VECTOR_STORE_ENTITIES)
+    entity_id = compute_mdhash_id("Alice", prefix="ent-")
+
+    await storage.delete([entity_id])
+    assert entity_id in storage._pending_vector_deletes
+
+    await storage.delete_entity("Alice")
+
+    # The pending tombstone for the hash id was discarded.
+    assert entity_id not in storage._pending_vector_deletes
+    # And the predicate SQL ran.
+    storage.db.execute.assert_awaited_once()
+
+    # A subsequent flush has nothing to do.
+    await storage.index_done_callback()
+    assert storage._retry_call_count["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 20. delete_entity / delete_entity_relation are safe pre-initialize()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_entity_pre_initialize_is_safe_noop():
+    """Calling delete_entity before initialize() (i.e. _flush_lock is still
+    None) must log-and-return rather than raise TypeError on `async with`.
+    """
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=None)
+    embed = CountingEmbed()
+    embedding_func = EmbeddingFunc(
+        embedding_dim=embed.embedding_dim,
+        func=embed,
+        model_name=embed.model_name,
+    )
+    storage = PGVectorStorage(
+        namespace=NameSpace.VECTOR_STORE_ENTITIES,
+        workspace="test_ws",
+        global_config={
+            "embedding_batch_num": 10,
+            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.5},
+        },
+        embedding_func=embedding_func,
+    )
+    storage.db = db
+    # Intentionally do NOT set _flush_lock (mimics pre-initialize state).
+    assert storage._flush_lock is None
+
+    # Both must be no-ops, not raise.
+    await storage.delete_entity("Alice")
+    await storage.delete_entity_relation("Alice")
+
+    # No SQL fired (the methods short-circuited before touching db.execute).
+    db.execute.assert_not_called()
