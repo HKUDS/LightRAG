@@ -1719,9 +1719,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 return
 
             relation_ids = [item["id"] for item in results]
-            self._client.delete(
-                collection_name=self.final_namespace, pks=relation_ids
-            )
+            self._client.delete(collection_name=self.final_namespace, pks=relation_ids)
             logger.debug(
                 f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
             )
