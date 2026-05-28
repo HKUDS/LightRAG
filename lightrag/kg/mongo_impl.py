@@ -2772,6 +2772,16 @@ class MongoVectorDBStorage(BaseVectorStorage):
         Pending docs whose vector hasn't been embedded yet are embedded
         lazily inside the lock; the resulting vector is cached on the
         buffered `_PendingVectorDoc` so the next flush won't re-embed.
+
+        Visibility caveat for ids not in the buffer: the server-side
+        ``find`` fallback runs *outside* ``_flush_lock``. A concurrent
+        ``delete()`` that lands between lock release and the cursor
+        read only buffers the delete -- the old vector is still on disk
+        until the next flush, so this method may return a stale vector
+        for an id that has been buffered for deletion. This is
+        best-effort read-after-uncommitted-delete and matches the
+        ``query()`` contract: callers needing strict consistency must
+        ``index_done_callback()`` first.
         """
         if not ids:
             return {}
@@ -2841,10 +2851,23 @@ class MongoVectorDBStorage(BaseVectorStorage):
             return result
 
     async def drop(self) -> dict[str, str]:
-        """Drop the storage by removing all documents in the collection and recreating vector index.
+        """Drop all documents and recreate the vector index. Destructive.
+
+        MUST only be called when ``pipeline_status`` is idle (see the
+        Pipeline concurrency contract in ``AGENTS.md``); the only
+        in-tree caller ``clear_documents`` enforces this.
+
+        Caveat — only this instance's buffers are cleared. Other
+        ``MongoVectorDBStorage`` instances aliased onto the same
+        ``final_namespace`` (multi-worker processes, or distinct
+        workspaces collapsed by ``MONGODB_WORKSPACE``) keep their own
+        buffers; a sibling whose prior flush failed and left buffers
+        intact will, on its next flush, bulk-write those stale rows into
+        the freshly recreated collection. Direct callers bypassing the
+        idle precondition MUST flush every aliased instance first.
 
         Returns:
-            dict[str, str]: Status of the operation with keys 'status' and 'message'
+            dict[str, str]: ``{"status": "success"|"error", "message": str}``
         """
         try:
             async with self._flush_lock:

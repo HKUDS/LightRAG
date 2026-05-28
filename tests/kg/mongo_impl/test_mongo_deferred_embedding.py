@@ -457,6 +457,69 @@ async def test_distinct_namespaces_get_independent_locks():
 
 
 @pytest.mark.asyncio
+async def test_concurrent_upsert_and_flush_serialize_on_lock():
+    """upsert() and index_done_callback() racing on the same namespace must
+    not corrupt the buffer or split a single doc across two embed calls.
+
+    Drives a slow embed (asyncio.Event-gated) so the flush genuinely holds
+    the lock while a second coroutine attempts upsert mid-flight. Asserts:
+      - the late upsert lands in the buffer (not silently dropped)
+      - it is *not* embedded by the in-flight flush (still pending after)
+      - a follow-up flush picks it up cleanly with exactly one extra embed
+
+    Note: we replace ``s.embedding_func`` directly (not ``patch.object`` on
+    ``embed.__call__``) because Python dispatches ``embed(...)`` through
+    ``type(embed).__call__``, bypassing any instance-level patch.
+    """
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+
+    embed_gate = asyncio.Event()
+    flush_entered = asyncio.Event()
+    original_embed = s.embedding_func
+
+    async def gated_embed(texts, **kwargs):
+        flush_entered.set()
+        await embed_gate.wait()
+        return await original_embed(texts, **kwargs)
+
+    await s.upsert({"v1": {"content": "first"}})
+    s.embedding_func = gated_embed
+    try:
+        flush_task = asyncio.create_task(s.index_done_callback())
+        await flush_entered.wait()  # flush is now holding _flush_lock
+
+        # This upsert must wait on _flush_lock; schedule it concurrently.
+        late_upsert = asyncio.create_task(s.upsert({"v2": {"content": "late"}}))
+        # Give the event loop a chance to actually start late_upsert and
+        # confirm it is blocked on the lock (still no v2 in buffer).
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert "v2" not in s._pending_vector_docs
+        assert not late_upsert.done()
+
+        embed_gate.set()
+        await flush_task
+        await late_upsert
+    finally:
+        s.embedding_func = original_embed
+
+    # Flush embedded v1 only; v2 arrived after the docs_to_embed snapshot.
+    assert embed.call_count == 1
+    assert embed.batches == [["first"]]
+    assert "v1" not in s._pending_vector_docs  # flushed
+    assert "v2" in s._pending_vector_docs  # still buffered
+    s._data.bulk_write.assert_called_once()
+
+    # Next flush picks up the late upsert without re-embedding v1.
+    await s.index_done_callback()
+    assert embed.call_count == 2
+    assert embed.batches[-1] == ["late"]
+    assert s._pending_vector_docs == {}
+    assert s._data.bulk_write.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_drop_clears_pending_buffers():
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)
