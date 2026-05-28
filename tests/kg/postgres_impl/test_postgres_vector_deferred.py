@@ -10,6 +10,7 @@ These tests use the same ``MagicMock``-based DB stub as
 """
 
 import asyncio
+import datetime
 
 import numpy as np
 import pytest
@@ -730,14 +731,17 @@ async def test_delete_entity_discards_matching_pending_delete():
 
 
 # ---------------------------------------------------------------------------
-# 20. delete_entity / delete_entity_relation are safe pre-initialize()
+# 20. delete_entity / delete_entity_relation raise pre-initialize()
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_delete_entity_pre_initialize_is_safe_noop():
-    """Calling delete_entity before initialize() (i.e. _flush_lock is still
-    None) must log-and-return rather than raise TypeError on `async with`.
+async def test_delete_entity_pre_initialize_raises():
+    """Calling delete_entity / delete_entity_relation before initialize()
+    must raise RuntimeError, not silently drop the destructive intent.
+
+    Silent no-op would defeat the data-loss visibility that finalize() and
+    _flush_pending_vector_ops enforce on the symmetric paths.
     """
     db = MagicMock()
     db.execute = AsyncMock(return_value=None)
@@ -760,9 +764,113 @@ async def test_delete_entity_pre_initialize_is_safe_noop():
     # Intentionally do NOT set _flush_lock (mimics pre-initialize state).
     assert storage._flush_lock is None
 
-    # Both must be no-ops, not raise.
-    await storage.delete_entity("Alice")
-    await storage.delete_entity_relation("Alice")
+    with pytest.raises(RuntimeError, match="called before initialize"):
+        await storage.delete_entity("Alice")
+    with pytest.raises(RuntimeError, match="called before initialize"):
+        await storage.delete_entity_relation("Alice")
 
     # No SQL fired (the methods short-circuited before touching db.execute).
     db.execute.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 21. _flush_pending_vector_ops raises on lifecycle violations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flush_after_client_release_raises_with_counts():
+    """Direct call to _flush_pending_vector_ops after db release with a
+    non-empty buffer must raise — silent return would lose data without any
+    operator-visible signal (the symmetric path in finalize() already raises).
+    """
+    storage = _make_storage()
+    await storage.upsert({"c1": _chunk_data()})
+    await storage.delete(["c2"])
+
+    # Mimic post-finalize state: client released, buffers preserved.
+    storage.db = None
+
+    with pytest.raises(RuntimeError, match="after client release"):
+        await storage._flush_pending_vector_ops()
+    # Buffers untouched — the call must not have eaten the data on its way out.
+    assert "c1" in storage._pending_vector_docs
+    assert "c2" in storage._pending_vector_deletes
+
+
+@pytest.mark.asyncio
+async def test_flush_pre_initialize_with_pending_raises():
+    """Pre-initialize call with a non-empty buffer (programmer error path:
+    direct buffer manipulation before initialize) also raises rather than
+    silently returning."""
+    storage = _make_storage()
+    # Reset to pre-initialize state but seed the buffer to simulate the
+    # programmer-error scenario.
+    storage._flush_lock = None
+    storage._pending_vector_docs["c1"] = _PendingPGVectorDoc(
+        item={"__id__": "c1", **_chunk_data()},
+        created_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
+    )
+
+    with pytest.raises(RuntimeError, match="called before initialize"):
+        await storage._flush_pending_vector_ops()
+
+
+# ---------------------------------------------------------------------------
+# 22. get_vectors_by_ids drops embeddings whose pending record changed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_vectors_by_ids_drops_when_pending_record_swapped():
+    """If a concurrent upsert replaces the pending record while embedding I/O
+    is in flight (outside the lock), the freshly-computed vector no longer
+    matches the current buffer state and must be dropped from the response
+    rather than returned stale."""
+    embed = _GatedEmbed()
+    storage = _make_storage(embed=embed)
+
+    # Seed the original pending doc.
+    await storage.upsert({"c1": _chunk_data(content="original")})
+    original_pending = storage._pending_vector_docs["c1"]
+
+    # Kick off get_vectors_by_ids — it will block inside the embedding gate
+    # *outside* _flush_lock.
+    task = asyncio.create_task(storage.get_vectors_by_ids(["c1"]))
+    await asyncio.wait_for(embed.entered.wait(), timeout=1.0)
+
+    # While embedding is in flight, replace the pending record via upsert.
+    # The new doc has a different content and a vector=None.
+    await storage.upsert({"c1": _chunk_data(content="replaced")})
+    assert storage._pending_vector_docs["c1"] is not original_pending
+
+    # Release the gate; the embedding completes and the identity check fires.
+    embed.gate.set()
+    result = await asyncio.wait_for(task, timeout=1.0)
+
+    # The stale embedding is NOT returned, and is NOT cached on the new
+    # pending record (which keeps vector=None for the next flush to embed).
+    assert result == {}
+    assert storage._pending_vector_docs["c1"].vector is None
+
+
+@pytest.mark.asyncio
+async def test_get_vectors_by_ids_drops_when_pending_record_removed():
+    """Same identity-check guard but for the delete-while-embedding race."""
+    embed = _GatedEmbed()
+    storage = _make_storage(embed=embed)
+
+    await storage.upsert({"c1": _chunk_data(content="original")})
+
+    task = asyncio.create_task(storage.get_vectors_by_ids(["c1"]))
+    await asyncio.wait_for(embed.entered.wait(), timeout=1.0)
+
+    # Delete the pending record mid-embedding.
+    await storage.delete(["c1"])
+    assert "c1" not in storage._pending_vector_docs
+
+    embed.gate.set()
+    result = await asyncio.wait_for(task, timeout=1.0)
+
+    # The vector for the removed id is dropped from the response.
+    assert result == {}

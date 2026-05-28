@@ -3786,15 +3786,36 @@ class PGVectorStorage(BaseVectorStorage):
                 and the buffers stay intact. Cached vectors stay attached
                 to pending docs so the next flush does not re-embed.
               * On success both buffers are cleared.
+
+        Post-finalize / pre-initialize:
+            Calling this after ``finalize()`` (``self.db is None``) or
+            before ``initialize()`` (``self._flush_lock is None``) with a
+            non-empty buffer raises ``RuntimeError`` — silently dropping
+            buffered writes would defeat the data-loss visibility that
+            ``finalize()`` provides. An empty-buffer call is a no-op.
         """
         if self._flush_lock is None:
+            pending_docs = len(self._pending_vector_docs)
+            pending_deletes = len(self._pending_vector_deletes)
+            if pending_docs or pending_deletes:
+                raise RuntimeError(
+                    f"[{self.workspace}] PGVectorStorage._flush_pending_vector_ops "
+                    f"called before initialize(); {pending_docs} pending upserts "
+                    f"and {pending_deletes} pending deletes cannot be flushed"
+                )
             return
 
         async with self._flush_lock:
             if not self._pending_vector_docs and not self._pending_vector_deletes:
                 return
             if self.db is None:
-                return
+                pending_docs = len(self._pending_vector_docs)
+                pending_deletes = len(self._pending_vector_deletes)
+                raise RuntimeError(
+                    f"[{self.workspace}] PGVectorStorage._flush_pending_vector_ops "
+                    f"called after client release; {pending_docs} pending upserts "
+                    f"and {pending_deletes} pending deletes cannot be flushed"
+                )
 
             timing_label = f"{self.workspace} PGVectorStorage.flush[{self.namespace}]"
             total_start = time.perf_counter()
@@ -4001,13 +4022,19 @@ class PGVectorStorage(BaseVectorStorage):
         The SQL predicate is kept (rather than ``self.delete([ent_id])``) as
         a safety net for legacy rows whose ``id`` may not equal
         ``compute_mdhash_id(entity_name, prefix="ent-")``.
+
+        Raises:
+            RuntimeError: if called before ``initialize()`` (``_flush_lock``
+                is still ``None``). Silently dropping a destructive intent
+                would defeat the data-loss visibility that the rest of this
+                storage enforces; the caller must initialize first.
         """
         if self._flush_lock is None:
-            logger.warning(
+            raise RuntimeError(
                 f"[{self.workspace}] PGVectorStorage.delete_entity called before "
-                f"initialize(); ignoring delete for entity '{entity_name}'"
+                f"initialize(); call initialize_storages() on the LightRAG instance "
+                f"before issuing destructive operations"
             )
-            return
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
 
         def _prune_pending() -> None:
@@ -4076,13 +4103,19 @@ class PGVectorStorage(BaseVectorStorage):
             caller decides whether to retry." Callers that need to rename
             or re-link the entity must re-issue the relation upserts after
             this call.
+
+        Raises:
+            RuntimeError: if called before ``initialize()`` (``_flush_lock``
+                is still ``None``). Silently dropping a destructive intent
+                would defeat the data-loss visibility that the rest of this
+                storage enforces; the caller must initialize first.
         """
         if self._flush_lock is None:
-            logger.warning(
+            raise RuntimeError(
                 f"[{self.workspace}] PGVectorStorage.delete_entity_relation called "
-                f"before initialize(); ignoring delete for entity '{entity_name}'"
+                f"before initialize(); call initialize_storages() on the LightRAG "
+                f"instance before issuing destructive operations"
             )
-            return
 
         def _prune_pending() -> None:
             for buffered_id in [
@@ -4131,6 +4164,15 @@ class PGVectorStorage(BaseVectorStorage):
         ``__vector__`` and ``__id__`` are stripped from buffered results to
         match the other vector backends; callers needing embeddings must use
         ``get_vectors_by_ids``.
+
+        Response shape:
+            Buffered hits return ``{"id", "content", <payload fields>,
+            "created_at"}`` only — no embedding column. SQL-fallback hits
+            return the full row including ``content_vector`` (and any
+            namespace-specific columns such as ``entity_name`` or
+            ``source_id``). Callers that only read documented payload
+            fields (``content``, ``id``, ``created_at``) are unaffected;
+            consumers iterating over all keys must tolerate both shapes.
         """
         async with self._flush_lock:
             if id in self._pending_vector_deletes:
@@ -4168,6 +4210,9 @@ class PGVectorStorage(BaseVectorStorage):
         served from the buffer; remaining ids fall through to a single
         parameterized ``id = ANY($2)`` SQL query (replacing the previous
         string-built ``IN (...)`` form).
+
+        Response shape: same buffered-vs-SQL inconsistency as
+        ``get_by_id`` — see that docstring for details.
         """
         if not ids:
             return []
