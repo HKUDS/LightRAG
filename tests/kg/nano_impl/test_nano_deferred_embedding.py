@@ -334,6 +334,9 @@ async def test_flush_embedding_failure_raises_and_keeps_pending(tmp_path):
 
     assert "id1" in storage._pending_upserts, "pending preserved for retry"
     assert len(storage._client) == 0, "nothing materialized on embed failure"
+    # Embed failure happens before self._client.upsert in _flush_pending_locked,
+    # so _client_dirty must NOT be set. (A save-stage failure would leave it True
+    # — see test_finalize_retries_save_after_flush_failure.)
     assert storage._client_dirty is False
 
 
