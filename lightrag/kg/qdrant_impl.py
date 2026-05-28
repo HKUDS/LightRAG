@@ -1016,9 +1016,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         if remaining:
             try:
                 qdrant_ids = [
-                    compute_mdhash_id_for_qdrant(
-                        id, prefix=self.effective_workspace
-                    )
+                    compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace)
                     for id in remaining
                 ]
                 results = self._client.retrieve(
@@ -1154,34 +1152,33 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         Qdrant has no client connection that needs explicit release here
         (the QdrantClient is held by the storage instance and torn down
         on GC), but we still need to fail loudly when a transient bulk
-        error left writes buffered.
+        error left writes buffered. ``_flush_pending_vector_ops`` is
+        all-or-nothing: it either clears both buffers or raises with
+        them intact, so we only need to handle the raise path.
         """
-        flush_error: Exception | None = None
         try:
             await self._flush_pending_vector_ops()
         except Exception as e:
-            flush_error = e
-
-        pending_docs = len(self._pending_vector_docs)
-        pending_deletes = len(self._pending_vector_deletes)
-
-        if flush_error is not None:
+            async with self._flush_lock:
+                pending_docs = len(self._pending_vector_docs)
+                pending_deletes = len(self._pending_vector_deletes)
             raise RuntimeError(
                 f"[{self.workspace}] QdrantVectorDBStorage.finalize() flush raised; "
                 f"{pending_docs} pending upserts and {pending_deletes} pending "
                 f"deletes were left buffered (data lost)"
-            ) from flush_error
-        if pending_docs or pending_deletes:
-            raise RuntimeError(
-                f"[{self.workspace}] QdrantVectorDBStorage.finalize() left "
-                f"{pending_docs} pending upserts and {pending_deletes} pending "
-                f"deletes buffered after final flush attempt (these writes have been lost)"
-            )
+            ) from e
 
     async def drop(self) -> dict[str, str]:
-        """Drop all vector data from storage and clean up resources
+        """Drop all vector data from storage and clean up resources.
 
-        This method will delete all data for the current workspace from the Qdrant collection.
+        This method deletes all data for the current workspace from the
+        Qdrant collection. The pending-write buffers are cleared *before*
+        the server-side delete is issued so a concurrent flush cannot
+        resurrect the dropped data. This means that if the server-side
+        delete fails, the buffered writes are also lost — the caller
+        cannot recover them by retrying ``drop()``. This is consistent
+        with ``drop()``'s contract ("discard everything for this
+        workspace") and matches the other lazy-embedding backends.
 
         Returns:
             dict[str, str]: Operation status and message
@@ -1200,9 +1197,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     collection_name=self.final_namespace,
                     points_selector=models.FilterSelector(
                         filter=models.Filter(
-                            must=[
-                                workspace_filter_condition(self.effective_workspace)
-                            ]
+                            must=[workspace_filter_condition(self.effective_workspace)]
                         )
                     ),
                     wait=True,

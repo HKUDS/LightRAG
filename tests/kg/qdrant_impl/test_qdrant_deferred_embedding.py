@@ -378,9 +378,7 @@ async def test_env_workspace_override_shares_flush_lock(patch_namespace_lock):
         assert a.final_namespace == b.final_namespace
         assert a.effective_workspace == b.effective_workspace == "shared_ws"
         assert a._flush_lock is b._flush_lock
-        assert (
-            len([k for k in cache if k == (a.final_namespace, "shared_ws")]) == 1
-        )
+        assert len([k for k in cache if k == (a.final_namespace, "shared_ws")]) == 1
 
 
 @pytest.mark.asyncio
