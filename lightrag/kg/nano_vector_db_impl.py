@@ -509,11 +509,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
             a subsequent ``index_done_callback``. Callers outside the
             pipeline must persist explicitly.
 
+        Buffer semantics — post-prune with caller short-circuit contract:
+            The materialized client delete runs first; the matching
+            pending upsert (if any) is popped **only after** it
+            succeeds. If the materialized delete raises, the pending
+            buffer stays intact and the exception is re-raised so the
+            caller can short-circuit before ``index_done_callback``
+            flushes a half-cleaned buffer.
+
         **Not pipeline-gated** — see class docstring
         *Non-pipeline write paths*. The caller is responsible for
         ensuring single-writer serialization.
         """
-
         try:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             logger.debug(
@@ -523,17 +530,20 @@ class NanoVectorDBStorage(BaseVectorStorage):
             async with self._storage_lock:
                 self._reload_client_from_disk_locked(for_write=True)
 
-                # Cancel a buffered upsert for this entity, then delete from the
-                # materialized client (lock non-reentrant; no _get_client).
-                pending_cancelled = (
-                    self._pending_upserts.pop(entity_id, None) is not None
-                )
+                # Materialized side first so a failure leaves the
+                # pending buffer intact for the caller's retry path.
                 if self._client.get([entity_id]):
                     self._client.delete([entity_id])
                     self._client_dirty = True
                     deleted = True
                 else:
                     deleted = False
+
+                # Materialized delete succeeded — safe to cancel any
+                # buffered upsert for this entity.
+                pending_cancelled = (
+                    self._pending_upserts.pop(entity_id, None) is not None
+                )
 
             if deleted or pending_cancelled:
                 logger.debug(
@@ -545,6 +555,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 )
         except Exception as e:
             logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
+            raise
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete every relation vector incident to ``entity_name``.
@@ -554,30 +565,32 @@ class NanoVectorDBStorage(BaseVectorStorage):
             a subsequent ``index_done_callback``. Callers outside the
             pipeline must persist explicitly.
 
+        Buffer semantics — post-prune with caller short-circuit contract:
+            The materialized client delete runs first; matching pending
+            upserts are pruned **only after** it succeeds. If the
+            materialized delete raises, the pending buffer stays intact
+            and the exception is re-raised so the caller (e.g.
+            ``adelete_by_entity``) can short-circuit before
+            ``_persist_graph_updates`` triggers ``index_done_callback``
+            on a half-cleaned buffer.
+
+            Previously the buffer was pre-pruned and the outer
+            ``except`` swallowed exceptions into ``logger.error`` — that
+            combination silently dropped both buffered relation vectors
+            and the failure signal.
+
         **Not pipeline-gated** — see class docstring
         *Non-pipeline write paths*. The caller is responsible for
         ensuring single-writer serialization.
         """
-
         try:
             async with self._storage_lock:
                 self._reload_client_from_disk_locked(for_write=True)
 
-                # Prune matching buffered upserts (their records carry src_id /
-                # tgt_id from the relationships vdb meta_fields)...
-                pending_ids = [
-                    doc_id
-                    for doc_id, pdoc in self._pending_upserts.items()
-                    if pdoc.record.get("src_id") == entity_name
-                    or pdoc.record.get("tgt_id") == entity_name
-                ]
-                for doc_id in pending_ids:
-                    del self._pending_upserts[doc_id]
-
-                # ...then scan the materialized client and delete matches.
-                # Use .get() for src_id / tgt_id to match the pending-side
-                # lookup above: rows without those keys (foreign namespaces)
-                # simply don't match instead of raising KeyError.
+                # Materialized side first so a failure leaves the
+                # pending buffer intact for the caller's retry path.
+                # Use .get() for src_id / tgt_id so rows from foreign
+                # namespaces without those keys silently don't match.
                 storage = getattr(self._client, "_NanoVectorDB__storage")
                 ids_to_delete = [
                     dp["__id__"]
@@ -588,6 +601,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 if ids_to_delete:
                     self._client.delete(ids_to_delete)
                     self._client_dirty = True
+
+                # Materialized delete succeeded — safe to prune matching
+                # buffered upserts so a subsequent flush won't re-upsert
+                # the just-deleted relations.
+                pending_ids = [
+                    doc_id
+                    for doc_id, pdoc in self._pending_upserts.items()
+                    if pdoc.record.get("src_id") == entity_name
+                    or pdoc.record.get("tgt_id") == entity_name
+                ]
+                for doc_id in pending_ids:
+                    del self._pending_upserts[doc_id]
 
             total = len(pending_ids) + len(ids_to_delete)
             if total:
@@ -602,6 +627,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.error(
                 f"[{self.workspace}] Error deleting relations for {entity_name}: {e}"
             )
+            raise
 
     async def index_done_callback(self) -> bool:
         """Flush deferred embeddings, commit to disk, and notify other processes.

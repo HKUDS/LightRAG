@@ -541,6 +541,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         Errors propagate (same rationale as ``delete``).
 
+        Buffer semantics — post-prune with caller short-circuit contract:
+            The materialized index rebuild runs first; matching pending
+            upserts are pruned **only after** it succeeds. If the
+            rebuild raises, the pending buffer stays intact so the
+            caller (``adelete_by_entity`` in ``utils_graph.py``) can
+            short-circuit before ``_persist_graph_updates`` flushes a
+            half-cleaned buffer.
+
         **Not pipeline-gated** — see class docstring
         *Non-pipeline write paths*. The caller is responsible for
         ensuring single-writer serialization.
@@ -548,19 +556,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         async with self._storage_lock:
             self._reload_index_from_disk_locked(for_write=True)
 
-            # Prune matching buffered upserts (their records carry src_id /
-            # tgt_id from the relationships vdb meta_fields)...
-            pending_ids = [
-                doc_id
-                for doc_id, pdoc in self._pending_upserts.items()
-                if pdoc.record.get("src_id") == entity_name
-                or pdoc.record.get("tgt_id") == entity_name
-            ]
-            for doc_id in pending_ids:
-                del self._pending_upserts[doc_id]
-
-            # ...then scan the materialized rows. .get() so rows from
-            # foreign namespaces (no src_id / tgt_id) silently don't match.
+            # Materialized side first so a failure leaves the pending
+            # buffer intact for the caller's retry path. .get() so rows
+            # from foreign namespaces (no src_id / tgt_id) silently
+            # don't match.
             relations = [
                 fid
                 for fid, meta in self._id_to_meta.items()
@@ -570,6 +569,18 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if relations:
                 self._remove_faiss_ids_locked(relations)
                 self._index_dirty = True
+
+            # Materialized rebuild succeeded — safe to prune matching
+            # buffered upserts (their records carry src_id / tgt_id from
+            # the relationships vdb meta_fields).
+            pending_ids = [
+                doc_id
+                for doc_id, pdoc in self._pending_upserts.items()
+                if pdoc.record.get("src_id") == entity_name
+                or pdoc.record.get("tgt_id") == entity_name
+            ]
+            for doc_id in pending_ids:
+                del self._pending_upserts[doc_id]
 
         total = len(pending_ids) + len(relations)
         if total:
