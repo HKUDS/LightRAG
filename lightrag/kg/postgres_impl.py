@@ -4097,23 +4097,26 @@ class PGVectorStorage(BaseVectorStorage):
         ``_flush_lock`` so it cannot interleave with a flush of buffered
         relation upserts.
 
-        Buffer semantics:
+        Buffer semantics — post-prune with caller short-circuit contract:
             Any pending relation upsert whose ``src_id`` or ``tgt_id``
             matches ``entity_name`` is pruned from ``_pending_vector_docs``
-            *only after* the SQL predicate delete succeeds, and will NOT be
-            re-inserted after that point — even if it would have created a
-            new edge. This matches the "delete all relations touching this
-            entity" intent. If the SQL raises, the pending docs are left
-            untouched so a subsequent retry can still observe them, and
-            the exception is logged and re-raised so the caller (e.g.
-            ``adelete_by_entity``) short-circuits before
-            ``_persist_graph_updates()`` flushes those preserved pending
-            upserts back into the table. Matches the cross-backend
-            contract documented on the Qdrant / Milvus / Mongo
-            implementations: "server-side failures are re-raised; the
-            caller decides whether to retry." Callers that need to rename
-            or re-link the entity must re-issue the relation upserts after
-            this call.
+            **only after** the SQL predicate delete succeeds. On SQL
+            failure the pending docs are left intact and the exception is
+            re-raised. This avoids silently dropping buffered relation
+            vectors that the user never told us to discard.
+
+            Correctness relies on the caller short-circuiting before it
+            can trigger ``index_done_callback`` and flush those preserved
+            pending upserts back into the table (which would undo the
+            delete intent on a partial server-side delete). The single
+            in-tree caller ``adelete_by_entity`` in ``utils_graph.py``
+            honors this: its ``except`` clause skips both ``delete_node``
+            and ``_persist_graph_updates``, so on failure both the graph
+            and the pending vector buffer stay consistent with the
+            "delete never happened" state and the operation converges on
+            the next retry. Callers that need to rename or re-link the
+            entity must re-issue the relation upserts after a successful
+            call.
 
         Raises:
             RuntimeError: if called before ``initialize()`` (``_flush_lock``
@@ -4154,16 +4157,12 @@ class PGVectorStorage(BaseVectorStorage):
                 )
                 # SQL succeeded — safe to prune pending relation docs. If
                 # it had raised, we'd skip this so the pending state
-                # remains for retry on the next flush.
+                # remains for retry on the next call.
                 _prune_pending()
             logger.debug(
                 f"[{self.workspace}] Successfully deleted relations for entity {entity_name}"
             )
         except Exception as e:
-            # Re-raise so the caller can short-circuit and skip the
-            # subsequent flush; otherwise the pending relation upserts
-            # we just preserved would be persisted back, undoing the
-            # delete.
             logger.error(
                 f"[{self.workspace}] Error deleting relations for entity {entity_name}: {e}"
             )
