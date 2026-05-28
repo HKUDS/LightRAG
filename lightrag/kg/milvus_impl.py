@@ -1885,14 +1885,15 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     )
                 except Exception as e:
                     logger.error(
-                        f"[{self.workspace}] Error lazily embedding pending vectors: {e}"
+                        f"[{self.workspace}] Error lazily embedding pending vectors "
+                        f"(upserts={len(docs_to_embed)}): {e}"
                     )
                     raise
                 embeddings = np.concatenate(embeddings_list)
                 if len(embeddings) != len(docs_to_embed):
                     raise RuntimeError(
-                        f"[{self.workspace}] Embedding count mismatch in lazy embed: "
-                        f"expected {len(docs_to_embed)}, got {len(embeddings)}"
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
                     )
                 for i, ((doc_id, pdoc), embedding) in enumerate(
                     zip(docs_to_embed, embeddings), start=1
