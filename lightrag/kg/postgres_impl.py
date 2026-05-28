@@ -4381,10 +4381,35 @@ class PGVectorStorage(BaseVectorStorage):
         return result
 
     async def drop(self) -> dict[str, str]:
-        """Drop the storage. Discards pending buffers before the table delete.
+        """Drop all rows scoped to this storage's workspace.
 
-        Runs under ``_flush_lock`` so a concurrent flush / upsert cannot
-        land writes against rows that are being torn down.
+        The underlying table is shared across workspaces and is NOT
+        dropped — this method issues ``DELETE FROM <table> WHERE
+        workspace=$1`` and clears the pending buffers (queued
+        upserts/deletes against rows that are about to disappear are
+        meaningless).
+
+        Concurrency contract:
+            ``_flush_lock`` guards same-process flush / upsert / delete
+            races only. Cross-worker buffered writes are NOT covered —
+            another worker's pending buffer can flush stale rows back
+            into the table immediately after this call returns. Callers
+            running inside the LightRAG framework MUST hold
+            ``pipeline_status["destructive_busy"] = True`` (acquired
+            atomically via ``_acquire_destructive_busy``) for the entire
+            duration of the drop; the ``/documents/clear`` endpoint
+            already does this before invoking ``drop()`` on every
+            storage. Direct callers (tests, ops scripts, debugging) are
+            responsible for ensuring no other writer is touching this
+            workspace.
+
+        Returns:
+            ``{"status": "success" | "error", "message": ...}``. Unlike
+            ``delete()`` / ``delete_entity()`` / ``delete_entity_relation()``
+            which re-raise on failure, ``drop()`` swallows the exception
+            into the return dict — callers MUST inspect ``status`` to
+            detect failure. The exception is also logged at ``error``
+            level so a missed status check still leaves a trail.
         """
         try:
             async with self._flush_lock:
@@ -4396,6 +4421,10 @@ class PGVectorStorage(BaseVectorStorage):
                 await self.db.execute(drop_sql, {"workspace": self.workspace})
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping vector storage "
+                f"{self.namespace}: {e}"
+            )
             return {"status": "error", "message": str(e)}
 
 
