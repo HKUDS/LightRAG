@@ -667,7 +667,7 @@ async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypat
     # The scan-owned background task forwards from_scan=True so per-file
     # enqueues bypass the scanning guard whose ``scanning`` flag the
     # scan task itself holds.
-    assert calls[0]["kwargs"] == {"from_scan": True}
+    assert calls[0]["kwargs"] == {"from_scan": True, "input_dir": tmp_path}
     archived_names = {
         path.name for path in (tmp_path / PARSED_DIR_NAME).iterdir() if path.is_file()
     }
@@ -787,7 +787,7 @@ async def test_scan_mixed_new_and_resume_routes_only_new_through_enqueue(
     # source on disk.
     assert len(calls) == 1
     assert calls[0]["file_paths"] == [new_file]
-    assert calls[0]["kwargs"] == {"from_scan": True}
+    assert calls[0]["kwargs"] == {"from_scan": True, "input_dir": tmp_path}
     # The unconditional trigger fires once — guaranteeing the resume row
     # advances even if pipeline_index_files's internal trigger were to be
     # skipped (e.g. if every new file was rejected by enqueue).
@@ -842,7 +842,7 @@ async def test_scan_failed_extraction_record_without_full_docs_is_retried(
     assert rag.doc_status.deleted_ids == [str(file_path)]
     assert len(calls) == 1
     assert calls[0]["file_paths"] == [file_path]
-    assert calls[0]["kwargs"] == {"from_scan": True}
+    assert calls[0]["kwargs"] == {"from_scan": True, "input_dir": tmp_path}
     assert rag.process_calls == 0
     assert file_path.exists()
 
