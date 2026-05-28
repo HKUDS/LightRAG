@@ -1614,7 +1614,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 ]
                 logger.info(
                     f"[{self.workspace}] {self.namespace} flush: embedding "
-                    f"{len(docs_to_embed)} vectors in {len(batches)} batch(es)"
+                    f"{len(docs_to_embed)} vectors in {len(batches)} batch(es) "
+                    f"(batch_num={self._max_batch_size})"
                 )
                 try:
                     embeddings_list = await asyncio.gather(
@@ -1625,15 +1626,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     )
                 except Exception as e:
                     logger.error(
-                        f"[{self.workspace}] Error embedding pending vectors for {self.namespace}: {e}"
+                        f"[{self.workspace}] Error embedding pending vector ops "
+                        f"(upserts={len(docs_to_embed)}): {e}"
                     )
                     raise
 
                 embeddings = np.concatenate(embeddings_list)
                 if len(embeddings) != len(docs_to_embed):
                     raise RuntimeError(
-                        f"[{self.workspace}] Embedding count mismatch in {self.namespace}: "
-                        f"expected {len(docs_to_embed)}, got {len(embeddings)}"
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
                     )
                 for i, ((_, pdoc), embedding) in enumerate(
                     zip(docs_to_embed, embeddings), start=1
@@ -1662,7 +1664,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     )
             except Exception as e:
                 logger.error(
-                    f"[{self.workspace}] Error flushing vector ops for {self.namespace}: {e}"
+                    f"[{self.workspace}] Error flushing vector ops "
+                    f"(upserts={len(pending_docs)}, "
+                    f"deletes={len(pending_deletes)}): {e}"
                 )
                 raise
 
