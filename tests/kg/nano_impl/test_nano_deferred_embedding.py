@@ -270,6 +270,93 @@ async def test_finalize_flushes_pending(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_delete_entity_relation_cancels_pending(tmp_path):
+    embed = _CountingEmbed()
+    storage = NanoVectorDBStorage(
+        namespace="test_relations",
+        workspace="ws",
+        global_config={
+            "working_dir": str(tmp_path),
+            "embedding_batch_num": 32,
+            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
+        },
+        embedding_func=EmbeddingFunc(embedding_dim=DIM, max_token_size=512, func=embed),
+        meta_fields={"content", "src_id", "tgt_id"},
+    )
+    await storage.initialize()
+
+    # Materialize r1 (A->B), leave r2 (A->C) and r3 (X->Y) as pending.
+    await storage.upsert({"r1": {"content": "rel1", "src_id": "A", "tgt_id": "B"}})
+    await storage.index_done_callback()
+    await storage.upsert(
+        {
+            "r2": {"content": "rel2", "src_id": "A", "tgt_id": "C"},
+            "r3": {"content": "rel3", "src_id": "X", "tgt_id": "Y"},
+        }
+    )
+
+    await storage.delete_entity_relation("A")
+
+    assert "r2" not in storage._pending_upserts, "incident pending entry cancelled"
+    assert "r3" in storage._pending_upserts, "unrelated pending entry preserved"
+    assert len(storage._client) == 0, "materialized A->B removed"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_flush_embedding_failure_raises_and_keeps_pending(tmp_path):
+    class _FailingEmbed:
+        def __init__(self):
+            self.call_count = 0
+
+        async def __call__(self, texts, **kwargs):
+            self.call_count += 1
+            raise RuntimeError("embed boom")
+
+    embed = _FailingEmbed()
+    storage = NanoVectorDBStorage(
+        namespace="test_vectors",
+        workspace="ws",
+        global_config={
+            "working_dir": str(tmp_path),
+            "embedding_batch_num": 32,
+            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
+        },
+        embedding_func=EmbeddingFunc(embedding_dim=DIM, max_token_size=512, func=embed),
+        meta_fields={"content"},
+    )
+    await storage.initialize()
+
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    with pytest.raises(RuntimeError, match="embed boom"):
+        await storage.index_done_callback()
+
+    assert "id1" in storage._pending_upserts, "pending preserved for retry"
+    assert len(storage._client) == 0, "nothing materialized on embed failure"
+    assert storage._client_dirty is False
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_drop_discards_pending_without_embedding(tmp_path):
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+
+    await storage.upsert({"id1": {"content": "alpha"}})
+    assert "id1" in storage._pending_upserts
+
+    result = await storage.drop()
+
+    assert result["status"] == "success"
+    assert storage._pending_upserts == {}, "drop discards buffered upserts"
+    assert embed.call_count == 0, "drop must not embed"
+    assert storage._client_dirty is False
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_finalize_retries_save_after_flush_failure(tmp_path):
     embed = _CountingEmbed()
     storage = _make_storage(tmp_path, embed)

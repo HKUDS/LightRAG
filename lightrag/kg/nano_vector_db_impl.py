@@ -142,9 +142,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
         caches the vector back for the next flush. ``query`` and
         ``client_storage`` see only data already materialized into
         ``self._client`` — unflushed pending data is intentionally not
-        queryable. A flush failure (embedding error / count mismatch) raises,
-        leaves the pending buffer intact, and skips the disk write so no data
-        is silently lost.
+        queryable. A flush failure (embedding error, count mismatch, or save
+        IO error) raises through ``index_done_callback``; the pending buffer
+        is preserved, and if only the save failed ``_client_dirty`` stays
+        ``True`` so a subsequent ``finalize`` retries the save.
     """
 
     def __post_init__(self):
@@ -559,11 +560,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     del self._pending_upserts[doc_id]
 
                 # ...then scan the materialized client and delete matches.
+                # Use .get() for src_id / tgt_id to match the pending-side
+                # lookup above: rows without those keys (foreign namespaces)
+                # simply don't match instead of raising KeyError.
                 storage = getattr(self._client, "_NanoVectorDB__storage")
                 ids_to_delete = [
                     dp["__id__"]
                     for dp in storage["data"]
-                    if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
+                    if dp.get("src_id") == entity_name
+                    or dp.get("tgt_id") == entity_name
                 ]
                 if ids_to_delete:
                     self._client.delete(ids_to_delete)
@@ -592,44 +597,35 @@ class NanoVectorDBStorage(BaseVectorStorage):
                snapshot while preserving this process's pending buffer.
             2. ``_flush_pending_locked`` embeds every buffered upsert (once
                per id) and materializes it into ``self._client``. A failure
-               here **raises** — pending is kept, nothing is written — so the
-               loss surfaces through ``_insert_done`` instead of being silent.
+               here **raises** — pending is kept, nothing is written.
             3. ``_save_to_disk_locked`` (``atomic_write``) lays a tmp file
                beside the target and renames it into place — readers either
                see the previous file in full or the new file in full, never a
-               torn write.
+               torn write. A failure here **also raises**; ``_client_dirty``
+               stays ``True`` so a later ``finalize`` retries the save.
             4. ``set_all_update_flags`` flips every registered process's
                ``storage_updated`` flag, then we immediately reset our own
                flag to ``False`` so the writer does not self-reload on the
                next call to ``_get_client``.
 
-        If this worker's client is stale, reload the latest on-disk snapshot
-        first, then flush the process-local pending buffer into that fresh
-        client. Returning early here would strand deferred upserts because
-        ``_insert_done`` does not retry based on the boolean result.
+        Either failure surfaces loudly through ``_insert_done`` so the caller
+        can abort the document batch instead of silently losing vectors. The
+        bool return is kept for legacy callers but is effectively always
+        ``True`` on the success path.
         """
         async with self._storage_lock:
             self._reload_client_from_disk_locked(for_write=True)
 
-            # Flush deferred embeddings after any reload. On embedding error / count
-            # mismatch this raises, leaving pending intact and skipping the
-            # disk write (no silent data loss); the exception propagates.
+            # Flush + save both raise on failure (embedding mismatch / save IO
+            # error). The exception propagates out of the lock so _insert_done
+            # aborts the batch; pending stays intact and _client_dirty stays
+            # True (if only the save failed) for a later retry.
             await self._flush_pending_locked()
-            try:
-                self._save_to_disk_locked()
-                # Notify other processes that data has been updated
-                await set_all_update_flags(self.namespace, workspace=self.workspace)
-                # Reset own update flag to avoid self-reloading
-                self.storage_updated.value = False
-                self._client_dirty = False
-                return True  # Return success
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error saving data for {self.namespace}: {e}"
-                )
-                return False  # Return error
-
-        return True  # Return success
+            self._save_to_disk_locked()
+            await set_all_update_flags(self.namespace, workspace=self.workspace)
+            self.storage_updated.value = False
+            self._client_dirty = False
+            return True
 
     @staticmethod
     def _format_record(dp: dict[str, Any]) -> dict[str, Any]:
@@ -819,26 +815,33 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def finalize(self):
         """Flush any buffered upserts and persist before shutdown (safety net).
 
-        Normally ``index_done_callback`` has already drained the pending buffer,
-        but a flow that upserts without a trailing callback would otherwise lose
-        those vectors silently. Flush + save here, and if anything remains
-        buffered afterward raise ``RuntimeError`` naming the count so the loss is
-        recorded (``finalize_storages`` logs it as an error).
+        Normally ``index_done_callback`` has already drained the pending buffer
+        and synced to disk, but two paths land here with work to do:
+
+        - **Pending upserts only** (no prior ``index_done_callback``): flush
+          and save. We reload first so a stale process picks up other writers'
+          commits before merging its pending buffer in.
+        - **Unsaved materialized changes** (``_client_dirty=True``): an earlier
+          ``index_done_callback`` flushed pending into ``self._client`` but
+          its save raised. Skip the reload — reloading would drop those
+          materialized-but-unsaved rows — and just retry the save.
+
+        Flush / save failures propagate (same contract as
+        ``index_done_callback``); a partially flushed buffer is preserved for
+        a future retry.
         """
         async with self._storage_lock:
             if not self._pending_upserts and not self._client_dirty:
                 return
             if self._pending_upserts:
-                self._reload_client_from_disk_locked(for_write=True)
+                # Only reload when we have nothing un-persisted in self._client.
+                # A dirty client carries successfully-flushed-but-unsaved rows
+                # from a prior index_done_callback; reloading would silently
+                # drop them.
+                if not self._client_dirty:
+                    self._reload_client_from_disk_locked(for_write=True)
                 await self._flush_pending_locked()
             self._save_to_disk_locked()
             await set_all_update_flags(self.namespace, workspace=self.workspace)
             self.storage_updated.value = False
             self._client_dirty = False
-            leftover = len(self._pending_upserts)
-
-        if leftover:
-            raise RuntimeError(
-                f"[{self.workspace}] NanoVectorDBStorage.finalize() left {leftover} "
-                f"pending upserts buffered after the final flush for {self.namespace}"
-            )
