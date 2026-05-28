@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -65,7 +66,13 @@ def test_build_upsert_batches_raises_for_single_oversized_point():
 
 
 @pytest.mark.asyncio
-async def test_upsert_fail_fast_stops_on_first_failed_batch():
+async def test_flush_fail_fast_stops_on_first_failed_batch():
+    """Flush-time fail-fast: once any batch raises, subsequent batches are skipped.
+
+    Mirrors the pre-deferred-embedding `upsert()` contract: the failure
+    bubbles out of `_flush_pending_vector_ops`, and the buffer is preserved
+    so the next flush can retry.
+    """
     storage = QdrantVectorDBStorage.__new__(QdrantVectorDBStorage)
     storage.workspace = "test_ws"
     storage.namespace = "chunks"
@@ -76,6 +83,9 @@ async def test_upsert_fail_fast_stops_on_first_failed_batch():
     storage._max_upsert_points_per_batch = 2
     storage.final_namespace = "test_collection"
     storage._client = MagicMock()
+    storage._pending_vector_docs = {}
+    storage._pending_vector_deletes = set()
+    storage._flush_lock = asyncio.Lock()
 
     async def fake_embedding_func(texts, **kwargs):
         return np.array([[float(len(text)), 0.0] for text in texts], dtype=np.float32)
@@ -85,8 +95,12 @@ async def test_upsert_fail_fast_stops_on_first_failed_batch():
 
     data = {f"chunk-{i}": {"content": f"content-{i}"} for i in range(5)}
 
+    # `upsert` only buffers; the failure surfaces from `_flush_pending_vector_ops`.
+    await storage.upsert(data)
+    assert len(storage._pending_vector_docs) == 5
+
     with pytest.raises(RuntimeError, match="batch failed"):
-        await storage.upsert(data)
+        await storage._flush_pending_vector_ops()
 
     # 5 items with max 2 points per batch => expected 3 batches, but stop at batch #2 on error.
     assert storage._client.upsert.call_count == 2
@@ -94,3 +108,5 @@ async def test_upsert_fail_fast_stops_on_first_failed_batch():
     second_call = storage._client.upsert.call_args_list[1]
     assert len(first_call.kwargs["points"]) == 2
     assert len(second_call.kwargs["points"]) == 2
+    # Buffer is preserved so the next flush can retry.
+    assert len(storage._pending_vector_docs) == 5
