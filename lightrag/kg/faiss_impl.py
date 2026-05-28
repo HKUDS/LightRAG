@@ -675,13 +675,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
         newly embedded vectors go through ``faiss.normalize_L2``.
 
         Failure handling:
-            * Embedding error / count mismatch → raises; ``_pending_upserts``
-              is left intact, ``self._index_dirty`` is not touched, nothing
-              is written to ``self._index``.
-            * Rebuild / ``index.add`` failure → raises before
-              ``_index_dirty=True`` flips, so the materialized state is not
-              falsely marked dirty (Faiss ops are synchronous and typically
-              all-or-nothing).
+            * Embedding error / count mismatch → raises before any mutation
+              to ``self._index`` / ``self._id_to_meta``; ``_pending_upserts``
+              is left intact and ``self._index_dirty`` is not touched.
+            * Rebuild / ``index.add`` failure → raises mid-write. The
+              materialized state may already be partially mutated (e.g.
+              ``_remove_faiss_ids_locked`` ran and dropped the prior fids
+              for re-upserted ids), but ``_index_dirty`` is **not** set
+              because we deliberately treat ``_pending_upserts`` as the
+              source of truth on this path: pending stays intact, and the
+              next ``finalize`` call re-enters ``_flush_pending_locked``,
+              which will rebuild the affected rows from the cached vectors
+              and re-add them — self-healing without re-embedding. The
+              dirty flag is reserved for "materialized but unsaved",
+              which is only true after ``index.add`` completes.
         """
         if not self._pending_upserts:
             return
@@ -711,7 +718,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 )
             # Batch in-place normalize once (faiss.normalize_L2 requires 2D).
             faiss.normalize_L2(arr)
-            for (_, pdoc), i in zip(to_embed, range(len(to_embed))):
+            for i, (_, pdoc) in enumerate(to_embed):
                 pdoc.vector = arr[i].copy()
 
         # All pending vectors are now non-None and already-normalized float32.
@@ -737,8 +744,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         self._index_dirty = True
 
-        # Clear only the entries we just flushed (an upsert that arrived after
-        # the snapshot would have re-set vector=None and must not be dropped).
+        # Clear only the entries we just flushed. Today the non-reentrant
+        # _storage_lock locks out concurrent upserts for the entire flush
+        # (including the asyncio.gather await), so the `is pdoc` identity
+        # check is always True — it's kept as defensive scaffolding so that
+        # if the lock scope is ever relaxed (e.g. embedding moved outside the
+        # lock), a concurrent upsert that re-set vector=None would not be
+        # silently dropped here.
         for doc_id, pdoc in pending_items:
             if self._pending_upserts.get(doc_id) is pdoc:
                 del self._pending_upserts[doc_id]

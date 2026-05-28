@@ -691,3 +691,78 @@ async def test_delete_propagates_errors(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="rebuild boom"):
         await storage.delete(["id1"])
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_flush_recovers_from_index_add_failure_without_re_embedding(tmp_path):
+    """Self-heal contract: if ``index.add`` raises mid-flush (after embedding
+    already succeeded), the pending buffer keeps the cached vectors and a
+    subsequent ``finalize`` retries the flush **without re-embedding**. Pins
+    the "pending is the source of truth on mid-write failure" invariant
+    documented on ``_flush_pending_locked``."""
+
+    class _AddFailsOnce:
+        """Wraps a real faiss index, raising on the first ``.add`` call. After
+        the second add succeeds it swaps the storage's ``_index`` attribute
+        back to the real instance, so ``faiss.write_index`` (which requires a
+        real SWIG-wrapped object) can run during the retry's save step. This
+        is a test-only shim — in production ``self._index`` is always a real
+        faiss index throughout the retry.
+        """
+
+        def __init__(self, storage, real):
+            self._storage = storage
+            self._real = real
+            self._calls = 0
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def add(self, arr):
+            self._calls += 1
+            if self._calls == 1:
+                raise RuntimeError("add boom")
+            result = self._real.add(arr)
+            self._storage._index = self._real
+            return result
+
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    real_index = storage._index
+    storage._index = _AddFailsOnce(storage, real_index)
+
+    with pytest.raises(RuntimeError, match="add boom"):
+        await storage.index_done_callback()
+
+    # Embedding completed once (failure happened after embed, in index.add).
+    assert embed.call_count == 1
+    # Pending preserved with cached vectors — that's the self-healing key.
+    assert "id1" in storage._pending_upserts
+    assert storage._pending_upserts["id1"].vector is not None
+    # _index_dirty stays False: docstring says we deliberately don't flip it
+    # on mid-write failure (pending is the source of truth).
+    assert storage._index_dirty is False
+    assert storage._index.ntotal == 0
+
+    # Retry through the same public entry point. The wrapper's second add
+    # succeeds, unwraps itself, and the rest of finalize (save + notify)
+    # runs against the real index.
+    await storage.finalize()
+
+    assert embed.call_count == 1, "retry must reuse cached vectors, not re-embed"
+    assert storage._index is real_index, "wrapper unwrapped itself on the second add"
+    assert storage._index.ntotal == 1
+    assert storage._pending_upserts == {}
+    assert storage._index_dirty is False
+    _assert_consistent(storage)
+
+    # And the row was persisted to disk by the retry's save.
+    reader = _make_storage(tmp_path, embed)
+    await reader.initialize()
+    hit = await reader.get_by_id("id1")
+    assert hit is not None and hit["content"] == "alpha"
