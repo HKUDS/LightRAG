@@ -88,7 +88,7 @@
     "@types/katex": "^0.16.8",
     "@types/node": "^25.6.2",
     "@tailwindcss/typography": "^0.5.15",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@types/react-i18next": "^8.1.0",
     "@types/react-syntax-highlighter": "^15.5.13",
