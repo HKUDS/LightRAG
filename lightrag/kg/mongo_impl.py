@@ -2472,7 +2472,15 @@ class MongoVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        """Queries the vector database using Atlas Vector Search."""
+        """Queries the vector database using Atlas Vector Search.
+
+        Reads from the server-side index only; buffered upserts and deletes
+        are NOT visible until ``index_done_callback`` / ``finalize`` flushes
+        them. Callers that need read-your-writes for a freshly upserted id
+        should use ``get_by_id`` / ``get_by_ids`` (which consult the buffer)
+        or flush first. Matches the deferred-embedding contract used by
+        OpenSearch / FAISS / Nano.
+        """
         if query_embedding is not None:
             # Convert numpy array to list if needed for MongoDB compatibility
             if hasattr(query_embedding, "tolist"):
@@ -2530,6 +2538,11 @@ class MongoVectorDBStorage(BaseVectorStorage):
         concurrent upserts and destructive mutations. Any failure (embed
         or server write) raises and leaves both buffers intact; the next
         `index_done_callback` retries automatically.
+
+        Concurrency invariant: ``_flush_lock`` is a non-reentrant asyncio
+        lock. Callers MUST NOT hold it when invoking this method --
+        re-entry would deadlock. The only in-tree callers are
+        ``index_done_callback`` and ``finalize``, both lock-free.
         """
         async with self._flush_lock:
             if not self._pending_vector_docs and not self._pending_vector_deletes:
@@ -2589,9 +2602,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     continue
                 committed_ids.append(doc_id)
                 full_doc = {**pdoc.source, "vector": pdoc.vector}
-                ops.append(
-                    UpdateOne({"_id": doc_id}, {"$set": full_doc}, upsert=True)
-                )
+                ops.append(UpdateOne({"_id": doc_id}, {"$set": full_doc}, upsert=True))
             for doc_id in pending_deletes:
                 ops.append(DeleteOne({"_id": doc_id}))
 

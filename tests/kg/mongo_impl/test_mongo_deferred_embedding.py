@@ -67,8 +67,16 @@ class _AsyncCursor:
 
 
 @pytest.fixture(autouse=True)
-def patch_namespace_lock():
-    """Cache real asyncio.Locks per (namespace, workspace) for shared semantics."""
+def patch_namespace_lock(monkeypatch):
+    """Cache real asyncio.Locks per (namespace, workspace) for shared semantics.
+
+    Also unconditionally clears ``MONGODB_WORKSPACE`` so tests are insulated
+    from shell-level env leakage: ``final_namespace`` depends on this var,
+    and a leaked value (e.g. ``space2``) silently collapses distinct
+    workspaces into one namespace. Tests that need an override set it
+    explicitly via ``patch.dict(os.environ, ...)``.
+    """
+    monkeypatch.delenv("MONGODB_WORKSPACE", raising=False)
     cache: dict[tuple[str, str | None], asyncio.Lock] = {}
 
     def factory(namespace, workspace=None, enable_logging=False):
@@ -105,9 +113,7 @@ def _make_storage(
     # Wire a fake AsyncCollection (the only Mongo surface our code touches).
     storage._data = MagicMock()
     storage._data.bulk_write = AsyncMock()
-    storage._data.delete_many = AsyncMock(
-        return_value=MagicMock(deleted_count=0)
-    )
+    storage._data.delete_many = AsyncMock(return_value=MagicMock(deleted_count=0))
     storage._data.find_one = AsyncMock(return_value=None)
     storage._data.find = MagicMock(return_value=_AsyncCursor([]))
     storage.db = MagicMock()  # non-None so finalize releases it
@@ -148,7 +154,10 @@ async def test_index_done_callback_triggers_flush():
 
     assert embed.call_count == 1
     s._data.bulk_write.assert_called_once()
-    ops, kwargs = s._data.bulk_write.call_args.args[0], s._data.bulk_write.call_args.kwargs
+    ops, kwargs = (
+        s._data.bulk_write.call_args.args[0],
+        s._data.bulk_write.call_args.kwargs,
+    )
     assert kwargs.get("ordered") is False
     assert all(isinstance(op, UpdateOne) for op in ops)
     assert len(ops) == 2
@@ -252,9 +261,15 @@ async def test_finalize_raises_when_buffer_unflushed_and_still_releases_client()
     await s.upsert({"v1": {"content": "hello"}})
 
     with patch.object(ClientManager, "release_client", new=AsyncMock()) as rel:
-        with pytest.raises(RuntimeError, match="finalize.*flush raised"):
+        with pytest.raises(RuntimeError, match="finalize.*flush raised") as exc_info:
             await s.finalize()
         rel.assert_awaited_once()
+
+    # Operator-diagnostic counts must appear in the message so the buffered
+    # data loss is auditable from the log alone (1 upsert pre-loaded, 0 deletes).
+    msg = str(exc_info.value)
+    assert "1 pending upserts" in msg
+    assert "0 pending deletes" in msg
 
     # Client references cleared so a second finalize doesn't release twice.
     assert s.db is None
@@ -412,6 +427,24 @@ async def test_env_workspace_override_shares_flush_lock(patch_namespace_lock):
         assert a.final_namespace == b.final_namespace == "shared_ws_entities"
         assert a._flush_lock is b._flush_lock
         assert len([k for k in cache if k[0] == "shared_ws_entities"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_workspace_param_shares_flush_lock(patch_namespace_lock):
+    """Plain ctor path (no MONGODB_WORKSPACE env): same workspace → shared lock.
+
+    Companion to ``test_env_workspace_override_shares_flush_lock``; together
+    they cover both ways two instances can land on the same final_namespace.
+    The autouse fixture clears MONGODB_WORKSPACE so this exercises the plain
+    constructor path, not the env-override path.
+    """
+    cache = patch_namespace_lock
+    embed = CountingEmbeddingFunc()
+    a = _make_storage(embed, workspace="caller")
+    b = _make_storage(embed, workspace="caller")
+    assert a.final_namespace == b.final_namespace == "caller_entities"
+    assert a._flush_lock is b._flush_lock
+    assert len([k for k in cache if k[0] == "caller_entities"]) == 1
 
 
 @pytest.mark.asyncio
