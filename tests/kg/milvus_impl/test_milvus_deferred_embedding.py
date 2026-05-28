@@ -354,9 +354,7 @@ async def test_delete_entity_relation_diverges_when_buffer_overwrites_persisted(
 
     # Buffered upsert rewriting an (assumed) already-persisted rel-X-Y
     # so that its new src/tgt would match entity "A".
-    await s.upsert(
-        {"rel-X-Y": {"content": "A → B", "src_id": "A", "tgt_id": "B"}}
-    )
+    await s.upsert({"rel-X-Y": {"content": "A → B", "src_id": "A", "tgt_id": "B"}})
     assert "rel-X-Y" in s._pending_vector_docs
 
     # Server still sees the OLD persisted row (src_id="X" / tgt_id="Y"),
@@ -385,9 +383,7 @@ async def test_delete_entity_relation_eager_ordering_matches_persisted():
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)
 
-    await s.upsert(
-        {"rel-X-Y": {"content": "A → B", "src_id": "A", "tgt_id": "B"}}
-    )
+    await s.upsert({"rel-X-Y": {"content": "A → B", "src_id": "A", "tgt_id": "B"}})
     await s.index_done_callback()  # buffered upsert is now persisted
     assert s._pending_vector_docs == {}
     s._client.upsert.assert_called_once()
