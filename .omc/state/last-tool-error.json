@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"(unset GIT_DIR GIT_WORK_TREE; git push origin feat/pg-rcte-storage --force-with-lease 2>&1)\",\"description\":\"Force push rebased branch to origin\"}",
+  "error": "Exit code 1\nTo github.com:ysys143/LightRAG.git\n ! [rejected]          feat/pg-rcte-storage -> feat/pg-rcte-storage (stale info)\nerror: failed to push some refs to 'github.com:ysys143/LightRAG.git'",
+  "timestamp": "2026-05-28T19:18:10.252Z",
+  "retry_count": 1
+}
