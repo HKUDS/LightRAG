@@ -22,6 +22,24 @@ from .shared_storage import (
 )
 
 
+@dataclass
+class _PendingNanoDoc:
+    """A buffered upsert waiting for deferred embedding and materialization.
+
+    ``record`` holds ``__id__`` / ``__created_at__`` plus the ``meta_fields``
+    (which always include ``content`` for the entity/relation/chunk vdbs), so
+    the content needed for deferred embedding lives in the record itself — no
+    separate copy is kept. ``vector`` starts as ``None`` and is filled either
+    during the lock-held flush or by a lazy ``get_vectors_by_ids`` embedding;
+    once set it is reused by the next flush instead of re-calling the model.
+    The compressed ``vector`` / raw ``__vector__`` keys are added to ``record``
+    only at flush time, right before ``client.upsert``.
+    """
+
+    record: dict[str, Any]
+    vector: np.ndarray | None = None
+
+
 @final
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
@@ -99,6 +117,34 @@ class NanoVectorDBStorage(BaseVectorStorage):
               not exposed in the WebUI. If you wire them up to a new
               caller, that caller must arrange single-writer
               serialization the same way the pipeline does.
+
+    Deferred-embedding protocol:
+        ``upsert`` does **not** call the embedding model. It only buffers a
+        ``_PendingNanoDoc`` (content-bearing record + ``vector=None``) in the
+        minimal ``self._pending_upserts`` area, overwriting any prior pending
+        doc for the same id (which also clears a temp vector a previous
+        ``get_vectors_by_ids`` may have cached). The model is called once per
+        id at flush time (``_flush_pending_locked``), so repeated upserts of
+        the same id — and many small upsert calls — embed only once. See
+        issue #2785 and the ``OpenSearchVectorDBStorage`` equivalent.
+
+        Embedding runs **inside ``_storage_lock``** during the flush (not in
+        ``upsert``): under the single-writer invariant this keeps the content
+        used for embedding consistent with the record written to disk and
+        prevents a destructive op from interleaving between embed and write.
+        The lock is non-reentrant, so ``_flush_pending_locked`` requires the
+        caller to already hold it and operates on ``self._client`` directly
+        (never through ``_get_client``).
+
+        Reads are read-your-writes: ``get_by_id`` / ``get_by_ids`` /
+        ``get_vectors_by_ids`` consult ``_pending_upserts`` first.
+        ``get_vectors_by_ids`` lazily embeds a pending doc on demand and
+        caches the vector back for the next flush. ``query`` and
+        ``client_storage`` see only data already materialized into
+        ``self._client`` — unflushed pending data is intentionally not
+        queryable. A flush failure (embedding error / count mismatch) raises,
+        leaves the pending buffer intact, and skips the disk write so no data
+        is silently lost.
     """
 
     def __post_init__(self):
@@ -143,6 +189,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self.embedding_func.embedding_dim,
             storage_file=self._client_file_name,
         )
+
+        # Minimal pending area for deferred embedding: id -> _PendingNanoDoc.
+        # Holds only records not yet embedded+materialized into self._client;
+        # it never duplicates rows already written to the client. Flushed
+        # under _storage_lock by _flush_pending_locked().
+        self._pending_upserts: dict[str, _PendingNanoDoc] = {}
 
     async def initialize(self):
         """Initialize storage data"""
@@ -194,69 +246,144 @@ class NanoVectorDBStorage(BaseVectorStorage):
             return self._client
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Insert or update vectors in memory; persistence is deferred.
+        """Buffer vectors for deferred embedding; persistence is deferred too.
+
+        Embedding is **not** performed here. Each record is buffered in
+        ``self._pending_upserts`` with ``vector=None`` and the embedding model
+        is called once per id at flush time (``_flush_pending_locked`` during
+        ``index_done_callback`` / ``finalize``). This coalesces repeated
+        upserts of the same id and many small upsert calls into a single
+        embedding pass (see class docstring, *Deferred-embedding protocol*,
+        and issue #2785).
 
         Persistence:
             Changes live only in this process's memory until the next
             ``index_done_callback``. Cross-process readers will not see
             them until that commit fires (see class docstring,
-            *Cross-process sync protocol*).
-
-        Concurrency:
-            The embedding step runs **outside** ``_storage_lock`` on
-            purpose — it can issue network / GPU calls and we don't
-            want to hold the per-namespace lock for that latency. The
-            actual ``client.upsert`` call happens after ``_get_client``;
-            correctness during that unlocked window relies on the class
-            docstring *Lock scope* invariant (synchronous NanoVectorDB
-            ops + single-writer pipeline gate).
+            *Cross-process sync protocol*). Until the flush, an upserted id
+            is observable only through the read-your-writes read paths, not
+            through ``query``.
         """
-        # logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
+        # logger.debug(f"[{self.workspace}] Buffering {len(data)} to {self.namespace}")
         if not data:
             return
 
         current_time = int(time.time())
-        list_data = [
-            {
-                "__id__": k,
-                "__created_at__": current_time,
-                **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
-            }
+        pending = [
+            (
+                k,
+                {
+                    "__id__": k,
+                    "__created_at__": current_time,
+                    **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+                },
+            )
             for k, v in data.items()
         ]
-        contents = [v["content"] for v in data.values()]
-        batches = [
-            contents[i : i + self._max_batch_size]
-            for i in range(0, len(contents), self._max_batch_size)
+
+        # Buffer under the lock to interlock with the lock-held flush. A new
+        # _PendingNanoDoc(vector=None) overwrites any prior pending doc for the
+        # same id, discarding a temp vector a previous get_vectors_by_ids may
+        # have cached (content-version change -> must re-embed new content).
+        async with self._storage_lock:
+            for doc_id, record in pending:
+                self._pending_upserts[doc_id] = _PendingNanoDoc(record=record)
+
+    async def _flush_pending_locked(self) -> None:
+        """Embed pending docs and materialize them into ``self._client``.
+
+        Precondition: the caller **must already hold** ``_storage_lock``. The
+        lock is non-reentrant, so this helper never calls ``_get_client`` and
+        operates on ``self._client`` directly. Embedding runs inside the lock
+        on purpose (see class docstring, *Deferred-embedding protocol*).
+
+        Failure handling: if embedding raises or the returned count does not
+        match, the exception propagates and ``_pending_upserts`` is left intact
+        so the next flush retries; nothing is written to ``self._client``.
+        """
+        if not self._pending_upserts:
+            return
+
+        # Snapshot for stable ordering between the embed list and the write.
+        pending_items = list(self._pending_upserts.items())
+        to_embed = [
+            (doc_id, pdoc) for doc_id, pdoc in pending_items if pdoc.vector is None
         ]
 
-        # Execute embedding outside of lock to avoid long lock times
-        embedding_tasks = [
-            self.embedding_func(batch, context="document") for batch in batches
-        ]
-        embeddings_list = await asyncio.gather(*embedding_tasks)
-
-        embeddings = np.concatenate(embeddings_list)
-        if len(embeddings) == len(list_data):
-            for i, d in enumerate(list_data):
-                # Compress vector using Float16 + zlib + Base64 for storage optimization
-                vector_f16 = embeddings[i].astype(np.float16)
-                compressed_vector = zlib.compress(vector_f16.tobytes())
-                encoded_vector = base64.b64encode(compressed_vector).decode("utf-8")
-                d["vector"] = encoded_vector
-                d["__vector__"] = embeddings[i]
-            client = await self._get_client()
-            results = client.upsert(datas=list_data)
-            return results
-        else:
-            # sometimes the embedding is not returned correctly. just log it.
-            logger.error(
-                f"[{self.workspace}] embedding is not 1-1 with data, {len(embeddings)} != {len(list_data)}"
+        if to_embed:
+            contents = [pdoc.record["content"] for _, pdoc in to_embed]
+            batches = [
+                contents[i : i + self._max_batch_size]
+                for i in range(0, len(contents), self._max_batch_size)
+            ]
+            embeddings_list = await asyncio.gather(
+                *[
+                    self.embedding_func(batch, context="document")
+                    for batch in batches
+                ]
             )
+            embeddings = np.concatenate(embeddings_list)
+            if len(embeddings) != len(to_embed):
+                # Explicit raise (not a log): a mismatch would mis-pair vectors
+                # with records. Keep pending intact so the next flush retries.
+                raise RuntimeError(
+                    f"[{self.workspace}] embedding is not 1-1 with pending data, "
+                    f"{len(embeddings)} != {len(to_embed)}"
+                )
+            for (_, pdoc), embedding in zip(to_embed, embeddings):
+                pdoc.vector = embedding
+
+        list_data = []
+        for _, pdoc in pending_items:
+            vector = pdoc.vector
+            # Compress vector using Float16 + zlib + Base64 for storage optimization
+            vector_f16 = vector.astype(np.float16)
+            compressed_vector = zlib.compress(vector_f16.tobytes())
+            encoded_vector = base64.b64encode(compressed_vector).decode("utf-8")
+            record = pdoc.record
+            record["vector"] = encoded_vector
+            record["__vector__"] = vector
+            list_data.append(record)
+
+        self._client.upsert(datas=list_data)
+
+        # Clear only the entries we just flushed (an upsert that arrived after
+        # the snapshot would have re-set vector=None and must not be dropped).
+        for doc_id, pdoc in pending_items:
+            if self._pending_upserts.get(doc_id) is pdoc:
+                del self._pending_upserts[doc_id]
+
+    def _save_to_disk_locked(self) -> None:
+        """Atomically persist ``self._client`` and notify other processes.
+
+        Precondition: the caller must already hold ``_storage_lock``. Factored
+        out of ``index_done_callback`` so ``finalize`` reuses the exact same
+        save+notify sequence. ``NanoVectorDB.save()`` always writes to whatever
+        path is on the instance, so we temporarily redirect ``storage_file`` to
+        the per-writer tmp and let ``atomic_write`` own the rename; the original
+        path is restored on every path (success and exception).
+        """
+
+        def _save_atomic(tmp: str) -> None:
+            original = self._client.storage_file
+            self._client.storage_file = tmp
+            try:
+                self._client.save()
+            finally:
+                self._client.storage_file = original
+
+        atomic_write(self._client_file_name, _save_atomic, self.workspace or "_")
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
+        """Similarity search over data already materialized into ``self._client``.
+
+        Buffered (unflushed) upserts are **not** searchable — only rows that a
+        prior ``index_done_callback`` / ``finalize`` flushed are considered.
+        Use the read-your-writes paths (``get_by_id`` / ``get_by_ids`` /
+        ``get_vectors_by_ids``) to observe pending data before a flush.
+        """
         # Use provided embedding or compute it
         if query_embedding is not None:
             embedding = query_embedding
@@ -313,15 +440,21 @@ class NanoVectorDBStorage(BaseVectorStorage):
             ids: List of vector IDs to be deleted
         """
         try:
-            client = await self._get_client()
-            # Record count before deletion
-            before_count = len(client)
+            # Hold the lock so the pending-cancel and the client delete are a
+            # single critical section against a concurrent flush. Operate on
+            # self._client directly (the lock is non-reentrant; no _get_client).
+            async with self._storage_lock:
+                for doc_id in ids:
+                    self._pending_upserts.pop(doc_id, None)
 
-            client.delete(ids)
+                # Record count before deletion
+                before_count = len(self._client)
 
-            # Calculate actual deleted count
-            after_count = len(client)
-            deleted_count = before_count - after_count
+                self._client.delete(ids)
+
+                # Calculate actual deleted count
+                after_count = len(self._client)
+                deleted_count = before_count - after_count
 
             logger.debug(
                 f"[{self.workspace}] Successfully deleted {deleted_count} vectors from {self.namespace}"
@@ -350,10 +483,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
             )
 
-            # Check if the entity exists
-            client = await self._get_client()
-            if client.get([entity_id]):
-                client.delete([entity_id])
+            async with self._storage_lock:
+                # Cancel a buffered upsert for this entity, then delete from the
+                # materialized client (lock non-reentrant; no _get_client).
+                pending_cancelled = self._pending_upserts.pop(entity_id, None) is not None
+                if self._client.get([entity_id]):
+                    self._client.delete([entity_id])
+                    deleted = True
+                else:
+                    deleted = False
+
+            if deleted or pending_cancelled:
                 logger.debug(
                     f"[{self.workspace}] Successfully deleted entity {entity_name}"
                 )
@@ -378,23 +518,32 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
 
         try:
-            client = await self._get_client()
-            storage = getattr(client, "_NanoVectorDB__storage")
-            relations = [
-                dp
-                for dp in storage["data"]
-                if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
-            ]
-            logger.debug(
-                f"[{self.workspace}] Found {len(relations)} relations for entity {entity_name}"
-            )
-            ids_to_delete = [relation["__id__"] for relation in relations]
+            async with self._storage_lock:
+                # Prune matching buffered upserts (their records carry src_id /
+                # tgt_id from the relationships vdb meta_fields)...
+                pending_ids = [
+                    doc_id
+                    for doc_id, pdoc in self._pending_upserts.items()
+                    if pdoc.record.get("src_id") == entity_name
+                    or pdoc.record.get("tgt_id") == entity_name
+                ]
+                for doc_id in pending_ids:
+                    del self._pending_upserts[doc_id]
 
-            if ids_to_delete:
-                client = await self._get_client()
-                client.delete(ids_to_delete)
+                # ...then scan the materialized client and delete matches.
+                storage = getattr(self._client, "_NanoVectorDB__storage")
+                ids_to_delete = [
+                    dp["__id__"]
+                    for dp in storage["data"]
+                    if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
+                ]
+                if ids_to_delete:
+                    self._client.delete(ids_to_delete)
+
+            total = len(pending_ids) + len(ids_to_delete)
+            if total:
                 logger.debug(
-                    f"[{self.workspace}] Deleted {len(ids_to_delete)} relations for {entity_name}"
+                    f"[{self.workspace}] Deleted {total} relations for {entity_name}"
                 )
             else:
                 logger.debug(
@@ -406,17 +555,22 @@ class NanoVectorDBStorage(BaseVectorStorage):
             )
 
     async def index_done_callback(self) -> bool:
-        """Commit in-memory state to disk and notify other processes.
+        """Flush deferred embeddings, commit to disk, and notify other processes.
 
         This is the writer's **commit point** in the cross-process sync
-        protocol (see class docstring). Two effects, in order:
-            1. ``atomic_write`` lays a tmp file beside the target and
-               renames it into place — readers either see the previous
-               file in full or the new file in full, never a torn write.
-            2. ``set_all_update_flags`` flips every registered process's
-               ``storage_updated`` flag, then we immediately reset our
-               own flag to ``False`` so the writer does not self-reload
-               on the next call to ``_get_client``.
+        protocol (see class docstring). Effects, in order:
+            1. ``_flush_pending_locked`` embeds every buffered upsert (once
+               per id) and materializes it into ``self._client``. A failure
+               here **raises** — pending is kept, nothing is written — so the
+               loss surfaces through ``_insert_done`` instead of being silent.
+            2. ``_save_to_disk_locked`` (``atomic_write``) lays a tmp file
+               beside the target and renames it into place — readers either
+               see the previous file in full or the new file in full, never a
+               torn write.
+            3. ``set_all_update_flags`` flips every registered process's
+               ``storage_updated`` flag, then we immediately reset our own
+               flag to ``False`` so the writer does not self-reload on the
+               next call to ``_get_client``.
 
         Two-block structure (intentional, do not collapse):
             * **First ``async with``** — early-return path for a
@@ -427,15 +581,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
               It is kept as defensive scaffolding for any future relaxation
               of the single-writer invariant; removing it would silently
               re-enable lost-write bugs the moment a second writer is
-              introduced.
-            * **Second ``async with``** — the actual save + notify.
-
-        ``_save_atomic`` temporarily reassigns ``self._client.storage_file``
-        to the tmp path so ``NanoVectorDB.save()`` (which always writes to
-        whatever path is on the instance) lands in the right place. This
-        is safe because (a) no other ``NanoVectorDB`` method reads
-        ``storage_file`` and (b) the reassignment is bracketed by
-        try/finally and held under ``_storage_lock``.
+              introduced. The pending buffer is left intact here so the next
+              callback retries the flush.
+            * **Second ``async with``** — flush + save + notify.
         """
         async with self._storage_lock:
             # Check if storage was updated by another process
@@ -452,26 +600,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 self.storage_updated.value = False
                 return False  # Return error
 
-        # Acquire lock and perform persistence
+        # Acquire lock and perform flush + persistence
         async with self._storage_lock:
+            # Flush deferred embeddings first. On embedding error / count
+            # mismatch this raises, leaving pending intact and skipping the
+            # disk write (no silent data loss); the exception propagates.
+            await self._flush_pending_locked()
             try:
-                # Save data to disk atomically. NanoVectorDB.save() always
-                # writes to whatever path is in `self._client.storage_file`,
-                # so we temporarily redirect it to the per-writer tmp and let
-                # atomic_write own the rename. The original path is restored
-                # on every path (success and exception) so subsequent reads
-                # against the client continue to point at the real file.
-                def _save_atomic(tmp: str) -> None:
-                    original = self._client.storage_file
-                    self._client.storage_file = tmp
-                    try:
-                        self._client.save()
-                    finally:
-                        self._client.storage_file = original
-
-                atomic_write(
-                    self._client_file_name, _save_atomic, self.workspace or "_"
-                )
+                self._save_to_disk_locked()
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
@@ -485,8 +621,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         return True  # Return success
 
+    @staticmethod
+    def _format_record(dp: dict[str, Any]) -> dict[str, Any]:
+        """Shape a stored/pending record into the public read result."""
+        return {
+            **{k: v for k, v in dp.items() if k not in ("vector", "__vector__")},
+            "id": dp.get("__id__"),
+            "created_at": dp.get("__created_at__"),
+        }
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        """Get vector data by its ID
+        """Get vector data by its ID (read-your-writes against the pending buffer).
 
         Args:
             id: The unique identifier of the vector
@@ -494,19 +639,20 @@ class NanoVectorDBStorage(BaseVectorStorage):
         Returns:
             The vector data if found, or None if not found
         """
+        # Read-your-writes: a buffered upsert is visible before its flush.
+        async with self._storage_lock:
+            pending = self._pending_upserts.get(id)
+            if pending is not None:
+                return self._format_record(pending.record)
+
         client = await self._get_client()
         result = client.get([id])
         if result:
-            dp = result[0]
-            return {
-                **{k: v for k, v in dp.items() if k != "vector"},
-                "id": dp.get("__id__"),
-                "created_at": dp.get("__created_at__"),
-            }
+            return self._format_record(result[0])
         return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get multiple vector data by their IDs
+        """Get multiple vector data by their IDs (read-your-writes), preserving order.
 
         Args:
             ids: List of unique identifiers
@@ -517,30 +663,36 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not ids:
             return []
 
-        client = await self._get_client()
-        results = client.get(ids)
+        # Read-your-writes: serve buffered upserts from the pending area and
+        # only query the materialized client for the remaining ids.
         result_map: dict[str, dict[str, Any]] = {}
+        remaining: list[str] = []
+        async with self._storage_lock:
+            for requested_id in ids:
+                pending = self._pending_upserts.get(requested_id)
+                if pending is not None:
+                    result_map[str(requested_id)] = self._format_record(pending.record)
+                else:
+                    remaining.append(requested_id)
 
-        for dp in results:
-            if not dp:
-                continue
-            record = {
-                **{k: v for k, v in dp.items() if k != "vector"},
-                "id": dp.get("__id__"),
-                "created_at": dp.get("__created_at__"),
-            }
-            key = record.get("id")
-            if key is not None:
-                result_map[str(key)] = record
+        if remaining:
+            client = await self._get_client()
+            for dp in client.get(remaining):
+                if not dp:
+                    continue
+                record = self._format_record(dp)
+                key = record.get("id")
+                if key is not None:
+                    result_map[str(key)] = record
 
-        ordered_results: list[dict[str, Any] | None] = []
-        for requested_id in ids:
-            ordered_results.append(result_map.get(str(requested_id)))
-
-        return ordered_results
+        return [result_map.get(str(requested_id)) for requested_id in ids]
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
-        """Get vectors by their IDs, returning only ID and vector data for efficiency
+        """Get vectors by their IDs (read-your-writes), returning only ID and vector.
+
+        For buffered upserts the vector is computed lazily (and cached back onto
+        the pending doc so the next flush reuses it instead of re-embedding);
+        for materialized rows the stored compressed vector is decoded.
 
         Args:
             ids: List of unique identifiers
@@ -552,18 +704,54 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not ids:
             return {}
 
-        client = await self._get_client()
-        results = client.get(ids)
+        vectors_dict: dict[str, list[float]] = {}
+        remaining: list[str] = []
+        async with self._storage_lock:
+            to_embed: list[tuple[str, _PendingNanoDoc]] = []
+            for requested_id in ids:
+                pending = self._pending_upserts.get(requested_id)
+                if pending is None:
+                    remaining.append(requested_id)
+                elif pending.vector is not None:
+                    vectors_dict[requested_id] = pending.vector.astype(
+                        np.float32
+                    ).tolist()
+                else:
+                    to_embed.append((requested_id, pending))
 
-        vectors_dict = {}
-        for result in results:
-            if result and "vector" in result and "__id__" in result:
-                # Decompress vector data (Base64 + zlib + Float16 compressed)
-                decoded = base64.b64decode(result["vector"])
-                decompressed = zlib.decompress(decoded)
-                vector_f16 = np.frombuffer(decompressed, dtype=np.float16)
-                vector_f32 = vector_f16.astype(np.float32).tolist()
-                vectors_dict[result["__id__"]] = vector_f32
+            if to_embed:
+                contents = [pdoc.record["content"] for _, pdoc in to_embed]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                embeddings_list = await asyncio.gather(
+                    *[
+                        self.embedding_func(batch, context="document")
+                        for batch in batches
+                    ]
+                )
+                embeddings = np.concatenate(embeddings_list)
+                if len(embeddings) != len(to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] embedding is not 1-1 with pending data, "
+                        f"{len(embeddings)} != {len(to_embed)}"
+                    )
+                for (requested_id, pdoc), embedding in zip(to_embed, embeddings):
+                    # Cache the vector back so the next flush reuses it.
+                    pdoc.vector = embedding
+                    vectors_dict[requested_id] = embedding.astype(np.float32).tolist()
+
+        if remaining:
+            client = await self._get_client()
+            for result in client.get(remaining):
+                if result and "vector" in result and "__id__" in result:
+                    # Decompress vector data (Base64 + zlib + Float16 compressed)
+                    decoded = base64.b64decode(result["vector"])
+                    decompressed = zlib.decompress(decoded)
+                    vector_f16 = np.frombuffer(decompressed, dtype=np.float16)
+                    vector_f32 = vector_f16.astype(np.float32).tolist()
+                    vectors_dict[result["__id__"]] = vector_f32
 
         return vectors_dict
 
@@ -592,6 +780,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
         try:
             async with self._storage_lock:
+                # Discard buffered (unflushed) upserts along with the data.
+                self._pending_upserts.clear()
+
                 # delete _client_file_name
                 if os.path.exists(self._client_file_name):
                     os.remove(self._client_file_name)
@@ -613,3 +804,27 @@ class NanoVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"[{self.workspace}] Error dropping {self.namespace}: {e}")
             return {"status": "error", "message": str(e)}
+
+    async def finalize(self):
+        """Flush any buffered upserts and persist before shutdown (safety net).
+
+        Normally ``index_done_callback`` has already drained the pending buffer,
+        but a flow that upserts without a trailing callback would otherwise lose
+        those vectors silently. Flush + save here, and if anything remains
+        buffered afterward raise ``RuntimeError`` naming the count so the loss is
+        recorded (``finalize_storages`` logs it as an error).
+        """
+        async with self._storage_lock:
+            if not self._pending_upserts:
+                return
+            await self._flush_pending_locked()
+            self._save_to_disk_locked()
+            await set_all_update_flags(self.namespace, workspace=self.workspace)
+            self.storage_updated.value = False
+            leftover = len(self._pending_upserts)
+
+        if leftover:
+            raise RuntimeError(
+                f"[{self.workspace}] NanoVectorDBStorage.finalize() left {leftover} "
+                f"pending upserts buffered after the final flush for {self.namespace}"
+            )
