@@ -3475,7 +3475,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             try:
                 # No per-operation refresh: search visibility is established
                 # by the refresh in index_done_callback().
-                success, failed = await helpers.async_bulk(
+                _, failed = await helpers.async_bulk(
                     self.client, actions, raise_on_error=False
                 )
             except OpenSearchException as e:
@@ -3489,7 +3489,6 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 raise
 
             retryable_ids, non_retryable_ops = _extract_bulk_failed_ids(failed)
-            non_retryable_ids = {op.doc_id for op in non_retryable_ops}
 
             # Clear successful and non-retryable entries; keep retryable ones
             # in place for the next flush.
@@ -3519,18 +3518,6 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     f"failed permanently and were dropped (non-retryable status). "
                     f"Sample: {sample_text}"
                 )
-                if len(non_retryable_ops) > len(sample):
-                    logger.debug(
-                        f"[{self.workspace}] Remaining permanent failures: "
-                        + ", ".join(
-                            f"{op.op}/{op.doc_id}/status={op.status}/{op.error}"
-                            for op in non_retryable_ops[len(sample) :]
-                        )
-                    )
-            logger.debug(
-                f"[{self.workspace}] Flushed vector ops: {success} ok, "
-                f"retry={len(retryable_ids)}, dropped={len(non_retryable_ids)}"
-            )
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
