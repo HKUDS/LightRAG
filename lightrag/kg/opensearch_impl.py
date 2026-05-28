@@ -3408,6 +3408,14 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     contents[i : i + self._max_batch_size]
                     for i in range(0, len(contents), self._max_batch_size)
                 ]
+                # TEMP diagnostic (remove later): confirm deferred batching is
+                # actually coalescing per-id upserts. defer working -> docs >>
+                # batches; eager/per-id -> docs == batches == 1 every flush.
+                logger.info(
+                    f"[{self.workspace}] {self.namespace} flush: embedding "
+                    f"{len(docs_to_embed)} vectors in {len(batches)} batch(es) "
+                    f"(batch_num={self._max_batch_size})"
+                )
                 try:
                     embeddings_list = await asyncio.gather(
                         *[
