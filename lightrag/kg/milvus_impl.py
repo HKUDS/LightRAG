@@ -1972,6 +1972,34 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         This method will delete all data from the Milvus collection.
 
+        Known limitation — multi-instance aliasing: we only clear *this*
+        instance's ``_pending_vector_docs`` / ``_pending_vector_deletes``.
+        The namespace lock (keyed on ``final_namespace``) serializes the
+        drop+recreate against a concurrent flush, but it does not
+        invalidate process-local buffers held by *other*
+        ``MilvusVectorDBStorage`` instances that share the same
+        ``final_namespace`` — e.g. multi-worker deployments where each
+        process holds its own instance, or distinct namespaces aliased
+        onto one collection by ``MILVUS_WORKSPACE``. A sibling whose
+        previous ``index_done_callback()`` raised (which by contract
+        leaves its buffers intact for retry) will, on its next flush,
+        acquire the same namespace lock and upsert those stale rows
+        into the *newly recreated* collection — silently undoing the
+        drop.
+
+        Safe under the current calling contract: the only caller,
+        ``clear_documents`` in ``lightrag/api/routers/document_routes.py``,
+        reserves the destructive slot only when ``pipeline_status`` is
+        idle (``busy=False``, ``scanning=False``, ``pending_enqueues==0``;
+        see the Pipeline concurrency contract in ``AGENTS.md``). With
+        the pipeline idle no in-flight ingestion is queueing new
+        buffered writes, and the only sibling state that could still
+        be dirty is a buffer left over from a previously-failed flush
+        — accepted as a rare residual risk rather than fixed by a
+        cross-instance invalidation token. Any future direct caller of
+        ``drop()`` that bypasses this idle precondition MUST flush
+        every aliased instance itself before calling.
+
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
