@@ -705,9 +705,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 contents[i : i + self._max_batch_size]
                 for i in range(0, len(contents), self._max_batch_size)
             ]
-            embeddings_list = await asyncio.gather(
-                *[self.embedding_func(batch, context="document") for batch in batches]
+            logger.info(
+                f"[{self.workspace}] {self.namespace} flush: embedding "
+                f"{len(to_embed)} vectors in {len(batches)} batch(es) "
+                f"(batch_num={self._max_batch_size})"
             )
+            try:
+                embeddings_list = await asyncio.gather(
+                    *[
+                        self.embedding_func(batch, context="document")
+                        for batch in batches
+                    ]
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error embedding pending vector ops "
+                    f"(upserts={len(to_embed)}): {e}"
+                )
+                raise
             arr = np.concatenate(embeddings_list, axis=0).astype(np.float32)
             if len(arr) != len(to_embed):
                 # Explicit raise (not a log): a mismatch would mis-pair vectors
