@@ -1427,13 +1427,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._initialized = False
 
         # Deferred-embedding buffers and the per-namespace flush lock.
-        # The lock is constructed in initialize() once the shared-storage
-        # primitives are available; we use the final_namespace as the key
-        # so two instances pointing at the same Milvus collection (e.g.
-        # when MILVUS_WORKSPACE env override is used) share the same lock.
+        # The lock keys on final_namespace so two instances pointing at the
+        # same Milvus collection (e.g. when MILVUS_WORKSPACE env override is
+        # used) share a single writer lock. We construct it here in
+        # __post_init__ — not in initialize() — so any code path that
+        # touches the buffer before initialize() still has a valid lock.
         self._pending_vector_docs: dict[str, _PendingVectorDoc] = {}
         self._pending_vector_deletes: set[str] = set()
-        self._flush_lock = None
+        self._flush_lock = get_namespace_lock(
+            namespace=self.final_namespace, workspace=""
+        )
 
     async def initialize(self):
         """Initialize Milvus collection"""
@@ -1471,16 +1474,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     f"[{self.workspace}] Failed to initialize Milvus collection '{self.namespace}': {e}"
                 )
                 raise
-
-        # Construct the flush lock outside the data-init lock so it survives
-        # re-initialization. Key on final_namespace to align with the actual
-        # backend partition: two storage instances whose final_namespace
-        # collides (e.g. MILVUS_WORKSPACE env override) must share a single
-        # writer lock.
-        if self._flush_lock is None:
-            self._flush_lock = get_namespace_lock(
-                namespace=self.final_namespace, workspace=""
-            )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Buffer vector docs for embedding and batched flush.
@@ -1523,6 +1516,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
+        """Similarity search against the persisted Milvus collection.
+
+        Note: buffered-but-unflushed upserts are NOT visible to this method —
+        they exist only in `_pending_vector_docs` until `index_done_callback()`
+        embeds and writes them. Callers that need read-after-write visibility
+        for similarity search must run an explicit flush first.
+        """
         # Ensure collection is loaded before querying
         self._ensure_collection_loaded()
 
@@ -1567,7 +1567,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         ]
 
     async def index_done_callback(self) -> None:
-        """Flush buffered vector ops; Milvus persists automatically once written."""
+        """Flush all buffered vector ops to Milvus before returning.
+
+        Contract: on a successful return, every previously buffered upsert
+        has been embedded and committed to the collection, and every buffered
+        delete has been issued — i.e. all pending vectors are durable in
+        Milvus (which persists automatically once written). On any embed-
+        or server-side failure this method raises and leaves both buffers
+        intact for the next callback to retry; the caller MUST NOT assume
+        clean persistence in that case.
+        """
         await self._flush_pending_vector_ops()
 
     async def _flush_pending_vector_ops(self) -> None:
@@ -1632,15 +1641,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     pdoc.vector = embedding.tolist()
                     await _cooperative_yield(i)
 
-            # Assemble final upsert payload.
-            list_data: list[dict[str, Any]] = []
-            committed_ids: list[str] = []
-            for doc_id, pdoc in pending_docs.items():
-                if pdoc.vector is None:
-                    # Shouldn't happen after the embed loop above, but guard anyway.
-                    continue
-                committed_ids.append(doc_id)
-                list_data.append({**pdoc.source, "vector": pdoc.vector})
+            # Assemble final upsert payload. After the embed loop above every
+            # pending doc has a non-None vector (count-mismatch was checked),
+            # so we can iterate without re-guarding.
+            committed_ids: list[str] = list(pending_docs.keys())
+            list_data: list[dict[str, Any]] = [
+                {**pending_docs[doc_id].source, "vector": pending_docs[doc_id].vector}
+                for doc_id in committed_ids
+            ]
 
             try:
                 if list_data:
@@ -1899,7 +1907,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     vector_data = item["vector"]
                     if isinstance(vector_data, np.ndarray):
                         vector_data = vector_data.tolist()
-                    result[item["id"]] = vector_data
+                    # Match get_by_ids: stringify the server-returned id so
+                    # callers can index the dict by the original requested id.
+                    result[str(item["id"])] = vector_data
             return result
         except Exception as e:
             logger.error(
@@ -1921,8 +1931,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             flush_error = e
 
-        pending_docs = len(self._pending_vector_docs)
-        pending_deletes = len(self._pending_vector_deletes)
+        # Read the residual buffer sizes under the flush lock so the
+        # snapshot is consistent with any racing late-arriving mutator
+        # (cancellation paths can land an upsert/delete between the flush
+        # above and the post-mortem check below).
+        async with self._flush_lock:
+            pending_docs = len(self._pending_vector_docs)
+            pending_deletes = len(self._pending_vector_deletes)
 
         if flush_error is not None:
             raise RuntimeError(

@@ -98,6 +98,8 @@ def _make_storage(
         meta_fields=meta_fields,
     )
     # Bypass real Milvus client; manually wire the bits initialize() would set.
+    # The flush lock is already constructed in __post_init__ via the patched
+    # get_namespace_lock factory, so no manual lock wiring is needed here.
     storage._client = MagicMock()
     storage._client.has_collection.return_value = True
     storage._client.upsert = MagicMock(return_value={"upsert_count": 0})
@@ -105,12 +107,6 @@ def _make_storage(
     storage._client.query = MagicMock(return_value=[])
     storage._client.load_collection = MagicMock()
     storage._initialized = True
-    # Manually construct the flush lock using the patched factory.
-    from lightrag.kg.milvus_impl import get_namespace_lock
-
-    storage._flush_lock = get_namespace_lock(
-        namespace=storage.final_namespace, workspace=""
-    )
     return storage
 
 
@@ -380,6 +376,53 @@ async def test_distinct_namespaces_get_independent_locks(patch_namespace_lock):
     b = _make_storage(embed, workspace="b")
     assert a.final_namespace != b.final_namespace
     assert a._flush_lock is not b._flush_lock
+
+
+@pytest.mark.asyncio
+async def test_mixed_upsert_and_delete_in_single_flush():
+    """A flush carrying both pending upserts and pending deletes (on disjoint
+    ids) must dispatch one server upsert and one server delete in a single
+    pass, then clear both buffers."""
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+
+    await s.upsert({"a": {"content": "alpha"}})
+    await s.delete(["b"])
+
+    assert set(s._pending_vector_docs.keys()) == {"a"}
+    assert s._pending_vector_deletes == {"b"}
+
+    await s.index_done_callback()
+
+    s._client.upsert.assert_called_once()
+    upsert_kwargs = s._client.upsert.call_args.kwargs
+    assert {row["id"] for row in upsert_kwargs["data"]} == {"a"}
+
+    s._client.delete.assert_called_once()
+    assert s._client.delete.call_args.kwargs["pks"] == ["b"]
+
+    # Both buffers cleared after a successful flush.
+    assert s._pending_vector_docs == {}
+    assert s._pending_vector_deletes == set()
+
+
+@pytest.mark.asyncio
+async def test_finalize_clean_flush_no_raise():
+    """Happy-path counterpart to test_finalize_raises_when_buffer_unflushed:
+    a successful flush during finalize() must leave both buffers empty and
+    must not raise."""
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+
+    await s.upsert({"v1": {"content": "hello"}})
+    await s.delete(["v2"])
+
+    await s.finalize()  # must not raise
+
+    s._client.upsert.assert_called_once()
+    s._client.delete.assert_called_once()
+    assert s._pending_vector_docs == {}
+    assert s._pending_vector_deletes == set()
 
 
 @pytest.mark.asyncio
