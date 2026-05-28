@@ -20,7 +20,7 @@ from ..utils import logger, compute_mdhash_id, _cooperative_yield
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
 from .._version import __version__
-from ..kg.shared_storage import get_data_init_lock
+from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
 import pipmaster as pm
 
@@ -28,7 +28,7 @@ if not pm.is_installed("pymongo"):
     pm.install("pymongo")
 
 from pymongo import AsyncMongoClient  # type: ignore
-from pymongo import UpdateOne  # type: ignore
+from pymongo import UpdateOne, DeleteOne  # type: ignore
 from pymongo.asynchronous.database import AsyncDatabase  # type: ignore
 from pymongo.asynchronous.collection import AsyncCollection  # type: ignore
 from pymongo.operations import SearchIndexModel  # type: ignore
@@ -2234,6 +2234,15 @@ class MongoGraphStorage(BaseGraphStorage):
             return {"status": "error", "message": str(e)}
 
 
+@dataclass
+class _PendingVectorDoc:
+    """Buffered vector upsert waiting for embedding and/or bulk flush."""
+
+    source: dict[str, Any]
+    content: str
+    vector: list[float] | None = None
+
+
 @final
 @dataclass
 class MongoVectorDBStorage(BaseVectorStorage):
@@ -2305,6 +2314,15 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self._collection_name = self.final_namespace
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
+        # Deferred-embedding buffers and the per-namespace flush lock.
+        # Constructed in initialize() once shared-storage primitives are
+        # available; keyed on final_namespace so two instances pointing at
+        # the same MongoDB collection (e.g. with the MONGODB_WORKSPACE env
+        # override) share a single writer lock.
+        self._pending_vector_docs: dict[str, _PendingVectorDoc] = {}
+        self._pending_vector_deletes: set[str] = set()
+        self._flush_lock = None
+
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
@@ -2319,11 +2337,39 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Use MongoDB as VDB {self._collection_name}"
             )
 
+        if self._flush_lock is None:
+            self._flush_lock = get_namespace_lock(
+                namespace=self.final_namespace, workspace=""
+            )
+
     async def finalize(self):
+        """Flush pending vector ops, release the Mongo client, surface unflushed data."""
+        flush_error: Exception | None = None
+        try:
+            await self._flush_pending_vector_ops()
+        except Exception as e:
+            flush_error = e
+
         if self.db is not None:
             await ClientManager.release_client(self.db)
             self.db = None
             self._data = None
+
+        pending_docs = len(self._pending_vector_docs)
+        pending_deletes = len(self._pending_vector_deletes)
+
+        if flush_error is not None:
+            raise RuntimeError(
+                f"[{self.workspace}] MongoVectorDBStorage.finalize() flush raised; "
+                f"{pending_docs} pending upserts and {pending_deletes} pending "
+                f"deletes were left buffered (client released, data lost)"
+            ) from flush_error
+        if pending_docs or pending_deletes:
+            raise RuntimeError(
+                f"[{self.workspace}] MongoVectorDBStorage.finalize() left "
+                f"{pending_docs} pending upserts and {pending_deletes} pending "
+                f"deletes buffered after final flush attempt (these writes have been lost)"
+            )
 
     async def create_vector_index_if_not_exists(self):
         """Creates an Atlas Vector Search index."""
@@ -2389,55 +2435,52 @@ class MongoVectorDBStorage(BaseVectorStorage):
             )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
+        """Buffer vector docs for embedding and batched flush.
+
+        Embedding deliberately does NOT happen here: repeated upserts of
+        the same id, or many small batches, collapse into a single
+        flush-time embedding pass. Reads observe pending docs via the
+        same lock for read-your-writes.
+        """
         if not data:
             return
 
-        # Add current time as Unix timestamp
         current_time = int(time.time())
 
-        list_data = []
+        pending_docs: list[tuple[str, _PendingVectorDoc]] = []
         for i, (k, v) in enumerate(data.items(), start=1):
-            list_data.append(
-                {
-                    "_id": k,
-                    "created_at": current_time,  # Add created_at field as Unix timestamp
-                    **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
-                }
+            source = {
+                "_id": k,
+                "created_at": current_time,
+                **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+            }
+            pending_docs.append(
+                (
+                    k,
+                    _PendingVectorDoc(source=source, content=v["content"]),
+                )
             )
             await _cooperative_yield(i)
-        contents = [v["content"] for v in data.values()]
-        batches = [
-            contents[i : i + self._max_batch_size]
-            for i in range(0, len(contents), self._max_batch_size)
-        ]
 
-        embedding_tasks = [
-            self.embedding_func(batch, context="document") for batch in batches
-        ]
-        embeddings_list = await asyncio.gather(*embedding_tasks)
-        embeddings = np.concatenate(embeddings_list)
-        assert len(embeddings) == len(
-            list_data
-        ), f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
-        for i, d in enumerate(list_data, start=1):
-            d["vector"] = np.array(embeddings[i - 1], dtype=np.float32).tolist()
-            await _cooperative_yield(i)
-
-        update_tasks = []
-        for i, doc in enumerate(list_data, start=1):
-            update_tasks.append(
-                self._data.update_one({"_id": doc["_id"]}, {"$set": doc}, upsert=True)
-            )
-            await _cooperative_yield(i)
-        await asyncio.gather(*update_tasks)
-
-        return list_data
+        # Installing a fresh _PendingVectorDoc invalidates any vector
+        # cached by a prior get_vectors_by_ids() call on a stale revision.
+        async with self._flush_lock:
+            for doc_id, pdoc in pending_docs:
+                self._pending_vector_deletes.discard(doc_id)
+                self._pending_vector_docs[doc_id] = pdoc
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
-        """Queries the vector database using Atlas Vector Search."""
+        """Queries the vector database using Atlas Vector Search.
+
+        Reads from the server-side index only; buffered upserts and deletes
+        are NOT visible until ``index_done_callback`` / ``finalize`` flushes
+        them. Callers that need read-your-writes for a freshly upserted id
+        should use ``get_by_id`` / ``get_by_ids`` (which consult the buffer)
+        or flush first. Matches the deferred-embedding contract used by
+        OpenSearch / FAISS / Nano.
+        """
         if query_embedding is not None:
             # Convert numpy array to list if needed for MongoDB compatibility
             if hasattr(query_embedding, "tolist"):
@@ -2484,71 +2527,156 @@ class MongoVectorDBStorage(BaseVectorStorage):
         ]
 
     async def index_done_callback(self) -> None:
-        # Mongo handles persistence automatically
-        pass
+        """Flush buffered vector ops; Mongo persists automatically once written."""
+        await self._flush_pending_vector_ops()
+
+    async def _flush_pending_vector_ops(self) -> None:
+        """Flush buffered vector upserts and deletes via a single bulk_write.
+
+        Embedding runs *inside* this lock (not in `upsert` or lock-free):
+        it makes deferred embedding and the bulk write atomic against
+        concurrent upserts and destructive mutations. Any failure (embed
+        or server write) raises and leaves both buffers intact; the next
+        `index_done_callback` retries automatically.
+
+        Concurrency invariant: ``_flush_lock`` is a non-reentrant asyncio
+        lock. Callers MUST NOT hold it when invoking this method --
+        re-entry would deadlock. The only in-tree callers are
+        ``index_done_callback`` and ``finalize``, both lock-free.
+        """
+        async with self._flush_lock:
+            if not self._pending_vector_docs and not self._pending_vector_deletes:
+                return
+            if self._data is None:
+                return
+
+            pending_docs = self._pending_vector_docs
+            pending_deletes = self._pending_vector_deletes
+
+            docs_to_embed: list[tuple[str, _PendingVectorDoc]] = [
+                (doc_id, pdoc)
+                for doc_id, pdoc in pending_docs.items()
+                if pdoc.vector is None
+            ]
+
+            if docs_to_embed:
+                contents = [pdoc.content for _, pdoc in docs_to_embed]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                logger.info(
+                    f"[{self.workspace}] {self.namespace} flush: embedding "
+                    f"{len(docs_to_embed)} vectors in {len(batches)} batch(es) "
+                    f"(batch_num={self._max_batch_size})"
+                )
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error embedding pending vector ops "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
+
+                embeddings = np.concatenate(embeddings_list)
+                if len(embeddings) != len(docs_to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
+                    )
+                for i, ((_, pdoc), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
+                    pdoc.vector = np.array(embedding, dtype=np.float32).tolist()
+                    await _cooperative_yield(i)
+
+            # Build the bulk_write op list.
+            ops: list[Any] = []
+            committed_ids: list[str] = []
+            for doc_id, pdoc in pending_docs.items():
+                if pdoc.vector is None:
+                    continue
+                committed_ids.append(doc_id)
+                full_doc = {**pdoc.source, "vector": pdoc.vector}
+                ops.append(UpdateOne({"_id": doc_id}, {"$set": full_doc}, upsert=True))
+            for doc_id in pending_deletes:
+                ops.append(DeleteOne({"_id": doc_id}))
+
+            if not ops:
+                return
+
+            try:
+                await self._data.bulk_write(ops, ordered=False)
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error flushing vector ops "
+                    f"(upserts={len(pending_docs)}, "
+                    f"deletes={len(pending_deletes)}): {e}"
+                )
+                raise
+
+            # On success, clear the buffers in-place so external references
+            # (e.g. drop()) see the cleared state.
+            for doc_id in committed_ids:
+                pending_docs.pop(doc_id, None)
+            pending_deletes.clear()
 
     async def delete(self, ids: list[str]) -> None:
-        """Delete vectors with specified IDs
-
-        Args:
-            ids: List of vector IDs to be deleted
-        """
-        logger.debug(
-            f"[{self.workspace}] Deleting {len(ids)} vectors from {self.namespace}"
-        )
+        """Buffer vector deletes for batched flush."""
         if not ids:
             return
-
-        # Convert to list if it's a set (MongoDB BSON cannot encode sets)
         if isinstance(ids, set):
             ids = list(ids)
-
-        try:
-            result = await self._data.delete_many({"_id": {"$in": ids}})
-            logger.debug(
-                f"[{self.workspace}] Successfully deleted {result.deleted_count} vectors from {self.namespace}"
-            )
-        except PyMongoError as e:
-            logger.error(
-                f"[{self.workspace}] Error while deleting vectors from {self.namespace}: {str(e)}"
-            )
+        async with self._flush_lock:
+            for doc_id in ids:
+                self._pending_vector_docs.pop(doc_id, None)
+                self._pending_vector_deletes.add(doc_id)
+        logger.debug(
+            f"[{self.workspace}] Buffered delete for {len(ids)} vectors in {self.namespace}"
+        )
 
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete an entity by its name
-
-        Args:
-            entity_name: Name of the entity to delete
-        """
-        try:
-            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            logger.debug(
-                f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
-            )
-
-            result = await self._data.delete_one({"_id": entity_id})
-            if result.deleted_count > 0:
-                logger.debug(
-                    f"[{self.workspace}] Successfully deleted entity {entity_name}"
-                )
-            else:
-                logger.debug(
-                    f"[{self.workspace}] Entity {entity_name} not found in storage"
-                )
-        except PyMongoError as e:
-            logger.error(
-                f"[{self.workspace}] Error deleting entity {entity_name}: {str(e)}"
-            )
+        """Buffer an entity vector delete by computing its hash ID."""
+        entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+        async with self._flush_lock:
+            self._pending_vector_docs.pop(entity_id, None)
+            self._pending_vector_deletes.add(entity_id)
+        logger.debug(
+            f"[{self.workspace}] Buffered delete for entity {entity_name} (id={entity_id})"
+        )
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete all relations associated with an entity
+        """Delete all relation vectors where entity appears as src or tgt.
 
-        Args:
-            entity_name: Name of the entity whose relations should be deleted
+        The whole method runs under ``_flush_lock`` so the server-side find
+        + delete cannot interleave with an in-flight bulk write. Server-side
+        failures are re-raised (no log-and-swallow): the caller decides
+        whether to retry.
         """
-        try:
-            # Find relations where entity appears as source or target
+        async with self._flush_lock:
+            # Prune matching docs from the pending upsert buffer.
+            for doc_id in [
+                k
+                for k, v in self._pending_vector_docs.items()
+                if v.source.get("src_id") == entity_name
+                or v.source.get("tgt_id") == entity_name
+            ]:
+                self._pending_vector_docs.pop(doc_id, None)
+
+            if self._data is None:
+                return
+
+            # _id is the only field we need from the find; project to keep
+            # the cursor light.
             relations_cursor = self._data.find(
-                {"$or": [{"src_id": entity_name}, {"tgt_id": entity_name}]}
+                {"$or": [{"src_id": entity_name}, {"tgt_id": entity_name}]},
+                {"_id": 1},
             )
             relations = await relations_cursor.to_list(length=None)
 
@@ -2558,42 +2686,32 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 )
                 return
 
-            # Extract IDs of relations to delete
             relation_ids = [relation["_id"] for relation in relations]
+            await self._data.delete_many({"_id": {"$in": relation_ids}})
             logger.debug(
-                f"[{self.workspace}] Found {len(relation_ids)} relations for entity {entity_name}"
+                f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
             )
-
-            # Delete the relations
-            result = await self._data.delete_many({"_id": {"$in": relation_ids}})
-            logger.debug(
-                f"[{self.workspace}] Deleted {result.deleted_count} relations for {entity_name}"
-            )
-        except PyMongoError as e:
-            logger.error(
-                f"[{self.workspace}] Error deleting relations for {entity_name}: {str(e)}"
-            )
-
-        except PyMongoError as e:
-            logger.error(
-                f"[{self.workspace}] Error searching by prefix in {self.namespace}: {str(e)}"
-            )
-            return []
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        """Get vector data by its ID
+        """Get vector data by its ID, with read-your-writes against the buffer.
 
-        Args:
-            id: The unique identifier of the vector
-
-        Returns:
-            The vector data if found, or None if not found
+        Pending buffer hits never include the `vector` field; server-side
+        fallback projects it out for parity.
         """
+        async with self._flush_lock:
+            if id in self._pending_vector_deletes:
+                return None
+            pending = self._pending_vector_docs.get(id)
+            if pending is not None:
+                doc = dict(pending.source)
+                # Surface both _id (Mongo native) and id (API expectation).
+                doc.setdefault("_id", id)
+                doc["id"] = id
+                return doc
+
         try:
-            # Search for the specific ID in MongoDB
-            result = await self._data.find_one({"_id": id})
+            result = await self._data.find_one({"_id": id}, {"vector": 0})
             if result:
-                # Format the result to include id field expected by API
                 result_dict = dict(result)
                 if "_id" in result_dict and "id" not in result_dict:
                     result_dict["id"] = result_dict["_id"]
@@ -2606,86 +2724,164 @@ class MongoVectorDBStorage(BaseVectorStorage):
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get multiple vector data by their IDs
-
-        Args:
-            ids: List of unique identifiers
-
-        Returns:
-            List of vector data objects that were found
-        """
+        """Get multiple vector data by their IDs (read-your-writes), preserving order."""
         if not ids:
             return []
 
-        try:
-            # Query MongoDB for multiple IDs
-            cursor = self._data.find({"_id": {"$in": ids}})
-            results = await cursor.to_list(length=None)
+        buffered: dict[str, dict[str, Any] | None] = {}
+        remaining: list[str] = []
+        async with self._flush_lock:
+            for doc_id in ids:
+                if doc_id in self._pending_vector_deletes:
+                    buffered[doc_id] = None
+                    continue
+                pending = self._pending_vector_docs.get(doc_id)
+                if pending is not None:
+                    doc = dict(pending.source)
+                    doc.setdefault("_id", doc_id)
+                    doc["id"] = doc_id
+                    buffered[doc_id] = doc
+                    continue
+                remaining.append(doc_id)
 
-            # Format results to include id field expected by API and preserve ordering
-            formatted_map: dict[str, dict[str, Any]] = {}
-            for result in results:
-                result_dict = dict(result)
-                if "_id" in result_dict and "id" not in result_dict:
-                    result_dict["id"] = result_dict["_id"]
-                key = str(result_dict.get("id", result_dict.get("_id")))
-                formatted_map[key] = result_dict
+        formatted_map: dict[str, dict[str, Any]] = {}
+        if remaining:
+            try:
+                cursor = self._data.find({"_id": {"$in": remaining}}, {"vector": 0})
+                results = await cursor.to_list(length=None)
+                for result in results:
+                    result_dict = dict(result)
+                    if "_id" in result_dict and "id" not in result_dict:
+                        result_dict["id"] = result_dict["_id"]
+                    key = str(result_dict.get("id", result_dict.get("_id")))
+                    formatted_map[key] = result_dict
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error retrieving vector data for IDs {remaining}: {e}"
+                )
+                return []
 
-            ordered_results: list[dict[str, Any] | None] = []
-            for id_value in ids:
-                ordered_results.append(formatted_map.get(str(id_value)))
-
-            return ordered_results
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"
-            )
-            return []
+        return [
+            buffered[doc_id] if doc_id in buffered else formatted_map.get(str(doc_id))
+            for doc_id in ids
+        ]
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
-        """Get vectors by their IDs, returning only ID and vector data for efficiency
+        """Get vector embeddings for given IDs, with read-your-writes.
 
-        Args:
-            ids: List of unique identifiers
+        Pending docs whose vector hasn't been embedded yet are embedded
+        lazily inside the lock; the resulting vector is cached on the
+        buffered `_PendingVectorDoc` so the next flush won't re-embed.
 
-        Returns:
-            Dictionary mapping IDs to their vector embeddings
-            Format: {id: [vector_values], ...}
+        Visibility caveat for ids not in the buffer: the server-side
+        ``find`` fallback runs *outside* ``_flush_lock``. A concurrent
+        ``delete()`` that lands between lock release and the cursor
+        read only buffers the delete -- the old vector is still on disk
+        until the next flush, so this method may return a stale vector
+        for an id that has been buffered for deletion. This is
+        best-effort read-after-uncommitted-delete and matches the
+        ``query()`` contract: callers needing strict consistency must
+        ``index_done_callback()`` first.
         """
         if not ids:
             return {}
 
+        result: dict[str, list[float]] = {}
+        remaining: list[str] = []
+        async with self._flush_lock:
+            docs_to_embed: list[tuple[str, _PendingVectorDoc]] = []
+            for doc_id in ids:
+                if doc_id in self._pending_vector_deletes:
+                    continue
+                pending = self._pending_vector_docs.get(doc_id)
+                if pending is not None:
+                    if pending.vector is None:
+                        docs_to_embed.append((doc_id, pending))
+                    else:
+                        result[doc_id] = pending.vector
+                    continue
+                remaining.append(doc_id)
+
+            if docs_to_embed:
+                contents = [pdoc.content for _, pdoc in docs_to_embed]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error lazily embedding pending vectors "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
+                embeddings = np.concatenate(embeddings_list)
+                if len(embeddings) != len(docs_to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
+                    )
+                for i, ((doc_id, pdoc), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
+                    pdoc.vector = np.array(embedding, dtype=np.float32).tolist()
+                    result[doc_id] = pdoc.vector
+                    await _cooperative_yield(i)
+
+        if not remaining:
+            return result
+
         try:
-            # Query MongoDB for the specified IDs, only retrieving the vector field
-            cursor = self._data.find({"_id": {"$in": ids}}, {"vector": 1})
-            results = await cursor.to_list(length=None)
-
-            vectors_dict = {}
-            for result in results:
-                if result and "vector" in result and "_id" in result:
-                    # MongoDB stores vectors as arrays, so they should already be lists
-                    vectors_dict[result["_id"]] = result["vector"]
-
-            return vectors_dict
-        except PyMongoError as e:
-            logger.error(
-                f"[{self.workspace}] Error retrieving vectors by IDs from {self.namespace}: {e}"
+            cursor = self._data.find(
+                {"_id": {"$in": remaining}}, {"_id": 1, "vector": 1}
             )
-            return {}
+            results = await cursor.to_list(length=None)
+            for row in results:
+                if row and "vector" in row and "_id" in row:
+                    result[row["_id"]] = row["vector"]
+            return result
+        except PyMongoError as e:
+            logger.error(f"[{self.workspace}] Error getting vectors: {e}")
+            return result
 
     async def drop(self) -> dict[str, str]:
-        """Drop the storage by removing all documents in the collection and recreating vector index.
+        """Drop all documents and recreate the vector index. Destructive.
+
+        MUST only be called when ``pipeline_status`` is idle (see the
+        Pipeline concurrency contract in ``AGENTS.md``); the only
+        in-tree caller ``clear_documents`` enforces this.
+
+        Caveat — only this instance's buffers are cleared. Other
+        ``MongoVectorDBStorage`` instances aliased onto the same
+        ``final_namespace`` (multi-worker processes, or distinct
+        workspaces collapsed by ``MONGODB_WORKSPACE``) keep their own
+        buffers; a sibling whose prior flush failed and left buffers
+        intact will, on its next flush, bulk-write those stale rows into
+        the freshly recreated collection. Direct callers bypassing the
+        idle precondition MUST flush every aliased instance first.
 
         Returns:
-            dict[str, str]: Status of the operation with keys 'status' and 'message'
+            dict[str, str]: ``{"status": "success"|"error", "message": str}``
         """
         try:
-            # Delete all documents
-            result = await self._data.delete_many({})
-            deleted_count = result.deleted_count
+            async with self._flush_lock:
+                # Discard any buffered writes before the collection is wiped;
+                # a concurrent flush would otherwise resurrect them.
+                self._pending_vector_docs.clear()
+                self._pending_vector_deletes.clear()
 
-            # Recreate vector index
-            await self.create_vector_index_if_not_exists()
+                # Delete all documents
+                result = await self._data.delete_many({})
+                deleted_count = result.deleted_count
+
+                # Recreate vector index
+                await self.create_vector_index_if_not_exists()
 
             logger.info(
                 f"[{self.workspace}] Dropped {deleted_count} documents from vector storage {self._collection_name} and recreated vector index"
