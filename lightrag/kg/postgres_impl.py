@@ -3841,13 +3841,25 @@ class PGVectorStorage(BaseVectorStorage):
                     contents[i : i + self._max_batch_size]
                     for i in range(0, len(contents), self._max_batch_size)
                 ]
-                embedding_start = time.perf_counter()
-                embeddings_list = await asyncio.gather(
-                    *[
-                        self.embedding_func(batch, context="document")
-                        for batch in batches
-                    ]
+                logger.info(
+                    f"[{self.workspace}] {self.namespace} flush: embedding "
+                    f"{len(docs_to_embed)} vectors in {len(batches)} batch(es) "
+                    f"(batch_num={self._max_batch_size})"
                 )
+                embedding_start = time.perf_counter()
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error embedding pending vector ops "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
                 performance_timing_log(
                     "[%s] embedding completed in %.4fs docs=%s batches=%s",
                     timing_label,
@@ -3929,11 +3941,10 @@ class PGVectorStorage(BaseVectorStorage):
             try:
                 await self.db._run_with_retry(_flush_batch, timing_label=timing_label)
             except Exception as e:
-                logger.warning(
-                    f"[{self.workspace}] PGVectorStorage flush failed; "
-                    f"buffer preserved for retry "
-                    f"({len(batch_values)} upserts, "
-                    f"{len(pending_delete_ids)} deletes left pending): {e}"
+                logger.error(
+                    f"[{self.workspace}] Error flushing vector ops "
+                    f"(upserts={len(batch_values)}, "
+                    f"deletes={len(pending_delete_ids)}): {e}"
                 )
                 raise
 
@@ -4314,9 +4325,19 @@ class PGVectorStorage(BaseVectorStorage):
                 contents[i : i + self._max_batch_size]
                 for i in range(0, len(contents), self._max_batch_size)
             ]
-            embeddings_list = await asyncio.gather(
-                *[self.embedding_func(batch, context="document") for batch in batches]
-            )
+            try:
+                embeddings_list = await asyncio.gather(
+                    *[
+                        self.embedding_func(batch, context="document")
+                        for batch in batches
+                    ]
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error lazily embedding pending vectors "
+                    f"(upserts={len(docs_to_embed)}): {e}"
+                )
+                raise
             embeddings = np.concatenate(embeddings_list)
             if len(embeddings) != len(docs_to_embed):
                 raise RuntimeError(
@@ -4374,9 +4395,7 @@ class PGVectorStorage(BaseVectorStorage):
                         f"[{self.workspace}] Failed to parse vector data for ID {row['id']}: {e}"
                     )
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error retrieving vectors by IDs from {self.namespace}: {e}"
-            )
+            logger.error(f"[{self.workspace}] Error getting vectors: {e}")
 
         return result
 
