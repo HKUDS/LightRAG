@@ -85,12 +85,13 @@ async def test_transient_json_parse_400_is_wrapped():
             await openai_complete_if_cache.__wrapped__(
                 model="gpt-4o-mini", prompt="hello"
             )
+    fake_client.close.assert_awaited()
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_genuine_400_fails_fast():
-    """A non-parse 400 (e.g. bad params) is not wrapped and propagates."""
+    """A non-parse 400 (e.g. bad params) is not wrapped, propagates, and closes the client."""
     err = _make_bad_request("Error code: 400 - Invalid value for 'temperature'.")
     fake_client = _make_error_client(err)
     with patch(
@@ -100,3 +101,6 @@ async def test_genuine_400_fails_fast():
             await openai_complete_if_cache.__wrapped__(
                 model="gpt-4o-mini", prompt="hello"
             )
+    # The non-transient 400 path must still close the underlying httpx client
+    # to avoid connection leaks in validation-heavy/misconfigured runs.
+    fake_client.close.assert_awaited()

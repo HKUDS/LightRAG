@@ -461,12 +461,15 @@ async def openai_complete_if_cache(
         # A "could not parse JSON body" 400 is transient (corrupted/truncated
         # request body in transit) and succeeds on retry; re-raise it as a
         # retryable type. Genuine 400s (bad params, content policy) fail fast.
+        # Either way we must close the client before re-raising, matching the
+        # other except branches above — otherwise non-transient 400s would
+        # leak httpx connections in validation-heavy/misconfigured runs.
+        try:
+            await openai_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close OpenAI client: {close_error}")
         if "could not parse" in str(e).lower():
             logger.warning(f"Transient JSON-parse 400 from OpenAI, will retry: {e}")
-            try:
-                await openai_async_client.close()
-            except Exception as close_error:
-                logger.warning(f"Failed to close OpenAI client: {close_error}")
             raise TransientBadRequestError(str(e)) from e
         raise
     except Exception as e:
