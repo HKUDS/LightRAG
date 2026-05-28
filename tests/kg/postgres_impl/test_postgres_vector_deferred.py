@@ -620,9 +620,9 @@ async def test_delete_entity_serializes_against_in_flight_flush():
     # Give the event loop a few turns to confirm delete_entity is blocked.
     for _ in range(5):
         await asyncio.sleep(0)
-    assert not delete_task.done(), (
-        "delete_entity should be waiting on _flush_lock while flush holds it"
-    )
+    assert (
+        not delete_task.done()
+    ), "delete_entity should be waiting on _flush_lock while flush holds it"
 
     # Unblock the flush; both should complete.
     embed.gate.set()
@@ -684,9 +684,7 @@ async def test_embedding_count_mismatch_raises_and_preserves_buffer():
 
     async def short_embed(texts, **kwargs):
         rows = max(0, len(list(texts)) - 1)
-        return np.array(
-            [[1.0, 0.0, 0.0] for _ in range(rows)], dtype=np.float32
-        )
+        return np.array([[1.0, 0.0, 0.0] for _ in range(rows)], dtype=np.float32)
 
     storage.embedding_func = short_embed
 

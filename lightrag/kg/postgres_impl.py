@@ -3796,9 +3796,7 @@ class PGVectorStorage(BaseVectorStorage):
             if self.db is None:
                 return
 
-            timing_label = (
-                f"{self.workspace} PGVectorStorage.flush[{self.namespace}]"
-            )
+            timing_label = f"{self.workspace} PGVectorStorage.flush[{self.namespace}]"
             total_start = time.perf_counter()
             performance_timing_log(
                 "[%s] start upserts=%s deletes=%s max_batch_size=%s",
@@ -3816,8 +3814,7 @@ class PGVectorStorage(BaseVectorStorage):
             ]
             if docs_to_embed:
                 contents = [
-                    pending_doc.item["content"]
-                    for _, pending_doc in docs_to_embed
+                    pending_doc.item["content"] for _, pending_doc in docs_to_embed
                 ]
                 batches = [
                     contents[i : i + self._max_batch_size]
@@ -3856,9 +3853,7 @@ class PGVectorStorage(BaseVectorStorage):
                 build_tuple = self._upsert_chunks
             elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
                 build_tuple = self._upsert_entities
-            elif is_namespace(
-                self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS
-            ):
+            elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
                 build_tuple = self._upsert_relationships
             else:
                 raise ValueError(f"{self.namespace} is not supported")
@@ -3911,9 +3906,7 @@ class PGVectorStorage(BaseVectorStorage):
                         )
 
             try:
-                await self.db._run_with_retry(
-                    _flush_batch, timing_label=timing_label
-                )
+                await self.db._run_with_retry(_flush_batch, timing_label=timing_label)
             except Exception as e:
                 logger.warning(
                     f"[{self.workspace}] PGVectorStorage flush failed; "
@@ -4224,18 +4217,13 @@ class PGVectorStorage(BaseVectorStorage):
                 remaining.append(doc_id)
 
         if docs_to_embed:
-            contents = [
-                pending_doc.item["content"] for _, pending_doc in docs_to_embed
-            ]
+            contents = [pending_doc.item["content"] for _, pending_doc in docs_to_embed]
             batches = [
                 contents[i : i + self._max_batch_size]
                 for i in range(0, len(contents), self._max_batch_size)
             ]
             embeddings_list = await asyncio.gather(
-                *[
-                    self.embedding_func(batch, context="document")
-                    for batch in batches
-                ]
+                *[self.embedding_func(batch, context="document") for batch in batches]
             )
             embeddings = np.concatenate(embeddings_list)
             if len(embeddings) != len(docs_to_embed):
