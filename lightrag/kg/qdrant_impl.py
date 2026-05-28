@@ -1169,21 +1169,40 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             ) from e
 
     async def drop(self) -> dict[str, str]:
-        """Drop all vector data from storage and clean up resources.
+        """Drop all vector data for the current workspace. Destructive.
 
-        This method deletes all data for the current workspace from the
-        Qdrant collection. The pending-write buffers are cleared *before*
-        the server-side delete is issued so a concurrent flush cannot
-        resurrect the dropped data. This means that if the server-side
-        delete fails, the buffered writes are also lost — the caller
-        cannot recover them by retrying ``drop()``. This is consistent
-        with ``drop()``'s contract ("discard everything for this
-        workspace") and matches the other lazy-embedding backends.
+        Deletes every point matching ``effective_workspace`` from the
+        shared Qdrant collection ``final_namespace`` (Qdrant partitions a
+        single physical collection across workspaces via the
+        ``workspace_id`` payload field, so sibling workspaces on the same
+        collection are untouched). The collection itself and its vector
+        index are NOT recreated — they were provisioned at
+        ``initialize()`` and remain in place.
+
+        MUST only be called when ``pipeline_status`` is idle (see the
+        Pipeline concurrency contract in ``AGENTS.md``); the only
+        in-tree caller ``clear_documents`` enforces this.
+
+        Pending-write buffers are cleared *before* the server-side delete
+        is issued so a concurrent flush on this instance cannot resurrect
+        the dropped data. As a consequence, if the server-side delete
+        fails, the buffered writes are also lost — the caller cannot
+        recover them by retrying ``drop()``. This matches ``drop()``'s
+        contract ("discard everything for this workspace") and the other
+        lazy-embedding backends.
+
+        Caveat — only this instance's buffers are cleared. Other
+        ``QdrantVectorDBStorage`` instances aliased onto the same
+        ``(final_namespace, effective_workspace)`` (multi-worker
+        processes, or distinct workspaces collapsed by
+        ``QDRANT_WORKSPACE``) keep their own buffers; a sibling whose
+        prior flush failed and left buffers intact will, on its next
+        flush, upsert those stale points back into the freshly emptied
+        workspace. Direct callers bypassing the idle precondition MUST
+        flush every aliased instance first.
 
         Returns:
-            dict[str, str]: Operation status and message
-            - On success: {"status": "success", "message": "data dropped"}
-            - On failure: {"status": "error", "message": "<error details>"}
+            dict[str, str]: ``{"status": "success"|"error", "message": str}``
         """
         try:
             async with self._flush_lock:
