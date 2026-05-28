@@ -3987,8 +3987,11 @@ class PGVectorStorage(BaseVectorStorage):
 
         Runs the SQL predicate delete (``WHERE entity_name=$2``) immediately
         under ``_flush_lock`` so it cannot interleave with a flush of the
-        same namespace, and additionally prunes the matching pending docs
-        and any pending delete that would otherwise re-fire after this.
+        same namespace, and — only after the SQL succeeds — prunes the
+        matching pending docs and any pending delete that would otherwise
+        re-fire. If the SQL raises, the buffer is left untouched so a
+        subsequent ``index_done_callback()`` flush can still observe and
+        retry the pending state instead of silently losing it.
 
         The SQL predicate is kept (rather than ``self.delete([ent_id])``) as
         a safety net for legacy rows whose ``id`` may not equal
@@ -4001,22 +4004,27 @@ class PGVectorStorage(BaseVectorStorage):
             )
             return
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+
+        def _prune_pending() -> None:
+            # Drop any pending upsert keyed by hash id or matching
+            # entity_name in the buffered payload (relationship docs
+            # have no entity_name; the lookup is a harmless no-op).
+            self._pending_vector_docs.pop(entity_id, None)
+            for buffered_id in [
+                k
+                for k, v in self._pending_vector_docs.items()
+                if v.item.get("entity_name") == entity_name
+            ]:
+                self._pending_vector_docs.pop(buffered_id, None)
+            # Drop any redundant pending delete; the SQL above covered it.
+            self._pending_vector_deletes.discard(entity_id)
+
         try:
             async with self._flush_lock:
-                # Prune any pending upsert keyed by hash id or matching
-                # entity_name in the buffered payload (relationship docs
-                # have no entity_name; the lookup is a harmless no-op).
-                self._pending_vector_docs.pop(entity_id, None)
-                for buffered_id in [
-                    k
-                    for k, v in self._pending_vector_docs.items()
-                    if v.item.get("entity_name") == entity_name
-                ]:
-                    self._pending_vector_docs.pop(buffered_id, None)
-                # Drop any redundant pending delete; the SQL below covers it.
-                self._pending_vector_deletes.discard(entity_id)
-
                 if self.db is None:
+                    # Storage already finalized; buffer is the only state
+                    # left, so apply the delete intent there.
+                    _prune_pending()
                     return
                 delete_sql = (
                     f"DELETE FROM {self.table_name} "
@@ -4026,6 +4034,9 @@ class PGVectorStorage(BaseVectorStorage):
                     delete_sql,
                     {"workspace": self.workspace, "entity_name": entity_name},
                 )
+                # SQL succeeded — safe to prune buffer. If it had raised,
+                # we'd skip this so the pending state remains for retry.
+                _prune_pending()
             logger.debug(
                 f"[{self.workspace}] Successfully deleted entity {entity_name}"
             )
@@ -4042,11 +4053,14 @@ class PGVectorStorage(BaseVectorStorage):
         Buffer semantics:
             Any pending relation upsert whose ``src_id`` or ``tgt_id``
             matches ``entity_name`` is pruned from ``_pending_vector_docs``
-            and will NOT be re-inserted after the SQL predicate delete —
-            even if it would have created a new edge. This matches the
-            "delete all relations touching this entity" intent. Callers
-            that need to rename or re-link the entity must re-issue the
-            relation upserts after this call.
+            *only after* the SQL predicate delete succeeds, and will NOT be
+            re-inserted after that point — even if it would have created a
+            new edge. This matches the "delete all relations touching this
+            entity" intent. If the SQL raises, the pending docs are left
+            untouched so a subsequent ``index_done_callback()`` flush can
+            still observe and retry them. Callers that need to rename or
+            re-link the entity must re-issue the relation upserts after
+            this call.
         """
         if self._flush_lock is None:
             logger.warning(
@@ -4054,18 +4068,22 @@ class PGVectorStorage(BaseVectorStorage):
                 f"before initialize(); ignoring delete for entity '{entity_name}'"
             )
             return
+
+        def _prune_pending() -> None:
+            for buffered_id in [
+                k
+                for k, v in self._pending_vector_docs.items()
+                if v.item.get("src_id") == entity_name
+                or v.item.get("tgt_id") == entity_name
+            ]:
+                self._pending_vector_docs.pop(buffered_id, None)
+
         try:
             async with self._flush_lock:
-                # Prune pending relationship docs matching the predicate.
-                for buffered_id in [
-                    k
-                    for k, v in self._pending_vector_docs.items()
-                    if v.item.get("src_id") == entity_name
-                    or v.item.get("tgt_id") == entity_name
-                ]:
-                    self._pending_vector_docs.pop(buffered_id, None)
-
                 if self.db is None:
+                    # Storage already finalized; buffer is the only state
+                    # left, so apply the delete intent there.
+                    _prune_pending()
                     return
                 delete_sql = (
                     f"DELETE FROM {self.table_name} "
@@ -4075,6 +4093,10 @@ class PGVectorStorage(BaseVectorStorage):
                     delete_sql,
                     {"workspace": self.workspace, "entity_name": entity_name},
                 )
+                # SQL succeeded — safe to prune pending relation docs. If
+                # it had raised, we'd skip this so the pending state
+                # remains for retry on the next flush.
+                _prune_pending()
             logger.debug(
                 f"[{self.workspace}] Successfully deleted relations for entity {entity_name}"
             )
