@@ -4214,10 +4214,15 @@ class PGVectorStorage(BaseVectorStorage):
         Embedding I/O runs *outside* ``_flush_lock`` so a slow embedding
         provider cannot block concurrent ``upsert`` / ``delete`` / read
         calls on this storage. The lock is re-acquired briefly to cache
-        the result, and the pending record's identity is re-checked first
-        — if a concurrent ``upsert`` / ``delete`` / ``drop`` replaced or
-        removed the record, the embedding is returned to the caller but
-        not cached on the new/missing record (rare, accepted trade-off).
+        the result, and the pending record's identity is re-checked
+        first: if a concurrent ``upsert`` / ``delete`` / ``drop`` replaced
+        or removed the record during the embedding window, that ID is
+        dropped from the response entirely — we neither cache the stale
+        vector on the new/missing record nor return it to the caller, so
+        callers cannot observe an embedding that no longer matches the
+        current buffer state. Affected callers should treat the missing
+        key the same as the existing "id was deleted before the call"
+        case and retry if needed.
         """
         if not ids:
             return {}
@@ -4254,9 +4259,13 @@ class PGVectorStorage(BaseVectorStorage):
                     f"expected {len(docs_to_embed)}, got {len(embeddings)}"
                 )
 
-            # Re-acquire the lock just long enough to cache results on the
-            # same record (identity check avoids clobbering a concurrent
-            # re-upsert that swapped in a new _PendingPGVectorDoc).
+            # Re-acquire the lock just long enough to cache results on
+            # the same record. The identity check gates BOTH the cache
+            # write and the response entry: if the pending record was
+            # swapped or removed during the embedding window (concurrent
+            # upsert / delete / drop), the just-computed vector no longer
+            # matches the current buffer state for this id, so we drop it
+            # from the response rather than return a stale embedding.
             async with self._flush_lock:
                 for i, ((doc_id, original_pending), embedding) in enumerate(
                     zip(docs_to_embed, embeddings), start=1
@@ -4264,7 +4273,7 @@ class PGVectorStorage(BaseVectorStorage):
                     current = self._pending_vector_docs.get(doc_id)
                     if current is original_pending:
                         current.vector = embedding
-                    result[doc_id] = embedding.tolist()
+                        result[doc_id] = embedding.tolist()
                     await _cooperative_yield(i)
 
         if not remaining:
