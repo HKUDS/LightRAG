@@ -3,10 +3,10 @@ import os
 from typing import Any, final, Optional, Dict
 from dataclasses import dataclass, fields
 import numpy as np
-from lightrag.utils import logger, compute_mdhash_id
+from lightrag.utils import logger, compute_mdhash_id, _cooperative_yield
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
-from ..kg.shared_storage import get_data_init_lock
+from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
@@ -18,6 +18,15 @@ from packaging import version
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
+
+
+@dataclass
+class _PendingVectorDoc:
+    """Buffered vector upsert waiting for embedding and/or bulk flush."""
+
+    source: dict[str, Any]
+    content: str
+    vector: list[float] | None = None
 
 
 # Supported index types
@@ -1417,6 +1426,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
         self._initialized = False
 
+        # Deferred-embedding buffers and the per-namespace flush lock.
+        # The lock keys on final_namespace so two instances pointing at the
+        # same Milvus collection (e.g. when MILVUS_WORKSPACE env override is
+        # used) share a single writer lock. We construct it here in
+        # __post_init__ — not in initialize() — so any code path that
+        # touches the buffer before initialize() still has a valid lock.
+        self._pending_vector_docs: dict[str, _PendingVectorDoc] = {}
+        self._pending_vector_deletes: set[str] = set()
+        self._flush_lock = get_namespace_lock(
+            namespace=self.final_namespace, workspace=""
+        )
+
     async def initialize(self):
         """Initialize Milvus collection"""
         async with get_data_init_lock():
@@ -1455,47 +1476,53 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        # logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
+        """Buffer vector docs for embedding and batched flush.
+
+        Embedding deliberately does NOT happen here: repeated upserts of the
+        same id, or many small batches, collapse into a single flush-time
+        embedding pass. Reads (`get_by_id`/`get_by_ids`/`get_vectors_by_ids`)
+        observe pending docs via the same lock for read-your-writes.
+        """
         if not data:
             return
-
-        # Ensure collection is loaded before upserting
-        self._ensure_collection_loaded()
 
         import time
 
         current_time = int(time.time())
 
-        list_data: list[dict[str, Any]] = [
-            {
+        pending_docs: list[tuple[str, _PendingVectorDoc]] = []
+        for i, (k, v) in enumerate(data.items(), start=1):
+            source = {
                 "id": k,
                 "created_at": current_time,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
-            for k, v in data.items()
-        ]
-        contents = [v["content"] for v in data.values()]
-        batches = [
-            contents[i : i + self._max_batch_size]
-            for i in range(0, len(contents), self._max_batch_size)
-        ]
+            pending_docs.append(
+                (
+                    k,
+                    _PendingVectorDoc(source=source, content=v["content"]),
+                )
+            )
+            await _cooperative_yield(i)
 
-        embedding_tasks = [
-            self.embedding_func(batch, context="document") for batch in batches
-        ]
-        embeddings_list = await asyncio.gather(*embedding_tasks)
-
-        embeddings = np.concatenate(embeddings_list)
-        for i, d in enumerate(list_data):
-            d["vector"] = embeddings[i]
-        results = self._client.upsert(
-            collection_name=self.final_namespace, data=list_data
-        )
-        return results
+        # An upsert overrides any pending delete on the same id; installing
+        # a fresh _PendingVectorDoc instance invalidates any vector cached
+        # by a prior get_vectors_by_ids() call on a stale revision.
+        async with self._flush_lock:
+            for doc_id, pdoc in pending_docs:
+                self._pending_vector_deletes.discard(doc_id)
+                self._pending_vector_docs[doc_id] = pdoc
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
+        """Similarity search against the persisted Milvus collection.
+
+        Note: buffered-but-unflushed upserts are NOT visible to this method —
+        they exist only in `_pending_vector_docs` until `index_done_callback()`
+        embeds and writes them. Callers that need read-after-write visibility
+        for similarity search must run an explicit flush first.
+        """
         # Ensure collection is loaded before querying
         self._ensure_collection_loaded()
 
@@ -1540,120 +1567,204 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         ]
 
     async def index_done_callback(self) -> None:
-        # Milvus handles persistence automatically
-        pass
+        """Flush all buffered vector ops to Milvus before returning.
 
-    async def delete_entity(self, entity_name: str) -> None:
-        """Delete an entity from the vector database
-
-        Args:
-            entity_name: The name of the entity to delete
+        Contract: on a successful return, every previously buffered upsert
+        has been embedded and committed to the collection, and every buffered
+        delete has been issued — i.e. all pending vectors are durable in
+        Milvus (which persists automatically once written). On any embed-
+        or server-side failure this method raises and leaves both buffers
+        intact for the next callback to retry; the caller MUST NOT assume
+        clean persistence in that case.
         """
-        try:
-            # Compute entity ID from name
-            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            logger.debug(
-                f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
-            )
+        await self._flush_pending_vector_ops()
 
-            # Delete the entity from Milvus collection
-            result = self._client.delete(
-                collection_name=self.final_namespace, pks=[entity_id]
-            )
+    async def _flush_pending_vector_ops(self) -> None:
+        """Flush buffered vector upserts and deletes to Milvus.
 
-            if result and result.get("delete_count", 0) > 0:
-                logger.debug(
-                    f"[{self.workspace}] Successfully deleted entity {entity_name}"
-                )
-            else:
-                logger.debug(
-                    f"[{self.workspace}] Entity {entity_name} not found in storage"
-                )
-
-        except Exception as e:
-            logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
-
-    async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete all relations associated with an entity
-
-        Args:
-            entity_name: The name of the entity whose relations should be deleted
+        Embedding runs *inside* this lock (not in `upsert` or lock-free):
+        it makes deferred embedding and bulk indexing atomic against
+        concurrent upserts and destructive mutations. Any failure (embed
+        or server write) raises and leaves both buffers intact; the next
+        `index_done_callback` retries automatically.
         """
-        try:
-            # Ensure collection is loaded before querying
+        async with self._flush_lock:
+            if not self._pending_vector_docs and not self._pending_vector_deletes:
+                return
+            if self._client is None:
+                return
+
+            # Milvus requires the collection to be loaded before upsert/delete.
             self._ensure_collection_loaded()
 
-            # Search for relations where entity is either source or target
-            expr = f'src_id == "{entity_name}" or tgt_id == "{entity_name}"'
+            pending_docs = self._pending_vector_docs
+            pending_deletes = self._pending_vector_deletes
 
-            # Find all relations involving this entity
+            docs_to_embed: list[tuple[str, _PendingVectorDoc]] = [
+                (doc_id, pdoc)
+                for doc_id, pdoc in pending_docs.items()
+                if pdoc.vector is None
+            ]
+
+            if docs_to_embed:
+                contents = [pdoc.content for _, pdoc in docs_to_embed]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                logger.info(
+                    f"[{self.workspace}] {self.namespace} flush: embedding "
+                    f"{len(docs_to_embed)} vectors in {len(batches)} batch(es) "
+                    f"(batch_num={self._max_batch_size})"
+                )
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error embedding pending vector ops "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
+
+                embeddings = np.concatenate(embeddings_list)
+                if len(embeddings) != len(docs_to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
+                    )
+                for i, ((_, pdoc), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
+                    pdoc.vector = embedding.tolist()
+                    await _cooperative_yield(i)
+
+            # Assemble final upsert payload. After the embed loop above every
+            # pending doc has a non-None vector (count-mismatch was checked),
+            # so we can iterate without re-guarding.
+            committed_ids: list[str] = list(pending_docs.keys())
+            list_data: list[dict[str, Any]] = [
+                {**pending_docs[doc_id].source, "vector": pending_docs[doc_id].vector}
+                for doc_id in committed_ids
+            ]
+
+            try:
+                if list_data:
+                    self._client.upsert(
+                        collection_name=self.final_namespace, data=list_data
+                    )
+                if pending_deletes:
+                    self._client.delete(
+                        collection_name=self.final_namespace,
+                        pks=list(pending_deletes),
+                    )
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error flushing vector ops "
+                    f"(upserts={len(pending_docs)}, "
+                    f"deletes={len(pending_deletes)}): {e}"
+                )
+                raise
+
+            # On success, clear the buffers in-place so external references
+            # (e.g. drop()) see the cleared state.
+            for doc_id in committed_ids:
+                pending_docs.pop(doc_id, None)
+            pending_deletes.clear()
+
+    async def delete_entity(self, entity_name: str) -> None:
+        """Buffer an entity vector delete by computing its hash ID."""
+        entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+        async with self._flush_lock:
+            self._pending_vector_docs.pop(entity_id, None)
+            self._pending_vector_deletes.add(entity_id)
+        logger.debug(
+            f"[{self.workspace}] Buffered delete for entity {entity_name} (id={entity_id})"
+        )
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        """Delete all relation vectors where entity appears as src or tgt.
+
+        The whole method runs under ``_flush_lock`` so the server-side query
+        + delete cannot interleave with an in-flight bulk upsert.
+        Server-side failures are re-raised (no log-and-swallow): the caller
+        decides whether to retry.
+
+        Semantic note (deferred-buffer ↔ persisted divergence): pruning only
+        consults the *current* buffered ``src_id`` / ``tgt_id`` view; we do
+        not re-read the persisted row a buffered upsert is about to
+        overwrite. So if a pending upsert is rewriting an already-persisted
+        ``rel-X-Y`` so that its new ``src_id`` / ``tgt_id`` matches
+        ``entity_name`` while the persisted row's do not (or vice versa),
+        the persisted row will not be deleted by the server-side filter and
+        the pending overwrite is dropped — i.e. the final state can diverge
+        from the eager-flush ordering (upsert → flush → delete). Callers
+        that require eager-equivalent semantics should call
+        ``index_done_callback()`` before ``delete_entity_relation``.
+        """
+        async with self._flush_lock:
+            # Prune matching docs from the pending upsert buffer.
+            for doc_id in [
+                k
+                for k, v in self._pending_vector_docs.items()
+                if v.source.get("src_id") == entity_name
+                or v.source.get("tgt_id") == entity_name
+            ]:
+                self._pending_vector_docs.pop(doc_id, None)
+
+            if self._client is None:
+                return
+
+            self._ensure_collection_loaded()
+
+            expr = f'src_id == "{entity_name}" or tgt_id == "{entity_name}"'
             results = self._client.query(
-                collection_name=self.final_namespace, filter=expr, output_fields=["id"]
+                collection_name=self.final_namespace,
+                filter=expr,
+                output_fields=["id"],
             )
 
-            if not results or len(results) == 0:
+            if not results:
                 logger.debug(
                     f"[{self.workspace}] No relations found for entity {entity_name}"
                 )
                 return
 
-            # Extract IDs of relations to delete
             relation_ids = [item["id"] for item in results]
+            self._client.delete(collection_name=self.final_namespace, pks=relation_ids)
             logger.debug(
-                f"[{self.workspace}] Found {len(relation_ids)} relations for entity {entity_name}"
-            )
-
-            # Delete the relations
-            if relation_ids:
-                delete_result = self._client.delete(
-                    collection_name=self.final_namespace, pks=relation_ids
-                )
-
-                logger.debug(
-                    f"[{self.workspace}] Deleted {delete_result.get('delete_count', 0)} relations for {entity_name}"
-                )
-
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error deleting relations for {entity_name}: {e}"
+                f"[{self.workspace}] Deleted {len(relation_ids)} relations for {entity_name}"
             )
 
     async def delete(self, ids: list[str]) -> None:
-        """Delete vectors with specified IDs
-
-        Args:
-            ids: List of vector IDs to be deleted
-        """
-        try:
-            # Ensure collection is loaded before deleting
-            self._ensure_collection_loaded()
-
-            # Delete vectors by IDs
-            result = self._client.delete(collection_name=self.final_namespace, pks=ids)
-
-            if result and result.get("delete_count", 0) > 0:
-                logger.debug(
-                    f"[{self.workspace}] Successfully deleted {result.get('delete_count', 0)} vectors from {self.namespace}"
-                )
-            else:
-                logger.debug(
-                    f"[{self.workspace}] No vectors were deleted from {self.namespace}"
-                )
-
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error while deleting vectors from {self.namespace}: {e}"
-            )
+        """Buffer vector deletes for batched flush."""
+        if not ids:
+            return
+        if isinstance(ids, set):
+            ids = list(ids)
+        async with self._flush_lock:
+            for doc_id in ids:
+                self._pending_vector_docs.pop(doc_id, None)
+                self._pending_vector_deletes.add(doc_id)
+        logger.debug(
+            f"[{self.workspace}] Buffered delete for {len(ids)} vectors in {self.namespace}"
+        )
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        """Get vector data by its ID
+        """Get vector data by its ID, with read-your-writes against the buffer."""
+        async with self._flush_lock:
+            if id in self._pending_vector_deletes:
+                return None
+            pending = self._pending_vector_docs.get(id)
+            if pending is not None:
+                doc = dict(pending.source)
+                doc["id"] = id
+                return doc
 
-        Args:
-            id: The unique identifier of the vector
-
-        Returns:
-            The vector data if found, or None if not found
-        """
         try:
             # Ensure collection is loaded before querying
             self._ensure_collection_loaded()
@@ -1661,7 +1772,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Include all meta_fields (created_at is now always included) plus id
             output_fields = list(self.meta_fields) + ["id"]
 
-            # Query Milvus for a specific ID
             result = self._client.query(
                 collection_name=self.final_namespace,
                 filter=f'id == "{id}"',
@@ -1679,118 +1789,216 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get multiple vector data by their IDs
-
-        Args:
-            ids: List of unique identifiers
-
-        Returns:
-            List of vector data objects that were found
-        """
+        """Get multiple vector data by their IDs (read-your-writes), preserving order."""
         if not ids:
             return []
 
-        try:
-            # Ensure collection is loaded before querying
-            self._ensure_collection_loaded()
+        buffered: dict[str, dict[str, Any] | None] = {}
+        remaining: list[str] = []
+        async with self._flush_lock:
+            for doc_id in ids:
+                if doc_id in self._pending_vector_deletes:
+                    buffered[doc_id] = None
+                    continue
+                pending = self._pending_vector_docs.get(doc_id)
+                if pending is not None:
+                    doc = dict(pending.source)
+                    doc["id"] = doc_id
+                    buffered[doc_id] = doc
+                    continue
+                remaining.append(doc_id)
 
-            # Include all meta_fields (created_at is now always included) plus id
-            output_fields = list(self.meta_fields) + ["id"]
+        result_map: dict[str, dict[str, Any]] = {}
+        if remaining:
+            try:
+                # Ensure collection is loaded before querying
+                self._ensure_collection_loaded()
 
-            # Prepare the ID filter expression
-            id_list = '", "'.join(ids)
-            filter_expr = f'id in ["{id_list}"]'
+                # Include all meta_fields (created_at is now always included) plus id
+                output_fields = list(self.meta_fields) + ["id"]
 
-            # Query Milvus with the filter
-            result = self._client.query(
-                collection_name=self.final_namespace,
-                filter=filter_expr,
-                output_fields=output_fields,
-            )
+                id_list = '", "'.join(remaining)
+                filter_expr = f'id in ["{id_list}"]'
 
-            if not result:
+                result = self._client.query(
+                    collection_name=self.final_namespace,
+                    filter=filter_expr,
+                    output_fields=output_fields,
+                )
+
+                if result:
+                    for row in result:
+                        if not row:
+                            continue
+                        row_id = row.get("id")
+                        if row_id is not None:
+                            result_map[str(row_id)] = row
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error retrieving vector data for IDs {remaining}: {e}"
+                )
                 return []
 
-            result_map: dict[str, dict[str, Any]] = {}
-            for row in result:
-                if not row:
-                    continue
-                row_id = row.get("id")
-                if row_id is not None:
-                    result_map[str(row_id)] = row
-
-            ordered_results: list[dict[str, Any] | None] = []
-            for requested_id in ids:
-                ordered_results.append(result_map.get(str(requested_id)))
-
-            return ordered_results
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"
-            )
-            return []
+        return [
+            buffered[doc_id] if doc_id in buffered else result_map.get(str(doc_id))
+            for doc_id in ids
+        ]
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
-        """Get vectors by their IDs, returning only ID and vector data for efficiency
+        """Get vector embeddings for given IDs, with read-your-writes.
 
-        Args:
-            ids: List of unique identifiers
-
-        Returns:
-            Dictionary mapping IDs to their vector embeddings
-            Format: {id: [vector_values], ...}
+        Pending docs with `vector is None` trigger a lazy embed inside the
+        lock; the resulting vector is cached on the buffered `_PendingVectorDoc`
+        so the next flush won't re-embed the same content.
         """
         if not ids:
             return {}
 
+        result: dict[str, list[float]] = {}
+        remaining: list[str] = []
+        async with self._flush_lock:
+            docs_to_embed: list[tuple[str, _PendingVectorDoc]] = []
+            for doc_id in ids:
+                if doc_id in self._pending_vector_deletes:
+                    continue
+                pending = self._pending_vector_docs.get(doc_id)
+                if pending is not None:
+                    if pending.vector is None:
+                        docs_to_embed.append((doc_id, pending))
+                    else:
+                        result[doc_id] = pending.vector
+                    continue
+                remaining.append(doc_id)
+
+            if docs_to_embed:
+                contents = [pdoc.content for _, pdoc in docs_to_embed]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error lazily embedding pending vectors "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
+                embeddings = np.concatenate(embeddings_list)
+                if len(embeddings) != len(docs_to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
+                    )
+                for i, ((doc_id, pdoc), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
+                    pdoc.vector = embedding.tolist()
+                    result[doc_id] = pdoc.vector
+                    await _cooperative_yield(i)
+
+        if not remaining:
+            return result
+
         try:
-            # Ensure collection is loaded before querying
             self._ensure_collection_loaded()
 
-            # Prepare the ID filter expression
-            id_list = '", "'.join(ids)
+            id_list = '", "'.join(remaining)
             filter_expr = f'id in ["{id_list}"]'
 
-            # Query Milvus with the filter, requesting only vector field
-            result = self._client.query(
+            rows = self._client.query(
                 collection_name=self.final_namespace,
                 filter=filter_expr,
-                output_fields=["vector"],
+                output_fields=["id", "vector"],
             )
 
-            vectors_dict = {}
-            for item in result:
+            for item in rows or []:
                 if item and "vector" in item and "id" in item:
-                    # Convert numpy array to list if needed
                     vector_data = item["vector"]
                     if isinstance(vector_data, np.ndarray):
                         vector_data = vector_data.tolist()
-                    vectors_dict[item["id"]] = vector_data
-
-            return vectors_dict
+                    # Match get_by_ids: stringify the server-returned id so
+                    # callers can index the dict by the original requested id.
+                    result[str(item["id"])] = vector_data
+            return result
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Error retrieving vectors by IDs from {self.namespace}: {e}"
             )
-            return {}
+            return result
+
+    async def finalize(self):
+        """Flush pending vector ops; surface unflushed data as RuntimeError.
+
+        Milvus has no client connection to release (the MilvusClient is
+        stateless from the storage layer's perspective), but we still need
+        to fail loudly when a transient bulk error left writes buffered —
+        the caller must not believe storage finalized cleanly.
+        """
+        flush_error: Exception | None = None
+        try:
+            await self._flush_pending_vector_ops()
+        except Exception as e:
+            flush_error = e
+
+        # Read the residual buffer sizes under the flush lock so the
+        # snapshot is consistent with any racing late-arriving mutator
+        # (cancellation paths can land an upsert/delete between the flush
+        # above and the post-mortem check below).
+        async with self._flush_lock:
+            pending_docs = len(self._pending_vector_docs)
+            pending_deletes = len(self._pending_vector_deletes)
+
+        if flush_error is not None:
+            raise RuntimeError(
+                f"[{self.workspace}] MilvusVectorDBStorage.finalize() flush raised; "
+                f"{pending_docs} pending upserts and {pending_deletes} pending "
+                f"deletes were left buffered (data lost)"
+            ) from flush_error
+        if pending_docs or pending_deletes:
+            raise RuntimeError(
+                f"[{self.workspace}] MilvusVectorDBStorage.finalize() left "
+                f"{pending_docs} pending upserts and {pending_deletes} pending "
+                f"deletes buffered after final flush attempt (these writes have been lost)"
+            )
 
     async def drop(self) -> dict[str, str]:
-        """Drop all vector data from storage and clean up resources
+        """Drop all data from the Milvus collection. Destructive.
 
-        This method will delete all data from the Milvus collection.
+        MUST only be called when ``pipeline_status`` is idle (see the
+        Pipeline concurrency contract in ``AGENTS.md``); the only
+        in-tree caller ``clear_documents`` enforces this.
+
+        Caveat — only this instance's buffers are cleared. Other
+        ``MilvusVectorDBStorage`` instances aliased onto the same
+        ``final_namespace`` (multi-worker processes, or distinct
+        workspaces collapsed by ``MILVUS_WORKSPACE``) keep their own
+        buffers; a sibling whose prior flush failed and left buffers
+        intact will, on its next flush, upsert those stale rows into
+        the freshly recreated collection. Direct callers bypassing the
+        idle precondition MUST flush every aliased instance first.
 
         Returns:
-            dict[str, str]: Operation status and message
-            - On success: {"status": "success", "message": "data dropped"}
-            - On failure: {"status": "error", "message": "<error details>"}
+            dict[str, str]: ``{"status": "success"|"error", "message": str}``
         """
         try:
-            # Drop the collection and recreate it
-            if self._client.has_collection(self.final_namespace):
-                self._client.drop_collection(self.final_namespace)
+            async with self._flush_lock:
+                # Discard any buffered writes before the collection is gone;
+                # a concurrent flush would otherwise resurrect them.
+                self._pending_vector_docs.clear()
+                self._pending_vector_deletes.clear()
 
-            # Recreate the collection
-            self._create_collection_if_not_exist()
+                # Drop the collection and recreate it
+                if self._client.has_collection(self.final_namespace):
+                    self._client.drop_collection(self.final_namespace)
+
+                # Recreate the collection
+                self._create_collection_if_not_exist()
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"

@@ -12,13 +12,23 @@ import pipmaster as pm
 
 from ..base import BaseVectorStorage
 from ..exceptions import DataMigrationError
-from ..kg.shared_storage import get_data_init_lock
-from ..utils import compute_mdhash_id, logger
+from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
+from ..utils import _cooperative_yield, compute_mdhash_id, logger
 
 if not pm.is_installed("qdrant-client"):
     pm.install("qdrant-client")
 
 from qdrant_client import QdrantClient, models  # type: ignore
+
+
+@dataclass
+class _PendingVectorDoc:
+    """Buffered vector upsert waiting for embedding and/or bulk flush."""
+
+    source: dict[str, Any]
+    content: str
+    vector: list[float] | None = None
+
 
 DEFAULT_WORKSPACE = "_"
 WORKSPACE_ID_FIELD = "workspace_id"
@@ -485,6 +495,15 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
         self._initialized = False
 
+        # Deferred-embedding buffers and the per-namespace flush lock.
+        # Qdrant partitions a single physical collection across workspaces
+        # via the workspace_id payload field, so the lock must include the
+        # effective workspace (not just final_namespace) to avoid letting
+        # two effectively-different writers race on the same collection.
+        self._pending_vector_docs: dict[str, _PendingVectorDoc] = {}
+        self._pending_vector_deletes: set[str] = set()
+        self._flush_lock = None
+
     @staticmethod
     def _to_json_serializable(value: Any) -> Any:
         """Convert nested values to JSON-serializable types for payload size estimation."""
@@ -623,8 +642,20 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 )
                 raise
 
+        if self._flush_lock is None:
+            self._flush_lock = get_namespace_lock(
+                namespace=self.final_namespace,
+                workspace=self.effective_workspace,
+            )
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
+        """Buffer vector docs for embedding and batched flush.
+
+        Embedding deliberately does NOT happen here: repeated upserts of
+        the same id, or many small batches, collapse into a single
+        flush-time embedding pass. The buffer is keyed by the caller's
+        original doc id; the Qdrant UUID conversion runs at flush time.
+        """
         if not data:
             return
 
@@ -632,71 +663,42 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         current_time = int(time.time())
 
-        list_data = [
-            {
+        pending_docs: list[tuple[str, _PendingVectorDoc]] = []
+        for i, (k, v) in enumerate(data.items(), start=1):
+            source = {
                 ID_FIELD: k,
                 WORKSPACE_ID_FIELD: self.effective_workspace,
                 CREATED_AT_FIELD: current_time,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
-            for k, v in data.items()
-        ]
-        contents = [v["content"] for v in data.values()]
-        batches = [
-            contents[i : i + self._max_batch_size]
-            for i in range(0, len(contents), self._max_batch_size)
-        ]
-
-        embedding_tasks = [
-            self.embedding_func(batch, context="document") for batch in batches
-        ]
-        embeddings_list = await asyncio.gather(*embedding_tasks)
-
-        embeddings = np.concatenate(embeddings_list)
-
-        list_points = []
-        for i, d in enumerate(list_data):
-            list_points.append(
-                models.PointStruct(
-                    id=compute_mdhash_id_for_qdrant(
-                        d[ID_FIELD], prefix=self.effective_workspace
-                    ),
-                    vector=embeddings[i],
-                    payload=d,
+            pending_docs.append(
+                (
+                    k,
+                    _PendingVectorDoc(source=source, content=v["content"]),
                 )
             )
+            await _cooperative_yield(i)
 
-        point_batches = self._build_upsert_batches(
-            list_points,
-            max_payload_bytes=self._max_upsert_payload_bytes,
-            max_points_per_batch=self._max_upsert_points_per_batch,
-        )
-
-        if len(point_batches) > 1:
-            logger.info(
-                f"[{self.workspace}] Qdrant upsert split into {len(point_batches)} batches "
-                f"for {len(list_points)} points (max_payload_bytes={self._max_upsert_payload_bytes}, "
-                f"max_points_per_batch={self._max_upsert_points_per_batch})"
-            )
-
-        results = None
-        for batch_index, (points_batch, estimated_bytes) in enumerate(point_batches, 1):
-            logger.debug(
-                f"[{self.workspace}] Qdrant upsert batch {batch_index}/{len(point_batches)}: "
-                f"points={len(points_batch)}, estimated_payload_bytes={estimated_bytes}"
-            )
-            # Fail-fast: any batch failure raises immediately and stops subsequent batches.
-            results = self._client.upsert(
-                collection_name=self.final_namespace,
-                points=points_batch,
-                wait=True,
-            )
-
-        return results
+        # An upsert overrides any pending delete on the same id; installing
+        # a fresh _PendingVectorDoc invalidates any vector cached by a
+        # prior get_vectors_by_ids() call on a stale revision.
+        async with self._flush_lock:
+            for doc_id, pdoc in pending_docs:
+                self._pending_vector_deletes.discard(doc_id)
+                self._pending_vector_docs[doc_id] = pdoc
 
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
+        """Query the vector database via Qdrant ``query_points``.
+
+        Reads from the server-side index only; buffered upserts and deletes
+        are NOT visible until ``index_done_callback`` / ``finalize`` flushes
+        them. Callers that need read-your-writes for a freshly upserted id
+        should use ``get_by_id`` / ``get_by_ids`` (which consult the buffer)
+        or flush first. Matches the deferred-embedding contract used by the
+        other lazy-embedding backends (Mongo / OpenSearch / FAISS / Nano).
+        """
         if query_embedding is not None:
             embedding = query_embedding
         else:
@@ -726,95 +728,197 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         ]
 
     async def index_done_callback(self) -> None:
-        # Qdrant handles persistence automatically
-        pass
+        """Flush buffered vector ops; Qdrant persists automatically once written."""
+        await self._flush_pending_vector_ops()
 
-    async def delete(self, ids: List[str]) -> None:
-        """Delete vectors with specified IDs
+    async def _flush_pending_vector_ops(self) -> None:
+        """Flush buffered vector upserts and deletes via batched client calls.
 
-        Args:
-            ids: List of vector IDs to be deleted
+        Embedding runs *inside* this lock (not in `upsert` or lock-free):
+        it makes deferred embedding and the upsert atomic against
+        concurrent upserts and destructive mutations. Reuses
+        ``_build_upsert_batches`` to respect Qdrant's payload size limit.
+        Any failure (embed or server write) raises and leaves both
+        buffers intact; the next ``index_done_callback`` retries.
+
+        Concurrency invariant: ``_flush_lock`` is a non-reentrant asyncio
+        lock. Callers MUST NOT hold it when invoking this method --
+        re-entry would deadlock. The only in-tree callers are
+        ``index_done_callback`` and ``finalize``, both lock-free.
         """
-        try:
-            if not ids:
+        async with self._flush_lock:
+            if not self._pending_vector_docs and not self._pending_vector_deletes:
+                return
+            if self._client is None:
                 return
 
-            # Convert regular ids to Qdrant compatible ids
-            qdrant_ids = [
-                compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace)
-                for id in ids
+            pending_docs = self._pending_vector_docs
+            pending_deletes = self._pending_vector_deletes
+
+            docs_to_embed: list[tuple[str, _PendingVectorDoc]] = [
+                (doc_id, pdoc)
+                for doc_id, pdoc in pending_docs.items()
+                if pdoc.vector is None
             ]
-            # Delete points from the collection with workspace filtering
-            self._client.delete(
-                collection_name=self.final_namespace,
-                points_selector=models.PointIdsList(points=qdrant_ids),
-                wait=True,
-            )
-            logger.debug(
-                f"[{self.workspace}] Successfully deleted {len(ids)} vectors from {self.namespace}"
-            )
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error while deleting vectors from {self.namespace}: {e}"
-            )
+
+            if docs_to_embed:
+                contents = [pdoc.content for _, pdoc in docs_to_embed]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                logger.info(
+                    f"[{self.workspace}] {self.namespace} flush: embedding "
+                    f"{len(docs_to_embed)} vectors in {len(batches)} batch(es) "
+                    f"(batch_num={self._max_batch_size})"
+                )
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error embedding pending vector ops "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
+
+                embeddings = np.concatenate(embeddings_list)
+                if len(embeddings) != len(docs_to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
+                    )
+                for i, ((_, pdoc), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
+                    # Cache the raw numpy row so a second flush after a
+                    # server-side error doesn't re-embed.
+                    pdoc.vector = np.array(embedding, dtype=np.float32).tolist()
+                    await _cooperative_yield(i)
+
+            # Build PointStruct list, converting caller-supplied ids to
+            # Qdrant UUIDs only now (the buffer keeps caller ids so
+            # read-your-writes works against the same key).
+            list_points: list[models.PointStruct] = []
+            committed_ids: list[str] = []
+            for doc_id, pdoc in pending_docs.items():
+                if pdoc.vector is None:
+                    continue
+                committed_ids.append(doc_id)
+                list_points.append(
+                    models.PointStruct(
+                        id=compute_mdhash_id_for_qdrant(
+                            doc_id, prefix=self.effective_workspace
+                        ),
+                        vector=pdoc.vector,
+                        payload=dict(pdoc.source),
+                    )
+                )
+
+            try:
+                if list_points:
+                    point_batches = self._build_upsert_batches(
+                        list_points,
+                        max_payload_bytes=self._max_upsert_payload_bytes,
+                        max_points_per_batch=self._max_upsert_points_per_batch,
+                    )
+
+                    if len(point_batches) > 1:
+                        logger.info(
+                            f"[{self.workspace}] Qdrant upsert split into {len(point_batches)} batches "
+                            f"for {len(list_points)} points (max_payload_bytes={self._max_upsert_payload_bytes}, "
+                            f"max_points_per_batch={self._max_upsert_points_per_batch})"
+                        )
+
+                    for batch_index, (points_batch, estimated_bytes) in enumerate(
+                        point_batches, 1
+                    ):
+                        logger.debug(
+                            f"[{self.workspace}] Qdrant upsert batch {batch_index}/{len(point_batches)}: "
+                            f"points={len(points_batch)}, estimated_payload_bytes={estimated_bytes}"
+                        )
+                        # Fail-fast: any batch failure raises immediately
+                        # and stops subsequent batches; the full buffer is
+                        # retained so the next flush retries.
+                        self._client.upsert(
+                            collection_name=self.final_namespace,
+                            points=points_batch,
+                            wait=True,
+                        )
+
+                if pending_deletes:
+                    qdrant_delete_ids = [
+                        compute_mdhash_id_for_qdrant(
+                            doc_id, prefix=self.effective_workspace
+                        )
+                        for doc_id in pending_deletes
+                    ]
+                    self._client.delete(
+                        collection_name=self.final_namespace,
+                        points_selector=models.PointIdsList(points=qdrant_delete_ids),
+                        wait=True,
+                    )
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error flushing vector ops "
+                    f"(upserts={len(pending_docs)}, "
+                    f"deletes={len(pending_deletes)}): {e}"
+                )
+                raise
+
+            for doc_id in committed_ids:
+                pending_docs.pop(doc_id, None)
+            pending_deletes.clear()
+
+    async def delete(self, ids: List[str]) -> None:
+        """Buffer vector deletes for batched flush."""
+        if not ids:
+            return
+        if isinstance(ids, set):
+            ids = list(ids)
+        async with self._flush_lock:
+            for doc_id in ids:
+                self._pending_vector_docs.pop(doc_id, None)
+                self._pending_vector_deletes.add(doc_id)
+        logger.debug(
+            f"[{self.workspace}] Buffered delete for {len(ids)} vectors in {self.namespace}"
+        )
 
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete an entity by name
-
-        Args:
-            entity_name: Name of the entity to delete
-        """
-        try:
-            # Compute entity ID from name (same as Milvus)
-            entity_id = compute_mdhash_id(entity_name, prefix=ENTITY_PREFIX)
-            logger.debug(
-                f"[{self.workspace}] Attempting to delete entity {entity_name} with ID {entity_id}"
-            )
-
-            # Scroll to find the entity by its ID field in payload with workspace filtering
-            # This is safer than reconstructing the Qdrant point ID
-            results = self._client.scroll(
-                collection_name=self.final_namespace,
-                scroll_filter=models.Filter(
-                    must=[
-                        workspace_filter_condition(self.effective_workspace),
-                        models.FieldCondition(
-                            key=ID_FIELD, match=models.MatchValue(value=entity_id)
-                        ),
-                    ]
-                ),
-                with_payload=False,
-                limit=1,
-            )
-
-            # Extract point IDs to delete
-            points = results[0]
-            if points:
-                ids_to_delete = [point.id for point in points]
-                self._client.delete(
-                    collection_name=self.final_namespace,
-                    points_selector=models.PointIdsList(points=ids_to_delete),
-                    wait=True,
-                )
-                logger.debug(
-                    f"[{self.workspace}] Successfully deleted entity {entity_name}"
-                )
-            else:
-                logger.debug(
-                    f"[{self.workspace}] Entity {entity_name} not found in storage"
-                )
-        except Exception as e:
-            logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
+        """Buffer an entity vector delete by computing its hash ID."""
+        entity_id = compute_mdhash_id(entity_name, prefix=ENTITY_PREFIX)
+        async with self._flush_lock:
+            self._pending_vector_docs.pop(entity_id, None)
+            self._pending_vector_deletes.add(entity_id)
+        logger.debug(
+            f"[{self.workspace}] Buffered delete for entity {entity_name} (id={entity_id})"
+        )
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete all relations associated with an entity
+        """Delete all relation vectors where entity appears as src or tgt.
 
-        Args:
-            entity_name: Name of the entity whose relations should be deleted
+        The whole method runs under ``_flush_lock`` so the server-side
+        scroll + delete cannot interleave with an in-flight bulk upsert.
+        Server-side failures are re-raised (no log-and-swallow): the
+        caller decides whether to retry.
         """
-        try:
-            # Build the filter to find relations where entity is either source or target
-            # must + should = workspace_id matches AND (src_id matches OR tgt_id matches)
+        async with self._flush_lock:
+            # Prune matching docs from the pending upsert buffer.
+            for doc_id in [
+                k
+                for k, v in self._pending_vector_docs.items()
+                if v.source.get("src_id") == entity_name
+                or v.source.get("tgt_id") == entity_name
+            ]:
+                self._pending_vector_docs.pop(doc_id, None)
+
+            if self._client is None:
+                return
+
             relation_filter = models.Filter(
                 must=[workspace_filter_condition(self.effective_workspace)],
                 should=[
@@ -827,14 +931,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 ],
             )
 
-            # Paginate through all matching relations to handle large datasets
             total_deleted = 0
             offset = None
             batch_size = 1000
 
             while True:
-                # Scroll to find relations, using with_payload=False for efficiency
-                # since we only need point IDs for deletion
                 results = self._client.scroll(
                     collection_name=self.final_namespace,
                     scroll_filter=relation_filter,
@@ -848,10 +949,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 if not points:
                     break
 
-                # Extract point IDs to delete
                 ids_to_delete = [point.id for point in points]
-
-                # Delete the batch of relations
                 self._client.delete(
                     collection_name=self.final_namespace,
                     points_selector=models.PointIdsList(points=ids_to_delete),
@@ -859,7 +957,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 )
                 total_deleted += len(ids_to_delete)
 
-                # Check if we've reached the end
                 if next_offset is None:
                     break
                 offset = next_offset
@@ -872,27 +969,25 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 logger.debug(
                     f"[{self.workspace}] No relations found for entity {entity_name}"
                 )
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error deleting relations for {entity_name}: {e}"
-            )
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        """Get vector data by its ID
+        """Get vector data by its ID, with read-your-writes against the buffer."""
+        async with self._flush_lock:
+            if id in self._pending_vector_deletes:
+                return None
+            pending = self._pending_vector_docs.get(id)
+            if pending is not None:
+                # Buffer hits return the source payload (no vector); the
+                # Qdrant fallback path also returns just the payload.
+                payload = dict(pending.source)
+                payload.setdefault(CREATED_AT_FIELD, None)
+                return payload
 
-        Args:
-            id: The unique identifier of the vector
-
-        Returns:
-            The vector data if found, or None if not found
-        """
         try:
-            # Convert to Qdrant compatible ID
             qdrant_id = compute_mdhash_id_for_qdrant(
                 id, prefix=self.effective_workspace
             )
 
-            # Retrieve the point by ID with workspace filtering
             result = self._client.retrieve(
                 collection_name=self.final_namespace,
                 ids=[qdrant_id],
@@ -914,131 +1009,257 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get multiple vector data by their IDs
-
-        Args:
-            ids: List of unique identifiers
-
-        Returns:
-            List of vector data objects that were found
-        """
+        """Get multiple vector data by their IDs (read-your-writes), preserving order."""
         if not ids:
             return []
 
-        try:
-            # Convert to Qdrant compatible IDs
-            qdrant_ids = [
-                compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace)
-                for id in ids
-            ]
+        buffered: dict[str, dict[str, Any] | None] = {}
+        remaining: list[str] = []
+        async with self._flush_lock:
+            for doc_id in ids:
+                if doc_id in self._pending_vector_deletes:
+                    buffered[doc_id] = None
+                    continue
+                pending = self._pending_vector_docs.get(doc_id)
+                if pending is not None:
+                    payload = dict(pending.source)
+                    payload.setdefault(CREATED_AT_FIELD, None)
+                    buffered[doc_id] = payload
+                    continue
+                remaining.append(doc_id)
 
-            # Retrieve the points by IDs
-            results = self._client.retrieve(
-                collection_name=self.final_namespace,
-                ids=qdrant_ids,
-                with_payload=True,
-            )
+        payload_by_original_id: dict[str, dict[str, Any]] = {}
+        payload_by_qdrant_id: dict[str, dict[str, Any]] = {}
 
-            # Ensure each result contains created_at field and preserve caller ordering
-            payload_by_original_id: dict[str, dict[str, Any]] = {}
-            payload_by_qdrant_id: dict[str, dict[str, Any]] = {}
+        if remaining:
+            try:
+                qdrant_ids = [
+                    compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace)
+                    for id in remaining
+                ]
+                results = self._client.retrieve(
+                    collection_name=self.final_namespace,
+                    ids=qdrant_ids,
+                    with_payload=True,
+                )
 
-            for point in results:
-                payload = dict(point.payload or {})
-                if CREATED_AT_FIELD not in payload:
-                    payload[CREATED_AT_FIELD] = None
+                for point in results:
+                    payload = dict(point.payload or {})
+                    if CREATED_AT_FIELD not in payload:
+                        payload[CREATED_AT_FIELD] = None
 
-                qdrant_point_id = str(point.id) if point.id is not None else ""
-                if qdrant_point_id:
-                    payload_by_qdrant_id[qdrant_point_id] = payload
+                    qdrant_point_id = str(point.id) if point.id is not None else ""
+                    if qdrant_point_id:
+                        payload_by_qdrant_id[qdrant_point_id] = payload
 
-                original_id = payload.get(ID_FIELD)
-                if original_id is not None:
-                    payload_by_original_id[str(original_id)] = payload
+                    original_id = payload.get(ID_FIELD)
+                    if original_id is not None:
+                        payload_by_original_id[str(original_id)] = payload
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error retrieving vector data for IDs {remaining}: {e}"
+                )
+                return []
 
-            ordered_payloads: list[dict[str, Any] | None] = []
-            for requested_id, qdrant_id in zip(ids, qdrant_ids):
-                payload = payload_by_original_id.get(str(requested_id))
-                if payload is None:
-                    payload = payload_by_qdrant_id.get(str(qdrant_id))
-                ordered_payloads.append(payload)
-
-            return ordered_payloads
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"
-            )
-            return []
+        ordered_payloads: list[dict[str, Any] | None] = []
+        for doc_id in ids:
+            if doc_id in buffered:
+                ordered_payloads.append(buffered[doc_id])
+                continue
+            payload = payload_by_original_id.get(str(doc_id))
+            if payload is None:
+                payload = payload_by_qdrant_id.get(
+                    compute_mdhash_id_for_qdrant(
+                        doc_id, prefix=self.effective_workspace
+                    )
+                )
+            ordered_payloads.append(payload)
+        return ordered_payloads
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
-        """Get vectors by their IDs, returning only ID and vector data for efficiency
+        """Get vector embeddings for given IDs, with read-your-writes.
 
-        Args:
-            ids: List of unique identifiers
+        Pending docs whose vector hasn't been embedded yet are embedded
+        lazily inside the lock; the resulting vector is cached on the
+        buffered ``_PendingVectorDoc`` so the next flush won't re-embed.
 
-        Returns:
-            Dictionary mapping IDs to their vector embeddings
-            Format: {id: [vector_values], ...}
+        Visibility caveat for ids not in the buffer: the server-side
+        ``retrieve`` fallback runs *outside* ``_flush_lock``. A concurrent
+        ``delete()`` that lands between lock release and the server read
+        only buffers the delete -- the old vector is still on disk
+        until the next flush, so this method may return a stale vector
+        for an id that has been buffered for deletion. This is
+        best-effort read-after-uncommitted-delete and matches the
+        ``query()`` contract: callers needing strict consistency must
+        ``index_done_callback()`` first.
         """
         if not ids:
             return {}
 
+        result: dict[str, list[float]] = {}
+        remaining: list[str] = []
+        async with self._flush_lock:
+            docs_to_embed: list[tuple[str, _PendingVectorDoc]] = []
+            for doc_id in ids:
+                if doc_id in self._pending_vector_deletes:
+                    continue
+                pending = self._pending_vector_docs.get(doc_id)
+                if pending is not None:
+                    if pending.vector is None:
+                        docs_to_embed.append((doc_id, pending))
+                    else:
+                        result[doc_id] = pending.vector
+                    continue
+                remaining.append(doc_id)
+
+            if docs_to_embed:
+                contents = [pdoc.content for _, pdoc in docs_to_embed]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error lazily embedding pending vectors "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
+                embeddings = np.concatenate(embeddings_list)
+                if len(embeddings) != len(docs_to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] Embedding count mismatch: expected "
+                        f"{len(docs_to_embed)}, got {len(embeddings)}"
+                    )
+                for i, ((doc_id, pdoc), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
+                    pdoc.vector = np.array(embedding, dtype=np.float32).tolist()
+                    result[doc_id] = pdoc.vector
+                    await _cooperative_yield(i)
+
+        if not remaining:
+            return result
+
         try:
-            # Convert to Qdrant compatible IDs
             qdrant_ids = [
                 compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace)
-                for id in ids
+                for id in remaining
             ]
-
-            # Retrieve the points by IDs with vectors
             results = self._client.retrieve(
                 collection_name=self.final_namespace,
                 ids=qdrant_ids,
-                with_vectors=True,  # Important: request vectors
+                with_vectors=True,
                 with_payload=True,
             )
 
-            vectors_dict = {}
             for point in results:
                 if point and point.vector is not None and point.payload:
-                    # Get original ID from payload
                     original_id = point.payload.get(ID_FIELD)
                     if original_id:
-                        # Convert numpy array to list if needed
                         vector_data = point.vector
                         if isinstance(vector_data, np.ndarray):
                             vector_data = vector_data.tolist()
-                        vectors_dict[original_id] = vector_data
+                        result[original_id] = vector_data
 
-            return vectors_dict
+            return result
         except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error retrieving vectors by IDs from {self.namespace}: {e}"
+            logger.error(f"[{self.workspace}] Error getting vectors: {e}")
+            return result
+
+    async def finalize(self):
+        """Flush pending vector ops; surface unflushed data as RuntimeError.
+
+        Qdrant has no client connection that needs explicit release here
+        (the QdrantClient is held by the storage instance and torn down
+        on GC), but we still need to fail loudly when a transient bulk
+        error left writes buffered. ``_flush_pending_vector_ops`` is
+        all-or-nothing: it either clears both buffers or raises with
+        them intact, but we still defensively check both buffers after a
+        successful flush in case a future refactor breaks that invariant.
+        """
+        flush_error: Exception | None = None
+        try:
+            await self._flush_pending_vector_ops()
+        except Exception as e:
+            flush_error = e
+
+        async with self._flush_lock:
+            pending_docs = len(self._pending_vector_docs)
+            pending_deletes = len(self._pending_vector_deletes)
+
+        if flush_error is not None:
+            raise RuntimeError(
+                f"[{self.workspace}] QdrantVectorDBStorage.finalize() flush raised; "
+                f"{pending_docs} pending upserts and {pending_deletes} pending "
+                f"deletes were left buffered (data lost)"
+            ) from flush_error
+        if pending_docs or pending_deletes:
+            raise RuntimeError(
+                f"[{self.workspace}] QdrantVectorDBStorage.finalize() left "
+                f"{pending_docs} pending upserts and {pending_deletes} pending "
+                f"deletes buffered after final flush attempt (these writes have been lost)"
             )
-            return {}
 
     async def drop(self) -> dict[str, str]:
-        """Drop all vector data from storage and clean up resources
+        """Drop all vector data for the current workspace. Destructive.
 
-        This method will delete all data for the current workspace from the Qdrant collection.
+        Deletes every point matching ``effective_workspace`` from the
+        shared Qdrant collection ``final_namespace`` (Qdrant partitions a
+        single physical collection across workspaces via the
+        ``workspace_id`` payload field, so sibling workspaces on the same
+        collection are untouched). The collection itself and its vector
+        index are NOT recreated — they were provisioned at
+        ``initialize()`` and remain in place.
+
+        MUST only be called when ``pipeline_status`` is idle (see the
+        Pipeline concurrency contract in ``AGENTS.md``); the only
+        in-tree caller ``clear_documents`` enforces this.
+
+        Pending-write buffers are cleared *before* the server-side delete
+        is issued so a concurrent flush on this instance cannot resurrect
+        the dropped data. As a consequence, if the server-side delete
+        fails, the buffered writes are also lost — the caller cannot
+        recover them by retrying ``drop()``. This matches ``drop()``'s
+        contract ("discard everything for this workspace") and the other
+        lazy-embedding backends.
+
+        Caveat — only this instance's buffers are cleared. Other
+        ``QdrantVectorDBStorage`` instances aliased onto the same
+        ``(final_namespace, effective_workspace)`` (multi-worker
+        processes, or distinct workspaces collapsed by
+        ``QDRANT_WORKSPACE``) keep their own buffers; a sibling whose
+        prior flush failed and left buffers intact will, on its next
+        flush, upsert those stale points back into the freshly emptied
+        workspace. Direct callers bypassing the idle precondition MUST
+        flush every aliased instance first.
 
         Returns:
-            dict[str, str]: Operation status and message
-            - On success: {"status": "success", "message": "data dropped"}
-            - On failure: {"status": "error", "message": "<error details>"}
+            dict[str, str]: ``{"status": "success"|"error", "message": str}``
         """
-        # No need to lock: data integrity is ensured by allowing only one process to hold pipeline at a time
         try:
-            # Delete all points for the current workspace
-            self._client.delete(
-                collection_name=self.final_namespace,
-                points_selector=models.FilterSelector(
-                    filter=models.Filter(
-                        must=[workspace_filter_condition(self.effective_workspace)]
-                    )
-                ),
-                wait=True,
-            )
+            async with self._flush_lock:
+                # Discard buffered writes before the workspace is wiped;
+                # a concurrent flush would otherwise resurrect them.
+                self._pending_vector_docs.clear()
+                self._pending_vector_deletes.clear()
+
+                # Delete all points for the current workspace
+                self._client.delete(
+                    collection_name=self.final_namespace,
+                    points_selector=models.FilterSelector(
+                        filter=models.Filter(
+                            must=[workspace_filter_condition(self.effective_workspace)]
+                        )
+                    ),
+                    wait=True,
+                )
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} dropped workspace data from Qdrant collection {self.namespace}"
