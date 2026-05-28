@@ -4825,8 +4825,9 @@ async def _build_context_str(
         entity_id_to_original,
         relation_id_to_original,
     )
+    final_data_payload = final_data.get("data", {})
     logger.debug(
-        f"[_build_context_str] Final data after conversion: {len(final_data.get('entities', []))} entities, {len(final_data.get('relationships', []))} relationships, {len(final_data.get('chunks', []))} chunks"
+        f"[_build_context_str] Final data after conversion: {len(final_data_payload.get('entities', []))} entities, {len(final_data_payload.get('relationships', []))} relationships, {len(final_data_payload.get('chunks', []))} chunks"
     )
     return result, final_data
 
