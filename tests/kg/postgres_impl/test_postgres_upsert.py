@@ -9,6 +9,7 @@ Verifies:
 5. Empty data returns without any DB call.
 """
 
+import asyncio
 import json
 import pytest
 import numpy as np
@@ -94,9 +95,19 @@ def make_vector_storage(namespace: str) -> PGVectorStorage:
     async def fake_run_with_retry(operation, **kwargs):
         retry_kwargs.append(kwargs)
         mock_conn = AsyncMock()
+        # connection.transaction() is a synchronous factory in asyncpg that
+        # returns an async context manager. AsyncMock would return a coroutine,
+        # so swap in a MagicMock that returns an AsyncMock-backed context.
+        tx_cm = AsyncMock()
+        tx_cm.__aenter__.return_value = None
+        tx_cm.__aexit__.return_value = None
+        mock_conn.transaction = MagicMock(return_value=tx_cm)
         await operation(mock_conn)
         for call in mock_conn.executemany.call_args_list:
             captured.append((call.args[0], call.args[1]))
+        # Also capture connection.execute calls (delete SQL inside flush).
+        for call in mock_conn.execute.call_args_list:
+            captured.append((call.args[0], call.args[1:]))
 
     db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
     db.workspace = "test_ws"
@@ -121,6 +132,7 @@ def make_vector_storage(namespace: str) -> PGVectorStorage:
         embedding_func=embedding,
     )
     storage.db = db
+    storage._flush_lock = asyncio.Lock()
     storage._captured = captured
     storage._retry_kwargs = retry_kwargs
     return storage
@@ -681,7 +693,10 @@ async def test_doc_status_upsert_sql_protects_existing_content_hash():
 
 
 @pytest.mark.asyncio
-async def test_vector_upsert_passes_timing_label():
+async def test_vector_flush_passes_timing_label():
+    """upsert() now buffers; the timing_label is emitted by the flush path
+    that runs from index_done_callback() / finalize().
+    """
     storage = make_vector_storage(NameSpace.VECTOR_STORE_CHUNKS)
     await storage.upsert(
         {
@@ -694,7 +709,11 @@ async def test_vector_upsert_passes_timing_label():
             }
         }
     )
+    # No retry call until flush.
+    assert storage._retry_kwargs == []
+
+    await storage.index_done_callback()
 
     assert storage._retry_kwargs[0]["timing_label"] == (
-        f"test_ws PGVectorStorage.upsert[{NameSpace.VECTOR_STORE_CHUNKS}]"
+        f"test_ws PGVectorStorage.flush[{NameSpace.VECTOR_STORE_CHUNKS}]"
     )

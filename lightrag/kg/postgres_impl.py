@@ -36,8 +36,13 @@ from ..base import (
 )
 from ..exceptions import DataMigrationError
 from ..namespace import NameSpace, is_namespace
-from ..utils import logger, _cooperative_yield, performance_timing_log
-from ..kg.shared_storage import get_data_init_lock
+from ..utils import (
+    logger,
+    compute_mdhash_id,
+    _cooperative_yield,
+    performance_timing_log,
+)
+from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
 import pipmaster as pm
 
@@ -3032,6 +3037,20 @@ class PGKVStorage(BaseKVStorage):
             return {"status": "error", "message": str(e)}
 
 
+@dataclass
+class _PendingPGVectorDoc:
+    """Buffered PG vector upsert awaiting embedding and batched flush.
+
+    ``vector`` is stored as a numpy ndarray (typically float32 from the
+    embedding function) once embedded; pgvector's asyncpg codec accepts
+    ndarray directly so no per-flush conversion is needed.
+    """
+
+    item: dict[str, Any]
+    created_at: datetime.datetime
+    vector: np.ndarray | None = None
+
+
 @final
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
@@ -3078,6 +3097,14 @@ class PGVectorStorage(BaseVectorStorage):
                 f"(length: {len(self.table_name)}). "
                 f"Consider using a shorter embedding model name or workspace name."
             )
+
+        # Pending buffers: upsert() and delete() queue work here until
+        # _flush_pending_vector_ops() runs from index_done_callback() /
+        # finalize(). Mirrors OpenSearchVectorDBStorage / NanoVectorDBStorage.
+        self._pending_vector_docs: dict[str, _PendingPGVectorDoc] = {}
+        self._pending_vector_deletes: set[str] = set()
+        # Namespace-keyed lock; created in initialize() after workspace is final.
+        self._flush_lock = None
 
     @staticmethod
     async def _pg_create_table(
@@ -3531,10 +3558,65 @@ class PGVectorStorage(BaseVectorStorage):
                 base_table=self.legacy_table_name,  # base_table for DDL template lookup
             )
 
+        if self._flush_lock is None:
+            self._flush_lock = get_namespace_lock(
+                self.namespace, workspace=self.workspace
+            )
+
     async def finalize(self):
-        if self.db is not None:
-            await ClientManager.release_client(self.db)
-            self.db = None
+        """Flush pending vector ops then release the shared PG client.
+
+        Captures regular ``Exception`` from the flush so it can be re-raised
+        as a ``RuntimeError`` naming the unflushed buffer counts after the
+        client is released. ``BaseException`` (``CancelledError``,
+        ``KeyboardInterrupt``, ``SystemExit``) is intentionally NOT caught
+        so it can propagate through ``finally`` — the buffer-count reframing
+        below is skipped in that case (the propagating exception already
+        signals shutdown; conflating it with "left N pending" would be
+        misleading).
+
+        Idempotency:
+            Re-entry after a successful or failed first call is a no-op for
+            the flush (client is already released), but still raises if
+            buffers remain non-empty so the operator sees the data-loss
+            signal again.
+        """
+        if self.db is None:
+            pending_docs = len(self._pending_vector_docs)
+            pending_deletes = len(self._pending_vector_deletes)
+            if pending_docs or pending_deletes:
+                raise RuntimeError(
+                    f"[{self.workspace}] PGVectorStorage.finalize() re-entry: "
+                    f"client already released; {pending_docs} pending upserts "
+                    f"and {pending_deletes} pending deletes cannot be flushed"
+                )
+            return
+
+        flush_error: Exception | None = None
+        try:
+            try:
+                await self._flush_pending_vector_ops()
+            except Exception as e:
+                flush_error = e
+        finally:
+            if self.db is not None:
+                await ClientManager.release_client(self.db)
+                self.db = None
+
+        pending_docs = len(self._pending_vector_docs)
+        pending_deletes = len(self._pending_vector_deletes)
+        if flush_error is not None:
+            raise RuntimeError(
+                f"[{self.workspace}] PGVectorStorage.finalize() flush raised; "
+                f"{pending_docs} pending upserts and {pending_deletes} pending "
+                f"deletes were left buffered (client released, data lost)"
+            ) from flush_error
+        if pending_docs or pending_deletes:
+            raise RuntimeError(
+                f"[{self.workspace}] PGVectorStorage.finalize() left "
+                f"{pending_docs} pending upserts and {pending_deletes} "
+                f"pending deletes buffered after final flush attempt"
+            )
 
     def _upsert_chunks(
         self, item: dict[str, Any], current_time: datetime.datetime
@@ -3631,125 +3713,252 @@ class PGVectorStorage(BaseVectorStorage):
         return upsert_sql, values
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.debug(f"[{self.workspace}] Inserting {len(data)} to {self.namespace}")
+        """Buffer vector docs for embedding and batched flush.
+
+        Correctness premise:
+            LightRAG's pipeline is the normal write path for graph/vector
+            mutations and guarantees a single writer process per workspace.
+            This storage follows the same deferred-embedding contract as
+            OpenSearchVectorDBStorage: the pending buffer is process-local.
+            Committed PG rows are immediately visible across workers, but
+            *buffered* writes are not — readers in other workers will not
+            see them until the writing worker calls index_done_callback().
+
+            Non-pipeline writers must provide equivalent single-writer
+            serialization and must flush explicitly before depending on
+            reads from another worker.
+
+        Memory expectation:
+            Pending docs (raw ``content`` strings, plus cached float32
+            vectors once embedded) accumulate in process memory until the
+            next ``index_done_callback()`` / ``finalize()``. This matches
+            the OpenSearch/Nano/Faiss contract. Callers performing very
+            large ingests should flush periodically (every N upserts) to
+            cap working-set size.
+        """
         if not data:
             return
 
-        timing_label = f"{self.workspace} PGVectorStorage.upsert[{self.namespace}]"
-        total_start = time.perf_counter()
-        performance_timing_log(
-            "[%s] start records=%s max_batch_size=%s",
-            timing_label,
-            len(data),
-            self._max_batch_size,
+        logger.debug(
+            f"[{self.workspace}] Buffering {len(data)} vectors for {self.namespace}"
         )
 
-        # Get current UTC time and convert to naive datetime for database storage
+        # Build pending docs outside the lock; UTC naive datetime mirrors
+        # the previous direct-write code path (the _upsert_* helpers feed
+        # this straight into asyncpg as a timestamp).
         current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
-        list_data = []
-        list_data_build_start = time.perf_counter()
+        pending_docs: list[tuple[str, _PendingPGVectorDoc]] = []
         for i, (k, v) in enumerate(data.items(), start=1):
-            list_data.append(
-                {
-                    "__id__": k,
-                    **{k1: v1 for k1, v1 in v.items()},
-                }
+            pending_docs.append(
+                (
+                    k,
+                    _PendingPGVectorDoc(
+                        item={"__id__": k, **v},
+                        created_at=current_time,
+                    ),
+                )
             )
             await _cooperative_yield(i)
-        performance_timing_log(
-            "[%s] list_data build completed in %.4fs records=%s",
-            timing_label,
-            time.perf_counter() - list_data_build_start,
-            len(list_data),
-        )
-        contents = [v["content"] for v in data.values()]
-        embedding_split_start = time.perf_counter()
-        batches = [
-            contents[i : i + self._max_batch_size]
-            for i in range(0, len(contents), self._max_batch_size)
-        ]
-        performance_timing_log(
-            "[%s] embedding batch split completed in %.4fs batches=%s",
-            timing_label,
-            time.perf_counter() - embedding_split_start,
-            len(batches),
-        )
 
-        embedding_tasks = [
-            self.embedding_func(batch, context="document") for batch in batches
-        ]
-        embedding_generation_start = time.perf_counter()
-        embeddings_list = await asyncio.gather(*embedding_tasks)
-        performance_timing_log(
-            "[%s] embedding generation completed in %.4fs batches=%s",
-            timing_label,
-            time.perf_counter() - embedding_generation_start,
-            len(embeddings_list),
-        )
+        async with self._flush_lock:
+            for doc_id, pending_doc in pending_docs:
+                # Invariant: a later upsert wins over an earlier delete; the
+                # unconditional dict assignment also discards any cached
+                # stale vector from a prior upsert of the same id.
+                self._pending_vector_deletes.discard(doc_id)
+                self._pending_vector_docs[doc_id] = pending_doc
 
-        embeddings = np.concatenate(embeddings_list)
-        assert len(embeddings) == len(
-            list_data
-        ), f"Embedding count mismatch: expected {len(list_data)}, got {len(embeddings)}"
-        embedding_fill_start = time.perf_counter()
-        for i, d in enumerate(list_data, start=1):
-            d["__vector__"] = embeddings[i - 1]
-            await _cooperative_yield(i)
-        performance_timing_log(
-            "[%s] vector backfill completed in %.4fs records=%s",
-            timing_label,
-            time.perf_counter() - embedding_fill_start,
-            len(list_data),
-        )
+    async def _flush_pending_vector_ops(self) -> None:
+        """Flush buffered PG vector upserts and deletes in one transaction.
 
-        # Prepare batch values for executemany
-        batch_values: list[tuple[Any, ...]] = []
-        upsert_sql = None
-        tuple_build_start = time.perf_counter()
+        Concurrency:
+            All buffer reads/writes and destructive server mutations on
+            this storage run under ``self._flush_lock``. Embedding stays
+            inside that lock so a destructive operation cannot interleave
+            between embedding and the PG write in the same process.
 
-        for i, item in enumerate(list_data, start=1):
+        Failure handling:
+            PG cannot expose per-document statuses, so flush is
+            all-or-nothing:
+              * If embedding fails the buffers stay intact (next flush
+                retries; cached vectors are reused).
+              * If ``_run_with_retry`` raises the transaction rolls back
+                and the buffers stay intact. Cached vectors stay attached
+                to pending docs so the next flush does not re-embed.
+              * On success both buffers are cleared.
+
+        Post-finalize / pre-initialize:
+            Calling this after ``finalize()`` (``self.db is None``) or
+            before ``initialize()`` (``self._flush_lock is None``) with a
+            non-empty buffer raises ``RuntimeError`` — silently dropping
+            buffered writes would defeat the data-loss visibility that
+            ``finalize()`` provides. An empty-buffer call is a no-op.
+        """
+        if self._flush_lock is None:
+            pending_docs = len(self._pending_vector_docs)
+            pending_deletes = len(self._pending_vector_deletes)
+            if pending_docs or pending_deletes:
+                raise RuntimeError(
+                    f"[{self.workspace}] PGVectorStorage._flush_pending_vector_ops "
+                    f"called before initialize(); {pending_docs} pending upserts "
+                    f"and {pending_deletes} pending deletes cannot be flushed"
+                )
+            return
+
+        async with self._flush_lock:
+            if not self._pending_vector_docs and not self._pending_vector_deletes:
+                return
+            if self.db is None:
+                pending_docs = len(self._pending_vector_docs)
+                pending_deletes = len(self._pending_vector_deletes)
+                raise RuntimeError(
+                    f"[{self.workspace}] PGVectorStorage._flush_pending_vector_ops "
+                    f"called after client release; {pending_docs} pending upserts "
+                    f"and {pending_deletes} pending deletes cannot be flushed"
+                )
+
+            timing_label = f"{self.workspace} PGVectorStorage.flush[{self.namespace}]"
+            total_start = time.perf_counter()
+            performance_timing_log(
+                "[%s] start upserts=%s deletes=%s max_batch_size=%s",
+                timing_label,
+                len(self._pending_vector_docs),
+                len(self._pending_vector_deletes),
+                self._max_batch_size,
+            )
+
+            # --- Embedding phase ---------------------------------------------
+            docs_to_embed = [
+                (doc_id, pending_doc)
+                for doc_id, pending_doc in self._pending_vector_docs.items()
+                if pending_doc.vector is None
+            ]
+            if docs_to_embed:
+                contents = [
+                    pending_doc.item["content"] for _, pending_doc in docs_to_embed
+                ]
+                batches = [
+                    contents[i : i + self._max_batch_size]
+                    for i in range(0, len(contents), self._max_batch_size)
+                ]
+                logger.info(
+                    f"[{self.workspace}] {self.namespace} flush: embedding "
+                    f"{len(docs_to_embed)} vectors in {len(batches)} batch(es) "
+                    f"(batch_num={self._max_batch_size})"
+                )
+                embedding_start = time.perf_counter()
+                try:
+                    embeddings_list = await asyncio.gather(
+                        *[
+                            self.embedding_func(batch, context="document")
+                            for batch in batches
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error embedding pending vector ops "
+                        f"(upserts={len(docs_to_embed)}): {e}"
+                    )
+                    raise
+                performance_timing_log(
+                    "[%s] embedding completed in %.4fs docs=%s batches=%s",
+                    timing_label,
+                    time.perf_counter() - embedding_start,
+                    len(docs_to_embed),
+                    len(batches),
+                )
+                embeddings = np.concatenate(embeddings_list)
+                # Explicit check: a count mismatch under `python -O` would
+                # silently truncate via zip(), mispairing vectors with docs.
+                if len(embeddings) != len(docs_to_embed):
+                    raise RuntimeError(
+                        f"[{self.workspace}] Embedding count mismatch: "
+                        f"expected {len(docs_to_embed)}, got {len(embeddings)}"
+                    )
+                for i, ((_, pending_doc), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
+                    pending_doc.vector = embedding
+                    await _cooperative_yield(i)
+
+            # --- Build batch tuples ------------------------------------------
             if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
-                upsert_sql, values = self._upsert_chunks(item, current_time)
+                build_tuple = self._upsert_chunks
             elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
-                upsert_sql, values = self._upsert_entities(item, current_time)
+                build_tuple = self._upsert_entities
             elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
-                upsert_sql, values = self._upsert_relationships(item, current_time)
+                build_tuple = self._upsert_relationships
             else:
                 raise ValueError(f"{self.namespace} is not supported")
 
-            batch_values.append(values)
-            await _cooperative_yield(i)
-        performance_timing_log(
-            "[%s] upsert tuple build completed in %.4fs records=%s",
-            timing_label,
-            time.perf_counter() - tuple_build_start,
-            len(batch_values),
-        )
+            batch_values: list[tuple[Any, ...]] = []
+            upsert_sql: str | None = None
+            for i, (doc_id, pending_doc) in enumerate(
+                self._pending_vector_docs.items(), start=1
+            ):
+                if pending_doc.vector is None:
+                    # Should not happen: every pending doc was embedded above
+                    # or had a cached vector from a previous lazy embed.
+                    raise RuntimeError(
+                        f"[{self.workspace}] Pending vector for id={doc_id} "
+                        f"missing after embedding phase"
+                    )
+                # Coerce to float32 ndarray if not already (defensive; the
+                # embedding func typically returns float32 but a custom
+                # provider may return float64 — pgvector wants float32).
+                item = dict(pending_doc.item)
+                vector = pending_doc.vector
+                if not isinstance(vector, np.ndarray) or vector.dtype != np.float32:
+                    vector = np.asarray(vector, dtype=np.float32)
+                item["__vector__"] = vector
+                upsert_sql, values = build_tuple(item, pending_doc.created_at)
+                batch_values.append(values)
+                await _cooperative_yield(i)
 
-        # Use executemany for batch execution - significantly reduces DB round-trips
-        # Note: register_vector is already called on pool init, no need to call it again
-        if batch_values and upsert_sql:
+            pending_delete_ids = list(self._pending_vector_deletes)
 
-            async def _batch_upsert(connection: asyncpg.Connection) -> None:
-                execute_start = time.perf_counter()
-                await connection.executemany(upsert_sql, batch_values)
-                performance_timing_log(
-                    "[%s] executemany completed in %.4fs batch_size=%s",
-                    timing_label,
-                    time.perf_counter() - execute_start,
-                    len(batch_values),
+            # --- Persistence -------------------------------------------------
+            async def _flush_batch(connection: asyncpg.Connection) -> None:
+                async with connection.transaction():
+                    if batch_values and upsert_sql:
+                        execute_start = time.perf_counter()
+                        await connection.executemany(upsert_sql, batch_values)
+                        performance_timing_log(
+                            "[%s] executemany completed in %.4fs batch_size=%s",
+                            timing_label,
+                            time.perf_counter() - execute_start,
+                            len(batch_values),
+                        )
+                    if pending_delete_ids:
+                        delete_sql = (
+                            f"DELETE FROM {self.table_name} "
+                            "WHERE workspace=$1 AND id = ANY($2)"
+                        )
+                        await connection.execute(
+                            delete_sql, self.workspace, pending_delete_ids
+                        )
+
+            try:
+                await self.db._run_with_retry(_flush_batch, timing_label=timing_label)
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error flushing vector ops "
+                    f"(upserts={len(batch_values)}, "
+                    f"deletes={len(pending_delete_ids)}): {e}"
                 )
+                raise
 
-            await self.db._run_with_retry(_batch_upsert, timing_label=timing_label)
-            logger.debug(
-                f"[{self.workspace}] Batch upserted {len(batch_values)} records to {self.namespace}"
+            # Success: clear committed buffers. Cached vectors live on
+            # those records and are GC'd with them.
+            self._pending_vector_docs.clear()
+            self._pending_vector_deletes.clear()
+            performance_timing_log(
+                "[%s] total complete in %.4fs upserts=%s deletes=%s",
+                timing_label,
+                time.perf_counter() - total_start,
+                len(batch_values),
+                len(pending_delete_ids),
             )
-        performance_timing_log(
-            "[%s] total complete in %.4fs records=%s",
-            timing_label,
-            time.perf_counter() - total_start,
-            len(data),
-        )
 
     #################### query method ###############
     async def query(
@@ -3784,66 +3993,172 @@ class PGVectorStorage(BaseVectorStorage):
         return results
 
     async def index_done_callback(self) -> None:
-        # PG handles persistence automatically
-        pass
+        await self._flush_pending_vector_ops()
 
     async def delete(self, ids: list[str]) -> None:
-        """Delete vectors with specified IDs from the storage.
+        """Buffer vector deletes for batched flush.
 
-        Args:
-            ids: List of vector IDs to be deleted
+        A delete cancels any pending upsert for the same id. The actual PG
+        delete is performed by ``_flush_pending_vector_ops`` during the next
+        ``index_done_callback`` / ``finalize`` call.
         """
         if not ids:
             return
-
-        delete_sql = (
-            f"DELETE FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
+        if isinstance(ids, set):
+            ids = list(ids)
+        async with self._flush_lock:
+            for doc_id in ids:
+                self._pending_vector_docs.pop(doc_id, None)
+                self._pending_vector_deletes.add(doc_id)
+        logger.debug(
+            f"[{self.workspace}] Buffered delete for {len(ids)} vectors in {self.namespace}"
         )
 
-        try:
-            await self.db.execute(delete_sql, {"workspace": self.workspace, "ids": ids})
-            logger.debug(
-                f"[{self.workspace}] Successfully deleted {len(ids)} vectors from {self.namespace}"
-            )
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error while deleting vectors from {self.namespace}: {e}"
-            )
-
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete an entity by its name from the vector storage.
+        """Delete an entity vector by entity name.
 
-        Args:
-            entity_name: The name of the entity to delete
+        Runs the SQL predicate delete (``WHERE entity_name=$2``) immediately
+        under ``_flush_lock`` so it cannot interleave with a flush of the
+        same namespace, and — only after the SQL succeeds — prunes the
+        matching pending docs and any pending delete that would otherwise
+        re-fire. If the SQL raises, the buffer is left untouched so a
+        subsequent retry can still observe the pending state instead of
+        silently losing it, and the exception is logged and re-raised so
+        the caller (e.g. ``adelete_by_entity``) short-circuits before
+        ``_persist_graph_updates()`` flushes those preserved pending
+        upserts back into the table. Matches the cross-backend contract
+        documented on the Qdrant / Milvus / Mongo implementations: "server-
+        side failures are re-raised; the caller decides whether to retry."
+
+        The SQL predicate is kept (rather than ``self.delete([ent_id])``) as
+        a safety net for legacy rows whose ``id`` may not equal
+        ``compute_mdhash_id(entity_name, prefix="ent-")``.
+
+        Raises:
+            RuntimeError: if called before ``initialize()`` (``_flush_lock``
+                is still ``None``). Silently dropping a destructive intent
+                would defeat the data-loss visibility that the rest of this
+                storage enforces; the caller must initialize first.
         """
-        try:
-            # Construct SQL to delete the entity using dynamic table name
-            delete_sql = f"""DELETE FROM {self.table_name}
-                            WHERE workspace=$1 AND entity_name=$2"""
-
-            await self.db.execute(
-                delete_sql, {"workspace": self.workspace, "entity_name": entity_name}
+        if self._flush_lock is None:
+            raise RuntimeError(
+                f"[{self.workspace}] PGVectorStorage.delete_entity called before "
+                f"initialize(); call initialize_storages() on the LightRAG instance "
+                f"before issuing destructive operations"
             )
+        entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+
+        def _prune_pending() -> None:
+            # Drop any pending upsert keyed by hash id or matching
+            # entity_name in the buffered payload (relationship docs
+            # have no entity_name; the lookup is a harmless no-op).
+            self._pending_vector_docs.pop(entity_id, None)
+            for buffered_id in [
+                k
+                for k, v in self._pending_vector_docs.items()
+                if v.item.get("entity_name") == entity_name
+            ]:
+                self._pending_vector_docs.pop(buffered_id, None)
+            # Drop any redundant pending delete; the SQL above covered it.
+            self._pending_vector_deletes.discard(entity_id)
+
+        try:
+            async with self._flush_lock:
+                if self.db is None:
+                    # Storage already finalized; buffer is the only state
+                    # left, so apply the delete intent there.
+                    _prune_pending()
+                    return
+                delete_sql = (
+                    f"DELETE FROM {self.table_name} "
+                    "WHERE workspace=$1 AND entity_name=$2"
+                )
+                await self.db.execute(
+                    delete_sql,
+                    {"workspace": self.workspace, "entity_name": entity_name},
+                )
+                # SQL succeeded — safe to prune buffer. If it had raised,
+                # we'd skip this so the pending state remains for retry.
+                _prune_pending()
             logger.debug(
                 f"[{self.workspace}] Successfully deleted entity {entity_name}"
             )
         except Exception as e:
+            # Re-raise so the caller can short-circuit and skip the
+            # subsequent flush; otherwise the pending upsert we just
+            # preserved would be persisted back, undoing the delete.
             logger.error(f"[{self.workspace}] Error deleting entity {entity_name}: {e}")
+            raise
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete all relations associated with an entity.
+        """Delete all relation vectors where ``entity_name`` is src or tgt.
 
-        Args:
-            entity_name: The name of the entity whose relations should be deleted
+        Predicate-based; runs immediately. The whole method holds
+        ``_flush_lock`` so it cannot interleave with a flush of buffered
+        relation upserts.
+
+        Buffer semantics — post-prune with caller short-circuit contract:
+            Any pending relation upsert whose ``src_id`` or ``tgt_id``
+            matches ``entity_name`` is pruned from ``_pending_vector_docs``
+            **only after** the SQL predicate delete succeeds. On SQL
+            failure the pending docs are left intact and the exception is
+            re-raised. This avoids silently dropping buffered relation
+            vectors that the user never told us to discard.
+
+            Correctness relies on the caller short-circuiting before it
+            can trigger ``index_done_callback`` and flush those preserved
+            pending upserts back into the table (which would undo the
+            delete intent on a partial server-side delete). The single
+            in-tree caller ``adelete_by_entity`` in ``utils_graph.py``
+            honors this: its ``except`` clause skips both ``delete_node``
+            and ``_persist_graph_updates``, so on failure both the graph
+            and the pending vector buffer stay consistent with the
+            "delete never happened" state and the operation converges on
+            the next retry. Callers that need to rename or re-link the
+            entity must re-issue the relation upserts after a successful
+            call.
+
+        Raises:
+            RuntimeError: if called before ``initialize()`` (``_flush_lock``
+                is still ``None``). Silently dropping a destructive intent
+                would defeat the data-loss visibility that the rest of this
+                storage enforces; the caller must initialize first.
         """
-        try:
-            # Delete relations where the entity is either the source or target
-            delete_sql = f"""DELETE FROM {self.table_name}
-                            WHERE workspace=$1 AND (source_id=$2 OR target_id=$2)"""
-
-            await self.db.execute(
-                delete_sql, {"workspace": self.workspace, "entity_name": entity_name}
+        if self._flush_lock is None:
+            raise RuntimeError(
+                f"[{self.workspace}] PGVectorStorage.delete_entity_relation called "
+                f"before initialize(); call initialize_storages() on the LightRAG "
+                f"instance before issuing destructive operations"
             )
+
+        def _prune_pending() -> None:
+            for buffered_id in [
+                k
+                for k, v in self._pending_vector_docs.items()
+                if v.item.get("src_id") == entity_name
+                or v.item.get("tgt_id") == entity_name
+            ]:
+                self._pending_vector_docs.pop(buffered_id, None)
+
+        try:
+            async with self._flush_lock:
+                if self.db is None:
+                    # Storage already finalized; buffer is the only state
+                    # left, so apply the delete intent there.
+                    _prune_pending()
+                    return
+                delete_sql = (
+                    f"DELETE FROM {self.table_name} "
+                    "WHERE workspace=$1 AND (source_id=$2 OR target_id=$2)"
+                )
+                await self.db.execute(
+                    delete_sql,
+                    {"workspace": self.workspace, "entity_name": entity_name},
+                )
+                # SQL succeeded — safe to prune pending relation docs. If
+                # it had raised, we'd skip this so the pending state
+                # remains for retry on the next call.
+                _prune_pending()
             logger.debug(
                 f"[{self.workspace}] Successfully deleted relations for entity {entity_name}"
             )
@@ -3851,21 +4166,44 @@ class PGVectorStorage(BaseVectorStorage):
             logger.error(
                 f"[{self.workspace}] Error deleting relations for entity {entity_name}: {e}"
             )
+            raise
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        """Get vector data by its ID
+        """Get vector data by its ID with read-your-writes against the buffer.
 
-        Args:
-            id: The unique identifier of the vector
+        ``__vector__`` and ``__id__`` are stripped from buffered results to
+        match the other vector backends; callers needing embeddings must use
+        ``get_vectors_by_ids``.
 
-        Returns:
-            The vector data if found, or None if not found
+        Response shape:
+            Buffered hits return ``{"id", "content", <payload fields>,
+            "created_at"}`` only — no embedding column. SQL-fallback hits
+            return the full row including ``content_vector`` (and any
+            namespace-specific columns such as ``entity_name`` or
+            ``source_id``). Callers that only read documented payload
+            fields (``content``, ``id``, ``created_at``) are unaffected;
+            consumers iterating over all keys must tolerate both shapes.
         """
-        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {self.table_name} WHERE workspace=$1 AND id=$2"
-        params = {"workspace": self.workspace, "id": id}
+        async with self._flush_lock:
+            if id in self._pending_vector_deletes:
+                return None
+            pending = self._pending_vector_docs.get(id)
+            if pending is not None:
+                doc = {
+                    k: v
+                    for k, v in pending.item.items()
+                    if k not in ("__id__", "__vector__")
+                }
+                doc["id"] = id
+                doc["created_at"] = int(pending.created_at.timestamp())
+                return doc
 
+        query = (
+            f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at "
+            f"FROM {self.table_name} WHERE workspace=$1 AND id=$2"
+        )
         try:
-            result = await self.db.query(query, list(params.values()))
+            result = await self.db.query(query, [self.workspace, id])
             if result:
                 return dict(result)
             return None
@@ -3876,107 +4214,235 @@ class PGVectorStorage(BaseVectorStorage):
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get multiple vector data by their IDs
+        """Get multiple vector docs by ID, preserving caller order.
 
-        Args:
-            ids: List of unique identifiers
+        Pending deletes return ``None`` in their slot. Pending upserts are
+        served from the buffer; remaining ids fall through to a single
+        parameterized ``id = ANY($2)`` SQL query (replacing the previous
+        string-built ``IN (...)`` form).
 
-        Returns:
-            List of vector data objects that were found
+        Response shape: same buffered-vs-SQL inconsistency as
+        ``get_by_id`` — see that docstring for details.
         """
         if not ids:
             return []
 
-        ids_str = ",".join([f"'{id}'" for id in ids])
-        query = f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM {self.table_name} WHERE workspace=$1 AND id IN ({ids_str})"
-        params = {"workspace": self.workspace}
+        buffered: dict[str, dict[str, Any] | None] = {}
+        remaining: list[str] = []
+        async with self._flush_lock:
+            for doc_id in ids:
+                if doc_id in self._pending_vector_deletes:
+                    buffered[doc_id] = None
+                    continue
+                pending = self._pending_vector_docs.get(doc_id)
+                if pending is not None:
+                    doc = {
+                        k: v
+                        for k, v in pending.item.items()
+                        if k not in ("__id__", "__vector__")
+                    }
+                    doc["id"] = doc_id
+                    doc["created_at"] = int(pending.created_at.timestamp())
+                    buffered[doc_id] = doc
+                    continue
+                remaining.append(doc_id)
 
-        try:
-            results = await self.db.query(query, list(params.values()), multirows=True)
-            if not results:
+        id_map: dict[str, dict[str, Any]] = {}
+        if remaining:
+            query = (
+                f"SELECT *, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at "
+                f"FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
+            )
+            try:
+                results = await self.db.query(
+                    query, [self.workspace, remaining], multirows=True
+                )
+                for record in results or []:
+                    if record is None:
+                        continue
+                    record_dict = dict(record)
+                    row_id = record_dict.get("id")
+                    if row_id is not None:
+                        id_map[str(row_id)] = record_dict
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"
+                )
                 return []
 
-            # Preserve caller requested ordering while normalizing asyncpg rows to dicts.
-            id_map: dict[str, dict[str, Any]] = {}
-            for record in results:
-                if record is None:
-                    continue
-                record_dict = dict(record)
-                row_id = record_dict.get("id")
-                if row_id is not None:
-                    id_map[str(row_id)] = record_dict
-
-            ordered_results: list[dict[str, Any] | None] = []
-            for requested_id in ids:
+        ordered_results: list[dict[str, Any] | None] = []
+        for requested_id in ids:
+            if requested_id in buffered:
+                ordered_results.append(buffered[requested_id])
+            else:
                 ordered_results.append(id_map.get(str(requested_id)))
-            return ordered_results
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"
-            )
-            return []
+        return ordered_results
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
-        """Get vectors by their IDs, returning only ID and vector data for efficiency
+        """Get vector embeddings by ID, with read-your-writes against the buffer.
 
-        Args:
-            ids: List of unique identifiers
+        Lazily embeds pending docs whose vector has not been computed yet,
+        caches the result on the pending record (so the next flush reuses
+        it), and falls through to a parameterized SQL query for ids not in
+        the buffer.
 
-        Returns:
-            Dictionary mapping IDs to their vector embeddings
-            Format: {id: [vector_values], ...}
+        Embedding I/O runs *outside* ``_flush_lock`` so a slow embedding
+        provider cannot block concurrent ``upsert`` / ``delete`` / read
+        calls on this storage. The lock is re-acquired briefly to cache
+        the result, and the pending record's identity is re-checked
+        first: if a concurrent ``upsert`` / ``delete`` / ``drop`` replaced
+        or removed the record during the embedding window, that ID is
+        dropped from the response entirely — we neither cache the stale
+        vector on the new/missing record nor return it to the caller, so
+        callers cannot observe an embedding that no longer matches the
+        current buffer state. Affected callers should treat the missing
+        key the same as the existing "id was deleted before the call"
+        case and retry if needed.
         """
         if not ids:
             return {}
 
-        ids_str = ",".join([f"'{id}'" for id in ids])
-        query = f"SELECT id, content_vector FROM {self.table_name} WHERE workspace=$1 AND id IN ({ids_str})"
-        params = {"workspace": self.workspace}
+        result: dict[str, list[float]] = {}
+        remaining: list[str] = []
+        docs_to_embed: list[tuple[str, _PendingPGVectorDoc]] = []
+        async with self._flush_lock:
+            for doc_id in ids:
+                if doc_id in self._pending_vector_deletes:
+                    continue
+                pending = self._pending_vector_docs.get(doc_id)
+                if pending is not None:
+                    if pending.vector is None:
+                        docs_to_embed.append((doc_id, pending))
+                    else:
+                        result[doc_id] = pending.vector.tolist()
+                    continue
+                remaining.append(doc_id)
 
+        if docs_to_embed:
+            contents = [pending_doc.item["content"] for _, pending_doc in docs_to_embed]
+            batches = [
+                contents[i : i + self._max_batch_size]
+                for i in range(0, len(contents), self._max_batch_size)
+            ]
+            try:
+                embeddings_list = await asyncio.gather(
+                    *[
+                        self.embedding_func(batch, context="document")
+                        for batch in batches
+                    ]
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{self.workspace}] Error lazily embedding pending vectors "
+                    f"(upserts={len(docs_to_embed)}): {e}"
+                )
+                raise
+            embeddings = np.concatenate(embeddings_list)
+            if len(embeddings) != len(docs_to_embed):
+                raise RuntimeError(
+                    f"[{self.workspace}] Embedding count mismatch: "
+                    f"expected {len(docs_to_embed)}, got {len(embeddings)}"
+                )
+
+            # Re-acquire the lock just long enough to cache results on
+            # the same record. The identity check gates BOTH the cache
+            # write and the response entry: if the pending record was
+            # swapped or removed during the embedding window (concurrent
+            # upsert / delete / drop), the just-computed vector no longer
+            # matches the current buffer state for this id, so we drop it
+            # from the response rather than return a stale embedding.
+            async with self._flush_lock:
+                for i, ((doc_id, original_pending), embedding) in enumerate(
+                    zip(docs_to_embed, embeddings), start=1
+                ):
+                    current = self._pending_vector_docs.get(doc_id)
+                    if current is original_pending:
+                        current.vector = embedding
+                        result[doc_id] = embedding.tolist()
+                    await _cooperative_yield(i)
+
+        if not remaining:
+            return result
+
+        query = (
+            f"SELECT id, content_vector FROM {self.table_name} "
+            f"WHERE workspace=$1 AND id = ANY($2)"
+        )
         try:
-            results = await self.db.query(query, list(params.values()), multirows=True)
-            vectors_dict = {}
-
-            for result in results:
-                if result and "content_vector" in result and "id" in result:
-                    try:
-                        vector_data = result["content_vector"]
-                        # Handle both pgvector-registered connections (returns list/tuple)
-                        # and non-registered connections (returns JSON string)
-                        if isinstance(vector_data, (list, tuple)):
-                            vectors_dict[result["id"]] = list(vector_data)
-                        elif isinstance(vector_data, str):
-                            parsed = json.loads(vector_data)
-                            if isinstance(parsed, list):
-                                vectors_dict[result["id"]] = parsed
-                        # Handle numpy arrays from pgvector
-                        elif hasattr(vector_data, "tolist"):
-                            vectors_dict[result["id"]] = vector_data.tolist()
-                        elif hasattr(vector_data, "to_list") and callable(
-                            vector_data.to_list
-                        ):
-                            vectors_dict[result["id"]] = vector_data.to_list()
-                    except (json.JSONDecodeError, TypeError) as e:
-                        logger.warning(
-                            f"[{self.workspace}] Failed to parse vector data for ID {result['id']}: {e}"
-                        )
-
-            return vectors_dict
-        except Exception as e:
-            logger.error(
-                f"[{self.workspace}] Error retrieving vectors by IDs from {self.namespace}: {e}"
+            results = await self.db.query(
+                query, [self.workspace, remaining], multirows=True
             )
-            return {}
+            for row in results or []:
+                if not row or "content_vector" not in row or "id" not in row:
+                    continue
+                vector_data = row["content_vector"]
+                try:
+                    if isinstance(vector_data, (list, tuple)):
+                        result[row["id"]] = list(vector_data)
+                    elif isinstance(vector_data, str):
+                        parsed = json.loads(vector_data)
+                        if isinstance(parsed, list):
+                            result[row["id"]] = parsed
+                    elif hasattr(vector_data, "tolist"):
+                        result[row["id"]] = vector_data.tolist()
+                    elif hasattr(vector_data, "to_list") and callable(
+                        vector_data.to_list
+                    ):
+                        result[row["id"]] = vector_data.to_list()
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(
+                        f"[{self.workspace}] Failed to parse vector data for ID {row['id']}: {e}"
+                    )
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error getting vectors: {e}")
+
+        return result
 
     async def drop(self) -> dict[str, str]:
-        """Drop the storage"""
+        """Drop all rows scoped to this storage's workspace.
+
+        The underlying table is shared across workspaces and is NOT
+        dropped — this method issues ``DELETE FROM <table> WHERE
+        workspace=$1`` and clears the pending buffers (queued
+        upserts/deletes against rows that are about to disappear are
+        meaningless).
+
+        Concurrency contract:
+            ``_flush_lock`` guards same-process flush / upsert / delete
+            races only. Cross-worker buffered writes are NOT covered —
+            another worker's pending buffer can flush stale rows back
+            into the table immediately after this call returns. Callers
+            running inside the LightRAG framework MUST hold
+            ``pipeline_status["destructive_busy"] = True`` (acquired
+            atomically via ``_acquire_destructive_busy``) for the entire
+            duration of the drop; the ``/documents/clear`` endpoint
+            already does this before invoking ``drop()`` on every
+            storage. Direct callers (tests, ops scripts, debugging) are
+            responsible for ensuring no other writer is touching this
+            workspace.
+
+        Returns:
+            ``{"status": "success" | "error", "message": ...}``. Unlike
+            ``delete()`` / ``delete_entity()`` / ``delete_entity_relation()``
+            which re-raise on failure, ``drop()`` swallows the exception
+            into the return dict — callers MUST inspect ``status`` to
+            detect failure. The exception is also logged at ``error``
+            level so a missed status check still leaves a trail.
+        """
         try:
-            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
-                table_name=self.table_name
-            )
-            await self.db.execute(drop_sql, {"workspace": self.workspace})
+            async with self._flush_lock:
+                self._pending_vector_docs.clear()
+                self._pending_vector_deletes.clear()
+                drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                    table_name=self.table_name
+                )
+                await self.db.execute(drop_sql, {"workspace": self.workspace})
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping vector storage "
+                f"{self.namespace}: {e}"
+            )
             return {"status": "error", "message": str(e)}
 
 
