@@ -690,6 +690,15 @@ class QdrantVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, query_embedding: list[float] = None
     ) -> list[dict[str, Any]]:
+        """Query the vector database via Qdrant ``query_points``.
+
+        Reads from the server-side index only; buffered upserts and deletes
+        are NOT visible until ``index_done_callback`` / ``finalize`` flushes
+        them. Callers that need read-your-writes for a freshly upserted id
+        should use ``get_by_id`` / ``get_by_ids`` (which consult the buffer)
+        or flush first. Matches the deferred-embedding contract used by the
+        other lazy-embedding backends (Mongo / OpenSearch / FAISS / Nano).
+        """
         if query_embedding is not None:
             embedding = query_embedding
         else:
@@ -731,6 +740,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         ``_build_upsert_batches`` to respect Qdrant's payload size limit.
         Any failure (embed or server write) raises and leaves both
         buffers intact; the next ``index_done_callback`` retries.
+
+        Concurrency invariant: ``_flush_lock`` is a non-reentrant asyncio
+        lock. Callers MUST NOT hold it when invoking this method --
+        re-entry would deadlock. The only in-tree callers are
+        ``index_done_callback`` and ``finalize``, both lock-free.
         """
         async with self._flush_lock:
             if not self._pending_vector_docs and not self._pending_vector_deletes:
@@ -781,7 +795,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 ):
                     # Cache the raw numpy row so a second flush after a
                     # server-side error doesn't re-embed.
-                    pdoc.vector = embedding.tolist()
+                    pdoc.vector = np.array(embedding, dtype=np.float32).tolist()
                     await _cooperative_yield(i)
 
             # Build PointStruct list, converting caller-supplied ids to
@@ -1064,6 +1078,16 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         Pending docs whose vector hasn't been embedded yet are embedded
         lazily inside the lock; the resulting vector is cached on the
         buffered ``_PendingVectorDoc`` so the next flush won't re-embed.
+
+        Visibility caveat for ids not in the buffer: the server-side
+        ``retrieve`` fallback runs *outside* ``_flush_lock``. A concurrent
+        ``delete()`` that lands between lock release and the server read
+        only buffers the delete -- the old vector is still on disk
+        until the next flush, so this method may return a stale vector
+        for an id that has been buffered for deletion. This is
+        best-effort read-after-uncommitted-delete and matches the
+        ``query()`` contract: callers needing strict consistency must
+        ``index_done_callback()`` first.
         """
         if not ids:
             return {}
@@ -1111,7 +1135,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 for i, ((doc_id, pdoc), embedding) in enumerate(
                     zip(docs_to_embed, embeddings), start=1
                 ):
-                    pdoc.vector = embedding.tolist()
+                    pdoc.vector = np.array(embedding, dtype=np.float32).tolist()
                     result[doc_id] = pdoc.vector
                     await _cooperative_yield(i)
 
@@ -1154,19 +1178,31 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         on GC), but we still need to fail loudly when a transient bulk
         error left writes buffered. ``_flush_pending_vector_ops`` is
         all-or-nothing: it either clears both buffers or raises with
-        them intact, so we only need to handle the raise path.
+        them intact, but we still defensively check both buffers after a
+        successful flush in case a future refactor breaks that invariant.
         """
+        flush_error: Exception | None = None
         try:
             await self._flush_pending_vector_ops()
         except Exception as e:
-            async with self._flush_lock:
-                pending_docs = len(self._pending_vector_docs)
-                pending_deletes = len(self._pending_vector_deletes)
+            flush_error = e
+
+        async with self._flush_lock:
+            pending_docs = len(self._pending_vector_docs)
+            pending_deletes = len(self._pending_vector_deletes)
+
+        if flush_error is not None:
             raise RuntimeError(
                 f"[{self.workspace}] QdrantVectorDBStorage.finalize() flush raised; "
                 f"{pending_docs} pending upserts and {pending_deletes} pending "
                 f"deletes were left buffered (data lost)"
-            ) from e
+            ) from flush_error
+        if pending_docs or pending_deletes:
+            raise RuntimeError(
+                f"[{self.workspace}] QdrantVectorDBStorage.finalize() left "
+                f"{pending_docs} pending upserts and {pending_deletes} pending "
+                f"deletes buffered after final flush attempt (these writes have been lost)"
+            )
 
     async def drop(self) -> dict[str, str]:
         """Drop all vector data for the current workspace. Destructive.
