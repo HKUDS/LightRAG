@@ -44,7 +44,10 @@ class _CountingEmbed:
         self.embedded_texts.extend(texts)
         # Deterministic per-text vector so duplicates are still 1-1.
         return np.array(
-            [np.full(self.dim, (abs(hash(t)) % 97) + 1, dtype=np.float32) for t in texts]
+            [
+                np.full(self.dim, (abs(hash(t)) % 97) + 1, dtype=np.float32)
+                for t in texts
+            ]
         )
 
 
@@ -57,9 +60,7 @@ def _make_storage(tmp_path, embed: _CountingEmbed) -> NanoVectorDBStorage:
             "embedding_batch_num": 32,
             "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
         },
-        embedding_func=EmbeddingFunc(
-            embedding_dim=DIM, max_token_size=512, func=embed
-        ),
+        embedding_func=EmbeddingFunc(embedding_dim=DIM, max_token_size=512, func=embed),
         meta_fields={"content"},
     )
 
@@ -160,6 +161,51 @@ async def test_delete_cancels_pending_and_removes_materialized(tmp_path):
     assert len(storage._client) == 0, "delete removes the materialized row immediately"
     assert await storage.get_by_id("id1") is None
     assert await storage.get_by_id("id2") is None
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_stale_client_reload_still_flushes_pending_upsert(tmp_path):
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    stale_writer = _make_storage(tmp_path, embed)
+    await writer.initialize()
+    await stale_writer.initialize()
+
+    await writer.upsert({"id1": {"content": "alpha"}})
+    assert await writer.index_done_callback() is True
+    assert stale_writer.storage_updated.value is True
+
+    await stale_writer.upsert({"id2": {"content": "beta"}})
+    assert await stale_writer.index_done_callback() is True
+
+    reader = _make_storage(tmp_path, embed)
+    await reader.initialize()
+    rows = await reader.get_by_ids(["id1", "id2"])
+    assert [row["id"] for row in rows] == ["id1", "id2"]
+    assert stale_writer._pending_upserts == {}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_reloads_stale_client_before_mutating(tmp_path):
+    embed = _CountingEmbed()
+    writer = _make_storage(tmp_path, embed)
+    stale_deleter = _make_storage(tmp_path, embed)
+    await writer.initialize()
+    await stale_deleter.initialize()
+
+    await writer.upsert({"id1": {"content": "alpha"}})
+    assert await writer.index_done_callback() is True
+    assert stale_deleter.storage_updated.value is True
+
+    await stale_deleter.delete(["id1"])
+    assert stale_deleter.storage_updated.value is False
+    assert await stale_deleter.index_done_callback() is True
+
+    reader = _make_storage(tmp_path, embed)
+    await reader.initialize()
+    assert await reader.get_by_id("id1") is None
 
 
 @pytest.mark.offline

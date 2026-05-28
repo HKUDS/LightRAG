@@ -207,6 +207,33 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self.namespace, workspace=self.workspace
         )
 
+    def _reload_client_from_disk_locked(self, *, for_write: bool = False) -> bool:
+        """Reload ``self._client`` if another process committed newer data.
+
+        Precondition: the caller must already hold ``_storage_lock``. This is
+        used by write paths as well as reads because deferred upserts mean a
+        stale writer must merge its pending buffer into the latest on-disk
+        snapshot, not save over it or return without flushing.
+        """
+        if not self.storage_updated.value:
+            return False
+
+        log_message = (
+            f"[{self.workspace}] Process {os.getpid()} reloading {self.namespace} "
+            "due to update by another process"
+        )
+        if for_write:
+            logger.warning(log_message)
+        else:
+            logger.info(log_message)
+
+        self._client = NanoVectorDB(
+            self.embedding_func.embedding_dim,
+            storage_file=self._client_file_name,
+        )
+        self.storage_updated.value = False
+        return True
+
     async def _get_client(self):
         """Return the live ``NanoVectorDB`` instance, reloading from disk if needed.
 
@@ -230,19 +257,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         so a reader cannot observe a partially-saved file.
         """
         async with self._storage_lock:
-            # Check if data needs to be reloaded
-            if self.storage_updated.value:
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} reloading {self.namespace} due to update by another process"
-                )
-                # Reload data
-                self._client = NanoVectorDB(
-                    self.embedding_func.embedding_dim,
-                    storage_file=self._client_file_name,
-                )
-                # Reset update flag
-                self.storage_updated.value = False
-
+            self._reload_client_from_disk_locked()
             return self._client
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -317,10 +332,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 for i in range(0, len(contents), self._max_batch_size)
             ]
             embeddings_list = await asyncio.gather(
-                *[
-                    self.embedding_func(batch, context="document")
-                    for batch in batches
-                ]
+                *[self.embedding_func(batch, context="document") for batch in batches]
             )
             embeddings = np.concatenate(embeddings_list)
             if len(embeddings) != len(to_embed):
@@ -444,6 +456,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
             # single critical section against a concurrent flush. Operate on
             # self._client directly (the lock is non-reentrant; no _get_client).
             async with self._storage_lock:
+                self._reload_client_from_disk_locked(for_write=True)
+
                 for doc_id in ids:
                     self._pending_upserts.pop(doc_id, None)
 
@@ -484,9 +498,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             )
 
             async with self._storage_lock:
+                self._reload_client_from_disk_locked(for_write=True)
+
                 # Cancel a buffered upsert for this entity, then delete from the
                 # materialized client (lock non-reentrant; no _get_client).
-                pending_cancelled = self._pending_upserts.pop(entity_id, None) is not None
+                pending_cancelled = (
+                    self._pending_upserts.pop(entity_id, None) is not None
+                )
                 if self._client.get([entity_id]):
                     self._client.delete([entity_id])
                     deleted = True
@@ -519,6 +537,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         try:
             async with self._storage_lock:
+                self._reload_client_from_disk_locked(for_write=True)
+
                 # Prune matching buffered upserts (their records carry src_id /
                 # tgt_id from the relationships vdb meta_fields)...
                 pending_ids = [
@@ -559,50 +579,30 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         This is the writer's **commit point** in the cross-process sync
         protocol (see class docstring). Effects, in order:
-            1. ``_flush_pending_locked`` embeds every buffered upsert (once
+            1. If another process committed first, reload the latest on-disk
+               snapshot while preserving this process's pending buffer.
+            2. ``_flush_pending_locked`` embeds every buffered upsert (once
                per id) and materializes it into ``self._client``. A failure
                here **raises** — pending is kept, nothing is written — so the
                loss surfaces through ``_insert_done`` instead of being silent.
-            2. ``_save_to_disk_locked`` (``atomic_write``) lays a tmp file
+            3. ``_save_to_disk_locked`` (``atomic_write``) lays a tmp file
                beside the target and renames it into place — readers either
                see the previous file in full or the new file in full, never a
                torn write.
-            3. ``set_all_update_flags`` flips every registered process's
+            4. ``set_all_update_flags`` flips every registered process's
                ``storage_updated`` flag, then we immediately reset our own
                flag to ``False`` so the writer does not self-reload on the
                next call to ``_get_client``.
 
-        Two-block structure (intentional, do not collapse):
-            * **First ``async with``** — early-return path for a
-              hypothetical second writer. Under the current single-writer
-              pipeline contract (class docstring, invariant 1) the
-              ``storage_updated.value`` check is permanently ``False`` in
-              the writer, so this branch is **dead code in production**.
-              It is kept as defensive scaffolding for any future relaxation
-              of the single-writer invariant; removing it would silently
-              re-enable lost-write bugs the moment a second writer is
-              introduced. The pending buffer is left intact here so the next
-              callback retries the flush.
-            * **Second ``async with``** — flush + save + notify.
+        If this worker's client is stale, reload the latest on-disk snapshot
+        first, then flush the process-local pending buffer into that fresh
+        client. Returning early here would strand deferred upserts because
+        ``_insert_done`` does not retry based on the boolean result.
         """
         async with self._storage_lock:
-            # Check if storage was updated by another process
-            if self.storage_updated.value:
-                # Storage was updated by another process, reload data instead of saving
-                logger.warning(
-                    f"[{self.workspace}] Storage for {self.namespace} was updated by another process, reloading..."
-                )
-                self._client = NanoVectorDB(
-                    self.embedding_func.embedding_dim,
-                    storage_file=self._client_file_name,
-                )
-                # Reset update flag
-                self.storage_updated.value = False
-                return False  # Return error
+            self._reload_client_from_disk_locked(for_write=True)
 
-        # Acquire lock and perform flush + persistence
-        async with self._storage_lock:
-            # Flush deferred embeddings first. On embedding error / count
+            # Flush deferred embeddings after any reload. On embedding error / count
             # mismatch this raises, leaving pending intact and skipping the
             # disk write (no silent data loss); the exception propagates.
             await self._flush_pending_locked()
