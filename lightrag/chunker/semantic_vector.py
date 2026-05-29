@@ -35,7 +35,9 @@ from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
 from lightrag.utils import EmbeddingFunc, Tokenizer, logger
 
 if TYPE_CHECKING:
-    from langchain_experimental.text_splitter import SemanticChunker as SemanticChunkerType
+    from langchain_experimental.text_splitter import (
+        SemanticChunker as SemanticChunkerType,
+    )
 else:
     SemanticChunkerType = Any
 

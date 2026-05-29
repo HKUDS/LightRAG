@@ -110,8 +110,7 @@ def _ref_full_prefix_span(
 def _windows(n_tokens: int, chunk_size: int, overlap: int) -> list[tuple[int, int]]:
     step = chunk_size - overlap
     return [
-        (start, min(start + chunk_size, n_tokens))
-        for start in range(0, n_tokens, step)
+        (start, min(start + chunk_size, n_tokens)) for start in range(0, n_tokens, step)
     ]
 
 
