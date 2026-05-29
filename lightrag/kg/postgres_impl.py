@@ -681,7 +681,7 @@ class PostgreSQLDB:
                 'SET search_path = ag_catalog, "$user", public'
             )
             await connection.execute(  # type: ignore
-                f"select create_graph('{graph_name}')"
+                "SELECT create_graph($1)", graph_name
             )
         except (
             asyncpg.exceptions.InvalidSchemaNameError,
