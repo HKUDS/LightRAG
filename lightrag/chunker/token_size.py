@@ -53,11 +53,32 @@ def _token_window_source_span(
     tokens: list[int],
     start_token: int,
     end_token: int,
-) -> dict[str, int] | None:
-    """Map a decoded token window back to its exact source span."""
+    *,
+    anchor: tuple[int, int],
+) -> tuple[dict[str, int] | None, tuple[int, int]]:
+    """Map a decoded token window back to its exact source span.
+
+    ``anchor`` is the previous window's *verified* ``(start_token, start_char)``.
+    Window starts are monotonically increasing, so instead of re-decoding the whole
+    ``tokens[:start_token]`` prefix (O(N) per window → O(N²) overall) we decode only
+    the delta ``tokens[anchor_token:start_token]`` (≈ one chunking step) to predict
+    the start char. The predicted offset is then verified against ``content`` exactly
+    as a full prefix decode would be: byte-level BPE decode is non-concatenative at a
+    multi-byte UTF-8 boundary, so a delta can be off by the few chars of one split
+    char — the ±32 ``find`` fallback corrects that, and re-anchoring on the verified
+    position each call keeps the error from accumulating. Net cost is O(N) total
+    while the located span stays byte-exact.
+
+    Returns ``(span, new_anchor)``. On an unlocatable (U+FFFD) window the span is
+    ``None`` and the anchor is returned unchanged so the next window still predicts
+    from the last verified position.
+    """
+    anchor_token, anchor_char = anchor
     window = tokenizer.decode(tokens[start_token:end_token])
-    prefix = tokenizer.decode(tokens[:start_token])
-    start = len(prefix)
+    if start_token >= anchor_token:
+        start = anchor_char + len(tokenizer.decode(tokens[anchor_token:start_token]))
+    else:  # non-monotonic caller (not expected) — fall back to a full prefix decode
+        start = len(tokenizer.decode(tokens[:start_token]))
     end = start + len(window)
     if content[start:end] != window:
         found = content.find(
@@ -66,10 +87,10 @@ def _token_window_source_span(
             min(len(content), end + 32 + len(window)),
         )
         if found < 0:
-            return None
+            return None, anchor
         start = found
         end = found + len(window)
-    return _source_span(content, start, end)
+    return _source_span(content, start, end), (start_token, start)
 
 
 def _make_chunk(
@@ -142,20 +163,23 @@ def chunking_by_token_size(
             for chunk, (chunk_start, chunk_end) in zip(raw_chunks, raw_spans):
                 _tokens = tokenizer.encode(chunk)
                 if len(_tokens) > chunk_token_size:
+                    # Anchor is chunk-relative (offsets are shifted by chunk_start
+                    # below), so it resets per split-by-character segment.
+                    anchor = (0, 0)
                     for start in range(
                         0, len(_tokens), chunk_token_size - chunk_overlap_token_size
                     ):
-                        chunk_content = tokenizer.decode(
-                            _tokens[start : start + chunk_token_size]
-                        )
+                        end_token = min(start + chunk_token_size, len(_tokens))
+                        chunk_content = tokenizer.decode(_tokens[start:end_token])
                         span = None
                         if _emit_source_span:
-                            span = _token_window_source_span(
+                            span, anchor = _token_window_source_span(
                                 tokenizer,
                                 chunk,
                                 _tokens,
                                 start,
-                                min(start + chunk_token_size, len(_tokens)),
+                                end_token,
+                                anchor=anchor,
                             )
                         if span is not None:
                             span = {
@@ -187,16 +211,17 @@ def chunking_by_token_size(
                 )
             )
     else:
+        anchor = (0, 0)
         for index, start in enumerate(
             range(0, len(tokens), chunk_token_size - chunk_overlap_token_size)
         ):
             end = min(start + chunk_token_size, len(tokens))
             chunk_content = tokenizer.decode(tokens[start:end])
-            span = (
-                _token_window_source_span(tokenizer, content, tokens, start, end)
-                if _emit_source_span
-                else None
-            )
+            span = None
+            if _emit_source_span:
+                span, anchor = _token_window_source_span(
+                    tokenizer, content, tokens, start, end, anchor=anchor
+                )
             results.append(
                 _make_chunk(
                     content=chunk_content,
