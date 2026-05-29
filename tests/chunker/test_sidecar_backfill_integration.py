@@ -116,6 +116,39 @@ def test_hard_split_slices_get_precise_refs(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_real_tiktoken_token_windows_match_verbatim(tmp_path: Path) -> None:
+    # The char tokenizer guarantees decode(encode(x)) == x; a real BPE tokenizer
+    # does not split on character boundaries, so this exercises that tiktoken's
+    # decoded token windows (after the chunker's .strip()) are still locatable in
+    # the reconstructed merged text — including across the token-overlap fallback.
+    tiktoken = pytest.importorskip("tiktoken")
+    del tiktoken  # only needed to gate the test
+    from lightrag.utils import TiktokenTokenizer
+
+    tok = TiktokenTokenizer()
+    blocks = [
+        ("b1", "The quick brown fox jumps over the lazy dog repeatedly."),
+        ("b2", "Pack my box with five dozen liquor jugs, said the printer."),
+        ("b3", "How vexingly quick daft zebras jump across the meadow."),
+    ]
+    blocks_path, merged = _write_blocks(tmp_path, blocks)
+
+    chunks = chunking_by_fixed_token(
+        tok, merged, chunk_token_size=12, chunk_overlap_token_size=3
+    )
+    assert len(chunks) >= 2  # small window + overlap -> multiple chunks
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    for ch in chunks:
+        assert ch["sidecar"]["type"] == "block"
+        assert ch["sidecar"]["refs"]
+    # Union of all refs covers every block.
+    seen = {r["id"] for ch in chunks for r in ch["sidecar"]["refs"]}
+    assert seen == {b for b, _ in blocks}
+
+
+@pytest.mark.offline
 def test_backfilled_sidecar_persists_into_chunks_dict(tmp_path: Path) -> None:
     blocks_path, merged = _write_blocks(
         tmp_path, [("b1", "Alpha body."), ("b2", "Beta body.")]

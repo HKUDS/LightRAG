@@ -92,6 +92,37 @@ def test_whitespace_normalized_match_for_v_style(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_v_inserts_space_between_adjacent_sentences_still_matches(
+    tmp_path: Path,
+) -> None:
+    # The source block has two sentences with NO whitespace at the boundary
+    # ("sentence.Second"); the V SemanticChunker rejoins sentences with a single
+    # space, inserting whitespace the source never had. Collapse-to-space matching
+    # would mismatch and raise; whitespace-stripped matching must still locate it.
+    blocks_path = _write_blocks(tmp_path, [("b1", "First sentence.Second sentence.")])
+    chunks = [_chunk("First sentence. Second sentence.", 0)]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert _refs(chunks[0]) == ["b1"]
+
+
+@pytest.mark.offline
+def test_v_reflow_across_blocks_keeps_boundary_refs(tmp_path: Path) -> None:
+    # V reflows internal newlines to spaces and the chunk spans the block
+    # boundary. Whitespace-stripped matching must still attribute both blocks.
+    blocks_path = _write_blocks(
+        tmp_path,
+        [("b1", "Alpha line one.\nAlpha line two."), ("b2", "Beta block body.")],
+    )
+    chunks = [_chunk("Alpha line one. Alpha line two. Beta block body.", 0)]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert _refs(chunks[0]) == ["b1", "b2"]
+
+
+@pytest.mark.offline
 def test_repeated_identical_blocks_map_to_distinct_blocks(tmp_path: Path) -> None:
     blocks_path = _write_blocks(
         tmp_path, [("b1", "Repeated text."), ("b2", "Repeated text.")]

@@ -2023,24 +2023,6 @@ class _PipelineMixin:
                         f"got {type(chunking_result)}"
                     )
 
-                # Sidecar backfill (below, after the hard-split) only runs for the
-                # built-in F/R/V strategies — or the legacy path when it is still
-                # the unmodified default fixed-token chunker. A user-supplied
-                # ``chunking_func`` may emit summaries / rewritten text that cannot
-                # be located in blocks.jsonl, which would wrongly FAIL the document.
-                if doc_process_opts.chunking_explicit:
-                    sidecar_backfill_eligible = doc_process_opts.chunking in {
-                        "F",
-                        "R",
-                        "V",
-                    }
-                else:
-                    from lightrag.chunker import chunking_by_token_size
-
-                    sidecar_backfill_eligible = (
-                        self.chunking_func is chunking_by_token_size
-                    )
-
                 # Reflect the format actually persisted in full_docs.
                 # Previously a structured-parse fallback always tagged
                 # parse_format=raw, which silently mislabelled lightrag docs;
@@ -2143,6 +2125,25 @@ class _PipelineMixin:
                 # chunk list so each slice maps precisely to the block(s) its
                 # content covers. Raises ChunkBlockMatchError -> doc FAILED when a
                 # chunk cannot be located in blocks.jsonl.
+                #
+                # Gated to the built-in F/R/V strategies — or the legacy path only
+                # when ``chunking_func`` is still the unmodified default fixed-token
+                # chunker. A user-supplied ``chunking_func`` may emit summaries /
+                # rewritten text that cannot be located in blocks.jsonl, which would
+                # wrongly FAIL the document.
+                if doc_process_opts.chunking_explicit:
+                    sidecar_backfill_eligible = doc_process_opts.chunking in {
+                        "F",
+                        "R",
+                        "V",
+                    }
+                else:
+                    from lightrag.chunker import chunking_by_token_size
+
+                    sidecar_backfill_eligible = (
+                        self.chunking_func is chunking_by_token_size
+                    )
+
                 if blocks_path and sidecar_backfill_eligible:
                     from lightrag.sidecar import backfill_chunk_sidecars
 

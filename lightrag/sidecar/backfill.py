@@ -18,13 +18,19 @@ content within it.
 
 F decodes/strips token windows (verbatim substrings, with token overlap); R strips
 LangChain pieces (verbatim, possible overlap); V strips ``SemanticChunker`` pieces
-that rejoin sentences with a single space (so newlines become spaces and the text is
-*not* byte-verbatim). To cover all three uniformly, matching runs over a
-whitespace-normalized projection of both sides.
+that rejoin sentences with a single space — so newlines collapse to spaces *and* a
+space may be inserted between sentences that were originally adjacent with no
+whitespace, making the text *not* byte-verbatim. To cover all three uniformly,
+matching runs over a **whitespace-stripped** projection of both sides (every
+whitespace char removed, not merely collapsed to a single space). Because whitespace
+removal is monotonic, a chunk's non-whitespace characters are always a contiguous
+substring of the merged text's non-whitespace characters — regardless of how either
+side spaced them — so V's reflowing can never spuriously fail a match.
 
 Multimodal placeholder tags (``<table …>…</table>``, ``<drawing …/>``,
 ``<equation …>…</equation>``) appear identically in block content and chunk content,
-so they match verbatim — markup is never stripped before matching.
+so they project identically under whitespace stripping and match — markup is never
+stripped before matching.
 """
 
 from __future__ import annotations
@@ -48,6 +54,13 @@ def _load_content_blocks(blocks_path: str) -> list[tuple[str, str]]:
     Returns ``(blockid, raw_content)`` pairs, skipping the meta header and any
     malformed lines. Mirrors ``paragraph_semantic._load_blocks_from_jsonl`` but
     keeps the raw (un-stripped) content needed to reproduce the chunker input.
+
+    Note: ``utils_pipeline.load_lightrag_document_content`` (which produces the
+    merged text the chunker actually received) skips line 0 *by index*; here we
+    skip *by type* instead. The two agree only because ``writer.write_sidecar``
+    always emits the meta header as the very first line — under that invariant
+    skip-by-type is equivalent, and it stays correct even if a stray non-content
+    row ever appears mid-file.
     """
     blocks: list[tuple[str, str]] = []
     with Path(blocks_path).open("r", encoding="utf-8") as fh:
@@ -96,36 +109,32 @@ def _build_block_spans(
 
 
 def _normalize_projection(merged: str) -> tuple[str, list[int]]:
-    """Collapse whitespace runs to single spaces; map back to merged offsets.
+    """Drop every whitespace char; map each kept char back to its merged offset.
 
     Returns ``(norm_text, norm_to_orig)`` where ``norm_to_orig[i]`` is the offset
-    in ``merged`` of the ``i``-th normalized character. Leading/trailing whitespace
-    is dropped so chunk- and merged-side normalization agree at boundaries.
+    in ``merged`` of the ``i``-th surviving (non-whitespace) character. Removing all
+    whitespace — rather than collapsing runs to a single space — keeps the two sides
+    aligned even when V inserts a space between originally-adjacent sentences. Because
+    whitespace removal is monotonic, any contiguous region of ``merged`` projects to a
+    contiguous substring of ``norm_text``, so chunk lookups stay exact.
     """
     norm_chars: list[str] = []
     norm_to_orig: list[int] = []
-    prev_space = True  # leading-space suppression
     for idx, ch in enumerate(merged):
         if ch.isspace():
-            if prev_space:
-                continue
-            norm_chars.append(" ")
-            norm_to_orig.append(idx)
-            prev_space = True
-        else:
-            norm_chars.append(ch)
-            norm_to_orig.append(idx)
-            prev_space = False
-    # Drop a single trailing space if present.
-    if norm_chars and norm_chars[-1] == " ":
-        norm_chars.pop()
-        norm_to_orig.pop()
+            continue
+        norm_chars.append(ch)
+        norm_to_orig.append(idx)
     return "".join(norm_chars), norm_to_orig
 
 
 def _normalize_text(text: str) -> str:
-    """Whitespace-normalized form of a chunk body (collapse runs, strip ends)."""
-    return " ".join(text.split())
+    """Whitespace-stripped form of a chunk body (every whitespace char removed).
+
+    Uses ``str.split()``'s whitespace definition, which matches ``str.isspace()``
+    used by :func:`_normalize_projection`, so both sides agree on what is stripped.
+    """
+    return "".join(text.split())
 
 
 def _covered_blockids(
