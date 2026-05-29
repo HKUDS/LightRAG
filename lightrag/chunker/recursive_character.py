@@ -31,6 +31,62 @@ except ImportError:
     RecursiveCharacterTextSplitter = None  # type: ignore[assignment]
 
 
+def _locate_chunk_start(
+    content: str,
+    body: str,
+    tokenizer: Tokenizer,
+    *,
+    prev_start: int | None,
+    prev_body: str | None,
+    overlap_tokens: int,
+    cursor: int,
+) -> int:
+    """Return the source-text offset where ``body`` begins, or ``-1``.
+
+    A plain forward :meth:`str.find` is safe for unique text but collapses on
+    repeated content: identical overlapping chunks all match the nearest
+    repetition, so every span packs into the document head and the tail is left
+    without provenance. To avoid that we *predict* this chunk's start from the
+    previous one using the token-overlap geometry — ``prev_body`` length minus
+    the characters its trailing ``overlap_tokens`` re-share with this chunk —
+    and trust the prediction when it lands exactly. Only when it misses (from a
+    variable token/char ratio or a stripped separator) do we snap to the
+    occurrence nearest the prediction, always staying at or past ``cursor`` (a
+    monotonic floor) so spans never move backward.
+    """
+    if prev_start is None or prev_body is None:
+        return content.find(body, cursor)
+
+    prev_tokens = tokenizer.encode(prev_body)
+    take = min(len(prev_tokens), overlap_tokens)
+    overlap_chars = (
+        len(tokenizer.decode(prev_tokens[len(prev_tokens) - take :])) if take else 0
+    )
+    step = max(1, len(prev_body) - overlap_chars)
+    guess = prev_start + step
+    if content[guess : guess + len(body)] == body:
+        return guess
+
+    # Prediction was off; snap to the occurrence nearest it within a one-chunk
+    # window, never before the monotonic floor.
+    lo = max(cursor, guess - len(body))
+    hi = guess + len(body)
+    nearest = -1
+    best: int | None = None
+    i = content.find(body, lo)
+    while i != -1 and i <= hi:
+        dist = abs(i - guess)
+        if best is None or dist < best:
+            best, nearest = dist, i
+        i = content.find(body, i + 1)
+    if nearest != -1:
+        return nearest
+
+    # Nothing near the prediction: fall back to the first match at/after the
+    # monotonic floor so a forward-consistent span is still recorded.
+    return content.find(body, cursor)
+
+
 def chunking_by_recursive_character(
     tokenizer: Tokenizer,
     content: str,
@@ -83,22 +139,30 @@ def chunking_by_recursive_character(
     # each chunk's true start. The result is ``start_index == -1`` for unique
     # text (lost ``_source_span`` → backfill failure under
     # ``require_source_span``) or a match against a later identical run (wrong
-    # provenance). Instead we recover spans with our own monotonic forward
-    # cursor, which only ever advances and re-derives each span by exact match.
+    # provenance). Instead we recover spans ourselves via ``_locate_chunk_start``.
+    overlap_tokens = max(int(chunk_overlap_token_size), 0)
     docs = splitter.create_documents([content])
     results: list[dict[str, Any]] = []
+    prev_start: int | None = None
+    prev_body: str | None = None
     cursor = 0
     for doc in docs:
         body = doc.page_content.strip()
         if not body:
             continue
-        start_index = content.find(body, cursor)
+        start_index = _locate_chunk_start(
+            content,
+            body,
+            tokenizer,
+            prev_start=prev_start,
+            prev_body=prev_body,
+            overlap_tokens=overlap_tokens,
+            cursor=cursor,
+        )
         source_span = None
         if start_index >= 0:
             source_span = {"start": start_index, "end": start_index + len(body)}
-            # Next chunk's start is strictly past this one (chunk starts are
-            # monotonically increasing, even with overlap), so advance by one
-            # to keep the cursor moving without skipping the next true start.
+            prev_start, prev_body = start_index, body
             cursor = start_index + 1
         results.append(
             {

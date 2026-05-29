@@ -108,3 +108,59 @@ def test_recursive_chunks_carry_exact_source_spans_with_overlap():
     for chunk in chunks:
         span = chunk["_source_span"]
         assert body[span["start"] : span["end"]] == chunk["content"]
+
+
+@pytest.mark.offline
+def test_long_unique_text_keeps_every_source_span():
+    """Every chunk of a long, non-repeating document must carry a span.
+
+    Regression for the LangChain ``add_start_index`` unit mismatch: with a
+    token-based length function its search cursor overshot each chunk's true
+    start, dropping ``_source_span`` (and failing ``require_source_span``
+    backfill) on roughly half of a unique document's chunks.
+    """
+    body = " ".join(f"word{i}" for i in range(800))
+    chunks = chunking_by_recursive_character(
+        _tok(),
+        body,
+        chunk_token_size=50,
+        chunk_overlap_token_size=10,
+    )
+
+    assert len(chunks) > 5
+    for chunk in chunks:
+        span = chunk["_source_span"]
+        assert body[span["start"] : span["end"]] == chunk["content"]
+
+
+@pytest.mark.offline
+def test_repeated_text_spans_tile_whole_document():
+    """Spans over heavily repeated text must tile the document, not cluster.
+
+    Regression for the repeated-content ambiguity: a naive forward ``find``
+    matches every identical overlapping chunk to the nearest repetition, so all
+    spans collapse into the document head and the tail gets no provenance. The
+    geometry-anchored locator must instead advance spans across the whole text.
+    """
+    unit = "ABCDE fghij. "
+    body = unit * 60
+    chunks = chunking_by_recursive_character(
+        _tok(),
+        body,
+        chunk_token_size=40,
+        chunk_overlap_token_size=10,
+    )
+
+    spans = [c["_source_span"] for c in chunks]
+    assert len(spans) == len(chunks)  # no chunk lost its span
+
+    # Each span is exact and starts are monotonically non-decreasing.
+    for chunk, span in zip(chunks, spans):
+        assert body[span["start"] : span["end"]] == chunk["content"]
+    starts = [s["start"] for s in spans]
+    assert starts == sorted(starts)
+
+    # Spans reach the document tail rather than clustering at the head. Under
+    # the old nearest-repetition behaviour the furthest end stalled near the
+    # first few hundred chars; tiling reaches within one ``unit`` of the end.
+    assert max(s["end"] for s in spans) >= len(body) - len(unit)
