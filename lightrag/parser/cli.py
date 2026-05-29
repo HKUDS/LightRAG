@@ -28,6 +28,27 @@ from unittest import mock
 ENGINES = ("native", "mineru", "docling")
 
 
+def _normalize_direct_script_sys_path() -> None:
+    if __package__:
+        return
+
+    parser_dir = Path(__file__).resolve().parent
+    repo_root = parser_dir.parent.parent
+
+    # Direct execution adds lightrag/parser to sys.path, which makes the
+    # native parser's third-party ``docx`` import resolve to parser/docx.
+    sys.path[:] = [
+        entry for entry in sys.path if Path(entry or ".").resolve() != parser_dir
+    ]
+    repo_root_str = str(repo_root)
+    if repo_root_str in sys.path:
+        sys.path.remove(repo_root_str)
+    sys.path.insert(0, repo_root_str)
+
+
+_normalize_direct_script_sys_path()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="parse_sidecar",
