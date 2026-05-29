@@ -15,10 +15,17 @@ import re
 # clamped to 6 rather than emitting an illegal 7+ run of ``#``.
 MAX_HEADING_LEVEL = 6
 
-# A heading line that is ALREADY markdown: 1-6 ``#`` followed by a space.
-# Used to avoid double-prefixing text that an upstream engine emitted with
-# its own markdown heading marker (e.g. mineru/docling extracting ``# Foo``).
-_MD_HEADING_RE = re.compile(r"^#{1,6} ")
+# A heading line that is ALREADY markdown: 1-6 ``#`` followed by one or more
+# spaces. Used to avoid double-prefixing text that an upstream engine emitted
+# with its own markdown heading marker (e.g. mineru/docling extracting
+# ``# Foo``).
+#
+# Ambiguity note: this is a heuristic, not a parse. A heading whose text
+# genuinely starts with ``#`` plus a space (an author literally writing
+# ``"# Note"`` as heading content) is indistinguishable from an
+# already-rendered markdown heading and will be treated as the latter. This
+# is accepted as a rare edge case in exchange for engine-agnostic dedup.
+_MD_HEADING_RE = re.compile(r"^#{1,6} +")
 
 
 def strip_heading_markdown_prefix(text: str) -> str:
@@ -26,7 +33,12 @@ def strip_heading_markdown_prefix(text: str) -> str:
 
     The content renderer may keep a source line such as ``"# Foo"`` verbatim
     to avoid double-prefixing, but structured metadata (``heading``,
-    ``parent_headings``, doc title) must stay clean.
+    ``parent_headings``, doc title) must stay clean. The whole ``#`` run and
+    all following spaces are removed, so ``"#  Extra"`` yields ``"Extra"``
+    (no leading space leaks into the metadata).
+
+    See the module-level ambiguity note: text that genuinely begins with a
+    ``#`` + space run is stripped here too.
     """
     return _MD_HEADING_RE.sub("", text, count=1)
 
@@ -42,7 +54,10 @@ def render_heading_line(level: int, text: str) -> str:
 
     Returns:
         ``text`` unchanged when it already starts with a markdown heading
-        prefix (``^#{1,6} ``); otherwise ``"#" * clamped_level + " " + text``.
+        prefix (``^#{1,6} +`` — 1-6 ``#`` then one or more spaces); otherwise
+        ``"#" * clamped_level + " " + text``. See the module-level ambiguity
+        note: a heading whose content genuinely begins with such a run is
+        kept verbatim rather than re-prefixed.
     """
     if _MD_HEADING_RE.match(text):
         return text

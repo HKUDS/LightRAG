@@ -61,7 +61,9 @@ def test_render_heading_line_non_heading_hash_is_prefixed(text, expected) -> Non
         ("# Foo", "Foo"),
         ("## Bar", "Bar"),
         ("###### Six", "Six"),
-        ("#  Extra space", " Extra space"),
+        # The whole "#" run plus all following spaces are stripped — no
+        # leading space leaks into the cleaned metadata.
+        ("#  Extra space", "Extra space"),
         ("#NoSpace", "#NoSpace"),
         ("####### Seven", "####### Seven"),
     ],
