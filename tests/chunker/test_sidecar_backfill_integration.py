@@ -282,6 +282,45 @@ def test_real_tiktoken_token_windows_match_verbatim(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> None:
+    # Regression: tiktoken is byte-level, so a 4-byte UTF-8 char (emoji / rare CJK
+    # extension) can have its bytes split across a token-window boundary. Decoding the
+    # partial window yields U+FFFD in BOTH the chunk content and its span probe, so the
+    # chunk is unlocatable by span or by text. With require_source_span this previously
+    # FAILED the entire document; it must now skip provenance for the corrupt chunks
+    # while still attributing the clean ones.
+    pytest.importorskip("tiktoken")
+    from lightrag.utils import TiktokenTokenizer
+
+    tok = TiktokenTokenizer()
+    # Emoji are supplementary-plane (4-byte) chars that force byte-fallback tokens.
+    block = "Status update 🎉🚀 progress 😀😁😂 and more text 🔥💡✅ keep going. " * 20
+    blocks_path, merged = _write_blocks(tmp_path, [("b1", block)])
+
+    chunks = chunking_by_fixed_token(
+        tok,
+        merged,
+        chunk_token_size=18,
+        chunk_overlap_token_size=4,
+        _emit_source_span=True,
+    )
+    # The window splits at least one emoji -> some chunks carry U+FFFD and lack a span.
+    assert any("�" in c["content"] for c in chunks)
+    assert any("_source_span" not in c for c in chunks)
+
+    # Must NOT raise: corrupt chunks are skipped, the rest are attributed.
+    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+
+    for ch in chunks:
+        if "�" in ch["content"]:
+            assert "sidecar" not in ch  # provenance degraded, document not failed
+        elif ch["content"].strip():  # empty tail chunks are skipped entirely
+            assert ch["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
+    # At least the clean chunks resolved into the single source block.
+    assert any("sidecar" in ch for ch in chunks)
+
+
+@pytest.mark.offline
 def test_backfilled_sidecar_persists_into_chunks_dict(tmp_path: Path) -> None:
     blocks_path, merged = _write_blocks(
         tmp_path, [("b1", "Alpha body."), ("b2", "Beta body.")]

@@ -2006,31 +2006,24 @@ class _PipelineMixin:
                     )
                     from lightrag.chunker import chunking_by_token_size
 
+                    # Only the unmodified default fixed-token chunker understands the
+                    # private ``_emit_source_span`` kwarg; a user-supplied
+                    # ``chunking_func`` must not receive it.
+                    legacy_kwargs = {}
                     if self.chunking_func is chunking_by_token_size:
-                        chunking_result = self.chunking_func(
-                            self.tokenizer,
-                            content,
-                            f_opts.get("split_by_character"),
-                            f_opts.get("split_by_character_only", False),
-                            f_opts.get(
-                                "chunk_overlap_token_size",
-                                self.chunk_overlap_token_size,
-                            ),
-                            legacy_chunk_size,
-                            _emit_source_span=True,
-                        )
-                    else:
-                        chunking_result = self.chunking_func(
-                            self.tokenizer,
-                            content,
-                            f_opts.get("split_by_character"),
-                            f_opts.get("split_by_character_only", False),
-                            f_opts.get(
-                                "chunk_overlap_token_size",
-                                self.chunk_overlap_token_size,
-                            ),
-                            legacy_chunk_size,
-                        )
+                        legacy_kwargs["_emit_source_span"] = True
+                    chunking_result = self.chunking_func(
+                        self.tokenizer,
+                        content,
+                        f_opts.get("split_by_character"),
+                        f_opts.get("split_by_character_only", False),
+                        f_opts.get(
+                            "chunk_overlap_token_size",
+                            self.chunk_overlap_token_size,
+                        ),
+                        legacy_chunk_size,
+                        **legacy_kwargs,
+                    )
                 if inspect.isawaitable(chunking_result):
                     chunking_result = await chunking_result
 

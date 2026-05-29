@@ -410,3 +410,43 @@ def test_empty_chunk_skipped_then_following_matches(tmp_path: Path) -> None:
 
     assert "sidecar" not in chunks[0]
     assert _refs(chunks[1]) == ["b1"]
+
+
+@pytest.mark.offline
+def test_replacement_char_chunk_skipped_not_failed(tmp_path: Path) -> None:
+    # A multi-byte UTF-8 char split at a token-window boundary decodes to U+FFFD in
+    # both the chunk content and its span probe, so the chunk is unlocatable by any
+    # means. Under require_source_span it must be SKIPPED (no sidecar), not raise and
+    # FAIL the whole document; the following clean chunk still maps correctly.
+    b1, b2 = "Status update 🎉 done.", "Clean tail block."
+    blocks_path = _write_blocks(tmp_path, [("b1", b1), ("b2", b2)])
+    merged = _BLOCK_SEPARATOR.join([b1, b2])
+    b2_start = merged.index(b2)
+    chunks = [
+        # First chunk lost a byte at the emoji boundary -> U+FFFD, no usable span.
+        _chunk("Status update � done.", 0),
+        # The clean chunk carries a valid span (as the real chunker would emit), so
+        # the strict contract is preserved for it.
+        {
+            **_chunk(b2, 1),
+            "_source_span": {"start": b2_start, "end": b2_start + len(b2)},
+        },
+    ]
+
+    # Must not raise even with the strict span contract.
+    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+
+    assert "sidecar" not in chunks[0]  # provenance degraded for the corrupt chunk
+    assert _refs(chunks[1]) == ["b2"]  # clean chunk still resolves
+
+
+@pytest.mark.offline
+def test_replacement_char_chunk_skipped_in_text_fallback(tmp_path: Path) -> None:
+    # Same degradation in the non-required (text-matching) path: a U+FFFD chunk is
+    # skipped rather than raising ChunkBlockMatchError.
+    blocks_path = _write_blocks(tmp_path, [("b1", "Alpha 🚀 beta.")])
+    chunks = [_chunk("Alpha � beta.", 0)]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert "sidecar" not in chunks[0]

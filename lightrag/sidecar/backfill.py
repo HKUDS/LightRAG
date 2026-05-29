@@ -47,6 +47,26 @@ from lightrag.utils import logger
 # lightrag/sidecar/writer.py and lightrag/utils_pipeline.py.
 _BLOCK_SEPARATOR = "\n\n"
 
+# U+FFFD. The fixed-token chunker decodes arbitrary token windows; when a window
+# boundary splits a multi-byte UTF-8 character (4-byte supplementary-plane chars:
+# emoji, rare CJK extensions), the partial decode yields this replacement character
+# in *both* the span probe and the chunk's own content. Such a chunk is then
+# inherently unlocatable in the source — by span or by text — so provenance is
+# impossible for it. We degrade to no-sidecar for that single chunk rather than
+# failing the whole document.
+_REPLACEMENT_CHAR = "�"
+
+
+def _is_unlocatable(body: str) -> bool:
+    """True when a chunk's content cannot be located in the source by any means.
+
+    See :data:`_REPLACEMENT_CHAR`: a chunk whose decoded content carries U+FFFD lost
+    bytes at a multi-byte token boundary, so neither its span nor its text can be
+    matched against the verbatim ``blocks.jsonl`` content. Callers skip provenance for
+    such chunks instead of marking the document FAILED.
+    """
+    return _REPLACEMENT_CHAR in body
+
 
 def _load_content_blocks(blocks_path: str) -> list[tuple[str, str]]:
     """Read ``type == "content"`` rows from a blocks.jsonl file in order.
@@ -258,6 +278,12 @@ def backfill_chunk_sidecars(
     chunks are skipped. ``_source_span`` is preferred when present. Raises
     :class:`ChunkBlockMatchError` when a sidecar-less, non-empty chunk cannot be
     located in the reconstructed merged text.
+
+    Exception: a chunk whose content carries the Unicode replacement character
+    (:data:`_REPLACEMENT_CHAR`) is inherently unlocatable — a multi-byte UTF-8
+    character was split at a token-window boundary, corrupting both its span probe
+    and its own content. Such a chunk is skipped (no sidecar) instead of failing the
+    document, even under ``require_source_span``.
     """
     if not blocks_path:
         return
@@ -310,6 +336,13 @@ def backfill_chunk_sidecars(
             continue
 
         if require_source_span:
+            if _is_unlocatable(body):
+                logger.warning(
+                    f"[sidecar-backfill] chunk #{chunk.get('chunk_order_index', -1)} "
+                    "contains replacement characters from a multi-byte token-boundary "
+                    "split; skipping provenance for it"
+                )
+                continue
             raise ChunkBlockMatchError(
                 chunk_order_index=int(chunk.get("chunk_order_index", -1)),
                 chunk_preview=body,
@@ -322,6 +355,13 @@ def backfill_chunk_sidecars(
 
         pos = _locate_chunk(norm_merged, nq, prev_start, prev_end, norm_to_orig, spans)
         if pos == -1:
+            if _is_unlocatable(body):
+                logger.warning(
+                    f"[sidecar-backfill] chunk #{chunk.get('chunk_order_index', -1)} "
+                    "contains replacement characters from a multi-byte token-boundary "
+                    "split; skipping provenance for it"
+                )
+                continue
             raise ChunkBlockMatchError(
                 chunk_order_index=int(chunk.get("chunk_order_index", -1)),
                 chunk_preview=body,
