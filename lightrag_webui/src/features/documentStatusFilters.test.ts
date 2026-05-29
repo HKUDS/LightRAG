@@ -15,6 +15,25 @@ describe('documentStatusFilters', () => {
       status_filter: 'processing',
       status_filters: null
     })
+    expect(getStatusRequestFilters('processed')).toEqual({
+      status_filter: 'processed',
+      status_filters: null
+    })
+    expect(getStatusRequestFilters('pending')).toEqual({
+      status_filter: 'pending',
+      status_filters: null
+    })
+    expect(getStatusRequestFilters('failed')).toEqual({
+      status_filter: 'failed',
+      status_filters: null
+    })
+  })
+
+  test('builds empty request filters for the all tab', () => {
+    expect(getStatusRequestFilters('all')).toEqual({
+      status_filter: null,
+      status_filters: null
+    })
   })
 
   test('matches grouped statuses for analyzing tab', () => {

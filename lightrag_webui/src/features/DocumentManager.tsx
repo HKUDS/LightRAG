@@ -46,6 +46,7 @@ import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon,
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 import {
   getStatusBucket,
+  getStatusRequestFilters,
   matchesStatusFilter,
   type StatusBucket,
   type StatusFilter
@@ -740,7 +741,7 @@ export default function DocumentManager() {
     query: QuerySnapshot,
     page: number = query.page
   ): DocumentsRequest => ({
-    status_filter: query.statusFilter === 'all' ? null : query.statusFilter,
+    ...getStatusRequestFilters(query.statusFilter),
     page,
     page_size: query.pageSize,
     sort_field: query.sortField,
