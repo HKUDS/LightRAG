@@ -68,7 +68,6 @@ def chunking_by_recursive_character(
         "chunk_size": max(int(chunk_token_size), 1),
         "chunk_overlap": max(int(chunk_overlap_token_size), 0),
         "length_function": lambda s: len(tokenizer.encode(s)),
-        "add_start_index": True,
         "strip_whitespace": True,
     }
     if separators is not None:
@@ -76,18 +75,31 @@ def chunking_by_recursive_character(
 
     splitter = RecursiveCharacterTextSplitter(**splitter_kwargs)
 
+    # We deliberately do *not* request LangChain's ``add_start_index``. That
+    # offset is computed with a character-vs-token unit mismatch when a
+    # token-based ``length_function`` is in play: ``create_documents`` advances
+    # its search cursor by ``previous_chunk_len`` (characters) minus
+    # ``chunk_overlap`` (tokens), so on overlapping chunks the cursor overshoots
+    # each chunk's true start. The result is ``start_index == -1`` for unique
+    # text (lost ``_source_span`` → backfill failure under
+    # ``require_source_span``) or a match against a later identical run (wrong
+    # provenance). Instead we recover spans with our own monotonic forward
+    # cursor, which only ever advances and re-derives each span by exact match.
     docs = splitter.create_documents([content])
     results: list[dict[str, Any]] = []
+    cursor = 0
     for doc in docs:
         body = doc.page_content.strip()
         if not body:
             continue
-        start_index = doc.metadata.get("start_index")
+        start_index = content.find(body, cursor)
         source_span = None
-        if isinstance(start_index, int) and start_index >= 0:
-            end_index = start_index + len(body)
-            if content[start_index:end_index] == body:
-                source_span = {"start": start_index, "end": end_index}
+        if start_index >= 0:
+            source_span = {"start": start_index, "end": start_index + len(body)}
+            # Next chunk's start is strictly past this one (chunk starts are
+            # monotonically increasing, even with overlap), so advance by one
+            # to keep the cursor moving without skipping the next true start.
+            cursor = start_index + 1
         results.append(
             {
                 "tokens": len(tokenizer.encode(body)),
