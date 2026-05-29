@@ -3,8 +3,10 @@
 import pytest
 
 pytest.importorskip("langchain_text_splitters")
+from langchain_text_splitters import RecursiveCharacterTextSplitter  # noqa: E402
 
 from lightrag.chunker import chunking_by_recursive_character  # noqa: E402
+from lightrag.chunker.recursive_character import _split_text_with_spans  # noqa: E402
 from lightrag.utils import Tokenizer, TokenizerInterface  # noqa: E402
 
 
@@ -140,7 +142,7 @@ def test_repeated_text_spans_tile_whole_document():
     Regression for the repeated-content ambiguity: a naive forward ``find``
     matches every identical overlapping chunk to the nearest repetition, so all
     spans collapse into the document head and the tail gets no provenance. The
-    geometry-anchored locator must instead advance spans across the whole text.
+    offset-aware splitter mirror must instead advance spans across the whole text.
     """
     unit = "ABCDE fghij. "
     body = unit * 60
@@ -164,3 +166,89 @@ def test_repeated_text_spans_tile_whole_document():
     # the old nearest-repetition behaviour the furthest end stalled near the
     # first few hundred chars; tiling reaches within one ``unit`` of the end.
     assert max(s["end"] for s in spans) >= len(body) - len(unit)
+
+
+@pytest.mark.offline
+def test_span_mirror_matches_langchain_split_text():
+    """Drift guard for the offset-aware mirror of LangChain's splitter."""
+    body = (
+        "Alpha repeats.\n\n"
+        "ff hh aa hh ee\n"
+        "ff hh aa hh ee\n\n"
+        "Tail repeats. Tail repeats. Tail repeats."
+    )
+    tok = _tok()
+
+    def length_function(text: str) -> int:
+        return len(tok.encode(text))
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=36,
+        chunk_overlap=14,
+        length_function=length_function,
+        strip_whitespace=True,
+    )
+
+    mirrored = _split_text_with_spans(
+        body,
+        base_offset=0,
+        separators=splitter._separators,
+        chunk_size=splitter._chunk_size,
+        chunk_overlap=splitter._chunk_overlap,
+        length_function=length_function,
+        keep_separator=splitter._keep_separator,
+        is_separator_regex=splitter._is_separator_regex,
+        strip_whitespace=splitter._strip_whitespace,
+    )
+
+    assert [piece for piece, _, _ in mirrored] == splitter.split_text(body)
+    for piece, start, end in mirrored:
+        assert body[start:end] == piece
+
+
+@pytest.mark.offline
+def test_chunk_repeating_an_earlier_block_maps_to_its_own_block():
+    """A chunk whose text also appears in an earlier, different block must map
+    to *its own* occurrence, not the earlier copy.
+
+    Regression for cross-block duplicate provenance: merged text ``"ff aa\\n\\naa"``
+    splits into ``["ff aa", "aa"]``. The second chunk ``"aa"`` is block 2, so its
+    span must point at the *second* ``"aa"`` (offset 7), not the ``"aa"`` inside
+    ``"ff aa"`` (offset 3). The earlier locator anchored on a predicted offset
+    and snapped to the nearest copy, silently emitting the wrong — but
+    legal-looking — span that strict backfill would trust.
+    """
+    merged = "ff aa\n\naa"
+    chunks = chunking_by_recursive_character(
+        _tok(),
+        merged,
+        chunk_token_size=5,
+        chunk_overlap_token_size=1,
+    )
+
+    assert [c["content"] for c in chunks] == ["ff aa", "aa"]
+    assert chunks[0]["_source_span"] == {"start": 0, "end": 5}
+    # The second "aa" lives in block 2 at offset 7, after the "\n\n" separator —
+    # not the "aa" embedded in "ff aa" at offset 3.
+    assert chunks[1]["_source_span"] == {"start": 7, "end": 9}
+    assert merged[7:9] == "aa"
+
+
+@pytest.mark.offline
+def test_repeated_block_window_does_not_shift_to_previous_duplicate():
+    """A repeated multi-block chunk must not slide back into the prior duplicate."""
+    block = "ff hh aa hh ee"
+    merged = "\n\n".join([block] * 4)
+    chunks = chunking_by_recursive_character(
+        _tok(),
+        merged,
+        chunk_token_size=36,
+        chunk_overlap_token_size=14,
+    )
+
+    assert [c["content"] for c in chunks] == [
+        f"{block}\n\n{block}",
+        f"{block}\n\n{block}",
+    ]
+    assert chunks[0]["_source_span"] == {"start": 0, "end": 30}
+    assert chunks[1]["_source_span"] == {"start": 32, "end": 62}
