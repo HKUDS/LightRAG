@@ -97,7 +97,7 @@ api = [
     "defusedxml>=0.7.0,<1.0.0",    # Safer XML parser used by parser/docx
     # Chunking strategies (process_options=R / V); lazy-imported by lightrag.chunker
     "langchain-text-splitters>=0.3,<2",
-    "langchain-experimental>=0.3,<1",
+    "langchain-experimental>=0.3.2,<1",  # >=0.3.2: SemanticChunker gained min_chunk_size
 ]
 
 # Offline deployment dependencies (layered design for flexibility)

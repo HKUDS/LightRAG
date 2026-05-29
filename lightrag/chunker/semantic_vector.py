@@ -127,8 +127,8 @@ def _semantic_groups_with_spans(
         (``sentence_split_regex``, ``breakpoint_threshold_type``, ``min_chunk_size``,
         ``number_of_chunks``, ``_calculate_sentence_distances``,
         ``_threshold_from_clusters``, ``_calculate_breakpoint_threshold``). Verified
-        byte-for-byte against ``langchain-experimental`` 0.3.x–0.4.x (the range pinned
-        in ``pyproject.toml``: ``langchain-experimental>=0.3,<1``). If that pin is
+        byte-for-byte against ``langchain-experimental`` 0.3.2–0.4.x (the range pinned
+        in ``pyproject.toml``: ``langchain-experimental>=0.3.2,<1``). If that pin is
         widened, re-verify against the new upstream ``split_text`` —
         ``tests/chunker/test_chunker_semantic_vector.py`` has a drift guard that
         compares this mirror's grouping to the live ``splitter.split_text`` output.
@@ -261,7 +261,7 @@ async def chunking_by_semantic_vector(
     if not _LANGCHAIN_EXPERIMENTAL_AVAILABLE:
         raise ImportError(
             "langchain-experimental is required for the 'V' chunking "
-            "strategy; install with `pip install langchain-experimental>=0.3`."
+            "strategy; install with `pip install langchain-experimental>=0.3.2`."
         )
 
     loop = asyncio.get_running_loop()

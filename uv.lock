@@ -2287,7 +2287,7 @@ requires-dist = [
     { name = "jiter", marker = "extra == 'api'" },
     { name = "json-repair" },
     { name = "json-repair", marker = "extra == 'api'" },
-    { name = "langchain-experimental", marker = "extra == 'api'", specifier = ">=0.3,<1" },
+    { name = "langchain-experimental", marker = "extra == 'api'", specifier = ">=0.3.2,<1" },
     { name = "langchain-text-splitters", marker = "extra == 'api'", specifier = ">=0.3,<2" },
     { name = "langfuse", marker = "extra == 'observability'", specifier = ">=3.8.1" },
     { name = "lightrag-hku", extras = ["api"], marker = "extra == 'evaluation'" },
