@@ -198,17 +198,29 @@ def test_docling_adapter_existing_markdown_heading_not_double_prefixed(
     tmp_path: Path,
 ) -> None:
     """A heading whose source text already carries a markdown ``#`` prefix is
-    kept verbatim rather than gaining a second prefix."""
+    kept verbatim in content but stored cleanly in metadata."""
     texts = [
         _text_item(label="title", text="# Already MD", self_ref="#/texts/0"),
-        _text_item(label="text", text="Body.", self_ref="#/texts/1"),
+        _text_item(
+            label="section_header",
+            text="## Child MD",
+            level=1,
+            self_ref="#/texts/1",
+        ),
+        _text_item(label="text", text="Body.", self_ref="#/texts/2"),
     ]
     raw_dir = _write_doc(
         tmp_path,
-        _doc(body_children=["#/texts/0", "#/texts/1"], texts=texts),
+        _doc(body_children=["#/texts/0", "#/texts/1", "#/texts/2"], texts=texts),
     )
     ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
     assert ir.blocks[0].content_template.splitlines()[0] == "# Already MD"
+    assert ir.blocks[1].content_template.splitlines()[0] == "## Child MD"
+    assert ir.doc_title == "Already MD"
+    assert [(b.heading, b.parent_headings) for b in ir.blocks] == [
+        ("Already MD", []),
+        ("Child MD", ["Already MD"]),
+    ]
 
 
 def test_docling_adapter_preserves_docling_heading_level(tmp_path: Path) -> None:

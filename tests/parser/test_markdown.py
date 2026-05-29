@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from lightrag.parser._markdown import render_heading_line
+from lightrag.parser._markdown import (
+    render_heading_line,
+    strip_heading_markdown_prefix,
+)
 
 
 @pytest.mark.offline
@@ -49,3 +52,19 @@ def test_render_heading_line_keeps_existing_markdown(already) -> None:
 )
 def test_render_heading_line_non_heading_hash_is_prefixed(text, expected) -> None:
     assert render_heading_line(1, text) == expected
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("# Foo", "Foo"),
+        ("## Bar", "Bar"),
+        ("###### Six", "Six"),
+        ("#  Extra space", " Extra space"),
+        ("#NoSpace", "#NoSpace"),
+        ("####### Seven", "####### Seven"),
+    ],
+)
+def test_strip_heading_markdown_prefix(text, expected) -> None:
+    assert strip_heading_markdown_prefix(text) == expected

@@ -22,6 +22,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from lxml import etree
 
+from lightrag.parser.docx import parse_document as parse_doc
 from lightrag.parser.docx.parse_document import (
     extract_docx_blocks,
     extract_paragraph_content,
@@ -227,6 +228,55 @@ def test_heading_markdown_prefix_capped_at_six(tmp_path) -> None:
         # level 7 outline → clamped to six "#".
         ("Deep Seven", "###### Deep Seven", 7),
     ]
+
+
+@pytest.mark.offline
+def test_existing_markdown_heading_keeps_content_but_metadata_is_clean(
+    tmp_path,
+) -> None:
+    doc = Document()
+    _add_heading(doc, "# Already MD", level=1)
+    doc.add_paragraph("Body.")
+
+    buf = BytesIO()
+    doc.save(buf)
+    docx_path = tmp_path / "markdown-heading.docx"
+    docx_path.write_bytes(buf.getvalue())
+
+    parse_metadata: dict[str, str] = {}
+    blocks = extract_docx_blocks(
+        str(docx_path), fixlevel=0, parse_metadata=parse_metadata
+    )
+
+    assert parse_metadata["first_heading"] == "Already MD"
+    assert blocks[0]["heading"] == "Already MD"
+    assert blocks[0]["parent_headings"] == []
+    assert blocks[0]["content"].splitlines()[0] == "# Already MD"
+
+
+@pytest.mark.offline
+def test_split_long_block_promoted_markdown_anchor_metadata_is_clean(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(parse_doc, "MAX_BLOCK_CONTENT_TOKENS", 25)
+    monkeypatch.setattr(parse_doc, "IDEAL_BLOCK_CONTENT_TOKENS", 20)
+    monkeypatch.setattr(parse_doc, "estimate_tokens", len)
+
+    blocks = parse_doc.split_long_block(
+        "Top",
+        [
+            {"text": "aaaaa", "para_id": "p1", "is_table": False},
+            {"text": "bbbbbbbbbb", "para_id": "p2", "is_table": False},
+            {"text": "# Anchor", "para_id": "p3", "is_table": False},
+            {"text": "cccccccccc", "para_id": "p4", "is_table": False},
+        ],
+        parent_headings=[],
+        block_level=1,
+    )
+
+    assert blocks[1]["heading"] == "Anchor"
+    assert blocks[1]["parent_headings"] == ["Top"]
+    assert blocks[1]["content"].splitlines()[0] == "# Anchor"
 
 
 @pytest.mark.offline

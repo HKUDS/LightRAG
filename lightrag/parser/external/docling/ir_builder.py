@@ -49,7 +49,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-from lightrag.parser._markdown import render_heading_line
+from lightrag.parser._markdown import (
+    render_heading_line,
+    strip_heading_markdown_prefix,
+)
 from lightrag.parser.external._common import env_json
 from lightrag.parser.external.docling.manifest import select_main_json
 from lightrag.sidecar.ir import (
@@ -193,13 +196,15 @@ class DoclingIRBuilder:
             cb_page_set = set()
             cb_bbox_positions = []
 
-        def _open_block(heading: str, level: int, parents: list[str]) -> None:
+        def _open_block(
+            heading: str, level: int, parents: list[str], raw_heading: str | None = None
+        ) -> None:
             nonlocal cb_heading, cb_level, cb_parents
             cb_heading = heading
             cb_level = level
             cb_parents = parents
             # Cap at 6 ``#`` and leave already-markdown headings untouched.
-            cb_lines.append(render_heading_line(level, heading))
+            cb_lines.append(render_heading_line(level, raw_heading or heading))
 
         def _append_text(text: str) -> bool:
             if not text:
@@ -349,18 +354,19 @@ class DoclingIRBuilder:
             # Heading?
             heading_level = _docling_heading_level(label, item)
             if heading_level > 0 and text:
+                clean_heading = strip_heading_markdown_prefix(text)
                 heading_stack = heading_stack[: max(heading_level - 1, 0)]
                 parents = [h for h in heading_stack if h]
-                heading_stack.append(text)
+                heading_stack.append(clean_heading)
                 # Every recognized heading starts its own block: flush the
                 # in-flight block (body or bare heading) and open a fresh one.
                 # A heading with no following body becomes a standalone block
                 # whose content is just the heading line.
                 _flush_block()
-                _open_block(text, heading_level, parents)
+                _open_block(clean_heading, heading_level, parents, text)
                 _record_positions(item)
                 if not doc_title and heading_level == 1:
-                    doc_title = text
+                    doc_title = clean_heading
                 _visit_children(item)
                 return
 

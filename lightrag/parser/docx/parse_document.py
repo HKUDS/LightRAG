@@ -16,7 +16,10 @@ except ImportError:
     )
     sys.exit(1)
 
-from lightrag.parser._markdown import render_heading_line
+from lightrag.parser._markdown import (
+    render_heading_line,
+    strip_heading_markdown_prefix,
+)
 from .numbering_resolver import NumberingResolver
 from .table_extractor import TableExtractor
 from .utils import estimate_tokens
@@ -888,10 +891,12 @@ def split_long_block(
 
     # Check if this block starts with a split table chunk (has _chunk_heading metadata)
     # If so, use that heading instead of block_heading
-    effective_heading = block_heading
+    effective_heading = strip_heading_markdown_prefix(block_heading)
 
     if paragraphs and paragraphs[0].get("_chunk_heading"):
-        effective_heading = paragraphs[0]["_chunk_heading"]
+        effective_heading = strip_heading_markdown_prefix(
+            paragraphs[0]["_chunk_heading"]
+        )
 
     # Calculate total content token count
     total_content = "\n".join(p["text"] for p in paragraphs)
@@ -996,7 +1001,7 @@ def split_long_block(
     result_blocks = []
     prev_idx = 0
     current_parent_headings = parent_headings
-    current_block_heading = block_heading
+    current_block_heading = strip_heading_markdown_prefix(block_heading)
 
     for anchor in selected_anchors:
         split_idx = anchor["index"]
@@ -1025,13 +1030,16 @@ def split_long_block(
             result_blocks.append(new_block)
 
         # Validate anchor as new heading
-        validate_heading_length(anchor["text"], anchor["para_id"])
+        clean_anchor_text = strip_heading_markdown_prefix(anchor["text"])
+        validate_heading_length(clean_anchor_text, anchor["para_id"])
 
         # Update for next block
-        current_block_heading = anchor["text"]
+        current_block_heading = clean_anchor_text
         # Update parent headings: add previous heading only if not "Preface/Uncategorized"
         if block_heading != "Preface/Uncategorized":
-            current_parent_headings = parent_headings + [block_heading]
+            current_parent_headings = parent_headings + [
+                strip_heading_markdown_prefix(block_heading)
+            ]
 
         prev_idx = (
             split_idx  # Don't skip anchor - it becomes first paragraph of next block
@@ -1594,11 +1602,12 @@ def extract_docx_blocks(
 
                 # Truncate heading if needed before storing
                 truncated_text = truncate_heading(full_text, heading_para_id)
+                clean_heading_text = strip_heading_markdown_prefix(truncated_text)
 
                 # Record the document's first heading (any level) for meta.doc_title.
                 if not first_heading_recorded:
                     if parse_metadata is not None:
-                        parse_metadata["first_heading"] = truncated_text
+                        parse_metadata["first_heading"] = clean_heading_text
                     first_heading_recorded = True
 
                 if should_split:
@@ -1629,7 +1638,7 @@ def extract_docx_blocks(
 
                     # Add heading to current_paragraphs. The content line gets
                     # a markdown ``#`` prefix (capped at 6) via
-                    # render_heading_line; the clean ``truncated_text`` is kept
+                    # render_heading_line; ``clean_heading_text`` is kept
                     # for the heading field / stack / parent_headings below.
                     current_paragraphs.append(
                         {
@@ -1642,7 +1651,7 @@ def extract_docx_blocks(
                     # Update current_heading and parent_headings for the FIRST heading in a block
                     # (when current_paragraphs just had this heading added as its first element)
                     if len(current_paragraphs) == 1:
-                        current_heading = truncated_text
+                        current_heading = clean_heading_text
                         current_heading_level = (
                             level  # Only set level when setting heading
                         )
@@ -1658,7 +1667,7 @@ def extract_docx_blocks(
                     current_heading_stack = {
                         k: v for k, v in current_heading_stack.items() if k < level
                     }
-                    current_heading_stack[level] = truncated_text
+                    current_heading_stack[level] = clean_heading_text
                 else:
                     # This heading doesn't trigger split - treat as regular paragraph
                     para_id = heading_para_id

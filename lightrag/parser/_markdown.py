@@ -21,6 +21,16 @@ MAX_HEADING_LEVEL = 6
 _MD_HEADING_RE = re.compile(r"^#{1,6} ")
 
 
+def strip_heading_markdown_prefix(text: str) -> str:
+    """Return heading metadata without an existing markdown heading prefix.
+
+    The content renderer may keep a source line such as ``"# Foo"`` verbatim
+    to avoid double-prefixing, but structured metadata (``heading``,
+    ``parent_headings``, doc title) must stay clean.
+    """
+    return _MD_HEADING_RE.sub("", text, count=1)
+
+
 def render_heading_line(level: int, text: str) -> str:
     """Render a heading as a markdown-prefixed content line.
 
@@ -40,4 +50,8 @@ def render_heading_line(level: int, text: str) -> str:
     return f"{hashes} {text}"
 
 
-__all__ = ["MAX_HEADING_LEVEL", "render_heading_line"]
+__all__ = [
+    "MAX_HEADING_LEVEL",
+    "render_heading_line",
+    "strip_heading_markdown_prefix",
+]
