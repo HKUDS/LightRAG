@@ -1968,6 +1968,7 @@ class _PipelineMixin:
                             self.tokenizer,
                             content,
                             f_chunk_size,
+                            _emit_source_span=True,
                             **f_opts,
                         )
                 else:
@@ -2003,6 +2004,14 @@ class _PipelineMixin:
                     logger.info(
                         f"Chunking F(legacy): {chunk_opts_str}, doc_id: {doc_id}"
                     )
+                    from lightrag.chunker import chunking_by_token_size
+
+                    # Only the unmodified default fixed-token chunker understands the
+                    # private ``_emit_source_span`` kwarg; a user-supplied
+                    # ``chunking_func`` must not receive it.
+                    legacy_kwargs = {}
+                    if self.chunking_func is chunking_by_token_size:
+                        legacy_kwargs["_emit_source_span"] = True
                     chunking_result = self.chunking_func(
                         self.tokenizer,
                         content,
@@ -2013,6 +2022,7 @@ class _PipelineMixin:
                             self.chunk_overlap_token_size,
                         ),
                         legacy_chunk_size,
+                        **legacy_kwargs,
                     )
                 if inspect.isawaitable(chunking_result):
                     chunking_result = await chunking_result
@@ -2119,6 +2129,35 @@ class _PipelineMixin:
                         extraction_meta["hard_fallback_split"] = (
                             f"{original_chunk_count} -> {len(chunking_result)}"
                         )
+
+                # Backfill block provenance for F/R/V chunks (P already carries
+                # sidecars; multimodal chunks too). Runs on the final, post-split
+                # chunk list so each slice maps precisely to the block(s) its
+                # content covers. Raises ChunkBlockMatchError -> doc FAILED when a
+                # chunk cannot be located in blocks.jsonl.
+                #
+                # Gated to the built-in F/R/V strategies — or the legacy path only
+                # when ``chunking_func`` is still the unmodified default fixed-token
+                # chunker. A user-supplied ``chunking_func`` may emit summaries /
+                # rewritten text that cannot be located in blocks.jsonl, which would
+                # wrongly FAIL the document.
+                if doc_process_opts.chunking_explicit:
+                    sidecar_backfill_eligible = doc_process_opts.chunking in {
+                        "F",
+                        "R",
+                        "V",
+                    }
+                else:
+                    from lightrag.chunker import chunking_by_token_size
+
+                    sidecar_backfill_eligible = (
+                        self.chunking_func is chunking_by_token_size
+                    )
+
+                if blocks_path and sidecar_backfill_eligible:
+                    from lightrag.sidecar import backfill_chunk_sidecars
+
+                    backfill_chunk_sidecars(chunking_result, blocks_path)
 
                 chunks = build_chunks_dict_from_chunking_result(
                     chunking_result, doc_id=doc_id, file_path=file_path

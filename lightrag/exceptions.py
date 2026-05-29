@@ -131,6 +131,36 @@ class ChunkTokenLimitExceededError(ValueError):
         self.chunk_preview = truncated_preview
 
 
+class ChunkBlockMatchError(ValueError):
+    """Raised when a chunk cannot be located in the document's blocks.jsonl.
+
+    Sidecar backfill (``lightrag.sidecar.backfill``) maps F/R/V chunks back to
+    their source block(s) by matching chunk content against the parse-time
+    ``*.blocks.jsonl`` merged text. When a sidecar-less chunk cannot be located,
+    this is raised so the pipeline marks the document FAILED rather than
+    persisting chunks with missing/incorrect provenance.
+    """
+
+    def __init__(
+        self,
+        chunk_order_index: int,
+        chunk_preview: str | None = None,
+        blocks_path: str | None = None,
+    ) -> None:
+        preview = chunk_preview.strip() if chunk_preview else None
+        truncated_preview = preview[:80] if preview else None
+        preview_note = f" Preview: '{truncated_preview}'" if truncated_preview else ""
+        path_note = f" (blocks: {blocks_path})" if blocks_path else ""
+        message = (
+            f"Chunk #{chunk_order_index} could not be located in the document "
+            f"blocks during sidecar backfill.{preview_note}{path_note}"
+        )
+        super().__init__(message)
+        self.chunk_order_index = chunk_order_index
+        self.chunk_preview = truncated_preview
+        self.blocks_path = blocks_path
+
+
 class DataMigrationError(Exception):
     """Raised when data migration from legacy collection/table fails."""
 
