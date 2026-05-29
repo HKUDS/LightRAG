@@ -110,9 +110,7 @@ def test_hard_split_slices_get_precise_refs(tmp_path: Path) -> None:
     assert chunks[0]["sidecar"]["refs"] == [{"type": "block", "id": "big"}]
     # "small" is referenced only by the slice that actually reaches its content.
     small_refs = [
-        ch
-        for ch in chunks
-        if any(r["id"] == "small" for r in ch["sidecar"]["refs"])
+        ch for ch in chunks if any(r["id"] == "small" for r in ch["sidecar"]["refs"])
     ]
     assert len(small_refs) == 1
 
