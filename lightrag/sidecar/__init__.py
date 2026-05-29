@@ -10,6 +10,7 @@ emits the spec-compliant ``*.parsed/`` directory.
 See :func:`lightrag.sidecar.writer.write_sidecar` for the entry point.
 """
 
+from lightrag.sidecar.backfill import backfill_chunk_sidecars
 from lightrag.sidecar.ir import (
     AssetSpec,
     IRBlock,
@@ -29,5 +30,6 @@ __all__ = [
     "IREquation",
     "IRPosition",
     "IRTable",
+    "backfill_chunk_sidecars",
     "write_sidecar",
 ]
