@@ -360,6 +360,37 @@ def test_adapter_each_heading_starts_its_own_block(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_adapter_heading_markdown_prefix_cap_and_existing_marker(
+    tmp_path: Path,
+) -> None:
+    """Heading prefix is capped at six ``#`` and a heading whose text already
+    carries a markdown prefix is not double-prefixed in content but is stored
+    cleanly in metadata."""
+    raw = _write_bundle(
+        tmp_path,
+        [
+            # level 7 → clamped to six "#".
+            {"type": "text", "text": "Deep", "text_level": 7},
+            {"type": "text", "text": "deep body."},
+            # Source text already a markdown heading → kept verbatim.
+            {"type": "text", "text": "# Already MD", "text_level": 1},
+            {"type": "text", "text": "md body."},
+            {"type": "text", "text": "## Child MD", "text_level": 2},
+            {"type": "text", "text": "child body."},
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="m.pdf")
+
+    first_lines = [b.content_template.split("\n")[0] for b in ir.blocks]
+    assert first_lines == ["###### Deep", "# Already MD", "## Child MD"]
+    assert [(b.heading, b.parent_headings) for b in ir.blocks] == [
+        ("Deep", []),
+        ("Already MD", []),
+        ("Child MD", ["Already MD"]),
+    ]
+
+
+@pytest.mark.offline
 def test_adapter_adjacent_shallower_heading_starts_new_block(
     tmp_path: Path,
 ) -> None:

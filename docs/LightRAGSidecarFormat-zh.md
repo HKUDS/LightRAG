@@ -91,9 +91,9 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 ```json
 {
   "type": "content",
-  "blockid": "462c6364584a7ba4bdae6853f85ac429",
+  "blockid": "b5b5264333943cfd623710da1c36fc93",
   "format": "plain_text",
-  "content": "1 产品用途和功能\nMI012模块用于支撑供氧抗荷调节器的供氧抗荷控制功能...",
+  "content": "# 1 产品用途和功能\nMI012模块用于支撑供氧抗荷调节器的供氧抗荷控制功能...",
   "heading": "1 产品用途和功能",
   "parent_headings": [],
   "level": 1,
@@ -113,8 +113,8 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `type` | `"content"` |
 | `blockid` | 全局唯一的Block ID |
 | `format` | 内容形态，目前固定为 `"plain_text"` |
-| `content` | 文本内容；**公式和图片此以占位标签出现，表格以带table标签的JSON或HTLM格式出现**（见 3.3） |
-| `heading` | content所在章节的最高层级标题；heading真实存在时，应该同时出现在content的开头。**每个被识别出的标题都独立成块**：若标题后紧跟正文，正文与该标题合并进同一个块（content = 标题 + 正文）；若标题后没有正文（例如其后紧接下一个层级的标题），该标题仍单独成块、content 仅为标题文本。这样可保证所有 Block 的 content 字段拼接后仍能完整、无重叠地还原原文。 |
+| `content` | 文本内容；**公式和图片此以占位标签出现，表格以带table标签的JSON或HTLM格式出现**（见 3.3）。标题行会按 `level` 渲染 markdown `#` 前缀（后跟一个空格）：level 1 → 一个 `#`，level 2 → 两个 `#`，……，封顶 6 个（level ≥ 7 的标题仍渲染为 `######`）。若源标题文字本身已以 markdown 前缀开头（1–6 个 `#` 后跟空格），则原样保留、不再重复加前缀。注意 `heading` 字段本身保持干净（不含 `#`）。 |
+| `heading` | content所在章节的最高层级标题；heading真实存在时，应该以 markdown 渲染后的标题行出现在content的开头。**每个被识别出的标题都独立成块**：若标题后紧跟正文，正文与该标题合并进同一个块（content = markdown 渲染后的标题行 + 正文）；若标题后没有正文（例如其后紧接下一个层级的标题），该标题仍单独成块、content 仅为 markdown 渲染后的标题行。这样可保证所有 Block 的 content 字段拼接后仍能完整、无重叠地还原原文。 |
 | `parent_headings` | 字符串数组: 自顶向下的祖先标题列表，不含当前 `heading` |
 | `level` | 整数: `heading` 在文档大纲中的层级（`1` = H1 / 一级标题，0表示无标题） |
 | `session_type` | Block所处区域：`body` `preface` `TOC` `references` `appendix` |

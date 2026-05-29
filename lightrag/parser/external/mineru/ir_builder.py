@@ -48,6 +48,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from lightrag.parser._markdown import (
+    render_heading_line,
+    strip_heading_markdown_prefix,
+)
 from lightrag.sidecar.ir import (
     AssetSpec,
     IRBlock,
@@ -229,15 +233,18 @@ class MinerUIRBuilder:
             cb_page_set = set()
             cb_bbox_positions = []
 
-        def _open_block(heading: str, level: int, parents: list[str]) -> None:
+        def _open_block(
+            heading: str, level: int, parents: list[str], raw_heading: str | None = None
+        ) -> None:
             nonlocal cb_heading, cb_level, cb_parents
             cb_heading = heading
             cb_level = level
             cb_parents = parents
             # Render the heading line into the block body so the merged
-            # text reads like markdown (``# Foo`` / ``## Bar`` / …).
-            md_prefix = "#" * max(level, 1)
-            cb_lines.append(f"{md_prefix} {heading}")
+            # text reads like markdown (``# Foo`` / ``## Bar`` / …). Levels
+            # are capped at 6 ``#`` and headings already carrying a markdown
+            # prefix are left untouched (see ``render_heading_line``).
+            cb_lines.append(render_heading_line(level, raw_heading or heading))
 
         def _append_text(text: str) -> bool:
             """Append ``text`` to the current block body and return whether
@@ -257,12 +264,13 @@ class MinerUIRBuilder:
 
             heading_text, heading_level = _detect_heading(item, item_type)
             if heading_text:
+                clean_heading = strip_heading_markdown_prefix(heading_text)
                 # Heading hierarchy is updated unconditionally so deeper
                 # parents resolve correctly once the next real body item
                 # opens a fresh block.
                 heading_stack = heading_stack[: max(heading_level - 1, 0)]
                 parents = [h for h in heading_stack if h]
-                heading_stack.append(heading_text)
+                heading_stack.append(clean_heading)
 
                 # Every recognized heading starts its own block: flush the
                 # in-flight block (whether it had body or was a bare heading)
@@ -270,11 +278,11 @@ class MinerUIRBuilder:
                 # becomes a standalone block whose content is just the heading
                 # line, matching the native docx parser's behaviour.
                 _flush_block()
-                _open_block(heading_text, heading_level, parents)
+                _open_block(clean_heading, heading_level, parents, heading_text)
                 _record_position(item)
 
                 if not doc_title and heading_level == 1:
-                    doc_title = heading_text
+                    doc_title = clean_heading
                 continue
 
             if item_type == "text":

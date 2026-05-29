@@ -71,7 +71,7 @@ SCENARIOS: list[Scenario] = [
         parse_metadata={"first_heading": "Introduction"},
         blocks=[
             _block(
-                "Introduction",
+                "# Introduction",
                 heading="Introduction",
                 level=1,
                 uuid="h1",
@@ -84,7 +84,7 @@ SCENARIOS: list[Scenario] = [
                 uuid_end="p2",
             ),
             _block(
-                "Background",
+                "## Background",
                 heading="Background",
                 level=2,
                 parent=["Introduction"],
@@ -107,7 +107,7 @@ SCENARIOS: list[Scenario] = [
         parse_metadata={"first_heading": "Equations"},
         blocks=[
             _block(
-                "Equations",
+                "# Equations",
                 heading="Equations",
                 level=1,
                 uuid="h1",
@@ -143,7 +143,7 @@ SCENARIOS: list[Scenario] = [
         parse_metadata={"first_heading": "Report"},
         blocks=[
             _block(
-                "Report",
+                "# Report",
                 heading="Report",
                 level=1,
                 uuid="h1",
@@ -185,7 +185,7 @@ SCENARIOS: list[Scenario] = [
         },
         blocks=[
             _block(
-                "Diagrams",
+                "# Diagrams",
                 heading="Diagrams",
                 level=1,
                 uuid="h1",
@@ -214,7 +214,7 @@ SCENARIOS: list[Scenario] = [
         assets={"pic.png": b"PNG-combo"},
         blocks=[
             _block(
-                "Combined",
+                "# Combined",
                 heading="Combined",
                 level=1,
                 uuid="h1",
@@ -243,7 +243,7 @@ SCENARIOS: list[Scenario] = [
         parse_metadata={"first_heading": "Sparse"},
         blocks=[
             _block(
-                "Sparse",
+                "# Sparse",
                 heading="Sparse",
                 level=1,
                 uuid="h1",
@@ -280,7 +280,7 @@ SCENARIOS: list[Scenario] = [
         assets={},
         blocks=[
             _block(
-                "Linked",
+                "# Linked",
                 heading="Linked",
                 level=1,
                 uuid="h1",
