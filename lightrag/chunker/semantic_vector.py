@@ -29,10 +29,15 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
 from lightrag.utils import EmbeddingFunc, Tokenizer, logger
+
+if TYPE_CHECKING:
+    from langchain_experimental.text_splitter import SemanticChunker as SemanticChunkerType
+else:
+    SemanticChunkerType = Any
 
 try:
     from langchain_core.embeddings import Embeddings
@@ -108,7 +113,7 @@ def _trim_span(text: str, start: int, end: int) -> tuple[int, int]:
 
 
 def _semantic_groups_with_spans(
-    splitter: SemanticChunker,
+    splitter: SemanticChunkerType,
     text: str,
 ) -> list[tuple[str, int, int]]:
     """Mirror SemanticChunker grouping while keeping original source spans.
