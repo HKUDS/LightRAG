@@ -210,6 +210,41 @@ def test_hard_split_slices_get_precise_refs(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_hard_split_multi_sentence_rejoin_keeps_provenance(tmp_path: Path) -> None:
+    # A single block whose sentences are separated by single spaces. The hard
+    # split regroups whole sentence units and rejoins them with "\n\n", so the
+    # resulting slice content is NOT byte-verbatim in the source. Span propagation
+    # must fall back to whitespace-normalized matching instead of dropping the span
+    # — otherwise require_source_span backfill would wrongly FAIL the document.
+    block = "ab. cd. ef. gh. ij. kl."
+    blocks_path, merged = _write_blocks(tmp_path, [("b1", block)])
+    tok = _tokenizer()
+
+    chunks = chunking_by_fixed_token(
+        tok,
+        merged,
+        chunk_token_size=200,
+        chunk_overlap_token_size=0,
+        _emit_source_span=True,
+    )
+    assert len(chunks) == 1
+    assert chunks[0]["_source_span"] == {"start": 0, "end": len(merged)}
+
+    chunks = enforce_chunk_token_limit_before_embedding(chunks, tok, max_tokens=7)
+    assert len(chunks) > 1  # hard split fired into multiple slices
+    # At least one slice rejoined sentence units with "\n\n" (not byte-verbatim),
+    # which is exactly the case the normalized span fallback must cover.
+    assert any("\n\n" in ch["content"] for ch in chunks)
+
+    # Must NOT raise: every slice keeps a span via the normalized fallback, and
+    # each maps back to the single source block it came from.
+    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+
+    for ch in chunks:
+        assert [r["id"] for r in ch["sidecar"]["refs"]] == ["b1"]
+
+
+@pytest.mark.offline
 def test_real_tiktoken_token_windows_match_verbatim(tmp_path: Path) -> None:
     # The char tokenizer guarantees decode(encode(x)) == x; a real BPE tokenizer
     # does not split on character boundaries, so this exercises that tiktoken's

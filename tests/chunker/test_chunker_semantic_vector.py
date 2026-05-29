@@ -175,3 +175,58 @@ def test_v_oversized_group_resplit_preserves_child_source_spans():
         span = chunk["_source_span"]
         assert body[span["start"] : span["end"]] == chunk["content"]
         assert chunk["tokens"] <= 35
+
+
+@pytest.mark.offline
+def test_semantic_groups_mirror_matches_upstream_split_text():
+    """Drift guard: ``_semantic_groups_with_spans`` re-implements the private body
+    of ``SemanticChunker.split_text`` to keep verbatim source spans. If an upstream
+    langchain-experimental release changes that grouping (or a private member it
+    relies on), this catches it — the mirror must yield the same group count and the
+    same content modulo whitespace (it keeps the verbatim slice; upstream reflows
+    sentences with single spaces)."""
+    from langchain_core.embeddings import Embeddings
+    from langchain_experimental.text_splitter import SemanticChunker
+
+    from lightrag.chunker.semantic_vector import _semantic_groups_with_spans
+    from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
+
+    class _SyncEmbeddings(Embeddings):
+        """Deterministic per-text vectors, mirroring _make_deterministic_embedding
+        but synchronous so SemanticChunker can be driven directly."""
+
+        def embed_documents(self, texts):
+            rows = []
+            for text in texts:
+                seed = abs(hash(text)) % (2**32)
+                rng = np.random.default_rng(seed=seed)
+                vec = rng.normal(size=8).astype(np.float64)
+                vec /= np.linalg.norm(vec) or 1.0
+                rows.append(vec.tolist())
+            return rows
+
+        def embed_query(self, text):
+            return self.embed_documents([text])[0]
+
+    text = (
+        "Quantum mechanics describes nature at small scales. "
+        "It contradicts classical intuition. "
+        "Bread is baked from flour. "
+        "Sourdough requires a long fermentation."
+    )
+    splitter = SemanticChunker(
+        _SyncEmbeddings(),
+        buffer_size=1,
+        breakpoint_threshold_type="percentile",
+        sentence_split_regex=DEFAULT_SENTENCE_SPLIT_REGEX,
+    )
+
+    # Same process → identical deterministic embeddings on both calls → identical
+    # distances/breakpoints, so any divergence is a real grouping drift.
+    upstream = splitter.split_text(text)
+    mirror = _semantic_groups_with_spans(splitter, text)
+
+    assert len(mirror) == len(upstream)
+    for (grp_text, start, end), up in zip(mirror, upstream):
+        assert grp_text == text[start:end]  # mirror keeps the verbatim source slice
+        assert "".join(grp_text.split()) == "".join(up.split())

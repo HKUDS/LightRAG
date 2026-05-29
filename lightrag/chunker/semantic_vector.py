@@ -111,7 +111,21 @@ def _semantic_groups_with_spans(
     splitter: SemanticChunker,
     text: str,
 ) -> list[tuple[str, int, int]]:
-    """Mirror SemanticChunker grouping while keeping original source spans."""
+    """Mirror SemanticChunker grouping while keeping original source spans.
+
+    .. warning::
+        This re-implements the body of ``SemanticChunker.split_text`` so each group
+        carries its exact source span (``text[start:end]``) instead of the upstream
+        ``" ".join(sentences)`` reflow. It relies on **private** members
+        (``sentence_split_regex``, ``breakpoint_threshold_type``, ``min_chunk_size``,
+        ``number_of_chunks``, ``_calculate_sentence_distances``,
+        ``_threshold_from_clusters``, ``_calculate_breakpoint_threshold``). Verified
+        byte-for-byte against ``langchain-experimental`` 0.3.x–0.4.x (the range pinned
+        in ``pyproject.toml``: ``langchain-experimental>=0.3,<1``). If that pin is
+        widened, re-verify against the new upstream ``split_text`` —
+        ``tests/chunker/test_chunker_semantic_vector.py`` has a drift guard that
+        compares this mirror's grouping to the live ``splitter.split_text`` output.
+    """
     single_sentences_list = re.split(splitter.sentence_split_regex, text)
     spans = _sentence_spans(text, single_sentences_list)
 
