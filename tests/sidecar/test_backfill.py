@@ -179,48 +179,52 @@ def test_overlap_chunk_with_later_duplicate_resolves_to_overlap(
     tmp_path: Path,
 ) -> None:
     # Regression: an overlapping chunk whose normalized text recurs LATER in the
-    # document. A ``prev_end``-anchored search would skip the overlap occurrence
-    # (it sits before prev_end) and grab the later duplicate, advancing the cursor
-    # too far and stranding the following chunk -> false ChunkBlockMatchError.
-    # The forward-from-start cursor must resolve chunk 1 to its overlap position.
+    # document. The overlap chunk extends past the previous chunk's end (as real F/R
+    # overlap chunks always do) AND its text reappears in a later block. The cursor
+    # must resolve it to the *leftmost* end-advancing occurrence (the overlap inside
+    # b1), not jump to the later b2 duplicate and strand the following chunk.
     #
-    # Merged text (normalized): "AABBCCDDEE" + "CCDDFF" = "AABBCCDDEECCDDFF".
-    #   "CCDD" appears at the b1 overlap (offset 4) AND inside b2 (offset 10).
-    blocks_path = _write_blocks(
-        tmp_path, [("b1", "AA BB CC DD EE"), ("b2", "CC DD FF")]
-    )
+    # Merged text (normalized): "xxyyzz" + "yyzz" = "xxyyzzyyzz".
+    #   "yyzz" appears at the b1 overlap (offset 2) AND as b2 (offset 6).
+    blocks_path = _write_blocks(tmp_path, [("b1", "xx yy zz"), ("b2", "yy zz")])
     chunks = [
-        _chunk("AA BB CC DD", 0),  # b1
-        _chunk("CC DD", 1),  # overlaps chunk 0 -> true home is b1, not the b2 dup
-        _chunk("EE", 2),  # lives between the overlap pos and the b2 duplicate
+        _chunk("xx yy", 0),  # b1
+        _chunk("yy zz", 1),  # overlaps chunk 0 (shares "yy", adds "zz") -> still b1
+        _chunk("yy zz", 2),  # the genuine b2 occurrence
     ]
 
     backfill_chunk_sidecars(chunks, blocks_path)
 
     assert _refs(chunks[0]) == ["b1"]
     assert _refs(chunks[1]) == ["b1"]
-    assert _refs(chunks[2]) == ["b1"]
+    assert _refs(chunks[2]) == ["b2"]
 
 
 @pytest.mark.offline
-def test_short_overlap_tail_maps_to_next_block_not_earlier_duplicate(
+def test_overlap_window_on_stripped_separator_advances_into_next_block(
     tmp_path: Path,
 ) -> None:
-    # Regression (the inverse of the later-duplicate case): b1="aa", b2="a" with a
-    # tiny chunk_size and token overlap yields chunks ["aa", "a", "a"]. The token
-    # overlap fell on the stripped separator, so the middle "a" is really b2's token
-    # advancing past b1 — it must map to b2, NOT the earlier duplicate "a" still
-    # inside b1. A prev_start-anchored first-match would wrongly pick b1's "a"; the
-    # windowed rule picks the furthest-forward occurrence in the reachable window.
-    # The trailing "a" (clamped at the doc end) is b2 as well.
-    blocks_path = _write_blocks(tmp_path, [("b1", "aa"), ("b2", "a")])
-    chunks = [_chunk("aa", 0), _chunk("a", 1), _chunk("a", 2)]
+    # Regression for the reviewer's second case: b1="a", b2="abab", chunk_size=2,
+    # overlap=1 yields (non-empty) chunks ["a", "a", "ab", "ba", "ab", "b"]. The token
+    # overlap repeatedly falls on the stripped separator, so consecutive chunks can
+    # share a normalized START — only the END advances. A start-anchored cursor
+    # strands "ba" (its true position sits at/under the previous start) and raises;
+    # the end-anchored cursor places every tail chunk inside b2.
+    blocks_path = _write_blocks(tmp_path, [("b1", "a"), ("b2", "abab")])
+    chunks = [
+        _chunk("a", 0),  # b1
+        _chunk("a", 1),  # window crossed the stripped separator -> b2
+        _chunk("ab", 2),
+        _chunk("ba", 3),
+        _chunk("ab", 4),
+        _chunk("b", 5),
+    ]
 
     backfill_chunk_sidecars(chunks, blocks_path)
 
     assert _refs(chunks[0]) == ["b1"]
-    assert _refs(chunks[1]) == ["b2"]
-    assert _refs(chunks[2]) == ["b2"]
+    for ch in chunks[1:]:
+        assert _refs(ch) == ["b2"]
 
 
 @pytest.mark.offline
