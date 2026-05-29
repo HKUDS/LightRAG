@@ -75,6 +75,9 @@ def test_v_chunker_runs_with_stub_embedding():
     assert [c["chunk_order_index"] for c in chunks] == list(range(len(chunks)))
     # No empty content rows.
     assert all(c["content"].strip() for c in chunks)
+    for chunk in chunks:
+        span = chunk["_source_span"]
+        assert body[span["start"] : span["end"]] == chunk["content"]
 
 
 class _ListHandler(logging.Handler):
@@ -125,3 +128,50 @@ def test_v_chunker_empty_input_returns_empty_list():
         return await chunking_by_semantic_vector(_tok(), "")
 
     assert asyncio.run(_run()) == []
+
+
+@pytest.mark.offline
+def test_v_chunker_spans_repeated_sentences_and_number_of_chunks():
+    body = (
+        "Repeat sentence.\n"
+        "Repeat sentence. "
+        "A distant topic appears. "
+        "Another distant topic appears."
+    )
+
+    async def _run():
+        return await chunking_by_semantic_vector(
+            _tok(),
+            body,
+            chunk_token_size=400,
+            embedding_func=_make_deterministic_embedding(),
+            number_of_chunks=2,
+        )
+
+    chunks = asyncio.run(_run())
+
+    assert chunks
+    for chunk in chunks:
+        span = chunk["_source_span"]
+        assert body[span["start"] : span["end"]] == chunk["content"]
+
+
+@pytest.mark.offline
+def test_v_oversized_group_resplit_preserves_child_source_spans():
+    body = " ".join(f"word{i:02d}" for i in range(30)) + "."
+
+    async def _run():
+        return await chunking_by_semantic_vector(
+            _tok(),
+            body,
+            chunk_token_size=35,
+            embedding_func=_make_deterministic_embedding(),
+        )
+
+    chunks = asyncio.run(_run())
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        span = chunk["_source_span"]
+        assert body[span["start"] : span["end"]] == chunk["content"]
+        assert chunk["tokens"] <= 35

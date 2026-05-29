@@ -1846,6 +1846,34 @@ def split_text_by_token_limit(
     return [x for x in out if x.strip()]
 
 
+def _child_source_span(
+    parent_content: str,
+    parent_span: Any,
+    piece: str,
+    search_from: int,
+) -> tuple[dict[str, int] | None, int]:
+    if not isinstance(parent_span, dict):
+        return None, search_from
+    try:
+        parent_start = int(parent_span["start"])
+        parent_end = int(parent_span["end"])
+    except (KeyError, TypeError, ValueError):
+        return None, search_from
+    if parent_start < 0 or parent_end < parent_start:
+        return None, search_from
+
+    local_start = parent_content.find(piece, max(0, search_from))
+    if local_start < 0:
+        return None, search_from
+    local_end = local_start + len(piece)
+    if parent_start + local_end > parent_end:
+        return None, search_from
+    return (
+        {"start": parent_start + local_start, "end": parent_start + local_end},
+        local_end,
+    )
+
+
 def enforce_chunk_token_limit_before_embedding(
     chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     tokenizer: Tokenizer,
@@ -1886,6 +1914,8 @@ def enforce_chunk_token_limit_before_embedding(
             continue
 
         base_chunk_id = dp.get("chunk_id")
+        parent_span = dp.get("_source_span")
+        span_search_from = 0
         total_parts = len(pieces)
         for i, piece in enumerate(pieces, 1):
             new_dp = dict(dp)
@@ -1900,6 +1930,14 @@ def enforce_chunk_token_limit_before_embedding(
             # /chunk_id) is rewritten per split slice.
             if isinstance(base_chunk_id, str) and base_chunk_id.strip():
                 new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
+
+            child_span, span_search_from = _child_source_span(
+                content, parent_span, piece, span_search_from
+            )
+            if child_span is not None:
+                new_dp["_source_span"] = child_span
+            elif "_source_span" in new_dp:
+                new_dp.pop("_source_span", None)
 
             new_dp["split_type"] = "hard_fallback"
             new_dp["split_part"] = i

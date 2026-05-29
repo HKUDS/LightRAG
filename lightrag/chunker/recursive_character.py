@@ -68,23 +68,32 @@ def chunking_by_recursive_character(
         "chunk_size": max(int(chunk_token_size), 1),
         "chunk_overlap": max(int(chunk_overlap_token_size), 0),
         "length_function": lambda s: len(tokenizer.encode(s)),
+        "add_start_index": True,
+        "strip_whitespace": True,
     }
     if separators is not None:
         splitter_kwargs["separators"] = list(separators)
 
     splitter = RecursiveCharacterTextSplitter(**splitter_kwargs)
 
-    pieces = splitter.split_text(content)
+    docs = splitter.create_documents([content])
     results: list[dict[str, Any]] = []
-    for piece in pieces:
-        body = piece.strip()
+    for doc in docs:
+        body = doc.page_content.strip()
         if not body:
             continue
+        start_index = doc.metadata.get("start_index")
+        source_span = None
+        if isinstance(start_index, int) and start_index >= 0:
+            end_index = start_index + len(body)
+            if content[start_index:end_index] == body:
+                source_span = {"start": start_index, "end": end_index}
         results.append(
             {
                 "tokens": len(tokenizer.encode(body)),
                 "content": body,
                 "chunk_order_index": len(results),
+                **({"_source_span": source_span} if source_span else {}),
             }
         )
 
@@ -99,11 +108,17 @@ def chunking_by_recursive_character(
         )
         body = content.strip()
         if body:
+            start = content.find(body)
             results.append(
                 {
                     "tokens": len(tokenizer.encode(body)),
                     "content": body,
                     "chunk_order_index": 0,
+                    **(
+                        {"_source_span": {"start": start, "end": start + len(body)}}
+                        if start >= 0
+                        else {}
+                    ),
                 }
             )
 

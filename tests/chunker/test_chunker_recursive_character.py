@@ -35,6 +35,7 @@ def test_short_input_single_chunk():
 
     assert len(chunks) == 1
     assert chunks[0]["content"] == body
+    assert chunks[0]["_source_span"] == {"start": 0, "end": len(body)}
     assert chunks[0]["chunk_order_index"] == 0
     assert chunks[0]["tokens"] == len(body)
 
@@ -91,3 +92,19 @@ def test_custom_separators_are_honored():
     # Every chunk fits the cap.
     for c in chunks:
         assert c["tokens"] <= 10
+
+
+@pytest.mark.offline
+def test_recursive_chunks_carry_exact_source_spans_with_overlap():
+    body = "Alpha section.\n\nBeta section.\n\nGamma section."
+    chunks = chunking_by_recursive_character(
+        _tok(),
+        body,
+        chunk_token_size=22,
+        chunk_overlap_token_size=6,
+    )
+
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        span = chunk["_source_span"]
+        assert body[span["start"] : span["end"]] == chunk["content"]
