@@ -175,11 +175,6 @@ class MinerUIRBuilder:
         cb_heading = PREFACE_HEADING
         cb_level = 0
         cb_parents: list[str] = []
-        # ``cb_has_body`` flips True the moment we accumulate any non-heading
-        # payload into the current block. While it stays False, an adjacent
-        # deeper heading is folded into this block as a body line (aligning
-        # with the native docx parser's behaviour for back-to-back headings).
-        cb_has_body = False
 
         def _record_position(item: dict) -> None:
             """Route an item's positional info into the right channel.
@@ -200,7 +195,7 @@ class MinerUIRBuilder:
         def _flush_block() -> None:
             """Emit the in-flight block if it carries any content."""
             nonlocal cb_lines, cb_tables, cb_drawings, cb_equations
-            nonlocal cb_page_set, cb_bbox_positions, cb_has_body
+            nonlocal cb_page_set, cb_bbox_positions
             has_payload = bool(cb_lines or cb_tables or cb_drawings or cb_equations)
             if not has_payload:
                 return
@@ -210,7 +205,6 @@ class MinerUIRBuilder:
                 cb_lines = []
                 cb_page_set = set()
                 cb_bbox_positions = []
-                cb_has_body = False
                 return
             positions = [
                 IRPosition(type="bbox", anchor=p)
@@ -234,7 +228,6 @@ class MinerUIRBuilder:
             cb_equations = []
             cb_page_set = set()
             cb_bbox_positions = []
-            cb_has_body = False
 
         def _open_block(heading: str, level: int, parents: list[str]) -> None:
             nonlocal cb_heading, cb_level, cb_parents
@@ -252,23 +245,10 @@ class MinerUIRBuilder:
             decide whether to also record the item's source position — an
             empty text item must NOT leak its ``page_idx`` to the block.
             """
-            nonlocal cb_has_body
             if not text:
                 return False
             cb_lines.append(text)
-            cb_has_body = True
             return True
-
-        def _merge_heading_as_body(heading: str, level: int) -> None:
-            """Fold an adjacent deeper heading into the current block.
-
-            The line keeps its markdown ``#`` prefix so the rendered block
-            still reads as ``# Section\n## Subsection``. Does NOT flip
-            ``cb_has_body`` — successive headings can keep folding until a
-            real body item lands.
-            """
-            md_prefix = "#" * max(level, 1)
-            cb_lines.append(f"{md_prefix} {heading}")
 
         for item_index, item in enumerate(content_list):
             if not isinstance(item, dict):
@@ -284,17 +264,11 @@ class MinerUIRBuilder:
                 parents = [h for h in heading_stack if h]
                 heading_stack.append(heading_text)
 
-                # Adjacency merge: previous block is a real heading with no
-                # body yet AND the new heading is strictly deeper — append
-                # this heading as body to the existing block instead of
-                # flushing. (Preface, level=0, is never merged into.)
-                if cb_level > 0 and not cb_has_body and heading_level > cb_level:
-                    _merge_heading_as_body(heading_text, heading_level)
-                    _record_position(item)
-                    if not doc_title and heading_level == 1:
-                        doc_title = heading_text
-                    continue
-
+                # Every recognized heading starts its own block: flush the
+                # in-flight block (whether it had body or was a bare heading)
+                # and open a fresh one. A heading with no following body thus
+                # becomes a standalone block whose content is just the heading
+                # line, matching the native docx parser's behaviour.
                 _flush_block()
                 _open_block(heading_text, heading_level, parents)
                 _record_position(item)
@@ -348,7 +322,6 @@ class MinerUIRBuilder:
                     )
                 )
                 cb_lines.append(f"{{{{{token}:{placeholder}}}}}")
-                cb_has_body = True
                 _record_position(item)
                 continue
 
@@ -364,7 +337,6 @@ class MinerUIRBuilder:
                 table.self_ref = _content_list_self_ref(item_index)
                 cb_tables.append(table)
                 cb_lines.append(f"{{{{TBL:{placeholder}}}}}")
-                cb_has_body = True
                 _record_position(item)
                 continue
 
@@ -377,7 +349,6 @@ class MinerUIRBuilder:
                     assets.append(asset)
                 cb_drawings.append(drawing)
                 cb_lines.append(f"{{{{IMG:{placeholder}}}}}")
-                cb_has_body = True
                 _record_position(item)
                 continue
 

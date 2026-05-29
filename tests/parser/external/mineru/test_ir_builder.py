@@ -324,10 +324,11 @@ def test_adapter_empty_text_item_does_not_leak_page_to_block(
 
 
 @pytest.mark.offline
-def test_adapter_adjacent_deeper_heading_merged_as_body(tmp_path: Path) -> None:
-    """Two headings in a row with no body between them: when the second is
-    strictly deeper (level number larger), it folds into the first heading's
-    block as a body line. Mirrors the native docx parser's behaviour.
+def test_adapter_each_heading_starts_its_own_block(tmp_path: Path) -> None:
+    """Every recognized heading starts its own block. Back-to-back headings
+    with no body between them are NOT folded — each becomes a standalone
+    block whose content is just the heading line; the heading that does have
+    a following body merges that body in. Mirrors the native docx parser.
     """
     raw = _write_bundle(
         tmp_path,
@@ -342,25 +343,20 @@ def test_adapter_adjacent_deeper_heading_merged_as_body(tmp_path: Path) -> None:
     )
     ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="m.pdf")
 
-    # First "1 Top" absorbs the immediately-following deeper headings;
-    # body lands inside the same block. Then a new top-level heading
-    # opens a fresh block.
-    assert len(ir.blocks) == 2
-
-    merged = ir.blocks[0]
-    assert merged.heading == "1 Top"
-    assert merged.level == 1
-    assert merged.parent_headings == []
-    assert merged.content_template == (
-        "# 1 Top\n## 1.1 Mid\n### 1.1.1 Deep\nBody for deep."
-    )
-
-    fresh = ir.blocks[1]
-    assert fresh.heading == "2 Top Again"
-    assert fresh.level == 1
-    # Heading stack reset cleanly — no stale deep parents leak.
-    assert fresh.parent_headings == []
-    assert fresh.content_template == "# 2 Top Again\nMore body."
+    summary = [
+        (b.heading, b.content_template, b.level, b.parent_headings) for b in ir.blocks
+    ]
+    assert summary == [
+        ("1 Top", "# 1 Top", 1, []),
+        ("1.1 Mid", "## 1.1 Mid", 2, ["1 Top"]),
+        (
+            "1.1.1 Deep",
+            "### 1.1.1 Deep\nBody for deep.",
+            3,
+            ["1 Top", "1.1 Mid"],
+        ),
+        ("2 Top Again", "# 2 Top Again\nMore body.", 1, []),
+    ]
 
 
 @pytest.mark.offline

@@ -18,6 +18,7 @@ from io import BytesIO
 
 import pytest
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from lxml import etree
 
@@ -139,6 +140,66 @@ def _build_docx_with_three_tables() -> BytesIO:
     doc.save(buf)
     buf.seek(0)
     return buf
+
+
+# --- end-to-end: every heading becomes its own block ----------------------
+
+
+def _add_heading(doc, text: str, level: int) -> None:
+    """Append a heading paragraph with an explicit ``w:outlineLvl``.
+
+    Setting outlineLvl directly on the paragraph (rather than relying on the
+    template's built-in Heading styles) keeps ``get_heading_level`` detection
+    deterministic. ``level`` is 1-based (1 = H1); outlineLvl val is 0-based.
+    """
+    para = doc.add_paragraph(text)
+    pPr = para._p.get_or_add_pPr()
+    outline = OxmlElement("w:outlineLvl")
+    outline.set(qn("w:val"), str(level - 1))
+    pPr.append(outline)
+
+
+@pytest.mark.offline
+def test_each_heading_becomes_its_own_block(tmp_path) -> None:
+    """Headings with no body must each form a standalone block.
+
+    Layout: H1 (no body) → H2 (no body) → H3 (with body) → H1 (no body, last).
+    Previously the empty H1/H2 were folded into the next heading's block; now
+    every recognized heading starts its own block. A heading with no following
+    body yields a block whose ``content`` is just the heading text, while a
+    heading with body merges that body into the same block. ``parent_headings``
+    must track the outline hierarchy correctly.
+    """
+    doc = Document()
+    _add_heading(doc, "Chapter One", level=1)
+    _add_heading(doc, "Section 1.1", level=2)
+    _add_heading(doc, "Subsection 1.1.1", level=3)
+    doc.add_paragraph("Body text under subsection.")
+    _add_heading(doc, "Appendix", level=1)
+
+    buf = BytesIO()
+    doc.save(buf)
+    docx_path = tmp_path / "headings.docx"
+    docx_path.write_bytes(buf.getvalue())
+
+    # fixlevel=0 mirrors the production path (pipeline.py): split at every
+    # heading level, no token-based splitting or small-block merging.
+    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+
+    summary = [
+        (b["heading"], b["content"], b["level"], b["parent_headings"]) for b in blocks
+    ]
+    assert summary == [
+        ("Chapter One", "Chapter One", 1, []),
+        ("Section 1.1", "Section 1.1", 2, ["Chapter One"]),
+        (
+            "Subsection 1.1.1",
+            "Subsection 1.1.1\nBody text under subsection.",
+            3,
+            ["Chapter One", "Section 1.1"],
+        ),
+        ("Appendix", "Appendix", 1, []),
+    ]
 
 
 @pytest.mark.offline

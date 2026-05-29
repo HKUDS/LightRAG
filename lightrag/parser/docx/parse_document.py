@@ -1527,9 +1527,6 @@ def extract_docx_blocks(
     current_heading_stack = {}  # {level: heading_text} - Use dict to correctly track heading hierarchy
     current_parent_headings = []  # Parent headings for current block
     current_paragraphs = []  # Track paragraphs with metadata for splitting
-    has_body_content = (
-        False  # Track if current block has body content (non-heading paragraphs/tables)
-    )
     matched_fixlevel_heading = False  # Track whether --fixlevel matched any heading
     table_split_counter = (
         0  # Track cumulative table split suffix numbers within current block
@@ -1607,9 +1604,12 @@ def extract_docx_blocks(
                     if fixlevel is not None and fixlevel > 0:
                         matched_fixlevel_heading = True
 
-                    # This heading triggers a block split
-                    # Only save previous block if it has body content
-                    if has_body_content and current_paragraphs:
+                    # This heading triggers a block split. Always flush the
+                    # accumulated paragraphs so every recognized heading starts
+                    # its own block. A heading with no body therefore becomes a
+                    # standalone block whose content is just the heading text,
+                    # instead of being folded into the next heading's block.
+                    if current_paragraphs:
                         _flush_current_block(
                             blocks,
                             current_heading,
@@ -1622,7 +1622,6 @@ def extract_docx_blocks(
 
                         # Reset for new block
                         current_paragraphs = []
-                        has_body_content = False
                         table_split_counter = (
                             0  # Reset table split counter for new heading
                         )
@@ -1664,9 +1663,6 @@ def extract_docx_blocks(
                     current_paragraphs.append(
                         {"text": truncated_text, "para_id": para_id, "is_table": False}
                     )
-
-                    # Mark that we have body content
-                    has_body_content = True
             else:
                 # Regular paragraph content
                 para_id = extract_para_id(element)
@@ -1679,9 +1675,6 @@ def extract_docx_blocks(
                 current_paragraphs.append(
                     {"text": full_text, "para_id": para_id, "is_table": False}
                 )
-
-                # Mark that we have body content
-                has_body_content = True
 
             # Check for paragraph-level section break (after processing paragraph)
             # sectPr in pPr means this paragraph ends a section
@@ -1776,7 +1769,6 @@ def extract_docx_blocks(
                                 "_table_header": header_rows_or_none,
                             }
                         )
-                        has_body_content = True
                     else:
                         # Middle or last chunk: save current block first
                         if current_paragraphs:
@@ -1790,7 +1782,6 @@ def extract_docx_blocks(
                                 debug,
                             )
                             current_paragraphs = []
-                            has_body_content = False
 
                         # Generate heading using suffix_number from chunk
                         if chunk["suffix_number"] is not None:
@@ -1841,7 +1832,6 @@ def extract_docx_blocks(
                                     "_table_header": header_rows_or_none,
                                 }
                             )
-                            has_body_content = True
                         else:
                             # Middle chunk: output immediately as standalone block
                             blocks.append(chunk_block)
@@ -1864,9 +1854,6 @@ def extract_docx_blocks(
                         "_table_header": header_rows_or_none,
                     }
                 )
-
-                # Mark that we have body content
-                has_body_content = True
 
             # Reset numbering tracking after table (table end boundary)
             resolver.reset_tracking_state()

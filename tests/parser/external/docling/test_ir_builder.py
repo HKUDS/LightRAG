@@ -159,9 +159,12 @@ def test_docling_adapter_simple_heading_hierarchy(tmp_path: Path) -> None:
     assert ir.blocks[2].content_template.splitlines()[0] == "### Details"
 
 
-def test_docling_adapter_adjacency_merge_folds_empty_heading(tmp_path: Path) -> None:
-    """When a heading block has no body and the next heading is deeper,
-    the deeper heading folds in as a body line (matches MinerU §5.1.4)."""
+def test_docling_adapter_empty_heading_becomes_standalone_block(
+    tmp_path: Path,
+) -> None:
+    """A heading with no body becomes its own standalone block whose content
+    is just the heading line; the following heading (with body) is a separate
+    block. No adjacency folding (matches the native docx parser)."""
     texts = [
         _text_item(label="title", text="Whole Doc Title", self_ref="#/texts/0"),
         _text_item(
@@ -177,15 +180,18 @@ def test_docling_adapter_adjacency_merge_folds_empty_heading(tmp_path: Path) -> 
         ),
     )
     ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
-    # Title had no body → Background folded into it as a `## ` line
-    assert len(ir.blocks) == 1
-    block = ir.blocks[0]
-    assert block.heading == "Whole Doc Title"
-    assert block.level == 1
-    lines = block.content_template.splitlines()
-    assert lines[0] == "# Whole Doc Title"
-    assert "## Background" in lines
-    assert "Body for Background." in lines
+    summary = [
+        (b.heading, b.content_template, b.level, b.parent_headings) for b in ir.blocks
+    ]
+    assert summary == [
+        ("Whole Doc Title", "# Whole Doc Title", 1, []),
+        (
+            "Background",
+            "## Background\nBody for Background.",
+            2,
+            ["Whole Doc Title"],
+        ),
+    ]
 
 
 def test_docling_adapter_preserves_docling_heading_level(tmp_path: Path) -> None:
