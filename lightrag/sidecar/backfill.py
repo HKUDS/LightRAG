@@ -180,12 +180,17 @@ def backfill_chunk_sidecars(
 
     norm_merged, norm_to_orig = _normalize_projection(merged)
 
-    # Forward-only cursor over the normalized text. ``prev_end`` is preferred so
-    # repeated content and phrases recurring inside the previous chunk resolve to
-    # the next occurrence; ``prev_start`` is the overlap fallback for F/R chunks
-    # that legitimately begin inside the previous chunk's span.
-    prev_start = 0
-    prev_end = 0
+    # Forward-only cursor keyed on each chunk's *start* offset in the normalized
+    # text. Contiguous F/R/V chunking guarantees the next chunk begins strictly
+    # after the previous chunk's start (positive step) and at/before its end (token
+    # overlap or plain adjacency — never a gap). So the correct match is the first
+    # occurrence strictly past ``prev_start``: it lands on the overlap position for
+    # F/R chunks that begin inside the previous chunk and on the next occurrence for
+    # adjacent / repeated content. A ``prev_end`` anchor is structurally wrong here —
+    # an overlap match always sits before ``prev_end``, so searching from ``prev_end``
+    # skips it and can grab a spurious *later* duplicate of the same text, which then
+    # strands the following chunk and raises a false ChunkBlockMatchError.
+    prev_start = -1
     for chunk in chunking_result:
         if not isinstance(chunk, dict):
             continue
@@ -199,9 +204,7 @@ def backfill_chunk_sidecars(
         if not nq:
             continue
 
-        pos = norm_merged.find(nq, prev_end)
-        if pos == -1:
-            pos = norm_merged.find(nq, prev_start)
+        pos = norm_merged.find(nq, prev_start + 1)
         if pos == -1:
             raise ChunkBlockMatchError(
                 chunk_order_index=int(chunk.get("chunk_order_index", -1)),
@@ -213,7 +216,7 @@ def backfill_chunk_sidecars(
         o_start = norm_to_orig[pos]
         # Map the last matched normalized char back, then extend one past it.
         o_end = norm_to_orig[norm_end - 1] + 1
-        prev_start, prev_end = pos, norm_end
+        prev_start = pos
 
         covered = _covered_blockids(spans, o_start, o_end)
         if not covered:

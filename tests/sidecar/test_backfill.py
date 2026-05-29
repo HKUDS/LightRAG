@@ -139,8 +139,8 @@ def test_repeated_identical_blocks_map_to_distinct_blocks(tmp_path: Path) -> Non
 def test_phrase_recurring_inside_previous_chunk_resolves_forward(
     tmp_path: Path,
 ) -> None:
-    # "common" appears inside b1; the next chunk's true home is b2. End-first
-    # search must not re-match the occurrence inside the previous chunk.
+    # "common" appears inside b1; the next chunk's true home is b2. The forward
+    # cursor must not re-match the occurrence inside the previous chunk.
     blocks_path = _write_blocks(
         tmp_path,
         [("b1", "common prefix and common middle"), ("b2", "common tail block")],
@@ -157,8 +157,9 @@ def test_phrase_recurring_inside_previous_chunk_resolves_forward(
 
 
 @pytest.mark.offline
-def test_overlapping_chunks_match_via_start_fallback(tmp_path: Path) -> None:
-    # Simulate F/R token overlap: chunk 2 begins inside chunk 1's span.
+def test_overlapping_chunks_match_inside_previous_span(tmp_path: Path) -> None:
+    # Simulate F/R token overlap: chunk 2 begins inside chunk 1's span. The
+    # forward-from-start cursor resolves the overlap position directly.
     blocks_path = _write_blocks(
         tmp_path, [("b1", "one two three four five six seven eight")]
     )
@@ -171,6 +172,34 @@ def test_overlapping_chunks_match_via_start_fallback(tmp_path: Path) -> None:
 
     assert _refs(chunks[0]) == ["b1"]
     assert _refs(chunks[1]) == ["b1"]
+
+
+@pytest.mark.offline
+def test_overlap_chunk_with_later_duplicate_resolves_to_overlap(
+    tmp_path: Path,
+) -> None:
+    # Regression: an overlapping chunk whose normalized text recurs LATER in the
+    # document. A ``prev_end``-anchored search would skip the overlap occurrence
+    # (it sits before prev_end) and grab the later duplicate, advancing the cursor
+    # too far and stranding the following chunk -> false ChunkBlockMatchError.
+    # The forward-from-start cursor must resolve chunk 1 to its overlap position.
+    #
+    # Merged text (normalized): "AABBCCDDEE" + "CCDDFF" = "AABBCCDDEECCDDFF".
+    #   "CCDD" appears at the b1 overlap (offset 4) AND inside b2 (offset 10).
+    blocks_path = _write_blocks(
+        tmp_path, [("b1", "AA BB CC DD EE"), ("b2", "CC DD FF")]
+    )
+    chunks = [
+        _chunk("AA BB CC DD", 0),  # b1
+        _chunk("CC DD", 1),  # overlaps chunk 0 -> true home is b1, not the b2 dup
+        _chunk("EE", 2),  # lives between the overlap pos and the b2 duplicate
+    ]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert _refs(chunks[0]) == ["b1"]
+    assert _refs(chunks[1]) == ["b1"]
+    assert _refs(chunks[2]) == ["b1"]
 
 
 @pytest.mark.offline
