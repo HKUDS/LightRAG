@@ -66,6 +66,27 @@ def _write_blocks(tmp_path: Path, blocks: list[tuple[str, str]]) -> tuple[str, s
 
 
 @pytest.mark.offline
+def test_real_overlap_tail_chunk_maps_to_next_block(tmp_path: Path) -> None:
+    # End-to-end reproduction of the overlap-tail ambiguity with the real chunker:
+    # b1="aa", b2="a", chunk_size=3, overlap=1 -> ["aa", "a", "a"]. The middle window
+    # [2:5] = "\n\na" strips to b2's "a" (the overlap landed on the separator), so the
+    # tail chunks belong to b2 — not the earlier "a" inside b1.
+    blocks_path, merged = _write_blocks(tmp_path, [("b1", "aa"), ("b2", "a")])
+    tok = _tokenizer()
+
+    chunks = chunking_by_fixed_token(
+        tok, merged, chunk_token_size=3, chunk_overlap_token_size=1
+    )
+    assert [c["content"] for c in chunks] == ["aa", "a", "a"]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert [r["id"] for r in chunks[0]["sidecar"]["refs"]] == ["b1"]
+    assert [r["id"] for r in chunks[1]["sidecar"]["refs"]] == ["b2"]
+    assert [r["id"] for r in chunks[2]["sidecar"]["refs"]] == ["b2"]
+
+
+@pytest.mark.offline
 def test_real_fixed_token_chunks_get_full_coverage(tmp_path: Path) -> None:
     blocks = [(f"b{i}", f"Block number {i} body content here.") for i in range(6)]
     blocks_path, merged = _write_blocks(tmp_path, blocks)

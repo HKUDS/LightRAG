@@ -203,6 +203,27 @@ def test_overlap_chunk_with_later_duplicate_resolves_to_overlap(
 
 
 @pytest.mark.offline
+def test_short_overlap_tail_maps_to_next_block_not_earlier_duplicate(
+    tmp_path: Path,
+) -> None:
+    # Regression (the inverse of the later-duplicate case): b1="aa", b2="a" with a
+    # tiny chunk_size and token overlap yields chunks ["aa", "a", "a"]. The token
+    # overlap fell on the stripped separator, so the middle "a" is really b2's token
+    # advancing past b1 — it must map to b2, NOT the earlier duplicate "a" still
+    # inside b1. A prev_start-anchored first-match would wrongly pick b1's "a"; the
+    # windowed rule picks the furthest-forward occurrence in the reachable window.
+    # The trailing "a" (clamped at the doc end) is b2 as well.
+    blocks_path = _write_blocks(tmp_path, [("b1", "aa"), ("b2", "a")])
+    chunks = [_chunk("aa", 0), _chunk("a", 1), _chunk("a", 2)]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert _refs(chunks[0]) == ["b1"]
+    assert _refs(chunks[1]) == ["b2"]
+    assert _refs(chunks[2]) == ["b2"]
+
+
+@pytest.mark.offline
 def test_unmatchable_chunk_raises(tmp_path: Path) -> None:
     blocks_path = _write_blocks(tmp_path, [("b1", "Present content.")])
     chunks = [_chunk("Absent content not in any block.", 3)]

@@ -151,6 +151,51 @@ def _covered_blockids(
     return covered
 
 
+def _locate_chunk(norm_merged: str, nq: str, prev_start: int, covered_end: int) -> int:
+    """Locate ``nq`` consistently with forward, contiguous chunking; -1 if absent.
+
+    Contiguous F/R/V chunking covers the merged text in order with overlaps, so each
+    chunk starts strictly after the previous chunk's start and at/before the furthest
+    offset covered so far (``covered_end``) — overlap or adjacency, never a gap. When
+    ``nq`` occurs more than once we resolve it using *both* endpoints:
+
+    - Prefer the occurrence that reaches **furthest forward within the reachable
+      window** ``(prev_start, covered_end]`` (largest start, hence largest end). This
+      maps a short overlap-tail chunk to the block its content actually advances into
+      — e.g. the token that followed a now-stripped separator — instead of an earlier
+      duplicate still sitting inside the previous chunk.
+    - If nothing matches inside the window, take the first occurrence after
+      ``prev_start`` (a forward jump: the first chunk, or non-contiguous inputs).
+    - Only if the text exists nowhere after ``prev_start`` do we accept an occurrence
+      at ``prev_start`` itself — a trailing duplicate clamped at the document end,
+      where two adjacent windows reduce to the same source token.
+
+    A ``prev_end``-only anchor skips overlap matches (they sit before ``prev_end``) and
+    can jump to a spurious *later* duplicate; a ``prev_start``-only anchor accepts an
+    *earlier* duplicate inside the previous chunk. The windowed rule avoids both.
+    """
+    best = -1
+    first_after = -1
+    search = prev_start + 1
+    while True:
+        p = norm_merged.find(nq, search)
+        if p == -1:
+            break
+        if first_after == -1:
+            first_after = p
+        if p <= covered_end:
+            best = p  # within the reachable window; keep the furthest-forward one
+            search = p + 1
+        else:
+            break  # occurrences only get later; nothing more inside the window
+    if best != -1:
+        return best
+    if first_after != -1:
+        return first_after
+    # Nothing strictly after prev_start: allow a clamped trailing duplicate at it.
+    return norm_merged.find(nq, prev_start) if prev_start >= 0 else -1
+
+
 def backfill_chunk_sidecars(
     chunking_result: list[dict[str, Any]],
     blocks_path: str,
@@ -180,17 +225,12 @@ def backfill_chunk_sidecars(
 
     norm_merged, norm_to_orig = _normalize_projection(merged)
 
-    # Forward-only cursor keyed on each chunk's *start* offset in the normalized
-    # text. Contiguous F/R/V chunking guarantees the next chunk begins strictly
-    # after the previous chunk's start (positive step) and at/before its end (token
-    # overlap or plain adjacency — never a gap). So the correct match is the first
-    # occurrence strictly past ``prev_start``: it lands on the overlap position for
-    # F/R chunks that begin inside the previous chunk and on the next occurrence for
-    # adjacent / repeated content. A ``prev_end`` anchor is structurally wrong here —
-    # an overlap match always sits before ``prev_end``, so searching from ``prev_end``
-    # skips it and can grab a spurious *later* duplicate of the same text, which then
-    # strands the following chunk and raises a false ChunkBlockMatchError.
+    # Forward cursor over the normalized text. ``prev_start`` is the previous chunk's
+    # matched start; ``covered_end`` the furthest offset matched so far. ``_locate_chunk``
+    # uses both to place each chunk consistently with contiguous, overlapping chunking
+    # — see its docstring for why neither endpoint alone suffices.
     prev_start = -1
+    covered_end = 0
     for chunk in chunking_result:
         if not isinstance(chunk, dict):
             continue
@@ -204,7 +244,7 @@ def backfill_chunk_sidecars(
         if not nq:
             continue
 
-        pos = norm_merged.find(nq, prev_start + 1)
+        pos = _locate_chunk(norm_merged, nq, prev_start, covered_end)
         if pos == -1:
             raise ChunkBlockMatchError(
                 chunk_order_index=int(chunk.get("chunk_order_index", -1)),
@@ -217,6 +257,7 @@ def backfill_chunk_sidecars(
         # Map the last matched normalized char back, then extend one past it.
         o_end = norm_to_orig[norm_end - 1] + 1
         prev_start = pos
+        covered_end = max(covered_end, norm_end)
 
         covered = _covered_blockids(spans, o_start, o_end)
         if not covered:
