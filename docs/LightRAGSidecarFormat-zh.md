@@ -114,7 +114,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `blockid` | 全局唯一的Block ID |
 | `format` | 内容形态，目前固定为 `"plain_text"` |
 | `content` | 文本内容；**公式和图片此以占位标签出现，表格以带table标签的JSON或HTLM格式出现**（见 3.3） |
-| `heading` | content所在章节的最高层级标题；heading真实存在时，应该同时出现在content的开头；如果heading之后紧接着下一个层级的heading，则把下一个层级的heading正文看待。这样做的目的是需要保证所有 Block 的 content字段内容拼接后形成完整的原文。 |
+| `heading` | content所在章节的最高层级标题；heading真实存在时，应该同时出现在content的开头。**每个被识别出的标题都独立成块**：若标题后紧跟正文，正文与该标题合并进同一个块（content = 标题 + 正文）；若标题后没有正文（例如其后紧接下一个层级的标题），该标题仍单独成块、content 仅为标题文本。这样可保证所有 Block 的 content 字段拼接后仍能完整、无重叠地还原原文。 |
 | `parent_headings` | 字符串数组: 自顶向下的祖先标题列表，不含当前 `heading` |
 | `level` | 整数: `heading` 在文档大纲中的层级（`1` = H1 / 一级标题，0表示无标题） |
 | `session_type` | Block所处区域：`body` `preface` `TOC` `references` `appendix` |

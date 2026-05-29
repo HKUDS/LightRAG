@@ -150,7 +150,6 @@ class DoclingIRBuilder:
         cb_heading = PREFACE_HEADING
         cb_level = 0
         cb_parents: list[str] = []
-        cb_has_body = False
 
         visited: set[str] = set()
         kv_count = len(doc.get("key_value_items") or [])
@@ -160,7 +159,7 @@ class DoclingIRBuilder:
 
         def _flush_block() -> None:
             nonlocal cb_lines, cb_tables, cb_drawings, cb_equations
-            nonlocal cb_page_set, cb_bbox_positions, cb_has_body
+            nonlocal cb_page_set, cb_bbox_positions
             has_payload = bool(cb_lines or cb_tables or cb_drawings or cb_equations)
             if not has_payload:
                 return
@@ -169,7 +168,6 @@ class DoclingIRBuilder:
                 cb_lines = []
                 cb_page_set = set()
                 cb_bbox_positions = []
-                cb_has_body = False
                 return
             positions = [
                 IRPosition(type="bbox", anchor=p)
@@ -193,7 +191,6 @@ class DoclingIRBuilder:
             cb_equations = []
             cb_page_set = set()
             cb_bbox_positions = []
-            cb_has_body = False
 
         def _open_block(heading: str, level: int, parents: list[str]) -> None:
             nonlocal cb_heading, cb_level, cb_parents
@@ -203,16 +200,10 @@ class DoclingIRBuilder:
             md_prefix = "#" * max(level, 1)
             cb_lines.append(f"{md_prefix} {heading}")
 
-        def _merge_heading_as_body(heading: str, level: int) -> None:
-            md_prefix = "#" * max(level, 1)
-            cb_lines.append(f"{md_prefix} {heading}")
-
         def _append_text(text: str) -> bool:
-            nonlocal cb_has_body
             if not text:
                 return False
             cb_lines.append(text)
-            cb_has_body = True
             return True
 
         def _record_positions(item: dict) -> None:
@@ -350,7 +341,7 @@ class DoclingIRBuilder:
                 _append_text(line)
 
         def _handle_text(item: dict) -> None:
-            nonlocal doc_title, heading_stack, cb_has_body
+            nonlocal doc_title, heading_stack
             label = str(item.get("label") or "").lower()
             text = _text_of(item).strip()
 
@@ -360,14 +351,10 @@ class DoclingIRBuilder:
                 heading_stack = heading_stack[: max(heading_level - 1, 0)]
                 parents = [h for h in heading_stack if h]
                 heading_stack.append(text)
-                # Adjacency merge
-                if cb_level > 0 and not cb_has_body and heading_level > cb_level:
-                    _merge_heading_as_body(text, heading_level)
-                    _record_positions(item)
-                    if not doc_title and heading_level == 1:
-                        doc_title = text
-                    _visit_children(item)
-                    return
+                # Every recognized heading starts its own block: flush the
+                # in-flight block (body or bare heading) and open a fresh one.
+                # A heading with no following body becomes a standalone block
+                # whose content is just the heading line.
                 _flush_block()
                 _open_block(text, heading_level, parents)
                 _record_positions(item)
@@ -421,7 +408,6 @@ class DoclingIRBuilder:
             if not placeholder:
                 return
             cb_lines.append(placeholder)
-            _bump_has_body()
             _record_positions(item)
 
         def _make_equation_placeholder(item: dict, *, is_block: bool) -> str:
@@ -441,10 +427,6 @@ class DoclingIRBuilder:
             )
             return f"{{{{{token}:{placeholder}}}}}"
 
-        def _bump_has_body() -> None:
-            nonlocal cb_has_body
-            cb_has_body = True
-
         def _handle_table(item: dict) -> None:
             table = _build_ir_table(item, ref_index)
             if table is None:
@@ -456,7 +438,6 @@ class DoclingIRBuilder:
             table.placeholder_key = placeholder
             cb_tables.append(table)
             cb_lines.append(f"{{{{TBL:{placeholder}}}}}")
-            _bump_has_body()
             _record_positions(item)
 
         def _handle_picture(item: dict) -> None:
@@ -476,7 +457,6 @@ class DoclingIRBuilder:
                 assets.append(asset)
             cb_drawings.append(drawing)
             cb_lines.append(f"{{{{IMG:{placeholder}}}}}")
-            _bump_has_body()
             _record_positions(item)
 
         # Kick off traversal from body.children
