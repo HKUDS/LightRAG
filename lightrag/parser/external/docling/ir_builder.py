@@ -49,6 +49,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from lightrag.parser._markdown import render_heading_line
 from lightrag.parser.external._common import env_json
 from lightrag.parser.external.docling.manifest import select_main_json
 from lightrag.sidecar.ir import (
@@ -197,8 +198,8 @@ class DoclingIRBuilder:
             cb_heading = heading
             cb_level = level
             cb_parents = parents
-            md_prefix = "#" * max(level, 1)
-            cb_lines.append(f"{md_prefix} {heading}")
+            # Cap at 6 ``#`` and leave already-markdown headings untouched.
+            cb_lines.append(render_heading_line(level, heading))
 
         def _append_text(text: str) -> bool:
             if not text:

@@ -186,19 +186,46 @@ def test_each_heading_becomes_its_own_block(tmp_path) -> None:
     # heading level, no token-based splitting or small-block merging.
     blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
 
+    # The content line carries a markdown ``#`` prefix matching the level,
+    # while the ``heading`` field stays clean (no prefix).
     summary = [
         (b["heading"], b["content"], b["level"], b["parent_headings"]) for b in blocks
     ]
     assert summary == [
-        ("Chapter One", "Chapter One", 1, []),
-        ("Section 1.1", "Section 1.1", 2, ["Chapter One"]),
+        ("Chapter One", "# Chapter One", 1, []),
+        ("Section 1.1", "## Section 1.1", 2, ["Chapter One"]),
         (
             "Subsection 1.1.1",
-            "Subsection 1.1.1\nBody text under subsection.",
+            "### Subsection 1.1.1\nBody text under subsection.",
             3,
             ["Chapter One", "Section 1.1"],
         ),
-        ("Appendix", "Appendix", 1, []),
+        ("Appendix", "# Appendix", 1, []),
+    ]
+
+
+@pytest.mark.offline
+def test_heading_markdown_prefix_capped_at_six(tmp_path) -> None:
+    """Heading content lines get a markdown ``#`` prefix matching the level,
+    capped at 6 ``#`` (a level-7 heading still renders ``######``)."""
+    doc = Document()
+    _add_heading(doc, "Top", level=1)
+    doc.add_paragraph("body under top.")
+    _add_heading(doc, "Deep Seven", level=7)
+    doc.add_paragraph("body under deep.")
+
+    buf = BytesIO()
+    doc.save(buf)
+    docx_path = tmp_path / "deep.docx"
+    docx_path.write_bytes(buf.getvalue())
+
+    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+
+    summary = [(b["heading"], b["content"].split("\n")[0], b["level"]) for b in blocks]
+    assert summary == [
+        ("Top", "# Top", 1),
+        # level 7 outline → clamped to six "#".
+        ("Deep Seven", "###### Deep Seven", 7),
     ]
 
 

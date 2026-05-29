@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from lightrag.parser._markdown import render_heading_line
 from lightrag.sidecar.ir import (
     AssetSpec,
     IRBlock,
@@ -235,9 +236,10 @@ class MinerUIRBuilder:
             cb_level = level
             cb_parents = parents
             # Render the heading line into the block body so the merged
-            # text reads like markdown (``# Foo`` / ``## Bar`` / …).
-            md_prefix = "#" * max(level, 1)
-            cb_lines.append(f"{md_prefix} {heading}")
+            # text reads like markdown (``# Foo`` / ``## Bar`` / …). Levels
+            # are capped at 6 ``#`` and headings already carrying a markdown
+            # prefix are left untouched (see ``render_heading_line``).
+            cb_lines.append(render_heading_line(level, heading))
 
         def _append_text(text: str) -> bool:
             """Append ``text`` to the current block body and return whether

@@ -194,6 +194,23 @@ def test_docling_adapter_empty_heading_becomes_standalone_block(
     ]
 
 
+def test_docling_adapter_existing_markdown_heading_not_double_prefixed(
+    tmp_path: Path,
+) -> None:
+    """A heading whose source text already carries a markdown ``#`` prefix is
+    kept verbatim rather than gaining a second prefix."""
+    texts = [
+        _text_item(label="title", text="# Already MD", self_ref="#/texts/0"),
+        _text_item(label="text", text="Body.", self_ref="#/texts/1"),
+    ]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(body_children=["#/texts/0", "#/texts/1"], texts=texts),
+    )
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    assert ir.blocks[0].content_template.splitlines()[0] == "# Already MD"
+
+
 def test_docling_adapter_preserves_docling_heading_level(tmp_path: Path) -> None:
     """When Docling reports all section_headers at level=1, the adapter
     preserves that (no numbering-based level inference)."""

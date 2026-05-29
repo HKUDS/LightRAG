@@ -16,6 +16,7 @@ except ImportError:
     )
     sys.exit(1)
 
+from lightrag.parser._markdown import render_heading_line
 from .numbering_resolver import NumberingResolver
 from .table_extractor import TableExtractor
 from .utils import estimate_tokens
@@ -1626,10 +1627,13 @@ def extract_docx_blocks(
                             0  # Reset table split counter for new heading
                         )
 
-                    # Add heading to current_paragraphs
+                    # Add heading to current_paragraphs. The content line gets
+                    # a markdown ``#`` prefix (capped at 6) via
+                    # render_heading_line; the clean ``truncated_text`` is kept
+                    # for the heading field / stack / parent_headings below.
                     current_paragraphs.append(
                         {
-                            "text": truncated_text,
+                            "text": render_heading_line(level, truncated_text),
                             "para_id": heading_para_id,
                             "is_table": False,
                         }
@@ -1659,9 +1663,15 @@ def extract_docx_blocks(
                     # This heading doesn't trigger split - treat as regular paragraph
                     para_id = heading_para_id
 
-                    # Store as regular paragraph with metadata
+                    # Store as regular paragraph with metadata. Still render
+                    # the markdown ``#`` prefix so a fixlevel-demoted heading
+                    # reads as a heading line in the merged content.
                     current_paragraphs.append(
-                        {"text": truncated_text, "para_id": para_id, "is_table": False}
+                        {
+                            "text": render_heading_line(level, truncated_text),
+                            "para_id": para_id,
+                            "is_table": False,
+                        }
                     )
             else:
                 # Regular paragraph content

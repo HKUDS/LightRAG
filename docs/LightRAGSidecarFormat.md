@@ -113,7 +113,7 @@ Each content line is the minimum addressable unit of an original document "block
 | `type` | `"content"` |
 | `blockid` | Globally unique Block ID |
 | `format` | Content form, currently fixed to `"plain_text"` |
-| `content` | Text content; **equations and images appear as placeholder tags here, tables appear as JSON or HTML wrapped in table tags** (see §3.3) |
+| `content` | Text content; **equations and images appear as placeholder tags here, tables appear as JSON or HTML wrapped in table tags** (see §3.3). The heading line is rendered with a markdown `#` prefix (plus a space) matching `level`: level 1 → one `#`, level 2 → two `#`, …, capped at 6 (a level ≥ 7 heading still renders `######`). If the source heading text already begins with a markdown prefix (1–6 `#` followed by a space), it is kept verbatim and not prefixed again. Note the `heading` field itself stays clean (no `#`). |
 | `heading` | The top-most-level heading of the section containing this content. When `heading` is real, it should also appear at the beginning of `content`. **Every recognized heading starts its own block**: if a heading is immediately followed by body text, that body is merged into the same block (content = heading + body); if a heading has no following body (e.g., it is immediately followed by a heading at the next level), it still becomes a standalone block whose content is just the heading text. This ensures that concatenating the `content` fields of all blocks still reconstructs the complete original text without overlap. |
 | `parent_headings` | String array: the top-down list of ancestor headings, excluding the current `heading` |
 | `level` | Integer: the level of `heading` in the document outline (`1` = H1 / first-level heading; `0` means no heading) |
