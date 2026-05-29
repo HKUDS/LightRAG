@@ -3708,10 +3708,18 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
         else:
             # Method 2: If no args, try single parameter construction.
             return type(original_exception)(f"{prefix}: {str(original_exception)}")
-    except (TypeError, ValueError, AttributeError):
-        # Method 3: If reconstruction fails, wrap it in a RuntimeError.
-        # This is the safest fallback, as attempting to create the same type
-        # with a single string can fail if the constructor requires multiple arguments.
+    except Exception:
+        # Method 3: If reconstruction fails for any reason, wrap it in a
+        # RuntimeError preserving the original type name and message. This is a
+        # defensive catch-all: most known failures already surface as TypeError
+        # (e.g. json.JSONDecodeError needs (msg, doc, pos) and
+        # openai.APIStatusError/BadRequestError need keyword-only
+        # (response, body), so rebuilding from args alone raises TypeError), but
+        # an exotic constructor could raise something else (KeyError, a
+        # validation error, ...). Catching `Exception` guarantees this helper
+        # never raises while prefixing — `KeyboardInterrupt`/`SystemExit` are
+        # BaseException and still propagate. The original exception and its full
+        # traceback are preserved by the caller's `raise ... from original`.
         return RuntimeError(
             f"{prefix}: {type(original_exception).__name__}: {str(original_exception)}"
         )
