@@ -2157,11 +2157,7 @@ class _PipelineMixin:
                 if blocks_path and sidecar_backfill_eligible:
                     from lightrag.sidecar import backfill_chunk_sidecars
 
-                    backfill_chunk_sidecars(
-                        chunking_result,
-                        blocks_path,
-                        require_source_span=True,
-                    )
+                    backfill_chunk_sidecars(chunking_result, blocks_path)
 
                 chunks = build_chunks_dict_from_chunking_result(
                     chunking_result, doc_id=doc_id, file_path=file_path

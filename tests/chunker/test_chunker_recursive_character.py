@@ -118,8 +118,8 @@ def test_long_unique_text_keeps_every_source_span():
 
     Regression for the LangChain ``add_start_index`` unit mismatch: with a
     token-based length function its search cursor overshot each chunk's true
-    start, dropping ``_source_span`` (and failing ``require_source_span``
-    backfill) on roughly half of a unique document's chunks.
+    start, dropping ``_source_span`` (and failing span-first backfill) on
+    roughly half of a unique document's chunks.
     """
     body = " ".join(f"word{i}" for i in range(800))
     chunks = chunking_by_recursive_character(

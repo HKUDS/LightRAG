@@ -83,7 +83,7 @@ def test_real_overlap_tail_chunk_maps_to_next_block(tmp_path: Path) -> None:
     )
     assert [c["content"] for c in chunks] == ["aa", "a", "a"]
 
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     assert [r["id"] for r in chunks[0]["sidecar"]["refs"]] == ["b1"]
     assert [r["id"] for r in chunks[1]["sidecar"]["refs"]] == ["b2"]
@@ -111,7 +111,7 @@ def test_real_overlap_on_stripped_separator_does_not_strand_chunks(
     )
     assert [c["content"] for c in chunks] == ["a", "", "a", "ab", "ba", "ab", "b"]
 
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     assert [r["id"] for r in chunks[0]["sidecar"]["refs"]] == ["b1"]
     # The empty chunk is skipped (no sidecar); all remaining chunks belong to b2.
@@ -140,7 +140,7 @@ def test_real_identical_adjacent_blocks_no_cross_block_artifact(
     )
     assert [c["content"] for c in chunks] == ["aa", "", "aa"]
 
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     assert chunks[0]["_source_span"] == {"start": 0, "end": 2}
     assert chunks[2]["_source_span"] == {"start": 4, "end": 6}
@@ -165,7 +165,7 @@ def test_real_fixed_token_chunks_get_full_coverage(tmp_path: Path) -> None:
     )
     assert len(chunks) >= 2  # multiple blocks per chunk at this size
 
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     # Every chunk is located and carries block provenance.
     for ch in chunks:
@@ -198,7 +198,7 @@ def test_hard_split_slices_get_precise_refs(tmp_path: Path) -> None:
     chunks = enforce_chunk_token_limit_before_embedding(chunks, tok, max_tokens=30)
     assert len(chunks) > 1  # hard-split fired
 
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     # The early slices live entirely inside "big" -> single ref, not both blocks.
     assert chunks[0]["sidecar"]["refs"] == [{"type": "block", "id": "big"}]
@@ -215,7 +215,7 @@ def test_hard_split_multi_sentence_rejoin_keeps_provenance(tmp_path: Path) -> No
     # split regroups whole sentence units and rejoins them with "\n\n", so the
     # resulting slice content is NOT byte-verbatim in the source. Span propagation
     # must fall back to whitespace-normalized matching instead of dropping the span
-    # — otherwise require_source_span backfill would wrongly FAIL the document.
+    # — otherwise span-first backfill would wrongly FAIL the document.
     block = "ab. cd. ef. gh. ij. kl."
     blocks_path, merged = _write_blocks(tmp_path, [("b1", block)])
     tok = _tokenizer()
@@ -238,7 +238,7 @@ def test_hard_split_multi_sentence_rejoin_keeps_provenance(tmp_path: Path) -> No
 
     # Must NOT raise: every slice keeps a span via the normalized fallback, and
     # each maps back to the single source block it came from.
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     for ch in chunks:
         assert [r["id"] for r in ch["sidecar"]["refs"]] == ["b1"]
@@ -271,7 +271,7 @@ def test_real_tiktoken_token_windows_match_verbatim(tmp_path: Path) -> None:
     )
     assert len(chunks) >= 2  # small window + overlap -> multiple chunks
 
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     for ch in chunks:
         assert ch["sidecar"]["type"] == "block"
@@ -286,9 +286,9 @@ def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> 
     # Regression: tiktoken is byte-level, so a 4-byte UTF-8 char (emoji / rare CJK
     # extension) can have its bytes split across a token-window boundary. Decoding the
     # partial window yields U+FFFD in BOTH the chunk content and its span probe, so the
-    # chunk is unlocatable by span or by text. With require_source_span this previously
-    # FAILED the entire document; it must now skip provenance for the corrupt chunks
-    # while still attributing the clean ones.
+    # chunk is unlocatable by span or by text. Span-first backfill must skip provenance
+    # for the corrupt chunks while still attributing the clean ones, not FAIL the whole
+    # document.
     pytest.importorskip("tiktoken")
     from lightrag.utils import TiktokenTokenizer
 
@@ -309,7 +309,7 @@ def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> 
     assert any("_source_span" not in c for c in chunks)
 
     # Must NOT raise: corrupt chunks are skipped, the rest are attributed.
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     for ch in chunks:
         if "�" in ch["content"]:
@@ -330,7 +330,7 @@ def test_backfilled_sidecar_persists_into_chunks_dict(tmp_path: Path) -> None:
     chunks = chunking_by_fixed_token(
         tok, merged, chunk_token_size=200, _emit_source_span=True
     )
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     chunks_dict = build_chunks_dict_from_chunking_result(
         chunks, doc_id="doc-xyz", file_path="doc.docx"
@@ -363,7 +363,7 @@ def test_span_first_disambiguates_repeated_cross_block_text(tmp_path: Path) -> N
     )
     assert [c["content"] for c in chunks] == ["ab\n\ncd", "abcd"]
 
-    backfill_chunk_sidecars(chunks, blocks_path, require_source_span=True)
+    backfill_chunk_sidecars(chunks, blocks_path)
 
     assert [r["id"] for r in chunks[0]["sidecar"]["refs"]] == ["b1", "b2"]
     assert [r["id"] for r in chunks[1]["sidecar"]["refs"]] == ["b3"]

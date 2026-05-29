@@ -3,34 +3,38 @@
 The ``P`` (paragraph_semantic) strategy records a ``sidecar`` field on each chunk
 mapping it back to its source row(s) in the parse-time ``*.blocks.jsonl`` sidecar
 file. The ``F`` / ``R`` / ``V`` strategies chunk the merged document text without
-that provenance. When a document was parsed into the LightRAG sidecar format
-(``blocks.jsonl`` exists), :func:`backfill_chunk_sidecars` scans the blocks and
-attaches a ``sidecar`` to each chunk that lacks one.
+that provenance, but each chunk carries a private ``_source_span`` — the half-open
+``[start, end)`` char offsets of its content within the merged text the chunker
+received. When a document was parsed into the LightRAG sidecar format
+(``blocks.jsonl`` exists), :func:`backfill_chunk_sidecars` reconstructs that merged
+text, records each block's character span, and attaches a ``sidecar`` to each chunk
+by mapping its ``_source_span`` onto the block(s) it overlaps.
 
-Matching contract
------------------
-The merged text a chunker received is exactly reproducible from ``blocks.jsonl``:
-both :func:`lightrag.sidecar.writer.write_sidecar` and
+Span contract
+-------------
+The merged text is exactly reproducible from ``blocks.jsonl``: both
+:func:`lightrag.sidecar.writer.write_sidecar` and
 :func:`lightrag.utils_pipeline.load_lightrag_document_content` build it as
 ``"\\n\\n".join(raw_content for content rows where content.strip())``. We rebuild
-the same string here, record each block's character span, and locate each chunk's
-content within it.
+the same string here so a chunk's ``_source_span`` indexes directly into it.
 
-F decodes/strips token windows (verbatim substrings, with token overlap); R strips
-LangChain pieces (verbatim, possible overlap); V strips ``SemanticChunker`` pieces
-that rejoin sentences with a single space — so newlines collapse to spaces *and* a
-space may be inserted between sentences that were originally adjacent with no
-whitespace, making the text *not* byte-verbatim. To cover all three uniformly,
-matching runs over a **whitespace-stripped** projection of both sides (every
-whitespace char removed, not merely collapsed to a single space). Because whitespace
-removal is monotonic, a chunk's non-whitespace characters are always a contiguous
-substring of the merged text's non-whitespace characters — regardless of how either
-side spaced them — so V's reflowing can never spuriously fail a match.
+F/R emit byte-verbatim spans (the span text equals the chunk content). V's
+``SemanticChunker`` rejoins sentences with a single space, so a V chunk's content
+may differ from its span text by whitespace alone; span validation therefore accepts
+either a byte-exact match or a **whitespace-stripped** match (every whitespace char
+removed, not merely collapsed to a single space). A span whose text matches the
+chunk under neither test is treated as absent.
+
+A chunk that reaches this stage without a usable ``_source_span`` is a hard error:
+the document is marked FAILED via :class:`ChunkBlockMatchError`. The sole exception
+is a chunk whose decoded content carries the Unicode replacement character
+(:data:`_REPLACEMENT_CHAR`) — a multi-byte UTF-8 char split at a token-window
+boundary corrupts both its span probe and its own content, making provenance
+impossible; such a chunk degrades to no-sidecar rather than failing the document.
 
 Multimodal placeholder tags (``<table …>…</table>``, ``<drawing …/>``,
-``<equation …>…</equation>``) appear identically in block content and chunk content,
-so they project identically under whitespace stripping and match — markup is never
-stripped before matching.
+``<equation …>…</equation>``) appear verbatim in both block content and chunk
+content, so a span covering them maps to the right block(s) unchanged.
 """
 
 from __future__ import annotations
@@ -128,31 +132,15 @@ def _build_block_spans(
     return _BLOCK_SEPARATOR.join(parts), spans
 
 
-def _normalize_projection(merged: str) -> tuple[str, list[int]]:
-    """Drop every whitespace char; map each kept char back to its merged offset.
-
-    Returns ``(norm_text, norm_to_orig)`` where ``norm_to_orig[i]`` is the offset
-    in ``merged`` of the ``i``-th surviving (non-whitespace) character. Removing all
-    whitespace — rather than collapsing runs to a single space — keeps the two sides
-    aligned even when V inserts a space between originally-adjacent sentences. Because
-    whitespace removal is monotonic, any contiguous region of ``merged`` projects to a
-    contiguous substring of ``norm_text``, so chunk lookups stay exact.
-    """
-    norm_chars: list[str] = []
-    norm_to_orig: list[int] = []
-    for idx, ch in enumerate(merged):
-        if ch.isspace():
-            continue
-        norm_chars.append(ch)
-        norm_to_orig.append(idx)
-    return "".join(norm_chars), norm_to_orig
-
-
 def _normalize_text(text: str) -> str:
-    """Whitespace-stripped form of a chunk body (every whitespace char removed).
+    """Whitespace-stripped form of a string (every whitespace char removed).
 
-    Uses ``str.split()``'s whitespace definition, which matches ``str.isspace()``
-    used by :func:`_normalize_projection`, so both sides agree on what is stripped.
+    Used by :func:`_chunk_source_span` to validate a span whose text differs from the
+    chunk content by whitespace only — V's ``SemanticChunker`` rejoins sentences with
+    a single space, so its chunk content is not byte-verbatim against the source span.
+    Removing all whitespace (rather than collapsing runs to a single space) keeps the
+    two sides aligned even when V inserts a space between originally-adjacent
+    sentences.
     """
     return "".join(text.split())
 
@@ -194,96 +182,24 @@ def _chunk_source_span(
     return start, end
 
 
-def _within_single_block(
-    spans: list[tuple[int, int, str]], o_start: int, o_end: int
-) -> bool:
-    """True if ``[o_start, o_end)`` lies entirely within one block's content span.
-
-    A block's content is contiguous (no internal gaps), so an interval contained in a
-    single ``(start, end)`` touches exactly that block. An interval that straddles a
-    separator gap is contained in no span and returns ``False``.
-    """
-    for start, end, _ in spans:
-        if start <= o_start and o_end <= end:
-            return True
-        if start > o_start:
-            break  # spans are start-ordered; no later span can contain o_start
-    return False
-
-
-def _locate_chunk(
-    norm_merged: str,
-    nq: str,
-    prev_start: int,
-    prev_end: int,
-    norm_to_orig: list[int],
-    spans: list[tuple[int, int, str]],
-) -> int:
-    """Locate ``nq`` consistently with forward, contiguous chunking; -1 if absent.
-
-    F/R/V chunks cover the merged text in order. With token overlap each chunk shares
-    a prefix with the previous one but always adds new content *past* it, so its end
-    advances forward. Starts are not a reliable signal: stripping the whitespace a
-    window falls on can make two consecutive chunks share a start (e.g. a window whose
-    only non-whitespace content begins right after a separator the next window also
-    begins with). The chunk **end** is the dependable monotonic anchor, and we further
-    prefer matches that don't straddle a block boundary:
-
-    - Primary: the leftmost occurrence at/after ``prev_start`` that (a) ends past
-      ``prev_end`` and (b) lies entirely within a single block. Requiring forward
-      end-progress rejects a pure-suffix duplicate inside the previous chunk (no new
-      coverage); requiring single-block containment rejects a *cross-block artifact* —
-      a match that exists only because whitespace stripping glued the tail of one block
-      to the head of the next across a now-removed separator. Leftmost then resolves an
-      overlap chunk to its true position rather than a later duplicate.
-    - Cross-block fallback: if no single-block occurrence advances coverage, the
-      leftmost occurrence that merely ends past ``prev_end``. A chunk whose window
-      genuinely spanned blocks (its raw content held the separator) matches only here,
-      so real cross-block chunks still resolve.
-    - Tail fallback: when nothing extends coverage — a chunk clamped at the document
-      tail, or a window that reduced to a duplicate of the previous one — the leftmost
-      occurrence at/after ``prev_start`` (or -1 when the text is absent entirely).
-    """
-    length = len(nq)
-    first_advancing = -1
-    search = prev_start
-    while True:
-        p = norm_merged.find(nq, search)
-        if p == -1:
-            break
-        search = p + 1
-        if p + length <= prev_end:
-            continue  # does not extend coverage; skip suffix/duplicate matches
-        if first_advancing == -1:
-            first_advancing = p
-        o_start = norm_to_orig[p]
-        o_end = norm_to_orig[p + length - 1] + 1
-        if _within_single_block(spans, o_start, o_end):
-            return p
-    if first_advancing != -1:
-        return first_advancing  # genuine cross-block chunk (no single-block match)
-    return norm_merged.find(nq, prev_start)
-
-
 def backfill_chunk_sidecars(
     chunking_result: list[dict[str, Any]],
     blocks_path: str,
-    *,
-    require_source_span: bool = False,
 ) -> None:
-    """Attach a ``sidecar`` to each chunk lacking one, in place.
+    """Attach a ``sidecar`` to each F/R/V chunk via its ``_source_span``, in place.
 
     No-op when ``blocks_path`` is empty/unreadable or carries no content rows.
     Chunks that already have a valid sidecar (P / multimodal) and empty-content
-    chunks are skipped. ``_source_span`` is preferred when present. Raises
-    :class:`ChunkBlockMatchError` when a sidecar-less, non-empty chunk cannot be
-    located in the reconstructed merged text.
+    chunks are skipped. Every remaining chunk must carry a ``_source_span`` that
+    resolves to its content in the reconstructed merged text and overlaps at least
+    one block; one that does not raises :class:`ChunkBlockMatchError`, marking the
+    document FAILED.
 
     Exception: a chunk whose content carries the Unicode replacement character
     (:data:`_REPLACEMENT_CHAR`) is inherently unlocatable — a multi-byte UTF-8
     character was split at a token-window boundary, corrupting both its span probe
     and its own content. Such a chunk is skipped (no sidecar) instead of failing the
-    document, even under ``require_source_span``.
+    document.
     """
     if not blocks_path:
         return
@@ -301,14 +217,6 @@ def backfill_chunk_sidecars(
     if not spans:
         return
 
-    norm_merged, norm_to_orig = _normalize_projection(merged)
-
-    # Forward cursor over the normalized text. ``prev_start`` is the previous chunk's
-    # matched start; ``prev_end`` the furthest offset covered so far (monotonic, since
-    # each chunk's end advances). ``_locate_chunk`` anchors on end-progress to place
-    # each chunk consistently with contiguous, overlapping chunking — see its docstring.
-    prev_start = 0
-    prev_end = 0
     for chunk in chunking_result:
         if not isinstance(chunk, dict):
             continue
@@ -319,23 +227,11 @@ def backfill_chunk_sidecars(
             continue
 
         source_span = _chunk_source_span(chunk, merged)
-        if source_span is not None:
-            o_start, o_end = source_span
-            covered = _covered_blockids(spans, o_start, o_end)
-            if not covered:
-                raise ChunkBlockMatchError(
-                    chunk_order_index=int(chunk.get("chunk_order_index", -1)),
-                    chunk_preview=body,
-                    blocks_path=blocks_path,
-                )
-            chunk["sidecar"] = {
-                "type": "block",
-                "id": covered[0],
-                "refs": [{"type": "block", "id": bid} for bid in covered],
-            }
-            continue
-
-        if require_source_span:
+        if source_span is None:
+            # No usable span: provenance is impossible. Degrade silently only for the
+            # inherently-unlocatable replacement-char case; otherwise FAIL the document
+            # rather than guess (the old text-matching fallback could not disambiguate
+            # a genuine cross-block match from a whitespace-glue artifact).
             if _is_unlocatable(body):
                 logger.warning(
                     f"[sidecar-backfill] chunk #{chunk.get('chunk_order_index', -1)} "
@@ -349,36 +245,11 @@ def backfill_chunk_sidecars(
                 blocks_path=blocks_path,
             )
 
-        nq = _normalize_text(body)
-        if not nq:
-            continue
-
-        pos = _locate_chunk(norm_merged, nq, prev_start, prev_end, norm_to_orig, spans)
-        if pos == -1:
-            if _is_unlocatable(body):
-                logger.warning(
-                    f"[sidecar-backfill] chunk #{chunk.get('chunk_order_index', -1)} "
-                    "contains replacement characters from a multi-byte token-boundary "
-                    "split; skipping provenance for it"
-                )
-                continue
-            raise ChunkBlockMatchError(
-                chunk_order_index=int(chunk.get("chunk_order_index", -1)),
-                chunk_preview=body,
-                blocks_path=blocks_path,
-            )
-
-        norm_end = pos + len(nq)
-        o_start = norm_to_orig[pos]
-        # Map the last matched normalized char back, then extend one past it.
-        o_end = norm_to_orig[norm_end - 1] + 1
-        prev_start = pos
-        prev_end = max(prev_end, norm_end)
-
+        o_start, o_end = source_span
         covered = _covered_blockids(spans, o_start, o_end)
         if not covered:
-            # The match landed entirely on separator gaps — should not happen for
-            # non-empty normalized content, but guard rather than emit an empty ref.
+            # The span landed entirely on separator gaps — should not happen for
+            # non-empty content, but guard rather than emit an empty ref.
             raise ChunkBlockMatchError(
                 chunk_order_index=int(chunk.get("chunk_order_index", -1)),
                 chunk_preview=body,

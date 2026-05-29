@@ -1897,8 +1897,8 @@ def _child_source_span(
     separated those sentences with a single space/newline. In that case we fall
     back to a whitespace-stripped match (the same projection sidecar backfill uses),
     which stays exact because whitespace removal is monotonic. Without this fallback
-    the child would lose its span and ``require_source_span`` backfill would wrongly
-    FAIL the document.
+    the child would lose its span and sidecar backfill would wrongly FAIL the
+    document.
 
     Returns ``(span | None, next_search_from)`` where ``next_search_from`` is a
     ``parent_content`` offset threaded forward by the caller so repeated pieces
