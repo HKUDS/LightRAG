@@ -113,6 +113,29 @@ def test_real_overlap_on_stripped_separator_does_not_strand_chunks(
 
 
 @pytest.mark.offline
+def test_real_identical_adjacent_blocks_no_cross_block_artifact(
+    tmp_path: Path,
+) -> None:
+    # End-to-end: identical adjacent blocks b1="aa", b2="aa", chunk_size=2, overlap=0
+    # -> ["aa", "", "aa"]. Stripping glues them to "aaaa", where "aa" also matches at
+    # offset 1 across the (removed) separator. The final chunk must reference only b2,
+    # not spuriously span both blocks.
+    blocks_path, merged = _write_blocks(tmp_path, [("b1", "aa"), ("b2", "aa")])
+    tok = _tokenizer()
+
+    chunks = chunking_by_fixed_token(
+        tok, merged, chunk_token_size=2, chunk_overlap_token_size=0
+    )
+    assert [c["content"] for c in chunks] == ["aa", "", "aa"]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert [r["id"] for r in chunks[0]["sidecar"]["refs"]] == ["b1"]
+    assert "sidecar" not in chunks[1]
+    assert [r["id"] for r in chunks[2]["sidecar"]["refs"]] == ["b2"]
+
+
+@pytest.mark.offline
 def test_real_fixed_token_chunks_get_full_coverage(tmp_path: Path) -> None:
     blocks = [(f"b{i}", f"Block number {i} body content here.") for i in range(6)]
     blocks_path, merged = _write_blocks(tmp_path, blocks)

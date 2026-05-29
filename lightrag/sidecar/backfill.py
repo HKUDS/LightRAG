@@ -151,39 +151,74 @@ def _covered_blockids(
     return covered
 
 
-def _locate_chunk(norm_merged: str, nq: str, prev_start: int, prev_end: int) -> int:
+def _within_single_block(
+    spans: list[tuple[int, int, str]], o_start: int, o_end: int
+) -> bool:
+    """True if ``[o_start, o_end)`` lies entirely within one block's content span.
+
+    A block's content is contiguous (no internal gaps), so an interval contained in a
+    single ``(start, end)`` touches exactly that block. An interval that straddles a
+    separator gap is contained in no span and returns ``False``.
+    """
+    for start, end, _ in spans:
+        if start <= o_start and o_end <= end:
+            return True
+        if start > o_start:
+            break  # spans are start-ordered; no later span can contain o_start
+    return False
+
+
+def _locate_chunk(
+    norm_merged: str,
+    nq: str,
+    prev_start: int,
+    prev_end: int,
+    norm_to_orig: list[int],
+    spans: list[tuple[int, int, str]],
+) -> int:
     """Locate ``nq`` consistently with forward, contiguous chunking; -1 if absent.
 
     F/R/V chunks cover the merged text in order. With token overlap each chunk shares
     a prefix with the previous one but always adds new content *past* it, so its end
     advances forward. Starts are not a reliable signal: stripping the whitespace a
     window falls on can make two consecutive chunks share a start (e.g. a window whose
-    only non-whitespace content begins right after a separator that the next window
-    also begins with). The chunk **end** is the dependable monotonic anchor.
+    only non-whitespace content begins right after a separator the next window also
+    begins with). The chunk **end** is the dependable monotonic anchor, and we further
+    prefer matches that don't straddle a block boundary:
 
-    - Primary: the leftmost occurrence at/after ``prev_start`` whose end passes
-      ``prev_end`` (the previous chunk's end). Requiring forward end-progress rejects a
-      pure-suffix duplicate sitting inside the previous chunk — it adds no new coverage
-      — while taking the *leftmost* qualifying occurrence resolves an overlap chunk to
-      its true position instead of a spurious *later* duplicate of the same text.
-    - Fallback: when nothing extends coverage — a chunk clamped at the document tail,
-      or a window that reduced to a duplicate of the previous one — the leftmost
+    - Primary: the leftmost occurrence at/after ``prev_start`` that (a) ends past
+      ``prev_end`` and (b) lies entirely within a single block. Requiring forward
+      end-progress rejects a pure-suffix duplicate inside the previous chunk (no new
+      coverage); requiring single-block containment rejects a *cross-block artifact* —
+      a match that exists only because whitespace stripping glued the tail of one block
+      to the head of the next across a now-removed separator. Leftmost then resolves an
+      overlap chunk to its true position rather than a later duplicate.
+    - Cross-block fallback: if no single-block occurrence advances coverage, the
+      leftmost occurrence that merely ends past ``prev_end``. A chunk whose window
+      genuinely spanned blocks (its raw content held the separator) matches only here,
+      so real cross-block chunks still resolve.
+    - Tail fallback: when nothing extends coverage — a chunk clamped at the document
+      tail, or a window that reduced to a duplicate of the previous one — the leftmost
       occurrence at/after ``prev_start`` (or -1 when the text is absent entirely).
-
-    A ``prev_end``-only anchor skips overlap matches (they begin before ``prev_end``)
-    and can jump to a later duplicate; a ``prev_start``-only anchor accepts an earlier
-    duplicate inside the previous chunk or, after a stripped separator, cannot advance.
-    Anchoring on end-progress avoids all three.
     """
     length = len(nq)
+    first_advancing = -1
     search = prev_start
     while True:
         p = norm_merged.find(nq, search)
         if p == -1:
             break
-        if p + length > prev_end:
-            return p
         search = p + 1
+        if p + length <= prev_end:
+            continue  # does not extend coverage; skip suffix/duplicate matches
+        if first_advancing == -1:
+            first_advancing = p
+        o_start = norm_to_orig[p]
+        o_end = norm_to_orig[p + length - 1] + 1
+        if _within_single_block(spans, o_start, o_end):
+            return p
+    if first_advancing != -1:
+        return first_advancing  # genuine cross-block chunk (no single-block match)
     return norm_merged.find(nq, prev_start)
 
 
@@ -235,7 +270,7 @@ def backfill_chunk_sidecars(
         if not nq:
             continue
 
-        pos = _locate_chunk(norm_merged, nq, prev_start, prev_end)
+        pos = _locate_chunk(norm_merged, nq, prev_start, prev_end, norm_to_orig, spans)
         if pos == -1:
             raise ChunkBlockMatchError(
                 chunk_order_index=int(chunk.get("chunk_order_index", -1)),

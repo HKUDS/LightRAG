@@ -228,6 +228,36 @@ def test_overlap_window_on_stripped_separator_advances_into_next_block(
 
 
 @pytest.mark.offline
+def test_cross_block_artifact_from_stripping_is_rejected(tmp_path: Path) -> None:
+    # Regression: identical adjacent blocks b1="aa", b2="aa" with no overlap yield
+    # chunks ["aa", "aa"]. In the stripped projection "aaaa", "aa" also occurs at
+    # offset 1, spanning b1's tail + b2's head across the removed separator — an
+    # artifact of stripping, not a real chunk. The second "aa" must map to b2 alone,
+    # so matching must prefer the single-block occurrence over the cross-block one.
+    blocks_path = _write_blocks(tmp_path, [("b1", "aa"), ("b2", "aa")])
+    chunks = [_chunk("aa", 0), _chunk("aa", 1)]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert _refs(chunks[0]) == ["b1"]
+    assert _refs(chunks[1]) == ["b2"]
+
+
+@pytest.mark.offline
+def test_genuine_cross_block_chunk_still_lists_both(tmp_path: Path) -> None:
+    # A chunk whose content genuinely spans the boundary (its window held the
+    # separator) has no single-block occurrence, so the cross-block fallback keeps it
+    # and both blocks are listed — the single-block preference must not break this.
+    blocks_path = _write_blocks(tmp_path, [("b1", "alpha"), ("b2", "beta")])
+    merged = _BLOCK_SEPARATOR.join(["alpha", "beta"])
+    chunks = [_chunk(merged, 0)]
+
+    backfill_chunk_sidecars(chunks, blocks_path)
+
+    assert _refs(chunks[0]) == ["b1", "b2"]
+
+
+@pytest.mark.offline
 def test_unmatchable_chunk_raises(tmp_path: Path) -> None:
     blocks_path = _write_blocks(tmp_path, [("b1", "Present content.")])
     chunks = [_chunk("Absent content not in any block.", 3)]
