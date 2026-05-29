@@ -1,7 +1,7 @@
 import os
 import re
 from dataclasses import dataclass
-from typing import final
+# from typing import final
 import configparser
 
 
@@ -61,7 +61,7 @@ READ_RETRY = retry(
 )
 
 
-@final
+# @final (removed per request in Issue #3130)
 @dataclass
 class Neo4JStorage(BaseGraphStorage):
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
