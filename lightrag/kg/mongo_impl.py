@@ -41,7 +41,8 @@ config.read("config.ini", "utf-8")
 
 GRAPH_BFS_MODE = os.getenv("MONGO_GRAPH_BFS_MODE", "bidirectional")
 
-# Flush-time batching limits for MongoVectorDBStorage.
+# Flush-time batching limits shared by every MongoDB upsert path
+# (MongoVectorDBStorage, MongoKVStorage, MongoGraphStorage).
 # The payload-byte budget is the primary limiter; the record-count caps are a
 # secondary guard that only binds when individual records are small.
 # Upsert and delete have separate count caps on purpose: upsert records each
@@ -53,6 +54,148 @@ GRAPH_BFS_MODE = os.getenv("MONGO_GRAPH_BFS_MODE", "bidirectional")
 DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16MB
 DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+
+def _estimate_doc_bytes(doc: Any) -> int:
+    """Estimate a document's serialized byte size via compact JSON.
+
+    JSON overestimates the real BSON size MongoDB writes (a JSON float string is
+    far longer than the 8 bytes a BSON double encodes), so callers stay
+    conservatively below server limits and never underestimate.
+    """
+    return len(
+        json.dumps(
+            doc, ensure_ascii=False, separators=(",", ":"), default=str
+        ).encode("utf-8")
+    )
+
+
+def _chunk_by_budget(
+    items: list[Any],
+    size_of,
+    max_payload_bytes: int,
+    max_records_per_batch: int,
+) -> list[tuple[list[Any], int]]:
+    """Split items into batches by estimated payload size (primary) and count.
+
+    The byte budget is the primary limiter: items accumulate until adding the
+    next one would exceed ``max_payload_bytes``, then a new batch starts.
+    ``size_of(item)`` returns an item's estimated serialized byte size. A single
+    item larger than the byte budget is emitted as its own batch rather than
+    raising; the server stays the final arbiter. A non-positive limit disables
+    that dimension. Returns ``(batch, summed_estimated_bytes)`` tuples (the
+    estimate is used for logging).
+    """
+    if not items:
+        return []
+
+    payload_limit = max_payload_bytes if max_payload_bytes > 0 else float("inf")
+    records_limit = (
+        max_records_per_batch if max_records_per_batch > 0 else float("inf")
+    )
+
+    batches: list[tuple[list[Any], int]] = []
+    current: list[Any] = []
+    # JSON array overhead ("[]")
+    current_bytes = 2
+
+    for item in items:
+        item_bytes = size_of(item)
+        # If current batch not empty, a comma is needed before next element.
+        separator_overhead = 1 if current else 0
+        next_bytes = current_bytes + separator_overhead + item_bytes
+
+        if current and (
+            len(current) >= records_limit or next_bytes > payload_limit
+        ):
+            batches.append((current, current_bytes))
+            current = []
+            current_bytes = 2
+            next_bytes = current_bytes + item_bytes
+
+        current.append(item)
+        current_bytes = next_bytes
+
+    if current:
+        batches.append((current, current_bytes))
+
+    return batches
+
+
+def _resolve_upsert_batch_limits() -> tuple[int, int]:
+    """Resolve flush-time upsert batching limits from env, with module defaults.
+
+    Shared by every MongoDB upsert path so the byte/record caps that bound a
+    single ``bulk_write`` are consistent across all of them. A non-positive
+    value disables that splitting dimension.
+    """
+    max_payload_bytes = int(
+        os.getenv(
+            "MONGO_UPSERT_MAX_PAYLOAD_BYTES",
+            str(DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES),
+        )
+    )
+    max_records_per_batch = int(
+        os.getenv(
+            "MONGO_UPSERT_MAX_RECORDS_PER_BATCH",
+            str(DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH),
+        )
+    )
+    if max_payload_bytes <= 0:
+        logger.warning(
+            f"MONGO_UPSERT_MAX_PAYLOAD_BYTES={max_payload_bytes} is non-positive, disable payload-size splitting"
+        )
+    if max_records_per_batch <= 0:
+        logger.warning(
+            f"MONGO_UPSERT_MAX_RECORDS_PER_BATCH={max_records_per_batch} is non-positive, disable upsert record-count splitting"
+        )
+    return max_payload_bytes, max_records_per_batch
+
+
+async def _run_batched_bulk_write(
+    collection,
+    ops: list[tuple[Any, int, str]],
+    *,
+    max_payload_bytes: int,
+    max_records_per_batch: int,
+    ordered: bool,
+    log_prefix: str,
+    what: str,
+) -> None:
+    """Execute UpdateOne ops as payload-size/record-count bounded bulk_write batches.
+
+    ``ops`` is a list of ``(operation, estimated_bytes, id_for_log)`` triples.
+    Splitting keeps each bulk command below MongoDB's 48MB message ceiling and
+    bounds the in-memory op list. Fail-fast: a batch failure raises and no
+    further batches run, so callers must treat the whole write as retryable
+    (UpdateOne(..., upsert=True) is idempotent).
+    """
+    if not ops:
+        return
+
+    batches = _chunk_by_budget(
+        ops, lambda triple: triple[1], max_payload_bytes, max_records_per_batch
+    )
+    if len(batches) > 1:
+        logger.info(
+            f"{log_prefix} {what} split into {len(batches)} batches "
+            f"for {len(ops)} records"
+        )
+    for batch_index, (batch, estimated_bytes) in enumerate(batches, 1):
+        if (
+            len(batch) == 1
+            and max_payload_bytes > 0
+            and estimated_bytes > max_payload_bytes
+        ):
+            logger.warning(
+                f"{log_prefix} {what}: single record id={batch[0][2]} "
+                f"estimated {estimated_bytes} bytes exceeds {max_payload_bytes}"
+            )
+        logger.debug(
+            f"{log_prefix} {what} batch {batch_index}/{len(batches)}: "
+            f"records={len(batch)}, estimated_payload_bytes={estimated_bytes}"
+        )
+        await collection.bulk_write([triple[0] for triple in batch], ordered=ordered)
 
 
 class ClientManager:
@@ -145,6 +288,10 @@ class MongoKVStorage(BaseKVStorage):
             )
 
         self._collection_name = self.final_namespace
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        ) = _resolve_upsert_batch_limits()
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -198,10 +345,10 @@ class MongoKVStorage(BaseKVStorage):
         if not data:
             return
 
-        # Unified handling for all namespaces with flattened keys
-        # Use bulk_write for better performance
-
-        operations = []
+        # Unified handling for all namespaces with flattened keys. KV docs
+        # (full_docs, text_chunks, llm_response_cache) can be large, so the
+        # upsert is split into payload-bounded bulk_write batches.
+        operations: list[tuple[Any, int, str]] = []
         current_time = int(time.time())  # Get current Unix timestamp
 
         for i, (k, v) in enumerate(data.items(), start=1):
@@ -219,21 +366,32 @@ class MongoKVStorage(BaseKVStorage):
             v_for_set.pop("create_time", None)
 
             operations.append(
-                UpdateOne(
-                    {"_id": k},
-                    {
-                        "$set": v_for_set,  # Update all fields except create_time
-                        "$setOnInsert": {
-                            "create_time": current_time
-                        },  # Set create_time only on insert
-                    },
-                    upsert=True,
+                (
+                    UpdateOne(
+                        {"_id": k},
+                        {
+                            "$set": v_for_set,  # Update all fields except create_time
+                            "$setOnInsert": {
+                                "create_time": current_time
+                            },  # Set create_time only on insert
+                        },
+                        upsert=True,
+                    ),
+                    _estimate_doc_bytes(v_for_set),
+                    k,
                 )
             )
             await _cooperative_yield(i)
 
-        if operations:
-            await self._data.bulk_write(operations)
+        await _run_batched_bulk_write(
+            self._data,
+            operations,
+            max_payload_bytes=self._max_upsert_payload_bytes,
+            max_records_per_batch=self._max_upsert_records_per_batch,
+            ordered=False,
+            log_prefix=f"[{self.workspace}] {self.namespace} upsert:",
+            what="upsert",
+        )
 
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
@@ -883,6 +1041,10 @@ class MongoGraphStorage(BaseGraphStorage):
 
         self._collection_name = self.final_namespace
         self._edge_collection_name = f"{self._collection_name}_edges"
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        ) = _resolve_upsert_batch_limits()
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -1200,15 +1362,29 @@ class MongoGraphStorage(BaseGraphStorage):
         """
         if not nodes:
             return
-        ops = []
+        ops: list[tuple[Any, int, str]] = []
         for node_id, node_data in nodes:
             update_doc: dict = {"$set": {**node_data}}
             if node_data.get("source_id", ""):
                 update_doc["$set"]["source_ids"] = node_data["source_id"].split(
                     GRAPH_FIELD_SEP
                 )
-            ops.append(UpdateOne({"_id": node_id}, update_doc, upsert=True))
-        await self.collection.bulk_write(ops, ordered=True)
+            ops.append(
+                (
+                    UpdateOne({"_id": node_id}, update_doc, upsert=True),
+                    _estimate_doc_bytes(update_doc),
+                    node_id,
+                )
+            )
+        await _run_batched_bulk_write(
+            self.collection,
+            ops,
+            max_payload_bytes=self._max_upsert_payload_bytes,
+            max_records_per_batch=self._max_upsert_records_per_batch,
+            ordered=True,
+            log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
+            what="node upsert",
+        )
 
     async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
         """Check existence of multiple nodes using a single $in query.
@@ -1241,13 +1417,25 @@ class MongoGraphStorage(BaseGraphStorage):
 
         # Ensure all source nodes exist (mirrors upsert_edge's upsert_node call)
         source_node_ids = list(dict.fromkeys(src for src, _tgt, _data in edges))
-        node_ops = [
-            UpdateOne({"_id": src}, {"$setOnInsert": {"_id": src}}, upsert=True)
+        node_ops: list[tuple[Any, int, str]] = [
+            (
+                UpdateOne({"_id": src}, {"$setOnInsert": {"_id": src}}, upsert=True),
+                _estimate_doc_bytes({"_id": src}),
+                src,
+            )
             for src in source_node_ids
         ]
-        await self.collection.bulk_write(node_ops, ordered=False)
+        await _run_batched_bulk_write(
+            self.collection,
+            node_ops,
+            max_payload_bytes=self._max_upsert_payload_bytes,
+            max_records_per_batch=self._max_upsert_records_per_batch,
+            ordered=False,
+            log_prefix=f"[{self.workspace}] {self.namespace} edges:",
+            what="source-node placeholder upsert",
+        )
 
-        edge_ops = []
+        edge_ops: list[tuple[Any, int, str]] = []
         for source_node_id, target_node_id, edge_data in edges:
             update_doc: dict = {"$set": {**edge_data}}
             if edge_data.get("source_id", ""):
@@ -1257,24 +1445,36 @@ class MongoGraphStorage(BaseGraphStorage):
             update_doc["$set"]["source_node_id"] = source_node_id
             update_doc["$set"]["target_node_id"] = target_node_id
             edge_ops.append(
-                UpdateOne(
-                    {
-                        "$or": [
-                            {
-                                "source_node_id": source_node_id,
-                                "target_node_id": target_node_id,
-                            },
-                            {
-                                "source_node_id": target_node_id,
-                                "target_node_id": source_node_id,
-                            },
-                        ]
-                    },
-                    update_doc,
-                    upsert=True,
+                (
+                    UpdateOne(
+                        {
+                            "$or": [
+                                {
+                                    "source_node_id": source_node_id,
+                                    "target_node_id": target_node_id,
+                                },
+                                {
+                                    "source_node_id": target_node_id,
+                                    "target_node_id": source_node_id,
+                                },
+                            ]
+                        },
+                        update_doc,
+                        upsert=True,
+                    ),
+                    _estimate_doc_bytes(update_doc),
+                    f"{source_node_id}->{target_node_id}",
                 )
             )
-        await self.edge_collection.bulk_write(edge_ops, ordered=True)
+        await _run_batched_bulk_write(
+            self.edge_collection,
+            edge_ops,
+            max_payload_bytes=self._max_upsert_payload_bytes,
+            max_records_per_batch=self._max_upsert_records_per_batch,
+            ordered=True,
+            log_prefix=f"[{self.workspace}] {self.namespace} edges:",
+            what="edge upsert",
+        )
 
     #
     # -------------------------------------------------------------------------
@@ -2329,33 +2529,19 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
         # Flush-time batching limits (see module-level DEFAULT_MONGO_* constants).
-        # A non-positive value disables that splitting dimension.
-        self._max_upsert_payload_bytes = int(
-            os.getenv(
-                "MONGO_UPSERT_MAX_PAYLOAD_BYTES",
-                str(DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES),
-            )
-        )
-        self._max_upsert_records_per_batch = int(
-            os.getenv(
-                "MONGO_UPSERT_MAX_RECORDS_PER_BATCH",
-                str(DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH),
-            )
-        )
+        # A non-positive value disables that splitting dimension. The two upsert
+        # limits are shared with KV/graph via _resolve_upsert_batch_limits(); the
+        # delete count cap is vector-specific (only the VDB batches deletes here).
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        ) = _resolve_upsert_batch_limits()
         self._max_delete_records_per_batch = int(
             os.getenv(
                 "MONGO_DELETE_MAX_RECORDS_PER_BATCH",
                 str(DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH),
             )
         )
-        if self._max_upsert_payload_bytes <= 0:
-            logger.warning(
-                f"MONGO_UPSERT_MAX_PAYLOAD_BYTES={self._max_upsert_payload_bytes} is non-positive, disable payload-size splitting"
-            )
-        if self._max_upsert_records_per_batch <= 0:
-            logger.warning(
-                f"MONGO_UPSERT_MAX_RECORDS_PER_BATCH={self._max_upsert_records_per_batch} is non-positive, disable upsert record-count splitting"
-            )
         if self._max_delete_records_per_batch <= 0:
             logger.warning(
                 f"MONGO_DELETE_MAX_RECORDS_PER_BATCH={self._max_delete_records_per_batch} is non-positive, disable delete record-count splitting"
@@ -2573,70 +2759,6 @@ class MongoVectorDBStorage(BaseVectorStorage):
             for doc in results
         ]
 
-    @staticmethod
-    def _build_upsert_batches(
-        records: list[dict[str, Any]],
-        max_payload_bytes: int,
-        max_records_per_batch: int,
-    ) -> list[tuple[list[dict[str, Any]], int]]:
-        """Split upsert records into batches by estimated payload size and count.
-
-        The byte budget is the primary limiter: records accumulate until adding
-        the next one would exceed ``max_payload_bytes``, then a new batch starts.
-        Size is estimated by JSON-serializing each record; this overestimates the
-        actual BSON size MongoDB writes (a JSON float string is far longer than
-        the 8 bytes a BSON double encodes), so the split stays conservatively
-        below the server limit and never underestimates.
-
-        A single record larger than the byte budget is emitted as its own batch
-        rather than raising: JSON overestimation means such a record's real BSON
-        size is often still under MongoDB's 16MB document ceiling, so we let the
-        server be the final arbiter instead of failing client-side. Returns a
-        list of ``(batch, estimated_bytes)`` tuples (estimate used for logging).
-        """
-        if not records:
-            return []
-
-        payload_limit = max_payload_bytes if max_payload_bytes > 0 else float("inf")
-        records_limit = (
-            max_records_per_batch if max_records_per_batch > 0 else float("inf")
-        )
-
-        batches: list[tuple[list[dict[str, Any]], int]] = []
-        current_batch: list[dict[str, Any]] = []
-        # JSON array overhead ("[]")
-        current_estimated_bytes = 2
-
-        for record in records:
-            record_size = len(
-                json.dumps(
-                    record,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    default=str,
-                ).encode("utf-8")
-            )
-
-            # If current batch not empty, a comma is needed before next element.
-            separator_overhead = 1 if current_batch else 0
-            next_batch_size = current_estimated_bytes + separator_overhead + record_size
-
-            if current_batch and (
-                len(current_batch) >= records_limit or next_batch_size > payload_limit
-            ):
-                batches.append((current_batch, current_estimated_bytes))
-                current_batch = []
-                current_estimated_bytes = 2
-                next_batch_size = current_estimated_bytes + record_size
-
-            current_batch.append(record)
-            current_estimated_bytes = next_batch_size
-
-        if current_batch:
-            batches.append((current_batch, current_estimated_bytes))
-
-        return batches
-
     async def index_done_callback(self) -> None:
         """Flush buffered vector ops; Mongo persists automatically once written."""
         await self._flush_pending_vector_ops()
@@ -2723,15 +2845,19 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     # bulk-command message limit and bound peak memory. Fail-fast:
                     # any batch failure raises immediately and the full buffer is
                     # retained for the next flush (upsert/delete are idempotent).
-                    upsert_batches = self._build_upsert_batches(
+                    # Logging is kept aligned with MilvusVectorDBStorage; the
+                    # batching maths is shared via _chunk_by_budget.
+                    upsert_batches = _chunk_by_budget(
                         list_data,
-                        max_payload_bytes=self._max_upsert_payload_bytes,
-                        max_records_per_batch=self._max_upsert_records_per_batch,
+                        _estimate_doc_bytes,
+                        self._max_upsert_payload_bytes,
+                        self._max_upsert_records_per_batch,
                     )
                     if len(upsert_batches) > 1:
                         logger.info(
                             f"[{self.workspace}] {self.namespace} flush: upsert split into "
                             f"{len(upsert_batches)} batches for {len(list_data)} records "
+                            f"(max_payload={self._max_upsert_payload_bytes} batch={self._max_upsert_records_per_batch})"
                         )
                     for batch_index, (records_batch, estimated_bytes) in enumerate(
                         upsert_batches, 1
