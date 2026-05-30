@@ -62,6 +62,13 @@ def _estimate_doc_bytes(doc: Any) -> int:
     JSON overestimates the real BSON size MongoDB writes (a JSON float string is
     far longer than the 8 bytes a BSON double encodes), so callers stay
     conservatively below server limits and never underestimate.
+
+    This is a splitting *heuristic*, not the exact wire size: upsert callers pass
+    only the dominant payload field (the ``$set`` body / ``update_doc``), not the
+    full ``UpdateOne`` op (filter, ``$setOnInsert``, ``$or`` wrapper). Those extras
+    are tiny next to an embedding/document body, and the 16MB estimate budget sits
+    far under MongoDB's 48MB bulk-command limit, so the under-count is immaterial;
+    the server stays the final arbiter.
     """
     return len(
         json.dumps(doc, ensure_ascii=False, separators=(",", ":"), default=str).encode(
@@ -379,6 +386,10 @@ class MongoKVStorage(BaseKVStorage):
             )
             await _cooperative_yield(i)
 
+        # ordered=False (intentional): the old single bulk_write used pymongo's
+        # default ordered=True, but every op targets a distinct flattened _id, so
+        # the writes are order-independent. ordered=False lets the server apply
+        # them in parallel and is the right choice for idempotent upserts.
         await _run_batched_bulk_write(
             self._data,
             operations,
@@ -2829,10 +2840,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # pending doc has a non-None vector (count-mismatch was checked),
             # so we can iterate without re-guarding. Each full_doc carries its
             # own "_id" (from source), matching the UpdateOne filter key.
-            committed_ids: list[str] = list(pending_docs.keys())
+            ids_to_commit: list[str] = list(pending_docs.keys())
             list_data: list[dict[str, Any]] = [
                 {**pending_docs[doc_id].source, "vector": pending_docs[doc_id].vector}
-                for doc_id in committed_ids
+                for doc_id in ids_to_commit
             ]
 
             try:
@@ -2905,7 +2916,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
             # On success, clear the buffers in-place so external references
             # (e.g. drop()) see the cleared state.
-            for doc_id in committed_ids:
+            for doc_id in ids_to_commit:
                 pending_docs.pop(doc_id, None)
             pending_deletes.clear()
 
