@@ -98,6 +98,7 @@ def _make_storage(
     storage._max_batch_size = 10
     storage._max_upsert_payload_bytes = 16 * 1024 * 1024
     storage._max_upsert_points_per_batch = 128
+    storage._max_delete_points_per_batch = 1000
     storage._pending_vector_docs = {}
     storage._pending_vector_deletes = set()
 
