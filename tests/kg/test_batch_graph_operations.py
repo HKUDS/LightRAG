@@ -825,7 +825,9 @@ class TestMongoBatchOrdering:
         storage.workspace = "test_ws"
         storage.namespace = "test_graph"
         storage._max_upsert_payload_bytes = DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES
-        storage._max_upsert_records_per_batch = DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH
+        storage._max_upsert_records_per_batch = (
+            DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH
+        )
 
         await MongoGraphStorage.upsert_nodes_batch(
             storage,
@@ -853,7 +855,9 @@ class TestMongoBatchOrdering:
         storage.workspace = "test_ws"
         storage.namespace = "test_graph"
         storage._max_upsert_payload_bytes = DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES
-        storage._max_upsert_records_per_batch = DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH
+        storage._max_upsert_records_per_batch = (
+            DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH
+        )
 
         await MongoGraphStorage.upsert_edges_batch(
             storage,
@@ -881,7 +885,9 @@ class TestMongoBatchOrdering:
         storage.workspace = "test_ws"
         storage.namespace = "test_graph"
         storage._max_upsert_payload_bytes = DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES
-        storage._max_upsert_records_per_batch = DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH
+        storage._max_upsert_records_per_batch = (
+            DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH
+        )
 
         await MongoGraphStorage.upsert_edges_batch(
             storage,

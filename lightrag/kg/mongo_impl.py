@@ -64,9 +64,9 @@ def _estimate_doc_bytes(doc: Any) -> int:
     conservatively below server limits and never underestimate.
     """
     return len(
-        json.dumps(
-            doc, ensure_ascii=False, separators=(",", ":"), default=str
-        ).encode("utf-8")
+        json.dumps(doc, ensure_ascii=False, separators=(",", ":"), default=str).encode(
+            "utf-8"
+        )
     )
 
 
@@ -90,9 +90,7 @@ def _chunk_by_budget(
         return []
 
     payload_limit = max_payload_bytes if max_payload_bytes > 0 else float("inf")
-    records_limit = (
-        max_records_per_batch if max_records_per_batch > 0 else float("inf")
-    )
+    records_limit = max_records_per_batch if max_records_per_batch > 0 else float("inf")
 
     batches: list[tuple[list[Any], int]] = []
     current: list[Any] = []
@@ -105,9 +103,7 @@ def _chunk_by_budget(
         separator_overhead = 1 if current else 0
         next_bytes = current_bytes + separator_overhead + item_bytes
 
-        if current and (
-            len(current) >= records_limit or next_bytes > payload_limit
-        ):
+        if current and (len(current) >= records_limit or next_bytes > payload_limit):
             batches.append((current, current_bytes))
             current = []
             current_bytes = 2
