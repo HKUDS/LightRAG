@@ -52,17 +52,46 @@ def test_build_upsert_batches_exact_payload_boundary_no_split():
     assert batches[0][1] == exact_limit
 
 
-def test_build_upsert_batches_raises_for_single_oversized_point():
+def test_build_upsert_batches_single_oversized_point_gets_own_batch():
+    """An oversized point is emitted as its own batch rather than raising.
+
+    Failing here would poison the whole flush; instead the server is left as
+    the final arbiter on whether the (conservatively estimated) point fits.
+    """
     point = _make_point("oversized", "x" * 64)
     point_size = QdrantVectorDBStorage._estimate_point_payload_bytes(point)
-    too_small_limit = point_size + 1
+    too_small_limit = point_size - 1
 
-    with pytest.raises(ValueError, match="Single Qdrant point exceeds payload limit"):
-        QdrantVectorDBStorage._build_upsert_batches(
-            [point],
-            max_payload_bytes=too_small_limit,
-            max_points_per_batch=128,
-        )
+    batches = QdrantVectorDBStorage._build_upsert_batches(
+        [point],
+        max_payload_bytes=too_small_limit,
+        max_points_per_batch=128,
+    )
+
+    assert len(batches) == 1
+    assert len(batches[0][0]) == 1
+    assert batches[0][0][0].id == "oversized"
+
+
+def test_build_upsert_batches_isolates_oversized_point_between_normal_ones():
+    """A mid-stream oversized point lands alone; neighbors are not polluted."""
+    small_a = _make_point("a", "x" * 4)
+    huge = _make_point("HUGE", "x" * 4096)
+    small_b = _make_point("b", "y" * 4)
+
+    # Budget fits a small point but not the huge one.
+    budget = QdrantVectorDBStorage._estimate_point_payload_bytes(small_a) + 16
+
+    batches = QdrantVectorDBStorage._build_upsert_batches(
+        [small_a, huge, small_b],
+        max_payload_bytes=budget,
+        max_points_per_batch=128,
+    )
+
+    huge_batches = [b for b, _ in batches if any(p.id == "HUGE" for p in b)]
+    assert len(huge_batches) == 1 and len(huge_batches[0]) == 1
+    # No point is dropped.
+    assert sum(len(b) for b, _ in batches) == 3
 
 
 @pytest.mark.asyncio
@@ -110,3 +139,34 @@ async def test_flush_fail_fast_stops_on_first_failed_batch():
     assert len(second_call.kwargs["points"]) == 2
     # Buffer is preserved so the next flush can retry.
     assert len(storage._pending_vector_docs) == 5
+
+
+@pytest.mark.asyncio
+async def test_flush_chunks_deletes_by_point_count():
+    """Deletes are split into chunks of at most _max_delete_points_per_batch."""
+    storage = QdrantVectorDBStorage.__new__(QdrantVectorDBStorage)
+    storage.workspace = "test_ws"
+    storage.namespace = "chunks"
+    storage.effective_workspace = "test_ws"
+    storage.meta_fields = {"content"}
+    storage._max_batch_size = 16
+    storage._max_upsert_payload_bytes = 1024 * 1024
+    storage._max_upsert_points_per_batch = 128
+    storage._max_delete_points_per_batch = 2
+    storage.final_namespace = "test_collection"
+    storage._client = MagicMock()
+    storage._pending_vector_docs = {}
+    storage._pending_vector_deletes = {f"chunk-{i}" for i in range(5)}
+    storage._flush_lock = asyncio.Lock()
+
+    await storage._flush_pending_vector_ops()
+
+    # 5 delete ids with max 2 per batch => 3 delete calls.
+    assert storage._client.delete.call_count == 3
+    chunk_sizes = sorted(
+        len(call.kwargs["points_selector"].points)
+        for call in storage._client.delete.call_args_list
+    )
+    assert chunk_sizes == [1, 2, 2]
+    # Buffer cleared on success.
+    assert len(storage._pending_vector_deletes) == 0
