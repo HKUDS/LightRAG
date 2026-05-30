@@ -81,6 +81,7 @@ def make_doc_status_storage() -> PGDocStatusStorage:
     storage.workspace = "test_ws"
     storage.global_config = GLOBAL_CONFIG
     storage.db = db
+    storage.__post_init__()  # resolves batch-limit attrs (payload/records caps)
     storage._captured = captured
     storage._retry_kwargs = retry_kwargs
     return storage
@@ -490,7 +491,8 @@ async def test_upsert_relation_chunks_tuple_order():
 @pytest.mark.asyncio
 async def test_sub_batching_splits_correctly():
     storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
-    storage._max_batch_size = 3  # Override to small value for testing
+    # upsert splits by _max_upsert_records_per_batch (byte cap left at default).
+    storage._max_upsert_records_per_batch = 3
 
     data = {f"doc-{i}": {"content": f"text {i}", "file_path": ""} for i in range(7)}
     await storage.upsert(data)
@@ -505,7 +507,7 @@ async def test_sub_batching_splits_correctly():
 @pytest.mark.asyncio
 async def test_sub_batching_exact_multiple():
     storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
-    storage._max_batch_size = 3
+    storage._max_upsert_records_per_batch = 3
 
     data = {f"doc-{i}": {"content": f"text {i}", "file_path": ""} for i in range(6)}
     await storage.upsert(data)
@@ -717,3 +719,81 @@ async def test_vector_flush_passes_timing_label():
     assert storage._retry_kwargs[0]["timing_label"] == (
         f"test_ws PGVectorStorage.flush[{NameSpace.VECTOR_STORE_CHUNKS}]"
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch limits: KV byte-budget split + delete chunking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kv_upsert_splits_by_payload_bytes():
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    # Disable the record cap; force a byte cap that no two rows can share.
+    storage._max_upsert_records_per_batch = 0
+    storage._max_upsert_payload_bytes = 200
+
+    data = {f"doc-{i}": {"content": "X" * 150, "file_path": ""} for i in range(3)}
+    await storage.upsert(data)
+
+    # Each ~150-byte content row exceeds half the budget -> 3 separate batches.
+    assert len(storage._captured) == 3
+
+
+@pytest.mark.asyncio
+async def test_kv_delete_splits_by_id_cap():
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    storage._max_delete_records_per_batch = 2
+    storage.db.execute = AsyncMock()
+
+    await storage.delete([f"doc-{i}" for i in range(5)])
+
+    # 5 ids / cap 2 => 3 bounded ANY($2) DELETE statements.
+    assert storage.db.execute.await_count == 3
+    slices = [call.args[1]["ids"] for call in storage.db.execute.await_args_list]
+    assert [len(s) for s in slices] == [2, 2, 1]
+
+
+# ---------------------------------------------------------------------------
+# Batch limits: DocStatus record-cap split + delete chunking
+# ---------------------------------------------------------------------------
+
+
+def _doc_status_payload(i: int) -> dict:
+    return {
+        "content_summary": f"summary {i}",
+        "content_length": 10,
+        "chunks_count": 1,
+        "status": "processed",
+        "file_path": f"/{i}.txt",
+        "chunks_list": ["chunk-1"],
+        "metadata": {"source": "test"},
+        "created_at": "2024-01-01T00:00:00+00:00",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+
+
+@pytest.mark.asyncio
+async def test_doc_status_upsert_splits_by_record_cap():
+    storage = make_doc_status_storage()
+    storage._max_upsert_records_per_batch = 2
+
+    data = {f"doc-{i}": _doc_status_payload(i) for i in range(5)}
+    await storage.upsert(data)
+
+    # 5 records / cap 2 => 3 executemany calls.
+    assert len(storage._captured) == 3
+    assert [len(rows) for _, rows in storage._captured] == [2, 2, 1]
+
+
+@pytest.mark.asyncio
+async def test_doc_status_delete_splits_by_id_cap():
+    storage = make_doc_status_storage()
+    storage._max_delete_records_per_batch = 2
+    storage.db.execute = AsyncMock()
+
+    await storage.delete([f"doc-{i}" for i in range(5)])
+
+    assert storage.db.execute.await_count == 3
+    slices = [call.args[1]["ids"] for call in storage.db.execute.await_args_list]
+    assert [len(s) for s in slices] == [2, 2, 1]
