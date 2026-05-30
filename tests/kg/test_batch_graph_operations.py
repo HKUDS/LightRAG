@@ -814,10 +814,20 @@ class TestMongoBatchOrdering:
     @pytest.mark.asyncio
     async def test_upsert_nodes_batch_uses_ordered_bulk_write(self):
         pytest.importorskip("pymongo")
-        from lightrag.kg.mongo_impl import MongoGraphStorage
+        from lightrag.kg.mongo_impl import (
+            MongoGraphStorage,
+            DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES,
+            DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH,
+        )
 
         storage = MongoGraphStorage.__new__(MongoGraphStorage)
         storage.collection = AsyncMock()
+        storage.workspace = "test_ws"
+        storage.namespace = "test_graph"
+        storage._max_upsert_payload_bytes = DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES
+        storage._max_upsert_records_per_batch = (
+            DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH
+        )
 
         await MongoGraphStorage.upsert_nodes_batch(
             storage,
@@ -833,11 +843,21 @@ class TestMongoBatchOrdering:
     @pytest.mark.asyncio
     async def test_upsert_edges_batch_uses_ordered_bulk_write(self):
         pytest.importorskip("pymongo")
-        from lightrag.kg.mongo_impl import MongoGraphStorage
+        from lightrag.kg.mongo_impl import (
+            MongoGraphStorage,
+            DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES,
+            DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH,
+        )
 
         storage = MongoGraphStorage.__new__(MongoGraphStorage)
         storage.collection = AsyncMock()
         storage.edge_collection = AsyncMock()
+        storage.workspace = "test_ws"
+        storage.namespace = "test_graph"
+        storage._max_upsert_payload_bytes = DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES
+        storage._max_upsert_records_per_batch = (
+            DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH
+        )
 
         await MongoGraphStorage.upsert_edges_batch(
             storage,
@@ -853,11 +873,21 @@ class TestMongoBatchOrdering:
     @pytest.mark.asyncio
     async def test_upsert_edges_batch_deduplicates_source_node_upserts(self):
         pytest.importorskip("pymongo")
-        from lightrag.kg.mongo_impl import MongoGraphStorage
+        from lightrag.kg.mongo_impl import (
+            MongoGraphStorage,
+            DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES,
+            DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH,
+        )
 
         storage = MongoGraphStorage.__new__(MongoGraphStorage)
         storage.collection = AsyncMock()
         storage.edge_collection = AsyncMock()
+        storage.workspace = "test_ws"
+        storage.namespace = "test_graph"
+        storage._max_upsert_payload_bytes = DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES
+        storage._max_upsert_records_per_batch = (
+            DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH
+        )
 
         await MongoGraphStorage.upsert_edges_batch(
             storage,

@@ -842,8 +842,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     if len(point_batches) > 1:
                         logger.info(
                             f"[{self.workspace}] Qdrant upsert split into {len(point_batches)} batches "
-                            f"for {len(list_points)} points (max_payload_bytes={self._max_upsert_payload_bytes}, "
-                            f"max_points_per_batch={self._max_upsert_points_per_batch})"
+                            f"for {len(list_points)} records (max_payload={self._max_upsert_payload_bytes}, "
+                            f"batch={self._max_upsert_points_per_batch})"
                         )
 
                     for batch_index, (points_batch, estimated_bytes) in enumerate(
