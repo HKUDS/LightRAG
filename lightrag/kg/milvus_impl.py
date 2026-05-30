@@ -1783,6 +1783,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         logger.info(
                             f"[{self.workspace}] {self.namespace} flush: upsert split into "
                             f"{len(upsert_batches)} batches for {len(list_data)} records "
+                            f"(max_payload={self._max_upsert_payload_bytes} batch={self._max_upsert_records_per_batch})"
                         )
                     for batch_index, (records_batch, estimated_bytes) in enumerate(
                         upsert_batches, 1
