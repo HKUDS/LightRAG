@@ -264,10 +264,14 @@ async def _run_chunked_async_bulk(
         else _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES
     )
     if len(actions) > chunk_size:
+        # Log format aligned with mongo_impl's flush split log
+        # (max_payload=/batch= field names, raw configured values). Unlike
+        # Mongo we cannot report the final batch count up front: async_bulk's
+        # _ActionChunker decides it at stream time by byte budget, so this
+        # record-count condition only catches count-driven splits.
         logger.info(
-            f"{log_prefix} {what}: {len(actions)} records will be split into "
-            f"multiple bulk chunks (chunk_size={chunk_size}, "
-            f"max_chunk_bytes={max_chunk_bytes})"
+            f"{log_prefix} {what} split for {len(actions)} records "
+            f"(max_payload={max_payload_bytes} batch={max_records_per_batch})"
         )
     return await helpers.async_bulk(
         client,
