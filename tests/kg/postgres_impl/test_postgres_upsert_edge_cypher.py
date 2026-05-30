@@ -32,6 +32,7 @@ def make_graph_storage() -> PGGraphStorage:
     storage.workspace = "test_ws"
     storage.namespace = "test_graph"
     storage.graph_name = "test_graph"
+    storage.__post_init__()  # resolves chunk-level batch-limit attrs
     storage.db = MagicMock()
     return storage
 
@@ -317,63 +318,70 @@ async def test_upsert_edge_does_not_retry_non_transient_errors(monkeypatch):
     assert call_count == 1
 
 
+async def _capture_upsert_edges_batch(storage: PGGraphStorage, edges):
+    """Run upsert_edges_batch against a fake connection; return captured calls."""
+    conn = _FakeConnection()
+
+    async def fake_run_with_retry(operation, **_kwargs):
+        return await operation(conn)
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+    await storage.upsert_edges_batch(edges)
+    return conn.calls
+
+
 @pytest.mark.asyncio
 async def test_upsert_edges_batch_iterates_in_sorted_order():
-    """upsert_edges_batch calls upsert_edge in canonical (LEAST, GREATEST)
-    order regardless of insertion order.
+    """A chunk acquires its advisory locks in canonical (LEAST, GREATEST) order
+    regardless of insertion order.
 
-    upsert_edge opens an independent transaction per call and releases the
-    advisory lock on commit, so this iteration order is not a deadlock fix
-    — but a deterministic order matches the dedup key already used above
-    and keeps logs / replays reproducible across callers.
+    Now load-bearing: a chunk transaction holds several edge locks until commit,
+    so a globally consistent acquisition order is what prevents cross-worker
+    deadlocks.
     """
     storage = make_graph_storage()
 
-    captured: list[tuple[str, str]] = []
-
-    async def fake_upsert_edge(src, tgt, edge_data):  # noqa: ARG001
-        captured.append((src, tgt))
-
-    storage.upsert_edge = AsyncMock(side_effect=fake_upsert_edge)
-
     # Insertion order intentionally non-canonical: B-A, C-A, D-A.
-    await storage.upsert_edges_batch(
+    calls = await _capture_upsert_edges_batch(
+        storage,
         [
             ("B", "A", {"weight": "1"}),
             ("C", "A", {"weight": "2"}),
             ("D", "A", {"weight": "3"}),
-        ]
+        ],
     )
 
-    # Edge keys after canonicalisation: (A,B), (A,C), (A,D). The values
-    # preserve the caller's original orientation per pair, but the iteration
-    # visits them in sorted-key order.
-    canonical_keys = [tuple(sorted(pair)) for pair in captured]
+    # Lock statements carry (graph_name, src, tgt); collect them in execution
+    # order and check the canonicalised pairs are sorted.
+    lock_pairs = [
+        (c["args"][1], c["args"][2])
+        for c in calls
+        if "pg_advisory_xact_lock" in c["sql"]
+    ]
+    canonical_keys = [tuple(sorted(pair)) for pair in lock_pairs]
     assert canonical_keys == sorted(canonical_keys)
     assert canonical_keys == [("A", "B"), ("A", "C"), ("A", "D")]
 
 
 @pytest.mark.asyncio
 async def test_upsert_edges_batch_dedupes_last_write_wins():
-    """Reciprocal duplicates collapse to a single upsert with the LATEST
-    edge_data, regardless of which orientation arrives last — preserves the
-    historical serial-fallback semantics documented on the method."""
+    """Reciprocal duplicates collapse to a single edge upsert carrying the
+    LATEST edge_data, regardless of which orientation arrives last."""
     storage = make_graph_storage()
 
-    captured: list[tuple[str, str, dict]] = []
-
-    async def fake_upsert_edge(src, tgt, edge_data):
-        captured.append((src, tgt, edge_data))
-
-    storage.upsert_edge = AsyncMock(side_effect=fake_upsert_edge)
-
-    await storage.upsert_edges_batch(
+    calls = await _capture_upsert_edges_batch(
+        storage,
         [
             ("A", "B", {"weight": "first"}),
             ("B", "A", {"weight": "second"}),  # reciprocal, wins
-        ]
+        ],
     )
 
-    assert len(captured) == 1
-    # Orientation = last write's caller order; edge_data = last write's payload.
-    assert captured[0] == ("B", "A", {"weight": "second"})
+    # Exactly one edge cypher (CREATE) ran, with the latest payload inlined and
+    # the last write's orientation in the bound params.
+    cypher_calls = [c for c in calls if "CREATE (source)-[r:DIRECTED" in c["sql"]]
+    assert len(cypher_calls) == 1
+    assert '"second"' in cypher_calls[0]["sql"]
+    assert '"first"' not in cypher_calls[0]["sql"]
+    params_json = cypher_calls[0]["args"][0]
+    assert json.loads(params_json) == {"src_id": "B", "tgt_id": "A"}

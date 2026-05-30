@@ -9,6 +9,7 @@ Verifies:
 5. upsert_edges_batch and upsert_nodes_batch are idempotent (safe to call twice).
 """
 
+import json
 import time
 import tempfile
 import pytest
@@ -757,18 +758,54 @@ class TestAinsertCustomKgBatchPath:
 
 
 class TestPostgresBatchOrdering:
+    @staticmethod
+    def _make_pg_storage():
+        """PGGraphStorage with a fake connection capturing executed Cypher.
+
+        The chunk-level batch paths build SQL and run it via
+        ``db._run_with_retry`` instead of calling ``upsert_node`` / ``upsert_edge``
+        per row, so the captured statements are how we observe dedup + ordering.
+        """
+        from lightrag.kg.postgres_impl import PGGraphStorage
+
+        storage = PGGraphStorage.__new__(PGGraphStorage)
+        storage.workspace = "test_ws"
+        storage.namespace = "test_graph"
+        storage.graph_name = "test_graph"
+        storage.__post_init__()  # resolves chunk-level batch limits
+
+        calls: list[dict] = []
+
+        class _Tx:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _Conn:
+            def transaction(self):
+                return _Tx()
+
+            async def execute(self, sql, *args):
+                calls.append({"sql": sql, "args": args})
+                return ""
+
+        conn = _Conn()
+
+        async def fake_run_with_retry(operation, **_kwargs):
+            return await operation(conn)
+
+        storage.db = AsyncMock()
+        storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+        return storage, calls
+
     @pytest.mark.offline
     @pytest.mark.asyncio
     async def test_upsert_nodes_batch_preserves_last_write_wins(self):
         from lightrag.kg.postgres_impl import PGGraphStorage
 
-        storage = PGGraphStorage.__new__(PGGraphStorage)
-        call_log: list[tuple[str, str]] = []
-
-        async def spy(node_id, *, node_data):
-            call_log.append((node_id, node_data["description"]))
-
-        storage.upsert_node = spy  # type: ignore[assignment]
+        storage, calls = self._make_pg_storage()
 
         await PGGraphStorage.upsert_nodes_batch(
             storage,
@@ -779,23 +816,20 @@ class TestPostgresBatchOrdering:
             ],
         )
 
-        assert call_log == [
-            ("EntityA", "latest"),
-            ("EntityB", "Description of EntityB"),
-        ]
+        merge_calls = [c for c in calls if "MERGE (n:base" in c["sql"]]
+        entity_ids = [json.loads(c["args"][0])["entity_id"] for c in merge_calls]
+        # Deduped to one EntityA (moved to its last position), then EntityB.
+        assert entity_ids == ["EntityA", "EntityB"]
+        # EntityA carries the latest payload, not the first.
+        assert '"latest"' in merge_calls[0]["sql"]
+        assert "Description of EntityA" not in merge_calls[0]["sql"]
 
     @pytest.mark.offline
     @pytest.mark.asyncio
     async def test_upsert_edges_batch_preserves_last_write_wins(self):
         from lightrag.kg.postgres_impl import PGGraphStorage
 
-        storage = PGGraphStorage.__new__(PGGraphStorage)
-        call_log: list[tuple[str, str, float]] = []
-
-        async def spy(src, tgt, *, edge_data):
-            call_log.append((src, tgt, edge_data["weight"]))
-
-        storage.upsert_edge = spy  # type: ignore[assignment]
+        storage, calls = self._make_pg_storage()
 
         await PGGraphStorage.upsert_edges_batch(
             storage,
@@ -806,7 +840,17 @@ class TestPostgresBatchOrdering:
             ],
         )
 
-        assert call_log == [("EntityB", "EntityA", 2.0), ("EntityB", "EntityC", 3.0)]
+        cypher_calls = [
+            c for c in calls if "CREATE (source)-[r:DIRECTED" in c["sql"]
+        ]
+        log = [
+            (json.loads(c["args"][0])["src_id"], json.loads(c["args"][0])["tgt_id"])
+            for c in cypher_calls
+        ]
+        # Canonical (LEAST, GREATEST) key order: (A,B) then (B,C); each pair keeps
+        # its last-write orientation/payload.
+        assert log == [("EntityB", "EntityA"), ("EntityB", "EntityC")]
+        assert "2.0" in cypher_calls[0]["sql"]  # weight 2.0 won the (A,B) pair
 
 
 class TestMongoBatchOrdering:
