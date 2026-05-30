@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from typing import Any, final, Optional, Dict
 from dataclasses import dataclass, fields
@@ -28,6 +29,15 @@ class _PendingVectorDoc:
     content: str
     vector: list[float] | None = None
 
+
+# Flush-time batching limits. Milvus' server-side proxy rejects any single
+# gRPC message larger than ~64MB (grpc.serverMaxRecvSize); the client library
+# cannot raise that ceiling, so large flushes must be split client-side.
+# The payload-byte budget is the primary limiter; the record-count caps are a
+# secondary guard that only binds when individual records are small.
+DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = 32 * 1024 * 1024  # 32MB, well below the 64MB gRPC ceiling
+DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 1000
+DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
 
 # Supported index types
 SUPPORTED_INDEX_TYPES = {
@@ -1424,6 +1434,39 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # Initialize client as None - will be created in initialize() method
         self._client = None
         self._max_batch_size = self.global_config["embedding_batch_num"]
+
+        # Flush-time batching limits (see module-level DEFAULT_MILVUS_* constants).
+        # A non-positive value disables that splitting dimension.
+        self._max_upsert_payload_bytes = int(
+            os.getenv(
+                "MILVUS_UPSERT_MAX_PAYLOAD_BYTES",
+                str(DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES),
+            )
+        )
+        self._max_upsert_records_per_batch = int(
+            os.getenv(
+                "MILVUS_UPSERT_MAX_RECORDS_PER_BATCH",
+                str(DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH),
+            )
+        )
+        self._max_delete_records_per_batch = int(
+            os.getenv(
+                "MILVUS_DELETE_MAX_RECORDS_PER_BATCH",
+                str(DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH),
+            )
+        )
+        if self._max_upsert_payload_bytes <= 0:
+            logger.warning(
+                f"MILVUS_UPSERT_MAX_PAYLOAD_BYTES={self._max_upsert_payload_bytes} is non-positive, disable payload-size splitting"
+            )
+        if self._max_upsert_records_per_batch <= 0:
+            logger.warning(
+                f"MILVUS_UPSERT_MAX_RECORDS_PER_BATCH={self._max_upsert_records_per_batch} is non-positive, disable upsert record-count splitting"
+            )
+        if self._max_delete_records_per_batch <= 0:
+            logger.warning(
+                f"MILVUS_DELETE_MAX_RECORDS_PER_BATCH={self._max_delete_records_per_batch} is non-positive, disable delete record-count splitting"
+            )
         self._initialized = False
 
         # Deferred-embedding buffers and the per-namespace flush lock.
@@ -1566,6 +1609,70 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             for dp in results[0]
         ]
 
+    @staticmethod
+    def _build_upsert_batches(
+        records: list[dict[str, Any]],
+        max_payload_bytes: int,
+        max_records_per_batch: int,
+    ) -> list[tuple[list[dict[str, Any]], int]]:
+        """Split upsert records into batches by estimated payload size and count.
+
+        The byte budget is the primary limiter: records accumulate until adding
+        the next one would exceed ``max_payload_bytes``, then a new batch starts.
+        Size is estimated by JSON-serializing each record; this overestimates the
+        actual gRPC protobuf size (a JSON float string is far longer than the 4
+        protobuf bytes it encodes), so the split stays conservatively below the
+        server limit and never underestimates.
+
+        A single record larger than the byte budget is emitted as its own batch
+        rather than raising: JSON overestimation means such a record's real
+        protobuf size is often still under Milvus' 64MB ceiling, so we let the
+        server be the final arbiter instead of failing client-side. Returns a
+        list of ``(batch, estimated_bytes)`` tuples (estimate used for logging).
+        """
+        if not records:
+            return []
+
+        payload_limit = max_payload_bytes if max_payload_bytes > 0 else float("inf")
+        records_limit = (
+            max_records_per_batch if max_records_per_batch > 0 else float("inf")
+        )
+
+        batches: list[tuple[list[dict[str, Any]], int]] = []
+        current_batch: list[dict[str, Any]] = []
+        # JSON array overhead ("[]")
+        current_estimated_bytes = 2
+
+        for record in records:
+            record_size = len(
+                json.dumps(
+                    record,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            )
+
+            # If current batch not empty, a comma is needed before next element.
+            separator_overhead = 1 if current_batch else 0
+            next_batch_size = current_estimated_bytes + separator_overhead + record_size
+
+            if current_batch and (
+                len(current_batch) >= records_limit or next_batch_size > payload_limit
+            ):
+                batches.append((current_batch, current_estimated_bytes))
+                current_batch = []
+                current_estimated_bytes = 2
+                next_batch_size = current_estimated_bytes + record_size
+
+            current_batch.append(record)
+            current_estimated_bytes = next_batch_size
+
+        if current_batch:
+            batches.append((current_batch, current_estimated_bytes))
+
+        return batches
+
     async def index_done_callback(self) -> None:
         """Flush all buffered vector ops to Milvus before returning.
 
@@ -1654,14 +1761,53 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             try:
                 if list_data:
-                    self._client.upsert(
-                        collection_name=self.final_namespace, data=list_data
+                    # Split the upsert into batches that stay under the server-side
+                    # 64MB gRPC message limit. Fail-fast: any batch failure raises
+                    # immediately and the full buffer is retained for the next flush.
+                    upsert_batches = self._build_upsert_batches(
+                        list_data,
+                        max_payload_bytes=self._max_upsert_payload_bytes,
+                        max_records_per_batch=self._max_upsert_records_per_batch,
                     )
+                    if len(upsert_batches) > 1:
+                        logger.info(
+                            f"[{self.workspace}] {self.namespace} flush: upsert split into "
+                            f"{len(upsert_batches)} batches for {len(list_data)} records "
+                        )
+                    for batch_index, (records_batch, estimated_bytes) in enumerate(
+                        upsert_batches, 1
+                    ):
+                        if (
+                            len(records_batch) == 1
+                            and self._max_upsert_payload_bytes > 0
+                            and estimated_bytes > self._max_upsert_payload_bytes
+                        ):
+                            logger.warning(
+                                f"[{self.workspace}] {self.namespace} flush: single record "
+                                f"id={records_batch[0].get('id')} estimated {estimated_bytes} bytes "
+                                f"exceeds {self._max_upsert_payload_bytes}"
+                            )
+                        logger.debug(
+                            f"[{self.workspace}] Milvus upsert batch {batch_index}/{len(upsert_batches)}: "
+                            f"records={len(records_batch)}, estimated_payload_bytes={estimated_bytes}"
+                        )
+                        self._client.upsert(
+                            collection_name=self.final_namespace, data=records_batch
+                        )
                 if pending_deletes:
-                    self._client.delete(
-                        collection_name=self.final_namespace,
-                        pks=list(pending_deletes),
+                    # Chunk deletes by record count; pks are short strings so a
+                    # count cap is enough to stay under the gRPC message limit.
+                    delete_ids = list(pending_deletes)
+                    delete_chunk = (
+                        self._max_delete_records_per_batch
+                        if self._max_delete_records_per_batch > 0
+                        else len(delete_ids)
                     )
+                    for i in range(0, len(delete_ids), delete_chunk):
+                        self._client.delete(
+                            collection_name=self.final_namespace,
+                            pks=delete_ids[i : i + delete_chunk],
+                        )
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Error flushing vector ops "
