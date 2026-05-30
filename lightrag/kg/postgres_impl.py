@@ -67,6 +67,150 @@ T = TypeVar("T")
 # PostgreSQL identifier length limit (in bytes)
 PG_MAX_IDENTIFIER_LENGTH = 63
 
+# Flush-time batching limits shared by the PostgreSQL non-graph write paths
+# (PGKVStorage, PGVectorStorage, PGDocStatusStorage). Mirrors the MONGO_* /
+# OPENSEARCH_* contract: the payload-byte budget is the primary limiter and the
+# record-count caps are a secondary guard. Unlike Mongo/OpenSearch there is no
+# single server-side bulk message to stay under -- asyncpg's executemany
+# pipelines each row over a reused prepared statement -- so for PostgreSQL the
+# byte budget mainly bounds client-side peak memory and transaction duration.
+# The default record cap keeps PGKVStorage's historical 200 behaviour; delete
+# ids are short strings so a larger count cap is safe.
+DEFAULT_PG_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16 MiB
+DEFAULT_PG_UPSERT_MAX_RECORDS_PER_BATCH = 200
+DEFAULT_PG_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+
+def _estimate_record_bytes(record: tuple[Any, ...]) -> int:
+    """Estimate the serialized byte size of one asyncpg parameter tuple.
+
+    A splitting *heuristic* for ``_chunk_by_budget``, not the exact wire size.
+    numpy vectors dominate vector rows and large text dominates KV rows, so the
+    estimate sums those accurately and treats scalars as a small constant:
+
+      * ``np.ndarray`` -> ``.nbytes`` (the binary pgvector payload)
+      * ``str`` -> UTF-8 byte length
+      * ``bytes`` / ``bytearray`` -> ``len``
+      * ``dict`` / ``list`` -> compact-JSON UTF-8 length (already-serialized
+        JSON columns are passed as ``str`` and handled above; this covers any
+        not-yet-serialized field)
+      * ``None`` -> 0
+      * everything else (int / float / datetime / ...) -> a small constant
+    """
+    total = 0
+    for field_value in record:
+        if isinstance(field_value, np.ndarray):
+            total += field_value.nbytes
+        elif isinstance(field_value, str):
+            total += len(field_value.encode("utf-8"))
+        elif isinstance(field_value, (bytes, bytearray)):
+            total += len(field_value)
+        elif field_value is None:
+            total += 0
+        elif isinstance(field_value, (dict, list)):
+            total += len(
+                json.dumps(
+                    field_value,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            )
+        else:
+            total += 16
+    return total
+
+
+def _chunk_by_budget(
+    items: list[T],
+    size_of: Callable[[T], int],
+    max_payload_bytes: int,
+    max_records_per_batch: int,
+) -> list[tuple[list[T], int]]:
+    """Split items into batches by estimated payload size (primary) and count.
+
+    The byte budget is the primary limiter: items accumulate until adding the
+    next one would exceed ``max_payload_bytes``, then a new batch starts.
+    ``size_of(item)`` returns an item's estimated serialized byte size. A single
+    item larger than the byte budget is emitted as its own batch rather than
+    raising; the server stays the final arbiter. A non-positive limit disables
+    that dimension. Returns ``(batch, summed_estimated_bytes)`` tuples (the
+    estimate is used for logging). Semantically identical to mongo_impl's
+    ``_chunk_by_budget``.
+    """
+    if not items:
+        return []
+
+    payload_limit = max_payload_bytes if max_payload_bytes > 0 else float("inf")
+    records_limit = max_records_per_batch if max_records_per_batch > 0 else float("inf")
+
+    batches: list[tuple[list[T], int]] = []
+    current: list[T] = []
+    # JSON array overhead ("[]")
+    current_bytes = 2
+
+    for item in items:
+        item_bytes = size_of(item)
+        # If current batch not empty, a comma is needed before next element.
+        separator_overhead = 1 if current else 0
+        next_bytes = current_bytes + separator_overhead + item_bytes
+
+        if current and (len(current) >= records_limit or next_bytes > payload_limit):
+            batches.append((current, current_bytes))
+            current = []
+            current_bytes = 2
+            next_bytes = current_bytes + item_bytes
+
+        current.append(item)
+        current_bytes = next_bytes
+
+    if current:
+        batches.append((current, current_bytes))
+
+    return batches
+
+
+def _resolve_pg_batch_limits() -> tuple[int, int, int]:
+    """Resolve flush-time batching limits from env, with module defaults.
+
+    Shared by every PostgreSQL non-graph write path so the byte/record caps that
+    bound a single ``executemany`` / ``DELETE ... ANY($2)`` are consistent across
+    all of them. A non-positive value disables that splitting dimension and logs
+    a warning. Returns ``(upsert_payload_bytes, upsert_records, delete_records)``.
+    """
+    upsert_payload_bytes = int(
+        os.environ.get(
+            "POSTGRES_UPSERT_MAX_PAYLOAD_BYTES",
+            str(DEFAULT_PG_UPSERT_MAX_PAYLOAD_BYTES),
+        )
+    )
+    upsert_records = int(
+        os.environ.get(
+            "POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH",
+            str(DEFAULT_PG_UPSERT_MAX_RECORDS_PER_BATCH),
+        )
+    )
+    delete_records = int(
+        os.environ.get(
+            "POSTGRES_DELETE_MAX_RECORDS_PER_BATCH",
+            str(DEFAULT_PG_DELETE_MAX_RECORDS_PER_BATCH),
+        )
+    )
+    if upsert_payload_bytes <= 0:
+        logger.warning(
+            f"POSTGRES_UPSERT_MAX_PAYLOAD_BYTES={upsert_payload_bytes} is non-positive, disable payload-size splitting"
+        )
+    if upsert_records <= 0:
+        logger.warning(
+            f"POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH={upsert_records} is non-positive, disable upsert record-count splitting"
+        )
+    if delete_records <= 0:
+        logger.warning(
+            f"POSTGRES_DELETE_MAX_RECORDS_PER_BATCH={delete_records} is non-positive, disable delete record-count splitting"
+        )
+    return upsert_payload_bytes, upsert_records, delete_records
+
+
 # All known vector index suffixes, used to drop conflicting indexes when switching types
 _VECTOR_INDEX_SUFFIXES = [
     "hnsw_cosine",
@@ -2377,6 +2521,11 @@ class PGKVStorage(BaseKVStorage):
 
     def __post_init__(self):
         self._max_batch_size = 200  # DB batch size, independent of embedding batch size
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+            self._max_delete_records_per_batch,
+        ) = _resolve_pg_batch_limits()
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -2921,14 +3070,36 @@ class PGKVStorage(BaseKVStorage):
             _timing_details_suffix(namespace=self.namespace),
         )
         if batch_values:
-            # Split into sub-batches to prevent database overload
-            num_batches = (
-                len(batch_values) + self._max_batch_size - 1
-            ) // self._max_batch_size
-            for batch_index, i in enumerate(
-                range(0, len(batch_values), self._max_batch_size), start=1
+            # Split into payload-byte (primary) / record-count (secondary)
+            # bounded sub-batches to bound peak memory and transaction duration
+            # (mirrors mongo_impl's _run_batched_bulk_write). asyncpg pipelines
+            # each row in executemany, so the byte budget caps client-side
+            # assembly rather than a single server message.
+            batches = _chunk_by_budget(
+                batch_values,
+                _estimate_record_bytes,
+                self._max_upsert_payload_bytes,
+                self._max_upsert_records_per_batch,
+            )
+            num_batches = len(batches)
+            log_prefix = f"[{self.workspace}] {self.namespace} upsert:"
+            if num_batches > 1:
+                logger.info(
+                    f"{log_prefix} split into {num_batches} batches "
+                    f"for {len(batch_values)} records"
+                )
+            for batch_index, (sub_batch, estimated_bytes) in enumerate(
+                batches, start=1
             ):
-                sub_batch = batch_values[i : i + self._max_batch_size]
+                if (
+                    len(sub_batch) == 1
+                    and self._max_upsert_payload_bytes > 0
+                    and estimated_bytes > self._max_upsert_payload_bytes
+                ):
+                    logger.warning(
+                        f"{log_prefix} single record estimated {estimated_bytes} "
+                        f"bytes exceeds {self._max_upsert_payload_bytes}"
+                    )
 
                 async def _batch_upsert(
                     connection: asyncpg.Connection,
@@ -3008,8 +3179,31 @@ class PGKVStorage(BaseKVStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
+        # Chunk the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables chunking). All chunks run in ONE
+        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # the original single-statement all-or-nothing behaviour; _run_with_retry
+        # re-runs the whole closure on transient errors (DELETE is idempotent).
+        chunk = (
+            self._max_delete_records_per_batch
+            if self._max_delete_records_per_batch > 0
+            else len(ids)
+        )
+        if len(ids) > chunk:
+            logger.info(
+                f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
+                f"split into chunks (chunk={chunk})"
+            )
+
+        async def _batch_delete(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                for i in range(0, len(ids), chunk):
+                    await connection.execute(
+                        delete_sql, self.workspace, ids[i : i + chunk]
+                    )
+
         try:
-            await self.db.execute(delete_sql, {"workspace": self.workspace, "ids": ids})
+            await self.db._run_with_retry(_batch_delete)
             logger.debug(
                 f"[{self.workspace}] Successfully deleted {len(ids)} records from {self.namespace}"
             )
@@ -3059,6 +3253,12 @@ class PGVectorStorage(BaseVectorStorage):
     def __post_init__(self):
         self._validate_embedding_func()
         self._max_batch_size = self.global_config["embedding_batch_num"]
+        # DB-write batching limits (distinct from the embedding batch size above).
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+            self._max_delete_records_per_batch,
+        ) = _resolve_pg_batch_limits()
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = config.get("cosine_better_than_threshold")
         if cosine_threshold is None:
@@ -3918,28 +4118,100 @@ class PGVectorStorage(BaseVectorStorage):
             pending_delete_ids = list(self._pending_vector_deletes)
 
             # --- Persistence -------------------------------------------------
-            async def _flush_batch(connection: asyncpg.Connection) -> None:
-                async with connection.transaction():
-                    if batch_values and upsert_sql:
-                        execute_start = time.perf_counter()
-                        await connection.executemany(upsert_sql, batch_values)
-                        performance_timing_log(
-                            "[%s] executemany completed in %.4fs batch_size=%s",
-                            timing_label,
-                            time.perf_counter() - execute_start,
-                            len(batch_values),
-                        )
-                    if pending_delete_ids:
-                        delete_sql = (
-                            f"DELETE FROM {self.table_name} "
-                            "WHERE workspace=$1 AND id = ANY($2)"
-                        )
-                        await connection.execute(
-                            delete_sql, self.workspace, pending_delete_ids
-                        )
+            # upsert and delete run as separate, payload/record-bounded phases
+            # (mirrors mongo_impl). The two buffers are disjoint -- upsert()
+            # discards from pending_deletes and delete() pops from pending_docs
+            # -- so phase ordering is irrelevant. Each chunk is its own
+            # transaction; both ops are idempotent (ON CONFLICT / ANY($2)), so a
+            # mid-flush failure raises with the buffers intact and the next
+            # flush replays everything (fail-fast-retain). This trades the old
+            # single-transaction atomicity for bounded peak memory / tx duration.
+            log_prefix = f"[{self.workspace}] {self.namespace} flush:"
+
+            upsert_batches = (
+                _chunk_by_budget(
+                    batch_values,
+                    _estimate_record_bytes,
+                    self._max_upsert_payload_bytes,
+                    self._max_upsert_records_per_batch,
+                )
+                if batch_values and upsert_sql
+                else []
+            )
+            if len(upsert_batches) > 1:
+                logger.info(
+                    f"{log_prefix} upsert split into {len(upsert_batches)} batches "
+                    f"for {len(batch_values)} records"
+                )
+
+            # ``or 1`` guards an upsert-only flush: with the delete cap disabled
+            # (<= 0) and no pending deletes, the fallback would be 0 and the
+            # range() step below would raise even though there is nothing to
+            # delete. The empty-list loop then simply no-ops.
+            delete_chunk = (
+                self._max_delete_records_per_batch
+                if self._max_delete_records_per_batch > 0
+                else len(pending_delete_ids) or 1
+            )
+            if pending_delete_ids and len(pending_delete_ids) > delete_chunk:
+                logger.info(
+                    f"{log_prefix} delete {len(pending_delete_ids)} ids split "
+                    f"into chunks (chunk={delete_chunk})"
+                )
+            delete_sql = (
+                f"DELETE FROM {self.table_name} WHERE workspace=$1 AND id = ANY($2)"
+            )
 
             try:
-                await self.db._run_with_retry(_flush_batch, timing_label=timing_label)
+                for batch_index, (sub_batch, estimated_bytes) in enumerate(
+                    upsert_batches, start=1
+                ):
+                    if (
+                        len(sub_batch) == 1
+                        and self._max_upsert_payload_bytes > 0
+                        and estimated_bytes > self._max_upsert_payload_bytes
+                    ):
+                        logger.warning(
+                            f"{log_prefix} single record estimated {estimated_bytes} "
+                            f"bytes exceeds {self._max_upsert_payload_bytes}"
+                        )
+
+                    async def _flush_upsert(
+                        connection: asyncpg.Connection,
+                        _sql: str = upsert_sql,
+                        _data: list[tuple] = sub_batch,
+                        _batch_index: int = batch_index,
+                        _num_batches: int = len(upsert_batches),
+                    ) -> None:
+                        async with connection.transaction():
+                            execute_start = time.perf_counter()
+                            await connection.executemany(_sql, _data)
+                            performance_timing_log(
+                                "[%s] sub-batch %s/%s executemany completed in %.4fs batch_size=%s",
+                                timing_label,
+                                _batch_index,
+                                _num_batches,
+                                time.perf_counter() - execute_start,
+                                len(_data),
+                            )
+
+                    await self.db._run_with_retry(
+                        _flush_upsert, timing_label=timing_label
+                    )
+
+                for i in range(0, len(pending_delete_ids), delete_chunk):
+                    id_slice = pending_delete_ids[i : i + delete_chunk]
+
+                    async def _flush_delete(
+                        connection: asyncpg.Connection,
+                        _ids: list[str] = id_slice,
+                    ) -> None:
+                        async with connection.transaction():
+                            await connection.execute(delete_sql, self.workspace, _ids)
+
+                    await self.db._run_with_retry(
+                        _flush_delete, timing_label=timing_label
+                    )
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Error flushing vector ops "
@@ -4485,6 +4757,13 @@ def _parse_doc_status_datetime(
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
     db: PostgreSQLDB = field(default=None)
+
+    def __post_init__(self):
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+            self._max_delete_records_per_batch,
+        ) = _resolve_pg_batch_limits()
 
     def _format_datetime_with_timezone(self, dt):
         """Convert datetime to ISO format string with timezone info"""
@@ -5280,8 +5559,31 @@ class PGDocStatusStorage(DocStatusStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
+        # Chunk the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables chunking). All chunks run in ONE
+        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # the original single-statement all-or-nothing behaviour; _run_with_retry
+        # re-runs the whole closure on transient errors (DELETE is idempotent).
+        chunk = (
+            self._max_delete_records_per_batch
+            if self._max_delete_records_per_batch > 0
+            else len(ids)
+        )
+        if len(ids) > chunk:
+            logger.info(
+                f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
+                f"split into chunks (chunk={chunk})"
+            )
+
+        async def _batch_delete(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                for i in range(0, len(ids), chunk):
+                    await connection.execute(
+                        delete_sql, self.workspace, ids[i : i + chunk]
+                    )
+
         try:
-            await self.db.execute(delete_sql, {"workspace": self.workspace, "ids": ids})
+            await self.db._run_with_retry(_batch_delete)
             logger.debug(
                 f"[{self.workspace}] Successfully deleted {len(ids)} records from {self.namespace}"
             )
@@ -5392,22 +5694,53 @@ class PGDocStatusStorage(DocStatusStorage):
             len(skipped),
         )
 
-        async def _batch_upsert(
-            connection: asyncpg.Connection,
-            _sql: str = sql,
-            _data: list[tuple] = batch,
-        ) -> None:
-            execute_start = time.perf_counter()
-            async with connection.transaction():
-                await connection.executemany(_sql, _data)
-            performance_timing_log(
-                "[%s] transaction + executemany completed in %.4fs batch_size=%s",
-                timing_label,
-                time.perf_counter() - execute_start,
-                len(_data),
+        # Split into payload-byte / record-count bounded sub-batches, each its
+        # own transaction (mirrors KV upsert / mongo_impl). ON CONFLICT makes
+        # every chunk idempotent, so a mid-flush failure is safely retryable.
+        batches = _chunk_by_budget(
+            batch,
+            _estimate_record_bytes,
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        )
+        num_batches = len(batches)
+        log_prefix = f"[{self.workspace}] {self.namespace} upsert:"
+        if num_batches > 1:
+            logger.info(
+                f"{log_prefix} split into {num_batches} batches "
+                f"for {len(batch)} records"
             )
+        for batch_index, (sub_batch, estimated_bytes) in enumerate(batches, start=1):
+            if (
+                len(sub_batch) == 1
+                and self._max_upsert_payload_bytes > 0
+                and estimated_bytes > self._max_upsert_payload_bytes
+            ):
+                logger.warning(
+                    f"{log_prefix} single record estimated {estimated_bytes} "
+                    f"bytes exceeds {self._max_upsert_payload_bytes}"
+                )
 
-        await self.db._run_with_retry(_batch_upsert, timing_label=timing_label)
+            async def _batch_upsert(
+                connection: asyncpg.Connection,
+                _sql: str = sql,
+                _data: list[tuple] = sub_batch,
+                _batch_index: int = batch_index,
+                _num_batches: int = num_batches,
+            ) -> None:
+                execute_start = time.perf_counter()
+                async with connection.transaction():
+                    await connection.executemany(_sql, _data)
+                performance_timing_log(
+                    "[%s] sub-batch %s/%s transaction + executemany completed in %.4fs batch_size=%s",
+                    timing_label,
+                    _batch_index,
+                    _num_batches,
+                    time.perf_counter() - execute_start,
+                    len(_data),
+                )
+
+            await self.db._run_with_retry(_batch_upsert, timing_label=timing_label)
         logger.debug(
             f"[{self.workspace}] Batch upserted {len(batch)} records to {self.namespace}"
         )

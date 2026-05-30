@@ -30,16 +30,24 @@ def make_storage(namespace: str) -> PGKVStorage:
     """Construct a PGKVStorage instance with a mocked db."""
     db = MagicMock()
     captured: list[tuple] = []
+    captured_execute: list[tuple] = []
     retry_kwargs: list[dict] = []
 
     async def fake_run_with_retry(operation, **kwargs):
         """Call the closure with a mock connection to capture executemany args."""
         retry_kwargs.append(kwargs)
         mock_conn = AsyncMock()
+        tx = AsyncMock()
+        tx.__aenter__.return_value = tx
+        tx.__aexit__.return_value = False
+        mock_conn.transaction = MagicMock(return_value=tx)
         await operation(mock_conn)
         # Store (sql, data) from each executemany call
         for call in mock_conn.executemany.call_args_list:
             captured.append((call.args[0], call.args[1]))
+        # Store (sql, args) from each execute call (chunked delete path).
+        for call in mock_conn.execute.call_args_list:
+            captured_execute.append((call.args[0], call.args[1:]))
 
     db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
     db.workspace = "test_ws"
@@ -52,6 +60,7 @@ def make_storage(namespace: str) -> PGKVStorage:
     storage.__post_init__()
 
     storage._captured = captured
+    storage._captured_execute = captured_execute
     storage._retry_kwargs = retry_kwargs
     return storage
 
@@ -60,6 +69,7 @@ def make_doc_status_storage() -> PGDocStatusStorage:
     """Construct a PGDocStatusStorage instance with a mocked db."""
     db = MagicMock()
     captured: list[tuple] = []
+    captured_execute: list[tuple] = []
     retry_kwargs: list[dict] = []
 
     async def fake_run_with_retry(operation, **kwargs):
@@ -72,6 +82,8 @@ def make_doc_status_storage() -> PGDocStatusStorage:
         await operation(mock_conn)
         for call in mock_conn.executemany.call_args_list:
             captured.append((call.args[0], call.args[1]))
+        for call in mock_conn.execute.call_args_list:
+            captured_execute.append((call.args[0], call.args[1:]))
 
     db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
     db.workspace = "test_ws"
@@ -81,7 +93,9 @@ def make_doc_status_storage() -> PGDocStatusStorage:
     storage.workspace = "test_ws"
     storage.global_config = GLOBAL_CONFIG
     storage.db = db
+    storage.__post_init__()  # resolves batch-limit attrs (payload/records caps)
     storage._captured = captured
+    storage._captured_execute = captured_execute
     storage._retry_kwargs = retry_kwargs
     return storage
 
@@ -490,7 +504,8 @@ async def test_upsert_relation_chunks_tuple_order():
 @pytest.mark.asyncio
 async def test_sub_batching_splits_correctly():
     storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
-    storage._max_batch_size = 3  # Override to small value for testing
+    # upsert splits by _max_upsert_records_per_batch (byte cap left at default).
+    storage._max_upsert_records_per_batch = 3
 
     data = {f"doc-{i}": {"content": f"text {i}", "file_path": ""} for i in range(7)}
     await storage.upsert(data)
@@ -505,7 +520,7 @@ async def test_sub_batching_splits_correctly():
 @pytest.mark.asyncio
 async def test_sub_batching_exact_multiple():
     storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
-    storage._max_batch_size = 3
+    storage._max_upsert_records_per_batch = 3
 
     data = {f"doc-{i}": {"content": f"text {i}", "file_path": ""} for i in range(6)}
     await storage.upsert(data)
@@ -717,3 +732,113 @@ async def test_vector_flush_passes_timing_label():
     assert storage._retry_kwargs[0]["timing_label"] == (
         f"test_ws PGVectorStorage.flush[{NameSpace.VECTOR_STORE_CHUNKS}]"
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch limits: KV byte-budget split + delete chunking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kv_upsert_splits_by_payload_bytes():
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    # Disable the record cap; force a byte cap that no two rows can share.
+    storage._max_upsert_records_per_batch = 0
+    storage._max_upsert_payload_bytes = 200
+
+    data = {f"doc-{i}": {"content": "X" * 150, "file_path": ""} for i in range(3)}
+    await storage.upsert(data)
+
+    # Each ~150-byte content row exceeds half the budget -> 3 separate batches.
+    assert len(storage._captured) == 3
+
+
+@pytest.mark.asyncio
+async def test_kv_delete_splits_by_id_cap():
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    storage._max_delete_records_per_batch = 2
+
+    await storage.delete([f"doc-{i}" for i in range(5)])
+
+    # 5 ids / cap 2 => 3 bounded ANY($2) DELETE statements, all in ONE
+    # transaction (a single _run_with_retry closure) for all-or-nothing semantics.
+    assert len(storage._retry_kwargs) == 1
+    assert len(storage._captured_execute) == 3
+    slices = [args[1] for _, args in storage._captured_execute]
+    assert [len(s) for s in slices] == [2, 2, 1]
+    assert all("DELETE FROM" in sql for sql, _ in storage._captured_execute)
+
+
+@pytest.mark.asyncio
+async def test_kv_delete_chunks_share_one_transaction():
+    """All delete chunks run inside a single connection.transaction()."""
+    storage = make_storage(NameSpace.KV_STORE_FULL_DOCS)
+    storage._max_delete_records_per_batch = 2
+
+    tx_calls = {"n": 0}
+
+    async def run(operation, **kwargs):
+        mock_conn = AsyncMock()
+        tx = AsyncMock()
+        tx.__aenter__.return_value = tx
+        tx.__aexit__.return_value = False
+
+        def _make_tx():
+            tx_calls["n"] += 1
+            return tx
+
+        mock_conn.transaction = MagicMock(side_effect=_make_tx)
+        await operation(mock_conn)
+
+    storage.db._run_with_retry = AsyncMock(side_effect=run)
+
+    await storage.delete([f"doc-{i}" for i in range(5)])
+
+    # One transaction wrapping all 3 chunks, not one per chunk.
+    assert tx_calls["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Batch limits: DocStatus record-cap split + delete chunking
+# ---------------------------------------------------------------------------
+
+
+def _doc_status_payload(i: int) -> dict:
+    return {
+        "content_summary": f"summary {i}",
+        "content_length": 10,
+        "chunks_count": 1,
+        "status": "processed",
+        "file_path": f"/{i}.txt",
+        "chunks_list": ["chunk-1"],
+        "metadata": {"source": "test"},
+        "created_at": "2024-01-01T00:00:00+00:00",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+
+
+@pytest.mark.asyncio
+async def test_doc_status_upsert_splits_by_record_cap():
+    storage = make_doc_status_storage()
+    storage._max_upsert_records_per_batch = 2
+
+    data = {f"doc-{i}": _doc_status_payload(i) for i in range(5)}
+    await storage.upsert(data)
+
+    # 5 records / cap 2 => 3 executemany calls.
+    assert len(storage._captured) == 3
+    assert [len(rows) for _, rows in storage._captured] == [2, 2, 1]
+
+
+@pytest.mark.asyncio
+async def test_doc_status_delete_splits_by_id_cap():
+    storage = make_doc_status_storage()
+    storage._max_delete_records_per_batch = 2
+
+    await storage.delete([f"doc-{i}" for i in range(5)])
+
+    # One transaction (single _run_with_retry) wrapping 3 bounded DELETEs.
+    assert len(storage._retry_kwargs) == 1
+    assert len(storage._captured_execute) == 3
+    slices = [args[1] for _, args in storage._captured_execute]
+    assert [len(s) for s in slices] == [2, 2, 1]
