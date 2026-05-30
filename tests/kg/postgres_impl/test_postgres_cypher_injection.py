@@ -230,17 +230,10 @@ async def test_upsert_edge_uses_parameterized_cypher():
         storage, "Alice", "Bob", {"weight": "1.0", "description": "knows"}
     )
 
-    # Two statements run on the connection: advisory lock first, then cypher.
-    assert len(calls) == 2
+    # The edge path takes no advisory lock: a single cypher statement.
+    assert len(calls) == 1
 
-    lock_sql = calls[0]["sql"]
-    # Raw node IDs are positional params on the lock, never interpolated.
-    assert "Alice" not in lock_sql
-    assert "Bob" not in lock_sql
-    # graph_name flows as $1, the endpoint pair as $2/$3.
-    assert calls[0]["args"] == ("test_graph", "Alice", "Bob")
-
-    cypher_call = calls[1]
+    cypher_call = calls[0]
     cypher_sql = cypher_call["sql"]
     assert "$1::agtype" in cypher_sql
     assert '"Alice"' not in cypher_sql.replace("$1::agtype", "")
@@ -264,7 +257,7 @@ async def test_upsert_edge_injection_payload():
         storage, injection_src, injection_tgt, {"description": "edge"}
     )
 
-    # Injection payloads must never appear in either SQL template — they only
+    # Injection payloads must never appear in the SQL template — they only
     # flow through positional params.
     for call in calls:
         assert "DETACH DELETE" not in call["sql"]
@@ -272,11 +265,8 @@ async def test_upsert_edge_injection_payload():
         assert injection_src not in call["sql"]
         assert injection_tgt not in call["sql"]
 
-    # Lock statement passes graph_name + raw IDs as positional params.
-    assert calls[0]["args"] == ("test_graph", injection_src, injection_tgt)
-
     # Cypher params arrive as a single positional agtype JSON arg.
-    params = json.loads(calls[1]["args"][0])
+    params = json.loads(calls[0]["args"][0])
     assert params["src_id"] == injection_src
     assert params["tgt_id"] == injection_tgt
 
@@ -291,15 +281,12 @@ async def test_upsert_edge_unicode_entity_ids():
         storage, src, tgt, {"description": "\u8def\u7ebf"}
     )
 
-    # Lock statement carries graph_name + raw IDs as positional params, not
-    # interpolated.
-    assert calls[0]["args"] == ("test_graph", src, tgt)
-    assert src not in calls[0]["sql"]
-    assert tgt not in calls[0]["sql"]
-
-    # Cypher params parsed from the positional agtype JSON arg.
-    cypher_sql = calls[1]["sql"]
-    params = json.loads(calls[1]["args"][0])
+    # Cypher params parsed from the positional agtype JSON arg; raw IDs never
+    # interpolated into the SQL template.
+    cypher_sql = calls[0]["sql"]
+    assert src not in cypher_sql
+    assert tgt not in cypher_sql
+    params = json.loads(calls[0]["args"][0])
     assert params["src_id"] == src
     assert params["tgt_id"] == tgt
     assert '`description`: "路线"' in cypher_sql

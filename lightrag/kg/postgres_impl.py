@@ -5814,21 +5814,6 @@ def _is_transient_graph_write_error(exc: BaseException) -> bool:
     )
 
 
-# Transaction-scoped advisory lock that serialises concurrent upserts of the
-# same logical edge. Keyed on (graph_name, ordered (src, tgt)) so {A,B}/{B,A}
-# collide while the same pair in a different graph/workspace does not. See
-# PGGraphStorage.upsert_edge for the full rationale.
-_EDGE_ADVISORY_LOCK_SQL = (
-    "SELECT pg_advisory_xact_lock("
-    "  hashtextextended("
-    "    $1::text || E'\\x01' ||"
-    "    LEAST($2::text, $3::text) || E'\\x01' || GREATEST($2::text, $3::text),"
-    "    0"
-    "  )"
-    ")"
-)
-
-
 @final
 @dataclass
 class PGGraphStorage(BaseGraphStorage):
@@ -6346,8 +6331,7 @@ class PGGraphStorage(BaseGraphStorage):
         Shared by ``upsert_edge`` and ``upsert_edges_batch``. The endpoint ids
         are parameterized; edge properties are inlined in the CREATE clause (the
         only reliable way to persist edge properties in AGE -- see
-        ``upsert_edge`` for the full rationale). The advisory lock is issued
-        separately via ``_EDGE_ADVISORY_LOCK_SQL``.
+        ``upsert_edge`` for the full rationale).
         """
         props_literal = self._format_properties(edge_data) if edge_data else "{}"
         cypher_query = f"""MATCH (source:base {{entity_id: $src_id}})
@@ -6398,6 +6382,11 @@ class PGGraphStorage(BaseGraphStorage):
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Upsert a node in the Neo4j database.
+
+        Caller contract:
+            Not exposed as a public API and not meant for direct/concurrent use.
+            The caller MUST guarantee single-writer-per-workspace
+            (``pipeline_status`` idle) so no other writer races this node.
 
         Args:
             node_id: The unique identifier for the node (used as label)
@@ -6452,6 +6441,12 @@ class PGGraphStorage(BaseGraphStorage):
         """
         Upsert an edge and its properties between two nodes identified by their labels.
 
+        Caller contract:
+            Not exposed as a public API and not meant for direct/concurrent use.
+            The caller MUST guarantee single-writer-per-workspace (the document
+            pipeline's ``busy`` / ``destructive_busy`` gate, i.e. ``pipeline_status``
+            idle) so no other writer races this edge. See the class docstring.
+
         Args:
             source_node_id (str): Label of the source node (used as identifier)
             target_node_id (str): Label of the target node (used as identifier)
@@ -6465,22 +6460,11 @@ class PGGraphStorage(BaseGraphStorage):
         # directly in a CREATE clause. We use OPTIONAL MATCH to delete any existing
         # edge first so the operation remains idempotent.
         #
-        # Concurrency: OPTIONAL MATCH + DELETE + CREATE is not atomic against other
-        # writers — two transactions upserting the same pair could both observe no
-        # existing edge and both CREATE one, leaving duplicate DIRECTED rows that
-        # inflate degree counts and duplicate relations. We serialise per logical
-        # edge with a transaction-scoped advisory lock keyed on
-        # (graph_name, ordered (src_id, tgt_id)) so:
-        #   - {A,B} and {B,A} collide on the same lock (the OPTIONAL MATCH is
-        #     undirected), and
-        #   - the same (A,B) pair in different AGE graphs / workspaces does NOT
-        #     collide. pg_advisory_xact_lock is database-wide, and we don't want
-        #     independent tenants to serialise each other's ingestion.
-        # AGE refuses to plan a join against a cypher() call that contains a
-        # CREATE clause ("cypher create clause cannot be rescanned"), so we cannot
-        # use a CTE for the lock. Instead we open an explicit transaction and run
-        # two statements on the same connection: the lock acquisition first, then
-        # the cypher upsert. The lock is released when the transaction commits.
+        # Concurrency: OPTIONAL MATCH + DELETE + CREATE is not atomic against a
+        # *concurrent* writer of the same pair (both could observe no edge and both
+        # CREATE one, leaving duplicate DIRECTED rows). No DB-side advisory lock is
+        # taken: the single-writer-per-workspace contract above guarantees there is
+        # no concurrent writer, so the lone-statement transaction is sufficient.
         cypher_sql, params_json = self._build_upsert_edge_sql(
             source_node_id, target_node_id, edge_data
         )
@@ -6495,12 +6479,6 @@ class PGGraphStorage(BaseGraphStorage):
 
         async def _operation(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
-                await connection.execute(
-                    _EDGE_ADVISORY_LOCK_SQL,
-                    self.graph_name,
-                    source_node_id,
-                    target_node_id,
-                )
                 await connection.execute(cypher_sql, params_json)
 
         try:
@@ -6609,6 +6587,11 @@ class PGGraphStorage(BaseGraphStorage):
         AGE-configure / transaction overhead of the old serial fallback.
         Deduplicating by node ID first preserves last-write-wins.
 
+        Caller contract:
+            Not exposed as a public API and not meant for direct/concurrent use.
+            The caller MUST guarantee single-writer-per-workspace
+            (``pipeline_status`` idle) so no other writer races these nodes.
+
         Args:
             nodes: List of (node_id, node_data) tuples.
         """
@@ -6660,23 +6643,13 @@ class PGGraphStorage(BaseGraphStorage):
         """Upsert one chunk of edges in a single AGE transaction.
 
         Each edge runs its OPTIONAL MATCH + DELETE + CREATE as one statement, all
-        wrapped in a single transaction. Unlike the single-row ``upsert_edge``,
-        the batch path does **not** take the per-edge ``pg_advisory_xact_lock``:
-
-          * Same-edge write races are already excluded by the single-writer
-            -per-workspace pipeline contract and the application-level keyed
-            locks the callers hold (operate.py's per-edge
-            ``get_storage_keyed_lock`` for the single path, and
-            ``ainsert_custom_kg``'s coarse keyed lock over every endpoint for the
-            batch path), so the lock's cross-process defense is redundant here.
-          * Holding one advisory lock per edge until the chunk commits would mean
-            up to ``_max_upsert_records_per_batch`` simultaneous locks (and
-            unboundedly many if the cap is disabled), risking shared-lock-table
-            exhaustion -- the opposite of what chunking is for.
-
-        Edges are still deduped within the chunk, so no edge is touched twice in
-        one transaction. Retry semantics mirror ``upsert_edge``: MERGE / DELETE +
-        CREATE are idempotent, so a full-chunk replay is safe.
+        wrapped in a single transaction. Like ``upsert_edge``, no advisory lock is
+        taken: the single-writer-per-workspace contract (caller keeps
+        ``pipeline_status`` idle) guarantees no concurrent writer, so the
+        DELETE+CREATE cannot race. Edges are also deduped within the chunk, so no
+        edge is touched twice in one transaction. Retry semantics mirror
+        ``upsert_edge``: DELETE + CREATE is idempotent, so a full-chunk replay is
+        safe.
         """
         built = [
             self._build_upsert_edge_sql(src, tgt, edge_data)
@@ -6719,7 +6692,12 @@ class PGGraphStorage(BaseGraphStorage):
         the per-edge transaction / AGE-configure overhead of the old serial
         fallback. Iteration is in canonical (LEAST, GREATEST) order purely for
         deterministic dedup / reproducible replay; see ``_upsert_edge_chunk`` for
-        why the batch path does not take per-edge advisory locks.
+        why no advisory lock is taken.
+
+        Caller contract:
+            Not exposed as a public API and not meant for direct/concurrent use.
+            The caller MUST guarantee single-writer-per-workspace
+            (``pipeline_status`` idle) so no other writer races these edges.
 
         Args:
             edges: List of (source_node_id, target_node_id, edge_data) tuples.
@@ -6752,6 +6730,11 @@ class PGGraphStorage(BaseGraphStorage):
     async def delete_node(self, node_id: str) -> None:
         """
         Delete a node from the graph.
+
+        Caller contract:
+            Not exposed as a public API and not meant for direct/concurrent use.
+            The caller MUST guarantee single-writer-per-workspace
+            (``pipeline_status`` idle) so no other writer races this delete.
 
         Args:
             node_id (str): The ID of the node to delete.
