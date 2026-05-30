@@ -173,6 +173,116 @@ def _extract_bulk_failed_ids(
     return retryable, non_retryable
 
 
+# Flush-time bulk batching limits. opensearch-py's helpers.async_bulk already
+# splits a request by payload-byte budget (primary) and record count
+# (secondary) via _ActionChunker -- semantically identical to MongoDB's
+# _chunk_by_budget. We only expose those two limiter dimensions as env vars and
+# pass them through as `max_chunk_bytes` / `chunk_size`, mirroring the MONGO_*
+# knobs (lightrag/kg/mongo_impl.py) so behaviour stays consistent across
+# backends. Defaults are tuned for OpenSearch: 100 MiB sits at the typical
+# `http.max_content_length` ceiling, while the record caps match Mongo's.
+DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES = 100 * 1024 * 1024  # 100 MiB
+DEFAULT_OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH = 128
+DEFAULT_OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+# Sentinel "effectively unbounded" byte budget when payload splitting is
+# disabled (env value <= 0). async_bulk needs a positive int here, so we use a
+# large finite value in place of Mongo's float("inf").
+_OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES = 1 << 62
+
+
+def _resolve_bulk_batch_limits() -> tuple[int, int, int]:
+    """Resolve flush-time bulk batching limits from env, with module defaults.
+
+    Shared by every OpenSearch write path so the byte/record caps that bound a
+    single ``async_bulk`` request are consistent across all of them. A
+    non-positive value disables that splitting dimension (see
+    ``_run_chunked_async_bulk``). Returns
+    ``(upsert_payload_bytes, upsert_records, delete_records)``.
+    """
+    upsert_payload_bytes = int(
+        _get_opensearch_env(
+            "OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES",
+            str(DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES),
+        )
+    )
+    upsert_records = int(
+        _get_opensearch_env(
+            "OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH",
+            str(DEFAULT_OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH),
+        )
+    )
+    delete_records = int(
+        _get_opensearch_env(
+            "OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH",
+            str(DEFAULT_OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH),
+        )
+    )
+    if upsert_payload_bytes <= 0:
+        logger.warning(
+            f"OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES={upsert_payload_bytes} is non-positive, disable payload-size splitting"
+        )
+    if upsert_records <= 0:
+        logger.warning(
+            f"OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH={upsert_records} is non-positive, disable upsert record-count splitting"
+        )
+    if delete_records <= 0:
+        logger.warning(
+            f"OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH={delete_records} is non-positive, disable delete record-count splitting"
+        )
+    return upsert_payload_bytes, upsert_records, delete_records
+
+
+async def _run_chunked_async_bulk(
+    client: Any,
+    actions: list[dict[str, Any]],
+    *,
+    max_payload_bytes: int,
+    max_records_per_batch: int,
+    log_prefix: str,
+    what: str,
+    raise_on_error: bool = False,
+    **bulk_kwargs: Any,
+) -> tuple[int, list[Any]]:
+    """Run ``helpers.async_bulk`` with payload-size/record-count bounded chunks.
+
+    A thin wrapper that mirrors ``mongo_impl._run_batched_bulk_write`` in shape,
+    but delegates the actual splitting to opensearch-py's ``_ActionChunker``
+    (byte budget primary, record count secondary, oversized single action
+    emitted as its own chunk -- the same semantics as Mongo's
+    ``_chunk_by_budget``). A non-positive limit disables that dimension. Extra
+    keyword arguments (e.g. ``refresh``) are forwarded to ``async_bulk``.
+    Returns ``async_bulk``'s ``(success, failed)`` tuple (``failed`` is empty
+    when ``raise_on_error=True``).
+    """
+    if not actions:
+        return 0, []
+    chunk_size = max_records_per_batch if max_records_per_batch > 0 else len(actions)
+    max_chunk_bytes = (
+        max_payload_bytes
+        if max_payload_bytes > 0
+        else _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES
+    )
+    if len(actions) > chunk_size:
+        # Log format aligned with mongo_impl's flush split log
+        # (max_payload=/batch= field names, raw configured values). Unlike
+        # Mongo we cannot report the final batch count up front: async_bulk's
+        # _ActionChunker decides it at stream time by byte budget, so this
+        # record-count condition only catches count-driven splits.
+        logger.info(
+            f"{log_prefix} {what} split for {len(actions)} records "
+            f"(max_payload={max_payload_bytes} batch={max_records_per_batch})"
+        )
+    return await helpers.async_bulk(
+        client,
+        actions,
+        chunk_size=chunk_size,
+        max_chunk_bytes=max_chunk_bytes,
+        raise_on_error=raise_on_error,
+        **bulk_kwargs,
+    )
+
+
 # Detected at first connection; True when OpenSearch >= 3.3.0.
 _shard_doc_supported: bool | None = None
 
@@ -406,6 +516,11 @@ class OpenSearchKVStorage(BaseKVStorage):
         # acquire this lock so an in-flight flush cannot interleave with
         # concurrent get_by_id / upsert / delete on the same workspace.
         self._flush_lock = None
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+            self._max_delete_records_per_batch,
+        ) = _resolve_bulk_batch_limits()
 
     async def initialize(self):
         """Initialize client connection and create index if needed."""
@@ -782,32 +897,52 @@ class OpenSearchKVStorage(BaseKVStorage):
             pending_upserts = self._pending_upserts
             pending_deletes = self._pending_kv_deletes
 
-            # Deletes come first so that a delete followed (in time) by an
-            # upsert on the same id is still observable as an index after
-            # the bulk completes; we also dedupe via the set/dict already.
-            actions: list[dict[str, Any]] = []
-            for doc_id in pending_deletes:
-                actions.append(
-                    {
-                        "_op_type": "delete",
-                        "_index": self._index_name,
-                        "_id": doc_id,
-                    }
-                )
-            for doc_id, source in pending_upserts.items():
-                actions.append(
-                    {
-                        "_op_type": "index",
-                        "_index": self._index_name,
-                        "_id": doc_id,
-                        "_source": source,
-                    }
-                )
+            # Deletes are flushed before upserts so a delete followed (in time)
+            # by an upsert on the same id still ends as an index; the two
+            # buffers are disjoint anyway (upsert/delete pop each other), so
+            # running them as separate async_bulk requests is safe and lets the
+            # delete record-count cap differ from the upsert cap (mirrors
+            # mongo_impl's separate upsert/delete phases).
+            delete_actions: list[dict[str, Any]] = [
+                {
+                    "_op_type": "delete",
+                    "_index": self._index_name,
+                    "_id": doc_id,
+                }
+                for doc_id in pending_deletes
+            ]
+            index_actions: list[dict[str, Any]] = [
+                {
+                    "_op_type": "index",
+                    "_index": self._index_name,
+                    "_id": doc_id,
+                    "_source": source,
+                }
+                for doc_id, source in pending_upserts.items()
+            ]
 
             try:
-                success, failed = await helpers.async_bulk(
-                    self.client, actions, raise_on_error=False
+                log_prefix = f"[{self.workspace}] {self.namespace} flush:"
+                del_success, del_failed = await _run_chunked_async_bulk(
+                    self.client,
+                    delete_actions,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_delete_records_per_batch,
+                    log_prefix=log_prefix,
+                    what="delete",
+                    raise_on_error=False,
                 )
+                idx_success, idx_failed = await _run_chunked_async_bulk(
+                    self.client,
+                    index_actions,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_upsert_records_per_batch,
+                    log_prefix=log_prefix,
+                    what="upsert",
+                    raise_on_error=False,
+                )
+                success = del_success + idx_success
+                failed = list(del_failed) + list(idx_failed)
             except OpenSearchException as e:
                 logger.error(
                     f"[{self.workspace}] Error flushing KV ops "
@@ -957,6 +1092,11 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         self.workspace, self.final_namespace, self._index_name = _build_index_name(
             self.workspace, self.namespace
         )
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+            self._max_delete_records_per_batch,
+        ) = _resolve_bulk_batch_limits()
 
     def _prepare_doc_status_data(self, doc: dict[str, Any]) -> dict[str, Any]:
         """Normalize a raw OpenSearch document to DocProcessingStatus-compatible dict."""
@@ -1153,8 +1293,15 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         try:
             # DocStatus needs refresh="wait_for" because get_docs_by_status
             # (search-based) is called immediately after enqueue upserts.
-            await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+            await _run_chunked_async_bulk(
+                self.client,
+                actions,
+                max_payload_bytes=self._max_upsert_payload_bytes,
+                max_records_per_batch=self._max_upsert_records_per_batch,
+                log_prefix=f"[{self.workspace}] {self.namespace} upsert:",
+                what="doc-status upsert",
+                raise_on_error=False,
+                refresh="wait_for",
             )
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error upserting doc statuses: {e}")
@@ -1504,8 +1651,15 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
             ]
-            await helpers.async_bulk(
-                self.client, actions, raise_on_error=False, refresh="wait_for"
+            await _run_chunked_async_bulk(
+                self.client,
+                actions,
+                max_payload_bytes=self._max_upsert_payload_bytes,
+                max_records_per_batch=self._max_delete_records_per_batch,
+                log_prefix=f"[{self.workspace}] {self.namespace} delete:",
+                what="doc-status delete",
+                raise_on_error=False,
+                refresh="wait_for",
             )
         except OpenSearchException as e:
             if _is_missing_index_error(e):
@@ -1575,6 +1729,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         )
         self._nodes_index = f"{base_name}-nodes"
         self._edges_index = f"{base_name}-edges"
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+            self._max_delete_records_per_batch,
+        ) = _resolve_bulk_batch_limits()
 
     async def initialize(self):
         """Initialize client, create indices, and detect PPL graphlookup support."""
@@ -2132,7 +2291,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "_source": doc,
                     }
                 )
-            await helpers.async_bulk(self.client, actions)
+            await _run_chunked_async_bulk(
+                self.client,
+                actions,
+                max_payload_bytes=self._max_upsert_payload_bytes,
+                max_records_per_batch=self._max_upsert_records_per_batch,
+                log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
+                what="node upsert",
+                raise_on_error=True,
+            )
             self._nodes_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error during batch node upsert: {e}")
@@ -2229,7 +2396,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         "_source": doc,
                     }
                 )
-            await helpers.async_bulk(self.client, actions)
+            await _run_chunked_async_bulk(
+                self.client,
+                actions,
+                max_payload_bytes=self._max_upsert_payload_bytes,
+                max_records_per_batch=self._max_upsert_records_per_batch,
+                log_prefix=f"[{self.workspace}] {self.namespace} edges:",
+                what="edge upsert",
+                raise_on_error=True,
+            )
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error during batch edge upsert: {e}")
@@ -2306,7 +2481,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 {"_op_type": "delete", "_index": self._nodes_index, "_id": nid}
                 for nid in nodes
             ]
-            await helpers.async_bulk(self.client, actions, raise_on_error=False)
+            await _run_chunked_async_bulk(
+                self.client,
+                actions,
+                max_payload_bytes=self._max_upsert_payload_bytes,
+                max_records_per_batch=self._max_delete_records_per_batch,
+                log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
+                what="node delete",
+                raise_on_error=False,
+            )
             self._nodes_dirty = True
             self._edges_dirty = True
         except OpenSearchException as e:
@@ -2342,7 +2525,21 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                             }
                         }
                     )
-            await self.client.bulk(body=operations)
+            # The raw bulk API does not auto-chunk (unlike helpers.async_bulk),
+            # so split the operation list by the delete record-count cap to keep
+            # each request bounded (mirrors mongo_impl's chunked delete_many).
+            chunk = (
+                self._max_delete_records_per_batch
+                if self._max_delete_records_per_batch > 0
+                else len(operations)
+            )
+            if len(operations) > chunk:
+                logger.info(
+                    f"[{self.workspace}] {self.namespace} edges: edge delete "
+                    f"{len(operations)} ops split into bulk chunks (chunk={chunk})"
+                )
+            for i in range(0, len(operations), chunk):
+                await self.client.bulk(body=operations[i : i + chunk])
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
@@ -3141,6 +3338,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         # this lock to keep in-process readers race-free during a flush and
         # to order cross-worker flushes against the same OpenSearch index.
         self._flush_lock = None
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+            self._max_delete_records_per_batch,
+        ) = _resolve_bulk_batch_limits()
 
     async def initialize(self):
         """Initialize client and create k-NN vector index."""
@@ -3444,21 +3646,26 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     pending_doc.vector = embedding.tolist()
                     await _cooperative_yield(i)
 
-            actions: list[dict[str, Any]] = []
-            for doc_id in pending_deletes:
-                actions.append(
-                    {
-                        "_op_type": "delete",
-                        "_index": self._index_name,
-                        "_id": doc_id,
-                    }
-                )
+            # Deletes and upserts go as separate async_bulk requests so the
+            # delete record-count cap can differ from the upsert cap (mirrors
+            # mongo_impl's separate upsert/delete phases). The two buffers are
+            # disjoint -- delete() pops from pending_docs and upsert() discards
+            # from pending_deletes -- so request ordering is irrelevant.
+            delete_actions: list[dict[str, Any]] = [
+                {
+                    "_op_type": "delete",
+                    "_index": self._index_name,
+                    "_id": doc_id,
+                }
+                for doc_id in pending_deletes
+            ]
             committed_doc_ids: set[str] = set()
+            index_actions: list[dict[str, Any]] = []
             for doc_id, pending_doc in pending_docs.items():
                 if pending_doc.vector is None:
                     continue
                 committed_doc_ids.add(doc_id)
-                actions.append(
+                index_actions.append(
                     {
                         "_op_type": "index",
                         "_index": self._index_name,
@@ -3469,15 +3676,32 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                         },
                     }
                 )
-            if not actions:
+            if not delete_actions and not index_actions:
                 return
 
             try:
                 # No per-operation refresh: search visibility is established
                 # by the refresh in index_done_callback().
-                _, failed = await helpers.async_bulk(
-                    self.client, actions, raise_on_error=False
+                log_prefix = f"[{self.workspace}] {self.namespace} flush:"
+                _, del_failed = await _run_chunked_async_bulk(
+                    self.client,
+                    delete_actions,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_delete_records_per_batch,
+                    log_prefix=log_prefix,
+                    what="delete",
+                    raise_on_error=False,
                 )
+                _, idx_failed = await _run_chunked_async_bulk(
+                    self.client,
+                    index_actions,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_upsert_records_per_batch,
+                    log_prefix=log_prefix,
+                    what="upsert",
+                    raise_on_error=False,
+                )
+                failed = list(del_failed) + list(idx_failed)
             except OpenSearchException as e:
                 logger.error(
                     f"[{self.workspace}] Error flushing vector ops "

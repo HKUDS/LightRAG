@@ -29,6 +29,12 @@ from lightrag.kg.opensearch_impl import (
     _resolve_workspace,
     _sanitize_index_name,
     _verify_mirrored_id_mapping,
+    _resolve_bulk_batch_limits,
+    _run_chunked_async_bulk,
+    _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES,
+    DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES,
+    DEFAULT_OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH,
+    DEFAULT_OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH,
 )
 from lightrag.base import DocStatus, DocProcessingStatus
 
@@ -242,6 +248,104 @@ class TestHelpers:
         assert _sanitize_index_name("Hello_World") == "hello_world"
         assert _sanitize_index_name("-bad") == "x-bad"
         assert _sanitize_index_name("a.b/c") == "a_b_c"
+
+
+# ---------------------------------------------------------------------------
+# Bulk batching limits (mirrors mongo_impl's payload/record split)
+# ---------------------------------------------------------------------------
+
+
+class TestBulkBatchLimits:
+    """Tests for _resolve_bulk_batch_limits and the _run_chunked_async_bulk wrapper."""
+
+    def test_resolve_defaults(self):
+        with patch.dict("os.environ", {}, clear=True):
+            payload, upserts, deletes = _resolve_bulk_batch_limits()
+        assert payload == DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES
+        assert upserts == DEFAULT_OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH
+        assert deletes == DEFAULT_OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH
+
+    def test_resolve_env_override(self):
+        env = {
+            "OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES": "12345",
+            "OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH": "7",
+            "OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH": "9",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            assert _resolve_bulk_batch_limits() == (12345, 7, 9)
+
+    def test_resolve_non_positive_disables_and_warns(self):
+        env = {
+            "OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES": "0",
+            "OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH": "-1",
+            "OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH": "0",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            with patch("lightrag.kg.opensearch_impl.logger") as mock_logger:
+                payload, upserts, deletes = _resolve_bulk_batch_limits()
+        assert (payload, upserts, deletes) == (0, -1, 0)
+        # one warning per disabled dimension
+        warnings = [c.args[0] for c in mock_logger.warning.call_args_list]
+        assert sum("non-positive" in msg for msg in warnings) == 3
+
+    @pytest.mark.asyncio
+    async def test_run_chunked_empty_short_circuits(self):
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+        ) as mock_bulk:
+            success, failed = await _run_chunked_async_bulk(
+                AsyncMock(),
+                [],
+                max_payload_bytes=10,
+                max_records_per_batch=10,
+                log_prefix="x",
+                what="y",
+            )
+        assert (success, failed) == (0, [])
+        mock_bulk.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_run_chunked_forwards_limits(self):
+        actions = [{"_op_type": "index", "_id": str(i)} for i in range(3)]
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+        ) as mock_bulk:
+            mock_bulk.return_value = (3, [])
+            await _run_chunked_async_bulk(
+                "client",
+                actions,
+                max_payload_bytes=4096,
+                max_records_per_batch=2,
+                log_prefix="[ws] ns:",
+                what="upsert",
+                refresh="wait_for",
+            )
+        _, kwargs = mock_bulk.call_args
+        assert kwargs["chunk_size"] == 2
+        assert kwargs["max_chunk_bytes"] == 4096
+        assert kwargs["raise_on_error"] is False
+        assert kwargs["refresh"] == "wait_for"
+
+    @pytest.mark.asyncio
+    async def test_run_chunked_non_positive_uses_sentinels(self):
+        actions = [{"_op_type": "index", "_id": str(i)} for i in range(3)]
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+        ) as mock_bulk:
+            mock_bulk.return_value = (3, [])
+            await _run_chunked_async_bulk(
+                "client",
+                actions,
+                max_payload_bytes=0,
+                max_records_per_batch=0,
+                log_prefix="x",
+                what="y",
+            )
+        _, kwargs = mock_bulk.call_args
+        # disabled record cap -> whole list in one chunk; disabled byte cap ->
+        # large finite sentinel (async_bulk needs a positive int).
+        assert kwargs["chunk_size"] == len(actions)
+        assert kwargs["max_chunk_bytes"] == _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -1184,6 +1288,37 @@ class TestKVStorageBatching:
                 # k1 flushed and cleared; k2 added after flush released.
                 assert "k1" not in s._pending_upserts
                 assert "k2" in s._pending_upserts
+
+    @pytest.mark.asyncio
+    async def test_flush_splits_delete_and_upsert_into_separate_phases(
+        self, global_config, embed_func, mock_client
+    ):
+        """A mixed flush issues two async_bulk calls, each with its own cap.
+
+        Deletes and upserts go as separate requests so the delete record-count
+        cap can differ from the upsert cap (mirrors mongo_impl). The per-call
+        failed lists are merged before retry classification.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                # Distinct caps so we can tell the two phases apart.
+                s._max_upsert_records_per_batch = 11
+                s._max_delete_records_per_batch = 22
+                await s.upsert({"keep": {"content": "v"}})
+                await s.delete(["gone"])
+                await s.index_done_callback()
+
+                assert mock_bulk.await_count == 2
+                by_op = {}
+                for call in mock_bulk.call_args_list:
+                    actions = call.args[1]
+                    by_op[actions[0]["_op_type"]] = call.kwargs["chunk_size"]
+                assert by_op == {"delete": 22, "index": 11}
 
 
 # ---------------------------------------------------------------------------
