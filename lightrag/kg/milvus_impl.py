@@ -1747,7 +1747,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 for i, ((_, pdoc), embedding) in enumerate(
                     zip(docs_to_embed, embeddings), start=1
                 ):
-                    pdoc.vector = embedding.tolist()
+                    # Cache as float32 so a second flush after a server-side
+                    # error doesn't re-embed, and so the upsert JSON payload
+                    # stays compact (float32 serializes to a shorter string
+                    # than float64, and Milvus stores FLOAT_VECTOR as float32
+                    # anyway, so the cast is lossless).
+                    pdoc.vector = np.array(embedding, dtype=np.float32).tolist()
                     await _cooperative_yield(i)
 
             # Assemble final upsert payload. After the embed loop above every
@@ -2063,7 +2068,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 for i, ((doc_id, pdoc), embedding) in enumerate(
                     zip(docs_to_embed, embeddings), start=1
                 ):
-                    pdoc.vector = embedding.tolist()
+                    # Cache float32 to match the flush path so the buffered
+                    # vector dtype is uniform regardless of which path embedded.
+                    pdoc.vector = np.array(embedding, dtype=np.float32).tolist()
                     result[doc_id] = pdoc.vector
                     await _cooperative_yield(i)
 
