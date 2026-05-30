@@ -3179,8 +3179,11 @@ class PGKVStorage(BaseKVStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
-        # Chunk the id list so a very large ANY($2) array stays a bounded
-        # single request (a non-positive cap disables chunking).
+        # Chunk the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables chunking). All chunks run in ONE
+        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # the original single-statement all-or-nothing behaviour; _run_with_retry
+        # re-runs the whole closure on transient errors (DELETE is idempotent).
         chunk = (
             self._max_delete_records_per_batch
             if self._max_delete_records_per_batch > 0
@@ -3191,12 +3194,16 @@ class PGKVStorage(BaseKVStorage):
                 f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
                 f"split into chunks (chunk={chunk})"
             )
+
+        async def _batch_delete(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                for i in range(0, len(ids), chunk):
+                    await connection.execute(
+                        delete_sql, self.workspace, ids[i : i + chunk]
+                    )
+
         try:
-            for i in range(0, len(ids), chunk):
-                id_slice = ids[i : i + chunk]
-                await self.db.execute(
-                    delete_sql, {"workspace": self.workspace, "ids": id_slice}
-                )
+            await self.db._run_with_retry(_batch_delete)
             logger.debug(
                 f"[{self.workspace}] Successfully deleted {len(ids)} records from {self.namespace}"
             )
@@ -5552,8 +5559,11 @@ class PGDocStatusStorage(DocStatusStorage):
 
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
-        # Chunk the id list so a very large ANY($2) array stays a bounded
-        # single request (a non-positive cap disables chunking).
+        # Chunk the id list so each statement's ANY($2) array stays bounded
+        # (a non-positive cap disables chunking). All chunks run in ONE
+        # transaction so a mid-delete failure rolls every chunk back, preserving
+        # the original single-statement all-or-nothing behaviour; _run_with_retry
+        # re-runs the whole closure on transient errors (DELETE is idempotent).
         chunk = (
             self._max_delete_records_per_batch
             if self._max_delete_records_per_batch > 0
@@ -5564,12 +5574,16 @@ class PGDocStatusStorage(DocStatusStorage):
                 f"[{self.workspace}] {self.namespace} delete: {len(ids)} ids "
                 f"split into chunks (chunk={chunk})"
             )
+
+        async def _batch_delete(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                for i in range(0, len(ids), chunk):
+                    await connection.execute(
+                        delete_sql, self.workspace, ids[i : i + chunk]
+                    )
+
         try:
-            for i in range(0, len(ids), chunk):
-                id_slice = ids[i : i + chunk]
-                await self.db.execute(
-                    delete_sql, {"workspace": self.workspace, "ids": id_slice}
-                )
+            await self.db._run_with_retry(_batch_delete)
             logger.debug(
                 f"[{self.workspace}] Successfully deleted {len(ids)} records from {self.namespace}"
             )
