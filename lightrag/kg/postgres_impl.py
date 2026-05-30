@@ -4137,10 +4137,14 @@ class PGVectorStorage(BaseVectorStorage):
                     f"for {len(batch_values)} records"
                 )
 
+            # ``or 1`` guards an upsert-only flush: with the delete cap disabled
+            # (<= 0) and no pending deletes, the fallback would be 0 and the
+            # range() step below would raise even though there is nothing to
+            # delete. The empty-list loop then simply no-ops.
             delete_chunk = (
                 self._max_delete_records_per_batch
                 if self._max_delete_records_per_batch > 0
-                else len(pending_delete_ids)
+                else len(pending_delete_ids) or 1
             )
             if pending_delete_ids and len(pending_delete_ids) > delete_chunk:
                 logger.info(

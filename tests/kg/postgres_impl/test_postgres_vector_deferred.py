@@ -931,6 +931,38 @@ async def test_flush_delete_splits_by_id_cap():
 
 
 @pytest.mark.asyncio
+async def test_upsert_only_flush_with_delete_splitting_disabled():
+    """Regression: delete cap <= 0 + no pending deletes must not raise.
+
+    The disabled-delete fallback used to yield delete_chunk == 0, making the
+    empty-delete range() step raise ValueError and fail the upsert.
+    """
+    storage = _make_storage()
+    storage._max_delete_records_per_batch = 0  # documented "disable splitting"
+
+    await storage.upsert({"c1": _chunk_data(content="alpha")})
+    await storage.index_done_callback()  # upsert-only flush, no deletes
+
+    assert len(storage._captured_executemany) == 1
+    assert storage._captured_execute == []
+    assert storage._pending_vector_docs == {}
+
+
+@pytest.mark.asyncio
+async def test_flush_delete_with_splitting_disabled_runs_single_statement():
+    """delete cap <= 0 sends every pending id in one ANY($2) statement."""
+    storage = _make_storage()
+    storage._max_delete_records_per_batch = 0
+
+    await storage.delete([f"c{i}" for i in range(5)])
+    await storage.index_done_callback()
+
+    assert len(storage._captured_execute) == 1
+    _, args = storage._captured_execute[0]
+    assert len(args[1]) == 5
+
+
+@pytest.mark.asyncio
 async def test_flush_upsert_and_delete_are_separate_phases():
     storage = _make_storage()
     storage._max_upsert_records_per_batch = 10
