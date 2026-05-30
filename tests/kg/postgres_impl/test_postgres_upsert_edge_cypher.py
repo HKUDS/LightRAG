@@ -332,13 +332,8 @@ async def _capture_upsert_edges_batch(storage: PGGraphStorage, edges):
 
 @pytest.mark.asyncio
 async def test_upsert_edges_batch_iterates_in_sorted_order():
-    """A chunk acquires its advisory locks in canonical (LEAST, GREATEST) order
-    regardless of insertion order.
-
-    Now load-bearing: a chunk transaction holds several edge locks until commit,
-    so a globally consistent acquisition order is what prevents cross-worker
-    deadlocks.
-    """
+    """A chunk emits edge cypher in canonical (LEAST, GREATEST) order regardless
+    of insertion order (deterministic dedup / reproducible replay)."""
     storage = make_graph_storage()
 
     # Insertion order intentionally non-canonical: B-A, C-A, D-A.
@@ -351,14 +346,15 @@ async def test_upsert_edges_batch_iterates_in_sorted_order():
         ],
     )
 
-    # Lock statements carry (graph_name, src, tgt); collect them in execution
-    # order and check the canonicalised pairs are sorted.
-    lock_pairs = [
-        (c["args"][1], c["args"][2])
-        for c in calls
-        if "pg_advisory_xact_lock" in c["sql"]
+    # The batch path takes no advisory lock; order is observed from the cypher
+    # calls' bound (src_id, tgt_id) params, canonicalised.
+    assert not any("pg_advisory_xact_lock" in c["sql"] for c in calls)
+    cypher_calls = [c for c in calls if "CREATE (source)-[r:DIRECTED" in c["sql"]]
+    edge_pairs = [
+        (json.loads(c["args"][0])["src_id"], json.loads(c["args"][0])["tgt_id"])
+        for c in cypher_calls
     ]
-    canonical_keys = [tuple(sorted(pair)) for pair in lock_pairs]
+    canonical_keys = [tuple(sorted(pair)) for pair in edge_pairs]
     assert canonical_keys == sorted(canonical_keys)
     assert canonical_keys == [("A", "B"), ("A", "C"), ("A", "D")]
 

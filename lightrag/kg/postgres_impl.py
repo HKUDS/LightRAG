@@ -6659,25 +6659,34 @@ class PGGraphStorage(BaseGraphStorage):
     ) -> None:
         """Upsert one chunk of edges in a single AGE transaction.
 
-        Each edge acquires its transaction-scoped advisory lock then runs its
-        OPTIONAL MATCH + DELETE + CREATE, all in one transaction. The caller
-        feeds edges in canonical (LEAST, GREATEST) order, so a chunk acquires its
-        several locks in a globally consistent order across workers -- this is
-        what prevents deadlocks now that a chunk holds multiple edge locks until
-        commit. Retry semantics mirror ``upsert_edge``.
+        Each edge runs its OPTIONAL MATCH + DELETE + CREATE as one statement, all
+        wrapped in a single transaction. Unlike the single-row ``upsert_edge``,
+        the batch path does **not** take the per-edge ``pg_advisory_xact_lock``:
+
+          * Same-edge write races are already excluded by the single-writer
+            -per-workspace pipeline contract and the application-level keyed
+            locks the callers hold (operate.py's per-edge
+            ``get_storage_keyed_lock`` for the single path, and
+            ``ainsert_custom_kg``'s coarse keyed lock over every endpoint for the
+            batch path), so the lock's cross-process defense is redundant here.
+          * Holding one advisory lock per edge until the chunk commits would mean
+            up to ``_max_upsert_records_per_batch`` simultaneous locks (and
+            unboundedly many if the cap is disabled), risking shared-lock-table
+            exhaustion -- the opposite of what chunking is for.
+
+        Edges are still deduped within the chunk, so no edge is touched twice in
+        one transaction. Retry semantics mirror ``upsert_edge``: MERGE / DELETE +
+        CREATE are idempotent, so a full-chunk replay is safe.
         """
         built = [
-            (src, tgt, *self._build_upsert_edge_sql(src, tgt, edge_data))
+            self._build_upsert_edge_sql(src, tgt, edge_data)
             for src, tgt, edge_data in chunk
         ]
         timing_label = f"{self.workspace} PGGraphStorage.upsert_edges_batch"
 
         async def _operation(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
-                for src, tgt, cypher_sql, params_json in built:
-                    await connection.execute(
-                        _EDGE_ADVISORY_LOCK_SQL, self.graph_name, src, tgt
-                    )
+                for cypher_sql, params_json in built:
                     await connection.execute(cypher_sql, params_json)
 
         try:
@@ -6693,7 +6702,7 @@ class PGGraphStorage(BaseGraphStorage):
             raise PGGraphQueryException(
                 {
                     "message": "Error executing graph upsert_edges_batch chunk",
-                    "wrapped": built[0][2] if built else "",
+                    "wrapped": built[0][0] if built else "",
                     "detail": repr(e),
                     "error_type": e.__class__.__name__,
                 }
@@ -6705,14 +6714,12 @@ class PGGraphStorage(BaseGraphStorage):
         """Batch insert/update multiple edges in chunk-level transactions.
 
         AGE relationships are undirected, so reciprocal duplicates are deduped to
-        the last update per endpoint pair. Edges are processed in canonical
-        (LEAST, GREATEST) order and grouped into payload/record-bounded chunks,
-        each run in one transaction -- removing the per-edge transaction / AGE
-        configure overhead of the old serial fallback. The canonical order is now
-        load-bearing: a chunk holds several advisory locks until commit, and a
-        consistent global acquisition order across workers prevents deadlocks
-        (do not disable the record cap, or a chunk could hold unboundedly many
-        locks for an unbounded time).
+        the last update per endpoint pair. Edges are grouped into
+        payload/record-bounded chunks, each run in one transaction -- removing
+        the per-edge transaction / AGE-configure overhead of the old serial
+        fallback. Iteration is in canonical (LEAST, GREATEST) order purely for
+        deterministic dedup / reproducible replay; see ``_upsert_edge_chunk`` for
+        why the batch path does not take per-edge advisory locks.
 
         Args:
             edges: List of (source_node_id, target_node_id, edge_data) tuples.
