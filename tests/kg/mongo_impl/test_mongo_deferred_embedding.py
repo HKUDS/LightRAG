@@ -17,7 +17,7 @@ pytest.importorskip(
     reason="pymongo is required for Mongo storage tests",
 )
 
-from pymongo import UpdateOne, DeleteOne  # type: ignore
+from pymongo import UpdateOne  # type: ignore
 
 from lightrag.kg.mongo_impl import MongoVectorDBStorage
 
@@ -304,13 +304,13 @@ async def test_upsert_then_delete_same_id_keeps_delete():
     assert "v1" in s._pending_vector_deletes
 
     await s.index_done_callback()
-    ops = s._data.bulk_write.call_args.args[0]
-    assert len(ops) == 1
-    assert isinstance(ops[0], DeleteOne)
+    s._data.bulk_write.assert_not_called()
+    s._data.delete_many.assert_awaited_once_with({"_id": {"$in": ["v1"]}})
+    assert s._pending_vector_deletes == set()
 
 
 @pytest.mark.asyncio
-async def test_bulk_write_uses_update_one_and_delete_one_mix():
+async def test_flush_uses_update_one_and_delete_many_mix():
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)
 
@@ -319,10 +319,28 @@ async def test_bulk_write_uses_update_one_and_delete_one_mix():
 
     await s.index_done_callback()
     ops = s._data.bulk_write.call_args.args[0]
-    op_types = {type(op).__name__ for op in ops}
-    assert op_types == {"UpdateOne", "DeleteOne"}
     assert sum(isinstance(op, UpdateOne) for op in ops) == 2
-    assert sum(isinstance(op, DeleteOne) for op in ops) == 2
+    s._data.delete_many.assert_awaited_once()
+    delete_filter = s._data.delete_many.await_args.args[0]
+    assert set(delete_filter["_id"]["$in"]) == {"d1", "d2"}
+
+
+@pytest.mark.asyncio
+async def test_flush_chunks_deletes_by_record_count():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    s._max_delete_records_per_batch = 2
+
+    await s.delete([f"d{i}" for i in range(5)])
+
+    await s.index_done_callback()
+
+    assert s._data.delete_many.await_count == 3
+    chunk_sizes = sorted(
+        len(call.args[0]["_id"]["$in"]) for call in s._data.delete_many.await_args_list
+    )
+    assert chunk_sizes == [1, 2, 2]
+    assert s._pending_vector_deletes == set()
 
 
 @pytest.mark.asyncio
