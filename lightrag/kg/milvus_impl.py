@@ -35,7 +35,9 @@ class _PendingVectorDoc:
 # cannot raise that ceiling, so large flushes must be split client-side.
 # The payload-byte budget is the primary limiter; the record-count caps are a
 # secondary guard that only binds when individual records are small.
-DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = 32 * 1024 * 1024  # 32MB, well below the 64MB gRPC ceiling
+DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
+    32 * 1024 * 1024
+)  # 32MB, well below the 64MB gRPC ceiling
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 1000
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
 
