@@ -17,7 +17,7 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..utils import logger, compute_mdhash_id, _cooperative_yield
+from ..utils import logger, compute_mdhash_id, _cooperative_yield, merge_source_ids
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
 from .._version import __version__
@@ -34,7 +34,11 @@ from pymongo.asynchronous.database import AsyncDatabase  # type: ignore
 from pymongo.asynchronous.collection import AsyncCollection  # type: ignore
 from pymongo.operations import SearchIndexModel  # type: ignore
 from pymongo.driver_info import DriverInfo  # type: ignore
-from pymongo.errors import PyMongoError  # type: ignore
+from pymongo.errors import (  # type: ignore
+    PyMongoError,
+    DuplicateKeyError,
+    BulkWriteError,
+)
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -54,6 +58,50 @@ GRAPH_BFS_MODE = os.getenv("MONGO_GRAPH_BFS_MODE", "bidirectional")
 DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16MB
 DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+# MongoDB duplicate-key error code, raised when an upsert insert races the
+# unique edge-endpoint index (another writer inserted the same edge first).
+_DUPLICATE_KEY_CODE = 11000
+
+# Emit a migration progress line every this many deduped docs, so operators
+# watching a large migration see liveness (mirrors the OpenSearch canonical-id
+# migration's progress cadence).
+_EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
+
+
+def _canonical_edge_endpoints(
+    source_node_id: str, target_node_id: str
+) -> tuple[str, str]:
+    """Direction-independent ``(edge_lo, edge_hi)`` endpoints for an undirected edge.
+
+    The sorted pair maps ``(A,B)`` and ``(B,A)`` to the same two field values,
+    so a *compound* unique index on ``(edge_lo, edge_hi)`` lets MongoDB reject
+    the second of two racing inserts (the classic ``$or``-upsert duplicate gap)
+    regardless of direction. Storing the endpoints as two separate fields — not
+    a single delimiter-joined string — avoids any collision between distinct
+    pairs whose ids happen to contain the delimiter (e.g. custom-KG ids), and
+    needs no input sanitisation. Reads keep using the bidirectional ``$or``.
+    """
+    return tuple(sorted((source_node_id, target_node_id)))  # type: ignore[return-value]
+
+
+def _edge_source_id_list(doc: dict[str, Any]) -> list[str]:
+    """Return an edge doc's source ids, from the ``source_ids`` array or by
+    splitting the ``GRAPH_FIELD_SEP``-joined ``source_id`` string."""
+    sids = doc.get("source_ids")
+    if not sids and doc.get("source_id"):
+        sids = doc["source_id"].split(GRAPH_FIELD_SEP)
+    return list(sids or [])
+
+
+def _coerce_weight(weight: Any) -> float | None:
+    """Coerce a (possibly string) edge weight to float, or None if non-numeric."""
+    if weight is None:
+        return None
+    try:
+        return float(weight)
+    except (TypeError, ValueError):
+        return None
 
 
 def _estimate_doc_bytes(doc: Any) -> int:
@@ -153,6 +201,27 @@ def _resolve_upsert_batch_limits() -> tuple[int, int]:
             f"MONGO_UPSERT_MAX_RECORDS_PER_BATCH={max_records_per_batch} is non-positive, disable upsert record-count splitting"
         )
     return max_payload_bytes, max_records_per_batch
+
+
+def _resolve_delete_batch_limit() -> int:
+    """Resolve the flush-time delete record-count cap from env, with module default.
+
+    Shared by every MongoDB delete path that fans a list of match clauses into a
+    single server message (``delete_many`` with ``$in``/``$or``), so the cap that
+    keeps one delete under the bulk message / 16MB query limit is consistent. A
+    non-positive value disables record-count splitting.
+    """
+    max_records_per_batch = int(
+        os.getenv(
+            "MONGO_DELETE_MAX_RECORDS_PER_BATCH",
+            str(DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH),
+        )
+    )
+    if max_records_per_batch <= 0:
+        logger.warning(
+            f"MONGO_DELETE_MAX_RECORDS_PER_BATCH={max_records_per_batch} is non-positive, disable delete record-count splitting"
+        )
+    return max_records_per_batch
 
 
 async def _run_batched_bulk_write(
@@ -1052,6 +1121,7 @@ class MongoGraphStorage(BaseGraphStorage):
             self._max_upsert_payload_bytes,
             self._max_upsert_records_per_batch,
         ) = _resolve_upsert_batch_limits()
+        self._max_delete_records_per_batch = _resolve_delete_batch_limit()
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -1068,6 +1138,11 @@ class MongoGraphStorage(BaseGraphStorage):
             # Create Atlas Search index for better search performance if possible
             await self.create_search_index_if_not_exists()
 
+            # Fail-fast: migrate legacy edges to canonical endpoint fields and
+            # build the unique index before serving (upsert relies on it). Raises
+            # on failure so startup aborts rather than serving a half-migrated graph.
+            await self.create_edge_indexes_and_migrate_if_not_exists()
+
             logger.debug(
                 f"[{self.workspace}] Use MongoDB as KG {self._collection_name}"
             )
@@ -1078,6 +1153,252 @@ class MongoGraphStorage(BaseGraphStorage):
             self.db = None
             self.collection = None
             self.edge_collection = None
+
+    async def create_edge_indexes_and_migrate_if_not_exists(self) -> None:
+        """Create the compound unique edge-endpoint index, migrating legacy edges first.
+
+        Fail-fast one-time migration (mirrors the OpenSearch canonical-id work):
+
+          1. dedupe legacy reciprocal duplicate docs, **merging the full relation
+             payload** into the survivor (provenance unioned, keywords
+             set-unioned, descriptions joined, weight summed — like
+             ``_merge_edges_then_upsert``) so no relation evidence is lost;
+          2. backfill the canonical ``edge_lo`` / ``edge_hi`` endpoints on every
+             remaining doc;
+          3. build the partial **compound** unique index on ``(edge_lo, edge_hi)``.
+
+        The endpoints are two separate fields (not a delimiter-joined string), so
+        distinct pairs never collide even if an id contains the would-be
+        delimiter — no input sanitisation required.
+
+        The index doubles as the completion flag: if it already exists we skip.
+        Anything failing raises, so ``initialize``/startup aborts rather than
+        serving a half-migrated collection (the upsert filter relies on every doc
+        having ``edge_lo``/``edge_hi``). Runs inside ``get_data_init_lock``, so
+        only the first worker of a deployment migrates; the rest skip on the index.
+
+        Assumes no concurrent *old-version* writer adds endpoint-less docs after
+        this completes (true for stop-the-world / single-deployment restarts). A
+        true rolling deploy with mixed code versions writing one collection could
+        leave a straggler duplicate; the remedy is to drop the
+        ``edge_endpoints_unique`` index and let the next startup re-migrate.
+        """
+        workspace_prefix = f"{self.workspace}_" if self.workspace != "" else ""
+        index_name = f"{workspace_prefix}edge_endpoints_unique"
+
+        indexes_cursor = await self.edge_collection.list_indexes()
+        existing_indexes = await indexes_cursor.to_list(length=None)
+        if any(idx.get("name") == index_name for idx in existing_indexes):
+            logger.info(
+                f"[{self.workspace}] Edge collection {self._edge_collection_name} "
+                f"already on canonical edge endpoints; skipping migration"
+            )
+            return
+
+        # Best-effort total for an X/total denominator (estimated_document_count
+        # is O(1) metadata); migration still works if it is unavailable.
+        try:
+            total = await self.edge_collection.estimated_document_count()
+        except PyMongoError:
+            total = None
+        logger.info(
+            f"[{self.workspace}] Starting canonical edge migration for "
+            f"{self._edge_collection_name}"
+            + (f" (~{total} edges to scan)" if total is not None else "")
+        )
+
+        removed = await self._dedupe_legacy_edges()
+        backfilled = await self._backfill_edge_endpoints()
+        # The unique index is the completion flag — only created on full success.
+        # unique build raises if any duplicate slipped through (e.g. a concurrent
+        # old-version writer), which fails startup so the next run retries.
+        await self.edge_collection.create_index(
+            [("edge_lo", 1), ("edge_hi", 1)],
+            name=index_name,
+            unique=True,
+            partialFilterExpression={
+                "edge_lo": {"$exists": True, "$type": "string"},
+                "edge_hi": {"$exists": True, "$type": "string"},
+            },
+        )
+        scanned = total if total is not None else "?"
+        logger.info(
+            f"[{self.workspace}] Canonical edge migration complete for "
+            f"{self._edge_collection_name}: scanned {scanned}, deduped {removed}, "
+            f"backfilled {backfilled}"
+        )
+
+    async def _dedupe_legacy_edges(self) -> int:
+        """Collapse duplicate docs for the same undirected edge into one.
+
+        Groups by the canonical (sorted) endpoint pair; for each group with more
+        than one doc, keeps the newest by ``created_at`` and **merges the
+        non-survivors' relation payload into it before deleting them** so no
+        relation evidence is lost: ``source_ids``/``source_id``/``file_path`` and
+        ``description`` are unioned over their ``GRAPH_FIELD_SEP`` components,
+        ``keywords`` are comma-set-unioned, and ``weight`` is **summed** (like
+        ``_merge_edges_then_upsert`` — duplicate docs carry separate accumulated
+        weight).
+
+        The merge is **idempotent across retries**: if a transient error aborts
+        startup after the survivor update but before the delete, the next run
+        re-processes the same group and must produce the same survivor. The union
+        fields union their split components (re-merging an already-merged
+        survivor is a no-op), and the weight sum counts the survivor's current
+        weight once plus each other duplicate only while its source_ids are not
+        yet folded into the survivor — so a retry (whose survivor already
+        contains them) does not double-count. Returns the number of docs removed.
+        """
+        pipeline = [
+            {
+                "$group": {
+                    "_id": {
+                        "lo": {
+                            "$cond": [
+                                {"$lte": ["$source_node_id", "$target_node_id"]},
+                                "$source_node_id",
+                                "$target_node_id",
+                            ]
+                        },
+                        "hi": {
+                            "$cond": [
+                                {"$lte": ["$source_node_id", "$target_node_id"]},
+                                "$target_node_id",
+                                "$source_node_id",
+                            ]
+                        },
+                    },
+                    "docs": {
+                        "$push": {
+                            "_id": "$_id",
+                            "source_id": "$source_id",
+                            "source_ids": "$source_ids",
+                            "file_path": "$file_path",
+                            "description": "$description",
+                            "keywords": "$keywords",
+                            "weight": "$weight",
+                            "created_at": "$created_at",
+                        }
+                    },
+                    "count": {"$sum": 1},
+                }
+            },
+            {"$match": {"count": {"$gt": 1}}},
+        ]
+        removed = 0
+        next_progress = _EDGE_MIGRATION_PROGRESS_INTERVAL
+        cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
+        async for group in cursor:
+            docs = group["docs"]
+            survivor = max(docs, key=lambda d: d.get("created_at") or 0)
+            others = [d for d in docs if d["_id"] != survivor["_id"]]
+            if not others:
+                continue
+
+            # Merge the full relation payload across ALL docs (survivor included).
+            # The union fields (source_ids/file_path/description/keywords) union
+            # their split components, so re-merging an already-merged survivor (a
+            # fail-fast retry) is a no-op.
+            all_source_ids: list[str] = []
+            all_file_paths: list[str] = []
+            all_descriptions: list[str] = []
+            all_keywords: set[str] = set()
+            for d in docs:
+                all_source_ids = merge_source_ids(
+                    all_source_ids, _edge_source_id_list(d)
+                )
+                fp = d.get("file_path")
+                all_file_paths = merge_source_ids(
+                    all_file_paths, fp.split(GRAPH_FIELD_SEP) if fp else []
+                )
+                desc = d.get("description")
+                all_descriptions = merge_source_ids(
+                    all_descriptions, desc.split(GRAPH_FIELD_SEP) if desc else []
+                )
+                kw = d.get("keywords")
+                if kw:
+                    all_keywords.update(k.strip() for k in kw.split(",") if k.strip())
+
+            # Weight is summed like _merge_edges_then_upsert (duplicate docs carry
+            # separate accumulated evidence), but idempotently: the survivor's
+            # current weight is the base (counted once) and each other duplicate
+            # adds its weight ONLY if its source_ids are not already folded into
+            # the survivor. On a fail-fast retry the survivor already contains the
+            # others' source_ids, so they are skipped and the sum stays stable.
+            # Legacy string weights are coerced; non-numeric values are skipped so
+            # the migration cannot crash on a bad value.
+            survivor_sids = set(_edge_source_id_list(survivor))
+            weights: list[float] = []
+            sw = _coerce_weight(survivor.get("weight"))
+            if sw is not None:
+                weights.append(sw)
+            for o in others:
+                o_sids = set(_edge_source_id_list(o))
+                if not o_sids or o_sids <= survivor_sids:
+                    continue  # no new trackable evidence -> don't (re-)add weight
+                ow = _coerce_weight(o.get("weight"))
+                if ow is not None:
+                    weights.append(ow)
+
+            set_fields: dict[str, Any] = {}
+            if all_source_ids:
+                set_fields["source_ids"] = all_source_ids
+                set_fields["source_id"] = GRAPH_FIELD_SEP.join(all_source_ids)
+            if all_file_paths:
+                set_fields["file_path"] = GRAPH_FIELD_SEP.join(all_file_paths)
+            if all_descriptions:
+                set_fields["description"] = GRAPH_FIELD_SEP.join(all_descriptions)
+            if all_keywords:
+                set_fields["keywords"] = ",".join(sorted(all_keywords))
+            if weights:
+                set_fields["weight"] = sum(weights)
+            if set_fields:
+                await self.edge_collection.update_one(
+                    {"_id": survivor["_id"]}, {"$set": set_fields}
+                )
+            await self.edge_collection.delete_many(
+                {"_id": {"$in": [d["_id"] for d in others]}}
+            )
+            removed += len(others)
+            if removed >= next_progress:
+                logger.info(
+                    f"[{self.workspace}] Canonical edge migration progress: "
+                    f"deduped {removed} duplicate doc(s) so far"
+                )
+                next_progress += _EDGE_MIGRATION_PROGRESS_INTERVAL
+        return removed
+
+    async def _backfill_edge_endpoints(self) -> int:
+        """Set the canonical ``edge_lo``/``edge_hi`` on every doc that lacks them.
+
+        Returns the modified count. Runs after dedupe, so each canonical pair has
+        one doc and the backfilled (edge_lo, edge_hi) pairs are unique.
+        """
+        is_sorted = {"$lte": ["$source_node_id", "$target_node_id"]}
+        result = await self.edge_collection.update_many(
+            {"edge_lo": {"$exists": False}},
+            [
+                {
+                    "$set": {
+                        "edge_lo": {
+                            "$cond": [
+                                is_sorted,
+                                "$source_node_id",
+                                "$target_node_id",
+                            ]
+                        },
+                        "edge_hi": {
+                            "$cond": [
+                                is_sorted,
+                                "$target_node_id",
+                                "$source_node_id",
+                            ]
+                        },
+                    }
+                }
+            ],
+        )
+        return result.modified_count
 
     # Sample entity document
     # "source_ids" is Array representation of "source_id" split by GRAPH_FIELD_SEP
@@ -1125,20 +1446,15 @@ class MongoGraphStorage(BaseGraphStorage):
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """
         Check if there's a direct single-hop edge between source_node_id and target_node_id.
+
+        Matches on the canonical ``(edge_lo, edge_hi)`` pair (direction-independent)
+        instead of the bidirectional ``$or``, so this point lookup is served by the
+        compound unique index. Safe because the fail-fast migration in
+        ``initialize`` guarantees every served doc carries the endpoints.
         """
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
         doc = await self.edge_collection.find_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            },
+            {"edge_lo": edge_lo, "edge_hi": edge_hi},
             {"_id": 1},
         )
         return doc is not None
@@ -1187,19 +1503,11 @@ class MongoGraphStorage(BaseGraphStorage):
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
+        # Canonical (edge_lo, edge_hi) point lookup served by the compound unique
+        # index (see has_edge); the fail-fast migration guarantees the endpoints.
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
         return await self.edge_collection.find_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            }
+            {"edge_lo": edge_lo, "edge_hi": edge_hi}
         )
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -1328,38 +1636,41 @@ class MongoGraphStorage(BaseGraphStorage):
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        """
-        Upsert an edge between source_node_id and target_node_id with optional 'relation'.
-        If an edge with the same target exists, we remove it and re-insert with updated data.
+        """Upsert the undirected edge between source_node_id and target_node_id.
+
+        Matches on the canonical ``(edge_lo, edge_hi)`` endpoint pair
+        (direction-independent) instead of the old bidirectional ``$or`` filter,
+        so the compound unique index can reject a racing duplicate insert. If two
+        writers race the first insert, the loser hits a ``DuplicateKeyError``; we
+        retry once, which now matches the just-inserted doc and updates it.
         """
         # Ensure source node exists
         await self.upsert_node(source_node_id, {})
 
-        update_doc = {"$set": edge_data}
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
+
+        # Copy so we never mutate the caller's edge_data dict.
+        set_doc: dict = {**edge_data}
         if edge_data.get("source_id", ""):
-            update_doc["$set"]["source_ids"] = edge_data["source_id"].split(
-                GRAPH_FIELD_SEP
-            )
+            set_doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
+        set_doc["source_node_id"] = source_node_id
+        set_doc["target_node_id"] = target_node_id
+        set_doc["edge_lo"] = edge_lo
+        set_doc["edge_hi"] = edge_hi
+        update_doc = {"$set": set_doc}
 
-        edge_data["source_node_id"] = source_node_id
-        edge_data["target_node_id"] = target_node_id
-
-        await self.edge_collection.update_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            },
-            update_doc,
-            upsert=True,
-        )
+        for attempt in range(2):
+            try:
+                await self.edge_collection.update_one(
+                    {"edge_lo": edge_lo, "edge_hi": edge_hi}, update_doc, upsert=True
+                )
+                return
+            except DuplicateKeyError:
+                # Another writer inserted this edge between our filter miss and
+                # insert. Retry once: the doc now exists, so the upsert becomes a
+                # plain update. A second failure is unexpected — let it surface.
+                if attempt == 1:
+                    raise
 
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes using a single bulk_write() call.
@@ -1442,7 +1753,12 @@ class MongoGraphStorage(BaseGraphStorage):
             what="source-node placeholder upsert",
         )
 
-        edge_ops: list[tuple[Any, int, str]] = []
+        # Key every edge by its canonical (edge_lo, edge_hi) pair and dedupe
+        # within the batch (last-write-wins). Deduping collapses reciprocal
+        # directions onto one op, which both matches the compound unique index
+        # and avoids an intra-batch duplicate-key error from two ops inserting
+        # the same endpoint pair.
+        deduped_ops: dict[tuple[str, str], tuple[Any, int, str]] = {}
         for source_node_id, target_node_id, edge_data in edges:
             update_doc: dict = {"$set": {**edge_data}}
             if edge_data.get("source_id", ""):
@@ -1451,37 +1767,65 @@ class MongoGraphStorage(BaseGraphStorage):
                 )
             update_doc["$set"]["source_node_id"] = source_node_id
             update_doc["$set"]["target_node_id"] = target_node_id
-            edge_ops.append(
-                (
-                    UpdateOne(
-                        {
-                            "$or": [
-                                {
-                                    "source_node_id": source_node_id,
-                                    "target_node_id": target_node_id,
-                                },
-                                {
-                                    "source_node_id": target_node_id,
-                                    "target_node_id": source_node_id,
-                                },
-                            ]
-                        },
-                        update_doc,
-                        upsert=True,
-                    ),
-                    _estimate_doc_bytes(update_doc),
-                    f"{source_node_id}->{target_node_id}",
-                )
+            edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
+            update_doc["$set"]["edge_lo"] = edge_lo
+            update_doc["$set"]["edge_hi"] = edge_hi
+            deduped_ops[(edge_lo, edge_hi)] = (
+                UpdateOne(
+                    {"edge_lo": edge_lo, "edge_hi": edge_hi}, update_doc, upsert=True
+                ),
+                _estimate_doc_bytes(update_doc),
+                f"{source_node_id}->{target_node_id}",
             )
-        await _run_batched_bulk_write(
-            self.edge_collection,
-            edge_ops,
-            max_payload_bytes=self._max_upsert_payload_bytes,
-            max_records_per_batch=self._max_upsert_records_per_batch,
-            ordered=True,
-            log_prefix=f"[{self.workspace}] {self.namespace} edges:",
-            what="edge upsert",
-        )
+        edge_ops = list(deduped_ops.values())
+
+        # ordered=True (kept from the pre-canonical behaviour). Intra-batch
+        # last-write-wins is already guaranteed by the endpoint-pair dedupe above
+        # (one op per pair), so ordering is not load-bearing for that; we keep it
+        # for continuity. If a concurrent writer (another process bypassing the keyed
+        # lock) wins an insert, our upsert hits 11000 and the bulk aborts; we
+        # retry the whole op list once — the racing docs now exist, so the
+        # upserts update instead of inserting (idempotent). A non-11000 / write-
+        # concern error re-raises rather than being masked.
+        async def _run_edge_bulk() -> None:
+            await _run_batched_bulk_write(
+                self.edge_collection,
+                edge_ops,
+                max_payload_bytes=self._max_upsert_payload_bytes,
+                max_records_per_batch=self._max_upsert_records_per_batch,
+                ordered=True,
+                log_prefix=f"[{self.workspace}] {self.namespace} edges:",
+                what="edge upsert",
+            )
+
+        try:
+            await _run_edge_bulk()
+        except BulkWriteError as e:
+            details = e.details or {}
+            write_errors = details.get("writeErrors", [])
+            # Retry ONLY when every failure is a duplicate-key race; a
+            # writeConcern failure (durability problem, empty writeErrors) or any
+            # other write error must surface, not be masked by a blind retry.
+            #
+            # NOTE: under ordered=True the bulk aborts at the FIRST failing op, so
+            # writeErrors holds at most one entry — the all(...) check therefore
+            # only inspects that first error, not the whole batch. Ops after it
+            # never ran; they re-run when we retry the entire op list below. So a
+            # non-11000 error hidden behind a leading 11000 is not masked — it
+            # simply surfaces one retry later (the retry hits it and re-raises,
+            # since by then the leading dup has resolved to a plain update).
+            dup_only = (
+                bool(write_errors)
+                and all(we.get("code") == _DUPLICATE_KEY_CODE for we in write_errors)
+                and not details.get("writeConcernErrors")
+            )
+            if not dup_only:
+                raise
+            logger.debug(
+                f"[{self.workspace}] {self.namespace} edges: {len(write_errors)} "
+                f"duplicate-key race(s) on edge upsert; retrying as updates"
+            )
+            await _run_edge_bulk()
 
     #
     # -------------------------------------------------------------------------
@@ -1558,6 +1902,8 @@ class MongoGraphStorage(BaseGraphStorage):
                     "target_node_id",
                     "relationship",
                     "source_ids",
+                    "edge_lo",
+                    "edge_hi",
                 ]
             },
         )
@@ -1984,16 +2330,31 @@ class MongoGraphStorage(BaseGraphStorage):
         if not edges:
             return
 
+        # Match each edge by its canonical (edge_lo, edge_hi) pair: one clause per
+        # edge (vs. the old two-clause bidirectional pair) served by the compound
+        # unique index, with reciprocal/duplicate inputs collapsed. Safe because
+        # the fail-fast migration guarantees every served doc carries the endpoints.
+        seen: set[tuple[str, str]] = set()
         all_edge_pairs = []
         for source_id, target_id in edges:
-            all_edge_pairs.append(
-                {"source_node_id": source_id, "target_node_id": target_id}
-            )
-            all_edge_pairs.append(
-                {"source_node_id": target_id, "target_node_id": source_id}
-            )
+            endpoints = _canonical_edge_endpoints(source_id, target_id)
+            if endpoints in seen:
+                continue
+            seen.add(endpoints)
+            all_edge_pairs.append({"edge_lo": endpoints[0], "edge_hi": endpoints[1]})
 
-        await self.edge_collection.delete_many({"$or": all_edge_pairs})
+        # Chunk the $or by record count so a large delete stays under the bulk
+        # message / 16MB query limit; endpoints are bounded id strings, so a count
+        # cap is enough (no byte budget needed). A non-positive cap disables it.
+        chunk = (
+            self._max_delete_records_per_batch
+            if self._max_delete_records_per_batch > 0
+            else len(all_edge_pairs)
+        )
+        for i in range(0, len(all_edge_pairs), chunk):
+            await self.edge_collection.delete_many(
+                {"$or": all_edge_pairs[i : i + chunk]}
+            )
 
         logger.debug(f"[{self.workspace}] Successfully deleted edges: {edges}")
 
@@ -2536,23 +2897,14 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
         # Flush-time batching limits (see module-level DEFAULT_MONGO_* constants).
-        # A non-positive value disables that splitting dimension. The two upsert
-        # limits are shared with KV/graph via _resolve_upsert_batch_limits(); the
-        # delete count cap is vector-specific (only the VDB batches deletes here).
+        # A non-positive value disables that splitting dimension. The upsert and
+        # delete caps are shared across KV/graph/VDB via the _resolve_* helpers so
+        # every path stays under the same bulk message / 16MB query limit.
         (
             self._max_upsert_payload_bytes,
             self._max_upsert_records_per_batch,
         ) = _resolve_upsert_batch_limits()
-        self._max_delete_records_per_batch = int(
-            os.getenv(
-                "MONGO_DELETE_MAX_RECORDS_PER_BATCH",
-                str(DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH),
-            )
-        )
-        if self._max_delete_records_per_batch <= 0:
-            logger.warning(
-                f"MONGO_DELETE_MAX_RECORDS_PER_BATCH={self._max_delete_records_per_batch} is non-positive, disable delete record-count splitting"
-            )
+        self._max_delete_records_per_batch = _resolve_delete_batch_limit()
 
         # Deferred-embedding buffers and the per-namespace flush lock.
         # Constructed in initialize() once shared-storage primitives are
