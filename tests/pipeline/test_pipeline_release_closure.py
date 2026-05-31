@@ -318,16 +318,16 @@ def test_doc_status_metadata_carry_over_helper():
 
     # Carries the internal pending-parse source basename forward for retries.
     md = doc_status_transition_metadata(
-        _StubStatusDoc({"source_file_name": "demo.[mineru].pdf"})
+        _StubStatusDoc({"source_file": "demo.[mineru].pdf"})
     )
-    assert md == {"source_file_name": "demo.[mineru].pdf"}
+    assert md == {"source_file": "demo.[mineru].pdf"}
 
     # Layers in transition extras while keeping the carry-over.
     md = doc_status_transition_metadata(
         _StubStatusDoc({"process_options": "R!"}),
-        extra={"processing_start_time": 12345},
+        extra={"process_start_time": 12345},
     )
-    assert md == {"process_options": "R!", "processing_start_time": 12345}
+    assert md == {"process_options": "R!", "process_start_time": 12345}
 
     # No carry-over when metadata is missing or empty.
     assert doc_status_transition_metadata(_StubStatusDoc({})) == {}
@@ -354,11 +354,11 @@ def test_carry_over_keys_grouped_by_stage():
 
     assert _DOC_STATUS_METADATA_CARRY_OVER_KEYS == (
         "process_options",
-        "source_file_name",
+        "source_file",
         "parse_warnings",
         "chunk_opts",
-        "parsing_start_time",
-        "parsing_end_time",
+        "parse_start_time",
+        "parse_end_time",
         "parse_stage_skipped",
         "analyzing_start_time",
         "analyzing_end_time",
@@ -381,16 +381,16 @@ def test_carry_over_helper_propagates_end_times_and_skipped():
     md = doc_status_transition_metadata(
         _StubStatusDoc(
             {
-                "parsing_start_time": 1700000000,
-                "parsing_end_time": 1700000010,
+                "parse_start_time": 1700000000,
+                "parse_end_time": 1700000010,
                 "analyzing_start_time": 1700000020,
                 "analyzing_end_time": 1700000050,
             }
         )
     )
     assert md == {
-        "parsing_start_time": 1700000000,
-        "parsing_end_time": 1700000010,
+        "parse_start_time": 1700000000,
+        "parse_end_time": 1700000010,
         "analyzing_start_time": 1700000020,
         "analyzing_end_time": 1700000050,
     }
@@ -457,12 +457,12 @@ def test_doc_status_metadata_survives_processed_transition(tmp_path):
             )
             # parse_native on FULL_DOCS_FORMAT_RAW does not actually parse —
             # it passes content through verbatim — so the skip branch fires
-            # and ``parsing_end_time`` stays absent. ``parse_stage_skipped``
+            # and ``parse_end_time`` stays absent. ``parse_stage_skipped``
             # is the cache-hit / no-parse-work sentinel (same field used by
             # parse_mineru / parse_docling for raw-bundle cache hits).
-            assert isinstance(metadata.get("parsing_start_time"), int)
+            assert isinstance(metadata.get("parse_start_time"), int)
             assert metadata.get("parse_stage_skipped") is True
-            assert "parsing_end_time" not in metadata
+            assert "parse_end_time" not in metadata
             # parse_native on raw content returns blocks_path="", which makes
             # analyze_multimodal take the "no blocks_path" early-return branch
             # and set analyzing_stage_skipped=True (no analyzing_end_time).
@@ -532,7 +532,7 @@ def test_analyze_soft_failure_writes_neither_end_time_nor_skipped(tmp_path):
 
 @pytest.mark.offline
 def test_stage_end_outcomes_persist_within_their_own_stage(tmp_path):
-    """The parse-stage outcome (parsing_end_time / parse_stage_skipped) must be
+    """The parse-stage outcome (parse_end_time / parse_stage_skipped) must be
     persisted to doc_status during the PARSING stage — before the doc waits in
     q_analyze and the ANALYZING transition fires — and the analyze-stage outcome
     during ANALYZING, before PROCESSING. Otherwise these signals only land at the
@@ -2981,11 +2981,11 @@ def test_parse_mineru_uses_hint_source_and_canonical_upload_name(tmp_path, monke
         status = await rag.doc_status.get_by_id(doc_id)
         assert status is not None
         assert status["file_path"] == canonical_name
-        assert status["metadata"]["source_file_name"] == hinted_name
+        assert status["metadata"]["source_file"] == hinted_name
 
         content_data = await rag.full_docs.get_by_id(doc_id)
         assert content_data is not None
-        content_data["source_file_name"] = status["metadata"]["source_file_name"]
+        content_data["source_file"] = status["metadata"]["source_file"]
 
         parsed = await rag.parse_mineru(
             doc_id=doc_id,

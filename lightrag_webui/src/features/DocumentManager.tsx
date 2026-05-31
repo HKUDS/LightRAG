@@ -115,17 +115,17 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
 const formatMetadata = (metadata: Record<string, any>): string => {
   const formattedMetadata = { ...metadata };
 
-  if (formattedMetadata.parsing_start_time && typeof formattedMetadata.parsing_start_time === 'number') {
-    const date = new Date(formattedMetadata.parsing_start_time * 1000);
+  if (formattedMetadata.parse_start_time && typeof formattedMetadata.parse_start_time === 'number') {
+    const date = new Date(formattedMetadata.parse_start_time * 1000);
     if (!isNaN(date.getTime())) {
-      formattedMetadata.parsing_start_time = date.toLocaleString();
+      formattedMetadata.parse_start_time = date.toLocaleString();
     }
   }
 
-  if (formattedMetadata.parsing_end_time && typeof formattedMetadata.parsing_end_time === 'number') {
-    const date = new Date(formattedMetadata.parsing_end_time * 1000);
+  if (formattedMetadata.parse_end_time && typeof formattedMetadata.parse_end_time === 'number') {
+    const date = new Date(formattedMetadata.parse_end_time * 1000);
     if (!isNaN(date.getTime())) {
-      formattedMetadata.parsing_end_time = date.toLocaleString();
+      formattedMetadata.parse_end_time = date.toLocaleString();
     }
   }
 
@@ -143,17 +143,17 @@ const formatMetadata = (metadata: Record<string, any>): string => {
     }
   }
 
-  if (formattedMetadata.processing_start_time && typeof formattedMetadata.processing_start_time === 'number') {
-    const date = new Date(formattedMetadata.processing_start_time * 1000);
+  if (formattedMetadata.process_start_time && typeof formattedMetadata.process_start_time === 'number') {
+    const date = new Date(formattedMetadata.process_start_time * 1000);
     if (!isNaN(date.getTime())) {
-      formattedMetadata.processing_start_time = date.toLocaleString();
+      formattedMetadata.process_start_time = date.toLocaleString();
     }
   }
 
-  if (formattedMetadata.processing_end_time && typeof formattedMetadata.processing_end_time === 'number') {
-    const date = new Date(formattedMetadata.processing_end_time * 1000);
+  if (formattedMetadata.process_end_time && typeof formattedMetadata.process_end_time === 'number') {
+    const date = new Date(formattedMetadata.process_end_time * 1000);
     if (!isNaN(date.getTime())) {
-      formattedMetadata.processing_end_time = date.toLocaleString();
+      formattedMetadata.process_end_time = date.toLocaleString();
     }
   }
 
