@@ -283,6 +283,31 @@ async def _run_chunked_async_bulk(
     )
 
 
+# Index _meta flag marking that an edges index has been migrated to canonical
+# (sorted-pair) document ids. Guards the one-time reindex in
+# PGGraphStorage-style startup so it runs at most once per index.
+_EDGE_ID_CANONICAL_META_FLAG = "edge_id_canonical_v1"
+
+# Emit a migration progress line every this many scanned edges, so operators
+# watching a large-index reindex see liveness and an X/total denominator.
+_EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
+
+
+def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
+    """Direction-independent edge document ``_id``.
+
+    ``hash(sorted(src, tgt))`` collapses an edge and its reverse onto the same
+    ``_id``, so concurrent ``(A,B)``/``(B,A)`` writes overwrite one document
+    (last-write-wins) instead of racing into two separate docs. This makes
+    ``upsert_edge`` idempotent by construction — no ``exists(reverse)``
+    read-then-write and no lock needed. The canonical id is always one of the
+    two directed ids ``hash("src-tgt")``/``hash("tgt-src")``, so the
+    bidirectional ``mget`` in ``has_edge``/``get_edge`` keeps finding it.
+    """
+    lo, hi = sorted((source_node_id, target_node_id))
+    return compute_mdhash_id(f"{lo}-{hi}", prefix="edge-")
+
+
 # Detected at first connection; True when OpenSearch >= 3.3.0.
 _shard_doc_supported: bool | None = None
 
@@ -1741,6 +1766,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             if self.client is None:
                 self.client = await ClientManager.get_client()
             await self._create_indices_if_not_exist()
+            await self._migrate_edges_to_canonical_id_if_needed()
             self._indices_ready = True
             self._nodes_dirty = False
             self._edges_dirty = False
@@ -1896,6 +1922,189 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except RequestError as e:
             if "resource_already_exists_exception" not in str(e):
                 raise
+
+    async def _migrate_edges_to_canonical_id_if_needed(self) -> None:
+        """One-time reindex of edge docs onto canonical (sorted-pair) ``_id``s.
+
+        Legacy edges were keyed by ``hash("src-tgt")`` in the *call* direction,
+        so an edge could live under either orientation's id. After
+        ``upsert_edge`` switched to a canonical sorted-pair id, a fresh write
+        lands on a different ``_id`` than a legacy reverse-direction doc,
+        leaving two documents for one edge (``node_degree``/``get_node_edges``
+        double-count). This collapses every non-canonical doc onto its
+        canonical ``_id`` (last-write-wins on duplicates) and deletes the stale
+        id.
+
+        Idempotent and self-guarded: an index ``_meta`` flag marks completion
+        so the full scan runs at most once; already-canonical docs are skipped,
+        so a partial/failed run simply re-runs on the next startup. Must run
+        with no concurrent writers — ``initialize`` calls it inside
+        ``get_data_init_lock()``.
+        """
+        try:
+            if not await self.client.indices.exists(index=self._edges_index):
+                logger.debug(
+                    f"[{self.workspace}] Edge index {self._edges_index} does not "
+                    f"exist yet; skipping canonical edge-id migration"
+                )
+                return
+            mapping = await self.client.indices.get_mapping(index=self._edges_index)
+            meta = (
+                mapping.get(self._edges_index, {}).get("mappings", {}).get("_meta", {})
+            )
+            if meta.get(_EDGE_ID_CANONICAL_META_FLAG):
+                logger.info(
+                    f"[{self.workspace}] Edge index {self._edges_index} already on "
+                    f"canonical ids; skipping migration"
+                )
+                return
+
+            # Count upfront so operators get an X/total denominator; best-effort
+            # (migration still works if count is unavailable).
+            try:
+                total = (await self.client.count(index=self._edges_index)).get("count")
+            except OpenSearchException:
+                total = None
+            logger.info(
+                f"[{self.workspace}] Starting canonical edge-id migration for "
+                f"{self._edges_index}"
+                + (f" (~{total} edges to scan)" if total is not None else "")
+            )
+
+            scanned = 0
+            migrated = 0
+            had_real_error = False
+            pending: list[dict[str, Any]] = []
+            # Flush roughly one bulk chunk at a time so a huge index does not
+            # buffer every action in memory before writing.
+            flush_at = max(self._max_upsert_records_per_batch, 1) * 2
+            next_progress = _EDGE_MIGRATION_PROGRESS_INTERVAL
+
+            async def _flush_pending() -> None:
+                nonlocal pending, had_real_error
+                if not pending:
+                    return
+                # raise_on_error=False so a stale-doc 404 on the delete leg does
+                # not abort the batch. In a multi-node deploy two nodes can both
+                # pass the _meta check and run concurrently (get_data_init_lock is
+                # process-local); the slower node then deletes ids the faster one
+                # already removed. Those 404s are benign — ignore them, but record
+                # any *real* error so we leave the index unflagged to retry.
+                _success, errors = await _run_chunked_async_bulk(
+                    self.client,
+                    pending,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_upsert_records_per_batch,
+                    log_prefix=f"[{self.workspace}] {self.namespace} edges:",
+                    what="canonical edge-id migration",
+                    raise_on_error=False,
+                )
+                pending = []
+                real_errors = [
+                    e
+                    for e in errors
+                    if not (
+                        isinstance(e, dict) and e.get("delete", {}).get("status") == 404
+                    )
+                ]
+                if real_errors:
+                    had_real_error = True
+                    logger.error(
+                        f"[{self.workspace}] Canonical edge-id migration hit "
+                        f"{len(real_errors)} error(s) in {self._edges_index}"
+                    )
+
+            scroll_id = None
+            try:
+                response = await self.client.search(
+                    index=self._edges_index,
+                    body={"query": {"match_all": {}}, "sort": ["_doc"]},
+                    scroll="5m",
+                    size=1000,
+                )
+                while True:
+                    scroll_id = response.get("_scroll_id")
+                    hits = response.get("hits", {}).get("hits", [])
+                    if not hits:
+                        break
+                    for hit in hits:
+                        scanned += 1
+                        source = hit.get("_source", {})
+                        src = source.get("source_node_id")
+                        tgt = source.get("target_node_id")
+                        if not src or not tgt:
+                            continue
+                        canonical = _canonical_edge_id(src, tgt)
+                        if hit["_id"] == canonical:
+                            continue
+                        pending.append(
+                            {
+                                "_op_type": "index",
+                                "_index": self._edges_index,
+                                "_id": canonical,
+                                "_source": source,
+                            }
+                        )
+                        pending.append(
+                            {
+                                "_op_type": "delete",
+                                "_index": self._edges_index,
+                                "_id": hit["_id"],
+                            }
+                        )
+                        migrated += 1
+                    if len(pending) >= flush_at:
+                        await _flush_pending()
+                    if scanned >= next_progress:
+                        logger.info(
+                            f"[{self.workspace}] Canonical edge-id migration "
+                            f"progress: scanned {scanned}"
+                            + (f"/{total}" if total is not None else "")
+                            + f", migrated {migrated} so far"
+                        )
+                        next_progress += _EDGE_MIGRATION_PROGRESS_INTERVAL
+                    response = await self.client.scroll(
+                        scroll_id=scroll_id, scroll="5m"
+                    )
+                await _flush_pending()
+            finally:
+                if scroll_id is not None:
+                    try:
+                        await self.client.clear_scroll(scroll_id=scroll_id)
+                    except OpenSearchException:
+                        pass
+
+            if migrated:
+                # Make migrated docs visible to subsequent searches in one go.
+                try:
+                    await self.client.indices.refresh(index=self._edges_index)
+                except OpenSearchException:
+                    pass
+
+            if had_real_error:
+                logger.error(
+                    f"[{self.workspace}] Canonical edge-id migration incomplete for "
+                    f"{self._edges_index} (scanned {scanned}, migrated {migrated}); "
+                    f"leaving unflagged to retry on next startup"
+                )
+                return
+
+            logger.info(
+                f"[{self.workspace}] Canonical edge-id migration complete for "
+                f"{self._edges_index}: scanned {scanned}, migrated {migrated}"
+            )
+            # Mark complete so subsequent startups skip the full scan. Legacy
+            # reciprocal duplicates collapse onto one canonical doc here
+            # (last-write-wins) — acceptable since edges are undirected.
+            await self.client.indices.put_mapping(
+                index=self._edges_index,
+                body={"_meta": {**meta, _EDGE_ID_CANONICAL_META_FLAG: True}},
+            )
+        except OpenSearchException as e:
+            logger.error(
+                f"[{self.workspace}] Canonical edge-id migration failed for "
+                f"{self._edges_index}: {e}"
+            )
 
     async def finalize(self):
         """Release the OpenSearch client connection."""
@@ -2232,7 +2441,13 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        """Insert or update an edge with deterministic ID for bidirectional handling."""
+        """Insert or update an edge keyed by a canonical (sorted-pair) ``_id``.
+
+        The canonical id collapses ``(src, tgt)`` and ``(tgt, src)`` onto one
+        document, so this is idempotent by construction: concurrent
+        reciprocal writers overwrite the same ``_id`` (last-write-wins) instead
+        of racing into two docs. No ``exists(reverse)`` read-then-write needed.
+        """
         try:
             await self._ensure_indices_ready()
             # Ensure source node exists (don't overwrite if it already has data)
@@ -2245,21 +2460,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             if edge_data.get("source_id", ""):
                 doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
 
-            # Use a deterministic ID for the edge so upserts work
-            edge_id = compute_mdhash_id(
-                f"{source_node_id}-{target_node_id}", prefix="edge-"
-            )
-
-            # Check if reverse edge exists
-            reverse_id = compute_mdhash_id(
-                f"{target_node_id}-{source_node_id}", prefix="edge-"
-            )
-            try:
-                if await self.client.exists(index=self._edges_index, id=reverse_id):
-                    edge_id = reverse_id
-            except OpenSearchException:
-                pass
-
+            edge_id = _canonical_edge_id(source_node_id, target_node_id)
             await self.client.index(index=self._edges_index, id=edge_id, body=doc)
             self._edges_dirty = True
         except OpenSearchException as e:
@@ -2332,10 +2533,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     ) -> None:
         """Batch insert/update multiple edges using the OpenSearch bulk API.
 
-        Replicates the bidirectional edge-ID logic of upsert_edge(): a canonical
-        forward ID is used unless a reverse-direction document already exists, in
-        which case the reverse ID is used so the update lands on the existing doc.
-        The reverse-ID look-up is done in a single mget call before the bulk write.
+        Each edge is keyed by its canonical (sorted-pair) ``_id`` (see
+        ``_canonical_edge_id``), so reciprocal directions collapse onto one
+        document with no reverse-direction look-up. Edges that map to the same
+        canonical id within this batch are deduplicated last-write-wins.
 
         Args:
             edges: List of (source_node_id, target_node_id, edge_data) tuples.
@@ -2354,48 +2555,24 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             if missing_sources:
                 await self.upsert_nodes_batch(missing_sources)
 
-            # Compute forward and reverse edge IDs, then batch-check which
-            # reverse-direction docs already exist (one mget instead of N exists).
-            forward_ids = [
-                compute_mdhash_id(f"{src}-{tgt}", prefix="edge-")
-                for src, tgt, _ in edges
-            ]
-            reverse_ids = [
-                compute_mdhash_id(f"{tgt}-{src}", prefix="edge-")
-                for src, tgt, _ in edges
-            ]
-            try:
-                rev_response = await self.client.mget(
-                    index=self._edges_index, body={"ids": reverse_ids}
-                )
-                existing_reverse = {
-                    doc["_id"]
-                    for doc in rev_response.get("docs", [])
-                    if doc.get("found")
-                }
-            except OpenSearchException:
-                existing_reverse = set()
-
-            actions = []
-            reserved_edge_ids = set(existing_reverse)
-            for (src, tgt, edge_data), fwd_id, rev_id in zip(
-                edges, forward_ids, reverse_ids
-            ):
-                edge_id = rev_id if rev_id in reserved_edge_ids else fwd_id
-                reserved_edge_ids.add(edge_id)
+            # Key every edge by its canonical id and dedupe within the batch
+            # (last-write-wins) so a single bulk request carries one action per
+            # logical edge regardless of direction.
+            actions_by_id: dict[str, dict[str, Any]] = {}
+            for src, tgt, edge_data in edges:
                 doc = {k: v for k, v in edge_data.items() if k != "_id"}
                 doc["source_node_id"] = src
                 doc["target_node_id"] = tgt
                 if edge_data.get("source_id", ""):
                     doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
-                actions.append(
-                    {
-                        "_op_type": "index",
-                        "_index": self._edges_index,
-                        "_id": edge_id,
-                        "_source": doc,
-                    }
-                )
+                edge_id = _canonical_edge_id(src, tgt)
+                actions_by_id[edge_id] = {
+                    "_op_type": "index",
+                    "_index": self._edges_index,
+                    "_id": edge_id,
+                    "_source": doc,
+                }
+            actions = list(actions_by_id.values())
             await _run_chunked_async_bulk(
                 self.client,
                 actions,
@@ -2498,11 +2675,14 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
         """Batch-delete multiple edges by deterministic ID (real-time).
 
-        Each edge is stored under one of two candidate IDs:
+        New writes key edges by their canonical (sorted-pair) id, but we still
+        delete *both* directed candidates per edge:
           forward  = compute_mdhash_id("src-tgt", prefix="edge-")
           reverse  = compute_mdhash_id("tgt-src", prefix="edge-")
-        We delete both candidates for every requested edge so the deletion
-        is effective regardless of which direction was stored.
+        The canonical id is always one of these two, and deleting the other is a
+        harmless 404 — this keeps deletes effective for any legacy doc not yet
+        collapsed by the canonical-id migration. The raw bulk API does not raise
+        on a 404 delete.
 
         Marks edge search views dirty so refresh happens lazily on the next
         search/count-based graph read.
