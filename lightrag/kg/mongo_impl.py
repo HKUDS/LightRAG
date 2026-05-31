@@ -85,6 +85,25 @@ def _canonical_edge_endpoints(
     return tuple(sorted((source_node_id, target_node_id)))  # type: ignore[return-value]
 
 
+def _edge_source_id_list(doc: dict[str, Any]) -> list[str]:
+    """Return an edge doc's source ids, from the ``source_ids`` array or by
+    splitting the ``GRAPH_FIELD_SEP``-joined ``source_id`` string."""
+    sids = doc.get("source_ids")
+    if not sids and doc.get("source_id"):
+        sids = doc["source_id"].split(GRAPH_FIELD_SEP)
+    return list(sids or [])
+
+
+def _coerce_weight(weight: Any) -> float | None:
+    """Coerce a (possibly string) edge weight to float, or None if non-numeric."""
+    if weight is None:
+        return None
+    try:
+        return float(weight)
+    except (TypeError, ValueError):
+        return None
+
+
 def _estimate_doc_bytes(doc: Any) -> int:
     """Estimate a document's serialized byte size via compact JSON.
 
@@ -1195,15 +1214,18 @@ class MongoGraphStorage(BaseGraphStorage):
         non-survivors' relation payload into it before deleting them** so no
         relation evidence is lost: ``source_ids``/``source_id``/``file_path`` and
         ``description`` are unioned over their ``GRAPH_FIELD_SEP`` components,
-        ``keywords`` are comma-set-unioned, and ``weight`` takes the max.
+        ``keywords`` are comma-set-unioned, and ``weight`` is **summed** (like
+        ``_merge_edges_then_upsert`` — duplicate docs carry separate accumulated
+        weight).
 
         The merge is **idempotent across retries**: if a transient error aborts
         startup after the survivor update but before the delete, the next run
-        re-processes the same group and must produce the same survivor. All
-        fields union their split components (so re-merging an already-merged
-        survivor is a no-op), and ``weight`` uses max rather than sum (summing
-        would double-count a survivor already merged by a prior partial run).
-        Returns the number of docs removed.
+        re-processes the same group and must produce the same survivor. The union
+        fields union their split components (re-merging an already-merged
+        survivor is a no-op), and the weight sum counts the survivor's current
+        weight once plus each other duplicate only while its source_ids are not
+        yet folded into the survivor — so a retry (whose survivor already
+        contains them) does not double-count. Returns the number of docs removed.
         """
         pipeline = [
             {
@@ -1252,18 +1274,17 @@ class MongoGraphStorage(BaseGraphStorage):
                 continue
 
             # Merge the full relation payload across ALL docs (survivor included).
-            # Every field unions its split components so re-merging an
-            # already-merged survivor (a fail-fast retry) is a no-op.
+            # The union fields (source_ids/file_path/description/keywords) union
+            # their split components, so re-merging an already-merged survivor (a
+            # fail-fast retry) is a no-op.
             all_source_ids: list[str] = []
             all_file_paths: list[str] = []
             all_descriptions: list[str] = []
             all_keywords: set[str] = set()
-            weights: list[float] = []
             for d in docs:
-                sids = d.get("source_ids")
-                if not sids and d.get("source_id"):
-                    sids = d["source_id"].split(GRAPH_FIELD_SEP)
-                all_source_ids = merge_source_ids(all_source_ids, sids or [])
+                all_source_ids = merge_source_ids(
+                    all_source_ids, _edge_source_id_list(d)
+                )
                 fp = d.get("file_path")
                 all_file_paths = merge_source_ids(
                     all_file_paths, fp.split(GRAPH_FIELD_SEP) if fp else []
@@ -1275,15 +1296,27 @@ class MongoGraphStorage(BaseGraphStorage):
                 kw = d.get("keywords")
                 if kw:
                     all_keywords.update(k.strip() for k in kw.split(",") if k.strip())
-                # Legacy weights may be stored as strings (graph API is
-                # dict[str, str]); coerce and skip non-numeric so the migration
-                # cannot crash on a bad value.
-                w = d.get("weight")
-                if w is not None:
-                    try:
-                        weights.append(float(w))
-                    except (TypeError, ValueError):
-                        pass
+
+            # Weight is summed like _merge_edges_then_upsert (duplicate docs carry
+            # separate accumulated evidence), but idempotently: the survivor's
+            # current weight is the base (counted once) and each other duplicate
+            # adds its weight ONLY if its source_ids are not already folded into
+            # the survivor. On a fail-fast retry the survivor already contains the
+            # others' source_ids, so they are skipped and the sum stays stable.
+            # Legacy string weights are coerced; non-numeric values are skipped so
+            # the migration cannot crash on a bad value.
+            survivor_sids = set(_edge_source_id_list(survivor))
+            weights: list[float] = []
+            sw = _coerce_weight(survivor.get("weight"))
+            if sw is not None:
+                weights.append(sw)
+            for o in others:
+                o_sids = set(_edge_source_id_list(o))
+                if not o_sids or o_sids <= survivor_sids:
+                    continue  # no new trackable evidence -> don't (re-)add weight
+                ow = _coerce_weight(o.get("weight"))
+                if ow is not None:
+                    weights.append(ow)
 
             set_fields: dict[str, Any] = {}
             if all_source_ids:
@@ -1296,9 +1329,7 @@ class MongoGraphStorage(BaseGraphStorage):
             if all_keywords:
                 set_fields["keywords"] = ",".join(sorted(all_keywords))
             if weights:
-                # max (not sum) so a fail-fast retry over an already-merged
-                # survivor stays idempotent.
-                set_fields["weight"] = max(weights)
+                set_fields["weight"] = sum(weights)
             if set_fields:
                 await self.edge_collection.update_one(
                     {"_id": survivor["_id"]}, {"$set": set_fields}

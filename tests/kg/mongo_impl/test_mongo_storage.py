@@ -337,7 +337,7 @@ class TestMongoEdgeKey:
         assert set_fields["file_path"] == "f1<SEP>f2"
         assert set_fields["description"] == "d1<SEP>d2"  # distinct descriptions joined
         assert set_fields["keywords"] == "alpha,beta,gamma"  # comma set-union, sorted
-        assert set_fields["weight"] == 2.0  # max (idempotent across retries)
+        assert set_fields["weight"] == 3.0  # summed (1.0 + 2.0), idempotent
         # The other duplicate is deleted.
         assert s.edge_collection.delete_many.call_args[0][0] == {"_id": {"$in": [1]}}
         # Compound unique partial index built as the completion flag.
@@ -361,18 +361,18 @@ class TestMongoEdgeKey:
     @pytest.mark.asyncio
     async def test_dedupe_coerces_string_weights(self):
         """Legacy string weights (graph API is dict[str, str]) must not crash the
-        migration; they coerce to float."""
+        migration; they coerce to float and sum."""
         s = self._make_storage()
         group = {
             "_id": {"lo": "A", "hi": "B"},
             "count": 2,
             "docs": [
-                {"_id": 1, "weight": "1.0", "created_at": 10},
-                {"_id": 2, "weight": "2.0", "created_at": 20},
+                {"_id": 1, "source_ids": ["c1"], "weight": "1.0", "created_at": 10},
+                {"_id": 2, "source_ids": ["c2"], "weight": "2.0", "created_at": 20},
             ],
         }
         set_fields = await self._run_dedupe(s, group)
-        assert set_fields["weight"] == 2.0  # max of coerced floats, no TypeError
+        assert set_fields["weight"] == 3.0  # coerced floats summed, no TypeError
 
     @pytest.mark.asyncio
     async def test_dedupe_merge_is_idempotent_on_retry(self):
@@ -417,7 +417,9 @@ class TestMongoEdgeKey:
             },
         )
 
-        assert second["weight"] == first["weight"] == 2.0
+        # Summed once (1.0 + 2.0); the retry must NOT re-add the duplicate's
+        # weight (its source_ids are already folded into the survivor).
+        assert second["weight"] == first["weight"] == 3.0
         assert second["description"] == first["description"] == "d1<SEP>d2"
         assert second["source_ids"] == first["source_ids"] == ["c1", "c2"]
         assert second["file_path"] == first["file_path"] == "f1<SEP>f2"
