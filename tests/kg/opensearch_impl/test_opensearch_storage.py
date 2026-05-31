@@ -1187,9 +1187,9 @@ class TestKVStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
                 flush_can_finish.set()
                 await flush_task
@@ -1283,9 +1283,9 @@ class TestKVStorageBatching:
                 )
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 assert "k2" not in s._pending_upserts
 
                 flush_can_finish.set()
@@ -2572,10 +2572,144 @@ class TestGraphStorage:
             side_effect=[ConflictError(409, "version_conflict", {}), None]
         )
 
-        await s._merge_into_canonical_edge("edge-canon", {"source_id": "c9"})
+        await s._merge_into_canonical_edge("edge-canon", [{"source_id": "c9"}])
 
         assert mock_client.get.await_count == 2  # re-read after the conflict
         assert mock_client.index.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_merge_into_canonical_recreates_when_canonical_vanished(
+        self, global_config, embed_func, mock_client
+    ):
+        """If the canonical doc disappears between the create-409 and the merge
+        GET, recreate it from the (merged) reverse sources rather than crashing."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.get = AsyncMock(side_effect=NotFoundError(404, "not_found", {}))
+        mock_client.index = AsyncMock()
+
+        await s._merge_into_canonical_edge(
+            "edge-canon",
+            [
+                {"source_ids": ["c1"], "weight": 1.0, "source_node_id": "A"},
+                {"source_ids": ["c2"], "weight": 2.0},
+            ],
+        )
+
+        # Recreated with a plain index (no optimistic concurrency to honour —
+        # there is no current version) carrying the merged reverse payload.
+        kwargs = mock_client.index.await_args.kwargs
+        assert kwargs["id"] == "edge-canon"
+        assert "if_seq_no" not in kwargs
+        body = kwargs["body"]
+        assert body["source_ids"] == ["c1", "c2"]
+        assert body["weight"] == 3.0  # summed across both reverse sources
+        assert body["source_node_id"] == "A"  # base reverse-source fields kept
+
+    @pytest.mark.asyncio
+    async def test_merge_into_canonical_aborts_after_persistent_conflicts(
+        self, global_config, embed_func, mock_client
+    ):
+        """Persistent version conflicts abort startup (fail-safe: raised before
+        any delete) rather than silently giving up."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": "edge-canon",
+                "_seq_no": 1,
+                "_primary_term": 1,
+                "_source": {"source_node_id": "A", "target_node_id": "B"},
+            }
+        )
+        mock_client.index = AsyncMock(
+            side_effect=ConflictError(409, "version_conflict", {})
+        )
+
+        with pytest.raises(RuntimeError, match="could not merge into edge-canon"):
+            await s._merge_into_canonical_edge("edge-canon", [{"source_id": "c9"}])
+        assert mock_client.index.await_count == 3  # bounded retries
+
+    @pytest.mark.asyncio
+    async def test_migrate_merges_multiple_reverse_docs_into_one_canonical(
+        self, global_config, embed_func, mock_client
+    ):
+        """When 3+ legacy docs map to one canonical pair, every 409'd reverse
+        source is folded in — not just the last one (no evidence dropped)."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        canonical = _canonical_edge_id("A", "B")
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        # Two reverse-orientation docs (distinct old ids) for the same pair, each
+        # with its own provenance, both non-canonical so both end up pending.
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-rev1",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c2"],
+                                "weight": 2.0,
+                            },
+                        },
+                        {
+                            "_id": "edge-rev2",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c3"],
+                                "weight": 3.0,
+                            },
+                        },
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": canonical,
+                "_seq_no": 7,
+                "_primary_term": 1,
+                "_source": {
+                    "source_node_id": "A",
+                    "target_node_id": "B",
+                    "source_ids": ["c1"],
+                    "weight": 1.0,
+                },
+            }
+        )
+        mock_client.index = AsyncMock()
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            if acts and acts[0]["_op_type"] == "create":
+                # First create wins the insert; the second 409s on the same id.
+                return (1, [{"create": {"_id": canonical, "status": 409}}])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        # A single merge write into the canonical folds in *both* reverse docs.
+        assert mock_client.index.await_count == 1
+        merged = mock_client.index.await_args.kwargs["body"]
+        assert merged["source_ids"] == ["c1", "c2", "c3"]  # all provenance kept
+        assert merged["weight"] == 6.0  # 1.0 + 2.0 + 3.0 summed
 
     def test_merge_edge_payloads_sums_weight_idempotently(self):
         """Weight is summed (not max), and re-merging an already-merged base
@@ -4404,9 +4538,9 @@ class TestVectorStorageBatching:
                 # embedding computation and arrive at the lock.
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 # v2 must not be visible in the buffer yet.
                 assert "v2" not in s._pending_vector_docs
 
@@ -4455,9 +4589,9 @@ class TestVectorStorageBatching:
                 delete_task = asyncio.create_task(s.delete(["v1"]))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_task.done()
-                ), "concurrent delete should be blocked by the flush lock"
+                assert not delete_task.done(), (
+                    "concurrent delete should be blocked by the flush lock"
+                )
 
                 flush_can_finish.set()
                 await flush_task
@@ -4668,9 +4802,9 @@ class TestVectorStorageBatching:
                 rel_task = asyncio.create_task(s.delete_entity_relation("Alice"))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_started.is_set()
-                ), "delete_by_query should be blocked behind the flush lock"
+                assert not delete_started.is_set(), (
+                    "delete_by_query should be blocked behind the flush lock"
+                )
                 assert not rel_task.done()
 
                 flush_can_finish.set()
@@ -4710,9 +4844,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
 
                 flush_can_finish.set()
@@ -4755,9 +4889,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked during deferred embedding"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked during deferred embedding"
+                )
                 assert not drop_task.done()
 
                 embedding_can_finish.set()

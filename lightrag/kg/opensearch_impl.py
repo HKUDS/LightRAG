@@ -2122,13 +2122,13 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 # fast BEFORE any delete, so no edge is dropped without its
                 # canonical counterpart in place; the flag stays unset and the
                 # next startup rescans.
-                conflicted_canonicals: list[str] = []
+                conflicted_canonicals: set[str] = set()
                 real_create_errors = []
                 for e in errors:
                     info = e.get("create") if isinstance(e, dict) else None
                     if info is not None and info.get("status") == 409:
                         if info.get("_id"):
-                            conflicted_canonicals.append(info["_id"])
+                            conflicted_canonicals.add(info["_id"])
                         continue
                     real_create_errors.append(e)
                 if real_create_errors:
@@ -2139,15 +2139,21 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     )
 
                 if conflicted_canonicals:
-                    source_by_canonical = {
-                        canonical: source for canonical, _old_id, source in batch
-                    }
-                    for canonical in conflicted_canonicals:
-                        reverse_source = source_by_canonical.get(canonical)
-                        if reverse_source is not None:
-                            await self._merge_into_canonical_edge(
-                                canonical, reverse_source
+                    # A single canonical can be the target of more than one
+                    # pending reverse doc in this batch (e.g. 3+ legacy docs for
+                    # one node pair, where only one wins the insert and the rest
+                    # 409). Collect *all* sources mapping to each conflicted
+                    # canonical and merge them together so no reverse payload is
+                    # dropped; re-merging the source that won the insert is a
+                    # no-op (idempotent — see _merge_edge_payloads).
+                    sources_by_canonical: dict[str, list[dict[str, Any]]] = {}
+                    for canonical, _old_id, source in batch:
+                        if canonical in conflicted_canonicals:
+                            sources_by_canonical.setdefault(canonical, []).append(
+                                source
                             )
+                    for canonical, sources in sources_by_canonical.items():
+                        await self._merge_into_canonical_edge(canonical, sources)
 
                 # Phase 2 — every create succeeded, 409'd-then-merged, so the
                 # canonical now exists for all; delete the old ids. delete 404 is
@@ -2258,11 +2264,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             raise
 
     async def _merge_into_canonical_edge(
-        self, canonical_id: str, reverse_source: dict[str, Any]
+        self, canonical_id: str, reverse_sources: list[dict[str, Any]]
     ) -> None:
-        """Merge a legacy reverse-orientation doc's payload into an existing
+        """Merge legacy reverse-orientation doc(s)' payload into an existing
         canonical doc (the create-409 reciprocal-duplicate case) so deleting the
         reverse loses no relation evidence (mirrors mongo_impl's dedupe merge).
+
+        ``reverse_sources`` carries every pending source in this batch that maps
+        to ``canonical_id`` (usually one, but >1 when a node pair has 3+ legacy
+        docs); all are folded into the canonical in a single write.
 
         Uses optimistic concurrency (``if_seq_no``/``if_primary_term``) so a
         concurrent live write during a rolling deploy is never clobbered: on a
@@ -2277,13 +2287,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 )
             except NotFoundError:
                 # Canonical vanished between the create-409 and now; recreate it
-                # from the reverse source (nothing to merge against).
+                # by merging the reverse sources together (nothing else to merge
+                # against).
+                recreated = {
+                    **reverse_sources[0],
+                    **_merge_edge_payloads(reverse_sources),
+                }
                 await self.client.index(
-                    index=self._edges_index, id=canonical_id, body=reverse_source
+                    index=self._edges_index, id=canonical_id, body=recreated
                 )
                 return
             base = current.get("_source", {})
-            merged = {**base, **_merge_edge_payloads([base, reverse_source])}
+            merged = {**base, **_merge_edge_payloads([base, *reverse_sources])}
             try:
                 await self.client.index(
                     index=self._edges_index,
