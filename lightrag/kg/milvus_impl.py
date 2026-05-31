@@ -6,7 +6,7 @@ from dataclasses import dataclass, fields
 import numpy as np
 from lightrag.utils import logger, compute_mdhash_id, _cooperative_yield
 from ..base import BaseVectorStorage
-from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
+from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH, DEFAULT_QUERY_PRIORITY
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
 
@@ -1579,7 +1579,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             embedding = [query_embedding]  # Milvus expects a list of embeddings
         else:
             embedding = await self.embedding_func(
-                [query], context="query", _priority=5
+                [query], context="query", _priority=DEFAULT_QUERY_PRIORITY
             )  # higher priority for query
 
         # Include all meta_fields (created_at is now always included)

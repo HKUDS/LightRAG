@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
+from lightrag.constants import DEFAULT_QUERY_PRIORITY
 
 from .shared_storage import (
     get_namespace_lock,
@@ -394,7 +395,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             embedding = np.array([query_embedding], dtype=np.float32)
         else:
             embedding = await self.embedding_func(
-                [query], context="query", _priority=5
+                [query], context="query", _priority=DEFAULT_QUERY_PRIORITY
             )  # higher priority for query
             # embedding is shape (1, dim)
             embedding = np.array(embedding, dtype=np.float32)

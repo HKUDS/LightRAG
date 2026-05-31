@@ -34,6 +34,7 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
+from ..constants import DEFAULT_QUERY_PRIORITY
 from ..exceptions import DataMigrationError
 from ..namespace import NameSpace, is_namespace
 from ..utils import (
@@ -4241,7 +4242,7 @@ class PGVectorStorage(BaseVectorStorage):
             embedding = query_embedding
         else:
             embeddings = await self.embedding_func(
-                [query], context="query", _priority=5
+                [query], context="query", _priority=DEFAULT_QUERY_PRIORITY
             )  # higher priority for query
             embedding = embeddings[0]
 

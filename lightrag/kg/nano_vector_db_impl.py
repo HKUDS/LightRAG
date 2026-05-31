@@ -14,6 +14,7 @@ from lightrag.utils import (
 )
 
 from lightrag.base import BaseVectorStorage
+from lightrag.constants import DEFAULT_QUERY_PRIORITY
 from nano_vectordb import NanoVectorDB
 from .shared_storage import (
     get_namespace_lock,
@@ -423,7 +424,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         else:
             # Execute embedding outside of lock to avoid improve cocurrent
             embedding = await self.embedding_func(
-                [query], context="query", _priority=5
+                [query], context="query", _priority=DEFAULT_QUERY_PRIORITY
             )  # higher priority for query
             embedding = embedding[0]
 
