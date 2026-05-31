@@ -203,6 +203,27 @@ def _resolve_upsert_batch_limits() -> tuple[int, int]:
     return max_payload_bytes, max_records_per_batch
 
 
+def _resolve_delete_batch_limit() -> int:
+    """Resolve the flush-time delete record-count cap from env, with module default.
+
+    Shared by every MongoDB delete path that fans a list of match clauses into a
+    single server message (``delete_many`` with ``$in``/``$or``), so the cap that
+    keeps one delete under the bulk message / 16MB query limit is consistent. A
+    non-positive value disables record-count splitting.
+    """
+    max_records_per_batch = int(
+        os.getenv(
+            "MONGO_DELETE_MAX_RECORDS_PER_BATCH",
+            str(DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH),
+        )
+    )
+    if max_records_per_batch <= 0:
+        logger.warning(
+            f"MONGO_DELETE_MAX_RECORDS_PER_BATCH={max_records_per_batch} is non-positive, disable delete record-count splitting"
+        )
+    return max_records_per_batch
+
+
 async def _run_batched_bulk_write(
     collection,
     ops: list[tuple[Any, int, str]],
@@ -1100,6 +1121,7 @@ class MongoGraphStorage(BaseGraphStorage):
             self._max_upsert_payload_bytes,
             self._max_upsert_records_per_batch,
         ) = _resolve_upsert_batch_limits()
+        self._max_delete_records_per_batch = _resolve_delete_batch_limit()
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -1424,20 +1446,15 @@ class MongoGraphStorage(BaseGraphStorage):
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """
         Check if there's a direct single-hop edge between source_node_id and target_node_id.
+
+        Matches on the canonical ``(edge_lo, edge_hi)`` pair (direction-independent)
+        instead of the bidirectional ``$or``, so this point lookup is served by the
+        compound unique index. Safe because the fail-fast migration in
+        ``initialize`` guarantees every served doc carries the endpoints.
         """
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
         doc = await self.edge_collection.find_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            },
+            {"edge_lo": edge_lo, "edge_hi": edge_hi},
             {"_id": 1},
         )
         return doc is not None
@@ -1486,19 +1503,11 @@ class MongoGraphStorage(BaseGraphStorage):
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
+        # Canonical (edge_lo, edge_hi) point lookup served by the compound unique
+        # index (see has_edge); the fail-fast migration guarantees the endpoints.
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
         return await self.edge_collection.find_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            }
+            {"edge_lo": edge_lo, "edge_hi": edge_hi}
         )
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -2321,16 +2330,31 @@ class MongoGraphStorage(BaseGraphStorage):
         if not edges:
             return
 
+        # Match each edge by its canonical (edge_lo, edge_hi) pair: one clause per
+        # edge (vs. the old two-clause bidirectional pair) served by the compound
+        # unique index, with reciprocal/duplicate inputs collapsed. Safe because
+        # the fail-fast migration guarantees every served doc carries the endpoints.
+        seen: set[tuple[str, str]] = set()
         all_edge_pairs = []
         for source_id, target_id in edges:
-            all_edge_pairs.append(
-                {"source_node_id": source_id, "target_node_id": target_id}
-            )
-            all_edge_pairs.append(
-                {"source_node_id": target_id, "target_node_id": source_id}
-            )
+            endpoints = _canonical_edge_endpoints(source_id, target_id)
+            if endpoints in seen:
+                continue
+            seen.add(endpoints)
+            all_edge_pairs.append({"edge_lo": endpoints[0], "edge_hi": endpoints[1]})
 
-        await self.edge_collection.delete_many({"$or": all_edge_pairs})
+        # Chunk the $or by record count so a large delete stays under the bulk
+        # message / 16MB query limit; endpoints are bounded id strings, so a count
+        # cap is enough (no byte budget needed). A non-positive cap disables it.
+        chunk = (
+            self._max_delete_records_per_batch
+            if self._max_delete_records_per_batch > 0
+            else len(all_edge_pairs)
+        )
+        for i in range(0, len(all_edge_pairs), chunk):
+            await self.edge_collection.delete_many(
+                {"$or": all_edge_pairs[i : i + chunk]}
+            )
 
         logger.debug(f"[{self.workspace}] Successfully deleted edges: {edges}")
 
@@ -2873,23 +2897,14 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
         # Flush-time batching limits (see module-level DEFAULT_MONGO_* constants).
-        # A non-positive value disables that splitting dimension. The two upsert
-        # limits are shared with KV/graph via _resolve_upsert_batch_limits(); the
-        # delete count cap is vector-specific (only the VDB batches deletes here).
+        # A non-positive value disables that splitting dimension. The upsert and
+        # delete caps are shared across KV/graph/VDB via the _resolve_* helpers so
+        # every path stays under the same bulk message / 16MB query limit.
         (
             self._max_upsert_payload_bytes,
             self._max_upsert_records_per_batch,
         ) = _resolve_upsert_batch_limits()
-        self._max_delete_records_per_batch = int(
-            os.getenv(
-                "MONGO_DELETE_MAX_RECORDS_PER_BATCH",
-                str(DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH),
-            )
-        )
-        if self._max_delete_records_per_batch <= 0:
-            logger.warning(
-                f"MONGO_DELETE_MAX_RECORDS_PER_BATCH={self._max_delete_records_per_batch} is non-positive, disable delete record-count splitting"
-            )
+        self._max_delete_records_per_batch = _resolve_delete_batch_limit()
 
         # Deferred-embedding buffers and the per-namespace flush lock.
         # Constructed in initialize() once shared-storage primitives are

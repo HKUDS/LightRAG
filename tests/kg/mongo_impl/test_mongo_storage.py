@@ -454,6 +454,105 @@ class TestMongoEdgeKey:
         assert second["keywords"] == first["keywords"] == "alpha,beta,gamma"
 
 
+class TestMongoEdgeReadCanonicalFilter:
+    """Exact single-edge reads/deletes use the canonical (edge_lo, edge_hi)
+    filter so they hit the compound unique index instead of the bidirectional
+    ``$or``. Per-node scans (node_degree/get_node_edges/delete_node) intentionally
+    keep ``$or`` — edge_hi is not a compound-index prefix, so they gain nothing."""
+
+    def _make_storage(self, max_delete_records_per_batch=1000):
+        s = MongoGraphStorage.__new__(MongoGraphStorage)
+        s.workspace = "test"
+        s.namespace = "chunk_entity_relation"
+        s._edge_collection_name = "test_edges"
+        s._max_delete_records_per_batch = max_delete_records_per_batch
+        s.edge_collection = SimpleNamespace()
+        return s
+
+    @pytest.mark.asyncio
+    async def test_has_edge_uses_canonical_filter(self):
+        s = self._make_storage()
+        s.edge_collection.find_one = AsyncMock(return_value={"_id": "x"})
+        assert await s.has_edge("B", "A") is True
+
+        filt, projection = s.edge_collection.find_one.call_args[0]
+        lo, hi = _canonical_edge_endpoints("B", "A")
+        assert filt == {"edge_lo": lo, "edge_hi": hi}
+        assert projection == {"_id": 1}
+
+    @pytest.mark.asyncio
+    async def test_has_edge_direction_independent(self):
+        s = self._make_storage()
+        s.edge_collection.find_one = AsyncMock(return_value=None)
+        await s.has_edge("A", "B")
+        forward = s.edge_collection.find_one.call_args[0][0]
+        await s.has_edge("B", "A")
+        backward = s.edge_collection.find_one.call_args[0][0]
+        assert forward == backward
+
+    @pytest.mark.asyncio
+    async def test_get_edge_uses_canonical_filter(self):
+        s = self._make_storage()
+        s.edge_collection.find_one = AsyncMock(return_value={"weight": 1.0})
+        await s.get_edge("B", "A")
+        filt = s.edge_collection.find_one.call_args[0][0]
+        lo, hi = _canonical_edge_endpoints("B", "A")
+        assert filt == {"edge_lo": lo, "edge_hi": hi}
+
+    @pytest.mark.asyncio
+    async def test_remove_edges_uses_canonical_pairs_and_collapses_reciprocals(self):
+        s = self._make_storage()
+        s.edge_collection.delete_many = AsyncMock()
+        # (A,B) and its reciprocal (B,A) must collapse to a single clause.
+        await s.remove_edges([("A", "B"), ("B", "A"), ("C", "D")])
+
+        query = s.edge_collection.delete_many.call_args[0][0]
+        lo_ab, hi_ab = _canonical_edge_endpoints("A", "B")
+        lo_cd, hi_cd = _canonical_edge_endpoints("C", "D")
+        assert query == {
+            "$or": [
+                {"edge_lo": lo_ab, "edge_hi": hi_ab},
+                {"edge_lo": lo_cd, "edge_hi": hi_cd},
+            ]
+        }
+
+    @pytest.mark.asyncio
+    async def test_remove_edges_empty_is_noop(self):
+        s = self._make_storage()
+        s.edge_collection.delete_many = AsyncMock()
+        await s.remove_edges([])
+        s.edge_collection.delete_many.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_remove_edges_chunks_large_or_by_record_cap(self):
+        # 5 distinct edges with a cap of 2 → 3 delete_many calls (2 + 2 + 1),
+        # and every input edge is covered exactly once across the chunks.
+        s = self._make_storage(max_delete_records_per_batch=2)
+        s.edge_collection.delete_many = AsyncMock()
+        edges = [(f"n{i}", f"n{i + 1}") for i in range(5)]
+        await s.remove_edges(edges)
+
+        calls = s.edge_collection.delete_many.call_args_list
+        assert [len(c[0][0]["$or"]) for c in calls] == [2, 2, 1]
+        clauses = [clause for c in calls for clause in c[0][0]["$or"]]
+        expected = [
+            {"edge_lo": lo, "edge_hi": hi}
+            for lo, hi in (_canonical_edge_endpoints(src, tgt) for src, tgt in edges)
+        ]
+        assert clauses == expected
+
+    @pytest.mark.asyncio
+    async def test_remove_edges_non_positive_cap_disables_chunking(self):
+        # A non-positive cap means "no record-count splitting": one delete_many.
+        s = self._make_storage(max_delete_records_per_batch=0)
+        s.edge_collection.delete_many = AsyncMock()
+        edges = [(f"n{i}", f"n{i + 1}") for i in range(5)]
+        await s.remove_edges(edges)
+
+        assert s.edge_collection.delete_many.await_count == 1
+        assert len(s.edge_collection.delete_many.call_args[0][0]["$or"]) == 5
+
+
 class TestMongoDocStatusLookup:
     """Cover the Mongo-native overrides for basename / content_hash lookups."""
 
