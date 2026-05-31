@@ -1118,9 +1118,10 @@ class MongoGraphStorage(BaseGraphStorage):
 
         Fail-fast one-time migration (mirrors the OpenSearch canonical-id work):
 
-          1. dedupe legacy reciprocal duplicate docs, **merging provenance** —
-             ``source_id`` / ``source_ids`` / ``file_path`` are unioned into the
-             survivor so no chunk evidence is lost;
+          1. dedupe legacy reciprocal duplicate docs, **merging the full relation
+             payload** into the survivor (provenance unioned, keywords
+             set-unioned, descriptions joined, weight summed — like
+             ``_merge_edges_then_upsert``) so no relation evidence is lost;
           2. backfill the canonical ``edge_lo`` / ``edge_hi`` endpoints on every
              remaining doc;
           3. build the partial **compound** unique index on ``(edge_lo, edge_hi)``.
@@ -1190,9 +1191,13 @@ class MongoGraphStorage(BaseGraphStorage):
         """Collapse duplicate docs for the same undirected edge into one.
 
         Groups by the canonical (sorted) endpoint pair; for each group with more
-        than one doc, keeps the newest by ``created_at`` and unions
-        ``source_ids``/``source_id``/``file_path`` from every duplicate into it
-        before deleting the rest. Returns the number of docs removed.
+        than one doc, keeps the newest by ``created_at`` and **merges the
+        non-survivors' relation payload into it before deleting them**, mirroring
+        ``_merge_edges_then_upsert`` so no relation evidence is lost:
+        ``source_ids``/``source_id``/``file_path`` are unioned, ``keywords`` are
+        comma-set-unioned, distinct ``description`` values are ``GRAPH_FIELD_SEP``
+        joined (the no-LLM merge fallback), and ``weight`` is summed. Returns the
+        number of docs removed.
         """
         pipeline = [
             {
@@ -1219,6 +1224,9 @@ class MongoGraphStorage(BaseGraphStorage):
                             "source_id": "$source_id",
                             "source_ids": "$source_ids",
                             "file_path": "$file_path",
+                            "description": "$description",
+                            "keywords": "$keywords",
+                            "weight": "$weight",
                             "created_at": "$created_at",
                         }
                     },
@@ -1237,10 +1245,14 @@ class MongoGraphStorage(BaseGraphStorage):
             if not others:
                 continue
 
-            # Union provenance across ALL docs (survivor included) so no
-            # chunk/file evidence is dropped when the duplicates are deleted.
+            # Merge the full relation payload across ALL docs (survivor included)
+            # so deleting the duplicates loses no evidence (mirrors
+            # _merge_edges_then_upsert's field semantics).
             all_source_ids: list[str] = []
             all_file_paths: list[str] = []
+            all_keywords: set[str] = set()
+            descriptions: list[str] = []
+            weights: list[float] = []
             for d in docs:
                 sids = d.get("source_ids")
                 if not sids and d.get("source_id"):
@@ -1249,6 +1261,14 @@ class MongoGraphStorage(BaseGraphStorage):
                 fp = d.get("file_path")
                 fps = fp.split(GRAPH_FIELD_SEP) if fp else []
                 all_file_paths = merge_source_ids(all_file_paths, fps)
+                kw = d.get("keywords")
+                if kw:
+                    all_keywords.update(k.strip() for k in kw.split(",") if k.strip())
+                desc = d.get("description")
+                if desc and desc not in descriptions:
+                    descriptions.append(desc)
+                if d.get("weight") is not None:
+                    weights.append(d["weight"])
 
             set_fields: dict[str, Any] = {}
             if all_source_ids:
@@ -1256,6 +1276,12 @@ class MongoGraphStorage(BaseGraphStorage):
                 set_fields["source_id"] = GRAPH_FIELD_SEP.join(all_source_ids)
             if all_file_paths:
                 set_fields["file_path"] = GRAPH_FIELD_SEP.join(all_file_paths)
+            if all_keywords:
+                set_fields["keywords"] = ",".join(sorted(all_keywords))
+            if descriptions:
+                set_fields["description"] = GRAPH_FIELD_SEP.join(descriptions)
+            if weights:
+                set_fields["weight"] = sum(weights)
             if set_fields:
                 await self.edge_collection.update_one(
                     {"_id": survivor["_id"]}, {"$set": set_fields}

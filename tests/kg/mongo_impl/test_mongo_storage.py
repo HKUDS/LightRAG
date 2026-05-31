@@ -275,7 +275,8 @@ class TestMongoEdgeKey:
                 to_list=AsyncMock(return_value=[{"name": "_id_"}])
             )
         )
-        # One duplicate group for edge {A,B}: two docs with distinct provenance.
+        # One duplicate group for edge {A,B}: two docs with distinct provenance
+        # AND distinct relation payload (description/keywords/weight).
         group = {
             "_id": {"lo": "A", "hi": "B"},
             "count": 2,
@@ -285,6 +286,9 @@ class TestMongoEdgeKey:
                     "source_id": "c1",
                     "source_ids": ["c1"],
                     "file_path": "f1",
+                    "description": "d1",
+                    "keywords": "alpha,beta",
+                    "weight": 1.0,
                     "created_at": 10,
                 },
                 {
@@ -292,6 +296,9 @@ class TestMongoEdgeKey:
                     "source_id": "c2",
                     "source_ids": ["c2"],
                     "file_path": "f2",
+                    "description": "d2",
+                    "keywords": "beta,gamma",
+                    "weight": 2.0,
                     "created_at": 20,
                 },
             ],
@@ -321,11 +328,16 @@ class TestMongoEdgeKey:
             for line in info_lines
         )
 
-        # Survivor is the newest (created_at 20 → _id 2); provenance unioned.
+        # Survivor is the newest (created_at 20 → _id 2); the full relation
+        # payload is merged in before the duplicate is deleted (no evidence lost).
         surv_filter, surv_update = s.edge_collection.update_one.call_args[0]
+        set_fields = surv_update["$set"]
         assert surv_filter == {"_id": 2}
-        assert surv_update["$set"]["source_ids"] == ["c1", "c2"]
-        assert surv_update["$set"]["file_path"] == "f1<SEP>f2"
+        assert set_fields["source_ids"] == ["c1", "c2"]
+        assert set_fields["file_path"] == "f1<SEP>f2"
+        assert set_fields["description"] == "d1<SEP>d2"  # distinct descriptions joined
+        assert set_fields["keywords"] == "alpha,beta,gamma"  # comma set-union, sorted
+        assert set_fields["weight"] == 3.0  # summed
         # The other duplicate is deleted.
         assert s.edge_collection.delete_many.call_args[0][0] == {"_id": {"$in": [1]}}
         # Compound unique partial index built as the completion flag.
