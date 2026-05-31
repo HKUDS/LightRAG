@@ -89,8 +89,8 @@ async def test_upsert_edge_uses_delete_create_not_set():
         storage, "NodeA", "NodeB", {"weight": "1.0", "description": "test edge"}
     )
 
-    # The cypher statement is the second one (after the lock acquisition).
-    cypher_sql = calls[1]["sql"]
+    # The cypher statement is the third one (after the per-edge + shared locks).
+    cypher_sql = calls[2]["sql"]
 
     # The new query must not contain any SET-based edge update — those silently
     # fail against AGE. All edge props live inline in the CREATE clause.
@@ -107,7 +107,7 @@ async def test_upsert_edge_contains_optional_match_delete_create():
     storage = make_graph_storage()
     calls = await _capture_upsert_edge(storage, "Alice", "Bob", {"weight": "0.5"})
 
-    cypher_sql = calls[1]["sql"]
+    cypher_sql = calls[2]["sql"]
     assert "OPTIONAL MATCH (source)-[old:DIRECTED]-(target)" in cypher_sql
     assert "DELETE old" in cypher_sql
     assert "CREATE (source)-[r:DIRECTED" in cypher_sql
@@ -123,7 +123,7 @@ async def test_upsert_edge_handles_empty_props():
     storage = make_graph_storage()
     calls = await _capture_upsert_edge(storage, "Alice", "Bob", {})
 
-    cypher_sql = calls[1]["sql"]
+    cypher_sql = calls[2]["sql"]
     assert "CREATE (source)-[r:DIRECTED {}]->(target)" in cypher_sql
 
 
@@ -133,7 +133,7 @@ async def test_upsert_edge_uses_parameterized_match_ids():
     storage = make_graph_storage()
     calls = await _capture_upsert_edge(storage, "Node A", "Node B", {"weight": "1.0"})
 
-    cypher_call = calls[1]
+    cypher_call = calls[2]
     cypher_sql = cypher_call["sql"]
     assert "entity_id: $src_id" in cypher_sql
     assert "entity_id: $tgt_id" in cypher_sql
@@ -162,11 +162,11 @@ async def test_upsert_edge_serialises_with_advisory_lock():
     storage = make_graph_storage()
     calls = await _capture_upsert_edge(storage, "Alice", "Bob", {"weight": "0.5"})
 
-    # Two statements: lock first, then cypher upsert.
-    assert len(calls) == 2
+    # Three statements: per-edge exclusive lock, graph-wide shared lock, cypher.
+    assert len(calls) == 3
 
     lock_sql = calls[0]["sql"]
-    assert "pg_advisory_xact_lock" in lock_sql
+    assert "pg_advisory_xact_lock(" in lock_sql  # exclusive (not _shared)
     # graph_name flows as $1 so independent AGE graphs in the same DB do not
     # serialise each other's edges.
     assert "$1::text || E'\\x01' ||" in lock_sql
@@ -179,9 +179,16 @@ async def test_upsert_edge_serialises_with_advisory_lock():
     assert "Alice" not in lock_sql and "Bob" not in lock_sql
     assert calls[0]["args"] == ("test_graph", "Alice", "Bob")
 
-    # The cypher statement must not contain the lock — that would cause AGE to
+    # Second statement: graph-wide SHARED lock keyed on graph_name only, so it
+    # conflicts with the batch path's exclusive graph lock but not with other
+    # single writers.
+    shared_sql = calls[1]["sql"]
+    assert "pg_advisory_xact_lock_shared" in shared_sql
+    assert calls[1]["args"] == ("test_graph",)
+
+    # The cypher statement must not contain a lock — that would cause AGE to
     # reject the plan with "cypher create clause cannot be rescanned".
-    cypher_sql = calls[1]["sql"]
+    cypher_sql = calls[2]["sql"]
     assert "pg_advisory_xact_lock" not in cypher_sql
 
 

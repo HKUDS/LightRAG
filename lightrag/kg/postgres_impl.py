@@ -5832,13 +5832,28 @@ _EDGE_ADVISORY_LOCK_SQL = (
     ")"
 )
 
-# Transaction-scoped advisory lock keyed on the whole graph ($1 = graph_name).
-# Used by the edge *batch* path: rather than one per-edge lock per row (which
-# would pile up to the chunk size and risk shared-lock-table exhaustion), a
-# chunk takes a single graph-wide lock -- one advisory lock regardless of how
-# many edges the batch carries -- serialising bulk edge writes on the graph as
-# one unit.
+# Graph-wide advisory locks keyed on the whole graph ($1 = graph_name), used so
+# the edge *batch* path conflicts with concurrent single-edge writers without
+# taking one lock per edge.
+#
+#   * EXCLUSIVE (batch): one ``pg_advisory_xact_lock`` per chunk -- a single
+#     advisory lock regardless of edge count, so it can't pile up to the chunk
+#     size or exhaust the shared lock table. It serialises a bulk edge write
+#     against the graph as one unit.
+#   * SHARED (single): every single ``upsert_edge`` also takes
+#     ``pg_advisory_xact_lock_shared`` on the same key. Shared/shared is
+#     compatible, so concurrent single-edge writes on *different* edges do not
+#     serialise (pipeline concurrency preserved); shared/exclusive conflicts, so
+#     a batch and any single-edge writer on the same graph cannot interleave
+#     their OPTIONAL MATCH/DELETE/CREATE and create duplicate DIRECTED rows.
+#
+# The shared graph lock does NOT serialise two single writers of the *same*
+# edge (shared/shared is compatible) -- that is what the per-edge
+# ``_EDGE_ADVISORY_LOCK_SQL`` is for; the two cover different races.
 _GRAPH_ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))"
+_GRAPH_ADVISORY_LOCK_SHARED_SQL = (
+    "SELECT pg_advisory_xact_lock_shared(hashtextextended($1::text, 0))"
+)
 
 
 @final
@@ -6488,12 +6503,17 @@ class PGGraphStorage(BaseGraphStorage):
         # Concurrency: OPTIONAL MATCH + DELETE + CREATE is not atomic against a
         # concurrent writer of the same pair (both could observe no edge and both
         # CREATE one, leaving duplicate DIRECTED rows). The graph-edit endpoints do
-        # not hold the pipeline writer slot, so we serialise per logical edge with a
-        # transaction-scoped advisory lock keyed on (graph_name, ordered (src, tgt))
-        # acquired before the cypher upsert, on the same connection / transaction.
-        # AGE refuses to plan a join against a cypher() call containing a CREATE
-        # ("cypher create clause cannot be rescanned"), so the lock cannot live in a
-        # CTE -- it is a separate statement inside the explicit transaction.
+        # not hold the pipeline writer slot, so the transaction takes two
+        # transaction-scoped advisory locks before the cypher upsert (AGE refuses
+        # to plan a join against a cypher() containing CREATE, so the locks cannot
+        # live in a CTE -- they are separate statements on the same connection):
+        #   1. per-edge EXCLUSIVE lock keyed on (graph_name, ordered (src, tgt)) --
+        #      serialises same-edge single-vs-single writers while letting
+        #      different edges proceed concurrently (pipeline concurrency);
+        #   2. graph-wide SHARED lock -- conflicts with the batch path's graph-wide
+        #      EXCLUSIVE lock so a bulk upsert_edges_batch and a single edge write
+        #      cannot interleave, without serialising single writers against each
+        #      other (shared/shared is compatible).
         cypher_sql, params_json = self._build_upsert_edge_sql(
             source_node_id, target_node_id, edge_data
         )
@@ -6513,6 +6533,9 @@ class PGGraphStorage(BaseGraphStorage):
                     self.graph_name,
                     source_node_id,
                     target_node_id,
+                )
+                await connection.execute(
+                    _GRAPH_ADVISORY_LOCK_SHARED_SQL, self.graph_name
                 )
                 await connection.execute(cypher_sql, params_json)
 
@@ -6678,12 +6701,14 @@ class PGGraphStorage(BaseGraphStorage):
         Each edge runs its OPTIONAL MATCH + DELETE + CREATE as one statement, all
         wrapped in a single transaction. Instead of the single-row path's per-edge
         advisory lock (which would pile up to the chunk size), the chunk takes ONE
-        graph-wide ``_GRAPH_ADVISORY_LOCK_SQL`` at the top of the transaction --
-        a single advisory lock regardless of edge count -- which serialises bulk
-        edge writes against the same graph and prevents the concurrent
-        OPTIONAL MATCH/DELETE/CREATE duplicate race. Edges are also deduped within
-        the chunk. Retry semantics mirror ``upsert_edge``: DELETE + CREATE is
-        idempotent, so a full-chunk replay is safe.
+        graph-wide EXCLUSIVE ``_GRAPH_ADVISORY_LOCK_SQL`` at the top of the
+        transaction -- a single advisory lock regardless of edge count. It
+        conflicts with the graph-wide SHARED lock every single ``upsert_edge``
+        takes, so a bulk edge write and any concurrent single-edge write on the
+        same graph cannot interleave their OPTIONAL MATCH/DELETE/CREATE and create
+        duplicate DIRECTED rows. Edges are also deduped within the chunk. Retry
+        semantics mirror ``upsert_edge``: DELETE + CREATE is idempotent, so a
+        full-chunk replay is safe.
         """
         built = [
             self._build_upsert_edge_sql(src, tgt, edge_data)
