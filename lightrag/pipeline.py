@@ -104,25 +104,39 @@ def _call_source_file_resolver(
     owner: Any,
     file_path: str,
     *,
-    source_file_name: str | None = None,
+    source_file: str | None = None,
     parser_engine: str | None = None,
 ) -> str:
     """Call parser source resolver while tolerating legacy test doubles."""
     resolver = owner._resolve_source_file_for_parser
     params = inspect.signature(resolver).parameters
-    supports_context = "source_file_name" in params or any(
+    supports_context = "source_file" in params or any(
         param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
     )
     if supports_context:
         return resolver(
             file_path,
-            source_file_name=source_file_name,
+            source_file=source_file,
             parser_engine=parser_engine,
         )
-    return resolver(source_file_name or file_path)
+    return resolver(source_file or file_path)
 
 
-# Map ``process_options.chunking`` selector → ``extraction_meta.chunking_method``
+def _read_source_file(data: Any) -> str | None:
+    """Read the source-file basename with backward compatibility.
+
+    The ``source_file_name`` → ``source_file`` rename means documents enqueued
+    before the change persisted the old key in full_docs content_data /
+    doc_status.metadata.  Resumed/legacy docs are read through here so they
+    still resolve their original source basename; write sites always use the
+    new ``source_file`` key.
+    """
+    if not isinstance(data, dict):
+        return None
+    return data.get("source_file") or data.get("source_file_name")
+
+
+# Map ``process_options.chunking`` selector → ``extraction_meta.chunk_method``
 # string used by the pipeline observability layer and the resume path.
 _CHUNKING_METHOD_LABELS: dict[str, str] = {
     "F": "fixed_token",
@@ -519,9 +533,9 @@ class _PipelineMixin:
             if engine := _parse_engine_at(index):
                 content_data["parse_engine"] = engine
             if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-                source_file_name = Path(str(file_paths[index] or "").strip()).name
-                if has_known_document_source(source_file_name):
-                    content_data["source_file_name"] = source_file_name
+                source_file = Path(str(file_paths[index] or "").strip()).name
+                if has_known_document_source(source_file):
+                    content_data["source_file"] = source_file
             options_str = _process_options_at(index)
             if options_str:
                 content_data["process_options"] = options_str
@@ -644,9 +658,9 @@ class _PipelineMixin:
                 # Mirror process_options into doc_status.metadata so admin UIs
                 # can surface the per-document strategy without a full_docs lookup.
                 metadata["process_options"] = options_str
-            source_file_name = content_data.get("source_file_name")
-            if source_file_name:
-                metadata["source_file_name"] = source_file_name
+            source_file = _read_source_file(content_data)
+            if source_file:
+                metadata["source_file"] = source_file
             if metadata:
                 base["metadata"] = metadata
             return base
@@ -1473,19 +1487,26 @@ class _PipelineMixin:
                         f"Document content not found in full_docs for doc_id: {doc_id_w}"
                     )
                 if isinstance(status_doc_w.metadata, dict):
-                    source_file_name_w = status_doc_w.metadata.get("source_file_name")
-                    if source_file_name_w and not content_data_w.get(
-                        "source_file_name"
-                    ):
-                        content_data_w["source_file_name"] = source_file_name_w
-                # Stamp parsing_start_time on the in-memory status_doc so
+                    source_file_w = _read_source_file(status_doc_w.metadata)
+                    if source_file_w:
+                        # Normalize the legacy ``source_file_name`` onto the new
+                        # key in the in-memory status metadata so the carry-over
+                        # allowlist (which no longer lists ``source_file_name``)
+                        # preserves it through the PARSING upsert below. Without
+                        # this, a retry after a parse failure — before full_docs
+                        # is rewritten — would no longer resolve the hinted
+                        # source file. Idempotent when the new key already exists.
+                        status_doc_w.metadata["source_file"] = source_file_w
+                        if not _read_source_file(content_data_w):
+                            content_data_w["source_file"] = source_file_w
+                # Stamp parse_start_time on the in-memory status_doc so
                 # carry-over (_DOC_STATUS_METADATA_CARRY_OVER_KEYS) writes it
                 # into doc_status here and preserves it across every
                 # subsequent state transition for stage-duration analysis.
                 if not isinstance(status_doc_w.metadata, dict):
                     status_doc_w.metadata = {}
                 # Drop stale per-attempt fields from any prior failed/retried
-                # attempt before stamping the new parsing_start_time. All of
+                # attempt before stamping the new parse_start_time. All of
                 # these are written by either this worker (cache-hit /
                 # cache-miss branches below) or the downstream analyze worker,
                 # and would otherwise be carried forward via carry-over,
@@ -1493,17 +1514,17 @@ class _PipelineMixin:
                 # skipped signals for the new attempt. The cache-hit mirror
                 # block only writes ``parse_stage_skipped`` when the parser
                 # actually returns a hit; the cache-miss branch only writes
-                # ``parsing_end_time`` when parse actually runs; the analyze
+                # ``parse_end_time`` when parse actually runs; the analyze
                 # worker writes its pair on re-entry.
                 for _stale_key in (
-                    "parsing_end_time",
+                    "parse_end_time",
                     "parse_stage_skipped",
                     "analyzing_start_time",
                     "analyzing_end_time",
                     "analyzing_stage_skipped",
                 ):
                     status_doc_w.metadata.pop(_stale_key, None)
-                status_doc_w.metadata["parsing_start_time"] = int(time.time())
+                status_doc_w.metadata["parse_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
                     doc_id=doc_id_w,
                     status=DocStatus.PARSING,
@@ -1540,7 +1561,7 @@ class _PipelineMixin:
 
                 # Mirror raw-bundle cache-hit flag from mineru/docling; cache-
                 # miss runs (including parse_native, which has no cache
-                # concept) stamp ``parsing_end_time`` instead so post-mortem
+                # concept) stamp ``parse_end_time`` instead so post-mortem
                 # can derive the parse-stage duration. The two fields are
                 # mutually exclusive per attempt. Both are persisted right
                 # below (before the doc enters q_analyze) so doc_status
@@ -1551,7 +1572,7 @@ class _PipelineMixin:
                 if parsed_data_w.get("parse_stage_skipped"):
                     status_doc_w.metadata["parse_stage_skipped"] = True
                 else:
-                    status_doc_w.metadata["parsing_end_time"] = int(time.time())
+                    status_doc_w.metadata["parse_end_time"] = int(time.time())
 
                 # parse_* may have patched content_hash for
                 # pending_parse → raw transitions.
@@ -1578,7 +1599,7 @@ class _PipelineMixin:
                     continue
 
                 # Persist the parse-stage outcome to doc_status now, before the
-                # doc waits in q_analyze, so parsing_end_time / parse_stage_skipped
+                # doc waits in q_analyze, so parse_end_time / parse_stage_skipped
                 # reflect the actual end of parsing instead of only landing at the
                 # ANALYZING transition via carry-over. content_hash is already
                 # refreshed and duplicates are filtered out by this point.
@@ -1782,7 +1803,7 @@ class _PipelineMixin:
         file_path = resolve_doc_file_path(status_doc=status_doc)
         current_file_number = 0
         file_extraction_stage_ok = False
-        processing_start_time = int(time.time())
+        process_start_time = int(time.time())
         first_stage_tasks: list[asyncio.Task] = []
         entity_relation_task: asyncio.Task | None = None
         chunks: dict[str, Any] = {}
@@ -2087,7 +2108,7 @@ class _PipelineMixin:
                         if persisted_format == FULL_DOCS_FORMAT_LIGHTRAG
                         else "legacy"
                     ),
-                    "chunking_method": (
+                    "chunk_method": (
                         # Explicit selector in process_options: reflect
                         # the dispatched strategy.  ``fixed_token_fallback``
                         # is preserved as a defensive label in case a
@@ -2196,7 +2217,7 @@ class _PipelineMixin:
                 if not chunks:
                     logger.warning("No document chunks to process")
 
-                processing_start_time = int(time.time())
+                process_start_time = int(time.time())
 
                 await self._raise_if_cancelled(
                     ctx.pipeline_status, ctx.pipeline_status_lock
@@ -2214,7 +2235,7 @@ class _PipelineMixin:
                             "chunks_list": list(chunks.keys()),
                         },
                         metadata_extra={
-                            "processing_start_time": processing_start_time,
+                            "process_start_time": process_start_time,
                             **extraction_meta,
                         },
                     )
@@ -2267,8 +2288,8 @@ class _PipelineMixin:
                     failed_chunks_snapshot=get_failed_chunk_snapshot(),
                     pending_tasks=pending_tasks,
                     metadata_extra={
-                        "processing_start_time": processing_start_time,
-                        "processing_end_time": int(time.time()),
+                        "process_start_time": process_start_time,
+                        "process_end_time": int(time.time()),
                     },
                     pipeline_status=ctx.pipeline_status,
                     pipeline_status_lock=ctx.pipeline_status_lock,
@@ -2307,7 +2328,7 @@ class _PipelineMixin:
                             file_path=file_path,
                         )
 
-                    processing_end_time = int(time.time())
+                    process_end_time = int(time.time())
                     await self._upsert_doc_status_transition(
                         doc_id=doc_id,
                         status=DocStatus.PROCESSED,
@@ -2318,8 +2339,8 @@ class _PipelineMixin:
                             "chunks_list": list(chunks.keys()),
                         },
                         metadata_extra={
-                            "processing_start_time": processing_start_time,
-                            "processing_end_time": processing_end_time,
+                            "process_start_time": process_start_time,
+                            "process_end_time": process_end_time,
                             **extraction_meta,
                         },
                     )
@@ -2348,8 +2369,8 @@ class _PipelineMixin:
                         failed_chunks_snapshot=get_failed_chunk_snapshot(),
                         pending_tasks=[],
                         metadata_extra={
-                            "processing_start_time": processing_start_time,
-                            "processing_end_time": int(time.time()),
+                            "process_start_time": process_start_time,
+                            "process_end_time": int(time.time()),
                             **extraction_meta,
                         },
                         pipeline_status=ctx.pipeline_status,
@@ -2656,7 +2677,7 @@ class _PipelineMixin:
             source_path = _call_source_file_resolver(
                 self,
                 file_path,
-                source_file_name=content_data.get("source_file_name"),
+                source_file=_read_source_file(content_data),
                 parser_engine=PARSER_ENGINE_NATIVE,
             )
             p = Path(source_path)
@@ -2849,7 +2870,7 @@ class _PipelineMixin:
             _call_source_file_resolver(
                 self,
                 file_path,
-                source_file_name=content_data.get("source_file_name"),
+                source_file=_read_source_file(content_data),
                 parser_engine=PARSER_ENGINE_MINERU,
             )
         )
@@ -2963,7 +2984,7 @@ class _PipelineMixin:
             _call_source_file_resolver(
                 self,
                 file_path,
-                source_file_name=content_data.get("source_file_name"),
+                source_file=_read_source_file(content_data),
                 parser_engine=PARSER_ENGINE_DOCLING,
             )
         )
@@ -3177,9 +3198,7 @@ class _PipelineMixin:
         source_path = _call_source_file_resolver(
             self,
             file_path,
-            source_file_name=content_data.get("source_file_name")
-            if content_data
-            else None,
+            source_file=_read_source_file(content_data),
         )
         archived = await archive_source_after_full_docs_sync(source_path)
         archive_msg = f"; archived to {archived}" if archived else ""
@@ -3195,13 +3214,13 @@ class _PipelineMixin:
         self,
         file_path: str,
         *,
-        source_file_name: str | None = None,
+        source_file: str | None = None,
         parser_engine: str | None = None,
     ) -> str:
         """Resolve a readable source file path for parser upload.
 
         ``file_path`` is the canonical stored basename. Pending-parse records
-        may also carry ``source_file_name`` with the real uploaded/scanned
+        may also carry ``source_file`` with the real uploaded/scanned
         basename, including parser hints.
         """
         candidates: list[Path] = []
@@ -3222,7 +3241,7 @@ class _PipelineMixin:
 
         p = Path(file_path)
         name = p.name
-        source_name = Path(str(source_file_name or "").strip()).name
+        source_name = Path(str(source_file or "").strip()).name
         input_path = input_dir_path()
         # API ``DocumentManager`` scopes its input dir to
         # ``<base_input_dir>/<workspace>/`` (see DocumentManager.__init__);

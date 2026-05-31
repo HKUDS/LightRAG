@@ -185,11 +185,11 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # format as the ``Chunking <strategy>: ...`` log line (params portion only).
 # Carrying it forward keeps the value visible after PROCESSING -> FAILED,
 # whose ``metadata_extra`` only carries timing fields.
-# ``parsing_start_time`` / ``analyzing_start_time`` are Unix epoch seconds
+# ``parse_start_time`` / ``analyzing_start_time`` are Unix epoch seconds
 # stamped at the entry of ``_parse_worker`` / ``_analyze_worker`` (mirrors
-# the existing ``processing_start_time`` set when entering PROCESSING) so
+# the existing ``process_start_time`` set when entering PROCESSING) so
 # per-stage durations can be derived from doc_status post-mortem.
-# ``parsing_end_time`` is the paired Unix epoch seconds stamped by
+# ``parse_end_time`` is the paired Unix epoch seconds stamped by
 # ``_parse_worker`` when the parse stage actually runs (cache-miss branch,
 # covering ``parse_native`` too which has no cache concept). Absent on
 # cache-hit attempts (``parse_stage_skipped`` is set instead).
@@ -212,7 +212,7 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # Within each stage, the ``*_end_time`` and ``*_stage_skipped`` fields are
 # mutually exclusive (at most one is written per attempt; both may be
 # absent if analyze soft-failed).
-# ``source_file_name`` records the original pending-parse source basename used
+# ``source_file`` records the original pending-parse source basename used
 # by parser workers; it is intentionally separate from canonical ``file_path``.
 #
 # The order of this tuple is the rendering order of metadata fields in
@@ -223,11 +223,11 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # together, etc., so the dialog reads top-to-bottom along the pipeline.
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "process_options",
-    "source_file_name",
+    "source_file",
     "parse_warnings",
     "chunk_opts",
-    "parsing_start_time",
-    "parsing_end_time",
+    "parse_start_time",
+    "parse_end_time",
     "parse_stage_skipped",
     "analyzing_start_time",
     "analyzing_end_time",
