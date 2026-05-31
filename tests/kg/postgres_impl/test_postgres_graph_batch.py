@@ -157,19 +157,26 @@ async def test_upsert_edges_batch_splits_into_chunk_transactions():
     # 5 edges / cap 2 => 3 chunks; each chunk = one transaction.
     assert cap.run_count == 3
     assert cap.tx_count == 3
-    # One CREATE cypher per edge.
+    # One CREATE cypher per edge, and exactly one graph-wide lock per chunk.
     assert _sql_count(cap, "CREATE (source)-[r:DIRECTED") == 5
+    assert _sql_count(cap, "pg_advisory_xact_lock") == 3
 
 
 @pytest.mark.asyncio
-async def test_upsert_edges_batch_takes_no_advisory_lock():
-    """The batch path relies on single-writer + the caller's keyed lock, so it
-    must NOT take per-edge advisory locks (which would pile up per chunk)."""
+async def test_upsert_edges_batch_takes_one_graph_lock_per_chunk():
+    """The batch chunk takes a single graph-wide advisory lock (keyed on
+    graph_name only), not one lock per edge -- bounded regardless of edge count."""
     storage, cap = make_graph_storage()
-    await storage.upsert_edges_batch([("A", "B", {"w": "1"})])
+    await storage.upsert_edges_batch(
+        [(f"s{i}", f"t{i}", {"w": str(i)}) for i in range(4)]
+    )
 
-    assert _sql_count(cap, "pg_advisory_xact_lock") == 0
-    assert _sql_count(cap, "CREATE (source)-[r:DIRECTED") == 1
+    lock_calls = [c for c in cap.calls if "pg_advisory_xact_lock" in c["sql"]]
+    assert len(lock_calls) == 1  # one chunk, one lock (not 4)
+    assert lock_calls[0]["args"] == ("test_graph",)  # graph-keyed, no endpoints
+    assert _sql_count(cap, "CREATE (source)-[r:DIRECTED") == 4
+    # The lock is acquired before any edge cypher in the chunk.
+    assert "pg_advisory_xact_lock" in cap.calls[0]["sql"]
 
 
 @pytest.mark.asyncio
