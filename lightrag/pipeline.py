@@ -1538,12 +1538,14 @@ class _PipelineMixin:
                         status_doc_w.metadata = {}
                     status_doc_w.metadata["parse_warnings"] = parse_warnings_payload_w
 
-                # Mirror raw-bundle cache-hit flag from mineru/docling so the
-                # next upsert (ANALYZING) carries it into doc_status; cache-
+                # Mirror raw-bundle cache-hit flag from mineru/docling; cache-
                 # miss runs (including parse_native, which has no cache
                 # concept) stamp ``parsing_end_time`` instead so post-mortem
                 # can derive the parse-stage duration. The two fields are
-                # mutually exclusive per attempt.
+                # mutually exclusive per attempt. Both are persisted right
+                # below (before the doc enters q_analyze) so doc_status
+                # reflects the parse end immediately; carry-over keeps them
+                # visible across every later transition.
                 if not isinstance(status_doc_w.metadata, dict):
                     status_doc_w.metadata = {}
                 if parsed_data_w.get("parse_stage_skipped"):
@@ -1574,6 +1576,18 @@ class _PipelineMixin:
                     pipeline_status_lock=ctx.pipeline_status_lock,
                 ):
                     continue
+
+                # Persist the parse-stage outcome to doc_status now, before the
+                # doc waits in q_analyze, so parsing_end_time / parse_stage_skipped
+                # reflect the actual end of parsing instead of only landing at the
+                # ANALYZING transition via carry-over. content_hash is already
+                # refreshed and duplicates are filtered out by this point.
+                await self._upsert_doc_status_transition(
+                    doc_id=doc_id_w,
+                    status=DocStatus.PARSING,
+                    status_doc=status_doc_w,
+                    file_path=file_path_w,
+                )
 
                 await ctx.q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
             except PipelineCancelledException:
@@ -1672,13 +1686,29 @@ class _PipelineMixin:
                 #     exception (generic ``except Exception``) or hit a
                 #     malformed/empty sidecar early return. Failure is not a
                 #     skip AND not a completion, so write neither field.
-                # The skipped/end_time pair is mutually exclusive.
+                # The skipped/end_time pair is mutually exclusive. The two
+                # outcome-bearing branches persist immediately below (before
+                # the doc enters q_process) so analyzing_end_time /
+                # analyzing_stage_skipped reflect the actual end of analysis
+                # rather than only landing at the PROCESSING transition.
                 if not isinstance(status_doc_w.metadata, dict):
                     status_doc_w.metadata = {}
+                analyze_outcome_recorded = False
                 if analyzed.pop("analyzing_stage_skipped", False):
                     status_doc_w.metadata["analyzing_stage_skipped"] = True
+                    analyze_outcome_recorded = True
                 elif analyzed.get("multimodal_processed"):
                     status_doc_w.metadata["analyzing_end_time"] = int(time.time())
+                    analyze_outcome_recorded = True
+                # Soft-failed attempts (neither flag) write nothing new, so skip
+                # the extra upsert; PROCESSING will be their next doc_status write.
+                if analyze_outcome_recorded:
+                    await self._upsert_doc_status_transition(
+                        doc_id=doc_id_w,
+                        status=DocStatus.ANALYZING,
+                        status_doc=status_doc_w,
+                        file_path=file_path_w,
+                    )
                 await ctx.q_process.put((doc_id_w, status_doc_w, analyzed))
             except PipelineCancelledException:
                 # In-flight cancellation surfaced from analyze_multimodal

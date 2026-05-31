@@ -531,6 +531,75 @@ def test_analyze_soft_failure_writes_neither_end_time_nor_skipped(tmp_path):
 
 
 @pytest.mark.offline
+def test_stage_end_outcomes_persist_within_their_own_stage(tmp_path):
+    """The parse-stage outcome (parsing_end_time / parse_stage_skipped) must be
+    persisted to doc_status during the PARSING stage — before the doc waits in
+    q_analyze and the ANALYZING transition fires — and the analyze-stage outcome
+    during ANALYZING, before PROCESSING. Otherwise these signals only land at the
+    next stage's transition via carry-over, so a doc sitting in a backlogged queue
+    shows its prior status with no end-of-stage signal.
+
+    Wraps doc_status.upsert to capture the (status, metadata-keys) sequence and
+    asserts each stage-end signal appears under its own status ahead of the next
+    stage's first upsert. parse_native on raw content takes the skip branches, so
+    the signals here are the skipped flags rather than the *_end_time stamps.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        calls: list[tuple[str, set[str]]] = []
+        try:
+            original_upsert = rag.doc_status.upsert
+
+            async def _recording_upsert(data, *args, **kwargs):
+                for payload in data.values():
+                    status_text = _status_value_text(payload.get("status"))
+                    metadata = payload.get("metadata") or {}
+                    calls.append((status_text, set(metadata.keys())))
+                return await original_upsert(data, *args, **kwargs)
+
+            rag.doc_status.upsert = _recording_upsert  # type: ignore[assignment]
+
+            await rag.apipeline_enqueue_documents(
+                "Some content body for chunking.",
+                file_paths="stage_end_timing.txt",
+                track_id="track-stage-end-timing",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+        first_analyzing = next(
+            (i for i, (s, _) in enumerate(calls) if s == "analyzing"), None
+        )
+        first_processing = next(
+            (i for i, (s, _) in enumerate(calls) if s == "processing"), None
+        )
+        assert first_analyzing is not None, f"no ANALYZING upsert; sequence: {calls!r}"
+        assert (
+            first_processing is not None
+        ), f"no PROCESSING upsert; sequence: {calls!r}"
+
+        assert any(
+            s == "parsing" and "parse_stage_skipped" in keys
+            for s, keys in calls[:first_analyzing]
+        ), (
+            f"parse-stage outcome not persisted under PARSING before the "
+            f"ANALYZING transition; upsert sequence: {calls!r}"
+        )
+        assert any(
+            s == "analyzing" and "analyzing_stage_skipped" in keys
+            for s, keys in calls[first_analyzing:first_processing]
+        ), (
+            f"analyze-stage outcome not persisted under ANALYZING before the "
+            f"PROCESSING transition; upsert sequence: {calls!r}"
+        )
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_apipeline_enqueue_persists_process_options(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)
