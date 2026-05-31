@@ -2533,13 +2533,14 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             edge_id, other_id = _reciprocal_edge_ids(source_node_id, target_node_id)
             await self.client.index(index=self._edges_index, id=edge_id, body=doc)
             # Self-heal: drop a stale reverse-orientation doc if one exists
-            # (skipped for self-loops, where both ids coincide). Best-effort —
-            # a missing doc (404) is the normal case and must not fail the write.
+            # (skipped for self-loops, where both ids coincide). ignore=404 so the
+            # common steady-state case (no stale reverse doc) neither raises nor
+            # makes opensearch-py log a WARNING for every single edge write.
             if other_id != edge_id:
                 try:
-                    await self.client.delete(index=self._edges_index, id=other_id)
-                except NotFoundError:
-                    pass
+                    await self.client.delete(
+                        index=self._edges_index, id=other_id, ignore=404
+                    )
                 except OpenSearchException as e:
                     logger.warning(
                         f"[{self.workspace}] Self-heal delete of stale reverse edge "
