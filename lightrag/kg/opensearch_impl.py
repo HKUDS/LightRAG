@@ -1931,15 +1931,24 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         ``upsert_edge`` switched to a canonical sorted-pair id, a fresh write
         lands on a different ``_id`` than a legacy reverse-direction doc,
         leaving two documents for one edge (``node_degree``/``get_node_edges``
-        double-count). This collapses every non-canonical doc onto its
-        canonical ``_id`` (last-write-wins on duplicates) and deletes the stale
-        id.
+        double-count). This re-keys every non-canonical doc onto its canonical
+        ``_id`` and deletes the stale id.
+
+        The canonical write uses ``op_type=create`` (insert-only), so it never
+        overwrites an existing canonical doc. ``get_data_init_lock`` serialises
+        the init critical section across one deployment's worker pool (only the
+        first worker migrates; the rest skip via the ``_meta`` flag), but it is
+        a ``multiprocessing.Manager`` lock that does NOT span separate
+        deployments. During a rolling deploy a previous-release worker can still
+        serve ``upsert_edge`` while we hold a stale scrolled copy, so create-only
+        ensures we never clobber that live canonical write (or a forward legacy
+        doc) with stale data — the existing doc wins and the redundant
+        orientation is deleted.
 
         Idempotent and self-guarded: an index ``_meta`` flag marks completion
         so the full scan runs at most once; already-canonical docs are skipped,
-        so a partial/failed run simply re-runs on the next startup. Must run
-        with no concurrent writers — ``initialize`` calls it inside
-        ``get_data_init_lock()``.
+        and create-409 / delete-404 races are tolerated, so a partial/failed run
+        simply re-runs on the next startup.
         """
         try:
             if not await self.client.indices.exists(index=self._edges_index):
@@ -1984,12 +1993,16 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 nonlocal pending, had_real_error
                 if not pending:
                     return
-                # raise_on_error=False so a stale-doc 404 on the delete leg does
-                # not abort the batch. In a multi-node deploy two nodes can both
-                # pass the _meta check and run concurrently (get_data_init_lock is
-                # process-local); the slower node then deletes ids the faster one
-                # already removed. Those 404s are benign — ignore them, but record
-                # any *real* error so we leave the index unflagged to retry.
+                # raise_on_error=False so two expected, benign per-item statuses
+                # do not abort the batch. get_data_init_lock only serialises one
+                # deployment's workers, so a concurrent migration run or a live
+                # writer from a previous-release worker (rolling deploy) can race
+                # us:
+                #   * create 409 — the canonical doc already exists (live write or
+                #     forward legacy doc); we deliberately do NOT overwrite it.
+                #   * delete 404 — the stale id was already removed by another run.
+                # Any *other* status is a real error: we record it and leave the
+                # index unflagged so the next startup retries.
                 _success, errors = await _run_chunked_async_bulk(
                     self.client,
                     pending,
@@ -2004,7 +2017,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     e
                     for e in errors
                     if not (
-                        isinstance(e, dict) and e.get("delete", {}).get("status") == 404
+                        isinstance(e, dict)
+                        and (
+                            e.get("create", {}).get("status") == 409
+                            or e.get("delete", {}).get("status") == 404
+                        )
                     )
                 ]
                 if real_errors:
@@ -2037,9 +2054,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         canonical = _canonical_edge_id(src, tgt)
                         if hit["_id"] == canonical:
                             continue
+                        # op_type=create (insert-only) so we NEVER overwrite an
+                        # existing canonical doc. get_data_init_lock serialises
+                        # init across one deployment's workers but not across
+                        # separate deployments, so during a rolling deploy a
+                        # previous-release worker can still serve upsert_edge and
+                        # write the fresh canonical edge; an unconditional index
+                        # here would clobber it with this stale scrolled _source.
+                        # create fails with 409 when canonical exists (tolerated
+                        # below), leaving the live/forward doc intact.
                         pending.append(
                             {
-                                "_op_type": "index",
+                                "_op_type": "create",
                                 "_index": self._edges_index,
                                 "_id": canonical,
                                 "_source": source,
@@ -2094,8 +2120,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 f"{self._edges_index}: scanned {scanned}, migrated {migrated}"
             )
             # Mark complete so subsequent startups skip the full scan. Legacy
-            # reciprocal duplicates collapse onto one canonical doc here
-            # (last-write-wins) — acceptable since edges are undirected.
+            # reciprocal duplicates collapse onto one canonical doc here: the
+            # first writer of the canonical _id wins (create is insert-only) and
+            # the other orientation is deleted — acceptable since edges are
+            # undirected, and it never clobbers a concurrent live write.
             await self.client.indices.put_mapping(
                 index=self._edges_index,
                 body={"_meta": {**meta, _EDGE_ID_CANONICAL_META_FLAG: True}},

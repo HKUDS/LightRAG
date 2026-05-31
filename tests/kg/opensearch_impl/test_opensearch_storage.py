@@ -2304,10 +2304,13 @@ class TestGraphStorage:
 
         canonical = _canonical_edge_id("A", "B")
         actions = bulk_calls[-1]
-        index_ops = [a for a in actions if a["_op_type"] == "index"]
+        # Insert-only create (never clobber a concurrent live canonical write),
+        # plus delete of the stale id.
+        create_ops = [a for a in actions if a["_op_type"] == "create"]
         delete_ops = [a for a in actions if a["_op_type"] == "delete"]
-        assert index_ops[0]["_id"] == canonical
-        assert index_ops[0]["_source"]["source_node_id"] == "A"
+        assert not [a for a in actions if a["_op_type"] == "index"]
+        assert create_ops[0]["_id"] == canonical
+        assert create_ops[0]["_source"]["source_node_id"] == "A"
         assert delete_ops[0]["_id"] == "edge-legacy-noncanonical"
 
         # Completion flag persisted via _meta.
@@ -2318,8 +2321,12 @@ class TestGraphStorage:
     @pytest.mark.parametrize(
         "errors, expect_flag",
         [
-            ([{"delete": {"_id": "edge-old", "status": 404}}], True),  # benign
-            ([{"index": {"_id": "edge-x", "status": 503}}], False),  # real failure
+            ([{"delete": {"_id": "edge-old", "status": 404}}], True),  # stale delete
+            (
+                [{"create": {"_id": "edge-canon", "status": 409}}],
+                True,
+            ),  # canonical already exists (live write) — must not clobber/fail
+            ([{"create": {"_id": "edge-canon", "status": 503}}], False),  # real
         ],
     )
     async def test_migrate_edges_tolerates_stale_404_but_not_real_errors(
