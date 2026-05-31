@@ -1797,6 +1797,14 @@ class MongoGraphStorage(BaseGraphStorage):
             # Retry ONLY when every failure is a duplicate-key race; a
             # writeConcern failure (durability problem, empty writeErrors) or any
             # other write error must surface, not be masked by a blind retry.
+            #
+            # NOTE: under ordered=True the bulk aborts at the FIRST failing op, so
+            # writeErrors holds at most one entry — the all(...) check therefore
+            # only inspects that first error, not the whole batch. Ops after it
+            # never ran; they re-run when we retry the entire op list below. So a
+            # non-11000 error hidden behind a leading 11000 is not masked — it
+            # simply surfaces one retry later (the retry hits it and re-raises,
+            # since by then the leading dup has resolved to a plain update).
             dup_only = (
                 bool(write_errors)
                 and all(we.get("code") == _DUPLICATE_KEY_CODE for we in write_errors)

@@ -230,6 +230,34 @@ class TestMongoEdgeKey:
                 await s.upsert_edges_batch([("A", "B", {"weight": 1.0})])
 
     @pytest.mark.asyncio
+    async def test_upsert_edges_batch_surfaces_non_dup_error_hidden_behind_dup(self):
+        """Under ordered=True the bulk aborts at the first failing op, so a
+        non-11000 error sitting *behind* a leading 11000 race is not reported on
+        the first pass. It must still surface — on the retry, where the leading
+        dup has resolved to an update and the real error now leads."""
+        s = self._make_storage()
+        edge_calls = []
+
+        async def fake_bulk(collection, ops, **kwargs):
+            if collection is s.edge_collection:
+                edge_calls.append(collection)
+                if len(edge_calls) == 1:
+                    # First pass: ordered abort reports only the leading dup race.
+                    raise BulkWriteError({"writeErrors": [{"code": 11000}]})
+                # Retry: dup resolved to an update, the hidden error now leads.
+                raise BulkWriteError({"writeErrors": [{"code": 121}]})
+
+        with patch(
+            "lightrag.kg.mongo_impl._run_batched_bulk_write",
+            new=AsyncMock(side_effect=fake_bulk),
+        ):
+            with pytest.raises(BulkWriteError) as exc:
+                await s.upsert_edges_batch([("A", "B", {"weight": 1.0})])
+        # Retried once (dup-only first pass), then the non-dup error re-raised.
+        assert len(edge_calls) == 2
+        assert exc.value.details["writeErrors"][0]["code"] == 121
+
+    @pytest.mark.asyncio
     async def test_upsert_edges_batch_reraises_write_concern_error(self):
         """A writeConcern-only BulkWriteError (empty writeErrors) is a durability
         failure — it must surface, not be masked by the duplicate-key retry."""
