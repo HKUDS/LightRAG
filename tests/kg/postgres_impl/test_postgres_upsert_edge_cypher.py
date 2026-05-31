@@ -32,6 +32,7 @@ def make_graph_storage() -> PGGraphStorage:
     storage.workspace = "test_ws"
     storage.namespace = "test_graph"
     storage.graph_name = "test_graph"
+    storage.__post_init__()  # resolves chunk-level batch-limit attrs
     storage.db = MagicMock()
     return storage
 
@@ -88,8 +89,8 @@ async def test_upsert_edge_uses_delete_create_not_set():
         storage, "NodeA", "NodeB", {"weight": "1.0", "description": "test edge"}
     )
 
-    # The cypher statement is the second one (after the lock acquisition).
-    cypher_sql = calls[1]["sql"]
+    # The cypher statement is the third one (after the per-edge + shared locks).
+    cypher_sql = calls[2]["sql"]
 
     # The new query must not contain any SET-based edge update — those silently
     # fail against AGE. All edge props live inline in the CREATE clause.
@@ -106,7 +107,7 @@ async def test_upsert_edge_contains_optional_match_delete_create():
     storage = make_graph_storage()
     calls = await _capture_upsert_edge(storage, "Alice", "Bob", {"weight": "0.5"})
 
-    cypher_sql = calls[1]["sql"]
+    cypher_sql = calls[2]["sql"]
     assert "OPTIONAL MATCH (source)-[old:DIRECTED]-(target)" in cypher_sql
     assert "DELETE old" in cypher_sql
     assert "CREATE (source)-[r:DIRECTED" in cypher_sql
@@ -122,7 +123,7 @@ async def test_upsert_edge_handles_empty_props():
     storage = make_graph_storage()
     calls = await _capture_upsert_edge(storage, "Alice", "Bob", {})
 
-    cypher_sql = calls[1]["sql"]
+    cypher_sql = calls[2]["sql"]
     assert "CREATE (source)-[r:DIRECTED {}]->(target)" in cypher_sql
 
 
@@ -132,7 +133,7 @@ async def test_upsert_edge_uses_parameterized_match_ids():
     storage = make_graph_storage()
     calls = await _capture_upsert_edge(storage, "Node A", "Node B", {"weight": "1.0"})
 
-    cypher_call = calls[1]
+    cypher_call = calls[2]
     cypher_sql = cypher_call["sql"]
     assert "entity_id: $src_id" in cypher_sql
     assert "entity_id: $tgt_id" in cypher_sql
@@ -161,11 +162,11 @@ async def test_upsert_edge_serialises_with_advisory_lock():
     storage = make_graph_storage()
     calls = await _capture_upsert_edge(storage, "Alice", "Bob", {"weight": "0.5"})
 
-    # Two statements: lock first, then cypher upsert.
-    assert len(calls) == 2
+    # Three statements: per-edge exclusive lock, graph-wide shared lock, cypher.
+    assert len(calls) == 3
 
     lock_sql = calls[0]["sql"]
-    assert "pg_advisory_xact_lock" in lock_sql
+    assert "pg_advisory_xact_lock(" in lock_sql  # exclusive (not _shared)
     # graph_name flows as $1 so independent AGE graphs in the same DB do not
     # serialise each other's edges.
     assert "$1::text || E'\\x01' ||" in lock_sql
@@ -178,9 +179,16 @@ async def test_upsert_edge_serialises_with_advisory_lock():
     assert "Alice" not in lock_sql and "Bob" not in lock_sql
     assert calls[0]["args"] == ("test_graph", "Alice", "Bob")
 
-    # The cypher statement must not contain the lock — that would cause AGE to
+    # Second statement: graph-wide SHARED lock keyed on graph_name only, so it
+    # conflicts with the batch path's exclusive graph lock but not with other
+    # single writers.
+    shared_sql = calls[1]["sql"]
+    assert "pg_advisory_xact_lock_shared" in shared_sql
+    assert calls[1]["args"] == ("test_graph",)
+
+    # The cypher statement must not contain a lock — that would cause AGE to
     # reject the plan with "cypher create clause cannot be rescanned".
-    cypher_sql = calls[1]["sql"]
+    cypher_sql = calls[2]["sql"]
     assert "pg_advisory_xact_lock" not in cypher_sql
 
 
@@ -317,63 +325,69 @@ async def test_upsert_edge_does_not_retry_non_transient_errors(monkeypatch):
     assert call_count == 1
 
 
+async def _capture_upsert_edges_batch(storage: PGGraphStorage, edges):
+    """Run upsert_edges_batch against a fake connection; return captured calls."""
+    conn = _FakeConnection()
+
+    async def fake_run_with_retry(operation, **_kwargs):
+        return await operation(conn)
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+    await storage.upsert_edges_batch(edges)
+    return conn.calls
+
+
 @pytest.mark.asyncio
 async def test_upsert_edges_batch_iterates_in_sorted_order():
-    """upsert_edges_batch calls upsert_edge in canonical (LEAST, GREATEST)
-    order regardless of insertion order.
-
-    upsert_edge opens an independent transaction per call and releases the
-    advisory lock on commit, so this iteration order is not a deadlock fix
-    — but a deterministic order matches the dedup key already used above
-    and keeps logs / replays reproducible across callers.
-    """
+    """A chunk emits edge cypher in canonical (LEAST, GREATEST) order regardless
+    of insertion order (deterministic dedup / reproducible replay)."""
     storage = make_graph_storage()
 
-    captured: list[tuple[str, str]] = []
-
-    async def fake_upsert_edge(src, tgt, edge_data):  # noqa: ARG001
-        captured.append((src, tgt))
-
-    storage.upsert_edge = AsyncMock(side_effect=fake_upsert_edge)
-
     # Insertion order intentionally non-canonical: B-A, C-A, D-A.
-    await storage.upsert_edges_batch(
+    calls = await _capture_upsert_edges_batch(
+        storage,
         [
             ("B", "A", {"weight": "1"}),
             ("C", "A", {"weight": "2"}),
             ("D", "A", {"weight": "3"}),
-        ]
+        ],
     )
 
-    # Edge keys after canonicalisation: (A,B), (A,C), (A,D). The values
-    # preserve the caller's original orientation per pair, but the iteration
-    # visits them in sorted-key order.
-    canonical_keys = [tuple(sorted(pair)) for pair in captured]
+    # The batch chunk takes ONE graph-wide advisory lock (keyed on graph_name
+    # only, no per-edge endpoints), not a per-edge lock. Order is observed from
+    # the cypher calls' bound (src_id, tgt_id) params, canonicalised.
+    lock_calls = [c for c in calls if "pg_advisory_xact_lock" in c["sql"]]
+    assert len(lock_calls) == 1
+    assert lock_calls[0]["args"] == ("test_graph",)
+    cypher_calls = [c for c in calls if "CREATE (source)-[r:DIRECTED" in c["sql"]]
+    edge_pairs = [
+        (json.loads(c["args"][0])["src_id"], json.loads(c["args"][0])["tgt_id"])
+        for c in cypher_calls
+    ]
+    canonical_keys = [tuple(sorted(pair)) for pair in edge_pairs]
     assert canonical_keys == sorted(canonical_keys)
     assert canonical_keys == [("A", "B"), ("A", "C"), ("A", "D")]
 
 
 @pytest.mark.asyncio
 async def test_upsert_edges_batch_dedupes_last_write_wins():
-    """Reciprocal duplicates collapse to a single upsert with the LATEST
-    edge_data, regardless of which orientation arrives last — preserves the
-    historical serial-fallback semantics documented on the method."""
+    """Reciprocal duplicates collapse to a single edge upsert carrying the
+    LATEST edge_data, regardless of which orientation arrives last."""
     storage = make_graph_storage()
 
-    captured: list[tuple[str, str, dict]] = []
-
-    async def fake_upsert_edge(src, tgt, edge_data):
-        captured.append((src, tgt, edge_data))
-
-    storage.upsert_edge = AsyncMock(side_effect=fake_upsert_edge)
-
-    await storage.upsert_edges_batch(
+    calls = await _capture_upsert_edges_batch(
+        storage,
         [
             ("A", "B", {"weight": "first"}),
             ("B", "A", {"weight": "second"}),  # reciprocal, wins
-        ]
+        ],
     )
 
-    assert len(captured) == 1
-    # Orientation = last write's caller order; edge_data = last write's payload.
-    assert captured[0] == ("B", "A", {"weight": "second"})
+    # Exactly one edge cypher (CREATE) ran, with the latest payload inlined and
+    # the last write's orientation in the bound params.
+    cypher_calls = [c for c in calls if "CREATE (source)-[r:DIRECTED" in c["sql"]]
+    assert len(cypher_calls) == 1
+    assert '"second"' in cypher_calls[0]["sql"]
+    assert '"first"' not in cypher_calls[0]["sql"]
+    params_json = cypher_calls[0]["args"][0]
+    assert json.loads(params_json) == {"src_id": "B", "tgt_id": "A"}

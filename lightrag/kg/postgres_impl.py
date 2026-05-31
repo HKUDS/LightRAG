@@ -5814,12 +5814,63 @@ def _is_transient_graph_write_error(exc: BaseException) -> bool:
     )
 
 
+# Transaction-scoped advisory lock that serialises concurrent upserts of the
+# *same logical edge* (single-row ``upsert_edge``). Keyed on
+# (graph_name, ordered (src, tgt)) so {A,B}/{B,A} collide while the same pair in
+# a different graph/workspace does not. It is the DB-level last line of defense
+# for the busy-check race on the graph-edit endpoints (see
+# document_routes.check_pipeline_busy_or_raise): two concurrent writers could
+# otherwise both pass the OPTIONAL MATCH and both CREATE, leaving duplicate
+# DIRECTED rows.
+_EDGE_ADVISORY_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock("
+    "  hashtextextended("
+    "    $1::text || E'\\x01' ||"
+    "    LEAST($2::text, $3::text) || E'\\x01' || GREATEST($2::text, $3::text),"
+    "    0"
+    "  )"
+    ")"
+)
+
+# Graph-wide advisory locks keyed on the whole graph ($1 = graph_name), used so
+# the edge *batch* path conflicts with concurrent single-edge writers without
+# taking one lock per edge.
+#
+#   * EXCLUSIVE (batch): one ``pg_advisory_xact_lock`` per chunk -- a single
+#     advisory lock regardless of edge count, so it can't pile up to the chunk
+#     size or exhaust the shared lock table. It serialises a bulk edge write
+#     against the graph as one unit.
+#   * SHARED (single): every single ``upsert_edge`` also takes
+#     ``pg_advisory_xact_lock_shared`` on the same key. Shared/shared is
+#     compatible, so concurrent single-edge writes on *different* edges do not
+#     serialise (pipeline concurrency preserved); shared/exclusive conflicts, so
+#     a batch and any single-edge writer on the same graph cannot interleave
+#     their OPTIONAL MATCH/DELETE/CREATE and create duplicate DIRECTED rows.
+#
+# The shared graph lock does NOT serialise two single writers of the *same*
+# edge (shared/shared is compatible) -- that is what the per-edge
+# ``_EDGE_ADVISORY_LOCK_SQL`` is for; the two cover different races.
+_GRAPH_ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))"
+_GRAPH_ADVISORY_LOCK_SHARED_SQL = (
+    "SELECT pg_advisory_xact_lock_shared(hashtextextended($1::text, 0))"
+)
+
+
 @final
 @dataclass
 class PGGraphStorage(BaseGraphStorage):
     def __post_init__(self):
         # Graph name will be dynamically generated in initialize() based on workspace
         self.db: PostgreSQLDB | None = None
+        # Chunk-level batching limits for the batch upsert / remove paths. The
+        # payload budget bounds the Cypher text inlined per chunk and the
+        # transaction / advisory-lock duration; the record caps bound the chunk
+        # size. Shared with the KV/Vector/DocStatus knobs.
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+            self._max_delete_records_per_batch,
+        ) = _resolve_pg_batch_limits()
 
     def _get_workspace_graph_name(self) -> str:
         """
@@ -6282,6 +6333,84 @@ class PGGraphStorage(BaseGraphStorage):
 
         return edges
 
+    def _build_upsert_node_sql(
+        self, node_id: str, node_data: dict[str, str]
+    ) -> tuple[str, str]:
+        """Build the (SQL, agtype params JSON) for a single node upsert.
+
+        Shared by ``upsert_node`` (single statement) and ``upsert_nodes_batch``
+        (chunk transaction) so the two paths cannot drift. Raises ValueError if
+        ``entity_id`` is missing.
+
+        AGE supports binding scalar values in Cypher parameters here, but not a
+        bound agtype object on ``SET n += $props`` (verified on AGE 1.5.0), so
+        the node ID is parameterized and the property map is inlined as a safely
+        escaped literal.
+        """
+        if "entity_id" not in node_data:
+            raise ValueError(
+                "PostgreSQL: node properties must contain an 'entity_id' field"
+            )
+        node_props = {k: v for k, v in node_data.items() if k != "entity_id"}
+        props_literal = self._format_properties(node_props)
+        cypher_query = f"""MERGE (n:base {{entity_id: $entity_id}})
+                     SET n += {props_literal}
+                     RETURN n"""
+        query = (
+            f"SELECT * FROM cypher("
+            f"{_dollar_quote(self.graph_name)}::name, "
+            f"{_dollar_quote(cypher_query)}::cstring, "
+            f"$1::agtype) AS (n agtype)"
+        )
+        params_json = json.dumps({"entity_id": node_id}, ensure_ascii=False)
+        return query, params_json
+
+    def _build_upsert_edge_sql(
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+    ) -> tuple[str, str]:
+        """Build the (Cypher SQL, agtype params JSON) for a single edge upsert.
+
+        Shared by ``upsert_edge`` and ``upsert_edges_batch``. The endpoint ids
+        are parameterized; edge properties are inlined in the CREATE clause (the
+        only reliable way to persist edge properties in AGE -- see
+        ``upsert_edge`` for the full rationale).
+        """
+        props_literal = self._format_properties(edge_data) if edge_data else "{}"
+        cypher_query = f"""MATCH (source:base {{entity_id: $src_id}})
+                     WITH source
+                     MATCH (target:base {{entity_id: $tgt_id}})
+                     WITH source, target
+                     OPTIONAL MATCH (source)-[old:DIRECTED]-(target)
+                     DELETE old
+                     WITH source, target
+                     CREATE (source)-[r:DIRECTED {props_literal}]->(target)
+                     RETURN r"""
+        cypher_sql = (
+            f"SELECT r FROM cypher("
+            f"{_dollar_quote(self.graph_name)}::name, "
+            f"{_dollar_quote(cypher_query)}::cstring, "
+            f"$1::agtype) AS (r agtype)"
+        )
+        params_json = json.dumps(
+            {"src_id": source_node_id, "tgt_id": target_node_id},
+            ensure_ascii=False,
+        )
+        return cypher_sql, params_json
+
+    def _estimate_node_cypher_bytes(
+        self, node_id: str, node_data: dict[str, str]
+    ) -> int:
+        """Estimate the inlined-Cypher byte size of one node upsert (for chunking)."""
+        node_props = {k: v for k, v in node_data.items() if k != "entity_id"}
+        return len((node_id + self._format_properties(node_props)).encode("utf-8"))
+
+    def _estimate_edge_cypher_bytes(
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+    ) -> int:
+        """Estimate the inlined-Cypher byte size of one edge upsert (for chunking)."""
+        props_literal = self._format_properties(edge_data) if edge_data else "{}"
+        return len((source_node_id + target_node_id + props_literal).encode("utf-8"))
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -6292,36 +6421,17 @@ class PGGraphStorage(BaseGraphStorage):
         """
         Upsert a node in the Neo4j database.
 
+        Caller contract:
+            Not exposed as a public API and not meant for direct/concurrent use.
+            The caller MUST guarantee single-writer-per-workspace
+            (``pipeline_status`` idle) so no other writer races this node.
+
         Args:
             node_id: The unique identifier for the node (used as label)
             node_data: Dictionary of node properties
         """
-        if "entity_id" not in node_data:
-            raise ValueError(
-                "PostgreSQL: node properties must contain an 'entity_id' field"
-            )
-
-        # AGE supports binding scalar values in Cypher parameters here, but not
-        # using a bound agtype object on ``SET n += $props`` (verified on AGE 1.5.0).
-        # Keep the node ID parameterized and inline a safely escaped property map literal.
-        node_props = {k: v for k, v in node_data.items() if k != "entity_id"}
-        props_literal = self._format_properties(node_props)
-        cypher_query = f"""MERGE (n:base {{entity_id: $entity_id}})
-                     SET n += {props_literal}
-                     RETURN n"""
-
-        query = (
-            f"SELECT * FROM cypher("
-            f"{_dollar_quote(self.graph_name)}::name, "
-            f"{_dollar_quote(cypher_query)}::cstring, "
-            f"$1::agtype) AS (n agtype)"
-        )
-        pg_params = {
-            "params": json.dumps(
-                {"entity_id": node_id},
-                ensure_ascii=False,
-            )
-        }
+        query, node_params_json = self._build_upsert_node_sql(node_id, node_data)
+        pg_params = {"params": node_params_json}
         timing_label = f"{self.workspace} PGGraphStorage.upsert_node"
         total_start = time.perf_counter()
         performance_timing_log(
@@ -6369,6 +6479,14 @@ class PGGraphStorage(BaseGraphStorage):
         """
         Upsert an edge and its properties between two nodes identified by their labels.
 
+        Caller contract:
+            Not exposed as a public API. Document-pipeline callers run under the
+            single-writer gate, but the graph-edit endpoints
+            (``/graph/relation/edit`` etc.) only best-effort-check
+            ``pipeline_status`` (``check_pipeline_busy_or_raise``) and can race a
+            pipeline write in the check-to-write window — so this path keeps the
+            per-edge advisory lock below as the DB-level last line of defense.
+
         Args:
             source_node_id (str): Label of the source node (used as identifier)
             target_node_id (str): Label of the target node (used as identifier)
@@ -6382,51 +6500,22 @@ class PGGraphStorage(BaseGraphStorage):
         # directly in a CREATE clause. We use OPTIONAL MATCH to delete any existing
         # edge first so the operation remains idempotent.
         #
-        # Concurrency: OPTIONAL MATCH + DELETE + CREATE is not atomic against other
-        # writers — two transactions upserting the same pair could both observe no
-        # existing edge and both CREATE one, leaving duplicate DIRECTED rows that
-        # inflate degree counts and duplicate relations. We serialise per logical
-        # edge with a transaction-scoped advisory lock keyed on
-        # (graph_name, ordered (src_id, tgt_id)) so:
-        #   - {A,B} and {B,A} collide on the same lock (the OPTIONAL MATCH is
-        #     undirected), and
-        #   - the same (A,B) pair in different AGE graphs / workspaces does NOT
-        #     collide. pg_advisory_xact_lock is database-wide, and we don't want
-        #     independent tenants to serialise each other's ingestion.
-        # AGE refuses to plan a join against a cypher() call that contains a
-        # CREATE clause ("cypher create clause cannot be rescanned"), so we cannot
-        # use a CTE for the lock. Instead we open an explicit transaction and run
-        # two statements on the same connection: the lock acquisition first, then
-        # the cypher upsert. The lock is released when the transaction commits.
-        props_literal = self._format_properties(edge_data) if edge_data else "{}"
-        cypher_query = f"""MATCH (source:base {{entity_id: $src_id}})
-                     WITH source
-                     MATCH (target:base {{entity_id: $tgt_id}})
-                     WITH source, target
-                     OPTIONAL MATCH (source)-[old:DIRECTED]-(target)
-                     DELETE old
-                     WITH source, target
-                     CREATE (source)-[r:DIRECTED {props_literal}]->(target)
-                     RETURN r"""
-
-        lock_sql = (
-            "SELECT pg_advisory_xact_lock("
-            "  hashtextextended("
-            "    $1::text || E'\\x01' ||"
-            "    LEAST($2::text, $3::text) || E'\\x01' || GREATEST($2::text, $3::text),"
-            "    0"
-            "  )"
-            ")"
-        )
-        cypher_sql = (
-            f"SELECT r FROM cypher("
-            f"{_dollar_quote(self.graph_name)}::name, "
-            f"{_dollar_quote(cypher_query)}::cstring, "
-            f"$1::agtype) AS (r agtype)"
-        )
-        params_json = json.dumps(
-            {"src_id": source_node_id, "tgt_id": target_node_id},
-            ensure_ascii=False,
+        # Concurrency: OPTIONAL MATCH + DELETE + CREATE is not atomic against a
+        # concurrent writer of the same pair (both could observe no edge and both
+        # CREATE one, leaving duplicate DIRECTED rows). The graph-edit endpoints do
+        # not hold the pipeline writer slot, so the transaction takes two
+        # transaction-scoped advisory locks before the cypher upsert (AGE refuses
+        # to plan a join against a cypher() containing CREATE, so the locks cannot
+        # live in a CTE -- they are separate statements on the same connection):
+        #   1. per-edge EXCLUSIVE lock keyed on (graph_name, ordered (src, tgt)) --
+        #      serialises same-edge single-vs-single writers while letting
+        #      different edges proceed concurrently (pipeline concurrency);
+        #   2. graph-wide SHARED lock -- conflicts with the batch path's graph-wide
+        #      EXCLUSIVE lock so a bulk upsert_edges_batch and a single edge write
+        #      cannot interleave, without serialising single writers against each
+        #      other (shared/shared is compatible).
+        cypher_sql, params_json = self._build_upsert_edge_sql(
+            source_node_id, target_node_id, edge_data
         )
         timing_label = f"{self.workspace} PGGraphStorage.upsert_edge"
         total_start = time.perf_counter()
@@ -6440,7 +6529,13 @@ class PGGraphStorage(BaseGraphStorage):
         async def _operation(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
                 await connection.execute(
-                    lock_sql, self.graph_name, source_node_id, target_node_id
+                    _EDGE_ADVISORY_LOCK_SQL,
+                    self.graph_name,
+                    source_node_id,
+                    target_node_id,
+                )
+                await connection.execute(
+                    _GRAPH_ADVISORY_LOCK_SHARED_SQL, self.graph_name
                 )
                 await connection.execute(cypher_sql, params_json)
 
@@ -6492,12 +6587,66 @@ class PGGraphStorage(BaseGraphStorage):
                 }
             ) from e
 
-    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
-        """Batch insert/update multiple nodes while preserving input-order semantics.
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception(_is_transient_graph_write_error),
+        reraise=True,
+    )
+    async def _upsert_node_chunk(self, chunk: list[tuple[str, dict[str, str]]]) -> None:
+        """Upsert one chunk of nodes in a single AGE transaction.
 
-        PostgreSQL/AGE write paths embed properties directly in Cypher strings and do not
-        yet support parameterized UNWIND. Deduplicating by node ID first preserves the
-        last-write-wins behaviour of the historical serial fallback.
+        Each node's MERGE runs as its own statement on one shared connection,
+        all wrapped in a single transaction so a mid-chunk failure rolls the
+        whole chunk back. ``_run_with_retry`` handles connection-level transient
+        errors; the ``@retry`` here handles query-level ones (deadlock /
+        serialization / lock) wrapped as PGGraphQueryException, mirroring
+        ``upsert_node``. MERGE is idempotent, so a full-chunk replay is safe.
+        """
+        built = [
+            self._build_upsert_node_sql(node_id, node_data)
+            for node_id, node_data in chunk
+        ]
+        timing_label = f"{self.workspace} PGGraphStorage.upsert_nodes_batch"
+
+        async def _operation(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                for query, params_json in built:
+                    await connection.execute(query, params_json)
+
+        try:
+            await self.db._run_with_retry(
+                _operation,
+                with_age=True,
+                graph_name=self.graph_name,
+                timing_label=timing_label,
+            )
+        except Exception as e:
+            if isinstance(e, PGGraphQueryException):
+                raise
+            raise PGGraphQueryException(
+                {
+                    "message": "Error executing graph upsert_nodes_batch chunk",
+                    "wrapped": built[0][0] if built else "",
+                    "detail": repr(e),
+                    "error_type": e.__class__.__name__,
+                }
+            ) from e
+
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        """Batch insert/update multiple nodes in chunk-level transactions.
+
+        AGE inlines properties in Cypher and has no parameterized UNWIND bulk
+        upsert, so this keeps the per-node MERGE but groups nodes into
+        payload/record-bounded chunks, each run in one transaction on a single
+        shared connection -- removing the per-node connection-acquire /
+        AGE-configure / transaction overhead of the old serial fallback.
+        Deduplicating by node ID first preserves last-write-wins.
+
+        Caller contract:
+            Not exposed as a public API and not meant for direct/concurrent use.
+            The caller MUST guarantee single-writer-per-workspace
+            (``pipeline_status`` idle) so no other writer races these nodes.
 
         Args:
             nodes: List of (node_id, node_data) tuples.
@@ -6509,8 +6658,20 @@ class PGGraphStorage(BaseGraphStorage):
             deduped_nodes.pop(node_id, None)
             deduped_nodes[node_id] = node_data
 
-        for node_id, node_data in deduped_nodes.items():
-            await self.upsert_node(node_id, node_data=node_data)
+        items = list(deduped_nodes.items())
+        batches = _chunk_by_budget(
+            items,
+            lambda pair: self._estimate_node_cypher_bytes(pair[0], pair[1]),
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        )
+        if len(batches) > 1:
+            logger.info(
+                f"[{self.workspace}] {self.namespace} nodes: node upsert split "
+                f"into {len(batches)} chunks for {len(items)} nodes"
+            )
+        for chunk, _estimated_bytes in batches:
+            await self._upsert_node_chunk(chunk)
 
     async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
         """Check existence of multiple nodes using a single array-based SQL query.
@@ -6526,14 +6687,77 @@ class PGGraphStorage(BaseGraphStorage):
         result = await self.get_nodes_batch(node_ids)
         return set(result.keys())
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception(_is_transient_graph_write_error),
+        reraise=True,
+    )
+    async def _upsert_edge_chunk(
+        self, chunk: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        """Upsert one chunk of edges in a single AGE transaction.
+
+        Each edge runs its OPTIONAL MATCH + DELETE + CREATE as one statement, all
+        wrapped in a single transaction. Instead of the single-row path's per-edge
+        advisory lock (which would pile up to the chunk size), the chunk takes ONE
+        graph-wide EXCLUSIVE ``_GRAPH_ADVISORY_LOCK_SQL`` at the top of the
+        transaction -- a single advisory lock regardless of edge count. It
+        conflicts with the graph-wide SHARED lock every single ``upsert_edge``
+        takes, so a bulk edge write and any concurrent single-edge write on the
+        same graph cannot interleave their OPTIONAL MATCH/DELETE/CREATE and create
+        duplicate DIRECTED rows. Edges are also deduped within the chunk. Retry
+        semantics mirror ``upsert_edge``: DELETE + CREATE is idempotent, so a
+        full-chunk replay is safe.
+        """
+        built = [
+            self._build_upsert_edge_sql(src, tgt, edge_data)
+            for src, tgt, edge_data in chunk
+        ]
+        timing_label = f"{self.workspace} PGGraphStorage.upsert_edges_batch"
+
+        async def _operation(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                await connection.execute(_GRAPH_ADVISORY_LOCK_SQL, self.graph_name)
+                for cypher_sql, params_json in built:
+                    await connection.execute(cypher_sql, params_json)
+
+        try:
+            await self.db._run_with_retry(
+                _operation,
+                with_age=True,
+                graph_name=self.graph_name,
+                timing_label=timing_label,
+            )
+        except Exception as e:
+            if isinstance(e, PGGraphQueryException):
+                raise
+            raise PGGraphQueryException(
+                {
+                    "message": "Error executing graph upsert_edges_batch chunk",
+                    "wrapped": built[0][0] if built else "",
+                    "detail": repr(e),
+                    "error_type": e.__class__.__name__,
+                }
+            ) from e
+
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
     ) -> None:
-        """Batch insert/update multiple edges while preserving input-order semantics.
+        """Batch insert/update multiple edges in chunk-level transactions.
 
-        PostgreSQL/AGE relationships are undirected (`MERGE (source)-[r:DIRECTED]-(target)`),
-        so batches containing reciprocal duplicates must retain the last update for each
-        endpoint pair to match the historical serial fallback.
+        AGE relationships are undirected, so reciprocal duplicates are deduped to
+        the last update per endpoint pair. Edges are grouped into
+        payload/record-bounded chunks, each run in one transaction -- removing
+        the per-edge transaction / AGE-configure overhead of the old serial
+        fallback. Iteration is in canonical (LEAST, GREATEST) order purely for
+        deterministic dedup / reproducible replay. Each chunk takes one graph-wide
+        advisory lock (see ``_upsert_edge_chunk``) rather than a lock per edge.
+
+        Caller contract:
+            Not exposed as a public API. The only in-tree caller
+            (``ainsert_custom_kg``) holds a coarse keyed lock over every endpoint;
+            the per-chunk graph-wide advisory lock is the DB-level backstop.
 
         Args:
             edges: List of (source_node_id, target_node_id, edge_data) tuples.
@@ -6546,19 +6770,31 @@ class PGGraphStorage(BaseGraphStorage):
             deduped_edges.pop(edge_key, None)
             deduped_edges[edge_key] = (src, tgt, edge_data)
 
-        # Iterate in canonical (LEAST, GREATEST) order rather than dict
-        # insertion order. upsert_edge opens an independent transaction per
-        # call and releases the advisory lock on commit, so this is not a
-        # deadlock fix — but a deterministic iteration order makes logs and
-        # replays reproducible across callers, and matches the dedup key
-        # already used above.
-        for edge_key in sorted(deduped_edges):
-            src, tgt, edge_data = deduped_edges[edge_key]
-            await self.upsert_edge(src, tgt, edge_data=edge_data)
+        ordered = [deduped_edges[key] for key in sorted(deduped_edges)]
+        batches = _chunk_by_budget(
+            ordered,
+            lambda triple: self._estimate_edge_cypher_bytes(
+                triple[0], triple[1], triple[2]
+            ),
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        )
+        if len(batches) > 1:
+            logger.info(
+                f"[{self.workspace}] {self.namespace} edges: edge upsert split "
+                f"into {len(batches)} chunks for {len(ordered)} edges"
+            )
+        for chunk, _estimated_bytes in batches:
+            await self._upsert_edge_chunk(chunk)
 
     async def delete_node(self, node_id: str) -> None:
         """
         Delete a node from the graph.
+
+        Caller contract:
+            Not exposed as a public API and not meant for direct/concurrent use.
+            The caller MUST guarantee single-writer-per-workspace
+            (``pipeline_status`` idle) so no other writer races this delete.
 
         Args:
             node_id (str): The ID of the node to delete.
@@ -6578,49 +6814,106 @@ class PGGraphStorage(BaseGraphStorage):
             raise
 
     async def remove_nodes(self, node_ids: list[str]) -> None:
-        """
-        Remove multiple nodes from the graph.
+        """Remove multiple nodes from the graph.
+
+        Node ids are inlined into a Cypher ``IN [...]`` list, so the list is
+        chunked by the delete record cap and the payload-byte budget to keep each
+        statement's Cypher text bounded. All chunks run in ONE transaction so the
+        removal stays all-or-nothing, matching the original single-statement
+        behaviour.
 
         Args:
             node_ids (list[str]): A list of node IDs to remove.
         """
+        if not node_ids:
+            return
         node_ids_normalized = [self._normalize_node_id(node_id) for node_id in node_ids]
-        node_id_list = ", ".join([f'"{node_id}"' for node_id in node_ids_normalized])
+        batches = _chunk_by_budget(
+            node_ids_normalized,
+            lambda nid: len(nid.encode("utf-8")) + 4,  # quotes + ", " separator
+            self._max_upsert_payload_bytes,
+            self._max_delete_records_per_batch,
+        )
+        if len(batches) > 1:
+            logger.info(
+                f"[{self.workspace}] {self.namespace} nodes: node removal split "
+                f"into {len(batches)} chunks for {len(node_ids_normalized)} nodes"
+            )
 
-        # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
-        cypher_query = f"""MATCH (n:base)
+        # Build Cypher with dynamic dollar-quoting to handle entity_id containing $ sequences
+        queries: list[str] = []
+        for chunk, _estimated_bytes in batches:
+            node_id_list = ", ".join(f'"{nid}"' for nid in chunk)
+            cypher_query = f"""MATCH (n:base)
                      WHERE n.entity_id IN [{node_id_list}]
                      DETACH DELETE n"""
+            queries.append(
+                f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (n agtype)"
+            )
 
-        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (n agtype)"
+        async def _operation(connection: asyncpg.Connection) -> None:
+            async with connection.transaction():
+                for query in queries:
+                    await connection.execute(query)
 
         try:
-            await self._query(query, readonly=False)
+            await self.db._run_with_retry(
+                _operation, with_age=True, graph_name=self.graph_name
+            )
         except Exception as e:
             logger.error(f"[{self.workspace}] Error during node removal: {e}")
             raise
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
-        """
-        Remove multiple edges from the graph.
+        """Remove multiple edges from the graph.
+
+        Endpoint ids are inlined into Cypher, so the edge list is chunked by the
+        delete record cap and the payload-byte budget. Each chunk runs in one
+        transaction (the old path opened one transaction per edge), bounding both
+        the Cypher text and the transaction duration per chunk.
 
         Args:
             edges (list[tuple[str, str]]): A list of edges to remove, where each edge is a tuple of (source_node_id, target_node_id).
         """
-        for source, target in edges:
-            src_label = self._normalize_node_id(source)
-            tgt_label = self._normalize_node_id(target)
-
-            # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
-            cypher_query = f"""MATCH (a:base {{entity_id: "{src_label}"}})-[r]-(b:base {{entity_id: "{tgt_label}"}})
+        if not edges:
+            return
+        normalized = [
+            (self._normalize_node_id(src), self._normalize_node_id(tgt))
+            for src, tgt in edges
+        ]
+        batches = _chunk_by_budget(
+            normalized,
+            lambda pair: len(pair[0].encode("utf-8"))
+            + len(pair[1].encode("utf-8"))
+            + 8,
+            self._max_upsert_payload_bytes,
+            self._max_delete_records_per_batch,
+        )
+        if len(batches) > 1:
+            logger.info(
+                f"[{self.workspace}] {self.namespace} edges: edge removal split "
+                f"into {len(batches)} chunks for {len(normalized)} edges"
+            )
+        for chunk, _estimated_bytes in batches:
+            # Build Cypher with dynamic dollar-quoting to handle entity_id containing $ sequences
+            queries: list[str] = []
+            for src_label, tgt_label in chunk:
+                cypher_query = f"""MATCH (a:base {{entity_id: "{src_label}"}})-[r]-(b:base {{entity_id: "{tgt_label}"}})
                          DELETE r"""
+                queries.append(
+                    f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (r agtype)"
+                )
 
-            query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (r agtype)"
+            async def _operation(
+                connection: asyncpg.Connection, _queries: list[str] = queries
+            ) -> None:
+                async with connection.transaction():
+                    for query in _queries:
+                        await connection.execute(query)
 
             try:
-                await self._query(query, readonly=False)
-                logger.debug(
-                    f"[{self.workspace}] Deleted edge from '{source}' to '{target}'"
+                await self.db._run_with_retry(
+                    _operation, with_age=True, graph_name=self.graph_name
                 )
             except Exception as e:
                 logger.error(f"[{self.workspace}] Error during edge deletion: {str(e)}")
