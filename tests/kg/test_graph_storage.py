@@ -1025,16 +1025,18 @@ async def test_graph_query_helpers(storage):
         popular = await storage.get_popular_labels(limit=2)
         assert isinstance(popular, list)
         assert len(popular) <= 2
-        assert popular and popular[0] == "Alpha", (
-            f"highest-degree label should be 'Alpha', got {popular}"
-        )
+        assert (
+            popular and popular[0] == "Alpha"
+        ), f"highest-degree label should be 'Alpha', got {popular}"
 
         # 4. search_labels - substring / prefix match, and a clear miss
         print("== Testing search_labels")
         gamma_hits = await storage.search_labels("Gam")
         assert "Gamma" in gamma_hits, f"search 'Gam' should find 'Gamma': {gamma_hits}"
         alpha_hits = await storage.search_labels("Alpha")
-        assert "Alpha" in alpha_hits, f"search 'Alpha' should find 'Alpha': {alpha_hits}"
+        assert (
+            "Alpha" in alpha_hits
+        ), f"search 'Alpha' should find 'Alpha': {alpha_hits}"
         misses = await storage.search_labels("NoSuchEntityXYZ")
         assert "Alpha" not in misses and "Gamma" not in misses
 
@@ -1749,7 +1751,9 @@ async def main():
                                 )
                                 await reset_storage("String Escaping Regression Test")
                                 escaping_result = (
-                                    await test_graph_string_escaping_regressions(storage)
+                                    await test_graph_string_escaping_regressions(
+                                        storage
+                                    )
                                 )
 
                                 if escaping_result is not False:
