@@ -2992,14 +2992,19 @@ class MongoVectorDBStorage(BaseVectorStorage):
         """Create the Atlas Vector Search index, repairing a FAILED one.
 
         Atlas/mongot leaves a vector index in the terminal ``FAILED`` state
-        after a build error and never retries it on its own; every
-        subsequent ``$vectorSearch`` then raises ``cannot query vector index
-        ... while in state FAILED``. Matching the index only by name would
-        treat that dead index as healthy and wedge all queries permanently,
-        so a same-dimension FAILED index is dropped and rebuilt here. The
-        dimension-mismatch guard runs *before* the rebuild: a FAILED index
-        built under a different embedding model raises rather than being
-        auto-rebuilt against incompatible stored vectors. Transitional states
+        after a build error and never retries it on its own; when that index
+        is also non-queryable every subsequent ``$vectorSearch`` raises
+        ``cannot query vector index ... while in state FAILED``. Matching the
+        index only by name would treat that dead index as healthy and wedge
+        all queries permanently, so a non-queryable, same-dimension FAILED
+        index is dropped and rebuilt here.
+
+        Two guards run *before* the rebuild: (1) a FAILED index that is still
+        ``queryable`` (a background rebuild/update failed but the previously
+        built index keeps serving) is left in place to avoid taking a
+        still-serving index offline; (2) a FAILED index built under a
+        different embedding model raises rather than being auto-rebuilt
+        against incompatible stored vectors. Transitional states
         (``PENDING``/``BUILDING``) are left alone -- they become queryable
         without intervention.
         """
@@ -3037,16 +3042,34 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     logger.error(f"[{self.workspace}] {error_msg}")
                     raise ValueError(error_msg)
 
-                # A FAILED build is terminal: drop it and fall through to
-                # recreate (the same self-heal `drop()` relies on). Only
-                # reached once the dimension guard above has confirmed the
-                # stored dimension matches the current embedding model. Wait
-                # for the drop to clear first -- create_search_index rejects a
-                # name that still exists while the old index is DELETING.
+                # Self-heal a FAILED index, but ONLY when it is actually
+                # non-queryable. Atlas can report status="FAILED" while
+                # queryable=true -- e.g. a background rebuild/update failed
+                # yet the previously-built index keeps serving queries (see
+                # the listSearchIndexes status docs). Dropping such an index
+                # here would take a still-serving index offline and cause
+                # avoidable query downtime while we wait for deletion and
+                # rebuild. Reached only once the dimension guard above
+                # confirmed the stored dimension matches.
                 if index.get("status") == "FAILED":
+                    if index.get("queryable", True):
+                        logger.warning(
+                            f"[{self.workspace}] vector index {self._index_name} reports "
+                            f"FAILED status but is still queryable; leaving the active "
+                            f"index in place. A background rebuild/update likely failed -- "
+                            f"inspect $listSearchIndexes statusDetail and drop/rebuild "
+                            f"manually if queries degrade."
+                        )
+                        return
+
+                    # Non-queryable FAILED build is terminal: drop and fall
+                    # through to recreate (the same self-heal `drop()` relies
+                    # on). Wait for the drop to clear first -- create_search_index
+                    # rejects a name that still exists while the old index is
+                    # DELETING.
                     logger.warning(
-                        f"[{self.workspace}] vector index {self._index_name} is in "
-                        f"FAILED state; dropping and recreating it"
+                        f"[{self.workspace}] vector index {self._index_name} is FAILED "
+                        f"and non-queryable; dropping and recreating it"
                     )
                     await self._data.drop_search_index(self._index_name)
                     await self._wait_for_search_index_absent(self._index_name)
