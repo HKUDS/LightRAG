@@ -721,8 +721,8 @@ PENDING ─►├─ q_mineru  ──► [mineru parser  × N2] ─┼─► q_a
 | 环境变量 | 默认值 | 作用 | 调优建议 |
 | --- | --- | --- | --- |
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: native 解析（docx / pdf / txt 等纯本地处理）并发 worker 数 | 纯 CPU、内存占用低，可按 CPU 核数提高 |
-| `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，**默认串行最稳**。本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
-| `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，**默认串行最稳**。本地部署且 CPU/GPU 充足时可设 2-3 |
+| `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，**默认 2 为适度并发**。资源紧张时可降到 1；本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
+| `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，**默认 2 为适度并发**。资源紧张时可降到 1；本地部署且 CPU/GPU 充足时可设 2-3 |
 | `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限 |
 | `MAX_PARALLEL_INSERT` | `2` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC / 3`，区间 2~10。该阶段每个文档会触发多次 LLM 调用，过高会撞 LLM 限流。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
 | `QUEUE_SIZE_DEFAULT` | `100` | parse / analyze 阶段间的有界队列容量 | 一般无需调整。极少量大批量任务（成千上万）可适当提高，避免 enqueue 端反压；内存紧张时可调低 |
@@ -731,14 +731,14 @@ PENDING ─►├─ q_mineru  ──► [mineru parser  × N2] ─┼─► q_a
 **几个要点：**
 
 1. **解析阶段按引擎隔离**，所以混用 native/mineru/docling 时不必担心一种引擎慢拖累另一种。
-2. **mineru / docling 默认串行（=1）**：实测两者资源占用高，并行收益不稳定（容易 OOM / 显存竞争 / 失败重试）。如果你部署了多 GPU 或专门的解析服务器，可手动调高。
+2. **mineru / docling 默认 2**：两者资源占用高，默认保持适度并发。资源紧张时可降到 1（避免 OOM / 显存竞争 / 失败重试）；如果你部署了多 GPU 或专门的解析服务器，可手动调高。
 3. **`MAX_PARALLEL_INSERT` 兼任 worker 池大小和信号量上限**：流水线创建 `Semaphore(max_parallel_insert)`，每个 process worker 在抽取入库前还要拿一次信号量。所以哪怕你把 worker 数手动改大，实际并发上限仍由这个值决定——直接调它就够了。
 4. **queue size 与背压**：`QUEUE_SIZE_INSERT=4` 这个偏小的默认值是有意为之——process 阶段慢且占内存，让 analyze 阶段在队列写满时阻塞、再反压到 parse 阶段，避免一次性把成千上万份解析结果堆在内存里。
 5. **改后生效方式**：所有参数通过 `.env`（或环境变量）传入，仅在 `LightRAG` 实例构造时读取一次；改完需要重启服务。
 
 **典型调优场景：**
 
-- 大量 PDF + 本地 MinerU 单 GPU：`MAX_PARALLEL_PARSE_MINERU=1`、`MAX_PARALLEL_ANALYZE=5`、`MAX_PARALLEL_INSERT=2`（默认即可）。
+- 大量 PDF + 本地 MinerU 单 GPU：`MAX_PARALLEL_PARSE_MINERU=2`、`MAX_PARALLEL_ANALYZE=5`、`MAX_PARALLEL_INSERT=2`（默认即可；显存紧张时把 MINERU 降到 1）。
 - 大量 PDF + MinerU 云端服务：`MAX_PARALLEL_PARSE_MINERU=3~5`（视云端配额），其它保持默认。
 - 纯 docx / txt（仅走 native）：`MAX_PARALLEL_PARSE_NATIVE=10`、`MAX_PARALLEL_INSERT` 按 `MAX_ASYNC/3` 推算。
 - LLM 限流明显：先降 `MAX_PARALLEL_INSERT`（process 阶段每文档多次 LLM 调用），再降 `MAX_PARALLEL_ANALYZE`（VLM 是独立配额）。

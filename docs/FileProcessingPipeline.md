@@ -721,8 +721,8 @@ At enqueue time, `resolve_stored_document_parser_engine` puts each document into
 | Environment variable | Default | Effect | Tuning advice |
 | --- | --- | --- | --- |
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: number of concurrent workers for native parsing (docx / pdf / txt and other pure local processing) | Pure CPU, low memory usage; can be raised to CPU core count |
-| `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: number of concurrent workers for MinerU parsing | MinerU has significant GPU/CPU usage; **the default of serial is most stable**. With local deployment and ample VRAM, you can set 2–3; when going through MinerU's official cloud service, you can raise it appropriately (subject to cloud quotas). |
-| `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: number of concurrent workers for Docling parsing | Docling is similarly resource-sensitive; **the default of serial is most stable**. With local deployment and ample CPU/GPU, you can set 2–3. |
+| `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: number of concurrent workers for MinerU parsing | MinerU has significant GPU/CPU usage; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample VRAM, you can set 2–3; when going through MinerU's official cloud service, you can raise it appropriately (subject to cloud quotas). |
+| `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: number of concurrent workers for Docling parsing | Docling is similarly resource-sensitive; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample CPU/GPU, you can set 2–3. |
 | `MAX_PARALLEL_ANALYZE` | `5` | N4: number of concurrent workers for multimodal analysis (VLM image / table description) | Directly consumes the VLM quota. Recommended ≤ VLM service concurrency cap. |
 | `MAX_PARALLEL_INSERT` | `2` | N5: number of concurrent documents at the entity / relation extraction + ingest stage | Recommended `MAX_ASYNC / 3`, in the range 2–10. This stage triggers multiple LLM calls per document; setting it too high will hit LLM rate limits. This value also serves as the `asyncio.Semaphore` for an additional constraint (worker count and semaphore value are the same). |
 | `QUEUE_SIZE_DEFAULT` | `100` | Bounded queue capacity between the parse / analyze stages | Generally no need to tune. For very large batches (thousands or more), can be raised to avoid backpressure at the enqueue side; lower it when memory is tight. |
@@ -731,14 +731,14 @@ At enqueue time, `resolve_stored_document_parser_engine` puts each document into
 **Several key points:**
 
 1. **Parsing stage is isolated per engine**, so when mixing native/mineru/docling, you don't have to worry about a slow engine dragging another down.
-2. **mineru / docling default to serial (=1)**: in practice both have high resource usage, and concurrency benefits are unstable (prone to OOM / VRAM contention / failure retry). With multi-GPU or a dedicated parser server, you can raise them manually.
+2. **mineru / docling default to 2**: both have high resource usage, so the default keeps parallelism modest. Lower to 1 when resources are tight (OOM / VRAM contention / failure retry); with multi-GPU or a dedicated parser server, you can raise them manually.
 3. **`MAX_PARALLEL_INSERT` doubles as worker pool size and semaphore cap**: the pipeline creates a `Semaphore(max_parallel_insert)`, and each process worker also takes the semaphore before extraction and ingest. So even if you manually raise the worker count, the actual concurrency cap is still bounded by this value — just tune it directly.
 4. **Queue size and backpressure**: the small default `QUEUE_SIZE_INSERT=4` is intentional — the process stage is slow and memory-hungry; when the queue fills, analyze blocks, and backpressure reaches the parse stage, preventing thousands of parsing results from piling up in memory at once.
 5. **How changes take effect**: all parameters are passed in via `.env` (or environment variables), read once at `LightRAG` construction; restart the service after changing them.
 
 **Typical tuning scenarios:**
 
-- Large batch of PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=1`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=2` (defaults are fine).
+- Large batch of PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=2`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=2` (defaults are fine; lower MINERU to 1 if VRAM is tight).
 - Large batch of PDFs + MinerU cloud service: `MAX_PARALLEL_PARSE_MINERU=3~5` (depending on cloud quota), others at defaults.
 - Pure docx / txt (only native): `MAX_PARALLEL_PARSE_NATIVE=10`; `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC/3`.
 - Heavy LLM rate-limiting: first lower `MAX_PARALLEL_INSERT` (the process stage makes multiple LLM calls per document), then lower `MAX_PARALLEL_ANALYZE` (VLM is a separate quota).
