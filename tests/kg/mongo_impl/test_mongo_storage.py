@@ -337,7 +337,7 @@ class TestMongoEdgeKey:
         assert set_fields["file_path"] == "f1<SEP>f2"
         assert set_fields["description"] == "d1<SEP>d2"  # distinct descriptions joined
         assert set_fields["keywords"] == "alpha,beta,gamma"  # comma set-union, sorted
-        assert set_fields["weight"] == 3.0  # summed
+        assert set_fields["weight"] == 2.0  # max (idempotent across retries)
         # The other duplicate is deleted.
         assert s.edge_collection.delete_many.call_args[0][0] == {"_id": {"$in": [1]}}
         # Compound unique partial index built as the completion flag.
@@ -347,6 +347,81 @@ class TestMongoEdgeKey:
         assert ci_kwargs["name"] == "test_edge_endpoints_unique"
         assert ci_kwargs["unique"] is True
         assert set(ci_kwargs["partialFilterExpression"]) == {"edge_lo", "edge_hi"}
+
+    async def _run_dedupe(self, s, group):
+        """Run _dedupe_legacy_edges over a single group; return the survivor $set."""
+        s.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([group]))
+        s.edge_collection.update_one = AsyncMock()
+        s.edge_collection.delete_many = AsyncMock()
+        await s._dedupe_legacy_edges()
+        if s.edge_collection.update_one.call_args is None:
+            return None
+        return s.edge_collection.update_one.call_args[0][1]["$set"]
+
+    @pytest.mark.asyncio
+    async def test_dedupe_coerces_string_weights(self):
+        """Legacy string weights (graph API is dict[str, str]) must not crash the
+        migration; they coerce to float."""
+        s = self._make_storage()
+        group = {
+            "_id": {"lo": "A", "hi": "B"},
+            "count": 2,
+            "docs": [
+                {"_id": 1, "weight": "1.0", "created_at": 10},
+                {"_id": 2, "weight": "2.0", "created_at": 20},
+            ],
+        }
+        set_fields = await self._run_dedupe(s, group)
+        assert set_fields["weight"] == 2.0  # max of coerced floats, no TypeError
+
+    @pytest.mark.asyncio
+    async def test_dedupe_merge_is_idempotent_on_retry(self):
+        """A fail-fast retry that re-processes an already-merged survivor must
+        produce the same fields (no double-summed weight, no grown description)."""
+        s = self._make_storage()
+        original = [
+            {
+                "_id": 1,
+                "source_id": "c1",
+                "source_ids": ["c1"],
+                "file_path": "f1",
+                "description": "d1",
+                "keywords": "alpha,beta",
+                "weight": 1.0,
+                "created_at": 10,
+            },
+            {
+                "_id": 2,
+                "source_id": "c2",
+                "source_ids": ["c2"],
+                "file_path": "f2",
+                "description": "d2",
+                "keywords": "beta,gamma",
+                "weight": 2.0,
+                "created_at": 20,
+            },
+        ]
+        first = await self._run_dedupe(
+            s, {"_id": {"lo": "A", "hi": "B"}, "count": 2, "docs": list(original)}
+        )
+
+        # Retry: survivor (_id 2) already carries the merged fields, the other
+        # duplicate is still present (the previous delete never committed).
+        survivor_merged = {"_id": 2, "created_at": 20, **first}
+        second = await self._run_dedupe(
+            s,
+            {
+                "_id": {"lo": "A", "hi": "B"},
+                "count": 2,
+                "docs": [original[0], survivor_merged],
+            },
+        )
+
+        assert second["weight"] == first["weight"] == 2.0
+        assert second["description"] == first["description"] == "d1<SEP>d2"
+        assert second["source_ids"] == first["source_ids"] == ["c1", "c2"]
+        assert second["file_path"] == first["file_path"] == "f1<SEP>f2"
+        assert second["keywords"] == first["keywords"] == "alpha,beta,gamma"
 
 
 class TestMongoDocStatusLookup:

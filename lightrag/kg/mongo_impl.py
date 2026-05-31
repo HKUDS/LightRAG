@@ -1192,12 +1192,18 @@ class MongoGraphStorage(BaseGraphStorage):
 
         Groups by the canonical (sorted) endpoint pair; for each group with more
         than one doc, keeps the newest by ``created_at`` and **merges the
-        non-survivors' relation payload into it before deleting them**, mirroring
-        ``_merge_edges_then_upsert`` so no relation evidence is lost:
-        ``source_ids``/``source_id``/``file_path`` are unioned, ``keywords`` are
-        comma-set-unioned, distinct ``description`` values are ``GRAPH_FIELD_SEP``
-        joined (the no-LLM merge fallback), and ``weight`` is summed. Returns the
-        number of docs removed.
+        non-survivors' relation payload into it before deleting them** so no
+        relation evidence is lost: ``source_ids``/``source_id``/``file_path`` and
+        ``description`` are unioned over their ``GRAPH_FIELD_SEP`` components,
+        ``keywords`` are comma-set-unioned, and ``weight`` takes the max.
+
+        The merge is **idempotent across retries**: if a transient error aborts
+        startup after the survivor update but before the delete, the next run
+        re-processes the same group and must produce the same survivor. All
+        fields union their split components (so re-merging an already-merged
+        survivor is a no-op), and ``weight`` uses max rather than sum (summing
+        would double-count a survivor already merged by a prior partial run).
+        Returns the number of docs removed.
         """
         pipeline = [
             {
@@ -1245,13 +1251,13 @@ class MongoGraphStorage(BaseGraphStorage):
             if not others:
                 continue
 
-            # Merge the full relation payload across ALL docs (survivor included)
-            # so deleting the duplicates loses no evidence (mirrors
-            # _merge_edges_then_upsert's field semantics).
+            # Merge the full relation payload across ALL docs (survivor included).
+            # Every field unions its split components so re-merging an
+            # already-merged survivor (a fail-fast retry) is a no-op.
             all_source_ids: list[str] = []
             all_file_paths: list[str] = []
+            all_descriptions: list[str] = []
             all_keywords: set[str] = set()
-            descriptions: list[str] = []
             weights: list[float] = []
             for d in docs:
                 sids = d.get("source_ids")
@@ -1259,16 +1265,25 @@ class MongoGraphStorage(BaseGraphStorage):
                     sids = d["source_id"].split(GRAPH_FIELD_SEP)
                 all_source_ids = merge_source_ids(all_source_ids, sids or [])
                 fp = d.get("file_path")
-                fps = fp.split(GRAPH_FIELD_SEP) if fp else []
-                all_file_paths = merge_source_ids(all_file_paths, fps)
+                all_file_paths = merge_source_ids(
+                    all_file_paths, fp.split(GRAPH_FIELD_SEP) if fp else []
+                )
+                desc = d.get("description")
+                all_descriptions = merge_source_ids(
+                    all_descriptions, desc.split(GRAPH_FIELD_SEP) if desc else []
+                )
                 kw = d.get("keywords")
                 if kw:
                     all_keywords.update(k.strip() for k in kw.split(",") if k.strip())
-                desc = d.get("description")
-                if desc and desc not in descriptions:
-                    descriptions.append(desc)
-                if d.get("weight") is not None:
-                    weights.append(d["weight"])
+                # Legacy weights may be stored as strings (graph API is
+                # dict[str, str]); coerce and skip non-numeric so the migration
+                # cannot crash on a bad value.
+                w = d.get("weight")
+                if w is not None:
+                    try:
+                        weights.append(float(w))
+                    except (TypeError, ValueError):
+                        pass
 
             set_fields: dict[str, Any] = {}
             if all_source_ids:
@@ -1276,12 +1291,14 @@ class MongoGraphStorage(BaseGraphStorage):
                 set_fields["source_id"] = GRAPH_FIELD_SEP.join(all_source_ids)
             if all_file_paths:
                 set_fields["file_path"] = GRAPH_FIELD_SEP.join(all_file_paths)
+            if all_descriptions:
+                set_fields["description"] = GRAPH_FIELD_SEP.join(all_descriptions)
             if all_keywords:
                 set_fields["keywords"] = ",".join(sorted(all_keywords))
-            if descriptions:
-                set_fields["description"] = GRAPH_FIELD_SEP.join(descriptions)
             if weights:
-                set_fields["weight"] = sum(weights)
+                # max (not sum) so a fail-fast retry over an already-merged
+                # survivor stays idempotent.
+                set_fields["weight"] = max(weights)
             if set_fields:
                 await self.edge_collection.update_one(
                     {"_id": survivor["_id"]}, {"$set": set_fields}
