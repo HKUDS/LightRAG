@@ -2242,9 +2242,7 @@ class TestGraphStorage:
                 if c.kwargs["index"] == s._edges_index
             ]
             assert edge_index_ids == [canonical]
-            mock_client.delete.assert_awaited_once_with(
-                index=s._edges_index, id=other
-            )
+            mock_client.delete.assert_awaited_once_with(index=s._edges_index, id=other)
 
     @pytest.mark.asyncio
     async def test_upsert_edge_self_heal_tolerates_missing_reverse(
@@ -2300,10 +2298,7 @@ class TestGraphStorage:
             # Two edge bulks: the index bulk, then the self-heal delete bulk
             # (node-placeholder bulks target the nodes index — filtered out).
             edge_acts = [
-                a
-                for call in bulk_calls
-                for a in call
-                if a["_index"] == s._edges_index
+                a for call in bulk_calls for a in call if a["_index"] == s._edges_index
             ]
             index_actions = [a for a in edge_acts if a["_op_type"] == "index"]
             delete_actions = [a for a in edge_acts if a["_op_type"] == "delete"]
