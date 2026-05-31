@@ -2572,10 +2572,16 @@ class TestGraphStorage:
             side_effect=[ConflictError(409, "version_conflict", {}), None]
         )
 
-        await s._merge_into_canonical_edge("edge-canon", [{"source_id": "c9"}])
+        await s._merge_into_canonical_edge(
+            "edge-canon", [("edge-rev9", {"source_id": "c9"})]
+        )
 
         assert mock_client.get.await_count == 2  # re-read after the conflict
         assert mock_client.index.await_count == 2
+        # Folded only after the write that finally succeeds (post-conflict).
+        mock_client.delete.assert_awaited_once_with(
+            index=s._edges_index, id="edge-rev9"
+        )
 
     @pytest.mark.asyncio
     async def test_merge_into_canonical_recreates_when_canonical_vanished(
@@ -2591,8 +2597,11 @@ class TestGraphStorage:
         await s._merge_into_canonical_edge(
             "edge-canon",
             [
-                {"source_ids": ["c1"], "weight": 1.0, "source_node_id": "A"},
-                {"source_ids": ["c2"], "weight": 2.0},
+                (
+                    "edge-rev1",
+                    {"source_ids": ["c1"], "weight": 1.0, "source_node_id": "A"},
+                ),
+                ("edge-rev2", {"source_ids": ["c2"], "weight": 2.0}),
             ],
         )
 
@@ -2605,6 +2614,9 @@ class TestGraphStorage:
         assert body["source_ids"] == ["c1", "c2"]
         assert body["weight"] == 3.0  # summed across both reverse sources
         assert body["source_node_id"] == "A"  # base reverse-source fields kept
+        # Both folded reverse docs are deleted so a re-scan never re-folds them.
+        deleted_ids = {c.kwargs["id"] for c in mock_client.delete.await_args_list}
+        assert deleted_ids == {"edge-rev1", "edge-rev2"}
 
     @pytest.mark.asyncio
     async def test_merge_into_canonical_aborts_after_persistent_conflicts(
@@ -2627,8 +2639,12 @@ class TestGraphStorage:
         )
 
         with pytest.raises(RuntimeError, match="could not merge into edge-canon"):
-            await s._merge_into_canonical_edge("edge-canon", [{"source_id": "c9"}])
+            await s._merge_into_canonical_edge(
+                "edge-canon", [("edge-rev9", {"source_id": "c9"})]
+            )
         assert mock_client.index.await_count == 3  # bounded retries
+        # The reverse doc is never deleted while its evidence is unmerged.
+        mock_client.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_migrate_merges_multiple_reverse_docs_into_one_canonical(
@@ -2711,20 +2727,30 @@ class TestGraphStorage:
         assert merged["source_ids"] == ["c1", "c2", "c3"]  # all provenance kept
         assert merged["weight"] == 6.0  # 1.0 + 2.0 + 3.0 summed
 
-    def test_merge_edge_payloads_sums_weight_idempotently(self):
-        """Weight is summed (not max), and re-merging an already-merged base
-        does not double-count (idempotent across fail-fast retries)."""
-        base = {"source_ids": ["c1"], "weight": 1.0}
-        dup = {"source_ids": ["c2"], "weight": 2.0}
-        # First merge: disjoint evidence -> weights sum.
-        first = _merge_edge_payloads([base, dup])
-        assert first["weight"] == 3.0
-        assert first["source_ids"] == ["c1", "c2"]
-        # Retry: base already carries the merged source_ids + summed weight; the
-        # duplicate's source_ids are folded in, so its weight is not re-added.
-        merged_base = {"source_ids": ["c1", "c2"], "weight": 3.0}
-        second = _merge_edge_payloads([merged_base, dup])
-        assert second["weight"] == 3.0
+    def test_merge_edge_payloads_sums_every_fragment_weight(self):
+        """Weight is summed across every fragment (base + each duplicate), matching
+        operate.py's _merge_edges_then_upsert — including reciprocal duplicates that
+        share a source/chunk id, which must NOT be skipped (that undercounts)."""
+        # Disjoint provenance -> weights sum.
+        disjoint = _merge_edge_payloads(
+            [
+                {"source_ids": ["c1"], "weight": 1.0},
+                {"source_ids": ["c2"], "weight": 2.0},
+            ]
+        )
+        assert disjoint["weight"] == 3.0
+        assert disjoint["source_ids"] == ["c1", "c2"]
+        # Same-source reciprocal duplicate: both fragments carry separate
+        # accumulated weight, so their weights still sum (the regression this
+        # guards against silently dropped the duplicate's weight here).
+        same_source = _merge_edge_payloads(
+            [
+                {"source_ids": ["c1"], "weight": 1.0},
+                {"source_ids": ["c1"], "weight": 2.0},
+            ]
+        )
+        assert same_source["weight"] == 3.0
+        assert same_source["source_ids"] == ["c1"]
 
     @pytest.mark.asyncio
     async def test_migrate_edges_logs_progress_for_large_scan(

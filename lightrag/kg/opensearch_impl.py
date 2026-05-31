@@ -340,21 +340,26 @@ def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
     ``_merge_edges_then_upsert`` field semantics (minus LLM description
     summarisation): ``source_id``/``source_ids``/``file_path``/``description``
     union their ``GRAPH_FIELD_SEP`` components, ``keywords`` are comma-set-
-    unioned, and ``weight`` is **summed** (duplicate docs carry separate
-    accumulated weight). Returns only the merged fields (to be layered onto the
-    surviving doc).
+    unioned, and ``weight`` is **summed across every fragment** (base + each
+    duplicate). Returns only the merged fields (to be layered onto the surviving
+    doc).
 
-    Idempotent across fail-fast retries: the union fields union split components
-    (re-merging an already-merged base is a no-op), and the weight sum counts the
-    base's current weight once plus each duplicate only while its source_ids are
-    not already folded into the base — so a retry (whose base already contains
-    them) does not double-count. Legacy string weights are coerced; non-numeric
-    values are skipped so a bad value cannot crash the migration.
+    Weight summing deliberately does NOT dedup by ``source_id``: just like
+    ``_merge_edges_then_upsert``, every edge fragment contributes its weight even
+    when fragments share a source/chunk id — reciprocal duplicates that came from
+    the same chunk still carry separate accumulated weight, so skipping them would
+    undercount the relation. This function is therefore not idempotent on its own;
+    idempotency across fail-fast retries is a property of the migration flow, not
+    this math: each folded reverse doc is deleted right after the canonical write
+    (see ``_merge_into_canonical_edge``), so a re-scan never re-presents an
+    already-folded reverse for summing. Legacy string weights are coerced;
+    non-numeric values are skipped so a bad value cannot crash the migration.
     """
     source_ids: list[str] = []
     file_paths: list[str] = []
     descriptions: list[str] = []
     keywords: set[str] = set()
+    weights: list[float] = []
     for d in docs:
         source_ids = merge_source_ids(source_ids, _edge_source_id_list(d))
         fp = d.get("file_path")
@@ -368,19 +373,6 @@ def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
         kw = d.get("keywords")
         if kw:
             keywords.update(k.strip() for k in kw.split(",") if k.strip())
-
-    # Idempotent summed weight: base (docs[0]) counts once; each duplicate adds
-    # its weight only if its source_ids are not already folded into the base.
-    base = docs[0] if docs else {}
-    base_sids = set(_edge_source_id_list(base))
-    weights: list[float] = []
-    bw = _coerce_weight(base.get("weight"))
-    if bw is not None:
-        weights.append(bw)
-    for d in docs[1:]:
-        d_sids = set(_edge_source_id_list(d))
-        if not d_sids or d_sids <= base_sids:
-            continue  # no new trackable evidence -> don't (re-)add its weight
         dw = _coerce_weight(d.get("weight"))
         if dw is not None:
             weights.append(dw)
@@ -2142,18 +2134,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     # A single canonical can be the target of more than one
                     # pending reverse doc in this batch (e.g. 3+ legacy docs for
                     # one node pair, where only one wins the insert and the rest
-                    # 409). Collect *all* sources mapping to each conflicted
-                    # canonical and merge them together so no reverse payload is
-                    # dropped; re-merging the source that won the insert is a
-                    # no-op (idempotent — see _merge_edge_payloads).
-                    sources_by_canonical: dict[str, list[dict[str, Any]]] = {}
-                    for canonical, _old_id, source in batch:
+                    # 409). Collect *all* reverse docs mapping to each conflicted
+                    # canonical (carrying their old _id so they can be deleted
+                    # right after the merge) and fold them together so no reverse
+                    # payload is dropped.
+                    docs_by_canonical: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+                    for canonical, old_id, source in batch:
                         if canonical in conflicted_canonicals:
-                            sources_by_canonical.setdefault(canonical, []).append(
-                                source
+                            docs_by_canonical.setdefault(canonical, []).append(
+                                (old_id, source)
                             )
-                    for canonical, sources in sources_by_canonical.items():
-                        await self._merge_into_canonical_edge(canonical, sources)
+                    for canonical, reverse_docs in docs_by_canonical.items():
+                        await self._merge_into_canonical_edge(canonical, reverse_docs)
 
                 # Phase 2 — every create succeeded, 409'd-then-merged, so the
                 # canonical now exists for all; delete the old ids. delete 404 is
@@ -2264,21 +2256,30 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             raise
 
     async def _merge_into_canonical_edge(
-        self, canonical_id: str, reverse_sources: list[dict[str, Any]]
+        self, canonical_id: str, reverse_docs: list[tuple[str, dict[str, Any]]]
     ) -> None:
         """Merge legacy reverse-orientation doc(s)' payload into an existing
         canonical doc (the create-409 reciprocal-duplicate case) so deleting the
         reverse loses no relation evidence (mirrors mongo_impl's dedupe merge).
 
-        ``reverse_sources`` carries every pending source in this batch that maps
-        to ``canonical_id`` (usually one, but >1 when a node pair has 3+ legacy
-        docs); all are folded into the canonical in a single write.
+        ``reverse_docs`` carries every pending reverse doc in this batch that maps
+        to ``canonical_id`` as ``(old_id, source)`` pairs (usually one, but >1
+        when a node pair has 3+ legacy docs); all are folded into the canonical in
+        a single write, then deleted by their old ids.
 
         Uses optimistic concurrency (``if_seq_no``/``if_primary_term``) so a
         concurrent live write during a rolling deploy is never clobbered: on a
         version conflict we re-read — now including that write — and re-merge.
-        The merge is idempotent (see ``_merge_edge_payloads``), so a fail-fast
-        retry over an already-merged canonical is a no-op.
+
+        Weight summing is per-fragment and not self-idempotent (see
+        ``_merge_edge_payloads``), so idempotency across fail-fast retries comes
+        from deleting each folded reverse right after the canonical write: a
+        re-scan no longer finds it, so it is never folded (and summed) twice. The
+        delete is best-effort — the batch's Phase-2 delete re-attempts the same
+        ids — so it deliberately does not abort the migration; the only window in
+        which a weight could double-count is a crash strictly between the
+        canonical write and this delete, a bounded and non-fatal ranking
+        perturbation for a one-time migration.
         """
         for _attempt in range(3):
             try:
@@ -2289,6 +2290,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 # Canonical vanished between the create-409 and now; recreate it
                 # by merging the reverse sources together (nothing else to merge
                 # against).
+                reverse_sources = [source for _old_id, source in reverse_docs]
                 recreated = {
                     **reverse_sources[0],
                     **_merge_edge_payloads(reverse_sources),
@@ -2296,8 +2298,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 await self.client.index(
                     index=self._edges_index, id=canonical_id, body=recreated
                 )
+                await self._delete_folded_reverse_edges(reverse_docs)
                 return
             base = current.get("_source", {})
+            reverse_sources = [source for _old_id, source in reverse_docs]
             merged = {**base, **_merge_edge_payloads([base, *reverse_sources])}
             try:
                 await self.client.index(
@@ -2307,15 +2311,39 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     if_seq_no=current["_seq_no"],
                     if_primary_term=current["_primary_term"],
                 )
-                return
             except ConflictError:
                 # A concurrent write changed the canonical doc; re-read and
                 # re-merge so we never overwrite that write with stale data.
                 continue
+            await self._delete_folded_reverse_edges(reverse_docs)
+            return
         raise RuntimeError(
             f"Canonical edge-id migration: could not merge into {canonical_id} "
             f"after retries in {self._edges_index}; aborting startup"
         )
+
+    async def _delete_folded_reverse_edges(
+        self, reverse_docs: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        """Delete legacy reverse docs whose payload was just folded into the
+        canonical, so a fail-fast re-scan never re-folds (and re-sums) them.
+
+        Best-effort: a 404 means another run already removed it, and any other
+        error is swallowed (logged) rather than raised — the migration's Phase-2
+        bulk delete re-attempts these same ids, so failing here must not abort
+        startup nor leave the canonical without its merged evidence.
+        """
+        for old_id, _source in reverse_docs:
+            try:
+                await self.client.delete(index=self._edges_index, id=old_id)
+            except NotFoundError:
+                pass
+            except OpenSearchException as e:
+                logger.warning(
+                    f"[{self.workspace}] Canonical edge-id migration: could not "
+                    f"delete folded reverse doc {old_id} in {self._edges_index} "
+                    f"(Phase-2 delete will retry): {e}"
+                )
 
     async def finalize(self):
         """Release the OpenSearch client connection."""
