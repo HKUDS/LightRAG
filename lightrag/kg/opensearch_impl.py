@@ -293,19 +293,30 @@ _EDGE_ID_CANONICAL_META_FLAG = "edge_id_canonical_v1"
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
 
-def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
-    """Direction-independent edge document ``_id``.
+def _reciprocal_edge_ids(source_node_id: str, target_node_id: str) -> tuple[str, str]:
+    """Return ``(canonical_id, other_orientation_id)`` for an edge.
 
-    ``hash(sorted(src, tgt))`` collapses an edge and its reverse onto the same
-    ``_id``, so concurrent ``(A,B)``/``(B,A)`` writes overwrite one document
-    (last-write-wins) instead of racing into two separate docs. This makes
-    ``upsert_edge`` idempotent by construction — no ``exists(reverse)``
-    read-then-write and no lock needed. The canonical id is always one of the
-    two directed ids ``hash("src-tgt")``/``hash("tgt-src")``, so the
-    bidirectional ``mget`` in ``has_edge``/``get_edge`` keeps finding it.
+    ``canonical_id = hash(sorted(src, tgt))`` collapses an edge and its reverse
+    onto the same ``_id``, so concurrent ``(A,B)``/``(B,A)`` writes overwrite one
+    document (last-write-wins) instead of racing into two — idempotent by
+    construction, no ``exists(reverse)`` read-then-write and no lock needed. The
+    canonical id is always one of the two directed ids
+    ``hash("src-tgt")``/``hash("tgt-src")``, so the bidirectional ``mget`` in
+    ``has_edge``/``get_edge`` keeps finding it.
+
+    ``other_orientation_id`` is the reverse-direction directed id. The two are
+    equal only for a self-loop (``src == tgt``).
     """
     lo, hi = sorted((source_node_id, target_node_id))
-    return compute_mdhash_id(f"{lo}-{hi}", prefix="edge-")
+    return (
+        compute_mdhash_id(f"{lo}-{hi}", prefix="edge-"),
+        compute_mdhash_id(f"{hi}-{lo}", prefix="edge-"),
+    )
+
+
+def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
+    """Direction-independent edge document ``_id`` (see ``_reciprocal_edge_ids``)."""
+    return _reciprocal_edge_ids(source_node_id, target_node_id)[0]
 
 
 # Detected at first connection; True when OpenSearch >= 3.3.0.
@@ -2475,6 +2486,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         document, so this is idempotent by construction: concurrent
         reciprocal writers overwrite the same ``_id`` (last-write-wins) instead
         of racing into two docs. No ``exists(reverse)`` read-then-write needed.
+
+        Also best-effort deletes the other-orientation doc as a self-heal: a
+        pre-migration write or a rolling-deploy straggler still on the old code
+        can leave a reverse-direction doc that the one-time migration won't
+        revisit once its ``_meta`` flag is set, which would double-count this
+        edge. Removing it on the next write keeps the index converged.
         """
         try:
             await self._ensure_indices_ready()
@@ -2488,8 +2505,21 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             if edge_data.get("source_id", ""):
                 doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
 
-            edge_id = _canonical_edge_id(source_node_id, target_node_id)
+            edge_id, other_id = _reciprocal_edge_ids(source_node_id, target_node_id)
             await self.client.index(index=self._edges_index, id=edge_id, body=doc)
+            # Self-heal: drop a stale reverse-orientation doc if one exists
+            # (skipped for self-loops, where both ids coincide). Best-effort —
+            # a missing doc (404) is the normal case and must not fail the write.
+            if other_id != edge_id:
+                try:
+                    await self.client.delete(index=self._edges_index, id=other_id)
+                except NotFoundError:
+                    pass
+                except OpenSearchException as e:
+                    logger.warning(
+                        f"[{self.workspace}] Self-heal delete of stale reverse edge "
+                        f"{other_id} failed (non-fatal): {e}"
+                    )
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(
@@ -2585,21 +2615,25 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
             # Key every edge by its canonical id and dedupe within the batch
             # (last-write-wins) so a single bulk request carries one action per
-            # logical edge regardless of direction.
+            # logical edge regardless of direction. Collect the reverse-
+            # orientation ids too, for the self-heal delete below.
             actions_by_id: dict[str, dict[str, Any]] = {}
+            other_ids: set[str] = set()
             for src, tgt, edge_data in edges:
                 doc = {k: v for k, v in edge_data.items() if k != "_id"}
                 doc["source_node_id"] = src
                 doc["target_node_id"] = tgt
                 if edge_data.get("source_id", ""):
                     doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
-                edge_id = _canonical_edge_id(src, tgt)
+                edge_id, other_id = _reciprocal_edge_ids(src, tgt)
                 actions_by_id[edge_id] = {
                     "_op_type": "index",
                     "_index": self._edges_index,
                     "_id": edge_id,
                     "_source": doc,
                 }
+                if other_id != edge_id:
+                    other_ids.add(other_id)
             actions = list(actions_by_id.values())
             await _run_chunked_async_bulk(
                 self.client,
@@ -2611,6 +2645,36 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 raise_on_error=True,
             )
             self._edges_dirty = True
+
+            # Self-heal: best-effort delete of any stale reverse-orientation docs
+            # left by a pre-migration write or a rolling-deploy straggler (see
+            # upsert_edge). Never index an id we are also deleting — different
+            # canonical pairs can only collide on self-loops, already excluded.
+            # raise_on_error=False: a 404 is the normal case and must not fail
+            # the upsert that already succeeded.
+            delete_actions = [
+                {"_op_type": "delete", "_index": self._edges_index, "_id": oid}
+                for oid in other_ids
+                if oid not in actions_by_id
+            ]
+            if delete_actions:
+                # Own try/except so a cleanup failure is not misreported as an
+                # upsert failure — the index bulk above already succeeded.
+                try:
+                    await _run_chunked_async_bulk(
+                        self.client,
+                        delete_actions,
+                        max_payload_bytes=self._max_upsert_payload_bytes,
+                        max_records_per_batch=self._max_delete_records_per_batch,
+                        log_prefix=f"[{self.workspace}] {self.namespace} edges:",
+                        what="stale reverse-edge self-heal",
+                        raise_on_error=False,
+                    )
+                except OpenSearchException as e:
+                    logger.warning(
+                        f"[{self.workspace}] Stale reverse-edge self-heal failed "
+                        f"(non-fatal): {e}"
+                    )
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error during batch edge upsert: {e}")
 

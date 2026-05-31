@@ -32,6 +32,7 @@ from lightrag.kg.opensearch_impl import (
     _resolve_bulk_batch_limits,
     _run_chunked_async_bulk,
     _canonical_edge_id,
+    _reciprocal_edge_ids,
     _EDGE_ID_CANONICAL_META_FLAG,
     _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES,
     DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES,
@@ -2224,6 +2225,53 @@ class TestGraphStorage:
             assert edge_ids[0] == edge_ids[1] == _canonical_edge_id("A", "B")
 
     @pytest.mark.asyncio
+    async def test_upsert_edge_self_heals_reverse_orientation_doc(
+        self, global_config, embed_func, mock_client
+    ):
+        """Writing the canonical doc also deletes a stale reverse-orientation id."""
+        mock_client.exists = AsyncMock(return_value=True)  # source exists
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert_edge("B", "A", {"weight": "1.0"})
+
+            canonical, other = _reciprocal_edge_ids("B", "A")
+            edge_index_ids = [
+                c.kwargs["id"]
+                for c in mock_client.index.await_args_list
+                if c.kwargs["index"] == s._edges_index
+            ]
+            assert edge_index_ids == [canonical]
+            mock_client.delete.assert_awaited_once_with(
+                index=s._edges_index, id=other
+            )
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_self_heal_tolerates_missing_reverse(
+        self, global_config, embed_func, mock_client
+    ):
+        """A 404 on the self-heal delete (the normal case) must not fail the write."""
+        mock_client.exists = AsyncMock(return_value=True)
+        mock_client.delete = AsyncMock(side_effect=NotFoundError(404, "not_found", {}))
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert_edge("A", "B", {"weight": "1.0"})  # must not raise
+            assert s._edges_dirty is True
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_self_loop_does_not_delete_itself(
+        self, global_config, embed_func, mock_client
+    ):
+        """A self-loop has no other orientation, so no self-heal delete fires."""
+        mock_client.exists = AsyncMock(return_value=True)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert_edge("A", "A", {"weight": "1.0"})
+            mock_client.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_upsert_edges_batch_collapses_reciprocal_edges(
         self, global_config, embed_func, mock_client
     ):
@@ -2249,11 +2297,23 @@ class TestGraphStorage:
                     ]
                 )
 
-            edge_actions = bulk_calls[-1]
-            assert len(edge_actions) == 1
-            assert edge_actions[0]["_id"] == _canonical_edge_id("A", "B")
+            # Two edge bulks: the index bulk, then the self-heal delete bulk
+            # (node-placeholder bulks target the nodes index — filtered out).
+            edge_acts = [
+                a
+                for call in bulk_calls
+                for a in call
+                if a["_index"] == s._edges_index
+            ]
+            index_actions = [a for a in edge_acts if a["_op_type"] == "index"]
+            delete_actions = [a for a in edge_acts if a["_op_type"] == "delete"]
+            assert len(index_actions) == 1
+            assert index_actions[0]["_id"] == _canonical_edge_id("A", "B")
             # last-write-wins within the batch
-            assert edge_actions[0]["_source"]["weight"] == "2.0"
+            assert index_actions[0]["_source"]["weight"] == "2.0"
+            # self-heal deletes the reverse orientation id
+            other_id = _reciprocal_edge_ids("A", "B")[1]
+            assert [a["_id"] for a in delete_actions] == [other_id]
 
     @pytest.mark.asyncio
     async def test_migrate_edges_to_canonical_id_reindexes_legacy_docs(
