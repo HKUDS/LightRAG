@@ -1,15 +1,19 @@
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 pytest.importorskip(
     "pymongo",
     reason="pymongo is required for Mongo storage tests",
 )
 
-from pymongo.errors import PyMongoError
+from pymongo.errors import PyMongoError, BulkWriteError, DuplicateKeyError
 
-from lightrag.kg.mongo_impl import MongoDocStatusStorage, MongoGraphStorage
+from lightrag.kg.mongo_impl import (
+    MongoDocStatusStorage,
+    MongoGraphStorage,
+    _canonical_edge_key,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -97,6 +101,211 @@ class TestMongoGraphStorage:
         assert len(result.edges) == 1
         assert result.edges[0].source == "A"
         assert result.edges[0].target == "B"
+
+
+class TestMongoEdgeKey:
+    """Canonical edge_key writes, duplicate-key retries, and the migration."""
+
+    def _make_storage(self):
+        s = MongoGraphStorage.__new__(MongoGraphStorage)
+        s.workspace = "test"
+        s.namespace = "chunk_entity_relation"
+        s.global_config = {}
+        s._edge_collection_name = "test_edges"
+        s._max_upsert_payload_bytes = 16 * 1024 * 1024
+        s._max_upsert_records_per_batch = 128
+        s.collection = SimpleNamespace(update_one=AsyncMock())
+        s.edge_collection = SimpleNamespace()
+        return s
+
+    def test_canonical_edge_key_is_direction_independent(self):
+        assert _canonical_edge_key("B", "A") == _canonical_edge_key("A", "B")
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_filters_and_sets_canonical_edge_key(self):
+        s = self._make_storage()
+        s.edge_collection.update_one = AsyncMock()
+        await s.upsert_edge("B", "A", {"weight": 1.0, "source_id": "c1<SEP>c2"})
+
+        args, kwargs = s.edge_collection.update_one.call_args
+        filt, update = args[0], args[1]
+        ek = _canonical_edge_key("B", "A")
+        assert filt == {"edge_key": ek}
+        assert update["$set"]["edge_key"] == ek
+        assert update["$set"]["source_node_id"] == "B"
+        assert update["$set"]["target_node_id"] == "A"
+        assert update["$set"]["source_ids"] == ["c1", "c2"]
+        assert kwargs.get("upsert") is True
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_retries_once_on_duplicate_key(self):
+        s = self._make_storage()
+        s.edge_collection.update_one = AsyncMock(
+            side_effect=[DuplicateKeyError("E11000 dup"), None]
+        )
+        await s.upsert_edge("A", "B", {"weight": 1.0})
+        assert s.edge_collection.update_one.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_reraises_on_persistent_duplicate(self):
+        s = self._make_storage()
+        s.edge_collection.update_one = AsyncMock(
+            side_effect=DuplicateKeyError("E11000 dup")
+        )
+        with pytest.raises(DuplicateKeyError):
+            await s.upsert_edge("A", "B", {"weight": 1.0})
+        assert s.edge_collection.update_one.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_upsert_edges_batch_dedupes_reciprocal_and_sets_edge_key(self):
+        s = self._make_storage()
+        calls = []
+
+        async def fake_bulk(collection, ops, **kwargs):
+            calls.append((collection, ops))
+
+        with patch(
+            "lightrag.kg.mongo_impl._run_batched_bulk_write",
+            new=AsyncMock(side_effect=fake_bulk),
+        ):
+            await s.upsert_edges_batch(
+                [("A", "B", {"weight": 1.0}), ("B", "A", {"weight": 2.0})]
+            )
+
+        # Last call is the edge bulk (first is the node-placeholder bulk).
+        edge_collection, edge_ops = calls[-1]
+        assert edge_collection is s.edge_collection
+        assert len(edge_ops) == 1  # reciprocal pair collapsed to one op
+        op, _bytes, _logid = edge_ops[0]
+        ek = _canonical_edge_key("A", "B")
+        assert op._filter == {"edge_key": ek}
+        assert op._doc["$set"]["edge_key"] == ek
+        assert op._doc["$set"]["weight"] == 2.0  # last-write-wins
+
+    @pytest.mark.asyncio
+    async def test_upsert_edges_batch_retries_on_duplicate_bulk_error(self):
+        s = self._make_storage()
+        seq = []
+
+        async def fake_bulk(collection, ops, **kwargs):
+            seq.append(collection)
+            # Fail the first edge bulk with an all-11000 BulkWriteError.
+            if collection is s.edge_collection and seq.count(s.edge_collection) == 1:
+                raise BulkWriteError({"writeErrors": [{"code": 11000}]})
+
+        with patch(
+            "lightrag.kg.mongo_impl._run_batched_bulk_write",
+            new=AsyncMock(side_effect=fake_bulk),
+        ):
+            await s.upsert_edges_batch([("A", "B", {"weight": 1.0})])
+
+        # node bulk + edge bulk (raises) + edge bulk (retry succeeds)
+        assert seq.count(s.edge_collection) == 2
+
+    @pytest.mark.asyncio
+    async def test_upsert_edges_batch_reraises_non_duplicate_bulk_error(self):
+        s = self._make_storage()
+
+        async def fake_bulk(collection, ops, **kwargs):
+            if collection is s.edge_collection:
+                raise BulkWriteError({"writeErrors": [{"code": 121}]})
+
+        with patch(
+            "lightrag.kg.mongo_impl._run_batched_bulk_write",
+            new=AsyncMock(side_effect=fake_bulk),
+        ):
+            with pytest.raises(BulkWriteError):
+                await s.upsert_edges_batch([("A", "B", {"weight": 1.0})])
+
+    @pytest.mark.asyncio
+    async def test_upsert_edges_batch_reraises_write_concern_error(self):
+        """A writeConcern-only BulkWriteError (empty writeErrors) is a durability
+        failure — it must surface, not be masked by the duplicate-key retry."""
+        s = self._make_storage()
+        edge_calls = []
+
+        async def fake_bulk(collection, ops, **kwargs):
+            if collection is s.edge_collection:
+                edge_calls.append(collection)
+                raise BulkWriteError(
+                    {"writeErrors": [], "writeConcernErrors": [{"code": 64}]}
+                )
+
+        with patch(
+            "lightrag.kg.mongo_impl._run_batched_bulk_write",
+            new=AsyncMock(side_effect=fake_bulk),
+        ):
+            with pytest.raises(BulkWriteError):
+                await s.upsert_edges_batch([("A", "B", {"weight": 1.0})])
+        assert len(edge_calls) == 1  # not retried
+
+    @pytest.mark.asyncio
+    async def test_edge_migration_skips_when_index_exists(self):
+        s = self._make_storage()
+        s.edge_collection.list_indexes = AsyncMock(
+            return_value=SimpleNamespace(
+                to_list=AsyncMock(return_value=[{"name": "test_edge_key_unique"}])
+            )
+        )
+        s.edge_collection.aggregate = AsyncMock()
+        s.edge_collection.create_index = AsyncMock()
+
+        await s.create_edge_indexes_and_migrate_if_not_exists()
+
+        s.edge_collection.aggregate.assert_not_awaited()
+        s.edge_collection.create_index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_edge_migration_dedupes_backfills_and_builds_unique_index(self):
+        s = self._make_storage()
+        s.edge_collection.list_indexes = AsyncMock(
+            return_value=SimpleNamespace(
+                to_list=AsyncMock(return_value=[{"name": "_id_"}])
+            )
+        )
+        # One duplicate group for edge {A,B}: two docs with distinct provenance.
+        group = {
+            "_id": {"lo": "A", "hi": "B"},
+            "count": 2,
+            "docs": [
+                {
+                    "_id": 1,
+                    "source_id": "c1",
+                    "source_ids": ["c1"],
+                    "file_path": "f1",
+                    "created_at": 10,
+                },
+                {
+                    "_id": 2,
+                    "source_id": "c2",
+                    "source_ids": ["c2"],
+                    "file_path": "f2",
+                    "created_at": 20,
+                },
+            ],
+        }
+        s.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([group]))
+        s.edge_collection.update_one = AsyncMock()
+        s.edge_collection.delete_many = AsyncMock()
+        s.edge_collection.update_many = AsyncMock(
+            return_value=SimpleNamespace(modified_count=3)
+        )
+        s.edge_collection.create_index = AsyncMock()
+
+        await s.create_edge_indexes_and_migrate_if_not_exists()
+
+        # Survivor is the newest (created_at 20 → _id 2); provenance unioned.
+        surv_filter, surv_update = s.edge_collection.update_one.call_args[0]
+        assert surv_filter == {"_id": 2}
+        assert surv_update["$set"]["source_ids"] == ["c1", "c2"]
+        assert surv_update["$set"]["file_path"] == "f1<SEP>f2"
+        # The other duplicate is deleted.
+        assert s.edge_collection.delete_many.call_args[0][0] == {"_id": {"$in": [1]}}
+        # Unique partial index built as the completion flag.
+        ci_kwargs = s.edge_collection.create_index.call_args.kwargs
+        assert ci_kwargs["name"] == "test_edge_key_unique"
+        assert ci_kwargs["unique"] is True
+        assert "partialFilterExpression" in ci_kwargs
 
 
 class TestMongoDocStatusLookup:
