@@ -2017,22 +2017,24 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_has_edge(self, global_config, embed_func, mock_client):
-        mock_client.search = AsyncMock(
-            return_value={
-                "hits": {"hits": [], "total": {"value": 1}},
-                "aggregations": {
-                    "status_counts": {"buckets": []},
-                    "src": {"buckets": []},
-                    "tgt": {"buckets": []},
-                    "source_degrees": {"buckets": []},
-                    "target_degrees": {"buckets": []},
-                },
-            }
-        )
+        # has_edge point-checks the single canonical _id via exists().
+        mock_client.exists = AsyncMock(return_value=True)
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.has_edge("A", "B") is True
+            mock_client.exists.assert_awaited_once_with(
+                index=s._edges_index, id=_canonical_edge_id("A", "B")
+            )
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_has_edge_false(self, global_config, embed_func, mock_client):
+        mock_client.exists = AsyncMock(return_value=False)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.has_edge("A", "B") is False
 
     @pytest.mark.asyncio
     async def test_node_degree(self, global_config, embed_func, mock_client):
@@ -2081,22 +2083,19 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_get_edge(self, global_config, embed_func, mock_client):
-        # get_edge now uses mget (translog real-time) instead of search.
+        # get_edge reads the single canonical _id via mget (translog real-time).
+        canonical = _canonical_edge_id("A", "B")
         mock_client.mget = AsyncMock(
             return_value={
                 "docs": [
                     {
-                        "_id": "e1",
+                        "_id": canonical,
                         "found": True,
                         "_source": {
                             "source_node_id": "A",
                             "target_node_id": "B",
                             "weight": 1.0,
                         },
-                    },
-                    {
-                        "_id": "e2",
-                        "found": False,
                     },
                 ]
             }
@@ -2107,6 +2106,10 @@ class TestGraphStorage:
             edge = await s.get_edge("A", "B")
             assert edge is not None
             assert edge["weight"] == 1.0
+            assert edge["_id"] == canonical
+            mock_client.mget.assert_awaited_once_with(
+                index=s._edges_index, body={"ids": [canonical]}
+            )
 
     @pytest.mark.asyncio
     async def test_get_node_edges(self, global_config, embed_func, mock_client):
@@ -2991,17 +2994,35 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_remove_edges(self, global_config, embed_func, mock_client):
-        # remove_edges now uses bulk delete with deterministic IDs instead of
-        # delete_by_query, so mock bulk as AsyncMock.
+        # remove_edges bulk-deletes one canonical _id per edge.
         mock_client.bulk = AsyncMock(return_value={"errors": False, "items": []})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.remove_edges([("A", "B"), ("C", "D")])
-            # 2 edges × 2 candidate directions = 4 delete actions in one bulk call
+            # 2 distinct canonical edges = 2 delete actions in one bulk call
             mock_client.bulk.assert_awaited_once()
             call_body = mock_client.bulk.call_args.kwargs["body"]
-            assert len(call_body) == 4
+            assert len(call_body) == 2
+            assert {op["delete"]["_id"] for op in call_body} == {
+                _canonical_edge_id("A", "B"),
+                _canonical_edge_id("C", "D"),
+            }
+
+    @pytest.mark.asyncio
+    async def test_remove_edges_dedups_reciprocal(
+        self, global_config, embed_func, mock_client
+    ):
+        # (A,B) and (B,A) share a canonical _id, so they collapse to one op.
+        mock_client.bulk = AsyncMock(return_value={"errors": False, "items": []})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.remove_edges([("A", "B"), ("B", "A")])
+            mock_client.bulk.assert_awaited_once()
+            call_body = mock_client.bulk.call_args.kwargs["body"]
+            assert len(call_body) == 1
+            assert call_body[0]["delete"]["_id"] == _canonical_edge_id("A", "B")
 
     @pytest.mark.asyncio
     async def test_get_all_labels(self, global_config, embed_func, mock_client):
