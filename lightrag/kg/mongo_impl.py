@@ -1424,20 +1424,15 @@ class MongoGraphStorage(BaseGraphStorage):
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """
         Check if there's a direct single-hop edge between source_node_id and target_node_id.
+
+        Matches on the canonical ``(edge_lo, edge_hi)`` pair (direction-independent)
+        instead of the bidirectional ``$or``, so this point lookup is served by the
+        compound unique index. Safe because the fail-fast migration in
+        ``initialize`` guarantees every served doc carries the endpoints.
         """
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
         doc = await self.edge_collection.find_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            },
+            {"edge_lo": edge_lo, "edge_hi": edge_hi},
             {"_id": 1},
         )
         return doc is not None
@@ -1486,19 +1481,11 @@ class MongoGraphStorage(BaseGraphStorage):
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
+        # Canonical (edge_lo, edge_hi) point lookup served by the compound unique
+        # index (see has_edge); the fail-fast migration guarantees the endpoints.
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
         return await self.edge_collection.find_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            }
+            {"edge_lo": edge_lo, "edge_hi": edge_hi}
         )
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -2321,14 +2308,18 @@ class MongoGraphStorage(BaseGraphStorage):
         if not edges:
             return
 
+        # Match each edge by its canonical (edge_lo, edge_hi) pair: one clause per
+        # edge (vs. the old two-clause bidirectional pair) served by the compound
+        # unique index, with reciprocal/duplicate inputs collapsed. Safe because
+        # the fail-fast migration guarantees every served doc carries the endpoints.
+        seen: set[tuple[str, str]] = set()
         all_edge_pairs = []
         for source_id, target_id in edges:
-            all_edge_pairs.append(
-                {"source_node_id": source_id, "target_node_id": target_id}
-            )
-            all_edge_pairs.append(
-                {"source_node_id": target_id, "target_node_id": source_id}
-            )
+            endpoints = _canonical_edge_endpoints(source_id, target_id)
+            if endpoints in seen:
+                continue
+            seen.add(endpoints)
+            all_edge_pairs.append({"edge_lo": endpoints[0], "edge_hi": endpoints[1]})
 
         await self.edge_collection.delete_many({"$or": all_edge_pairs})
 
