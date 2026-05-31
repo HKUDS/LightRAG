@@ -6360,18 +6360,14 @@ class PGGraphStorage(BaseGraphStorage):
     ) -> int:
         """Estimate the inlined-Cypher byte size of one node upsert (for chunking)."""
         node_props = {k: v for k, v in node_data.items() if k != "entity_id"}
-        return len(
-            (node_id + self._format_properties(node_props)).encode("utf-8")
-        )
+        return len((node_id + self._format_properties(node_props)).encode("utf-8"))
 
     def _estimate_edge_cypher_bytes(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> int:
         """Estimate the inlined-Cypher byte size of one edge upsert (for chunking)."""
         props_literal = self._format_properties(edge_data) if edge_data else "{}"
-        return len(
-            (source_node_id + target_node_id + props_literal).encode("utf-8")
-        )
+        return len((source_node_id + target_node_id + props_literal).encode("utf-8"))
 
     @retry(
         stop=stop_after_attempt(3),
@@ -6535,9 +6531,7 @@ class PGGraphStorage(BaseGraphStorage):
         retry=retry_if_exception(_is_transient_graph_write_error),
         reraise=True,
     )
-    async def _upsert_node_chunk(
-        self, chunk: list[tuple[str, dict[str, str]]]
-    ) -> None:
+    async def _upsert_node_chunk(self, chunk: list[tuple[str, dict[str, str]]]) -> None:
         """Upsert one chunk of nodes in a single AGE transaction.
 
         Each node's MERGE runs as its own statement on one shared connection,
@@ -6823,7 +6817,9 @@ class PGGraphStorage(BaseGraphStorage):
         ]
         batches = _chunk_by_budget(
             normalized,
-            lambda pair: len(pair[0].encode("utf-8")) + len(pair[1].encode("utf-8")) + 8,
+            lambda pair: len(pair[0].encode("utf-8"))
+            + len(pair[1].encode("utf-8"))
+            + 8,
             self._max_upsert_payload_bytes,
             self._max_delete_records_per_batch,
         )

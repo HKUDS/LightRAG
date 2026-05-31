@@ -840,9 +840,7 @@ class TestPostgresBatchOrdering:
             ],
         )
 
-        cypher_calls = [
-            c for c in calls if "CREATE (source)-[r:DIRECTED" in c["sql"]
-        ]
+        cypher_calls = [c for c in calls if "CREATE (source)-[r:DIRECTED" in c["sql"]]
         log = [
             (json.loads(c["args"][0])["src_id"], json.loads(c["args"][0])["tgt_id"])
             for c in cypher_calls
