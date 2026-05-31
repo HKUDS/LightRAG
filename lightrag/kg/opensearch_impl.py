@@ -2376,25 +2376,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             return False
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        """Check whether an edge exists between two nodes (bidirectional).
+        """Check whether an edge exists between two nodes.
 
-        Uses mget with the two candidate edge IDs so the check is real-time
-        (translog-backed), consistent with has_node() and independent of the
-        index refresh cycle.
+        Startup migration is fail-fast, so after initialize() every edge is keyed
+        by its canonical (sorted-pair) ``_id``. Point-check that single id with
+        exists(), mirroring has_node() — real-time (translog-backed), independent
+        of the index refresh cycle, no candidate-id fan-out.
         """
         if not self._indices_ready:
             return False
         try:
-            forward_id = compute_mdhash_id(
-                f"{source_node_id}-{target_node_id}", prefix="edge-"
-            )
-            reverse_id = compute_mdhash_id(
-                f"{target_node_id}-{source_node_id}", prefix="edge-"
-            )
-            response = await self.client.mget(
-                index=self._edges_index, body={"ids": [forward_id, reverse_id]}
-            )
-            return any(doc.get("found") for doc in response.get("docs", []))
+            edge_id = _canonical_edge_id(source_node_id, target_node_id)
+            return await self.client.exists(index=self._edges_index, id=edge_id)
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
@@ -2450,30 +2443,22 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        """Get an edge between two nodes (bidirectional), or None.
+        """Get an edge between two nodes, or None.
 
-        Uses mget with the two candidate edge IDs so the read is real-time
-        (translog-backed), consistent with get_node() and independent of the
-        index refresh cycle.
+        Edges are stored under their canonical (sorted-pair) ``_id`` once the
+        fail-fast startup migration completes, so read that single id directly via
+        mget — real-time (translog-backed), no candidate-id fan-out.
         """
         if not self._indices_ready:
             return None
         try:
-            forward_id = compute_mdhash_id(
-                f"{source_node_id}-{target_node_id}", prefix="edge-"
-            )
-            reverse_id = compute_mdhash_id(
-                f"{target_node_id}-{source_node_id}", prefix="edge-"
-            )
-            response = await self.client.mget(
-                index=self._edges_index, body={"ids": [forward_id, reverse_id]}
-            )
-            for doc in response.get("docs", []):
-                if doc.get("found"):
-                    result = doc["_source"]
-                    result["_id"] = doc["_id"]
-                    return result
-            return None
+            edge_id = _canonical_edge_id(source_node_id, target_node_id)
+            response = await _mget_optional_doc(self.client, self._edges_index, edge_id)
+            if response is None:
+                return None
+            result = response["_source"]
+            result["_id"] = response["_id"]
+            return result
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
@@ -2928,16 +2913,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error removing nodes: {e}")
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
-        """Batch-delete multiple edges by deterministic ID (real-time).
+        """Batch-delete multiple edges by canonical ID (real-time).
 
-        New writes key edges by their canonical (sorted-pair) id, but we still
-        delete *both* directed candidates per edge:
-          forward  = compute_mdhash_id("src-tgt", prefix="edge-")
-          reverse  = compute_mdhash_id("tgt-src", prefix="edge-")
-        The canonical id is always one of these two, and deleting the other is a
-        harmless 404 — this keeps deletes effective for any legacy doc not yet
-        collapsed by the canonical-id migration. The raw bulk API does not raise
-        on a 404 delete.
+        Startup migration is fail-fast, so every edge is keyed by its canonical
+        (sorted-pair) ``_id``. Delete that single id per edge — dedup via a set so
+        reciprocal inputs ``(A,B)`` and ``(B,A)`` collapse to one delete op. The
+        raw bulk API does not raise on a 404 delete.
 
         Marks edge search views dirty so refresh happens lazily on the next
         search/count-based graph read.
@@ -2946,20 +2927,16 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             return
         logger.info(f"[{self.workspace}] Deleting {len(edges)} edges")
         try:
-            operations = []
-            for src, tgt in edges:
-                for edge_id in (
-                    compute_mdhash_id(f"{src}-{tgt}", prefix="edge-"),
-                    compute_mdhash_id(f"{tgt}-{src}", prefix="edge-"),
-                ):
-                    operations.append(
-                        {
-                            "delete": {
-                                "_index": self._edges_index,
-                                "_id": edge_id,
-                            }
-                        }
-                    )
+            edge_ids = {_canonical_edge_id(src, tgt) for src, tgt in edges}
+            operations = [
+                {
+                    "delete": {
+                        "_index": self._edges_index,
+                        "_id": edge_id,
+                    }
+                }
+                for edge_id in edge_ids
+            ]
             # The raw bulk API does not auto-chunk (unlike helpers.async_bulk),
             # so split the operation list by the delete record-count cap to keep
             # each request bounded (mirrors mongo_impl's chunked delete_many).
