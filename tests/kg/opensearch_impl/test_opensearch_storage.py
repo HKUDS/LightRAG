@@ -18,7 +18,11 @@ pytest.importorskip(
     reason="opensearchpy is required for OpenSearch storage tests",
 )
 
-from opensearchpy.exceptions import NotFoundError, OpenSearchException  # type: ignore
+from opensearchpy.exceptions import (  # type: ignore
+    NotFoundError,
+    OpenSearchException,
+    ConflictError,
+)
 from lightrag.kg.opensearch_impl import (
     OpenSearchKVStorage,
     OpenSearchDocStatusStorage,
@@ -32,6 +36,7 @@ from lightrag.kg.opensearch_impl import (
     _resolve_bulk_batch_limits,
     _run_chunked_async_bulk,
     _canonical_edge_id,
+    _merge_edge_payloads,
     _EDGE_ID_CANONICAL_META_FLAG,
     _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES,
     DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES,
@@ -2349,9 +2354,6 @@ class TestGraphStorage:
         "create_errors, delete_errors, expect_raise",
         [
             ([], [], False),  # clean run → flag set
-            # canonical already exists (forward legacy doc) — benign 409, source
-            # safe to drop, run completes.
-            ([{"create": {"_id": "C", "status": 409}}], [], False),
             # stale source already removed by another run — benign 404.
             ([], [{"delete": {"_id": "edge-old", "status": 404}}], False),
             # busy cluster rejected the create — fail fast, no flag.
@@ -2461,6 +2463,372 @@ class TestGraphStorage:
         all_actions = [a for call in bulk_calls for a in call]
         assert not [a for a in all_actions if a["_op_type"] == "delete"]
         mock_client.indices.put_mapping.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_migrate_merges_reverse_payload_into_canonical_on_conflict(
+        self, global_config, embed_func, mock_client
+    ):
+        """A reciprocal duplicate (create 409) merges the reverse doc's relation
+        payload into the existing canonical before deleting the reverse — no
+        evidence lost, mirroring the Mongo dedupe merge."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        canonical = _canonical_edge_id("A", "B")
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        # Scroll yields the reverse-orientation doc with its own payload.
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-reverse",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "description": "d2",
+                                "keywords": "beta,gamma",
+                                "weight": 2.0,
+                                "source_ids": ["c2"],
+                                "file_path": "f2",
+                            },
+                        }
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+        # The existing canonical (forward) doc with distinct payload.
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": canonical,
+                "_seq_no": 7,
+                "_primary_term": 1,
+                "_source": {
+                    "source_node_id": "A",
+                    "target_node_id": "B",
+                    "description": "d1",
+                    "keywords": "alpha,beta",
+                    "weight": 1.0,
+                    "source_ids": ["c1"],
+                    "file_path": "f1",
+                },
+            }
+        )
+        mock_client.index = AsyncMock()
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            if acts and acts[0]["_op_type"] == "create":
+                # canonical already exists -> 409 conflict
+                return (0, [{"create": {"_id": canonical, "status": 409}}])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        # Merged write goes to the canonical id with optimistic concurrency.
+        index_kwargs = mock_client.index.await_args.kwargs
+        assert index_kwargs["id"] == canonical
+        assert index_kwargs["if_seq_no"] == 7
+        assert index_kwargs["if_primary_term"] == 1
+        merged = index_kwargs["body"]
+        assert merged["description"] == "d1<SEP>d2"  # both descriptions kept
+        assert merged["keywords"] == "alpha,beta,gamma"  # comma set-union
+        assert merged["weight"] == 3.0  # summed (1.0 + 2.0)
+        assert merged["source_ids"] == ["c1", "c2"]  # provenance unioned
+        assert merged["file_path"] == "f1<SEP>f2"
+        # Direction fields kept from the surviving canonical doc.
+        assert merged["source_node_id"] == "A"
+        mock_client.indices.put_mapping.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_merge_into_canonical_retries_on_version_conflict(
+        self, global_config, embed_func, mock_client
+    ):
+        """A concurrent write (version conflict) is not clobbered: the merge
+        re-reads and retries."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": "edge-canon",
+                "_seq_no": 1,
+                "_primary_term": 1,
+                "_source": {"source_node_id": "A", "target_node_id": "B"},
+            }
+        )
+        mock_client.index = AsyncMock(
+            side_effect=[ConflictError(409, "version_conflict", {}), None]
+        )
+
+        await s._merge_into_canonical_edge(
+            "edge-canon", [("edge-rev9", {"source_id": "c9"})]
+        )
+
+        assert mock_client.get.await_count == 2  # re-read after the conflict
+        assert mock_client.index.await_count == 2
+        # Folded only after the write that finally succeeds (post-conflict).
+        mock_client.delete.assert_awaited_once_with(
+            index=s._edges_index, id="edge-rev9"
+        )
+
+    @pytest.mark.asyncio
+    async def test_merge_into_canonical_recreates_when_canonical_vanished(
+        self, global_config, embed_func, mock_client
+    ):
+        """If the canonical doc disappears between the create-409 and the merge
+        GET, recreate it from the (merged) reverse sources rather than crashing."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.get = AsyncMock(side_effect=NotFoundError(404, "not_found", {}))
+        mock_client.index = AsyncMock()
+
+        await s._merge_into_canonical_edge(
+            "edge-canon",
+            [
+                (
+                    "edge-rev1",
+                    {"source_ids": ["c1"], "weight": 1.0, "source_node_id": "A"},
+                ),
+                ("edge-rev2", {"source_ids": ["c2"], "weight": 2.0}),
+            ],
+        )
+
+        # Recreated with a plain index (no optimistic concurrency to honour —
+        # there is no current version) carrying the merged reverse payload.
+        kwargs = mock_client.index.await_args.kwargs
+        assert kwargs["id"] == "edge-canon"
+        assert "if_seq_no" not in kwargs
+        body = kwargs["body"]
+        assert body["source_ids"] == ["c1", "c2"]
+        assert body["weight"] == 3.0  # summed across both reverse sources
+        assert body["source_node_id"] == "A"  # base reverse-source fields kept
+        # Both folded reverse docs are deleted so a re-scan never re-folds them.
+        deleted_ids = {c.kwargs["id"] for c in mock_client.delete.await_args_list}
+        assert deleted_ids == {"edge-rev1", "edge-rev2"}
+
+    @pytest.mark.asyncio
+    async def test_merge_into_canonical_aborts_after_persistent_conflicts(
+        self, global_config, embed_func, mock_client
+    ):
+        """Persistent version conflicts abort startup (fail-safe: raised before
+        any delete) rather than silently giving up."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": "edge-canon",
+                "_seq_no": 1,
+                "_primary_term": 1,
+                "_source": {"source_node_id": "A", "target_node_id": "B"},
+            }
+        )
+        mock_client.index = AsyncMock(
+            side_effect=ConflictError(409, "version_conflict", {})
+        )
+
+        with pytest.raises(RuntimeError, match="could not merge into edge-canon"):
+            await s._merge_into_canonical_edge(
+                "edge-canon", [("edge-rev9", {"source_id": "c9"})]
+            )
+        assert mock_client.index.await_count == 3  # bounded retries
+        # The reverse doc is never deleted while its evidence is unmerged.
+        mock_client.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_migrate_merges_multiple_reverse_docs_into_one_canonical(
+        self, global_config, embed_func, mock_client
+    ):
+        """When 3+ legacy docs map to one canonical pair, every 409'd reverse
+        source is folded in — not just the last one (no evidence dropped)."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        canonical = _canonical_edge_id("A", "B")
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        # Two reverse-orientation docs (distinct old ids) for the same pair, each
+        # with its own provenance, both non-canonical so both end up pending.
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-rev1",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c2"],
+                                "weight": 2.0,
+                            },
+                        },
+                        {
+                            "_id": "edge-rev2",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c3"],
+                                "weight": 3.0,
+                            },
+                        },
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": canonical,
+                "_seq_no": 7,
+                "_primary_term": 1,
+                "_source": {
+                    "source_node_id": "A",
+                    "target_node_id": "B",
+                    "source_ids": ["c1"],
+                    "weight": 1.0,
+                },
+            }
+        )
+        mock_client.index = AsyncMock()
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            if acts and acts[0]["_op_type"] == "create":
+                # First create wins the insert; the second 409s on the same id.
+                return (1, [{"create": {"_id": canonical, "status": 409}}])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        # A single merge write into the canonical folds in *both* reverse docs.
+        assert mock_client.index.await_count == 1
+        merged = mock_client.index.await_args.kwargs["body"]
+        assert merged["source_ids"] == ["c1", "c2", "c3"]  # all provenance kept
+        assert merged["weight"] == 6.0  # 1.0 + 2.0 + 3.0 summed
+
+    @pytest.mark.asyncio
+    async def test_migrate_premerges_same_canonical_docs_into_one_create(
+        self, global_config, embed_func, mock_client
+    ):
+        """When several non-canonical docs map to a canonical that does NOT yet
+        exist, the batch issues ONE pre-merged create (not one per doc). This
+        avoids the intra-batch create race where one doc wins the insert and the
+        rest 409, then folding the 409'd docs re-merges the create winner and
+        double-counts its weight. The single create carries the summed-once
+        weight and no merge-into-canonical write happens."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        canonical = _canonical_edge_id("A", "B")
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        # Two reverse-orientation docs for the same pair, both non-canonical.
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-rev1",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c2"],
+                                "weight": 2.0,
+                            },
+                        },
+                        {
+                            "_id": "edge-rev2",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c3"],
+                                "weight": 3.0,
+                            },
+                        },
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+        mock_client.index = AsyncMock()
+
+        created = []
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            if acts and acts[0]["_op_type"] == "create":
+                created.extend(acts)
+                # Canonical did not pre-exist: the create succeeds (no 409).
+                return (len(acts), [])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        # Exactly one create for the canonical, carrying the summed-once weight —
+        # the create winner is never re-merged, so weight is 5.0, not 7.0.
+        create_for_canon = [a for a in created if a["_id"] == canonical]
+        assert len(create_for_canon) == 1
+        body = create_for_canon[0]["_source"]
+        assert body["weight"] == 5.0  # 2.0 + 3.0, counted once
+        assert body["source_ids"] == ["c2", "c3"]
+        # No fold/merge write into the canonical (no create conflicted).
+        mock_client.index.assert_not_awaited()
+
+    def test_merge_edge_payloads_sums_every_fragment_weight(self):
+        """Weight is summed across every fragment (base + each duplicate), matching
+        operate.py's _merge_edges_then_upsert — including reciprocal duplicates that
+        share a source/chunk id, which must NOT be skipped (that undercounts)."""
+        # Disjoint provenance -> weights sum.
+        disjoint = _merge_edge_payloads(
+            [
+                {"source_ids": ["c1"], "weight": 1.0},
+                {"source_ids": ["c2"], "weight": 2.0},
+            ]
+        )
+        assert disjoint["weight"] == 3.0
+        assert disjoint["source_ids"] == ["c1", "c2"]
+        # Same-source reciprocal duplicate: both fragments carry separate
+        # accumulated weight, so their weights still sum (the regression this
+        # guards against silently dropped the duplicate's weight here).
+        same_source = _merge_edge_payloads(
+            [
+                {"source_ids": ["c1"], "weight": 1.0},
+                {"source_ids": ["c1"], "weight": 2.0},
+            ]
+        )
+        assert same_source["weight"] == 3.0
+        assert same_source["source_ids"] == ["c1"]
 
     @pytest.mark.asyncio
     async def test_migrate_edges_logs_progress_for_large_scan(

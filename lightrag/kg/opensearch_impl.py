@@ -27,7 +27,7 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..utils import logger, compute_mdhash_id, _cooperative_yield
+from ..utils import logger, compute_mdhash_id, _cooperative_yield, merge_source_ids
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
@@ -38,7 +38,12 @@ if not pm.is_installed("opensearch-py"):
     pm.install("opensearch-py")
 
 from opensearchpy import AsyncOpenSearch, helpers  # type: ignore
-from opensearchpy.exceptions import OpenSearchException, NotFoundError, RequestError  # type: ignore
+from opensearchpy.exceptions import (  # type: ignore
+    OpenSearchException,
+    NotFoundError,
+    RequestError,
+    ConflictError,
+)
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -306,6 +311,85 @@ def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
     """
     lo, hi = sorted((source_node_id, target_node_id))
     return compute_mdhash_id(f"{lo}-{hi}", prefix="edge-")
+
+
+def _edge_source_id_list(doc: dict[str, Any]) -> list[str]:
+    """Return an edge doc's source ids, from the ``source_ids`` array or by
+    splitting the ``GRAPH_FIELD_SEP``-joined ``source_id`` string."""
+    sids = doc.get("source_ids")
+    if not sids and doc.get("source_id"):
+        sids = doc["source_id"].split(GRAPH_FIELD_SEP)
+    return list(sids or [])
+
+
+def _coerce_weight(weight: Any) -> float | None:
+    """Coerce a (possibly string) edge weight to float, or None if non-numeric."""
+    if weight is None:
+        return None
+    try:
+        return float(weight)
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge edge-doc relation payloads when consolidating legacy duplicates.
+
+    ``docs[0]`` is the survivor/base; the rest are duplicates folded into it.
+    Mirrors ``mongo_impl``'s dedupe merge and ``operate.py``'s
+    ``_merge_edges_then_upsert`` field semantics (minus LLM description
+    summarisation): ``source_id``/``source_ids``/``file_path``/``description``
+    union their ``GRAPH_FIELD_SEP`` components, ``keywords`` are comma-set-
+    unioned, and ``weight`` is **summed across every fragment** (base + each
+    duplicate). Returns only the merged fields (to be layered onto the surviving
+    doc).
+
+    Weight summing deliberately does NOT dedup by ``source_id``: just like
+    ``_merge_edges_then_upsert``, every edge fragment contributes its weight even
+    when fragments share a source/chunk id — reciprocal duplicates that came from
+    the same chunk still carry separate accumulated weight, so skipping them would
+    undercount the relation. This function is therefore not idempotent on its own;
+    idempotency across fail-fast retries is a property of the migration flow, not
+    this math: each folded reverse doc is deleted right after the canonical write
+    (see ``_merge_into_canonical_edge``), so a re-scan never re-presents an
+    already-folded reverse for summing. Legacy string weights are coerced;
+    non-numeric values are skipped so a bad value cannot crash the migration.
+    """
+    source_ids: list[str] = []
+    file_paths: list[str] = []
+    descriptions: list[str] = []
+    keywords: set[str] = set()
+    weights: list[float] = []
+    for d in docs:
+        source_ids = merge_source_ids(source_ids, _edge_source_id_list(d))
+        fp = d.get("file_path")
+        file_paths = merge_source_ids(
+            file_paths, fp.split(GRAPH_FIELD_SEP) if fp else []
+        )
+        desc = d.get("description")
+        descriptions = merge_source_ids(
+            descriptions, desc.split(GRAPH_FIELD_SEP) if desc else []
+        )
+        kw = d.get("keywords")
+        if kw:
+            keywords.update(k.strip() for k in kw.split(",") if k.strip())
+        dw = _coerce_weight(d.get("weight"))
+        if dw is not None:
+            weights.append(dw)
+
+    merged: dict[str, Any] = {}
+    if source_ids:
+        merged["source_ids"] = source_ids
+        merged["source_id"] = GRAPH_FIELD_SEP.join(source_ids)
+    if file_paths:
+        merged["file_path"] = GRAPH_FIELD_SEP.join(file_paths)
+    if descriptions:
+        merged["description"] = GRAPH_FIELD_SEP.join(descriptions)
+    if keywords:
+        merged["keywords"] = ",".join(sorted(keywords))
+    if weights:
+        merged["weight"] = sum(weights)
+    return merged
 
 
 # Detected at first connection; True when OpenSearch >= 3.3.0.
@@ -2000,20 +2084,41 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     return
                 batch, pending = pending, []
 
-                # Phase 1 — create the canonical docs. op_type=create
-                # (insert-only): a create 409 means the canonical doc already
-                # exists (forward legacy doc), which is benign — the reverse
-                # source row is then safe to drop. raise_on_error=False so a 409
-                # does not abort.
-                create_actions = [
-                    {
-                        "_op_type": "create",
-                        "_index": self._edges_index,
-                        "_id": canonical,
-                        "_source": source,
-                    }
-                    for canonical, _old_id, source in batch
-                ]
+                # Group this batch by canonical id. A node pair can have >1
+                # pending non-canonical doc (e.g. several legacy reciprocal
+                # duplicates), and they all map to the same canonical id; carry
+                # each doc's old _id so it can be deleted after consolidation.
+                docs_by_canonical: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+                for canonical, old_id, source in batch:
+                    docs_by_canonical.setdefault(canonical, []).append((old_id, source))
+
+                # Phase 1 — create exactly ONE canonical doc per canonical id.
+                # When a canonical has >1 pending doc we pre-merge their payloads
+                # in memory so the single create carries the summed weight/unioned
+                # provenance: issuing one create per doc instead would let one win
+                # the insert and the rest 409, and folding those 409'd docs back in
+                # would re-merge the create winner (its source is now the base),
+                # double-counting its weight. op_type=create (insert-only): a 409
+                # then means the canonical already existed *independently of this
+                # batch* (a forward legacy doc, or a prior batch/run), so every doc
+                # this batch mapped to it is a loser to fold in. raise_on_error=
+                # False so a 409 does not abort.
+                create_actions = []
+                for canonical, reverse_docs in docs_by_canonical.items():
+                    sources = [source for _old_id, source in reverse_docs]
+                    source = (
+                        {**sources[0], **_merge_edge_payloads(sources)}
+                        if len(sources) > 1
+                        else sources[0]
+                    )
+                    create_actions.append(
+                        {
+                            "_op_type": "create",
+                            "_index": self._edges_index,
+                            "_id": canonical,
+                            "_source": source,
+                        }
+                    )
                 _success, errors = await _run_chunked_async_bulk(
                     self.client,
                     create_actions,
@@ -2023,17 +2128,21 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     what="canonical edge-id migration (create)",
                     raise_on_error=False,
                 )
-                # Fail fast on any non-benign create error (e.g. 429/503): raise
-                # BEFORE deleting any source row, so no edge is dropped without
-                # its canonical counterpart in place. The flag stays unset and
-                # the next startup rescans.
-                real_create_errors = [
-                    e
-                    for e in errors
-                    if not (
-                        isinstance(e, dict) and e.get("create", {}).get("status") == 409
-                    )
-                ]
+                # A create 409 means the canonical doc already exists: merge the
+                # pending doc(s)' relation payload into it (below) so deleting them
+                # loses no evidence. Any other create error (e.g. 429/503) fails
+                # fast BEFORE any delete, so no edge is dropped without its
+                # canonical counterpart in place; the flag stays unset and the
+                # next startup rescans.
+                conflicted_canonicals: set[str] = set()
+                real_create_errors = []
+                for e in errors:
+                    info = e.get("create") if isinstance(e, dict) else None
+                    if info is not None and info.get("status") == 409:
+                        if info.get("_id"):
+                            conflicted_canonicals.add(info["_id"])
+                        continue
+                    real_create_errors.append(e)
                 if real_create_errors:
                     raise RuntimeError(
                         f"Canonical edge-id migration: {len(real_create_errors)} "
@@ -2041,10 +2150,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         f"(no source rows deleted)"
                     )
 
-                # Phase 2 — every create succeeded or 409'd, so the canonical now
-                # exists for all; delete the old ids. delete 404 is benign
-                # (another run already removed it); any other delete error fails
-                # fast.
+                # The canonical pre-existed (the create did not write it), so fold
+                # *every* doc this batch mapped to it — none is the create winner —
+                # then delete their old ids (in _merge_into_canonical_edge).
+                for canonical in conflicted_canonicals:
+                    await self._merge_into_canonical_edge(
+                        canonical, docs_by_canonical[canonical]
+                    )
+
+                # Phase 2 — every create succeeded, 409'd-then-merged, so the
+                # canonical now exists for all; delete the old ids. delete 404 is
+                # benign (another run already removed it); any other delete error
+                # fails fast.
                 delete_actions = [
                     {"_op_type": "delete", "_index": self._edges_index, "_id": old_id}
                     for _canonical, old_id, _source in batch
@@ -2133,9 +2250,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             )
             # Mark complete (only reached on full success) so subsequent startups
             # skip the full scan. Legacy reciprocal duplicates collapsed onto one
-            # canonical doc: the forward/existing doc wins (create is insert-only)
-            # and the other orientation was deleted — acceptable, edges are
-            # undirected.
+            # canonical doc: the reverse doc's relation payload was merged into
+            # the existing canonical (see _merge_into_canonical_edge) and the
+            # reverse orientation deleted — no relation evidence lost.
             await self.client.indices.put_mapping(
                 index=self._edges_index,
                 body={"_meta": {**meta, _EDGE_ID_CANONICAL_META_FLAG: True}},
@@ -2148,6 +2265,96 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 f"{self._edges_index}: {e}; aborting startup"
             )
             raise
+
+    async def _merge_into_canonical_edge(
+        self, canonical_id: str, reverse_docs: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        """Merge legacy reverse-orientation doc(s)' payload into an existing
+        canonical doc (the create-409 reciprocal-duplicate case) so deleting the
+        reverse loses no relation evidence (mirrors mongo_impl's dedupe merge).
+
+        ``reverse_docs`` carries every pending reverse doc in this batch that maps
+        to ``canonical_id`` as ``(old_id, source)`` pairs (usually one, but >1
+        when a node pair has 3+ legacy docs); all are folded into the canonical in
+        a single write, then deleted by their old ids.
+
+        Uses optimistic concurrency (``if_seq_no``/``if_primary_term``) so a
+        concurrent live write during a rolling deploy is never clobbered: on a
+        version conflict we re-read — now including that write — and re-merge.
+
+        Weight summing is per-fragment and not self-idempotent (see
+        ``_merge_edge_payloads``), so idempotency across fail-fast retries comes
+        from deleting each folded reverse right after the canonical write: a
+        re-scan no longer finds it, so it is never folded (and summed) twice. The
+        delete is best-effort — the batch's Phase-2 delete re-attempts the same
+        ids — so it deliberately does not abort the migration; the only window in
+        which a weight could double-count is a crash strictly between the
+        canonical write and this delete, a bounded and non-fatal ranking
+        perturbation for a one-time migration.
+        """
+        for _attempt in range(3):
+            try:
+                current = await self.client.get(
+                    index=self._edges_index, id=canonical_id
+                )
+            except NotFoundError:
+                # Canonical vanished between the create-409 and now; recreate it
+                # by merging the reverse sources together (nothing else to merge
+                # against).
+                reverse_sources = [source for _old_id, source in reverse_docs]
+                recreated = {
+                    **reverse_sources[0],
+                    **_merge_edge_payloads(reverse_sources),
+                }
+                await self.client.index(
+                    index=self._edges_index, id=canonical_id, body=recreated
+                )
+                await self._delete_folded_reverse_edges(reverse_docs)
+                return
+            base = current.get("_source", {})
+            reverse_sources = [source for _old_id, source in reverse_docs]
+            merged = {**base, **_merge_edge_payloads([base, *reverse_sources])}
+            try:
+                await self.client.index(
+                    index=self._edges_index,
+                    id=canonical_id,
+                    body=merged,
+                    if_seq_no=current["_seq_no"],
+                    if_primary_term=current["_primary_term"],
+                )
+            except ConflictError:
+                # A concurrent write changed the canonical doc; re-read and
+                # re-merge so we never overwrite that write with stale data.
+                continue
+            await self._delete_folded_reverse_edges(reverse_docs)
+            return
+        raise RuntimeError(
+            f"Canonical edge-id migration: could not merge into {canonical_id} "
+            f"after retries in {self._edges_index}; aborting startup"
+        )
+
+    async def _delete_folded_reverse_edges(
+        self, reverse_docs: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        """Delete legacy reverse docs whose payload was just folded into the
+        canonical, so a fail-fast re-scan never re-folds (and re-sums) them.
+
+        Best-effort: a 404 means another run already removed it, and any other
+        error is swallowed (logged) rather than raised — the migration's Phase-2
+        bulk delete re-attempts these same ids, so failing here must not abort
+        startup nor leave the canonical without its merged evidence.
+        """
+        for old_id, _source in reverse_docs:
+            try:
+                await self.client.delete(index=self._edges_index, id=old_id)
+            except NotFoundError:
+                pass
+            except OpenSearchException as e:
+                logger.warning(
+                    f"[{self.workspace}] Canonical edge-id migration: could not "
+                    f"delete folded reverse doc {old_id} in {self._edges_index} "
+                    f"(Phase-2 delete will retry): {e}"
+                )
 
     async def finalize(self):
         """Release the OpenSearch client connection."""
