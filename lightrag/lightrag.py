@@ -46,6 +46,7 @@ from lightrag.constants import (
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_SUMMARY_PRIORITY,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
@@ -2091,9 +2092,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval
-                # Apply higher priority (8) to entity/relation summary tasks
+                # Apply higher priority to entity/relation summary tasks
                 use_llm_func = partial(
-                    global_config["role_llm_funcs"]["query"], _priority=8
+                    global_config["role_llm_funcs"]["query"],
+                    _priority=DEFAULT_SUMMARY_PRIORITY,
                 )
 
                 param.stream = True if param.stream is None else param.stream

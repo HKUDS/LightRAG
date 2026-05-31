@@ -29,7 +29,7 @@ from ..base import (
 )
 from ..utils import logger, compute_mdhash_id, _cooperative_yield, merge_source_ids
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP
+from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
 import pipmaster as pm
@@ -4168,7 +4168,9 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 else list(query_embedding)
             )
         else:
-            embedding = await self.embedding_func([query], context="query", _priority=5)
+            embedding = await self.embedding_func(
+                [query], context="query", _priority=DEFAULT_QUERY_PRIORITY
+            )
             query_vector = embedding[0].tolist()
 
         search_body = {

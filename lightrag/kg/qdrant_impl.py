@@ -11,6 +11,7 @@ import numpy as np
 import pipmaster as pm
 
 from ..base import BaseVectorStorage
+from ..constants import DEFAULT_QUERY_PRIORITY
 from ..exceptions import DataMigrationError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 from ..utils import _cooperative_yield, compute_mdhash_id, logger
@@ -715,7 +716,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             embedding = query_embedding
         else:
             embedding_result = await self.embedding_func(
-                [query], context="query", _priority=5
+                [query], context="query", _priority=DEFAULT_QUERY_PRIORITY
             )  # higher priority for query
             embedding = embedding_result[0]
 

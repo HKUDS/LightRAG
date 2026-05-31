@@ -19,7 +19,7 @@ from ..base import (
 )
 from ..utils import logger, compute_mdhash_id, _cooperative_yield, merge_source_ids
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP
+from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
 from .._version import __version__
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
@@ -3163,7 +3163,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         else:
             # Generate the embedding
             embedding = await self.embedding_func(
-                [query], context="query", _priority=5
+                [query], context="query", _priority=DEFAULT_QUERY_PRIORITY
             )  # higher priority for query
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()

@@ -41,6 +41,7 @@ from lightrag.constants import (
     DEFAULT_LOG_FILENAME,
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_PROCESSING_PRIORITY,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
@@ -1241,7 +1242,11 @@ def priority_limit_async_func_call(
 
         @wraps(func)
         async def wait_func(
-            *args, _priority=10, _timeout=None, _queue_timeout=None, **kwargs
+            *args,
+            _priority=DEFAULT_PROCESSING_PRIORITY,
+            _timeout=None,
+            _queue_timeout=None,
+            **kwargs,
         ):
             """
             Execute function with enhanced priority-based concurrency control and timeout handling

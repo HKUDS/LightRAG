@@ -289,6 +289,28 @@ DEFAULT_MAX_PARALLEL_PARSE_DOCLING = 2
 DEFAULT_QUEUE_SIZE_DEFAULT = 100
 DEFAULT_QUEUE_SIZE_INSERT = 4
 
+# LLM / embedding call priority levels.  Lower values run first
+# (asyncio.PriorityQueue semantics); priority only orders calls *within* a
+# single role queue (extract / keyword / query / vlm).  These name the values
+# passed as the ``_priority`` argument to the priority_limit_async_func_call
+# wrapper, centralizing the magic numbers that were previously inlined at each
+# call site.
+#
+# Query stage (interactive: query/keyword LLM calls and query-time embeddings)
+# gets the highest priority so user requests stay responsive.
+DEFAULT_QUERY_PRIORITY = 5
+# Entity/relation description summary generation — ahead of raw extraction but
+# behind interactive query work.
+DEFAULT_SUMMARY_PRIORITY = 8
+# Processing stage entity/relation extraction (ingestion).  Also the wrapper's
+# baseline default for any call that does not pass ``_priority``.
+DEFAULT_PROCESSING_PRIORITY = 10
+# Priority used for all multimodal analysis LLM calls.  Set equal to
+# DEFAULT_PROCESSING_PRIORITY so analysis and ingestion work share the EXTRACT
+# queue fairly and advance evenly — otherwise a busy ingestion queue starves
+# analysis tasks, stalling analysis nodes and dragging down overall throughput.
+DEFAULT_MM_ANALYSIS_PRIORITY = DEFAULT_PROCESSING_PRIORITY
+
 # Multimodal analysis / chunk thresholds
 # Minimum token count retained when truncating a multimodal chunk's
 # description to fit within DEFAULT_MAX_EXTRACT_INPUT_TOKENS.  Falling below
@@ -299,10 +321,6 @@ DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS = 100
 # Anything smaller is treated as decorative (icons, separators, etc.) and
 # written as status="skipped".
 DEFAULT_MM_IMAGE_MIN_PIXEL = 32
-# Priority used for all multimodal analysis LLM calls.  Higher numbers run
-# behind entity extraction (priority 10) so a busy ingestion queue still
-# prefers KG-building work.
-DEFAULT_MM_ANALYSIS_PRIORITY = 12
 
 # Embedding configuration defaults
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
