@@ -2996,7 +2996,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
         subsequent ``$vectorSearch`` then raises ``cannot query vector index
         ... while in state FAILED``. Matching the index only by name would
         treat that dead index as healthy and wedge all queries permanently,
-        so a FAILED index is dropped and rebuilt here. Transitional states
+        so a same-dimension FAILED index is dropped and rebuilt here. The
+        dimension-mismatch guard runs *before* the rebuild: a FAILED index
+        built under a different embedding model raises rather than being
+        auto-rebuilt against incompatible stored vectors. Transitional states
         (``PENDING``/``BUILDING``) are left alone -- they become queryable
         without intervention.
         """
@@ -3007,20 +3010,13 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 if index["name"] != self._index_name:
                     continue
 
-                # A FAILED build is terminal: drop it and fall through to
-                # recreate (the same self-heal `drop()` relies on). Wait for
-                # the drop to clear first -- create_search_index rejects a
-                # name that still exists while the old index is DELETING.
-                if index.get("status") == "FAILED":
-                    logger.warning(
-                        f"[{self.workspace}] vector index {self._index_name} is in "
-                        f"FAILED state; dropping and recreating it"
-                    )
-                    await self._data.drop_search_index(self._index_name)
-                    await self._wait_for_search_index_absent(self._index_name)
-                    break
-
-                # Check if the existing index has matching vector dimensions
+                # Read the stored vector dimension first so the mismatch
+                # guard below runs even for a FAILED index. A FAILED index
+                # built under a *different* embedding model must NOT be
+                # silently auto-rebuilt: recreating with the new dimension
+                # against incompatible stored vectors would just FAIL again
+                # and hide the required data-directory reset from the
+                # operator. Only a same-dimension FAILED index is self-healed.
                 existing_dim = None
                 definition = index.get("latestDefinition", {})
                 fields = definition.get("fields", [])
@@ -3040,6 +3036,21 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     )
                     logger.error(f"[{self.workspace}] {error_msg}")
                     raise ValueError(error_msg)
+
+                # A FAILED build is terminal: drop it and fall through to
+                # recreate (the same self-heal `drop()` relies on). Only
+                # reached once the dimension guard above has confirmed the
+                # stored dimension matches the current embedding model. Wait
+                # for the drop to clear first -- create_search_index rejects a
+                # name that still exists while the old index is DELETING.
+                if index.get("status") == "FAILED":
+                    logger.warning(
+                        f"[{self.workspace}] vector index {self._index_name} is in "
+                        f"FAILED state; dropping and recreating it"
+                    )
+                    await self._data.drop_search_index(self._index_name)
+                    await self._wait_for_search_index_absent(self._index_name)
+                    break
 
                 logger.info(
                     f"[{self.workspace}] vector index {self._index_name} already exists with matching dimensions ({expected_dim})"
