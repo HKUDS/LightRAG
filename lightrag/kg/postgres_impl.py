@@ -7589,9 +7589,7 @@ class PGGraphStorage(BaseGraphStorage):
                 LEFT JOIN node_degrees d ON d.node_id = v.id
                 ORDER BY degree DESC, v.id ASC
                 LIMIT $1"""
-            node_results = await self._query(
-                query_nodes, params={"limit": max_nodes}
-            )
+            node_results = await self._query(query_nodes, params={"limit": max_nodes})
 
             node_ids = [str(result["node_id"]) for result in node_results]
 
