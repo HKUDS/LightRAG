@@ -32,7 +32,6 @@ from lightrag.kg.opensearch_impl import (
     _resolve_bulk_batch_limits,
     _run_chunked_async_bulk,
     _canonical_edge_id,
-    _reciprocal_edge_ids,
     _EDGE_ID_CANONICAL_META_FLAG,
     _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES,
     DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES,
@@ -1183,9 +1182,9 @@ class TestKVStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
                 flush_can_finish.set()
                 await flush_task
@@ -1279,9 +1278,9 @@ class TestKVStorageBatching:
                 )
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 assert "k2" not in s._pending_upserts
 
                 flush_can_finish.set()
@@ -2225,61 +2224,31 @@ class TestGraphStorage:
             assert edge_ids[0] == edge_ids[1] == _canonical_edge_id("A", "B")
 
     @pytest.mark.asyncio
-    async def test_upsert_edge_self_heals_reverse_orientation_doc(
+    async def test_upsert_edge_does_not_delete_on_write(
         self, global_config, embed_func, mock_client
     ):
-        """Writing the canonical doc also deletes a stale reverse-orientation id."""
+        """No per-write reverse-orientation cleanup — the fail-fast migration
+        already guarantees the index is canonical before any write."""
         mock_client.exists = AsyncMock(return_value=True)  # source exists
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.upsert_edge("B", "A", {"weight": "1.0"})
 
-            canonical, other = _reciprocal_edge_ids("B", "A")
             edge_index_ids = [
                 c.kwargs["id"]
                 for c in mock_client.index.await_args_list
                 if c.kwargs["index"] == s._edges_index
             ]
-            assert edge_index_ids == [canonical]
-            # ignore=404 keeps opensearch-py from logging a WARNING (and from
-            # raising) for the common no-stale-doc case on every edge write.
-            mock_client.delete.assert_awaited_once_with(
-                index=s._edges_index, id=other, ignore=404
-            )
-
-    @pytest.mark.asyncio
-    async def test_upsert_edge_self_heal_tolerates_delete_error(
-        self, global_config, embed_func, mock_client
-    ):
-        """A non-404 error on the self-heal delete is non-fatal to the write."""
-        mock_client.exists = AsyncMock(return_value=True)
-        mock_client.delete = AsyncMock(
-            side_effect=OpenSearchException("transient transport error")
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            await s.upsert_edge("A", "B", {"weight": "1.0"})  # must not raise
-            assert s._edges_dirty is True
-
-    @pytest.mark.asyncio
-    async def test_upsert_edge_self_loop_does_not_delete_itself(
-        self, global_config, embed_func, mock_client
-    ):
-        """A self-loop has no other orientation, so no self-heal delete fires."""
-        mock_client.exists = AsyncMock(return_value=True)
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            await s.upsert_edge("A", "A", {"weight": "1.0"})
+            assert edge_index_ids == [_canonical_edge_id("B", "A")]
             mock_client.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_upsert_edges_batch_collapses_reciprocal_edges(
         self, global_config, embed_func, mock_client
     ):
-        """Reciprocal edges in one batch collapse to a single canonical action."""
+        """Reciprocal edges in one batch collapse to a single canonical action,
+        with no extra self-heal delete bulk."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -2301,20 +2270,17 @@ class TestGraphStorage:
                     ]
                 )
 
-            # Two edge bulks: the index bulk, then the self-heal delete bulk
-            # (node-placeholder bulks target the nodes index — filtered out).
+            # Only index ops against the edges index (node-placeholder bulks
+            # target the nodes index — filtered out); no delete bulk.
             edge_acts = [
                 a for call in bulk_calls for a in call if a["_index"] == s._edges_index
             ]
             index_actions = [a for a in edge_acts if a["_op_type"] == "index"]
-            delete_actions = [a for a in edge_acts if a["_op_type"] == "delete"]
+            assert not [a for a in edge_acts if a["_op_type"] == "delete"]
             assert len(index_actions) == 1
             assert index_actions[0]["_id"] == _canonical_edge_id("A", "B")
             # last-write-wins within the batch
             assert index_actions[0]["_source"]["weight"] == "2.0"
-            # self-heal deletes the reverse orientation id
-            other_id = _reciprocal_edge_ids("A", "B")[1]
-            assert [a["_id"] for a in delete_actions] == [other_id]
 
     @pytest.mark.asyncio
     async def test_migrate_edges_to_canonical_id_reindexes_legacy_docs(
@@ -2380,18 +2346,18 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "create_errors, delete_errors, expect_flag",
+        "create_errors, delete_errors, expect_raise",
         [
-            ([], [], True),  # clean run
-            # canonical already exists (live write / forward doc) — benign,
-            # source still safe to drop, run completes.
-            ([{"create": {"_id": "C", "status": 409}}], [], True),
-            # stale source already removed by another run — benign.
-            ([], [{"delete": {"_id": "edge-old", "status": 404}}], True),
-            # busy cluster rejected the create — real error, leave unflagged.
-            ([{"create": {"_id": "C", "status": 503}}], [], False),
-            # delete genuinely failed — real error.
-            ([], [{"delete": {"_id": "edge-old", "status": 500}}], False),
+            ([], [], False),  # clean run → flag set
+            # canonical already exists (forward legacy doc) — benign 409, source
+            # safe to drop, run completes.
+            ([{"create": {"_id": "C", "status": 409}}], [], False),
+            # stale source already removed by another run — benign 404.
+            ([], [{"delete": {"_id": "edge-old", "status": 404}}], False),
+            # busy cluster rejected the create — fail fast, no flag.
+            ([{"create": {"_id": "C", "status": 503}}], [], True),
+            # delete genuinely failed — fail fast, no flag.
+            ([], [{"delete": {"_id": "edge-old", "status": 500}}], True),
         ],
     )
     async def test_migrate_edges_phase_error_handling(
@@ -2401,7 +2367,7 @@ class TestGraphStorage:
         mock_client,
         create_errors,
         delete_errors,
-        expect_flag,
+        expect_raise,
     ):
         s = self._make(global_config, embed_func)
         s.client = mock_client
@@ -2433,16 +2399,21 @@ class TestGraphStorage:
             "lightrag.kg.opensearch_impl.helpers.async_bulk",
             new=AsyncMock(side_effect=[(1, create_errors), (1, delete_errors)]),
         ):
-            await s._migrate_edges_to_canonical_id_if_needed()
-
-        assert mock_client.indices.put_mapping.await_count == (1 if expect_flag else 0)
+            if expect_raise:
+                # Fail fast: the migration raises so startup aborts, flag unset.
+                with pytest.raises(RuntimeError):
+                    await s._migrate_edges_to_canonical_id_if_needed()
+                mock_client.indices.put_mapping.assert_not_awaited()
+            else:
+                await s._migrate_edges_to_canonical_id_if_needed()
+                mock_client.indices.put_mapping.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_migrate_edges_preserves_source_when_create_fails(
+    async def test_migrate_edges_fail_fast_preserves_source_when_create_fails(
         self, global_config, embed_func, mock_client
     ):
-        """A non-benign create failure must NOT delete the source row, so the
-        unflagged retry can still rebuild the edge."""
+        """A non-benign create failure raises BEFORE any delete, so the source
+        row survives and the unflagged retry can rebuild the edge."""
         s = self._make(global_config, embed_func)
         s.client = mock_client
         mock_client.indices.exists = AsyncMock(return_value=True)
@@ -2474,8 +2445,6 @@ class TestGraphStorage:
         async def capture_bulk(_client, actions, *args, **kwargs):
             acts = list(actions)
             bulk_calls.append(acts)
-            # Fail the create with a busy-cluster 503; nothing to report for any
-            # later phase.
             if acts and acts[0]["_op_type"] == "create":
                 return (0, [{"create": {"_id": canonical, "status": 503}}])
             return (len(acts), [])
@@ -2484,10 +2453,11 @@ class TestGraphStorage:
             "lightrag.kg.opensearch_impl.helpers.async_bulk",
             new=AsyncMock(side_effect=capture_bulk),
         ):
-            await s._migrate_edges_to_canonical_id_if_needed()
+            with pytest.raises(RuntimeError):
+                await s._migrate_edges_to_canonical_id_if_needed()
 
-        # No delete bulk should have been issued for the failed canonical's
-        # source row, and the index must stay unflagged for retry.
+        # No delete bulk was issued (raise happened first), and the index stays
+        # unflagged for the next startup's retry.
         all_actions = [a for call in bulk_calls for a in call]
         assert not [a for a in all_actions if a["_op_type"] == "delete"]
         mock_client.indices.put_mapping.assert_not_awaited()
@@ -4304,9 +4274,9 @@ class TestVectorStorageBatching:
                 # embedding computation and arrive at the lock.
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 # v2 must not be visible in the buffer yet.
                 assert "v2" not in s._pending_vector_docs
 
@@ -4355,9 +4325,9 @@ class TestVectorStorageBatching:
                 delete_task = asyncio.create_task(s.delete(["v1"]))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_task.done()
-                ), "concurrent delete should be blocked by the flush lock"
+                assert not delete_task.done(), (
+                    "concurrent delete should be blocked by the flush lock"
+                )
 
                 flush_can_finish.set()
                 await flush_task
@@ -4568,9 +4538,9 @@ class TestVectorStorageBatching:
                 rel_task = asyncio.create_task(s.delete_entity_relation("Alice"))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_started.is_set()
-                ), "delete_by_query should be blocked behind the flush lock"
+                assert not delete_started.is_set(), (
+                    "delete_by_query should be blocked behind the flush lock"
+                )
                 assert not rel_task.done()
 
                 flush_can_finish.set()
@@ -4610,9 +4580,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
 
                 flush_can_finish.set()
@@ -4655,9 +4625,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked during deferred embedding"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked during deferred embedding"
+                )
                 assert not drop_task.done()
 
                 embedding_can_finish.set()

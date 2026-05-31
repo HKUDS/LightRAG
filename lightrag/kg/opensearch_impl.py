@@ -293,30 +293,19 @@ _EDGE_ID_CANONICAL_META_FLAG = "edge_id_canonical_v1"
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
 
-def _reciprocal_edge_ids(source_node_id: str, target_node_id: str) -> tuple[str, str]:
-    """Return ``(canonical_id, other_orientation_id)`` for an edge.
+def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
+    """Direction-independent edge document ``_id``.
 
-    ``canonical_id = hash(sorted(src, tgt))`` collapses an edge and its reverse
-    onto the same ``_id``, so concurrent ``(A,B)``/``(B,A)`` writes overwrite one
-    document (last-write-wins) instead of racing into two — idempotent by
-    construction, no ``exists(reverse)`` read-then-write and no lock needed. The
-    canonical id is always one of the two directed ids
-    ``hash("src-tgt")``/``hash("tgt-src")``, so the bidirectional ``mget`` in
-    ``has_edge``/``get_edge`` keeps finding it.
-
-    ``other_orientation_id`` is the reverse-direction directed id. The two are
-    equal only for a self-loop (``src == tgt``).
+    ``hash(sorted(src, tgt))`` collapses an edge and its reverse onto the same
+    ``_id``, so concurrent ``(A,B)``/``(B,A)`` writes overwrite one document
+    (last-write-wins) instead of racing into two separate docs. This makes
+    ``upsert_edge`` idempotent by construction — no ``exists(reverse)``
+    read-then-write and no lock needed. The canonical id is always one of the
+    two directed ids ``hash("src-tgt")``/``hash("tgt-src")``, so the
+    bidirectional ``mget`` in ``has_edge``/``get_edge`` keeps finding it.
     """
     lo, hi = sorted((source_node_id, target_node_id))
-    return (
-        compute_mdhash_id(f"{lo}-{hi}", prefix="edge-"),
-        compute_mdhash_id(f"{hi}-{lo}", prefix="edge-"),
-    )
-
-
-def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
-    """Direction-independent edge document ``_id`` (see ``_reciprocal_edge_ids``)."""
-    return _reciprocal_edge_ids(source_node_id, target_node_id)[0]
+    return compute_mdhash_id(f"{lo}-{hi}", prefix="edge-")
 
 
 # Detected at first connection; True when OpenSearch >= 3.3.0.
@@ -1945,21 +1934,26 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         double-count). This re-keys every non-canonical doc onto its canonical
         ``_id`` and deletes the stale id.
 
-        The canonical write uses ``op_type=create`` (insert-only), so it never
-        overwrites an existing canonical doc. ``get_data_init_lock`` serialises
-        the init critical section across one deployment's worker pool (only the
-        first worker migrates; the rest skip via the ``_meta`` flag), but it is
-        a ``multiprocessing.Manager`` lock that does NOT span separate
-        deployments. During a rolling deploy a previous-release worker can still
-        serve ``upsert_edge`` while we hold a stale scrolled copy, so create-only
-        ensures we never clobber that live canonical write (or a forward legacy
-        doc) with stale data — the existing doc wins and the redundant
-        orientation is deleted.
+        **Fail-fast.** Runs in ``initialize`` inside ``get_data_init_lock``
+        (which serialises one deployment's worker pool — only the first worker
+        migrates, the rest skip via the ``_meta`` flag). On any non-benign
+        per-item error (e.g. 429/503) it raises, so the service does not start
+        until the index is fully canonical; the next startup rescans (the flag
+        is only set on full success). Because the service is gated on a complete
+        migration and every later write is canonical, there is no need for a
+        per-write reverse-orientation cleanup.
 
-        Idempotent and self-guarded: an index ``_meta`` flag marks completion
-        so the full scan runs at most once; already-canonical docs are skipped,
-        and create-409 / delete-404 races are tolerated, so a partial/failed run
-        simply re-runs on the next startup.
+        The canonical write uses ``op_type=create`` (insert-only): a legacy
+        reciprocal duplicate (both directed docs present) collapses onto the
+        existing forward/canonical doc (create 409, benign) and the reverse copy
+        is deleted. A create that fails fast happens *before* any delete, so a
+        source row is never dropped without its canonical counterpart existing.
+
+        Assumes no concurrent *old-version* writer adds non-canonical docs after
+        this completes (true for stop-the-world / single-deployment restarts). A
+        true rolling deploy with two code versions writing the same index could
+        leave a straggler reverse doc; the remedy is to clear the ``_meta`` flag
+        and let the next startup re-migrate.
         """
         try:
             if not await self.client.indices.exists(index=self._edges_index):
@@ -1993,7 +1987,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
             scanned = 0
             migrated = 0
-            had_real_error = False
             # Each entry is (canonical_id, old_id, source) for one non-canonical
             # doc to be re-keyed. Flush roughly one bulk chunk at a time so a huge
             # index does not buffer every action in memory before writing.
@@ -2002,19 +1995,16 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             next_progress = _EDGE_MIGRATION_PROGRESS_INTERVAL
 
             async def _flush_pending() -> None:
-                nonlocal pending, had_real_error
+                nonlocal pending
                 if not pending:
                     return
                 batch, pending = pending, []
 
                 # Phase 1 — create the canonical docs. op_type=create
-                # (insert-only) so we NEVER overwrite an existing canonical doc:
-                # get_data_init_lock only serialises one deployment's workers, so
-                # during a rolling deploy a previous-release worker may already
-                # have written the fresh canonical edge; an unconditional index
-                # would clobber it with this stale scrolled _source. A create 409
-                # means canonical already exists — benign, the source row is then
-                # safe to drop. raise_on_error=False so a 409 does not abort.
+                # (insert-only): a create 409 means the canonical doc already
+                # exists (forward legacy doc), which is benign — the reverse
+                # source row is then safe to drop. raise_on_error=False so a 409
+                # does not abort.
                 create_actions = [
                     {
                         "_op_type": "create",
@@ -2033,36 +2023,32 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     what="canonical edge-id migration (create)",
                     raise_on_error=False,
                 )
-                # A canonical whose create failed for any non-benign reason
-                # (e.g. 429/503 on a busy cluster) must keep its source row: the
-                # only copy of the edge still lives under the old id, and the
-                # unflagged retry rebuilds it next startup. Deleting it here would
-                # silently lose the relationship.
-                failed_canonicals: set[str] = set()
-                for e in errors:
-                    info = e.get("create") if isinstance(e, dict) else None
-                    if info is not None and info.get("status") == 409:
-                        continue  # canonical already exists — source safe to drop
-                    had_real_error = True
-                    if info is not None and info.get("_id"):
-                        failed_canonicals.add(info["_id"])
-                if failed_canonicals:
-                    logger.error(
-                        f"[{self.workspace}] Canonical edge-id migration: "
-                        f"{len(failed_canonicals)} create(s) failed in "
-                        f"{self._edges_index}; keeping their source rows for retry"
+                # Fail fast on any non-benign create error (e.g. 429/503): raise
+                # BEFORE deleting any source row, so no edge is dropped without
+                # its canonical counterpart in place. The flag stays unset and
+                # the next startup rescans.
+                real_create_errors = [
+                    e
+                    for e in errors
+                    if not (
+                        isinstance(e, dict) and e.get("create", {}).get("status") == 409
+                    )
+                ]
+                if real_create_errors:
+                    raise RuntimeError(
+                        f"Canonical edge-id migration: {len(real_create_errors)} "
+                        f"create error(s) in {self._edges_index}; aborting startup "
+                        f"(no source rows deleted)"
                     )
 
-                # Phase 2 — delete the old id only where its canonical now exists
-                # (create succeeded or 409'd). delete 404 is benign (another run
-                # already removed it); any other delete error is real.
+                # Phase 2 — every create succeeded or 409'd, so the canonical now
+                # exists for all; delete the old ids. delete 404 is benign
+                # (another run already removed it); any other delete error fails
+                # fast.
                 delete_actions = [
                     {"_op_type": "delete", "_index": self._edges_index, "_id": old_id}
-                    for canonical, old_id, _source in batch
-                    if canonical not in failed_canonicals
+                    for _canonical, old_id, _source in batch
                 ]
-                if not delete_actions:
-                    return
                 _ds, derrors = await _run_chunked_async_bulk(
                     self.client,
                     delete_actions,
@@ -2080,11 +2066,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     )
                 ]
                 if real_delete_errors:
-                    had_real_error = True
-                    logger.error(
-                        f"[{self.workspace}] Canonical edge-id migration hit "
-                        f"{len(real_delete_errors)} delete error(s) in "
-                        f"{self._edges_index}"
+                    raise RuntimeError(
+                        f"Canonical edge-id migration: {len(real_delete_errors)} "
+                        f"delete error(s) in {self._edges_index}; aborting startup"
                     )
 
             scroll_id = None
@@ -2143,32 +2127,27 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 except OpenSearchException:
                     pass
 
-            if had_real_error:
-                logger.error(
-                    f"[{self.workspace}] Canonical edge-id migration incomplete for "
-                    f"{self._edges_index} (scanned {scanned}, migrated {migrated}); "
-                    f"leaving unflagged to retry on next startup"
-                )
-                return
-
             logger.info(
                 f"[{self.workspace}] Canonical edge-id migration complete for "
                 f"{self._edges_index}: scanned {scanned}, migrated {migrated}"
             )
-            # Mark complete so subsequent startups skip the full scan. Legacy
-            # reciprocal duplicates collapse onto one canonical doc here: the
-            # first writer of the canonical _id wins (create is insert-only) and
-            # the other orientation is deleted — acceptable since edges are
-            # undirected, and it never clobbers a concurrent live write.
+            # Mark complete (only reached on full success) so subsequent startups
+            # skip the full scan. Legacy reciprocal duplicates collapsed onto one
+            # canonical doc: the forward/existing doc wins (create is insert-only)
+            # and the other orientation was deleted — acceptable, edges are
+            # undirected.
             await self.client.indices.put_mapping(
                 index=self._edges_index,
                 body={"_meta": {**meta, _EDGE_ID_CANONICAL_META_FLAG: True}},
             )
         except OpenSearchException as e:
+            # Fail fast: a transport/cluster error during migration must abort
+            # startup (flag stays unset) rather than serve a half-migrated index.
             logger.error(
                 f"[{self.workspace}] Canonical edge-id migration failed for "
-                f"{self._edges_index}: {e}"
+                f"{self._edges_index}: {e}; aborting startup"
             )
+            raise
 
     async def finalize(self):
         """Release the OpenSearch client connection."""
@@ -2512,11 +2491,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         reciprocal writers overwrite the same ``_id`` (last-write-wins) instead
         of racing into two docs. No ``exists(reverse)`` read-then-write needed.
 
-        Also best-effort deletes the other-orientation doc as a self-heal: a
-        pre-migration write or a rolling-deploy straggler still on the old code
-        can leave a reverse-direction doc that the one-time migration won't
-        revisit once its ``_meta`` flag is set, which would double-count this
-        edge. Removing it on the next write keeps the index converged.
+        New writes are always canonical, and the startup migration is fail-fast
+        (the service does not start until every legacy doc is on its canonical
+        id), so there is no need to delete a reverse-orientation doc on each
+        write — the index is canonical before any write happens.
         """
         try:
             await self._ensure_indices_ready()
@@ -2530,22 +2508,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             if edge_data.get("source_id", ""):
                 doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
 
-            edge_id, other_id = _reciprocal_edge_ids(source_node_id, target_node_id)
+            edge_id = _canonical_edge_id(source_node_id, target_node_id)
             await self.client.index(index=self._edges_index, id=edge_id, body=doc)
-            # Self-heal: drop a stale reverse-orientation doc if one exists
-            # (skipped for self-loops, where both ids coincide). ignore=404 so the
-            # common steady-state case (no stale reverse doc) neither raises nor
-            # makes opensearch-py log a WARNING for every single edge write.
-            if other_id != edge_id:
-                try:
-                    await self.client.delete(
-                        index=self._edges_index, id=other_id, ignore=404
-                    )
-                except OpenSearchException as e:
-                    logger.warning(
-                        f"[{self.workspace}] Self-heal delete of stale reverse edge "
-                        f"{other_id} failed (non-fatal): {e}"
-                    )
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(
@@ -2641,25 +2605,21 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
             # Key every edge by its canonical id and dedupe within the batch
             # (last-write-wins) so a single bulk request carries one action per
-            # logical edge regardless of direction. Collect the reverse-
-            # orientation ids too, for the self-heal delete below.
+            # logical edge regardless of direction.
             actions_by_id: dict[str, dict[str, Any]] = {}
-            other_ids: set[str] = set()
             for src, tgt, edge_data in edges:
                 doc = {k: v for k, v in edge_data.items() if k != "_id"}
                 doc["source_node_id"] = src
                 doc["target_node_id"] = tgt
                 if edge_data.get("source_id", ""):
                     doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
-                edge_id, other_id = _reciprocal_edge_ids(src, tgt)
+                edge_id = _canonical_edge_id(src, tgt)
                 actions_by_id[edge_id] = {
                     "_op_type": "index",
                     "_index": self._edges_index,
                     "_id": edge_id,
                     "_source": doc,
                 }
-                if other_id != edge_id:
-                    other_ids.add(other_id)
             actions = list(actions_by_id.values())
             await _run_chunked_async_bulk(
                 self.client,
@@ -2671,36 +2631,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 raise_on_error=True,
             )
             self._edges_dirty = True
-
-            # Self-heal: best-effort delete of any stale reverse-orientation docs
-            # left by a pre-migration write or a rolling-deploy straggler (see
-            # upsert_edge). Never index an id we are also deleting — different
-            # canonical pairs can only collide on self-loops, already excluded.
-            # raise_on_error=False: a 404 is the normal case and must not fail
-            # the upsert that already succeeded.
-            delete_actions = [
-                {"_op_type": "delete", "_index": self._edges_index, "_id": oid}
-                for oid in other_ids
-                if oid not in actions_by_id
-            ]
-            if delete_actions:
-                # Own try/except so a cleanup failure is not misreported as an
-                # upsert failure — the index bulk above already succeeded.
-                try:
-                    await _run_chunked_async_bulk(
-                        self.client,
-                        delete_actions,
-                        max_payload_bytes=self._max_upsert_payload_bytes,
-                        max_records_per_batch=self._max_delete_records_per_batch,
-                        log_prefix=f"[{self.workspace}] {self.namespace} edges:",
-                        what="stale reverse-edge self-heal",
-                        raise_on_error=False,
-                    )
-                except OpenSearchException as e:
-                    logger.warning(
-                        f"[{self.workspace}] Stale reverse-edge self-heal failed "
-                        f"(non-fatal): {e}"
-                    )
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error during batch edge upsert: {e}")
 
