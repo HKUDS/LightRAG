@@ -12,7 +12,7 @@ from pymongo.errors import PyMongoError, BulkWriteError, DuplicateKeyError
 from lightrag.kg.mongo_impl import (
     MongoDocStatusStorage,
     MongoGraphStorage,
-    _canonical_edge_key,
+    _canonical_edge_endpoints,
 )
 
 pytestmark = pytest.mark.offline
@@ -104,7 +104,7 @@ class TestMongoGraphStorage:
 
 
 class TestMongoEdgeKey:
-    """Canonical edge_key writes, duplicate-key retries, and the migration."""
+    """Canonical edge-endpoint writes, duplicate-key retries, and the migration."""
 
     def _make_storage(self):
         s = MongoGraphStorage.__new__(MongoGraphStorage)
@@ -118,20 +118,31 @@ class TestMongoEdgeKey:
         s.edge_collection = SimpleNamespace()
         return s
 
-    def test_canonical_edge_key_is_direction_independent(self):
-        assert _canonical_edge_key("B", "A") == _canonical_edge_key("A", "B")
+    def test_canonical_edge_endpoints_are_direction_independent(self):
+        assert _canonical_edge_endpoints("B", "A") == _canonical_edge_endpoints(
+            "A", "B"
+        )
+        assert _canonical_edge_endpoints("B", "A") == ("A", "B")
+
+    def test_canonical_endpoints_never_collide_across_delimiter(self):
+        # Distinct pairs that a delimiter-joined key could conflate must stay
+        # distinct as separate (lo, hi) fields.
+        assert _canonical_edge_endpoints("A\x1fB", "C") != _canonical_edge_endpoints(
+            "A", "B\x1fC"
+        )
 
     @pytest.mark.asyncio
-    async def test_upsert_edge_filters_and_sets_canonical_edge_key(self):
+    async def test_upsert_edge_filters_and_sets_canonical_endpoints(self):
         s = self._make_storage()
         s.edge_collection.update_one = AsyncMock()
         await s.upsert_edge("B", "A", {"weight": 1.0, "source_id": "c1<SEP>c2"})
 
         args, kwargs = s.edge_collection.update_one.call_args
         filt, update = args[0], args[1]
-        ek = _canonical_edge_key("B", "A")
-        assert filt == {"edge_key": ek}
-        assert update["$set"]["edge_key"] == ek
+        lo, hi = _canonical_edge_endpoints("B", "A")
+        assert filt == {"edge_lo": lo, "edge_hi": hi}
+        assert update["$set"]["edge_lo"] == lo
+        assert update["$set"]["edge_hi"] == hi
         assert update["$set"]["source_node_id"] == "B"
         assert update["$set"]["target_node_id"] == "A"
         assert update["$set"]["source_ids"] == ["c1", "c2"]
@@ -157,7 +168,7 @@ class TestMongoEdgeKey:
         assert s.edge_collection.update_one.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_upsert_edges_batch_dedupes_reciprocal_and_sets_edge_key(self):
+    async def test_upsert_edges_batch_dedupes_reciprocal_and_sets_endpoints(self):
         s = self._make_storage()
         calls = []
 
@@ -177,9 +188,10 @@ class TestMongoEdgeKey:
         assert edge_collection is s.edge_collection
         assert len(edge_ops) == 1  # reciprocal pair collapsed to one op
         op, _bytes, _logid = edge_ops[0]
-        ek = _canonical_edge_key("A", "B")
-        assert op._filter == {"edge_key": ek}
-        assert op._doc["$set"]["edge_key"] == ek
+        lo, hi = _canonical_edge_endpoints("A", "B")
+        assert op._filter == {"edge_lo": lo, "edge_hi": hi}
+        assert op._doc["$set"]["edge_lo"] == lo
+        assert op._doc["$set"]["edge_hi"] == hi
         assert op._doc["$set"]["weight"] == 2.0  # last-write-wins
 
     @pytest.mark.asyncio
@@ -244,7 +256,7 @@ class TestMongoEdgeKey:
         s = self._make_storage()
         s.edge_collection.list_indexes = AsyncMock(
             return_value=SimpleNamespace(
-                to_list=AsyncMock(return_value=[{"name": "test_edge_key_unique"}])
+                to_list=AsyncMock(return_value=[{"name": "test_edge_endpoints_unique"}])
             )
         )
         s.edge_collection.aggregate = AsyncMock()
@@ -299,12 +311,12 @@ class TestMongoEdgeKey:
         # OpenSearch-aligned start/complete log wording.
         info_lines = [c.args[0] for c in mock_logger.info.call_args_list]
         assert any(
-            line.startswith("[test] Starting canonical edge_key migration for ")
+            line.startswith("[test] Starting canonical edge migration for ")
             and "(~4 edges to scan)" in line
             for line in info_lines
         )
         assert any(
-            "Canonical edge_key migration complete for" in line
+            "Canonical edge migration complete for" in line
             and "scanned 4, deduped 1, backfilled 3" in line
             for line in info_lines
         )
@@ -316,11 +328,13 @@ class TestMongoEdgeKey:
         assert surv_update["$set"]["file_path"] == "f1<SEP>f2"
         # The other duplicate is deleted.
         assert s.edge_collection.delete_many.call_args[0][0] == {"_id": {"$in": [1]}}
-        # Unique partial index built as the completion flag.
+        # Compound unique partial index built as the completion flag.
+        ci_args = s.edge_collection.create_index.call_args.args
         ci_kwargs = s.edge_collection.create_index.call_args.kwargs
-        assert ci_kwargs["name"] == "test_edge_key_unique"
+        assert ci_args[0] == [("edge_lo", 1), ("edge_hi", 1)]
+        assert ci_kwargs["name"] == "test_edge_endpoints_unique"
         assert ci_kwargs["unique"] is True
-        assert "partialFilterExpression" in ci_kwargs
+        assert set(ci_kwargs["partialFilterExpression"]) == {"edge_lo", "edge_hi"}
 
 
 class TestMongoDocStatusLookup:

@@ -59,31 +59,30 @@ DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16MB
 DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH = 1000
 
-# Separator joining the sorted (src, tgt) pair into a single canonical edge_key
-# string. \x1f (ASCII unit separator) cannot appear in normal entity names, so
-# collisions are effectively impossible (same pragmatic choice as the PG impl's
-# \x01-delimited advisory-lock key).
-_EDGE_KEY_SEP = "\x1f"
 # MongoDB duplicate-key error code, raised when an upsert insert races the
-# unique edge_key index (another writer inserted the same edge first).
+# unique edge-endpoint index (another writer inserted the same edge first).
 _DUPLICATE_KEY_CODE = 11000
 
-# Emit an edge_key-migration progress line every this many deduped docs, so
-# operators watching a large migration see liveness (mirrors the OpenSearch
-# canonical-id migration's progress cadence).
+# Emit a migration progress line every this many deduped docs, so operators
+# watching a large migration see liveness (mirrors the OpenSearch canonical-id
+# migration's progress cadence).
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
 
-def _canonical_edge_key(source_node_id: str, target_node_id: str) -> str:
-    """Direction-independent key for an undirected edge.
+def _canonical_edge_endpoints(
+    source_node_id: str, target_node_id: str
+) -> tuple[str, str]:
+    """Direction-independent ``(edge_lo, edge_hi)`` endpoints for an undirected edge.
 
-    ``sep.join(sorted((src, tgt)))`` maps ``(A,B)`` and ``(B,A)`` to the same
-    string, so a unique index on ``edge_key`` lets MongoDB reject the second of
-    two racing inserts (the classic ``$or``-upsert duplicate gap) regardless of
-    direction, while reads keep using the bidirectional ``$or`` filter.
+    The sorted pair maps ``(A,B)`` and ``(B,A)`` to the same two field values,
+    so a *compound* unique index on ``(edge_lo, edge_hi)`` lets MongoDB reject
+    the second of two racing inserts (the classic ``$or``-upsert duplicate gap)
+    regardless of direction. Storing the endpoints as two separate fields — not
+    a single delimiter-joined string — avoids any collision between distinct
+    pairs whose ids happen to contain the delimiter (e.g. custom-KG ids), and
+    needs no input sanitisation. Reads keep using the bidirectional ``$or``.
     """
-    lo, hi = sorted((source_node_id, target_node_id))
-    return f"{lo}{_EDGE_KEY_SEP}{hi}"
+    return tuple(sorted((source_node_id, target_node_id)))  # type: ignore[return-value]
 
 
 def _estimate_doc_bytes(doc: Any) -> int:
@@ -1098,9 +1097,9 @@ class MongoGraphStorage(BaseGraphStorage):
             # Create Atlas Search index for better search performance if possible
             await self.create_search_index_if_not_exists()
 
-            # Fail-fast: migrate legacy edges to a canonical edge_key and build
-            # the unique index before serving (upsert relies on it). Raises on
-            # failure so startup aborts rather than serving a half-migrated graph.
+            # Fail-fast: migrate legacy edges to canonical endpoint fields and
+            # build the unique index before serving (upsert relies on it). Raises
+            # on failure so startup aborts rather than serving a half-migrated graph.
             await self.create_edge_indexes_and_migrate_if_not_exists()
 
             logger.debug(
@@ -1115,37 +1114,42 @@ class MongoGraphStorage(BaseGraphStorage):
             self.edge_collection = None
 
     async def create_edge_indexes_and_migrate_if_not_exists(self) -> None:
-        """Create the unique ``edge_key`` index, migrating legacy edges first.
+        """Create the compound unique edge-endpoint index, migrating legacy edges first.
 
         Fail-fast one-time migration (mirrors the OpenSearch canonical-id work):
 
           1. dedupe legacy reciprocal duplicate docs, **merging provenance** —
              ``source_id`` / ``source_ids`` / ``file_path`` are unioned into the
              survivor so no chunk evidence is lost;
-          2. backfill the canonical ``edge_key`` on every remaining doc;
-          3. build the partial unique index on ``edge_key``.
+          2. backfill the canonical ``edge_lo`` / ``edge_hi`` endpoints on every
+             remaining doc;
+          3. build the partial **compound** unique index on ``(edge_lo, edge_hi)``.
+
+        The endpoints are two separate fields (not a delimiter-joined string), so
+        distinct pairs never collide even if an id contains the would-be
+        delimiter — no input sanitisation required.
 
         The index doubles as the completion flag: if it already exists we skip.
         Anything failing raises, so ``initialize``/startup aborts rather than
         serving a half-migrated collection (the upsert filter relies on every doc
-        having ``edge_key``). Runs inside ``get_data_init_lock``, so only the
-        first worker of a deployment migrates; the rest skip on the index.
+        having ``edge_lo``/``edge_hi``). Runs inside ``get_data_init_lock``, so
+        only the first worker of a deployment migrates; the rest skip on the index.
 
-        Assumes no concurrent *old-version* writer adds ``edge_key``-less docs
-        after this completes (true for stop-the-world / single-deployment
-        restarts). A true rolling deploy with mixed code versions writing one
-        collection could leave a straggler duplicate; the remedy is to drop the
-        ``edge_key_unique`` index and let the next startup re-migrate.
+        Assumes no concurrent *old-version* writer adds endpoint-less docs after
+        this completes (true for stop-the-world / single-deployment restarts). A
+        true rolling deploy with mixed code versions writing one collection could
+        leave a straggler duplicate; the remedy is to drop the
+        ``edge_endpoints_unique`` index and let the next startup re-migrate.
         """
         workspace_prefix = f"{self.workspace}_" if self.workspace != "" else ""
-        index_name = f"{workspace_prefix}edge_key_unique"
+        index_name = f"{workspace_prefix}edge_endpoints_unique"
 
         indexes_cursor = await self.edge_collection.list_indexes()
         existing_indexes = await indexes_cursor.to_list(length=None)
         if any(idx.get("name") == index_name for idx in existing_indexes):
             logger.info(
                 f"[{self.workspace}] Edge collection {self._edge_collection_name} "
-                f"already on canonical edge_key; skipping migration"
+                f"already on canonical edge endpoints; skipping migration"
             )
             return
 
@@ -1156,25 +1160,28 @@ class MongoGraphStorage(BaseGraphStorage):
         except PyMongoError:
             total = None
         logger.info(
-            f"[{self.workspace}] Starting canonical edge_key migration for "
+            f"[{self.workspace}] Starting canonical edge migration for "
             f"{self._edge_collection_name}"
             + (f" (~{total} edges to scan)" if total is not None else "")
         )
 
         removed = await self._dedupe_legacy_edges()
-        backfilled = await self._backfill_edge_keys()
+        backfilled = await self._backfill_edge_endpoints()
         # The unique index is the completion flag — only created on full success.
         # unique build raises if any duplicate slipped through (e.g. a concurrent
         # old-version writer), which fails startup so the next run retries.
         await self.edge_collection.create_index(
-            [("edge_key", 1)],
+            [("edge_lo", 1), ("edge_hi", 1)],
             name=index_name,
             unique=True,
-            partialFilterExpression={"edge_key": {"$exists": True, "$type": "string"}},
+            partialFilterExpression={
+                "edge_lo": {"$exists": True, "$type": "string"},
+                "edge_hi": {"$exists": True, "$type": "string"},
+            },
         )
         scanned = total if total is not None else "?"
         logger.info(
-            f"[{self.workspace}] Canonical edge_key migration complete for "
+            f"[{self.workspace}] Canonical edge migration complete for "
             f"{self._edge_collection_name}: scanned {scanned}, deduped {removed}, "
             f"backfilled {backfilled}"
         )
@@ -1259,40 +1266,38 @@ class MongoGraphStorage(BaseGraphStorage):
             removed += len(others)
             if removed >= next_progress:
                 logger.info(
-                    f"[{self.workspace}] Canonical edge_key migration progress: "
+                    f"[{self.workspace}] Canonical edge migration progress: "
                     f"deduped {removed} duplicate doc(s) so far"
                 )
                 next_progress += _EDGE_MIGRATION_PROGRESS_INTERVAL
         return removed
 
-    async def _backfill_edge_keys(self) -> int:
-        """Set the canonical ``edge_key`` on every doc that lacks it. Returns the
-        modified count. Runs after dedupe, so each canonical pair has one doc and
-        the backfilled keys are unique."""
+    async def _backfill_edge_endpoints(self) -> int:
+        """Set the canonical ``edge_lo``/``edge_hi`` on every doc that lacks them.
+
+        Returns the modified count. Runs after dedupe, so each canonical pair has
+        one doc and the backfilled (edge_lo, edge_hi) pairs are unique.
+        """
+        is_sorted = {"$lte": ["$source_node_id", "$target_node_id"]}
         result = await self.edge_collection.update_many(
-            {"edge_key": {"$exists": False}},
+            {"edge_lo": {"$exists": False}},
             [
                 {
                     "$set": {
-                        "edge_key": {
+                        "edge_lo": {
                             "$cond": [
-                                {"$lte": ["$source_node_id", "$target_node_id"]},
-                                {
-                                    "$concat": [
-                                        "$source_node_id",
-                                        _EDGE_KEY_SEP,
-                                        "$target_node_id",
-                                    ]
-                                },
-                                {
-                                    "$concat": [
-                                        "$target_node_id",
-                                        _EDGE_KEY_SEP,
-                                        "$source_node_id",
-                                    ]
-                                },
+                                is_sorted,
+                                "$source_node_id",
+                                "$target_node_id",
                             ]
-                        }
+                        },
+                        "edge_hi": {
+                            "$cond": [
+                                is_sorted,
+                                "$target_node_id",
+                                "$source_node_id",
+                            ]
+                        },
                     }
                 }
             ],
@@ -1550,14 +1555,16 @@ class MongoGraphStorage(BaseGraphStorage):
     ) -> None:
         """Upsert the undirected edge between source_node_id and target_node_id.
 
-        Matches on the canonical ``edge_key`` (direction-independent) instead of
-        the old bidirectional ``$or`` filter, so the unique ``edge_key`` index can
-        reject a racing duplicate insert. If two writers race the first insert,
-        the loser hits a ``DuplicateKeyError``; we retry once, which now matches
-        the just-inserted doc and updates it.
+        Matches on the canonical ``(edge_lo, edge_hi)`` endpoint pair
+        (direction-independent) instead of the old bidirectional ``$or`` filter,
+        so the compound unique index can reject a racing duplicate insert. If two
+        writers race the first insert, the loser hits a ``DuplicateKeyError``; we
+        retry once, which now matches the just-inserted doc and updates it.
         """
         # Ensure source node exists
         await self.upsert_node(source_node_id, {})
+
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
 
         # Copy so we never mutate the caller's edge_data dict.
         set_doc: dict = {**edge_data}
@@ -1565,14 +1572,14 @@ class MongoGraphStorage(BaseGraphStorage):
             set_doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
         set_doc["source_node_id"] = source_node_id
         set_doc["target_node_id"] = target_node_id
-        edge_key = _canonical_edge_key(source_node_id, target_node_id)
-        set_doc["edge_key"] = edge_key
+        set_doc["edge_lo"] = edge_lo
+        set_doc["edge_hi"] = edge_hi
         update_doc = {"$set": set_doc}
 
         for attempt in range(2):
             try:
                 await self.edge_collection.update_one(
-                    {"edge_key": edge_key}, update_doc, upsert=True
+                    {"edge_lo": edge_lo, "edge_hi": edge_hi}, update_doc, upsert=True
                 )
                 return
             except DuplicateKeyError:
@@ -1663,11 +1670,12 @@ class MongoGraphStorage(BaseGraphStorage):
             what="source-node placeholder upsert",
         )
 
-        # Key every edge by its canonical edge_key and dedupe within the batch
-        # (last-write-wins). Deduping collapses reciprocal directions onto one op,
-        # which both matches the unique index and avoids an intra-batch
-        # duplicate-key error from two ops inserting the same edge_key.
-        deduped_ops: dict[str, tuple[Any, int, str]] = {}
+        # Key every edge by its canonical (edge_lo, edge_hi) pair and dedupe
+        # within the batch (last-write-wins). Deduping collapses reciprocal
+        # directions onto one op, which both matches the compound unique index
+        # and avoids an intra-batch duplicate-key error from two ops inserting
+        # the same endpoint pair.
+        deduped_ops: dict[tuple[str, str], tuple[Any, int, str]] = {}
         for source_node_id, target_node_id, edge_data in edges:
             update_doc: dict = {"$set": {**edge_data}}
             if edge_data.get("source_id", ""):
@@ -1676,19 +1684,22 @@ class MongoGraphStorage(BaseGraphStorage):
                 )
             update_doc["$set"]["source_node_id"] = source_node_id
             update_doc["$set"]["target_node_id"] = target_node_id
-            edge_key = _canonical_edge_key(source_node_id, target_node_id)
-            update_doc["$set"]["edge_key"] = edge_key
-            deduped_ops[edge_key] = (
-                UpdateOne({"edge_key": edge_key}, update_doc, upsert=True),
+            edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
+            update_doc["$set"]["edge_lo"] = edge_lo
+            update_doc["$set"]["edge_hi"] = edge_hi
+            deduped_ops[(edge_lo, edge_hi)] = (
+                UpdateOne(
+                    {"edge_lo": edge_lo, "edge_hi": edge_hi}, update_doc, upsert=True
+                ),
                 _estimate_doc_bytes(update_doc),
                 f"{source_node_id}->{target_node_id}",
             )
         edge_ops = list(deduped_ops.values())
 
-        # ordered=True (kept from the pre-edge_key behaviour). Intra-batch
-        # last-write-wins is already guaranteed by the edge_key dedupe above (one
-        # op per key), so ordering is not load-bearing for that; we keep it for
-        # continuity. If a concurrent writer (another process bypassing the keyed
+        # ordered=True (kept from the pre-canonical behaviour). Intra-batch
+        # last-write-wins is already guaranteed by the endpoint-pair dedupe above
+        # (one op per pair), so ordering is not load-bearing for that; we keep it
+        # for continuity. If a concurrent writer (another process bypassing the keyed
         # lock) wins an insert, our upsert hits 11000 and the bulk aborts; we
         # retry the whole op list once — the racing docs now exist, so the
         # upserts update instead of inserting (idempotent). A non-11000 / write-
@@ -1800,7 +1811,8 @@ class MongoGraphStorage(BaseGraphStorage):
                     "target_node_id",
                     "relationship",
                     "source_ids",
-                    "edge_key",
+                    "edge_lo",
+                    "edge_hi",
                 ]
             },
         )
