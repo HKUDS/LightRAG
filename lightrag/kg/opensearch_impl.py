@@ -313,31 +313,50 @@ def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
     return compute_mdhash_id(f"{lo}-{hi}", prefix="edge-")
 
 
+def _edge_source_id_list(doc: dict[str, Any]) -> list[str]:
+    """Return an edge doc's source ids, from the ``source_ids`` array or by
+    splitting the ``GRAPH_FIELD_SEP``-joined ``source_id`` string."""
+    sids = doc.get("source_ids")
+    if not sids and doc.get("source_id"):
+        sids = doc["source_id"].split(GRAPH_FIELD_SEP)
+    return list(sids or [])
+
+
+def _coerce_weight(weight: Any) -> float | None:
+    """Coerce a (possibly string) edge weight to float, or None if non-numeric."""
+    if weight is None:
+        return None
+    try:
+        return float(weight)
+    except (TypeError, ValueError):
+        return None
+
+
 def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
     """Merge edge-doc relation payloads when consolidating legacy duplicates.
 
+    ``docs[0]`` is the survivor/base; the rest are duplicates folded into it.
     Mirrors ``mongo_impl``'s dedupe merge and ``operate.py``'s
     ``_merge_edges_then_upsert`` field semantics (minus LLM description
     summarisation): ``source_id``/``source_ids``/``file_path``/``description``
     union their ``GRAPH_FIELD_SEP`` components, ``keywords`` are comma-set-
-    unioned, and ``weight`` takes the max. Returns only the merged fields (to be
-    layered onto the surviving doc).
+    unioned, and ``weight`` is **summed** (duplicate docs carry separate
+    accumulated weight). Returns only the merged fields (to be layered onto the
+    surviving doc).
 
-    Idempotent: every field unions split components and ``weight`` is a max, so
-    re-merging an already-merged doc is a no-op (safe across fail-fast retries).
-    Legacy string weights are coerced to float; non-numeric values are skipped
-    so a bad value cannot crash the migration.
+    Idempotent across fail-fast retries: the union fields union split components
+    (re-merging an already-merged base is a no-op), and the weight sum counts the
+    base's current weight once plus each duplicate only while its source_ids are
+    not already folded into the base — so a retry (whose base already contains
+    them) does not double-count. Legacy string weights are coerced; non-numeric
+    values are skipped so a bad value cannot crash the migration.
     """
     source_ids: list[str] = []
     file_paths: list[str] = []
     descriptions: list[str] = []
     keywords: set[str] = set()
-    weights: list[float] = []
     for d in docs:
-        sids = d.get("source_ids")
-        if not sids and d.get("source_id"):
-            sids = d["source_id"].split(GRAPH_FIELD_SEP)
-        source_ids = merge_source_ids(source_ids, sids or [])
+        source_ids = merge_source_ids(source_ids, _edge_source_id_list(d))
         fp = d.get("file_path")
         file_paths = merge_source_ids(
             file_paths, fp.split(GRAPH_FIELD_SEP) if fp else []
@@ -349,12 +368,23 @@ def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
         kw = d.get("keywords")
         if kw:
             keywords.update(k.strip() for k in kw.split(",") if k.strip())
-        w = d.get("weight")
-        if w is not None:
-            try:
-                weights.append(float(w))
-            except (TypeError, ValueError):
-                pass
+
+    # Idempotent summed weight: base (docs[0]) counts once; each duplicate adds
+    # its weight only if its source_ids are not already folded into the base.
+    base = docs[0] if docs else {}
+    base_sids = set(_edge_source_id_list(base))
+    weights: list[float] = []
+    bw = _coerce_weight(base.get("weight"))
+    if bw is not None:
+        weights.append(bw)
+    for d in docs[1:]:
+        d_sids = set(_edge_source_id_list(d))
+        if not d_sids or d_sids <= base_sids:
+            continue  # no new trackable evidence -> don't (re-)add its weight
+        dw = _coerce_weight(d.get("weight"))
+        if dw is not None:
+            weights.append(dw)
+
     merged: dict[str, Any] = {}
     if source_ids:
         merged["source_ids"] = source_ids
@@ -366,7 +396,7 @@ def _merge_edge_payloads(docs: list[dict[str, Any]]) -> dict[str, Any]:
     if keywords:
         merged["keywords"] = ",".join(sorted(keywords))
     if weights:
-        merged["weight"] = max(weights)
+        merged["weight"] = sum(weights)
     return merged
 
 

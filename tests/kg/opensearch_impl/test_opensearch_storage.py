@@ -36,6 +36,7 @@ from lightrag.kg.opensearch_impl import (
     _resolve_bulk_batch_limits,
     _run_chunked_async_bulk,
     _canonical_edge_id,
+    _merge_edge_payloads,
     _EDGE_ID_CANONICAL_META_FLAG,
     _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES,
     DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES,
@@ -1186,9 +1187,9 @@ class TestKVStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
                 flush_can_finish.set()
                 await flush_task
@@ -1282,9 +1283,9 @@ class TestKVStorageBatching:
                 )
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 assert "k2" not in s._pending_upserts
 
                 flush_can_finish.set()
@@ -2544,7 +2545,7 @@ class TestGraphStorage:
         merged = index_kwargs["body"]
         assert merged["description"] == "d1<SEP>d2"  # both descriptions kept
         assert merged["keywords"] == "alpha,beta,gamma"  # comma set-union
-        assert merged["weight"] == 2.0  # max
+        assert merged["weight"] == 3.0  # summed (1.0 + 2.0)
         assert merged["source_ids"] == ["c1", "c2"]  # provenance unioned
         assert merged["file_path"] == "f1<SEP>f2"
         # Direction fields kept from the surviving canonical doc.
@@ -2575,6 +2576,21 @@ class TestGraphStorage:
 
         assert mock_client.get.await_count == 2  # re-read after the conflict
         assert mock_client.index.await_count == 2
+
+    def test_merge_edge_payloads_sums_weight_idempotently(self):
+        """Weight is summed (not max), and re-merging an already-merged base
+        does not double-count (idempotent across fail-fast retries)."""
+        base = {"source_ids": ["c1"], "weight": 1.0}
+        dup = {"source_ids": ["c2"], "weight": 2.0}
+        # First merge: disjoint evidence -> weights sum.
+        first = _merge_edge_payloads([base, dup])
+        assert first["weight"] == 3.0
+        assert first["source_ids"] == ["c1", "c2"]
+        # Retry: base already carries the merged source_ids + summed weight; the
+        # duplicate's source_ids are folded in, so its weight is not re-added.
+        merged_base = {"source_ids": ["c1", "c2"], "weight": 3.0}
+        second = _merge_edge_payloads([merged_base, dup])
+        assert second["weight"] == 3.0
 
     @pytest.mark.asyncio
     async def test_migrate_edges_logs_progress_for_large_scan(
@@ -4388,9 +4404,9 @@ class TestVectorStorageBatching:
                 # embedding computation and arrive at the lock.
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 # v2 must not be visible in the buffer yet.
                 assert "v2" not in s._pending_vector_docs
 
@@ -4439,9 +4455,9 @@ class TestVectorStorageBatching:
                 delete_task = asyncio.create_task(s.delete(["v1"]))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_task.done()
-                ), "concurrent delete should be blocked by the flush lock"
+                assert not delete_task.done(), (
+                    "concurrent delete should be blocked by the flush lock"
+                )
 
                 flush_can_finish.set()
                 await flush_task
@@ -4652,9 +4668,9 @@ class TestVectorStorageBatching:
                 rel_task = asyncio.create_task(s.delete_entity_relation("Alice"))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_started.is_set()
-                ), "delete_by_query should be blocked behind the flush lock"
+                assert not delete_started.is_set(), (
+                    "delete_by_query should be blocked behind the flush lock"
+                )
                 assert not rel_task.done()
 
                 flush_can_finish.set()
@@ -4694,9 +4710,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
 
                 flush_can_finish.set()
@@ -4739,9 +4755,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked during deferred embedding"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked during deferred embedding"
+                )
                 assert not drop_task.done()
 
                 embedding_can_finish.set()
