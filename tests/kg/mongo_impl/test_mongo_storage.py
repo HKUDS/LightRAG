@@ -284,6 +284,7 @@ class TestMongoEdgeKey:
                 },
             ],
         }
+        s.edge_collection.estimated_document_count = AsyncMock(return_value=4)
         s.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([group]))
         s.edge_collection.update_one = AsyncMock()
         s.edge_collection.delete_many = AsyncMock()
@@ -292,7 +293,21 @@ class TestMongoEdgeKey:
         )
         s.edge_collection.create_index = AsyncMock()
 
-        await s.create_edge_indexes_and_migrate_if_not_exists()
+        with patch("lightrag.kg.mongo_impl.logger") as mock_logger:
+            await s.create_edge_indexes_and_migrate_if_not_exists()
+
+        # OpenSearch-aligned start/complete log wording.
+        info_lines = [c.args[0] for c in mock_logger.info.call_args_list]
+        assert any(
+            line.startswith("[test] Starting canonical edge_key migration for ")
+            and "(~4 edges to scan)" in line
+            for line in info_lines
+        )
+        assert any(
+            "Canonical edge_key migration complete for" in line
+            and "scanned 4, deduped 1, backfilled 3" in line
+            for line in info_lines
+        )
 
         # Survivor is the newest (created_at 20 → _id 2); provenance unioned.
         surv_filter, surv_update = s.edge_collection.update_one.call_args[0]

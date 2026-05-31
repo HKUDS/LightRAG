@@ -68,6 +68,11 @@ _EDGE_KEY_SEP = "\x1f"
 # unique edge_key index (another writer inserted the same edge first).
 _DUPLICATE_KEY_CODE = 11000
 
+# Emit an edge_key-migration progress line every this many deduped docs, so
+# operators watching a large migration see liveness (mirrors the OpenSearch
+# canonical-id migration's progress cadence).
+_EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
+
 
 def _canonical_edge_key(source_node_id: str, target_node_id: str) -> str:
     """Direction-independent key for an undirected edge.
@@ -1138,16 +1143,24 @@ class MongoGraphStorage(BaseGraphStorage):
         indexes_cursor = await self.edge_collection.list_indexes()
         existing_indexes = await indexes_cursor.to_list(length=None)
         if any(idx.get("name") == index_name for idx in existing_indexes):
-            logger.debug(
+            logger.info(
                 f"[{self.workspace}] Edge collection {self._edge_collection_name} "
-                f"already has {index_name}; skipping edge_key migration"
+                f"already on canonical edge_key; skipping migration"
             )
             return
 
+        # Best-effort total for an X/total denominator (estimated_document_count
+        # is O(1) metadata); migration still works if it is unavailable.
+        try:
+            total = await self.edge_collection.estimated_document_count()
+        except PyMongoError:
+            total = None
         logger.info(
-            f"[{self.workspace}] Starting edge_key migration for "
+            f"[{self.workspace}] Starting canonical edge_key migration for "
             f"{self._edge_collection_name}"
+            + (f" (~{total} edges to scan)" if total is not None else "")
         )
+
         removed = await self._dedupe_legacy_edges()
         backfilled = await self._backfill_edge_keys()
         # The unique index is the completion flag — only created on full success.
@@ -1159,10 +1172,11 @@ class MongoGraphStorage(BaseGraphStorage):
             unique=True,
             partialFilterExpression={"edge_key": {"$exists": True, "$type": "string"}},
         )
+        scanned = total if total is not None else "?"
         logger.info(
-            f"[{self.workspace}] edge_key migration complete for "
-            f"{self._edge_collection_name}: removed {removed} duplicate doc(s), "
-            f"backfilled {backfilled} edge_key(s)"
+            f"[{self.workspace}] Canonical edge_key migration complete for "
+            f"{self._edge_collection_name}: scanned {scanned}, deduped {removed}, "
+            f"backfilled {backfilled}"
         )
 
     async def _dedupe_legacy_edges(self) -> int:
@@ -1207,6 +1221,7 @@ class MongoGraphStorage(BaseGraphStorage):
             {"$match": {"count": {"$gt": 1}}},
         ]
         removed = 0
+        next_progress = _EDGE_MIGRATION_PROGRESS_INTERVAL
         cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
         async for group in cursor:
             docs = group["docs"]
@@ -1242,6 +1257,12 @@ class MongoGraphStorage(BaseGraphStorage):
                 {"_id": {"$in": [d["_id"] for d in others]}}
             )
             removed += len(others)
+            if removed >= next_progress:
+                logger.info(
+                    f"[{self.workspace}] Canonical edge_key migration progress: "
+                    f"deduped {removed} duplicate doc(s) so far"
+                )
+                next_progress += _EDGE_MIGRATION_PROGRESS_INTERVAL
         return removed
 
     async def _backfill_edge_keys(self) -> int:
