@@ -977,6 +977,77 @@ async def test_graph_batch_upsert(storage):
 
 @pytest.mark.integration
 @pytest.mark.requires_db
+async def test_graph_query_helpers(storage):
+    """
+    Cover the whole-graph query helpers that the other tests don't touch:
+    1. get_all_nodes  - every node as a dict carrying its "id".
+    2. get_all_edges  - every edge as a dict carrying "source"/"target".
+    3. get_popular_labels - labels ordered by degree (highest first).
+    4. search_labels  - substring/fuzzy label search.
+    """
+    try:
+        # Star topology so degrees are distinct: Alpha=3, others=1.
+        node_ids = ["Alpha", "Beta", "Gamma", "Alphabet"]
+        for nid in node_ids:
+            await storage.upsert_node(
+                nid,
+                {
+                    "entity_id": nid,
+                    "description": f"desc of {nid}",
+                    "entity_type": "T",
+                },
+            )
+        star_edges = [("Alpha", "Beta"), ("Alpha", "Gamma"), ("Alpha", "Alphabet")]
+        for src, tgt in star_edges:
+            await storage.upsert_edge(
+                src, tgt, {"relationship": "rel", "weight": 1.0, "description": "d"}
+            )
+
+        # 1. get_all_nodes
+        print("== Testing get_all_nodes")
+        all_nodes = await storage.get_all_nodes()
+        assert isinstance(all_nodes, list)
+        ids = {n.get("id") for n in all_nodes}
+        assert ids == set(node_ids), f"get_all_nodes ids mismatch: {ids}"
+
+        # 2. get_all_edges (undirected: compare unordered endpoint pairs)
+        print("== Testing get_all_edges")
+        all_edges = await storage.get_all_edges()
+        assert isinstance(all_edges, list)
+        assert (
+            len(all_edges) == 3
+        ), f"get_all_edges should return 3 edges, got {len(all_edges)}"
+        edge_pairs = {frozenset((e["source"], e["target"])) for e in all_edges}
+        assert edge_pairs == {frozenset(p) for p in star_edges}
+
+        # 3. get_popular_labels - highest degree first
+        print("== Testing get_popular_labels")
+        popular = await storage.get_popular_labels(limit=2)
+        assert isinstance(popular, list)
+        assert len(popular) <= 2
+        assert popular and popular[0] == "Alpha", (
+            f"highest-degree label should be 'Alpha', got {popular}"
+        )
+
+        # 4. search_labels - substring / prefix match, and a clear miss
+        print("== Testing search_labels")
+        gamma_hits = await storage.search_labels("Gam")
+        assert "Gamma" in gamma_hits, f"search 'Gam' should find 'Gamma': {gamma_hits}"
+        alpha_hits = await storage.search_labels("Alpha")
+        assert "Alpha" in alpha_hits, f"search 'Alpha' should find 'Alpha': {alpha_hits}"
+        misses = await storage.search_labels("NoSuchEntityXYZ")
+        assert "Alpha" not in misses and "Gamma" not in misses
+
+        print("\nQuery helper tests completed.")
+        return True
+
+    except Exception as e:
+        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
+        return False
+
+
+@pytest.mark.integration
+@pytest.mark.requires_db
 async def test_graph_special_characters(storage):
     """
     Test the graph database's handling of special characters:
@@ -1614,12 +1685,15 @@ async def main():
         ASCIIColors.white(
             "7. Batch Upsert Test (upsert_nodes_batch / upsert_edges_batch, dedup, has_node)"
         )
-        ASCIIColors.white("8. All Tests")
+        ASCIIColors.white(
+            "8. Query Helpers Test (get_all_nodes / get_all_edges / get_popular_labels / search_labels)"
+        )
+        ASCIIColors.white("9. All Tests")
 
-        choice = input("\nEnter your choice (1/2/3/4/5/6/7/8): ")
+        choice = input("\nEnter your choice (1/2/3/4/5/6/7/8/9): ")
 
         # Clean data before running tests
-        if choice in ["1", "2", "3", "4", "5", "6", "7", "8"]:
+        if choice in ["1", "2", "3", "4", "5", "6", "7", "8", "9"]:
             await reset_storage("running tests")
 
         if choice == "1":
@@ -1637,6 +1711,8 @@ async def main():
         elif choice == "7":
             await test_graph_batch_upsert(storage)
         elif choice == "8":
+            await test_graph_query_helpers(storage)
+        elif choice == "9":
             ASCIIColors.cyan("\n=== Starting Basic Test ===")
             await reset_storage("Basic Test")
             basic_result = await test_graph_basic(storage)
@@ -1681,7 +1757,16 @@ async def main():
                                         "\n=== Starting Batch Upsert Test ==="
                                     )
                                     await reset_storage("Batch Upsert Test")
-                                    await test_graph_batch_upsert(storage)
+                                    batch_upsert_result = await test_graph_batch_upsert(
+                                        storage
+                                    )
+
+                                    if batch_upsert_result is not False:
+                                        ASCIIColors.cyan(
+                                            "\n=== Starting Query Helpers Test ==="
+                                        )
+                                        await reset_storage("Query Helpers Test")
+                                        await test_graph_query_helpers(storage)
         else:
             ASCIIColors.red("Invalid choice")
 
