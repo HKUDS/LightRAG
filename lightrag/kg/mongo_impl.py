@@ -1664,17 +1664,21 @@ class MongoGraphStorage(BaseGraphStorage):
             )
         edge_ops = list(deduped_ops.values())
 
-        # ordered=False so a duplicate-key race on one edge does not block the
-        # rest. If concurrent writers (another process bypassing the keyed lock)
-        # win an insert, our upsert hits 11000; retry once — the docs now exist so
-        # the upserts update instead of inserting. A non-11000 error re-raises.
+        # ordered=True (kept from the pre-edge_key behaviour). Intra-batch
+        # last-write-wins is already guaranteed by the edge_key dedupe above (one
+        # op per key), so ordering is not load-bearing for that; we keep it for
+        # continuity. If a concurrent writer (another process bypassing the keyed
+        # lock) wins an insert, our upsert hits 11000 and the bulk aborts; we
+        # retry the whole op list once — the racing docs now exist, so the
+        # upserts update instead of inserting (idempotent). A non-11000 / write-
+        # concern error re-raises rather than being masked.
         async def _run_edge_bulk() -> None:
             await _run_batched_bulk_write(
                 self.edge_collection,
                 edge_ops,
                 max_payload_bytes=self._max_upsert_payload_bytes,
                 max_records_per_batch=self._max_upsert_records_per_batch,
-                ordered=False,
+                ordered=True,
                 log_prefix=f"[{self.workspace}] {self.namespace} edges:",
                 what="edge upsert",
             )
