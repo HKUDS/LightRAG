@@ -7567,15 +7567,29 @@ class PGGraphStorage(BaseGraphStorage):
             total_nodes = count_result[0]["total_nodes"] if count_result else 0
             is_truncated = total_nodes > max_nodes
 
-            # Get max_nodes with highest degrees
-            query_nodes = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                    MATCH (n:base)
-                    OPTIONAL MATCH (n)-[r]->()
-                    RETURN id(n) as node_id, count(r) as degree
-                $$) AS (node_id BIGINT, degree BIGINT)
-                ORDER BY degree DESC
-                LIMIT {max_nodes}"""
-            node_results = await self._query(query_nodes)
+            # Get max_nodes with highest degrees using native SQL on AGE's
+            # underlying tables (same pattern as get_popular_labels).
+            # Degree is UNDIRECTED: count both start_id and end_id so a node
+            # that is mostly an edge target is not under-ranked and dropped on
+            # truncation. LEFT JOIN from the base vertex table + COALESCE keeps
+            # isolated (degree-0) nodes, matching the previous OPTIONAL MATCH
+            # behaviour when the graph is not truncated. Stable tie-break on id.
+            query_nodes = f"""
+                WITH node_degrees AS (
+                    SELECT node_id, COUNT(*) AS degree
+                    FROM (
+                        SELECT start_id AS node_id FROM {self.graph_name}._ag_label_edge
+                        UNION ALL
+                        SELECT end_id AS node_id FROM {self.graph_name}._ag_label_edge
+                    ) AS all_edges
+                    GROUP BY node_id
+                )
+                SELECT v.id AS node_id, COALESCE(d.degree, 0) AS degree
+                FROM {self.graph_name}.base v
+                LEFT JOIN node_degrees d ON d.node_id = v.id
+                ORDER BY degree DESC, v.id ASC
+                LIMIT $1"""
+            node_results = await self._query(query_nodes, params={"limit": max_nodes})
 
             node_ids = [str(result["node_id"]) for result in node_results]
 
