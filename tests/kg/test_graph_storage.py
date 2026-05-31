@@ -869,6 +869,114 @@ async def test_graph_batch_operations(storage):
 
 @pytest.mark.integration
 @pytest.mark.requires_db
+async def test_graph_batch_upsert(storage):
+    """
+    Test the batch *write* paths end-to-end against the configured backend:
+    1. upsert_nodes_batch inserts many nodes (forced across multiple chunks on
+       backends that chunk by record count, e.g. PGGraphStorage).
+    2. Same-batch last-write-wins dedup for nodes.
+    3. has_node / has_nodes_batch existence checks.
+    4. upsert_edges_batch inserts many edges, including a reciprocal duplicate
+       that must collapse to the last write (undirected last-write-wins).
+    5. Read-back of node/edge properties, degrees, and undirected consistency.
+
+    These paths are otherwise only covered by mock unit tests; this is the only
+    place they run against a real graph backend.
+    """
+    try:
+        # Force >1 chunk on backends that chunk batch upserts by record count
+        # (PGGraphStorage). Other backends simply ignore this attribute.
+        if hasattr(storage, "_max_upsert_records_per_batch"):
+            storage._max_upsert_records_per_batch = 2
+
+        # 1. Batch node upsert with a same-batch duplicate (last write wins).
+        nodes = [
+            ("E1", {"entity_id": "E1", "description": "first", "entity_type": "T"}),
+            ("E2", {"entity_id": "E2", "description": "second", "entity_type": "T"}),
+            ("E3", {"entity_id": "E3", "description": "third", "entity_type": "T"}),
+            ("E4", {"entity_id": "E4", "description": "fourth", "entity_type": "T"}),
+            ("E5", {"entity_id": "E5", "description": "fifth", "entity_type": "T"}),
+            # duplicate of E1 later in the same batch -> must keep this payload
+            (
+                "E1",
+                {"entity_id": "E1", "description": "first-updated", "entity_type": "T"},
+            ),
+        ]
+        print("== Testing upsert_nodes_batch (multi-chunk + same-batch dedup)")
+        await storage.upsert_nodes_batch(nodes)
+
+        # 2. All five distinct nodes exist; has_node / has_nodes_batch.
+        for nid in ["E1", "E2", "E3", "E4", "E5"]:
+            assert await storage.has_node(
+                nid
+            ), f"{nid} should exist after upsert_nodes_batch"
+        existing = await storage.has_nodes_batch(["E1", "E3", "E5", "DOES_NOT_EXIST"])
+        assert existing == {
+            "E1",
+            "E3",
+            "E5",
+        }, f"has_nodes_batch returned unexpected set: {existing}"
+
+        # Last-write-wins: the second E1 in the batch wins.
+        e1 = await storage.get_node("E1")
+        assert (
+            e1 is not None and e1["description"] == "first-updated"
+        ), "Same-batch node dedup should keep the last write"
+
+        # Batch read-back of the rest.
+        nodes_dict = await storage.get_nodes_batch(["E2", "E3", "E4", "E5"])
+        assert set(nodes_dict) == {"E2", "E3", "E4", "E5"}
+        assert nodes_dict["E3"]["description"] == "third"
+
+        # 3. Batch edge upsert with a reciprocal duplicate (undirected dedup).
+        edges = [
+            ("E1", "E2", {"relationship": "r12", "weight": 1.0, "description": "d12"}),
+            ("E2", "E3", {"relationship": "r23", "weight": 1.0, "description": "d23"}),
+            ("E3", "E4", {"relationship": "r34", "weight": 1.0, "description": "d34"}),
+            ("E4", "E5", {"relationship": "r45", "weight": 1.0, "description": "d45"}),
+            # reciprocal of (E1, E2): undirected -> last write wins
+            (
+                "E2",
+                "E1",
+                {
+                    "relationship": "r12-updated",
+                    "weight": 2.0,
+                    "description": "d12-updated",
+                },
+            ),
+        ]
+        print("== Testing upsert_edges_batch (multi-chunk + reciprocal dedup)")
+        await storage.upsert_edges_batch(edges)
+
+        # 4. Every edge readable in both directions (undirected).
+        for a, b in [("E1", "E2"), ("E2", "E3"), ("E3", "E4"), ("E4", "E5")]:
+            fwd = await storage.get_edge(a, b)
+            rev = await storage.get_edge(b, a)
+            assert fwd is not None, f"Edge {a}->{b} missing after upsert_edges_batch"
+            assert rev is not None, f"Reverse edge {b}->{a} missing (undirected)"
+            assert fwd == rev, f"Edge {a}<->{b} not undirected-consistent"
+
+        # Reciprocal dedup last-write-wins on (E1, E2).
+        e12 = await storage.get_edge("E1", "E2")
+        assert e12["relationship"] == "r12-updated", "Reciprocal edge dedup lost"
+        assert e12["weight"] == 2.0, "Reciprocal edge dedup kept the wrong weight"
+
+        # 5. Degrees reflect exactly the four distinct edges.
+        assert await storage.node_degree("E1") == 1
+        assert await storage.node_degree("E2") == 2
+        assert await storage.node_degree("E3") == 2
+        assert await storage.node_degree("E5") == 1
+
+        print("\nBatch upsert tests completed.")
+        return True
+
+    except Exception as e:
+        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
+        return False
+
+
+@pytest.mark.integration
+@pytest.mark.requires_db
 async def test_graph_special_characters(storage):
     """
     Test the graph database's handling of special characters:
@@ -1503,12 +1611,15 @@ async def main():
         ASCIIColors.white(
             "6. String Escaping Regression Test (Quoted and escaped entity IDs across graph operations)"
         )
-        ASCIIColors.white("7. All Tests")
+        ASCIIColors.white(
+            "7. Batch Upsert Test (upsert_nodes_batch / upsert_edges_batch, dedup, has_node)"
+        )
+        ASCIIColors.white("8. All Tests")
 
-        choice = input("\nEnter your choice (1/2/3/4/5/6/7): ")
+        choice = input("\nEnter your choice (1/2/3/4/5/6/7/8): ")
 
         # Clean data before running tests
-        if choice in ["1", "2", "3", "4", "5", "6", "7"]:
+        if choice in ["1", "2", "3", "4", "5", "6", "7", "8"]:
             await reset_storage("running tests")
 
         if choice == "1":
@@ -1524,6 +1635,8 @@ async def main():
         elif choice == "6":
             await test_graph_string_escaping_regressions(storage)
         elif choice == "7":
+            await test_graph_batch_upsert(storage)
+        elif choice == "8":
             ASCIIColors.cyan("\n=== Starting Basic Test ===")
             await reset_storage("Basic Test")
             basic_result = await test_graph_basic(storage)
@@ -1559,7 +1672,16 @@ async def main():
                                     "\n=== Starting String Escaping Regression Test ==="
                                 )
                                 await reset_storage("String Escaping Regression Test")
-                                await test_graph_string_escaping_regressions(storage)
+                                escaping_result = (
+                                    await test_graph_string_escaping_regressions(storage)
+                                )
+
+                                if escaping_result is not False:
+                                    ASCIIColors.cyan(
+                                        "\n=== Starting Batch Upsert Test ==="
+                                    )
+                                    await reset_storage("Batch Upsert Test")
+                                    await test_graph_batch_upsert(storage)
         else:
             ASCIIColors.red("Invalid choice")
 
