@@ -1183,9 +1183,9 @@ class TestKVStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
                 flush_can_finish.set()
                 await flush_task
@@ -1279,9 +1279,9 @@ class TestKVStorageBatching:
                 )
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 assert "k2" not in s._pending_upserts
 
                 flush_can_finish.set()
@@ -2358,12 +2358,12 @@ class TestGraphStorage:
             await s._migrate_edges_to_canonical_id_if_needed()
 
         canonical = _canonical_edge_id("A", "B")
-        actions = bulk_calls[-1]
-        # Insert-only create (never clobber a concurrent live canonical write),
-        # plus delete of the stale id.
-        create_ops = [a for a in actions if a["_op_type"] == "create"]
-        delete_ops = [a for a in actions if a["_op_type"] == "delete"]
-        assert not [a for a in actions if a["_op_type"] == "index"]
+        # Two phases: create bulk, then delete bulk.
+        all_actions = [a for call in bulk_calls for a in call]
+        create_ops = [a for a in all_actions if a["_op_type"] == "create"]
+        delete_ops = [a for a in all_actions if a["_op_type"] == "delete"]
+        # Insert-only create (never clobber a concurrent live canonical write).
+        assert not [a for a in all_actions if a["_op_type"] == "index"]
         assert create_ops[0]["_id"] == canonical
         assert create_ops[0]["_source"]["source_node_id"] == "A"
         assert delete_ops[0]["_id"] == "edge-legacy-noncanonical"
@@ -2374,18 +2374,28 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "errors, expect_flag",
+        "create_errors, delete_errors, expect_flag",
         [
-            ([{"delete": {"_id": "edge-old", "status": 404}}], True),  # stale delete
-            (
-                [{"create": {"_id": "edge-canon", "status": 409}}],
-                True,
-            ),  # canonical already exists (live write) — must not clobber/fail
-            ([{"create": {"_id": "edge-canon", "status": 503}}], False),  # real
+            ([], [], True),  # clean run
+            # canonical already exists (live write / forward doc) — benign,
+            # source still safe to drop, run completes.
+            ([{"create": {"_id": "C", "status": 409}}], [], True),
+            # stale source already removed by another run — benign.
+            ([], [{"delete": {"_id": "edge-old", "status": 404}}], True),
+            # busy cluster rejected the create — real error, leave unflagged.
+            ([{"create": {"_id": "C", "status": 503}}], [], False),
+            # delete genuinely failed — real error.
+            ([], [{"delete": {"_id": "edge-old", "status": 500}}], False),
         ],
     )
-    async def test_migrate_edges_tolerates_stale_404_but_not_real_errors(
-        self, global_config, embed_func, mock_client, errors, expect_flag
+    async def test_migrate_edges_phase_error_handling(
+        self,
+        global_config,
+        embed_func,
+        mock_client,
+        create_errors,
+        delete_errors,
+        expect_flag,
     ):
         s = self._make(global_config, embed_func)
         s.client = mock_client
@@ -2412,13 +2422,69 @@ class TestGraphStorage:
         )
         mock_client.clear_scroll = AsyncMock()
 
+        # First async_bulk call is the create phase, second is the delete phase.
         with patch(
             "lightrag.kg.opensearch_impl.helpers.async_bulk",
-            new=AsyncMock(return_value=(1, errors)),
+            new=AsyncMock(side_effect=[(1, create_errors), (1, delete_errors)]),
         ):
             await s._migrate_edges_to_canonical_id_if_needed()
 
         assert mock_client.indices.put_mapping.await_count == (1 if expect_flag else 0)
+
+    @pytest.mark.asyncio
+    async def test_migrate_edges_preserves_source_when_create_fails(
+        self, global_config, embed_func, mock_client
+    ):
+        """A non-benign create failure must NOT delete the source row, so the
+        unflagged retry can still rebuild the edge."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-old",
+                            "_source": {"source_node_id": "A", "target_node_id": "B"},
+                        }
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+
+        canonical = _canonical_edge_id("A", "B")
+        bulk_calls = []
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            bulk_calls.append(acts)
+            # Fail the create with a busy-cluster 503; nothing to report for any
+            # later phase.
+            if acts and acts[0]["_op_type"] == "create":
+                return (0, [{"create": {"_id": canonical, "status": 503}}])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        # No delete bulk should have been issued for the failed canonical's
+        # source row, and the index must stay unflagged for retry.
+        all_actions = [a for call in bulk_calls for a in call]
+        assert not [a for a in all_actions if a["_op_type"] == "delete"]
+        mock_client.indices.put_mapping.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_migrate_edges_logs_progress_for_large_scan(
@@ -4232,9 +4298,9 @@ class TestVectorStorageBatching:
                 # embedding computation and arrive at the lock.
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 # v2 must not be visible in the buffer yet.
                 assert "v2" not in s._pending_vector_docs
 
@@ -4283,9 +4349,9 @@ class TestVectorStorageBatching:
                 delete_task = asyncio.create_task(s.delete(["v1"]))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_task.done()
-                ), "concurrent delete should be blocked by the flush lock"
+                assert not delete_task.done(), (
+                    "concurrent delete should be blocked by the flush lock"
+                )
 
                 flush_can_finish.set()
                 await flush_task
@@ -4432,9 +4498,9 @@ class TestVectorStorageBatching:
         # invocation actually creates the index again.
         exists_responses = [False, False]
         mock_client.indices.exists = AsyncMock(
-            side_effect=lambda **kw: exists_responses.pop(0)
-            if exists_responses
-            else False
+            side_effect=lambda **kw: (
+                exists_responses.pop(0) if exists_responses else False
+            )
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
@@ -4496,9 +4562,9 @@ class TestVectorStorageBatching:
                 rel_task = asyncio.create_task(s.delete_entity_relation("Alice"))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_started.is_set()
-                ), "delete_by_query should be blocked behind the flush lock"
+                assert not delete_started.is_set(), (
+                    "delete_by_query should be blocked behind the flush lock"
+                )
                 assert not rel_task.done()
 
                 flush_can_finish.set()
@@ -4538,9 +4604,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
 
                 flush_can_finish.set()
@@ -4583,9 +4649,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked during deferred embedding"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked during deferred embedding"
+                )
                 assert not drop_task.done()
 
                 embedding_can_finish.set()

@@ -1994,52 +1994,97 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             scanned = 0
             migrated = 0
             had_real_error = False
-            pending: list[dict[str, Any]] = []
-            # Flush roughly one bulk chunk at a time so a huge index does not
-            # buffer every action in memory before writing.
-            flush_at = max(self._max_upsert_records_per_batch, 1) * 2
+            # Each entry is (canonical_id, old_id, source) for one non-canonical
+            # doc to be re-keyed. Flush roughly one bulk chunk at a time so a huge
+            # index does not buffer every action in memory before writing.
+            pending: list[tuple[str, str, dict[str, Any]]] = []
+            flush_at = max(self._max_upsert_records_per_batch, 1)
             next_progress = _EDGE_MIGRATION_PROGRESS_INTERVAL
 
             async def _flush_pending() -> None:
                 nonlocal pending, had_real_error
                 if not pending:
                     return
-                # raise_on_error=False so two expected, benign per-item statuses
-                # do not abort the batch. get_data_init_lock only serialises one
-                # deployment's workers, so a concurrent migration run or a live
-                # writer from a previous-release worker (rolling deploy) can race
-                # us:
-                #   * create 409 — the canonical doc already exists (live write or
-                #     forward legacy doc); we deliberately do NOT overwrite it.
-                #   * delete 404 — the stale id was already removed by another run.
-                # Any *other* status is a real error: we record it and leave the
-                # index unflagged so the next startup retries.
+                batch, pending = pending, []
+
+                # Phase 1 — create the canonical docs. op_type=create
+                # (insert-only) so we NEVER overwrite an existing canonical doc:
+                # get_data_init_lock only serialises one deployment's workers, so
+                # during a rolling deploy a previous-release worker may already
+                # have written the fresh canonical edge; an unconditional index
+                # would clobber it with this stale scrolled _source. A create 409
+                # means canonical already exists — benign, the source row is then
+                # safe to drop. raise_on_error=False so a 409 does not abort.
+                create_actions = [
+                    {
+                        "_op_type": "create",
+                        "_index": self._edges_index,
+                        "_id": canonical,
+                        "_source": source,
+                    }
+                    for canonical, _old_id, source in batch
+                ]
                 _success, errors = await _run_chunked_async_bulk(
                     self.client,
-                    pending,
+                    create_actions,
                     max_payload_bytes=self._max_upsert_payload_bytes,
                     max_records_per_batch=self._max_upsert_records_per_batch,
                     log_prefix=f"[{self.workspace}] {self.namespace} edges:",
-                    what="canonical edge-id migration",
+                    what="canonical edge-id migration (create)",
                     raise_on_error=False,
                 )
-                pending = []
-                real_errors = [
+                # A canonical whose create failed for any non-benign reason
+                # (e.g. 429/503 on a busy cluster) must keep its source row: the
+                # only copy of the edge still lives under the old id, and the
+                # unflagged retry rebuilds it next startup. Deleting it here would
+                # silently lose the relationship.
+                failed_canonicals: set[str] = set()
+                for e in errors:
+                    info = e.get("create") if isinstance(e, dict) else None
+                    if info is not None and info.get("status") == 409:
+                        continue  # canonical already exists — source safe to drop
+                    had_real_error = True
+                    if info is not None and info.get("_id"):
+                        failed_canonicals.add(info["_id"])
+                if failed_canonicals:
+                    logger.error(
+                        f"[{self.workspace}] Canonical edge-id migration: "
+                        f"{len(failed_canonicals)} create(s) failed in "
+                        f"{self._edges_index}; keeping their source rows for retry"
+                    )
+
+                # Phase 2 — delete the old id only where its canonical now exists
+                # (create succeeded or 409'd). delete 404 is benign (another run
+                # already removed it); any other delete error is real.
+                delete_actions = [
+                    {"_op_type": "delete", "_index": self._edges_index, "_id": old_id}
+                    for canonical, old_id, _source in batch
+                    if canonical not in failed_canonicals
+                ]
+                if not delete_actions:
+                    return
+                _ds, derrors = await _run_chunked_async_bulk(
+                    self.client,
+                    delete_actions,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_delete_records_per_batch,
+                    log_prefix=f"[{self.workspace}] {self.namespace} edges:",
+                    what="canonical edge-id migration (delete)",
+                    raise_on_error=False,
+                )
+                real_delete_errors = [
                     e
-                    for e in errors
+                    for e in derrors
                     if not (
-                        isinstance(e, dict)
-                        and (
-                            e.get("create", {}).get("status") == 409
-                            or e.get("delete", {}).get("status") == 404
-                        )
+                        isinstance(e, dict) and e.get("delete", {}).get("status") == 404
                     )
                 ]
-                if real_errors:
+                if real_delete_errors:
                     had_real_error = True
                     logger.error(
                         f"[{self.workspace}] Canonical edge-id migration hit "
-                        f"{len(real_errors)} error(s) in {self._edges_index}"
+                        f"{len(real_delete_errors)} delete error(s) in "
+                        f"{self._edges_index}"
                     )
 
             scroll_id = None
@@ -2065,30 +2110,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         canonical = _canonical_edge_id(src, tgt)
                         if hit["_id"] == canonical:
                             continue
-                        # op_type=create (insert-only) so we NEVER overwrite an
-                        # existing canonical doc. get_data_init_lock serialises
-                        # init across one deployment's workers but not across
-                        # separate deployments, so during a rolling deploy a
-                        # previous-release worker can still serve upsert_edge and
-                        # write the fresh canonical edge; an unconditional index
-                        # here would clobber it with this stale scrolled _source.
-                        # create fails with 409 when canonical exists (tolerated
-                        # below), leaving the live/forward doc intact.
-                        pending.append(
-                            {
-                                "_op_type": "create",
-                                "_index": self._edges_index,
-                                "_id": canonical,
-                                "_source": source,
-                            }
-                        )
-                        pending.append(
-                            {
-                                "_op_type": "delete",
-                                "_index": self._edges_index,
-                                "_id": hit["_id"],
-                            }
-                        )
+                        # Queue (canonical, old_id, source); the create/delete
+                        # split happens in _flush_pending so a failed create never
+                        # takes its source row with it.
+                        pending.append((canonical, hit["_id"], source))
                         migrated += 1
                     if len(pending) >= flush_at:
                         await _flush_pending()
