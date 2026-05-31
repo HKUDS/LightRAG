@@ -476,6 +476,72 @@ def test_doc_status_metadata_survives_processed_transition(tmp_path):
 
 
 @pytest.mark.offline
+def test_legacy_source_file_name_migrated_and_carried_over(tmp_path):
+    """Regression: a document persisted before the ``source_file_name`` →
+    ``source_file`` rename carries its source hint only as
+    ``metadata['source_file_name']`` (and full_docs lacks the key entirely).
+
+    The parse worker must normalize the legacy key onto the new
+    ``source_file`` key on the in-memory status_doc BEFORE the PARSING upsert.
+    Otherwise the carry-over allowlist (which no longer lists the legacy key)
+    drops the hint from doc_status, so a retry after a parse failure — before
+    full_docs is rewritten — can no longer resolve the hinted source file.
+    Here we assert the hint survives all the way to PROCESSED under the new key.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            doc_id = compute_mdhash_id("legacy_hint.txt", prefix="doc-")
+
+            # full_docs has NO source hint — the only copy lives under the
+            # legacy metadata key on doc_status, exactly as a pre-rename doc
+            # would have persisted it.
+            await rag.full_docs.upsert(
+                {
+                    doc_id: {
+                        "content": "legacy body for chunking.",
+                        "file_path": "legacy_hint.txt",
+                        "parse_format": "raw",
+                        "parse_engine": "legacy",
+                        "content_hash": "legacyhash",
+                    }
+                }
+            )
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PENDING,
+                        "content_summary": "legacy body for chunking.",
+                        "content_length": len("legacy body for chunking."),
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:01+00:00",
+                        "file_path": "legacy_hint.txt",
+                        "track_id": "track-legacy",
+                        "content_hash": "legacyhash",
+                        "metadata": {"source_file_name": "legacy_hint.[mineru].pdf"},
+                    }
+                }
+            )
+
+            await rag.apipeline_process_enqueue_documents()
+
+            final_status = await rag.doc_status.get_by_id(doc_id)
+            assert final_status is not None
+            assert _status_value_text(final_status.get("status")) == "processed"
+            metadata = final_status.get("metadata") or {}
+            assert metadata.get("source_file") == "legacy_hint.[mineru].pdf", (
+                "legacy source_file_name was not migrated to source_file and "
+                f"carried over; final metadata: {metadata!r}"
+            )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_analyze_soft_failure_writes_neither_end_time_nor_skipped(tmp_path):
     """If ``analyze_multimodal`` returns without setting either the
     ``multimodal_processed`` (completion) or ``analyzing_stage_skipped``

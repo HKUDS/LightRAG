@@ -1488,8 +1488,17 @@ class _PipelineMixin:
                     )
                 if isinstance(status_doc_w.metadata, dict):
                     source_file_w = _read_source_file(status_doc_w.metadata)
-                    if source_file_w and not _read_source_file(content_data_w):
-                        content_data_w["source_file"] = source_file_w
+                    if source_file_w:
+                        # Normalize the legacy ``source_file_name`` onto the new
+                        # key in the in-memory status metadata so the carry-over
+                        # allowlist (which no longer lists ``source_file_name``)
+                        # preserves it through the PARSING upsert below. Without
+                        # this, a retry after a parse failure — before full_docs
+                        # is rewritten — would no longer resolve the hinted
+                        # source file. Idempotent when the new key already exists.
+                        status_doc_w.metadata["source_file"] = source_file_w
+                        if not _read_source_file(content_data_w):
+                            content_data_w["source_file"] = source_file_w
                 # Stamp parse_start_time on the in-memory status_doc so
                 # carry-over (_DOC_STATUS_METADATA_CARRY_OVER_KEYS) writes it
                 # into doc_status here and preserves it across every
