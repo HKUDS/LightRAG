@@ -175,7 +175,7 @@ const formatMetadata = (metadata: Record<string, any>): string => {
     }
 
     if (typeof value === 'object') {
-      const entries = Object.entries(value);
+      const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
       if (entries.length === 0) return '{}';
       return entries
         .map(([key, child]) => {
@@ -193,6 +193,7 @@ const formatMetadata = (metadata: Record<string, any>): string => {
   };
 
   return Object.entries(formattedMetadata)
+    .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => {
       const rendered = formatValue(value, 1);
       if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
