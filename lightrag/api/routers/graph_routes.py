@@ -5,8 +5,9 @@ This module contains all graph-related routes for the LightRAG API.
 from typing import Optional, Dict, Any
 import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from lightrag.base import DeletionResult
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
 from .document_routes import check_pipeline_busy_or_raise
@@ -57,6 +58,29 @@ class EntityCreateRequest(BaseModel):
             }
         ],
     )
+
+
+class DeleteEntityRequest(BaseModel):
+    entity_name: str = Field(..., description="The name of the entity to delete.")
+
+    @field_validator("entity_name", mode="after")
+    @classmethod
+    def validate_entity_name(cls, entity_name: str) -> str:
+        if not entity_name or not entity_name.strip():
+            raise ValueError("Entity name cannot be empty")
+        return entity_name.strip()
+
+
+class DeleteRelationRequest(BaseModel):
+    source_entity: str = Field(..., description="The name of the source entity.")
+    target_entity: str = Field(..., description="The name of the target entity.")
+
+    @field_validator("source_entity", "target_entity", mode="after")
+    @classmethod
+    def validate_entity_names(cls, entity_name: str) -> str:
+        if not entity_name or not entity_name.strip():
+            raise ValueError("Entity name cannot be empty")
+        return entity_name.strip()
 
 
 class RelationCreateRequest(BaseModel):
@@ -704,5 +728,80 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error merging entities: {str(e)}"
             )
+
+    @router.delete(
+        "/graph/entity/delete",
+        response_model=DeletionResult,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def delete_entity(request: DeleteEntityRequest):
+        """
+        Delete an entity and all its relationships from the knowledge graph.
+
+        Args:
+            request (DeleteEntityRequest): The request body containing the entity name.
+
+        Returns:
+            DeletionResult: An object containing the outcome of the deletion process.
+
+        Raises:
+            HTTPException: If the entity is not found (404) or an error occurs (500).
+        """
+        try:
+            await check_pipeline_busy_or_raise(rag)
+            result = await rag.adelete_by_entity(entity_name=request.entity_name)
+            if result.status == "not_found":
+                raise HTTPException(status_code=404, detail=result.message)
+            if result.status == "fail":
+                raise HTTPException(status_code=500, detail=result.message)
+            # Set doc_id to empty string since this is an entity operation, not document
+            result.doc_id = ""
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = f"Error deleting entity '{request.entity_name}': {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=error_msg)
+
+    @router.delete(
+        "/graph/relation/delete",
+        response_model=DeletionResult,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def delete_relation(request: DeleteRelationRequest):
+        """
+        Delete a relationship between two entities from the knowledge graph.
+
+        Args:
+            request (DeleteRelationRequest): The request body containing the source and target entity names.
+
+        Returns:
+            DeletionResult: An object containing the outcome of the deletion process.
+
+        Raises:
+            HTTPException: If the relation is not found (404) or an error occurs (500).
+        """
+        try:
+            await check_pipeline_busy_or_raise(rag)
+            result = await rag.adelete_by_relation(
+                source_entity=request.source_entity,
+                target_entity=request.target_entity,
+            )
+            if result.status == "not_found":
+                raise HTTPException(status_code=404, detail=result.message)
+            if result.status == "fail":
+                raise HTTPException(status_code=500, detail=result.message)
+            # Set doc_id to empty string since this is a relation operation, not document
+            result.doc_id = ""
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = f"Error deleting relation from '{request.source_entity}' to '{request.target_entity}': {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=error_msg)
 
     return router

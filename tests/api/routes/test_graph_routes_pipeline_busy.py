@@ -8,8 +8,8 @@ with HTTP 409 while the document pipeline is busy:
 - POST /graph/entity/create        (graph_routes)
 - POST /graph/relation/create      (graph_routes)
 - POST /graph/entities/merge       (graph_routes)
-- DELETE /documents/delete_entity  (document_routes)
-- DELETE /documents/delete_relation (document_routes)
+- DELETE /graph/entity/delete      (graph_routes)
+- DELETE /graph/relation/delete    (graph_routes)
 
 The guard logic itself lives in
 ``lightrag.api.routers.document_routes.check_pipeline_busy_or_raise`` and is
@@ -171,13 +171,13 @@ _ENDPOINTS = [
     ),
     pytest.param(
         "DELETE",
-        "/documents/delete_entity",
+        "/graph/entity/delete",
         {"entity_name": "Alice"},
         id="delete_entity",
     ),
     pytest.param(
         "DELETE",
-        "/documents/delete_relation",
+        "/graph/relation/delete",
         {"source_entity": "Alice", "target_entity": "Bob"},
         id="delete_relation",
     ),
