@@ -2084,20 +2084,41 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     return
                 batch, pending = pending, []
 
-                # Phase 1 — create the canonical docs. op_type=create
-                # (insert-only): a create 409 means the canonical doc already
-                # exists (forward legacy doc), which is benign — the reverse
-                # source row is then safe to drop. raise_on_error=False so a 409
-                # does not abort.
-                create_actions = [
-                    {
-                        "_op_type": "create",
-                        "_index": self._edges_index,
-                        "_id": canonical,
-                        "_source": source,
-                    }
-                    for canonical, _old_id, source in batch
-                ]
+                # Group this batch by canonical id. A node pair can have >1
+                # pending non-canonical doc (e.g. several legacy reciprocal
+                # duplicates), and they all map to the same canonical id; carry
+                # each doc's old _id so it can be deleted after consolidation.
+                docs_by_canonical: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+                for canonical, old_id, source in batch:
+                    docs_by_canonical.setdefault(canonical, []).append((old_id, source))
+
+                # Phase 1 — create exactly ONE canonical doc per canonical id.
+                # When a canonical has >1 pending doc we pre-merge their payloads
+                # in memory so the single create carries the summed weight/unioned
+                # provenance: issuing one create per doc instead would let one win
+                # the insert and the rest 409, and folding those 409'd docs back in
+                # would re-merge the create winner (its source is now the base),
+                # double-counting its weight. op_type=create (insert-only): a 409
+                # then means the canonical already existed *independently of this
+                # batch* (a forward legacy doc, or a prior batch/run), so every doc
+                # this batch mapped to it is a loser to fold in. raise_on_error=
+                # False so a 409 does not abort.
+                create_actions = []
+                for canonical, reverse_docs in docs_by_canonical.items():
+                    sources = [source for _old_id, source in reverse_docs]
+                    source = (
+                        {**sources[0], **_merge_edge_payloads(sources)}
+                        if len(sources) > 1
+                        else sources[0]
+                    )
+                    create_actions.append(
+                        {
+                            "_op_type": "create",
+                            "_index": self._edges_index,
+                            "_id": canonical,
+                            "_source": source,
+                        }
+                    )
                 _success, errors = await _run_chunked_async_bulk(
                     self.client,
                     create_actions,
@@ -2107,9 +2128,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     what="canonical edge-id migration (create)",
                     raise_on_error=False,
                 )
-                # A create 409 means the canonical doc already exists (a forward
-                # legacy doc, i.e. a reciprocal duplicate): merge this reverse
-                # doc's relation payload into it (below) so deleting the reverse
+                # A create 409 means the canonical doc already exists: merge the
+                # pending doc(s)' relation payload into it (below) so deleting them
                 # loses no evidence. Any other create error (e.g. 429/503) fails
                 # fast BEFORE any delete, so no edge is dropped without its
                 # canonical counterpart in place; the flag stays unset and the
@@ -2130,22 +2150,13 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                         f"(no source rows deleted)"
                     )
 
-                if conflicted_canonicals:
-                    # A single canonical can be the target of more than one
-                    # pending reverse doc in this batch (e.g. 3+ legacy docs for
-                    # one node pair, where only one wins the insert and the rest
-                    # 409). Collect *all* reverse docs mapping to each conflicted
-                    # canonical (carrying their old _id so they can be deleted
-                    # right after the merge) and fold them together so no reverse
-                    # payload is dropped.
-                    docs_by_canonical: dict[str, list[tuple[str, dict[str, Any]]]] = {}
-                    for canonical, old_id, source in batch:
-                        if canonical in conflicted_canonicals:
-                            docs_by_canonical.setdefault(canonical, []).append(
-                                (old_id, source)
-                            )
-                    for canonical, reverse_docs in docs_by_canonical.items():
-                        await self._merge_into_canonical_edge(canonical, reverse_docs)
+                # The canonical pre-existed (the create did not write it), so fold
+                # *every* doc this batch mapped to it — none is the create winner —
+                # then delete their old ids (in _merge_into_canonical_edge).
+                for canonical in conflicted_canonicals:
+                    await self._merge_into_canonical_edge(
+                        canonical, docs_by_canonical[canonical]
+                    )
 
                 # Phase 2 — every create succeeded, 409'd-then-merged, so the
                 # canonical now exists for all; delete the old ids. delete 404 is

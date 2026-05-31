@@ -2727,6 +2727,84 @@ class TestGraphStorage:
         assert merged["source_ids"] == ["c1", "c2", "c3"]  # all provenance kept
         assert merged["weight"] == 6.0  # 1.0 + 2.0 + 3.0 summed
 
+    @pytest.mark.asyncio
+    async def test_migrate_premerges_same_canonical_docs_into_one_create(
+        self, global_config, embed_func, mock_client
+    ):
+        """When several non-canonical docs map to a canonical that does NOT yet
+        exist, the batch issues ONE pre-merged create (not one per doc). This
+        avoids the intra-batch create race where one doc wins the insert and the
+        rest 409, then folding the 409'd docs re-merges the create winner and
+        double-counts its weight. The single create carries the summed-once
+        weight and no merge-into-canonical write happens."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        canonical = _canonical_edge_id("A", "B")
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        # Two reverse-orientation docs for the same pair, both non-canonical.
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-rev1",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c2"],
+                                "weight": 2.0,
+                            },
+                        },
+                        {
+                            "_id": "edge-rev2",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c3"],
+                                "weight": 3.0,
+                            },
+                        },
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+        mock_client.index = AsyncMock()
+
+        created = []
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            if acts and acts[0]["_op_type"] == "create":
+                created.extend(acts)
+                # Canonical did not pre-exist: the create succeeds (no 409).
+                return (len(acts), [])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        # Exactly one create for the canonical, carrying the summed-once weight —
+        # the create winner is never re-merged, so weight is 5.0, not 7.0.
+        create_for_canon = [a for a in created if a["_id"] == canonical]
+        assert len(create_for_canon) == 1
+        body = create_for_canon[0]["_source"]
+        assert body["weight"] == 5.0  # 2.0 + 3.0, counted once
+        assert body["source_ids"] == ["c2", "c3"]
+        # No fold/merge write into the canonical (no create conflicted).
+        mock_client.index.assert_not_awaited()
+
     def test_merge_edge_payloads_sums_every_fragment_weight(self):
         """Weight is summed across every fragment (base + each duplicate), matching
         operate.py's _merge_edges_then_upsert — including reciprocal duplicates that
