@@ -2963,41 +2963,88 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 f"deletes buffered after final flush attempt (these writes have been lost)"
             )
 
+    async def _wait_for_search_index_absent(
+        self, index_name: str, *, timeout: float = 120.0, interval: float = 2.0
+    ) -> None:
+        """Poll until a dropped search index disappears.
+
+        ``create_search_index`` rejects a name that still exists while the
+        prior drop is in the DELETING state, so a recreate must wait for the
+        old index to clear first. Best-effort: on timeout it logs and returns
+        so the subsequent create surfaces any genuine conflict itself rather
+        than blocking initialize() indefinitely.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            cursor = await self._data.list_search_indexes()
+            names = {idx["name"] for idx in await cursor.to_list(length=None)}
+            if index_name not in names:
+                return
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    f"[{self.workspace}] dropped search index {index_name} still "
+                    f"present after {timeout:.0f}s; proceeding to recreate"
+                )
+                return
+            await asyncio.sleep(interval)
+
     async def create_vector_index_if_not_exists(self):
-        """Creates an Atlas Vector Search index."""
+        """Create the Atlas Vector Search index, repairing a FAILED one.
+
+        Atlas/mongot leaves a vector index in the terminal ``FAILED`` state
+        after a build error and never retries it on its own; every
+        subsequent ``$vectorSearch`` then raises ``cannot query vector index
+        ... while in state FAILED``. Matching the index only by name would
+        treat that dead index as healthy and wedge all queries permanently,
+        so a FAILED index is dropped and rebuilt here. Transitional states
+        (``PENDING``/``BUILDING``) are left alone -- they become queryable
+        without intervention.
+        """
         try:
             indexes_cursor = await self._data.list_search_indexes()
             indexes = await indexes_cursor.to_list(length=None)
             for index in indexes:
-                if index["name"] == self._index_name:
-                    # Check if the existing index has matching vector dimensions
-                    existing_dim = None
-                    definition = index.get("latestDefinition", {})
-                    fields = definition.get("fields", [])
-                    for field in fields:
-                        if (
-                            field.get("type") == "vector"
-                            and field.get("path") == "vector"
-                        ):
-                            existing_dim = field.get("numDimensions")
-                            break
+                if index["name"] != self._index_name:
+                    continue
 
-                    expected_dim = self.embedding_func.embedding_dim
-
-                    if existing_dim is not None and existing_dim != expected_dim:
-                        error_msg = (
-                            f"Vector dimension mismatch! Index '{self._index_name}' has "
-                            f"dimension {existing_dim}, but current embedding model expects "
-                            f"dimension {expected_dim}. Please drop the existing index or "
-                            f"use an embedding model with matching dimensions."
-                        )
-                        logger.error(f"[{self.workspace}] {error_msg}")
-                        raise ValueError(error_msg)
-
-                    logger.info(
-                        f"[{self.workspace}] vector index {self._index_name} already exists with matching dimensions ({expected_dim})"
+                # A FAILED build is terminal: drop it and fall through to
+                # recreate (the same self-heal `drop()` relies on). Wait for
+                # the drop to clear first -- create_search_index rejects a
+                # name that still exists while the old index is DELETING.
+                if index.get("status") == "FAILED":
+                    logger.warning(
+                        f"[{self.workspace}] vector index {self._index_name} is in "
+                        f"FAILED state; dropping and recreating it"
                     )
-                    return
+                    await self._data.drop_search_index(self._index_name)
+                    await self._wait_for_search_index_absent(self._index_name)
+                    break
+
+                # Check if the existing index has matching vector dimensions
+                existing_dim = None
+                definition = index.get("latestDefinition", {})
+                fields = definition.get("fields", [])
+                for field in fields:
+                    if field.get("type") == "vector" and field.get("path") == "vector":
+                        existing_dim = field.get("numDimensions")
+                        break
+
+                expected_dim = self.embedding_func.embedding_dim
+
+                if existing_dim is not None and existing_dim != expected_dim:
+                    error_msg = (
+                        f"Vector dimension mismatch! Index '{self._index_name}' has "
+                        f"dimension {existing_dim}, but current embedding model expects "
+                        f"dimension {expected_dim}. Please drop the existing index or "
+                        f"use an embedding model with matching dimensions."
+                    )
+                    logger.error(f"[{self.workspace}] {error_msg}")
+                    raise ValueError(error_msg)
+
+                logger.info(
+                    f"[{self.workspace}] vector index {self._index_name} already exists with matching dimensions ({expected_dim})"
+                )
+                return
 
             search_index_model = SearchIndexModel(
                 definition={
