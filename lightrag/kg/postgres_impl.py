@@ -4141,7 +4141,8 @@ class PGVectorStorage(BaseVectorStorage):
             if len(upsert_batches) > 1:
                 logger.info(
                     f"{log_prefix} upsert split into {len(upsert_batches)} batches "
-                    f"for {len(batch_values)} records"
+                    f"for {len(batch_values)} records "
+                    f"(max_payload={self._max_upsert_payload_bytes} batch={self._max_upsert_records_per_batch})"
                 )
 
             # ``or 1`` guards an upsert-only flush: with the delete cap disabled
@@ -4172,8 +4173,8 @@ class PGVectorStorage(BaseVectorStorage):
                         and estimated_bytes > self._max_upsert_payload_bytes
                     ):
                         logger.warning(
-                            f"{log_prefix} single record estimated {estimated_bytes} "
-                            f"bytes exceeds {self._max_upsert_payload_bytes}"
+                            f"{log_prefix} single record id={sub_batch[0][1]} "
+                            f"estimated {estimated_bytes} bytes exceeds {self._max_upsert_payload_bytes}"
                         )
 
                     async def _flush_upsert(
