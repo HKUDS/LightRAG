@@ -1493,6 +1493,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         re-flushed by remaining in-flight documents or carried into the next
         batch.
 
+        ``full_docs`` and ``doc_status`` are skipped: they are written by the
+        concurrent ``apipeline_enqueue_documents`` path (under
+        ``enqueue_serialize_lock``, which this cleanup does not hold), as
+        ``full_docs.upsert -> index_done_callback -> doc_status.upsert``.
+        Clearing ``full_docs``'s buffer in the window between an in-flight
+        upload's upsert and its flush would drop the document body while the
+        PENDING ``doc_status`` row still gets written, leaving an accepted
+        document with no content. Those writes self-flush immediately, so
+        skipping them discards nothing processing-owned.
+
         The LLM response cache gets a final flush *before* its buffer is
         dropped, because — unlike regenerable KG data — re-running LLM calls
         is expensive, so cached results must be persisted maximally:
@@ -1511,6 +1521,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         so cleanup never masks the original abort cause.
         """
         for storage_inst in self._index_storages():
+            if storage_inst is self.full_docs or storage_inst is self.doc_status:
+                # enqueue-owned (see docstring): never clear their buffers here.
+                continue
             if storage_inst is self.llm_response_cache:
                 # Persist what can still be written, then fall through to drop
                 # whatever could not (a poisoned item) so it cannot wedge the
