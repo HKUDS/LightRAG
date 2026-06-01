@@ -1095,12 +1095,7 @@ class _PipelineMixin:
                             # affected docs stay queued (PENDING/FAILED) and are
                             # picked up when processing is restarted after the
                             # storage issue is resolved.
-                            log_message = (
-                                f"Pipeline halted on internal storage error "
-                                f"({label}). Resolve the storage issue and "
-                                f"restart processing; affected documents remain "
-                                f"queued (PENDING/FAILED)."
-                            )
+                            log_message = self._internal_halt_message(label)
                             logger.error(log_message)
                         else:
                             log_message = f"Pipeline cancelled ({label})"
@@ -1186,8 +1181,8 @@ class _PipelineMixin:
                 )
 
         finally:
-            log_message = "Enqueued document processing pipeline stopped"
-            logger.info(log_message)
+            stopped_message = "Enqueued document processing pipeline stopped"
+            logger.info(stopped_message)
             # If the loop already released ``busy`` under the atomic exit
             # check, don't clobber it here — a concurrent enqueue may have
             # observed busy=False and started a new processing pass that
@@ -1196,13 +1191,31 @@ class _PipelineMixin:
             async with pipeline_status_lock:
                 if not busy_released_in_loop:
                     pipeline_status["busy"] = False
+                # An internal-error abort normally exits via the batch's
+                # ``break`` (not the loop-top cancellation handler, which
+                # logs + clears the reason itself), so without this the only
+                # visible trace would be the generic "stopped" line. Surface
+                # the actionable halt reason here too, BEFORE clearing the
+                # reason/detail. Read it first so _cancellation_label still
+                # sees the cause.
+                internal_halt = None
+                if pipeline_status.get("cancellation_reason") == "internal_error":
+                    internal_halt = self._internal_halt_message(
+                        self._cancellation_label(pipeline_status)
+                    )
+                    logger.error(internal_halt)
                 pipeline_status["cancellation_requested"] = (
                     False  # Always reset cancellation flag
                 )
                 pipeline_status["cancellation_reason"] = None
                 pipeline_status["cancellation_detail"] = None
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                pipeline_status["history_messages"].append(stopped_message)
+                if internal_halt is not None:
+                    pipeline_status["history_messages"].append(internal_halt)
+                    # Prefer the actionable halt reason as the latest message.
+                    pipeline_status["latest_message"] = internal_halt
+                else:
+                    pipeline_status["latest_message"] = stopped_message
 
     # ============================================================
     # Pipeline orchestration
@@ -2636,6 +2649,19 @@ class _PipelineMixin:
             detail = pipeline_status.get("cancellation_detail") or "unknown"
             return f"Cancelled by internal error: {detail}"
         return "User cancelled"
+
+    @staticmethod
+    def _internal_halt_message(label: str) -> str:
+        """Actionable halt message for an internal-error abort.
+
+        Shared by the loop-top cancellation handler and the finally cleanup so
+        the same wording surfaces whichever exit path the batch takes.
+        """
+        return (
+            f"Pipeline halted on internal storage error ({label}). Resolve the "
+            f"storage issue and restart processing; affected documents remain "
+            f"queued (PENDING/FAILED)."
+        )
 
     async def _cancellation_requested(
         self,
