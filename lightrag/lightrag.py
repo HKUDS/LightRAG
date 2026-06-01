@@ -1596,18 +1596,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status["history_messages"].append(log_message)
 
     async def _insert_done_with_cleanup(self) -> None:
-        """``_insert_done`` for direct (non-pipeline) callers, discarding the
-        pending buffers on a flush failure.
+        """``_insert_done`` for UPSERT-oriented direct (non-pipeline) callers,
+        discarding the pending buffers on a flush failure.
 
         The file pipeline aborts and calls ``_discard_pending_index_ops()``
-        centrally, but direct callers (custom KG / chunks insert,
-        delete/rebuild) have no such cleanup. Without it, a permanent flush
-        failure leaves the poisoned op buffered — OpenSearch keeps a
-        non-retryable bulk item; milvus/qdrant/postgres/mongo keep the whole
-        buffer — and every later ``_insert_done()`` replays it, even after the
-        caller submits otherwise valid work. Discard pending on
-        ``IndexFlushError`` so the buffer is clean for the next attempt, then
-        re-raise so the failure still surfaces to the caller.
+        centrally, but direct insert callers (custom KG / chunks insert) have
+        no such cleanup. Without it, a permanent flush failure leaves the
+        poisoned op buffered — OpenSearch keeps a non-retryable bulk item;
+        milvus/qdrant/postgres/mongo keep the whole buffer — and every later
+        ``_insert_done()`` replays it, even after the caller submits otherwise
+        valid work. Discard pending on ``IndexFlushError`` so the buffer is
+        clean for the next attempt, then re-raise so the failure still
+        surfaces to the caller.
+
+        WARNING: do NOT use this on deletion paths. ``_discard_pending_index_ops``
+        drops pending DELETES too, but deletes are not regenerable by
+        reprocessing (the document is being removed, nothing re-issues them).
+        Dropping them — while a deletion may still report success — would leave
+        stale vectors/KV searchable. Deletion paths must use plain
+        ``_insert_done`` so failed deletes stay buffered for a later retry.
         """
         try:
             await self._insert_done()
@@ -2881,8 +2888,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 raise Exception(f"Failed to delete entities: {e}") from e
 
         # ---- 6. Persist pre-rebuild changes ----
+        # Use plain _insert_done (no discard-on-failure): the pending buffer
+        # here holds DELETES, which are not regenerable by reprocessing. On a
+        # flush failure they must stay buffered for a later retry, not be
+        # discarded (see _insert_done_with_cleanup docstring).
         try:
-            await self._insert_done_with_cleanup()
+            await self._insert_done()
         except Exception as e:
             logger.error(f"[purge] Failed to persist pre-rebuild changes: {e}")
             raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
@@ -3636,9 +3647,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     raise Exception(f"Failed to delete entities: {e}") from e
 
             # Persist changes to graph database before entity and relationship rebuild
+            # Plain _insert_done: pending DELETES must be retained for retry on
+            # failure, not discarded (see _insert_done_with_cleanup docstring).
             try:
                 deletion_stage = "persist_pre_rebuild_changes"
-                await self._insert_done_with_cleanup()
+                await self._insert_done()
             except Exception as e:
                 logger.error(f"Failed to persist pre-rebuild changes: {e}")
                 raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
@@ -3786,8 +3799,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         finally:
             # ALWAYS ensure persistence if any deletion operations were started
             if deletion_operations_started:
+                # Plain _insert_done: this finally reports the deletion as
+                # successful after logging a persistence error, so discarding
+                # pending DELETES here would drop them with no retry and leave
+                # stale vectors/KV behind. Keep them buffered for a later flush.
                 try:
-                    await self._insert_done_with_cleanup()
+                    await self._insert_done()
                 except Exception as persistence_error:
                     persistence_error_msg = f"Failed to persist data after deletion attempt for {doc_id}: {persistence_error}"
                     logger.error(persistence_error_msg)
