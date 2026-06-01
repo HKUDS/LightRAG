@@ -1484,28 +1484,29 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ]
 
     async def _discard_pending_index_ops(self) -> None:
-        """Drop regenerable buffers on abort, but never touch the LLM cache.
+        """Drop every storage's not-yet-flushed buffer on an aborting batch.
 
-        Called when a batch aborts on an internal storage error: each
-        still-buffered KG/vector record belongs to a document that will be
-        marked FAILED and fully reprocessed, so dropping the shared cross-file
-        buffer is safe and stops the poisoned/stale records from being
-        re-flushed by remaining in-flight documents or carried into the next
-        batch.
+        Called when a batch aborts on an internal storage error. Each
+        still-buffered record belongs to a document that will be marked FAILED
+        and fully reprocessed, so dropping the shared cross-file buffers is
+        safe and stops the poisoned/stale records from being re-flushed by
+        remaining in-flight documents or carried into the next batch.
 
-        The LLM response cache is skipped entirely — not discarded (re-running
-        LLM calls is the expensive part, so cached results must survive) and
-        not re-flushed here either: every document that ended already persisted
-        it via its success / failure / cancel path (``_insert_done`` and
-        ``_finalize_doc_failure`` / ``_mark_doc_cancelled_in_stage``), so a
-        flush here would be redundant — and, if the cache backend was itself
-        the abort cause, a pointless retry of an operation that just failed.
-        Best-effort: a clear failure is logged, not raised, so cleanup never
-        masks the original abort cause.
+        The LLM response cache is dropped here too — deliberately, not skipped.
+        A buffer is pending (unwritten) work, not a persistence mechanism: by
+        abort time every *flushable* cache entry has already been committed by
+        the per-document flush paths (``_insert_done`` /
+        ``_finalize_doc_failure`` / ``_mark_doc_cancelled_in_stage``), which on
+        a per-item backend like OpenSearch pop the successes and keep only the
+        entries that could not be written. Skipping the cache would leave those
+        un-writable entries buffered, so a permanently-failing cache item (now
+        that OpenSearch raises on non-retryable bulk failures) would re-flush
+        and re-abort on every subsequent batch — wedging the pipeline. Dropping
+        them loses nothing persistable (the cache is an optimization; a dropped
+        entry is simply recomputed on reprocess). Best-effort: a clear failure
+        is logged, not raised, so cleanup never masks the original abort cause.
         """
         for storage_inst in self._index_storages():
-            if storage_inst is self.llm_response_cache:
-                continue
             try:
                 await cast(StorageNameSpace, storage_inst).drop_pending_index_ops()
             except Exception as e:
