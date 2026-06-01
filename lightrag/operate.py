@@ -135,7 +135,7 @@ def _truncate_entity_identifier(
     if len(encoded) > byte_limit:
         # Drop the partial trailing multi-byte char left by the byte slice.
         display_value = encoded[:byte_limit].decode("utf-8", errors="ignore")
-    preview = identifier[:20]  # Show first 20 characters as preview
+    preview = identifier[:50]  # Show first 50 characters as preview
     logger.warning(
         "%s: %s len %d chars / %d bytes > %d chars / %d bytes (Name: '%s...')",
         chunk_key,
