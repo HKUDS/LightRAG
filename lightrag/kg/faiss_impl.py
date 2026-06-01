@@ -892,6 +892,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._index = faiss.IndexFlatIP(self._dim)
             self._id_to_meta = {}
 
+    async def drop_pending_index_ops(self) -> None:
+        """Discard buffered upserts (pipeline aborting on error)."""
+        if self._storage_lock is None:
+            self._pending_upserts.clear()
+            return
+        async with self._storage_lock:
+            self._pending_upserts.clear()
+
     async def index_done_callback(self) -> bool:
         """Flush deferred embeddings, commit to disk, and notify other processes.
 

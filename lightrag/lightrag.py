@@ -113,6 +113,7 @@ from lightrag.operate import (
 )
 from lightrag.utils_pipeline import normalize_document_file_path
 from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.exceptions import IndexFlushError
 from lightrag.utils import (
     Tokenizer,
     TiktokenTokenizer,
@@ -1461,12 +1462,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status["history_messages"].append(error_msg)
             raise e
 
-    async def _insert_done(
-        self, pipeline_status=None, pipeline_status_lock=None
-    ) -> None:
-        tasks = [
-            cast(StorageNameSpace, storage_inst).index_done_callback()
-            for storage_inst in [  # type: ignore
+    def _index_storages(self) -> list:
+        """All storages flushed together by index_done_callback / abort."""
+        return [
+            storage_inst
+            for storage_inst in [
                 self.full_docs,
                 self.doc_status,
                 self.text_chunks,
@@ -1482,7 +1482,57 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ]
             if storage_inst is not None
         ]
-        await asyncio.gather(*tasks)
+
+    async def _discard_pending_index_ops(self) -> None:
+        """Drop regenerable buffers on abort, but never touch the LLM cache.
+
+        Called when a batch aborts on an internal storage error: each
+        still-buffered KG/vector record belongs to a document that will be
+        marked FAILED and fully reprocessed, so dropping the shared cross-file
+        buffer is safe and stops the poisoned/stale records from being
+        re-flushed by remaining in-flight documents or carried into the next
+        batch.
+
+        The LLM response cache is skipped entirely — not discarded (re-running
+        LLM calls is the expensive part, so cached results must survive) and
+        not re-flushed here either: every document that ended already persisted
+        it via its success / failure / cancel path (``_insert_done`` and
+        ``_finalize_doc_failure`` / ``_mark_doc_cancelled_in_stage``), so a
+        flush here would be redundant — and, if the cache backend was itself
+        the abort cause, a pointless retry of an operation that just failed.
+        Best-effort: a clear failure is logged, not raised, so cleanup never
+        masks the original abort cause.
+        """
+        for storage_inst in self._index_storages():
+            if storage_inst is self.llm_response_cache:
+                continue
+            try:
+                await cast(StorageNameSpace, storage_inst).drop_pending_index_ops()
+            except Exception as e:
+                logger.error(
+                    f"Failed to discard pending ops on "
+                    f"{type(storage_inst).__name__}: {e}"
+                )
+
+    async def _insert_done(
+        self, pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
+        storages = self._index_storages()
+
+        async def _flush_one(storage_inst) -> None:
+            # Wrap each flush so a failure carries the driver name + namespace.
+            # The pipeline uses this to abort the batch with an actionable
+            # reason instead of misattributing a shared-buffer flush error to
+            # whichever document happened to trigger index_done_callback.
+            try:
+                await cast(StorageNameSpace, storage_inst).index_done_callback()
+            except Exception as e:
+                namespace = getattr(storage_inst, "final_namespace", None) or getattr(
+                    storage_inst, "namespace", ""
+                )
+                raise IndexFlushError(type(storage_inst).__name__, namespace, e) from e
+
+        await asyncio.gather(*[_flush_one(inst) for inst in storages])
 
         log_message = "In memory DB persist to disk"
         logger.info(log_message)

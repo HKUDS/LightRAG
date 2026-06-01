@@ -3203,6 +3203,12 @@ class MongoVectorDBStorage(BaseVectorStorage):
         """Flush buffered vector ops; Mongo persists automatically once written."""
         await self._flush_pending_vector_ops()
 
+    async def drop_pending_index_ops(self) -> None:
+        """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        async with self._flush_lock:
+            self._pending_vector_docs.clear()
+            self._pending_vector_deletes.clear()
+
     async def _flush_pending_vector_ops(self) -> None:
         """Flush buffered vector upserts and deletes in batched bulk writes.
 

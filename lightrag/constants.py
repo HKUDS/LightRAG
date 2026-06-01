@@ -16,6 +16,11 @@ DEFAULT_MAX_GRAPH_NODES = 1000
 DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
 DEFAULT_ENTITY_NAME_MAX_LENGTH = 256
+# Max UTF-8 byte length for entity identifiers. Milvus enforces VARCHAR
+# max_length in BYTES (not characters), so a CJK name within the character
+# limit can still exceed the field limit. MUST stay <= the max_length of the
+# entity_name / src_id / tgt_id fields in lightrag/kg/milvus_impl.py.
+DEFAULT_ENTITY_NAME_MAX_BYTES = 512
 
 # Per-response output limits for entity extraction prompts
 DEFAULT_MAX_EXTRACTION_RECORDS = 100

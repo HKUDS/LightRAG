@@ -175,6 +175,20 @@ class StorageNameSpace(ABC):
     async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing"""
 
+    async def drop_pending_index_ops(self) -> None:
+        """Discard any not-yet-flushed buffered index ops.
+
+        Backends that defer writes to ``index_done_callback`` (via an
+        in-memory ``_pending_*`` buffer) override this to clear that buffer.
+        The pipeline calls it when a batch is aborting on an internal error:
+        every still-buffered record belongs to a document that is being
+        marked FAILED and fully reprocessed on the next run, so dropping the
+        buffer is safe and prevents the poisoned/stale records from being
+        re-flushed by the remaining in-flight documents or carried over to
+        the next batch. Immediate-write backends keep the default no-op.
+        """
+        return None
+
     @abstractmethod
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
