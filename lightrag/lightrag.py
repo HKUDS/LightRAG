@@ -1516,9 +1516,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # whatever could not (a poisoned item) so it cannot wedge the
                 # next batch.
                 try:
-                    await cast(
-                        StorageNameSpace, storage_inst
-                    ).index_done_callback()
+                    await cast(StorageNameSpace, storage_inst).index_done_callback()
                 except Exception as e:
                     logger.error(f"Failed to persist LLM cache on abort: {e}")
             try:
