@@ -1079,11 +1079,32 @@ class _PipelineMixin:
                 # Check for cancellation request at the start of main loop
                 async with pipeline_status_lock:
                     if pipeline_status.get("cancellation_requested", False):
+                        # Read the cause BEFORE resetting reason/detail below.
+                        is_internal = (
+                            pipeline_status.get("cancellation_reason")
+                            == "internal_error"
+                        )
+                        label = self._cancellation_label(pipeline_status)
                         pipeline_status["request_pending"] = False
                         pipeline_status["cancellation_requested"] = False
 
-                        log_message = f"Pipeline cancelled ({self._cancellation_label(pipeline_status)})"
-                        logger.info(log_message)
+                        if is_internal:
+                            # Unrecoverable storage error: halting is intentional
+                            # (auto-retry into a broken backend will not recover).
+                            # Surface at error level with an actionable message;
+                            # affected docs stay queued (PENDING/FAILED) and are
+                            # picked up when processing is restarted after the
+                            # storage issue is resolved.
+                            log_message = (
+                                f"Pipeline halted on internal storage error "
+                                f"({label}). Resolve the storage issue and "
+                                f"restart processing; affected documents remain "
+                                f"queued (PENDING/FAILED)."
+                            )
+                            logger.error(log_message)
+                        else:
+                            log_message = f"Pipeline cancelled ({label})"
+                            logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
                         pipeline_status["cancellation_reason"] = None

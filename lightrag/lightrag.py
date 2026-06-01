@@ -1517,6 +1517,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
           bad cache entry cannot re-flush and re-abort every subsequent batch
           and wedge the pipeline.
 
+        Backends that materialize writes in memory and only persist on a
+        later save (FAISS / Nano) discard just the pending buffer here and do
+        NOT roll back already-materialized-but-unsaved writes: the FAILED
+        documents are reprocessed idempotently, so the rollback would be
+        non-load-bearing and inconsistent with the server-backed backends
+        (see those backends' ``drop_pending_index_ops`` docstrings).
+
         Best-effort throughout: a flush/clear failure is logged, not raised,
         so cleanup never masks the original abort cause.
         """
