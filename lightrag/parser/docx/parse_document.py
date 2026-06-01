@@ -9,12 +9,13 @@ import sys
 
 try:
     from docx import Document
-except ImportError:
-    print(
-        "Error: python-docx not installed. Run: pip install python-docx",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+except ImportError as exc:
+    # Raise instead of sys.exit: this module is imported in-process by the
+    # gunicorn/uvicorn worker, where a SystemExit would tear down the whole
+    # worker rather than surfacing a normal, catchable error.
+    raise ImportError(
+        "python-docx not installed. Run: pip install python-docx"
+    ) from exc
 
 from lightrag.parser._markdown import (
     render_heading_line,
@@ -61,22 +62,46 @@ _SKIP_COMMENT_TAGS = frozenset(
 _SKIP_PARAGRAPH_TAGS = _SKIP_REVISION_TAGS | _SKIP_COMMENT_TAGS
 
 
-def print_error(title: str, details: str, solution: str):
+class DocxContentError(ValueError):
+    """DOCX content violates a parsing constraint (heading/table/anchor limits).
+
+    Raised instead of calling ``sys.exit`` so the pipeline's per-document
+    ``except Exception`` handler marks just that document FAILED while the
+    gunicorn/uvicorn worker process keeps running. Subclasses ``ValueError``
+    (i.e. an ``Exception``, not ``BaseException``) so the existing pipeline
+    handlers catch it.
     """
-    Print a friendly, formatted error message.
+
+
+def format_error(title: str, details: str, solution: str) -> str:
+    """
+    Build a friendly, formatted error message (title / details / SOLUTION).
 
     Args:
         title: Error title
         details: Detailed error information
         solution: Suggested solution steps
+
+    Returns:
+        str: The formatted multi-line message.
     """
-    print("\n" + "=" * 80, file=sys.stderr)
-    print(f"ERROR: {title}", file=sys.stderr)
-    print("=" * 80, file=sys.stderr)
-    print(f"\n{details}", file=sys.stderr)
-    print("\nSOLUTION:", file=sys.stderr)
-    print(solution, file=sys.stderr)
-    print("\n" + "=" * 80 + "\n", file=sys.stderr)
+    return (
+        "\n"
+        + "=" * 80
+        + f"\nERROR: {title}\n"
+        + "=" * 80
+        + f"\n\n{details}"
+        + "\n\nSOLUTION:\n"
+        + solution
+        + "\n\n"
+        + "=" * 80
+        + "\n"
+    )
+
+
+def print_error(title: str, details: str, solution: str):
+    """Print a friendly, formatted error message to stderr."""
+    print(format_error(title, details, solution), file=sys.stderr)
 
 
 def truncate_heading(heading_text: str, para_id: str = None) -> str:
@@ -110,23 +135,24 @@ def validate_heading_length(heading_text: str, para_id: str):
         heading_text: The heading text to validate
         para_id: The paragraph ID for error reporting
 
-    Exits:
-        sys.exit(1) if heading exceeds maximum length
+    Raises:
+        DocxContentError: if heading exceeds maximum length
     """
     if len(heading_text) > MAX_HEADING_LENGTH:
         preview = (
             heading_text[:100] + "..." if len(heading_text) > 100 else heading_text
         )
-        print_error(
-            f"Heading too long ({len(heading_text)} characters, max {MAX_HEADING_LENGTH})",
-            f'The following heading exceeds the maximum allowed length:\n\n  "{preview}"\n\n'
-            f"Location: Paragraph ID {para_id}\n"
-            f"Actual length: {len(heading_text)} characters",
-            "  1. Open the document in Microsoft Word\n"
-            f"  2. Shorten this heading to {MAX_HEADING_LENGTH} characters or less\n"
-            "  3. Re-upload it to LightRAG",
+        raise DocxContentError(
+            format_error(
+                f"Heading too long ({len(heading_text)} characters, max {MAX_HEADING_LENGTH})",
+                f'The following heading exceeds the maximum allowed length:\n\n  "{preview}"\n\n'
+                f"Location: Paragraph ID {para_id}\n"
+                f"Actual length: {len(heading_text)} characters",
+                "  1. Open the document in Microsoft Word\n"
+                f"  2. Shorten this heading to {MAX_HEADING_LENGTH} characters or less\n"
+                "  3. Re-upload it to LightRAG",
+            )
         )
-        sys.exit(1)
 
 
 def validate_table_tokens(table_json: str, block_heading: str):
@@ -137,24 +163,25 @@ def validate_table_tokens(table_json: str, block_heading: str):
         table_json: The JSON representation of the table
         block_heading: The heading of the block containing this table
 
-    Exits:
-        sys.exit(1) if table exceeds maximum token limit
+    Raises:
+        DocxContentError: if table exceeds maximum token limit
     """
     table_tokens = estimate_tokens(table_json)
     if table_tokens > MAX_BLOCK_CONTENT_TOKENS:
-        print_error(
-            f"Table too large (~{table_tokens} tokens, max {MAX_BLOCK_CONTENT_TOKENS})",
-            f"A table in the document is too large for LLM processing.\n\n"
-            f'Location: Under heading "{block_heading}"\n'
-            f"Table size: ~{table_tokens} tokens ({len(table_json)} characters)\n\n"
-            "Large tables can cause issues with file chunking.",
-            "  1. Open the document in Microsoft Word\n"
-            f'  2. Locate the table under heading "{block_heading}"\n'
-            "  3. Split the table into smaller tables, or\n"
-            "  4. Simplify the table content\n"
-            "  5. Re-upload it to LightRAG",
+        raise DocxContentError(
+            format_error(
+                f"Table too large (~{table_tokens} tokens, max {MAX_BLOCK_CONTENT_TOKENS})",
+                f"A table in the document is too large for LLM processing.\n\n"
+                f'Location: Under heading "{block_heading}"\n'
+                f"Table size: ~{table_tokens} tokens ({len(table_json)} characters)\n\n"
+                "Large tables can cause issues with file chunking.",
+                "  1. Open the document in Microsoft Word\n"
+                f'  2. Locate the table under heading "{block_heading}"\n'
+                "  3. Split the table into smaller tables, or\n"
+                "  4. Simplify the table content\n"
+                "  5. Re-upload it to LightRAG",
+            )
         )
-        sys.exit(1)
 
 
 def find_first_valid_para_id(para_ids: list) -> str | None:
@@ -884,8 +911,8 @@ def split_long_block(
     Returns:
         List of block dictionaries (may be split into multiple blocks), each with 'level' field
 
-    Exits:
-        sys.exit(1) if no suitable anchor found and content exceeds limit
+    Raises:
+        DocxContentError: if no suitable anchor found and content exceeds limit
     """
     import math
 
@@ -961,20 +988,21 @@ def split_long_block(
         preview = (
             block_heading[:80] + "..." if len(block_heading) > 80 else block_heading
         )
-        print_error(
-            "Cannot split long block (no suitable anchor paragraphs found)",
-            f"A text block is too long (~{total_tokens} tokens, max {MAX_BLOCK_CONTENT_TOKENS})\n"
-            f"but no paragraphs <= {MAX_ANCHOR_CANDIDATE_LENGTH} characters were found to use as split points.\n\n"
-            f'Location: Under heading "{preview}"\n'
-            f"Block size: ~{total_tokens} tokens ({len(total_content)} characters)\n"
-            f"Number of paragraphs: {len(paragraphs)}\n"
-            f"Calculated target blocks: {target_blocks}",
-            "  1. Open the document in Microsoft Word\n"
-            f'  2. Locate the section under heading "{preview}"\n'
-            f"  3. Add short headings or paragraph breaks (≤{MAX_ANCHOR_CANDIDATE_LENGTH} chars) to divide the content\n"
-            "  4. Re-upload it to LightRAG",
+        raise DocxContentError(
+            format_error(
+                "Cannot split long block (no suitable anchor paragraphs found)",
+                f"A text block is too long (~{total_tokens} tokens, max {MAX_BLOCK_CONTENT_TOKENS})\n"
+                f"but no paragraphs <= {MAX_ANCHOR_CANDIDATE_LENGTH} characters were found to use as split points.\n\n"
+                f'Location: Under heading "{preview}"\n'
+                f"Block size: ~{total_tokens} tokens ({len(total_content)} characters)\n"
+                f"Number of paragraphs: {len(paragraphs)}\n"
+                f"Calculated target blocks: {target_blocks}",
+                "  1. Open the document in Microsoft Word\n"
+                f'  2. Locate the section under heading "{preview}"\n'
+                f"  3. Add short headings or paragraph breaks (≤{MAX_ANCHOR_CANDIDATE_LENGTH} chars) to divide the content\n"
+                "  4. Re-upload it to LightRAG",
+            )
         )
-        sys.exit(1)
 
     # Select anchors for splitting (target_blocks - 1 split points needed)
     selected_anchors = []
@@ -1087,14 +1115,15 @@ def split_long_block(
                     if len(block["heading"]) > 80
                     else block["heading"]
                 )
-                print_error(
-                    "Cannot re-split oversized block (internal error)",
-                    f"A block exceeded MAX_BLOCK_CONTENT_TOKENS but paragraph metadata was lost.\n\n"
-                    f"Location: Under heading \"{preview}\"\n"
-                    f"Block size: ~{block_tokens} tokens ({len(block['content'])} characters)",
-                    "This is an internal error. Please report this issue.",
+                raise DocxContentError(
+                    format_error(
+                        "Cannot re-split oversized block (internal error)",
+                        f"A block exceeded MAX_BLOCK_CONTENT_TOKENS but paragraph metadata was lost.\n\n"
+                        f"Location: Under heading \"{preview}\"\n"
+                        f"Block size: ~{block_tokens} tokens ({len(block['content'])} characters)",
+                        "This is an internal error. Please report this issue.",
+                    )
                 )
-                sys.exit(1)
 
             # Recursively split this oversized block
             # The recursive call will either find more anchors or raise an error
