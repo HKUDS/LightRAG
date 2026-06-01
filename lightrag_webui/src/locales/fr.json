@@ -139,9 +139,9 @@
       "filters": {
         "all": "Tous",
         "completed": "Terminé",
-        "analyzing": "Analyse en cours",
-        "processing": "En traitement",
-        "pending": "En attente",
+        "parse": "Extraction",
+        "analyze": "Analyse",
+        "process": "Traitement",
         "failed": "Échec"
       },
       "status": {

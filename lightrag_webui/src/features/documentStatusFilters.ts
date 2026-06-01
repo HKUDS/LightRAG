@@ -1,61 +1,45 @@
 import type { DocStatus, DocumentsRequest } from '@/api/lightrag'
 
-export type StatusBucket = 'processed' | 'analyzing' | 'processing' | 'pending' | 'failed'
+export type StatusBucket = 'completed' | 'parse' | 'analyze' | 'process' | 'failed'
 export type StatusFilter = StatusBucket | 'all'
 
-const ANALYZING_STATUS_FILTERS: DocStatus[] = ['preprocessed', 'parsing', 'analyzing']
-
-export const getStatusBucket = (status: DocStatus): StatusBucket => {
-  if (ANALYZING_STATUS_FILTERS.includes(status)) {
-    return 'analyzing'
-  }
-  if (status === 'processing') {
-    return 'processing'
-  }
-  return status as Exclude<DocStatus, 'parsing' | 'analyzing' | 'preprocessed'>
+// Each filter bucket maps to exactly one DocStatus. `pending` and the deprecated
+// `preprocessed` intentionally have no dedicated bucket — they only surface under
+// the "all" tab.
+const BUCKET_TO_STATUS: Record<StatusBucket, DocStatus> = {
+  completed: 'processed',
+  parse: 'parsing',
+  analyze: 'analyzing',
+  process: 'processing',
+  failed: 'failed'
 }
 
-export const getGroupedStatusesForFilter = (statusFilter: StatusFilter): DocStatus[] | null => {
-  switch (statusFilter) {
-    case 'analyzing':
-      return ANALYZING_STATUS_FILTERS
-    case 'processed':
-    case 'processing':
-    case 'pending':
-    case 'failed':
-      return [statusFilter]
-    case 'all':
-    default:
-      return null
-  }
+const STATUS_TO_BUCKET: Partial<Record<DocStatus, StatusBucket>> = {
+  processed: 'completed',
+  parsing: 'parse',
+  analyzing: 'analyze',
+  processing: 'process',
+  failed: 'failed'
 }
+
+export const getStatusBucket = (status: DocStatus): StatusBucket | null =>
+  STATUS_TO_BUCKET[status] ?? null
 
 export const getStatusRequestFilters = (
   statusFilter: StatusFilter
 ): Pick<DocumentsRequest, 'status_filter' | 'status_filters'> => {
-  const groupedStatuses = getGroupedStatusesForFilter(statusFilter)
-
-  if (groupedStatuses === null) {
+  if (statusFilter === 'all') {
     return {
       status_filter: null,
       status_filters: null
     }
   }
 
-  if (statusFilter === 'analyzing') {
-    return {
-      status_filter: null,
-      status_filters: groupedStatuses
-    }
-  }
-
   return {
-    status_filter: groupedStatuses[0],
+    status_filter: BUCKET_TO_STATUS[statusFilter],
     status_filters: null
   }
 }
 
-export const matchesStatusFilter = (status: DocStatus, statusFilter: StatusFilter): boolean => {
-  const groupedStatuses = getGroupedStatusesForFilter(statusFilter)
-  return groupedStatuses === null || groupedStatuses.includes(status)
-}
+export const matchesStatusFilter = (status: DocStatus, statusFilter: StatusFilter): boolean =>
+  statusFilter === 'all' || BUCKET_TO_STATUS[statusFilter] === status
