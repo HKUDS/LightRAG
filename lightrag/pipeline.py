@@ -1838,6 +1838,24 @@ class _PipelineMixin:
                     parsed_data=parsed_data_w,
                     ctx=ctx,
                 )
+            except Exception as e:
+                # process_single_document handles its own per-doc failures; an
+                # escape here means even the FAILED-status write failed (e.g.
+                # the doc_status backend is down). Do NOT let the worker die —
+                # that strands the remaining queued items and hangs
+                # q_process.join() forever, wedging the pipeline busy. Route it
+                # to the batch-abort path (same flag as IndexFlushError) and
+                # keep draining so the batch winds down cleanly. CancelledError
+                # is a BaseException, not caught here, so a normal worker
+                # cancellation at batch end still propagates.
+                logger.error(f"Unhandled error in process worker; aborting batch: {e}")
+                logger.error(traceback.format_exc())
+                async with ctx.pipeline_status_lock:
+                    ctx.pipeline_status["cancellation_requested"] = True
+                    ctx.pipeline_status["cancellation_reason"] = "internal_error"
+                    ctx.pipeline_status["cancellation_detail"] = (
+                        f"process worker unhandled error: {e}"
+                    )
             finally:
                 ctx.q_process.task_done()
 

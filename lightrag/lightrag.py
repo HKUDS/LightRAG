@@ -1439,7 +1439,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         finally:
             if update_storage:
-                await self._insert_done()
+                await self._insert_done_with_cleanup()
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
@@ -1594,6 +1594,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
+
+    async def _insert_done_with_cleanup(self) -> None:
+        """``_insert_done`` for direct (non-pipeline) callers, discarding the
+        pending buffers on a flush failure.
+
+        The file pipeline aborts and calls ``_discard_pending_index_ops()``
+        centrally, but direct callers (custom KG / chunks insert,
+        delete/rebuild) have no such cleanup. Without it, a permanent flush
+        failure leaves the poisoned op buffered — OpenSearch keeps a
+        non-retryable bulk item; milvus/qdrant/postgres/mongo keep the whole
+        buffer — and every later ``_insert_done()`` replays it, even after the
+        caller submits otherwise valid work. Discard pending on
+        ``IndexFlushError`` so the buffer is clean for the next attempt, then
+        re-raise so the failure still surfaces to the caller.
+        """
+        try:
+            await self._insert_done()
+        except IndexFlushError:
+            await self._discard_pending_index_ops()
+            raise
 
     def insert_custom_kg(
         self, custom_kg: dict[str, Any], full_doc_id: str = None
@@ -1866,7 +1886,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             raise
         finally:
             if update_storage:
-                await self._insert_done()
+                await self._insert_done_with_cleanup()
 
     def query(
         self,
@@ -2862,7 +2882,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         # ---- 6. Persist pre-rebuild changes ----
         try:
-            await self._insert_done()
+            await self._insert_done_with_cleanup()
         except Exception as e:
             logger.error(f"[purge] Failed to persist pre-rebuild changes: {e}")
             raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
@@ -3618,7 +3638,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # Persist changes to graph database before entity and relationship rebuild
             try:
                 deletion_stage = "persist_pre_rebuild_changes"
-                await self._insert_done()
+                await self._insert_done_with_cleanup()
             except Exception as e:
                 logger.error(f"Failed to persist pre-rebuild changes: {e}")
                 raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
@@ -3767,7 +3787,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # ALWAYS ensure persistence if any deletion operations were started
             if deletion_operations_started:
                 try:
-                    await self._insert_done()
+                    await self._insert_done_with_cleanup()
                 except Exception as persistence_error:
                     persistence_error_msg = f"Failed to persist data after deletion attempt for {doc_id}: {persistence_error}"
                     logger.error(persistence_error_msg)
