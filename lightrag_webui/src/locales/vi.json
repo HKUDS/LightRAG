@@ -139,9 +139,9 @@
       "filters": {
         "all": "Tất cả",
         "completed": "Hoàn tất",
-        "analyzing": "Đang phân tích",
-        "processing": "Đang xử lý",
-        "pending": "Đang chờ",
+        "parse": "Trích xuất",
+        "analyze": "Phân tích",
+        "process": "Xử lý",
         "failed": "Thất bại"
       },
       "status": {

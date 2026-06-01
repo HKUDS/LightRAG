@@ -139,10 +139,10 @@
       "filters": {
         "all": "All",
         "completed": "Completed",
-        "analyzing": "Analyzing",
-        "processing": "Processing",
-        "pending": "Pending",
-        "failed": "Failed"
+        "parse": "Parse",
+        "analyze": "Analyze",
+        "process": "Process",
+        "failed": "Fail"
       },
       "status": {
         "all": "All",

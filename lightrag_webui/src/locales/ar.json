@@ -139,9 +139,9 @@
       "filters": {
         "all": "الكل",
         "completed": "مكتمل",
-        "analyzing": "جارٍ التحليل",
-        "processing": "قيد المعالجة",
-        "pending": "معلق",
+        "parse": "استخراج",
+        "analyze": "تحليل",
+        "process": "معالجة",
         "failed": "فشل"
       },
       "status": {
