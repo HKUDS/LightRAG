@@ -1202,10 +1202,10 @@ class _PipelineMixin:
             pipeline_status_lock=pipeline_status_lock,
             semaphore=asyncio.Semaphore(self.max_parallel_insert),
             total_files=total_files,
-            q_native=asyncio.Queue(maxsize=self.queue_size_default),
-            q_mineru=asyncio.Queue(maxsize=self.queue_size_default),
-            q_docling=asyncio.Queue(maxsize=self.queue_size_default),
-            q_analyze=asyncio.Queue(maxsize=self.queue_size_default),
+            q_native=asyncio.Queue(maxsize=self.queue_size_parse),
+            q_mineru=asyncio.Queue(maxsize=self.queue_size_parse),
+            q_docling=asyncio.Queue(maxsize=self.queue_size_parse),
+            q_analyze=asyncio.Queue(maxsize=self.queue_size_analyze),
             q_process=asyncio.Queue(maxsize=self.queue_size_insert),
         )
 
