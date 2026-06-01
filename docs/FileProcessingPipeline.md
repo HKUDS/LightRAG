@@ -738,7 +738,7 @@ At enqueue time, `resolve_stored_document_parser_engine` puts each document into
 
 **Typical tuning scenarios:**
 
-- Large batch of PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=2`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=2` (defaults are fine; lower MINERU to 1 if VRAM is tight).
+- Large batch of PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=2`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=3` (defaults are fine; lower MINERU to 1 if VRAM is tight).
 - Large batch of PDFs + MinerU cloud service: `MAX_PARALLEL_PARSE_MINERU=3~5` (depending on cloud quota), others at defaults.
 - Pure docx / txt (only native): `MAX_PARALLEL_PARSE_NATIVE=10`; `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC/3`.
 - Heavy LLM rate-limiting: first lower `MAX_PARALLEL_INSERT` (the process stage makes multiple LLM calls per document), then lower `MAX_PARALLEL_ANALYZE` (VLM is a separate quota).

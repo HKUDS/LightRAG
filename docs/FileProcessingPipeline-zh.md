@@ -738,7 +738,7 @@ PENDING ─►├─ q_mineru  ──► [mineru parser  × N2] ─┼─► q_a
 
 **典型调优场景：**
 
-- 大量 PDF + 本地 MinerU 单 GPU：`MAX_PARALLEL_PARSE_MINERU=2`、`MAX_PARALLEL_ANALYZE=5`、`MAX_PARALLEL_INSERT=2`（默认即可；显存紧张时把 MINERU 降到 1）。
+- 大量 PDF + 本地 MinerU 单 GPU：`MAX_PARALLEL_PARSE_MINERU=2`、`MAX_PARALLEL_ANALYZE=5`、`MAX_PARALLEL_INSERT=3`（默认即可；显存紧张时把 MINERU 降到 1）。
 - 大量 PDF + MinerU 云端服务：`MAX_PARALLEL_PARSE_MINERU=3~5`（视云端配额），其它保持默认。
 - 纯 docx / txt（仅走 native）：`MAX_PARALLEL_PARSE_NATIVE=10`、`MAX_PARALLEL_INSERT` 按 `MAX_ASYNC/3` 推算。
 - LLM 限流明显：先降 `MAX_PARALLEL_INSERT`（process 阶段每文档多次 LLM 调用），再降 `MAX_PARALLEL_ANALYZE`（VLM 是独立配额）。

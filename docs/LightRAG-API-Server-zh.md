@@ -502,7 +502,7 @@ LightRAG 服务器可以在 `Gunicorn + Uvicorn` 预加载模式下运行。Guni
 ### 工作进程数，数字不大于 (2 x 核心数) + 1
 WORKERS=2
 ### 一批中并行处理的文件数
-MAX_PARALLEL_INSERT=2
+MAX_PARALLEL_INSERT=3
 # LLM 的最大并发请求数
 MAX_ASYNC=4
 ```
@@ -981,7 +981,7 @@ ENTITY_EXTRACTION_USE_JSON=true
 # MAX_EXTRACTION_RECORDS=100
 # MAX_EXTRACTION_ENTITIES=40
 SUMMARY_LANGUAGE=Chinese
-MAX_PARALLEL_INSERT=2
+MAX_PARALLEL_INSERT=3
 LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 # CHUNK_R_SEPARATORS=["\n\n","\n","。","！","？","；","，"," ",""]
 # CHUNK_P_SIZE=2000
