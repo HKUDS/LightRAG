@@ -261,7 +261,7 @@ await rag.ainsert("Text", ids=["doc-123"])
 await rag.ainsert(["Text 1", "Text 2"], file_paths=["doc1.pdf", "doc2.pdf"])
 
 # Configure batch size
-rag = LightRAG(..., max_parallel_insert=4)  # Default: 2, max recommended: 10
+rag = LightRAG(..., max_parallel_insert=4)  # Default: 3, max recommended: 10
 ```
 
 ### Query Configuration

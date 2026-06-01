@@ -724,7 +724,7 @@ At enqueue time, `resolve_stored_document_parser_engine` puts each document into
 | `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: number of concurrent workers for MinerU parsing | MinerU has significant GPU/CPU usage; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample VRAM, you can set 2–3; when going through MinerU's official cloud service, you can raise it appropriately (subject to cloud quotas). |
 | `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: number of concurrent workers for Docling parsing | Docling is similarly resource-sensitive; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample CPU/GPU, you can set 2–3. |
 | `MAX_PARALLEL_ANALYZE` | `5` | N4: number of concurrent workers for multimodal analysis (VLM image / table description) | Directly consumes the VLM quota. Recommended ≤ VLM service concurrency cap. |
-| `MAX_PARALLEL_INSERT` | `2` | N5: number of concurrent documents at the entity / relation extraction + ingest stage | Recommended `MAX_ASYNC / 3`, in the range 2–10. This stage triggers multiple LLM calls per document; setting it too high will hit LLM rate limits. This value also serves as the `asyncio.Semaphore` for an additional constraint (worker count and semaphore value are the same). |
+| `MAX_PARALLEL_INSERT` | `3` | N5: number of concurrent documents at the entity / relation extraction + ingest stage | Recommended `MAX_ASYNC / 3`, in the range 2–10. This stage triggers multiple LLM calls per document; setting it too high will hit LLM rate limits. This value also serves as the `asyncio.Semaphore` for an additional constraint (worker count and semaphore value are the same). |
 | `QUEUE_SIZE_DEFAULT` | `100` | Bounded queue capacity between the parse / analyze stages | Generally no need to tune. For very large batches (thousands or more), can be raised to avoid backpressure at the enqueue side; lower it when memory is tight. |
 | `QUEUE_SIZE_INSERT` | `4` | Queue capacity between the analyze → process stage | The process stage is the slowest and most memory-hungry in the pipeline; the queue is deliberately small to provide backpressure to upstream and prevent memory bloat. |
 
@@ -738,7 +738,7 @@ At enqueue time, `resolve_stored_document_parser_engine` puts each document into
 
 **Typical tuning scenarios:**
 
-- Large batch of PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=2`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=2` (defaults are fine; lower MINERU to 1 if VRAM is tight).
+- Large batch of PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=2`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=3` (defaults are fine; lower MINERU to 1 if VRAM is tight).
 - Large batch of PDFs + MinerU cloud service: `MAX_PARALLEL_PARSE_MINERU=3~5` (depending on cloud quota), others at defaults.
 - Pure docx / txt (only native): `MAX_PARALLEL_PARSE_NATIVE=10`; `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC/3`.
 - Heavy LLM rate-limiting: first lower `MAX_PARALLEL_INSERT` (the process stage makes multiple LLM calls per document), then lower `MAX_PARALLEL_ANALYZE` (VLM is a separate quota).

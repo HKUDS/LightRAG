@@ -33,6 +33,7 @@ from lightrag.constants import (
     DEFAULT_MIN_RERANK_SCORE,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_MAX_ASYNC,
+    DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
@@ -499,7 +500,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Get MAX_PARALLEL_INSERT from environment
-    args.max_parallel_insert = get_env_value("MAX_PARALLEL_INSERT", 2, int)
+    args.max_parallel_insert = get_env_value(
+        "MAX_PARALLEL_INSERT", DEFAULT_MAX_PARALLEL_INSERT, int
+    )
 
     # Get MAX_GRAPH_NODES from environment
     args.max_graph_nodes = get_env_value("MAX_GRAPH_NODES", 1000, int)

@@ -502,7 +502,7 @@ Though LightRAG Server uses one worker to process the document indexing pipeline
 ### Number of worker processes, not greater than (2 x number_of_cores) + 1
 WORKERS=2
 ### Number of parallel files to process in one batch
-MAX_PARALLEL_INSERT=2
+MAX_PARALLEL_INSERT=3
 ### Max concurrent requests to the LLM
 MAX_ASYNC=4
 ```
@@ -981,7 +981,7 @@ ENTITY_EXTRACTION_USE_JSON=true
 # MAX_EXTRACTION_RECORDS=100
 # MAX_EXTRACTION_ENTITIES=40
 SUMMARY_LANGUAGE=Chinese
-MAX_PARALLEL_INSERT=2
+MAX_PARALLEL_INSERT=3
 LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 # CHUNK_R_SEPARATORS=["\n\n","\n","。","！","？","；","，"," ",""]
 # CHUNK_P_SIZE=2000
