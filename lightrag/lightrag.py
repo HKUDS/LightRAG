@@ -1483,7 +1483,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if storage_inst is not None
         ]
 
-    async def _discard_pending_index_ops(self) -> None:
+    async def _discard_pending_index_ops(
+        self, *, skip_enqueue_owned: bool = True
+    ) -> None:
         """Drop not-yet-flushed buffers on an aborting batch.
 
         Called when a batch aborts on an internal storage error. Each
@@ -1493,15 +1495,29 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         re-flushed by remaining in-flight documents or carried into the next
         batch.
 
-        ``full_docs`` and ``doc_status`` are skipped: they are written by the
-        concurrent ``apipeline_enqueue_documents`` path (under
-        ``enqueue_serialize_lock``, which this cleanup does not hold), as
-        ``full_docs.upsert -> index_done_callback -> doc_status.upsert``.
-        Clearing ``full_docs``'s buffer in the window between an in-flight
-        upload's upsert and its flush would drop the document body while the
-        PENDING ``doc_status`` row still gets written, leaving an accepted
-        document with no content. Those writes self-flush immediately, so
-        skipping them discards nothing processing-owned.
+        ``skip_enqueue_owned`` controls whether ``full_docs`` / ``doc_status``
+        are cleared:
+
+        * ``True`` (the file pipeline) — skip them. They are written by the
+          concurrent ``apipeline_enqueue_documents`` path (under
+          ``enqueue_serialize_lock``, which this cleanup does not hold), as
+          ``full_docs.upsert -> index_done_callback -> doc_status.upsert``.
+          Clearing ``full_docs``'s buffer in the window between an in-flight
+          upload's upsert and its flush would drop the document body while the
+          PENDING ``doc_status`` row still gets written, leaving an accepted
+          document with no content. Those writes self-flush immediately, so
+          skipping them discards nothing processing-owned.
+        * ``False`` (direct, non-pipeline callers like ``ainsert_custom_chunks``
+          via ``_insert_done_with_cleanup``) — clear them too. There is no
+          concurrent-enqueue contract for these callers, and a permanent
+          ``full_docs`` bulk failure (e.g. OpenSearch KV) must be cleared or it
+          stays buffered and every later ``_insert_done()`` replays the same
+          poisoned record. ``doc_status`` is immediate-write (no buffered
+          backend overrides ``drop_pending_index_ops``), so dropping it is a
+          no-op; only ``full_docs`` is meaningfully cleared. (Edge: a direct
+          insert racing a concurrent enqueue mid-window could still drop that
+          enqueue's in-flight body, but per-item backends only retain the
+          failed item and the enqueue race is a pipeline-only concern.)
 
         The LLM response cache gets a final flush *before* its buffer is
         dropped, because — unlike regenerable KG data — re-running LLM calls
@@ -1528,8 +1544,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         so cleanup never masks the original abort cause.
         """
         for storage_inst in self._index_storages():
-            if storage_inst is self.full_docs or storage_inst is self.doc_status:
-                # enqueue-owned (see docstring): never clear their buffers here.
+            if skip_enqueue_owned and (
+                storage_inst is self.full_docs or storage_inst is self.doc_status
+            ):
+                # enqueue-owned (see docstring): skipped for the file pipeline
+                # to avoid racing a concurrent enqueue; direct callers pass
+                # skip_enqueue_owned=False so a poisoned full_docs op is cleared.
                 continue
             if storage_inst is self.llm_response_cache:
                 # Persist what can still be written, then fall through to drop
@@ -1619,7 +1639,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         try:
             await self._insert_done()
         except IndexFlushError:
-            await self._discard_pending_index_ops()
+            # Direct callers have no concurrent-enqueue contract, so clear
+            # full_docs too (skip_enqueue_owned=False) — otherwise a permanent
+            # full_docs bulk failure stays buffered and replays on every later
+            # _insert_done().
+            await self._discard_pending_index_ops(skip_enqueue_owned=False)
             raise
 
     def insert_custom_kg(
