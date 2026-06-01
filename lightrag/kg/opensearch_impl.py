@@ -1063,11 +1063,15 @@ class OpenSearchKVStorage(BaseKVStorage):
             retryable_ids, non_retryable_ops = _extract_bulk_failed_ids(failed)
             non_retryable_ids = {op.doc_id for op in non_retryable_ops}
 
-            # Clear only successfully-written entries. Retryable ops stay for
-            # the next flush; non-retryable ops also stay buffered so the
-            # permanent failure is re-surfaced (we raise below) rather than
-            # silently dropped while the document is marked PROCESSED.
-            keep_ids = retryable_ids | non_retryable_ids
+            # Keep ONLY retryable ops buffered for the next flush. Successful
+            # ops are popped; non-retryable (permanent 4xx) ops are dropped
+            # here, not retained: a permanently-unwritable op can never land,
+            # so keeping it would replay-and-refail on every later flush and
+            # poison every caller that shares this buffer — including direct
+            # flush paths (e.g. _persist_parsed_full_docs) that never run the
+            # pipeline's cleanup. The raise below (not retention) is what
+            # surfaces the failure and prevents a silent PROCESSED.
+            keep_ids = retryable_ids
             for doc_id in list(pending_upserts.keys()):
                 if doc_id not in keep_ids:
                     pending_upserts.pop(doc_id, None)
@@ -4130,13 +4134,16 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                 raise
 
             retryable_ids, non_retryable_ops = _extract_bulk_failed_ids(failed)
-            non_retryable_ids = {op.doc_id for op in non_retryable_ops}
 
-            # Clear only successfully-written entries. Retryable ops stay for
-            # the next flush; non-retryable ops also stay buffered so the
-            # permanent failure is re-surfaced (we raise below) rather than
-            # silently dropped while the document is marked PROCESSED.
-            keep_ids = retryable_ids | non_retryable_ids
+            # Keep ONLY retryable ops buffered for the next flush. Successful
+            # ops are popped; non-retryable (permanent 4xx) ops are dropped
+            # here, not retained: a permanently-unwritable op can never land,
+            # so keeping it would replay-and-refail on every later flush and
+            # poison every caller that shares this buffer — including direct
+            # flush paths that never run the pipeline's cleanup. The raise
+            # below (not retention) is what surfaces the failure and prevents
+            # a silent PROCESSED.
+            keep_ids = retryable_ids
             for doc_id in committed_doc_ids:
                 if doc_id not in keep_ids:
                     pending_docs.pop(doc_id, None)

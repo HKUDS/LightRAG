@@ -1228,8 +1228,9 @@ class TestKVStorageBatching:
     ):
         """Permanent (4xx, e.g. mapping error) failures must surface as an
         error so _insert_done aborts the pipeline instead of silently marking
-        the document PROCESSED. Both the non-retryable and retryable ops stay
-        buffered (no silent drop)."""
+        the document PROCESSED. The non-retryable op is dropped from the buffer
+        (it can never land — keeping it would replay-and-refail on every later
+        flush and poison direct callers); the retryable op stays for retry."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -1255,8 +1256,8 @@ class TestKVStorageBatching:
                 await s.upsert({"k1": {"content": "x"}, "k2": {"content": "y"}})
                 with pytest.raises(RuntimeError, match="failed permanently"):
                     await s.index_done_callback()
-                # Non-retryable kept buffered (re-surfaced, not silently dropped).
-                assert "k1" in s._pending_upserts
+                # Non-retryable dropped (can never land; not replayed).
+                assert "k1" not in s._pending_upserts
                 # Retryable kept for the next flush.
                 assert "k2" in s._pending_upserts
 
@@ -4610,8 +4611,9 @@ class TestVectorStorageBatching:
         self, global_config, embed_func, mock_client
     ):
         """4xx (non-429) permanent failures must raise so the pipeline aborts
-        instead of marking the document PROCESSED; the failed op stays
-        buffered (no silent drop)."""
+        instead of marking the document PROCESSED; the failed op is dropped
+        from the buffer (it can never land — keeping it would replay-and-refail
+        on every later flush), while the retryable op stays for retry."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -4632,9 +4634,9 @@ class TestVectorStorageBatching:
                 )
                 with pytest.raises(RuntimeError, match="failed permanently"):
                     await s.index_done_callback()
-                # v1 (non-retryable) kept buffered, re-surfaced not silently
-                # dropped; v2 (retryable) retained for the next flush.
-                assert "v1" in s._pending_vector_docs
+                # v1 (non-retryable) dropped (can never land; not replayed);
+                # v2 (retryable) retained for the next flush.
+                assert "v1" not in s._pending_vector_docs
                 assert "v2" in s._pending_vector_docs
 
     @pytest.mark.asyncio
