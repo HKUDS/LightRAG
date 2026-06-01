@@ -1484,29 +1484,43 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ]
 
     async def _discard_pending_index_ops(self) -> None:
-        """Drop every storage's not-yet-flushed buffer on an aborting batch.
+        """Drop not-yet-flushed buffers on an aborting batch.
 
         Called when a batch aborts on an internal storage error. Each
-        still-buffered record belongs to a document that will be marked FAILED
-        and fully reprocessed, so dropping the shared cross-file buffers is
-        safe and stops the poisoned/stale records from being re-flushed by
-        remaining in-flight documents or carried into the next batch.
+        still-buffered KG/vector record belongs to a document that will be
+        marked FAILED and fully reprocessed, so dropping the shared cross-file
+        buffers is safe and stops the poisoned/stale records from being
+        re-flushed by remaining in-flight documents or carried into the next
+        batch.
 
-        The LLM response cache is dropped here too — deliberately, not skipped.
-        A buffer is pending (unwritten) work, not a persistence mechanism: by
-        abort time every *flushable* cache entry has already been committed by
-        the per-document flush paths (``_insert_done`` /
-        ``_finalize_doc_failure`` / ``_mark_doc_cancelled_in_stage``), which on
-        a per-item backend like OpenSearch pop the successes and keep only the
-        entries that could not be written. Skipping the cache would leave those
-        un-writable entries buffered, so a permanently-failing cache item (now
-        that OpenSearch raises on non-retryable bulk failures) would re-flush
-        and re-abort on every subsequent batch — wedging the pipeline. Dropping
-        them loses nothing persistable (the cache is an optimization; a dropped
-        entry is simply recomputed on reprocess). Best-effort: a clear failure
-        is logged, not raised, so cleanup never masks the original abort cause.
+        The LLM response cache gets a final flush *before* its buffer is
+        dropped, because — unlike regenerable KG data — re-running LLM calls
+        is expensive, so cached results must be persisted maximally:
+
+        * When the abort was NOT caused by the cache, the cache backend is
+          healthy and this flush commits every still-buffered entry, leaving
+          the buffer empty so the subsequent drop discards nothing persistable.
+        * When a poisoned cache item is itself the abort cause (OpenSearch now
+          raises on non-retryable bulk failures), the flush persists the
+          writable entries (per-item backends pop successes) while the
+          un-writable item stays buffered and the drop then clears it — so a
+          bad cache entry cannot re-flush and re-abort every subsequent batch
+          and wedge the pipeline.
+
+        Best-effort throughout: a flush/clear failure is logged, not raised,
+        so cleanup never masks the original abort cause.
         """
         for storage_inst in self._index_storages():
+            if storage_inst is self.llm_response_cache:
+                # Persist what can still be written, then fall through to drop
+                # whatever could not (a poisoned item) so it cannot wedge the
+                # next batch.
+                try:
+                    await cast(
+                        StorageNameSpace, storage_inst
+                    ).index_done_callback()
+                except Exception as e:
+                    logger.error(f"Failed to persist LLM cache on abort: {e}")
             try:
                 await cast(StorageNameSpace, storage_inst).drop_pending_index_ops()
             except Exception as e:
