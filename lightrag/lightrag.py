@@ -1558,7 +1558,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 raise IndexFlushError(type(storage_inst).__name__, namespace, e) from e
 
-        await asyncio.gather(*[_flush_one(inst) for inst in storages])
+        # Await every flush to completion (return_exceptions=True) before
+        # raising. With the default gather, the first IndexFlushError is
+        # propagated while sibling flush coroutines keep running detached —
+        # they could commit records or race _discard_pending_index_ops after
+        # the abort decision, and a second failing sibling would surface as a
+        # "Task exception was never retrieved" warning. Collecting all results
+        # first makes teardown deterministic and lets us report every failure.
+        results = await asyncio.gather(
+            *[_flush_one(inst) for inst in storages], return_exceptions=True
+        )
+        errors = [r for r in results if isinstance(r, BaseException)]
+        if errors:
+            # A cooperative cancellation must propagate as-is, not be reported
+            # as a storage flush failure (_flush_one's `except Exception` does
+            # not catch CancelledError, so it lands here as a result).
+            for exc in errors:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise exc
+            for extra in errors[1:]:
+                logger.error(f"Additional index flush failure: {extra}")
+            raise errors[0]
 
         log_message = "In memory DB persist to disk"
         logger.info(log_message)
