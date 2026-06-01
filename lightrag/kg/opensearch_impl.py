@@ -1735,8 +1735,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
-        except Exception:
-            pass
+            raise
 
     async def is_empty(self) -> bool:
         """Return True if the index contains no documents."""
