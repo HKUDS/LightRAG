@@ -1598,6 +1598,18 @@ class _PipelineMixin:
                 ):
                     continue
 
+                # Compute content-derived fields here while the parse worker
+                # still holds the body, and stamp them on status_doc so they
+                # are persisted at the PARSING transition below. Downstream
+                # stages (analyze / process) re-read the body from full_docs by
+                # doc_id instead of carrying it through q_analyze / q_process,
+                # keeping large documents out of those in-memory buffers. Parse
+                # has already persisted the parsed body to full_docs (lightrag /
+                # raw), so the re-read is guaranteed to find it.
+                parsed_content_w = parsed_data_w.get("content", "") or ""
+                status_doc_w.content_summary = get_content_summary(parsed_content_w)
+                status_doc_w.content_length = len(parsed_content_w)
+
                 # Persist the parse-stage outcome to doc_status now, before the
                 # doc waits in q_analyze, so parse_end_time / parse_stage_skipped
                 # reflect the actual end of parsing instead of only landing at the
@@ -1610,6 +1622,11 @@ class _PipelineMixin:
                     file_path=file_path_w,
                 )
 
+                # Drop the heavy body from the queue payload; q_analyze /
+                # q_process now carry only lightweight metadata (blocks_path,
+                # parse_format, flags). process_single_document re-reads the
+                # body from full_docs by doc_id.
+                parsed_data_w.pop("content", None)
                 await ctx.q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
             except PipelineCancelledException:
                 # Cancellation raised from inside the parse engine (future-
@@ -1669,11 +1686,11 @@ class _PipelineMixin:
                         pipeline_status_lock=ctx.pipeline_status_lock,
                     )
                     continue
-                refreshed_content_w = parsed_data_w.get("content", "") or ""
-                refreshed_summary_w = get_content_summary(refreshed_content_w)
-                refreshed_length_w = len(refreshed_content_w)
-                status_doc_w.content_summary = refreshed_summary_w
-                status_doc_w.content_length = refreshed_length_w
+                # content_summary / content_length were computed by the parse
+                # worker (which held the body) and are already set on this
+                # status_doc; the body is no longer carried through the queue,
+                # and analyze_multimodal works off the on-disk sidecar
+                # (blocks_path), not the body, so no re-read is needed here.
                 # Stamp analyzing_start_time so per-stage durations stay
                 # derivable from doc_status even after PROCESSED / FAILED;
                 # carry-over preserves it across later upserts.
@@ -1864,7 +1881,15 @@ class _PipelineMixin:
                         )
                         del ctx.pipeline_status["history_messages"][:-5000]
 
-                content = parsed_data.get("content", "")
+                # The parsed body is no longer carried through q_analyze /
+                # q_process (it would pin large documents in memory). Re-read it
+                # from full_docs (already fetched into content_data above) and
+                # strip the lightrag marker according to the stored parse_format
+                # — parse persisted the body for every engine before enqueue.
+                content = strip_lightrag_doc_prefix(
+                    (content_data or {}).get("content"),
+                    (content_data or {}).get("parse_format"),
+                )
 
                 # Decode per-document processing options once; later stages
                 # (multimodal hook / KG extraction) re-read them from
