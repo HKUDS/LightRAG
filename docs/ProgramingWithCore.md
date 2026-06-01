@@ -911,7 +911,7 @@ rag = LightRAG(
 rag.insert(["TEXT1", "TEXT2", "TEXT3", ...])  # Processed in batches of 4
 ```
 
-The `max_parallel_insert` parameter determines the number of documents processed concurrently. Default is **2**. Recommended to keep **below 10**, as the bottleneck typically lies with the LLM.
+The `max_parallel_insert` parameter determines the number of documents processed concurrently. Default is **3**. Recommended to keep **below 10**, as the bottleneck typically lies with the LLM.
 
 * Insert with ID
 

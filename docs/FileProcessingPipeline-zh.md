@@ -724,7 +724,7 @@ PENDING ─►├─ q_mineru  ──► [mineru parser  × N2] ─┼─► q_a
 | `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，**默认 2 为适度并发**。资源紧张时可降到 1；本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
 | `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，**默认 2 为适度并发**。资源紧张时可降到 1；本地部署且 CPU/GPU 充足时可设 2-3 |
 | `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限 |
-| `MAX_PARALLEL_INSERT` | `2` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC / 3`，区间 2~10。该阶段每个文档会触发多次 LLM 调用，过高会撞 LLM 限流。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
+| `MAX_PARALLEL_INSERT` | `3` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC / 3`，区间 2~10。该阶段每个文档会触发多次 LLM 调用，过高会撞 LLM 限流。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
 | `QUEUE_SIZE_DEFAULT` | `100` | parse / analyze 阶段间的有界队列容量 | 一般无需调整。极少量大批量任务（成千上万）可适当提高，避免 enqueue 端反压；内存紧张时可调低 |
 | `QUEUE_SIZE_INSERT` | `4` | analyze → process 阶段间的队列容量 | process 是流水线中最慢、最耗内存的阶段，队列特意做小，给上游提供反压防止内存堆积 |
 

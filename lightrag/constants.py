@@ -75,7 +75,7 @@ DEFAULT_TEMPERATURE = 1.0
 
 # Async configuration defaults
 DEFAULT_MAX_ASYNC = 4  # Default maximum async operations
-DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
+DEFAULT_MAX_PARALLEL_INSERT = 3  # Default maximum parallel insert operations
 
 # Chunker defaults — i18n-aware so Chinese / mixed-language documents
 # split correctly out of the box.  Override per deployment via
