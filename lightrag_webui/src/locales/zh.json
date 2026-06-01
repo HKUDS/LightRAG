@@ -139,9 +139,9 @@
       "filters": {
         "all": "全部",
         "completed": "已完成",
-        "analyzing": "分析中",
-        "processing": "处理中",
-        "pending": "等待中",
+        "parse": "内容解析",
+        "analyze": "模态分析",
+        "process": "抽取处理",
         "failed": "失败"
       },
       "status": {

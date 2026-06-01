@@ -139,9 +139,9 @@
       "filters": {
         "all": "Усі",
         "completed": "Завершено",
-        "analyzing": "Аналіз",
-        "processing": "Обробка",
-        "pending": "Очікування",
+        "parse": "Видобування",
+        "analyze": "Аналіз",
+        "process": "Обробка",
         "failed": "Помилка"
       },
       "status": {
