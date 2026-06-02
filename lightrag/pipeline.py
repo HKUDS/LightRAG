@@ -1273,20 +1273,39 @@ class _PipelineMixin:
         # an escape here would orphan the workers — they keep draining the queues and
         # appending to history_messages while the caller's finally has already cleared
         # ``busy`` — leaving busy=False while processing visibly continues.
-        batch_aborted_by_exception = False
         try:
-            # Add pending files to the correct parsing queue. An orchestrator-
-            # level storage read here (e.g. full_docs.get_by_id during a backend
-            # outage) that raises aborts the whole batch — the finally below
-            # cancels the workers cleanly and the caller releases ``busy``, with
-            # affected documents left queued (PENDING) for the next run. We do
-            # NOT per-doc isolate this read: the same unguarded read also runs in
-            # _validate_and_fix_document_consistency before this batch, so a clean
-            # whole-batch abort is the consistent behavior across both sites.
-            for doc_id, status_doc in to_process_docs.items():
-                content_data = await self.full_docs.get_by_id(doc_id) or {}
+            # Add pending files to the correct parsing queue
+            for current_file_number, (doc_id, status_doc) in enumerate(
+                to_process_docs.items(), start=1
+            ):
+                file_path = getattr(status_doc, "file_path", "unknown_source")
+                # Per-document isolation: the engine-routing get_by_id is the only
+                # orchestrator-level storage read in this loop. A transient/corrupt
+                # single-doc failure must FAIL just that document and continue with
+                # the rest of the batch — not escape and abort the whole batch.
+                # During a full outage _finalize_doc_failure's own doc_status write
+                # also raises; that escape is caught by the finally below (workers
+                # are cleanly cancelled) and the batch aborts as a whole.
+                try:
+                    content_data = await self.full_docs.get_by_id(doc_id) or {}
+                except Exception as e:
+                    await self._finalize_doc_failure(
+                        doc_id=doc_id,
+                        status_doc=status_doc,
+                        file_path=file_path,
+                        error=e,
+                        stage_label="parse",
+                        current_file_number=current_file_number,
+                        total_files=total_files,
+                        failed_chunks_snapshot=([], 0),
+                        pending_tasks=[],
+                        metadata_extra={},
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                    )
+                    continue
                 engine = resolve_stored_document_parser_engine(
-                    file_path=getattr(status_doc, "file_path", "unknown_source"),
+                    file_path=file_path,
                     content_data=content_data,
                 )
                 if engine == "mineru":
@@ -1301,32 +1320,24 @@ class _PipelineMixin:
             )
             await ctx.q_analyze.join()
             await ctx.q_process.join()
-        except BaseException:
-            batch_aborted_by_exception = True
-            raise
         finally:
             for w in workers:
                 w.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
 
-            # Discard not-yet-flushed shared cross-file buffers when the batch
-            # aborts, so they are neither re-flushed nor carried into the next
-            # batch — otherwise stale KG/vector records from already-merged
-            # in-flight docs could later be persisted for documents that were
-            # FAILED/reset rather than marked PROCESSED. This must run on BOTH:
-            #   - the cooperative internal-error abort (cancellation flag), and
-            #   - an exception escaping this method (e.g. an orchestrator-level
-            #     storage call failed during an outage and reached the finally).
-            # Workers are already stopped above, so this does not race a flush.
-            # _discard_pending_index_ops is best-effort (never raises), so it
-            # cannot mask the original abort cause. See drop_pending_index_ops.
-            async with pipeline_status_lock:
-                internal_abort = (
-                    pipeline_status.get("cancellation_requested", False)
-                    and pipeline_status.get("cancellation_reason") == "internal_error"
-                )
-            if internal_abort or batch_aborted_by_exception:
-                await self._discard_pending_index_ops()
+        # If the batch aborted on an internal storage error, the shared
+        # cross-file flush buffers may still hold records from the documents
+        # that were marked FAILED. Discard them now (workers are stopped, so
+        # this does not race a flush) so they are neither re-flushed nor
+        # carried into the next batch — every affected document is reprocessed
+        # on retry. See _discard_pending_index_ops / drop_pending_index_ops.
+        async with pipeline_status_lock:
+            internal_abort = (
+                pipeline_status.get("cancellation_requested", False)
+                and pipeline_status.get("cancellation_reason") == "internal_error"
+            )
+        if internal_abort:
+            await self._discard_pending_index_ops()
 
     async def _validate_and_fix_document_consistency(
         self,

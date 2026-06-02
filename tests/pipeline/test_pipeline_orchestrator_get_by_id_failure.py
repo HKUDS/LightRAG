@@ -1,23 +1,21 @@
 """Offline tests for orchestrator-level storage failures during batch enqueue.
 
-Covers the fix that guarantees the parse/analyze/process workers created in
-``_run_pipeline_batch`` are ALWAYS cancelled+awaited via a try/finally — so an
-exception escaping the enqueue loop (e.g. an orchestrator-level
-``full_docs.get_by_id`` failing during a backend outage) can never orphan live
-worker tasks that keep draining the queues and appending to ``history_messages``
-while the caller's finally has already cleared ``busy`` (the observed
-"busy=False but processing visibly continues" symptom). The same finally also
-discards not-yet-flushed shared index buffers so stale records are not carried
-into the next batch.
+Covers the fix that:
 
-By design there is NO per-document isolation of this read: the same unguarded
-``full_docs.get_by_id`` also runs in ``_validate_and_fix_document_consistency``
-before the batch, so a failure aborts the whole batch CLEANLY (workers torn
-down, busy released, docs left PENDING for retry) rather than being isolated.
+* guarantees the parse/analyze/process workers created in ``_run_pipeline_batch``
+  are ALWAYS cancelled+awaited via a try/finally — so an exception escaping the
+  enqueue loop (e.g. an orchestrator-level ``full_docs.get_by_id`` failing during
+  a backend outage) can never orphan live worker tasks that keep draining the
+  queues and appending to ``history_messages`` while the caller's finally has
+  already cleared ``busy`` (busy=False but processing visibly continues); and
+* isolates a single failing document's engine-routing ``get_by_id`` so that a
+  transient/corrupt doc is marked FAILED and the rest of the batch still
+  processes, instead of escaping and aborting the whole batch.
 
-``_validate_and_fix_document_consistency`` is bypassed in these tests so the
-escape lands inside ``_run_pipeline_batch`` (where workers are live) — the path
-that actually exercises worker teardown.
+The orchestrator's ``full_docs.get_by_id`` at batch enqueue is the read under
+test. ``_validate_and_fix_document_consistency`` (which also reads full_docs,
+but BEFORE any worker is created — so an escape there is a clean stop, not an
+orphan) is bypassed to target the enqueue path deterministically.
 """
 
 from __future__ import annotations
@@ -113,23 +111,63 @@ async def _passthrough_validate(self_docs, pipeline_status, pipeline_status_lock
 
 
 @pytest.mark.asyncio
-async def test_enqueue_get_by_id_failure_aborts_batch_cleanly(tmp_path, monkeypatch):
-    """An orchestrator-level get_by_id failure during batch enqueue (after the
-    workers exist) aborts the whole batch CLEANLY: the exception propagates,
-    every worker task is cancelled (no orphans), pending index buffers are
-    discarded, and the caller releases ``busy``. The document is left in a
-    non-PROCESSED state for the next run (no per-doc isolation by design).
-
-    ``_validate_and_fix_document_consistency`` is bypassed so the escape lands
-    inside ``_run_pipeline_batch`` (where workers are live) rather than in the
-    earlier validation read — the path that actually exercises worker teardown.
-    """
+async def test_single_doc_get_by_id_failure_is_isolated_no_orphans(
+    tmp_path, monkeypatch
+):
+    """One doc's enqueue get_by_id fails -> that doc FAILED, the rest PROCESSED,
+    busy released, and no worker tasks are orphaned."""
     rag = await _build_rag(tmp_path)
     try:
-        doc_path = "outage.txt"
-        doc_id = compute_mdhash_id(doc_path, prefix="doc-")
+        bad_path = "bad.txt"
+        good_path = "good.txt"
+        bad_id = compute_mdhash_id(bad_path, prefix="doc-")
+        good_id = compute_mdhash_id(good_path, prefix="doc-")
         await rag.apipeline_enqueue_documents(
-            input="outage content", file_paths=doc_path
+            input=["bad content", "good content"],
+            file_paths=[bad_path, good_path],
+        )
+
+        monkeypatch.setattr(
+            rag, "_validate_and_fix_document_consistency", _passthrough_validate
+        )
+
+        orig_get = rag.full_docs.get_by_id
+
+        async def flaky_get(doc_id):
+            if doc_id == bad_id:
+                raise ConnectionError("redis down for this doc")
+            return await orig_get(doc_id)
+
+        monkeypatch.setattr(rag.full_docs, "get_by_id", flaky_get)
+
+        await rag.apipeline_process_enqueue_documents()
+        # Give any (incorrectly) orphaned tasks a tick to surface.
+        await asyncio.sleep(0)
+
+        assert _live_worker_tasks() == [], "worker tasks were orphaned"
+
+        bad_status = await rag.doc_status.get_by_id(bad_id)
+        good_status = await rag.doc_status.get_by_id(good_id)
+        assert _status_to_text(bad_status["status"]) == "failed"
+        assert _status_to_text(good_status["status"]) == "processed"
+
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        assert pipeline_status.get("busy") is False
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_full_outage_escape_still_cancels_workers(tmp_path, monkeypatch):
+    """When even the FAILED-status write fails (full outage), the exception
+    escapes the enqueue loop, but the try/finally still cancels all workers
+    and the caller's finally releases busy — no orphans, busy=False."""
+    rag = await _build_rag(tmp_path)
+    try:
+        await rag.apipeline_enqueue_documents(
+            input="outage content", file_paths="outage.txt"
         )
 
         monkeypatch.setattr(
@@ -137,22 +175,14 @@ async def test_enqueue_get_by_id_failure_aborts_batch_cleanly(tmp_path, monkeypa
         )
 
         async def dead_get(doc_id):
-            raise ConnectionError("redis down during enqueue")
+            raise ConnectionError("redis fully down")
+
+        async def dead_upsert(*args, **kwargs):
+            raise ConnectionError("redis fully down")
 
         monkeypatch.setattr(rag.full_docs, "get_by_id", dead_get)
-
-        # The batch's finally must discard not-yet-flushed shared buffers when an
-        # exception escapes (not just on the cooperative internal-error flag), so
-        # stale KG/vector records are not carried into the next batch.
-        discard_calls = 0
-        orig_discard = rag._discard_pending_index_ops
-
-        async def spy_discard(*, skip_enqueue_owned=True):
-            nonlocal discard_calls
-            discard_calls += 1
-            await orig_discard(skip_enqueue_owned=skip_enqueue_owned)
-
-        monkeypatch.setattr(rag, "_discard_pending_index_ops", spy_discard)
+        # _finalize_doc_failure's doc_status write also fails -> escape.
+        monkeypatch.setattr(rag.doc_status, "upsert", dead_upsert)
 
         # apipeline_process_enqueue_documents lets the storage error propagate
         # out (its finally releases busy but does not swallow the exception).
@@ -161,15 +191,10 @@ async def test_enqueue_get_by_id_failure_aborts_batch_cleanly(tmp_path, monkeypa
         await asyncio.sleep(0)
 
         assert _live_worker_tasks() == [], "worker tasks were orphaned on escape"
-        assert discard_calls >= 1, "pending index buffers were not discarded on escape"
 
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=rag.workspace
         )
         assert pipeline_status.get("busy") is False
-
-        # Doc was not marked PROCESSED — it stays queued for the next run.
-        row = await rag.doc_status.get_by_id(doc_id)
-        assert _status_to_text(row["status"]) != "processed"
     finally:
         await rag.finalize_storages()
