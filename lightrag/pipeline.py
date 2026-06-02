@@ -1267,29 +1267,63 @@ class _PipelineMixin:
         for _ in range(max(1, self.max_parallel_insert)):
             workers.append(asyncio.create_task(self._process_worker(ctx)))
 
-        # Add pending files to the correct parsing queue
-        for doc_id, status_doc in to_process_docs.items():
-            content_data = await self.full_docs.get_by_id(doc_id) or {}
-            engine = resolve_stored_document_parser_engine(
-                file_path=getattr(status_doc, "file_path", "unknown_source"),
-                content_data=content_data,
+        # The workers above are live asyncio tasks; their cancellation MUST be
+        # guaranteed even if enqueuing or a queue join raises (e.g. an orchestrator-
+        # level storage call fails during a backend outage). Without this try/finally
+        # an escape here would orphan the workers — they keep draining the queues and
+        # appending to history_messages while the caller's finally has already cleared
+        # ``busy`` — leaving busy=False while processing visibly continues.
+        try:
+            # Add pending files to the correct parsing queue
+            for current_file_number, (doc_id, status_doc) in enumerate(
+                to_process_docs.items(), start=1
+            ):
+                file_path = getattr(status_doc, "file_path", "unknown_source")
+                # Per-document isolation: the engine-routing get_by_id is the only
+                # orchestrator-level storage read in this loop. A transient/corrupt
+                # single-doc failure must FAIL just that document and continue with
+                # the rest of the batch — not escape and abort the whole batch.
+                # During a full outage _finalize_doc_failure's own doc_status write
+                # also raises; that escape is caught by the finally below (workers
+                # are cleanly cancelled) and the batch aborts as a whole.
+                try:
+                    content_data = await self.full_docs.get_by_id(doc_id) or {}
+                except Exception as e:
+                    await self._finalize_doc_failure(
+                        doc_id=doc_id,
+                        status_doc=status_doc,
+                        file_path=file_path,
+                        error=e,
+                        stage_label="parse",
+                        current_file_number=current_file_number,
+                        total_files=total_files,
+                        failed_chunks_snapshot=([], 0),
+                        pending_tasks=[],
+                        metadata_extra={},
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                    )
+                    continue
+                engine = resolve_stored_document_parser_engine(
+                    file_path=file_path,
+                    content_data=content_data,
+                )
+                if engine == "mineru":
+                    await ctx.q_mineru.put((doc_id, status_doc))
+                elif engine == "docling":
+                    await ctx.q_docling.put((doc_id, status_doc))
+                else:
+                    await ctx.q_native.put((doc_id, status_doc))
+
+            await asyncio.gather(
+                ctx.q_native.join(), ctx.q_mineru.join(), ctx.q_docling.join()
             )
-            if engine == "mineru":
-                await ctx.q_mineru.put((doc_id, status_doc))
-            elif engine == "docling":
-                await ctx.q_docling.put((doc_id, status_doc))
-            else:
-                await ctx.q_native.put((doc_id, status_doc))
-
-        await asyncio.gather(
-            ctx.q_native.join(), ctx.q_mineru.join(), ctx.q_docling.join()
-        )
-        await ctx.q_analyze.join()
-        await ctx.q_process.join()
-
-        for w in workers:
-            w.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
+            await ctx.q_analyze.join()
+            await ctx.q_process.join()
+        finally:
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
 
         # If the batch aborted on an internal storage error, the shared
         # cross-file flush buffers may still hold records from the documents
@@ -2761,6 +2795,19 @@ class _PipelineMixin:
         """
         if isinstance(error, PipelineCancelledException):
             cancel_label = self._cancellation_label(pipeline_status)
+            # The cancel exceptions raised by the merge/summary stages hardcode a
+            # generic "User cancelled during <stage>" message. When the batch was
+            # actually aborted by an internal error (e.g. a storage outage), that
+            # mislabels the cause. Swap the generic prefix for the reason-aware
+            # label so doc_status records "Cancelled by internal error: <detail>
+            # during <stage>" rather than "User cancelled during <stage>".
+            raw = str(error)
+            if raw.startswith("User cancelled"):
+                doc_error_msg = f"{cancel_label}{raw[len('User cancelled'):]}"
+            elif raw:
+                doc_error_msg = f"{cancel_label}: {raw}"
+            else:
+                doc_error_msg = cancel_label
             if stage_label == "merge":
                 error_msg = (
                     f"{cancel_label} during merge {current_file_number}/"
@@ -2775,6 +2822,7 @@ class _PipelineMixin:
                 pipeline_status["latest_message"] = error_msg
                 pipeline_status["history_messages"].append(error_msg)
         else:
+            doc_error_msg = str(error)
             logger.error(traceback.format_exc())
             if stage_label == "merge":
                 error_msg = (
@@ -2809,7 +2857,7 @@ class _PipelineMixin:
             status_doc=status_doc,
             file_path=file_path,
             extra_fields={
-                "error_msg": str(error),
+                "error_msg": doc_error_msg,
                 "chunks_count": failed_chunks_count,
                 "chunks_list": failed_chunks_list,
             },
