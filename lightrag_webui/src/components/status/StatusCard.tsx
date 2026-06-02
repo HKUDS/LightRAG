@@ -168,16 +168,16 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
       workspace: storageWorkspaces?.doc_status_storage ?? defaultWorkspace
     },
     {
-      key: 'graph',
-      label: t('graphPanel.statusCard.graphStorage'),
-      storageClass: status.configuration.graph_storage,
-      workspace: storageWorkspaces?.graph_storage ?? defaultWorkspace
-    },
-    {
       key: 'vector',
       label: t('graphPanel.statusCard.vectorStorage'),
       storageClass: status.configuration.vector_storage,
       workspace: storageWorkspaces?.vector_storage ?? defaultWorkspace
+    },
+    {
+      key: 'graph',
+      label: t('graphPanel.statusCard.graphStorage'),
+      storageClass: status.configuration.graph_storage,
+      workspace: storageWorkspaces?.graph_storage ?? defaultWorkspace
     }
   ]
 
