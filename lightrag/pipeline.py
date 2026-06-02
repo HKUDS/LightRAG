@@ -2795,6 +2795,19 @@ class _PipelineMixin:
         """
         if isinstance(error, PipelineCancelledException):
             cancel_label = self._cancellation_label(pipeline_status)
+            # The cancel exceptions raised by the merge/summary stages hardcode a
+            # generic "User cancelled during <stage>" message. When the batch was
+            # actually aborted by an internal error (e.g. a storage outage), that
+            # mislabels the cause. Swap the generic prefix for the reason-aware
+            # label so doc_status records "Cancelled by internal error: <detail>
+            # during <stage>" rather than "User cancelled during <stage>".
+            raw = str(error)
+            if raw.startswith("User cancelled"):
+                doc_error_msg = f"{cancel_label}{raw[len('User cancelled'):]}"
+            elif raw:
+                doc_error_msg = f"{cancel_label}: {raw}"
+            else:
+                doc_error_msg = cancel_label
             if stage_label == "merge":
                 error_msg = (
                     f"{cancel_label} during merge {current_file_number}/"
@@ -2809,6 +2822,7 @@ class _PipelineMixin:
                 pipeline_status["latest_message"] = error_msg
                 pipeline_status["history_messages"].append(error_msg)
         else:
+            doc_error_msg = str(error)
             logger.error(traceback.format_exc())
             if stage_label == "merge":
                 error_msg = (
@@ -2843,7 +2857,7 @@ class _PipelineMixin:
             status_doc=status_doc,
             file_path=file_path,
             extra_fields={
-                "error_msg": str(error),
+                "error_msg": doc_error_msg,
                 "chunks_count": failed_chunks_count,
                 "chunks_list": failed_chunks_list,
             },

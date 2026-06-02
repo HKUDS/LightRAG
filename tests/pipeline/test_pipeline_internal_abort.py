@@ -388,3 +388,94 @@ async def test_process_worker_survives_unhandled_error(tmp_path, monkeypatch):
         assert "process worker unhandled error" in status["cancellation_detail"]
     finally:
         await rag.finalize_storages()
+
+
+# ===========================================================================
+# doc_status error_msg reflects the real cancel cause (internal vs user)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_finalize_doc_failure_labels_internal_error_in_doc_status(tmp_path):
+    """A doc cancelled mid-merge because of an INTERNAL-error abort must record
+    'Cancelled by internal error: <detail>' in doc_status — not the generic
+    'User cancelled' string hardcoded in the merge-stage cancel exception."""
+    rag = await _build_rag(tmp_path)
+    try:
+        doc_id = "doc-internal"
+        status_doc = _make_status_doc(doc_id)
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status["history_messages"] = []
+        pipeline_status["cancellation_reason"] = "internal_error"
+        pipeline_status["cancellation_detail"] = "RedisKVStorage[full_docs]: boom"
+
+        await rag._finalize_doc_failure(
+            doc_id=doc_id,
+            status_doc=status_doc,
+            file_path=f"{doc_id}.txt",
+            error=PipelineCancelledException("User cancelled during relation merge"),
+            stage_label="merge",
+            current_file_number=3,
+            total_files=10,
+            failed_chunks_snapshot=([], 0),
+            pending_tasks=[],
+            metadata_extra={},
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+        )
+
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert _status_to_text(row["status"]) == "failed"
+        error_msg = row["error_msg"]
+        assert error_msg.startswith("Cancelled by internal error:")
+        assert "RedisKVStorage[full_docs]: boom" in error_msg
+        # Stage granularity from the raw exception is preserved.
+        assert "during relation merge" in error_msg
+        # The misleading user-cancel wording must be gone.
+        assert not error_msg.startswith("User cancelled")
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_finalize_doc_failure_keeps_user_cancel_label(tmp_path):
+    """A genuine user cancel (no internal-error reason) still reads as
+    'User cancelled during <stage>' in doc_status."""
+    rag = await _build_rag(tmp_path)
+    try:
+        doc_id = "doc-user"
+        status_doc = _make_status_doc(doc_id)
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status["history_messages"] = []
+        pipeline_status["cancellation_reason"] = None
+        pipeline_status["cancellation_detail"] = None
+
+        await rag._finalize_doc_failure(
+            doc_id=doc_id,
+            status_doc=status_doc,
+            file_path=f"{doc_id}.txt",
+            error=PipelineCancelledException("User cancelled during relation merge"),
+            stage_label="merge",
+            current_file_number=1,
+            total_files=2,
+            failed_chunks_snapshot=([], 0),
+            pending_tasks=[],
+            metadata_extra={},
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+        )
+
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert row["error_msg"] == "User cancelled during relation merge"
+    finally:
+        await rag.finalize_storages()
