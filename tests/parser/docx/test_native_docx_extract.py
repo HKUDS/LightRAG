@@ -230,6 +230,92 @@ def test_heading_markdown_prefix_capped_at_six(tmp_path) -> None:
     ]
 
 
+def _add_outline_para_with_softbreak(doc, head_text: str, body_text: str, level: int):
+    """Append one ``<w:p>`` carrying an outline level whose runs are
+    ``head_text`` + a soft line break (``<w:br/>``) + ``body_text``.
+
+    Mirrors the real-world WPS/Word pattern where an author sets an outline
+    level on a paragraph but types the body with Shift+Enter (a soft break)
+    instead of a new paragraph, so heading + body live in a single paragraph.
+    """
+    para = doc.add_paragraph(head_text)
+    pPr = para._p.get_or_add_pPr()
+    outline = OxmlElement("w:outlineLvl")
+    outline.set(qn("w:val"), str(level - 1))
+    pPr.append(outline)
+    para.add_run().add_break()  # default WD_BREAK.LINE → soft <w:br/> → '\n'
+    para.add_run(body_text)
+    return para
+
+
+@pytest.mark.offline
+def test_oversize_outline_heading_with_softbreak_splits(tmp_path) -> None:
+    """An over-long heading paragraph that contains a soft break must split:
+    the first line stays the heading, the remainder becomes body text. No
+    DocxContentError, and the body content is preserved in full."""
+    head = "A、处置程序"
+    body = "施工现场一旦发生事故时应立即采取相应的应急处置措施并以最快速度报警。" * 8
+    assert len(head) + 1 + len(body) > 200  # would trip validate_heading_length
+
+    doc = Document()
+    _add_outline_para_with_softbreak(doc, head, body, level=4)
+
+    buf = BytesIO()
+    doc.save(buf)
+    docx_path = tmp_path / "softbreak.docx"
+    docx_path.write_bytes(buf.getvalue())
+
+    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+
+    # The short first line becomes the heading; the long remainder is body.
+    heading_block = next(b for b in blocks if b["heading"] == head)
+    assert body in heading_block["content"]
+    # Heading field carries only the first line, not the body.
+    assert body not in heading_block["heading"]
+
+
+@pytest.mark.offline
+def test_oversize_outline_heading_no_softbreak_demoted_to_body(tmp_path) -> None:
+    """A single-line over-long outline paragraph (no soft break) is demoted to
+    body text rather than raising — content preserved, not treated as a heading."""
+    long_text = "施工现场应急处置措施说明，" * 30  # well over 200 chars, no '\n'
+    assert len(long_text) > 200
+
+    doc = Document()
+    _add_heading(doc, long_text, level=2)
+
+    buf = BytesIO()
+    doc.save(buf)
+    docx_path = tmp_path / "demote.docx"
+    docx_path.write_bytes(buf.getvalue())
+
+    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+
+    # The text survives as body content, and no block adopts it as a heading.
+    assert any(long_text in b["content"] for b in blocks)
+    assert all(b["heading"] != long_text for b in blocks)
+
+
+@pytest.mark.offline
+def test_short_outline_paragraph_still_heading(tmp_path) -> None:
+    """A within-limit outline paragraph must still be recognized as a heading —
+    the over-long handling never demotes short headings."""
+    doc = Document()
+    _add_heading(doc, "处置程序", level=3)
+    doc.add_paragraph("body under heading.")
+
+    buf = BytesIO()
+    doc.save(buf)
+    docx_path = tmp_path / "short.docx"
+    docx_path.write_bytes(buf.getvalue())
+
+    blocks = extract_docx_blocks(str(docx_path), fixlevel=0)
+
+    heading_block = next(b for b in blocks if b["heading"] == "处置程序")
+    assert heading_block["level"] == 3
+    assert heading_block["content"].startswith("### 处置程序")
+
+
 @pytest.mark.offline
 def test_existing_markdown_heading_keeps_content_but_metadata_is_clean(
     tmp_path,
