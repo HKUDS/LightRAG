@@ -88,6 +88,7 @@ from lightrag.utils_pipeline import (
     parsed_artifact_dir_for,
     read_source_file_basename,
     resolve_doc_file_path,
+    resolve_doc_status_parse_engine,
     sidecar_blocks_path,
     sidecar_uri_for,
     strip_lightrag_doc_prefix,
@@ -1683,6 +1684,31 @@ class _PipelineMixin:
                 else:
                     status_doc_w.metadata["parse_end_time"] = int(time.time())
 
+                # Stamp the parse-stage extraction metadata (parse_format /
+                # parse_engine) now that the engine has run and reported its
+                # actual format/engine. These are determined here, so record
+                # them at the PARSING upsert below instead of deferring to
+                # PROCESSING; carry-over (_DOC_STATUS_METADATA_CARRY_OVER_KEYS)
+                # then preserves them across ANALYZING → PROCESSING → PROCESSED.
+                # ``resolve_doc_status_parse_engine`` is the shared resolver
+                # used by process_single_document too, so the value never jumps
+                # between the early and final writes. The engine source order
+                # mirrors the process stage's read from full_docs: the parser's
+                # own report wins, then the enqueue-time directive on
+                # content_data (raw passthrough), then the format-based default.
+                parse_format_w = (
+                    parsed_data_w.get("parse_format") or FULL_DOCS_FORMAT_RAW
+                )
+                explicit_engine_w = parsed_data_w.get("parse_engine") or (
+                    content_data_w.get("parse_engine")
+                    if isinstance(content_data_w, dict)
+                    else None
+                )
+                status_doc_w.metadata["parse_format"] = parse_format_w
+                status_doc_w.metadata["parse_engine"] = resolve_doc_status_parse_engine(
+                    parse_format_w, explicit_engine_w
+                )
+
                 # parse_* may have patched content_hash for
                 # pending_parse → raw transitions.
                 refreshed = await self.doc_status.get_by_id(doc_id_w)
@@ -2254,11 +2280,11 @@ class _PipelineMixin:
                 )
                 extraction_meta = {
                     "parse_format": persisted_format,
-                    "parse_engine": persisted_engine
-                    or (
-                        "native"
-                        if persisted_format == FULL_DOCS_FORMAT_LIGHTRAG
-                        else "legacy"
+                    # Shared resolver with the parse stage (_parse_worker), so a
+                    # field already stamped at PARSING re-writes to the same
+                    # value here — no value jump across the transition.
+                    "parse_engine": resolve_doc_status_parse_engine(
+                        persisted_format, persisted_engine
                     ),
                     "chunk_method": (
                         # Explicit selector in process_options: reflect
@@ -3038,6 +3064,7 @@ class _PipelineMixin:
                 "doc_id": doc_id,
                 "file_path": file_path,
                 "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+                "parse_engine": PARSER_ENGINE_NATIVE,
                 "content": parsed_data["content"],
                 "blocks_path": parsed_data["blocks_path"],
             }
@@ -3175,6 +3202,7 @@ class _PipelineMixin:
             "doc_id": doc_id,
             "file_path": file_path,
             "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+            "parse_engine": PARSER_ENGINE_MINERU,
             "content": parsed_data["content"],
             "blocks_path": parsed_data["blocks_path"],
             "parse_stage_skipped": parse_stage_skipped,
@@ -3294,6 +3322,7 @@ class _PipelineMixin:
             "doc_id": doc_id,
             "file_path": file_path,
             "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+            "parse_engine": PARSER_ENGINE_DOCLING,
             "content": parsed_data["content"],
             "blocks_path": parsed_data["blocks_path"],
             "parse_stage_skipped": parse_stage_skipped,

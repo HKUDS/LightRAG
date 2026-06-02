@@ -23,6 +23,8 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
     LIGHTRAG_DOC_CONTENT_PREFIX,
     PARSED_DIR_NAME,
+    PARSER_ENGINE_LEGACY,
+    PARSER_ENGINE_NATIVE,
 )
 from lightrag.parser.routing import canonicalize_parser_hinted_basename
 from lightrag.utils import (
@@ -236,6 +238,30 @@ def read_source_file_basename(data: Any) -> str | None:
 # insertion order all the way to the rendered output). Keep fields
 # grouped by stage: parse-stage fields together, analyze-stage fields
 # together, etc., so the dialog reads top-to-bottom along the pipeline.
+def resolve_doc_status_parse_engine(
+    parse_format: str | None,
+    explicit_engine: str | None,
+) -> str:
+    """Resolve the ``parse_engine`` value recorded in doc_status metadata.
+
+    Single source of truth shared by the parse stage (``_parse_worker``) and
+    the process stage (``process_single_document``) so both stamp the *same*
+    value — preventing a value "jump" when the field is written early at
+    PARSING and re-written later at PROCESSING.  ``explicit_engine`` wins when
+    a parser reported the engine it actually ran (or full_docs carries an
+    enqueue-time directive); otherwise fall back to ``native`` for the
+    structured ``lightrag`` format and ``legacy`` for everything else
+    (``raw`` passthrough), mirroring how a pre-engine corpus was processed.
+    """
+    if explicit_engine:
+        return explicit_engine
+    return (
+        PARSER_ENGINE_NATIVE
+        if parse_format == FULL_DOCS_FORMAT_LIGHTRAG
+        else PARSER_ENGINE_LEGACY
+    )
+
+
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "process_options",
     "source_file",
@@ -244,6 +270,8 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "parse_start_time",
     "parse_end_time",
     "parse_stage_skipped",
+    "parse_format",
+    "parse_engine",
     "analyzing_start_time",
     "analyzing_end_time",
     "analyzing_stage_skipped",

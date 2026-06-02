@@ -345,10 +345,12 @@ def test_carry_over_keys_grouped_by_stage():
     """Strict tuple-equality guard on ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
 
     The tuple order is the WebUI ``DocumentStatusDetailsDialog`` render order,
-    so per-stage fields must stay grouped (parse-stage trio then analyze-stage
-    trio). Locking the order here forces any future field addition to update
-    this assertion alongside the tuple, preventing silent regressions in the
-    dialog's timeline-ordered display.
+    so per-stage fields must stay grouped (parse-stage fields then analyze-stage
+    trio). ``parse_format`` / ``parse_engine`` join the parse-stage group so
+    they are stamped at PARSING (once the engine has run) and carried through
+    to PROCESSED instead of only landing at PROCESSING. Locking the order here
+    forces any future field addition to update this assertion alongside the
+    tuple, preventing silent regressions in the dialog's timeline display.
     """
     from lightrag.utils_pipeline import _DOC_STATUS_METADATA_CARRY_OVER_KEYS
 
@@ -360,6 +362,8 @@ def test_carry_over_keys_grouped_by_stage():
         "parse_start_time",
         "parse_end_time",
         "parse_stage_skipped",
+        "parse_format",
+        "parse_engine",
         "analyzing_start_time",
         "analyzing_end_time",
         "analyzing_stage_skipped",
