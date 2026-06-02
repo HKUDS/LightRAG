@@ -87,14 +87,14 @@ def format_error(title: str, details: str, solution: str) -> str:
     """
     return (
         "\n"
-        + "=" * 80
+        + "=" * 70
         + f"\nERROR: {title}\n"
-        + "=" * 80
+        + "=" * 70
         + f"\n\n{details}"
         + "\n\nSOLUTION:\n"
         + solution
         + "\n\n"
-        + "=" * 80
+        + "=" * 70
         + "\n"
     )
 
