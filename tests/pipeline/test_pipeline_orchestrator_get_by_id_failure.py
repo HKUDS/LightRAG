@@ -184,6 +184,19 @@ async def test_full_outage_escape_still_cancels_workers(tmp_path, monkeypatch):
         # _finalize_doc_failure's doc_status write also fails -> escape.
         monkeypatch.setattr(rag.doc_status, "upsert", dead_upsert)
 
+        # The batch's finally must discard not-yet-flushed shared buffers on an
+        # exception escape (not just the cooperative internal-error flag), so
+        # stale KG/vector records are not carried into the next batch.
+        discard_calls = 0
+        orig_discard = rag._discard_pending_index_ops
+
+        async def spy_discard(*, skip_enqueue_owned=True):
+            nonlocal discard_calls
+            discard_calls += 1
+            await orig_discard(skip_enqueue_owned=skip_enqueue_owned)
+
+        monkeypatch.setattr(rag, "_discard_pending_index_ops", spy_discard)
+
         # apipeline_process_enqueue_documents lets the storage error propagate
         # out (its finally releases busy but does not swallow the exception).
         with pytest.raises(Exception):
@@ -191,6 +204,7 @@ async def test_full_outage_escape_still_cancels_workers(tmp_path, monkeypatch):
         await asyncio.sleep(0)
 
         assert _live_worker_tasks() == [], "worker tasks were orphaned on escape"
+        assert discard_calls >= 1, "pending index buffers were not discarded on escape"
 
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=rag.workspace

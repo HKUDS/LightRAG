@@ -1273,6 +1273,7 @@ class _PipelineMixin:
         # an escape here would orphan the workers — they keep draining the queues and
         # appending to history_messages while the caller's finally has already cleared
         # ``busy`` — leaving busy=False while processing visibly continues.
+        batch_aborted_by_exception = False
         try:
             # Add pending files to the correct parsing queue
             for current_file_number, (doc_id, status_doc) in enumerate(
@@ -1320,24 +1321,32 @@ class _PipelineMixin:
             )
             await ctx.q_analyze.join()
             await ctx.q_process.join()
+        except BaseException:
+            batch_aborted_by_exception = True
+            raise
         finally:
             for w in workers:
                 w.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
 
-        # If the batch aborted on an internal storage error, the shared
-        # cross-file flush buffers may still hold records from the documents
-        # that were marked FAILED. Discard them now (workers are stopped, so
-        # this does not race a flush) so they are neither re-flushed nor
-        # carried into the next batch — every affected document is reprocessed
-        # on retry. See _discard_pending_index_ops / drop_pending_index_ops.
-        async with pipeline_status_lock:
-            internal_abort = (
-                pipeline_status.get("cancellation_requested", False)
-                and pipeline_status.get("cancellation_reason") == "internal_error"
-            )
-        if internal_abort:
-            await self._discard_pending_index_ops()
+            # Discard not-yet-flushed shared cross-file buffers when the batch
+            # aborts, so they are neither re-flushed nor carried into the next
+            # batch — otherwise stale KG/vector records from already-merged
+            # in-flight docs could later be persisted for documents that were
+            # FAILED/reset rather than marked PROCESSED. This must run on BOTH:
+            #   - the cooperative internal-error abort (cancellation flag), and
+            #   - an exception escaping this method (e.g. an orchestrator-level
+            #     storage call failed during an outage and reached the finally).
+            # Workers are already stopped above, so this does not race a flush.
+            # _discard_pending_index_ops is best-effort (never raises), so it
+            # cannot mask the original abort cause. See drop_pending_index_ops.
+            async with pipeline_status_lock:
+                internal_abort = (
+                    pipeline_status.get("cancellation_requested", False)
+                    and pipeline_status.get("cancellation_reason") == "internal_error"
+                )
+            if internal_abort or batch_aborted_by_exception:
+                await self._discard_pending_index_ops()
 
     async def _validate_and_fix_document_consistency(
         self,
