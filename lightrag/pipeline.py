@@ -1275,38 +1275,18 @@ class _PipelineMixin:
         # ``busy`` — leaving busy=False while processing visibly continues.
         batch_aborted_by_exception = False
         try:
-            # Add pending files to the correct parsing queue
-            for current_file_number, (doc_id, status_doc) in enumerate(
-                to_process_docs.items(), start=1
-            ):
-                file_path = getattr(status_doc, "file_path", "unknown_source")
-                # Per-document isolation: the engine-routing get_by_id is the only
-                # orchestrator-level storage read in this loop. A transient/corrupt
-                # single-doc failure must FAIL just that document and continue with
-                # the rest of the batch — not escape and abort the whole batch.
-                # During a full outage _finalize_doc_failure's own doc_status write
-                # also raises; that escape is caught by the finally below (workers
-                # are cleanly cancelled) and the batch aborts as a whole.
-                try:
-                    content_data = await self.full_docs.get_by_id(doc_id) or {}
-                except Exception as e:
-                    await self._finalize_doc_failure(
-                        doc_id=doc_id,
-                        status_doc=status_doc,
-                        file_path=file_path,
-                        error=e,
-                        stage_label="parse",
-                        current_file_number=current_file_number,
-                        total_files=total_files,
-                        failed_chunks_snapshot=([], 0),
-                        pending_tasks=[],
-                        metadata_extra={},
-                        pipeline_status=pipeline_status,
-                        pipeline_status_lock=pipeline_status_lock,
-                    )
-                    continue
+            # Add pending files to the correct parsing queue. An orchestrator-
+            # level storage read here (e.g. full_docs.get_by_id during a backend
+            # outage) that raises aborts the whole batch — the finally below
+            # cancels the workers cleanly and the caller releases ``busy``, with
+            # affected documents left queued (PENDING) for the next run. We do
+            # NOT per-doc isolate this read: the same unguarded read also runs in
+            # _validate_and_fix_document_consistency before this batch, so a clean
+            # whole-batch abort is the consistent behavior across both sites.
+            for doc_id, status_doc in to_process_docs.items():
+                content_data = await self.full_docs.get_by_id(doc_id) or {}
                 engine = resolve_stored_document_parser_engine(
-                    file_path=file_path,
+                    file_path=getattr(status_doc, "file_path", "unknown_source"),
                     content_data=content_data,
                 )
                 if engine == "mineru":
