@@ -740,8 +740,13 @@ class NetworkXStorage(BaseGraphStorage):
                 self.storage_updated.value = False
                 return True  # Return success
             except Exception as e:
+                # Raise (do NOT swallow + return False): _insert_done's
+                # _flush_one only detects failures via exceptions, so a
+                # swallowed graph-save error would let the document be marked
+                # PROCESSED with the graph changes unpersisted. Surfacing it
+                # aligns this backend with the others (faiss/nano raise too).
                 logger.error(f"[{self.workspace}] Error saving graph: {e}")
-                return False  # Return error
+                raise
 
         return True
 

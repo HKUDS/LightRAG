@@ -1223,11 +1223,14 @@ class TestKVStorageBatching:
                 assert "k2" in s._pending_upserts
 
     @pytest.mark.asyncio
-    async def test_kv_failed_flush_drops_non_retryable(
+    async def test_kv_failed_flush_raises_on_non_retryable(
         self, global_config, embed_func, mock_client
     ):
-        """Permanent (4xx, e.g. mapping error) failures are cleared from
-        the buffer rather than retried forever."""
+        """Permanent (4xx, e.g. mapping error) failures must surface as an
+        error so _insert_done aborts the pipeline instead of silently marking
+        the document PROCESSED. The non-retryable op is dropped from the buffer
+        (it can never land — keeping it would replay-and-refail on every later
+        flush and poison direct callers); the retryable op stays for retry."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -1251,8 +1254,11 @@ class TestKVStorageBatching:
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.upsert({"k1": {"content": "x"}, "k2": {"content": "y"}})
-                await s.index_done_callback()
+                with pytest.raises(RuntimeError, match="failed permanently"):
+                    await s.index_done_callback()
+                # Non-retryable dropped (can never land; not replayed).
                 assert "k1" not in s._pending_upserts
+                # Retryable kept for the next flush.
                 assert "k2" in s._pending_upserts
 
     @pytest.mark.asyncio
@@ -4601,10 +4607,13 @@ class TestVectorStorageBatching:
         assert non_retryable[0].error.endswith("...")
 
     @pytest.mark.asyncio
-    async def test_failed_flush_drops_non_retryable_entries(
+    async def test_failed_flush_raises_on_non_retryable_entries(
         self, global_config, embed_func, mock_client
     ):
-        """4xx (non-429) failures are dropped, not perpetually retried."""
+        """4xx (non-429) permanent failures must raise so the pipeline aborts
+        instead of marking the document PROCESSED; the failed op is dropped
+        from the buffer (it can never land — keeping it would replay-and-refail
+        on every later flush), while the retryable op stays for retry."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -4623,10 +4632,28 @@ class TestVectorStorageBatching:
                 await s.upsert(
                     {"v1": {"content": "bad"}, "v2": {"content": "transient"}}
                 )
-                await s.index_done_callback()
-                # v1 is dropped (non-retryable), v2 is retained (retryable).
+                with pytest.raises(RuntimeError, match="failed permanently"):
+                    await s.index_done_callback()
+                # v1 (non-retryable) dropped (can never land; not replayed);
+                # v2 (retryable) retained for the next flush.
                 assert "v1" not in s._pending_vector_docs
                 assert "v2" in s._pending_vector_docs
+
+    @pytest.mark.asyncio
+    async def test_drop_pending_index_ops_clears_buffers(
+        self, global_config, embed_func, mock_client
+    ):
+        """On an internal-error abort the pipeline calls drop_pending_index_ops
+        to discard buffered upserts/deletes without flushing them."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert({"v1": {"content": "x"}, "v2": {"content": "y"}})
+            s._pending_vector_deletes.add("old-id")
+            assert s._pending_vector_docs
+            await s.drop_pending_index_ops()
+            assert not s._pending_vector_docs
+            assert not s._pending_vector_deletes
 
     @pytest.mark.asyncio
     async def test_concurrent_writes_during_flush_are_serialised(
@@ -4801,12 +4828,11 @@ class TestVectorStorageBatching:
             )
 
     @pytest.mark.asyncio
-    async def test_non_retryable_logs_sample_ids(
-        self, global_config, embed_func, mock_client, caplog
+    async def test_non_retryable_raises_with_sample_ids(
+        self, global_config, embed_func, mock_client
     ):
-        """Non-retryable bulk failures log a sample with id/status/error."""
-        import logging as _logging
-
+        """Non-retryable bulk failures raise an error carrying a sample with
+        id/status/error so the abort is diagnosable."""
         failed = [
             {
                 "index": {
@@ -4820,36 +4846,25 @@ class TestVectorStorageBatching:
             }
             for i in range(6)
         ]
-        # lightrag logger has propagate=False, so caplog's root handler
-        # would miss these records. Re-enable propagation just for this
-        # test so caplog can capture the warning we emit.
-        lightrag_logger = _logging.getLogger("lightrag")
-        original_propagate = lightrag_logger.propagate
-        lightrag_logger.propagate = True
-        try:
-            with patch.object(ClientManager, "get_client", return_value=mock_client):
-                with patch(
-                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
-                    new_callable=AsyncMock,
-                ) as mock_bulk:
-                    mock_bulk.return_value = (0, failed)
-                    s = self._make(global_config, embed_func)
-                    await s.initialize()
-                    await s.upsert({f"v{i}": {"content": f"d{i}"} for i in range(6)})
-                    with caplog.at_level("WARNING", logger="lightrag"):
-                        await s.index_done_callback()
-        finally:
-            lightrag_logger.propagate = original_propagate
-        warning_text = "\n".join(
-            rec.message for rec in caplog.records if rec.levelname == "WARNING"
-        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                new_callable=AsyncMock,
+            ) as mock_bulk:
+                mock_bulk.return_value = (0, failed)
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({f"v{i}": {"content": f"d{i}"} for i in range(6)})
+                with pytest.raises(RuntimeError) as excinfo:
+                    await s.index_done_callback()
+        error_text = str(excinfo.value)
         # Sample contains the first 5 ids with op/status/reason text.
         for i in range(5):
-            assert f"v{i}" in warning_text
-        assert "status=400" in warning_text
-        assert "bad field" in warning_text
+            assert f"v{i}" in error_text
+        assert "status=400" in error_text
+        assert "bad field" in error_text
         # 6 permanent failures reported in aggregate.
-        assert "6 vector ops" in warning_text
+        assert "6 vector ops" in error_text
 
     @pytest.mark.asyncio
     async def test_index_done_callback_flushes_when_index_recreated(

@@ -989,3 +989,17 @@ async def test_flush_failure_keeps_pending_buffers():
     # Fail-fast-retain: nothing cleared, next flush replays everything.
     assert "c1" in storage._pending_vector_docs
     assert "c2" in storage._pending_vector_deletes
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_drop_pending_index_ops_clears_buffers():
+    """On an internal-error abort the pipeline calls drop_pending_index_ops to
+    discard buffered upserts/deletes without flushing them (PR #3187)."""
+    storage = _make_storage()
+    await storage.upsert({"c1": _chunk_data(content="alpha")})
+    storage._pending_vector_deletes.add("old-id")
+    assert storage._pending_vector_docs
+    await storage.drop_pending_index_ops()
+    assert not storage._pending_vector_docs
+    assert not storage._pending_vector_deletes

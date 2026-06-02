@@ -4269,6 +4269,12 @@ class PGVectorStorage(BaseVectorStorage):
     async def index_done_callback(self) -> None:
         await self._flush_pending_vector_ops()
 
+    async def drop_pending_index_ops(self) -> None:
+        """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        async with self._flush_lock:
+            self._pending_vector_docs.clear()
+            self._pending_vector_deletes.clear()
+
     async def delete(self, ids: list[str]) -> None:
         """Buffer vector deletes for batched flush.
 

@@ -39,7 +39,11 @@ from lightrag.constants import (
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
 )
-from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
+from lightrag.exceptions import (
+    MultimodalAnalysisError,
+    PipelineCancelledException,
+    IndexFlushError,
+)
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.routing import (
@@ -1043,6 +1047,8 @@ class _PipelineMixin:
                         "cur_batch": 0,  # Number of files already processed
                         "request_pending": False,  # Clear any previous request
                         "cancellation_requested": False,  # Initialize cancellation flag
+                        "cancellation_reason": None,  # "internal_error" or None (user)
+                        "cancellation_detail": None,  # driver + root cause for internal
                         "latest_message": "",
                     }
                 )
@@ -1073,13 +1079,31 @@ class _PipelineMixin:
                 # Check for cancellation request at the start of main loop
                 async with pipeline_status_lock:
                     if pipeline_status.get("cancellation_requested", False):
+                        # Read the cause BEFORE resetting reason/detail below.
+                        is_internal = (
+                            pipeline_status.get("cancellation_reason")
+                            == "internal_error"
+                        )
+                        label = self._cancellation_label(pipeline_status)
                         pipeline_status["request_pending"] = False
                         pipeline_status["cancellation_requested"] = False
 
-                        log_message = "Pipeline cancelled by user"
-                        logger.info(log_message)
+                        if is_internal:
+                            # Unrecoverable storage error: halting is intentional
+                            # (auto-retry into a broken backend will not recover).
+                            # Surface at error level with an actionable message;
+                            # affected docs stay queued (PENDING/FAILED) and are
+                            # picked up when processing is restarted after the
+                            # storage issue is resolved.
+                            log_message = self._internal_halt_message(label)
+                            logger.error(log_message)
+                        else:
+                            log_message = f"Pipeline cancelled ({label})"
+                            logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
+                        pipeline_status["cancellation_reason"] = None
+                        pipeline_status["cancellation_detail"] = None
 
                         # Exit directly, skipping request_pending check
                         return
@@ -1157,8 +1181,8 @@ class _PipelineMixin:
                 )
 
         finally:
-            log_message = "Enqueued document processing pipeline stopped"
-            logger.info(log_message)
+            stopped_message = "Enqueued document processing pipeline stopped"
+            logger.info(stopped_message)
             # If the loop already released ``busy`` under the atomic exit
             # check, don't clobber it here — a concurrent enqueue may have
             # observed busy=False and started a new processing pass that
@@ -1167,11 +1191,31 @@ class _PipelineMixin:
             async with pipeline_status_lock:
                 if not busy_released_in_loop:
                     pipeline_status["busy"] = False
+                # An internal-error abort normally exits via the batch's
+                # ``break`` (not the loop-top cancellation handler, which
+                # logs + clears the reason itself), so without this the only
+                # visible trace would be the generic "stopped" line. Surface
+                # the actionable halt reason here too, BEFORE clearing the
+                # reason/detail. Read it first so _cancellation_label still
+                # sees the cause.
+                internal_halt = None
+                if pipeline_status.get("cancellation_reason") == "internal_error":
+                    internal_halt = self._internal_halt_message(
+                        self._cancellation_label(pipeline_status)
+                    )
+                    logger.error(internal_halt)
                 pipeline_status["cancellation_requested"] = (
                     False  # Always reset cancellation flag
                 )
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                pipeline_status["cancellation_reason"] = None
+                pipeline_status["cancellation_detail"] = None
+                pipeline_status["history_messages"].append(stopped_message)
+                if internal_halt is not None:
+                    pipeline_status["history_messages"].append(internal_halt)
+                    # Prefer the actionable halt reason as the latest message.
+                    pipeline_status["latest_message"] = internal_halt
+                else:
+                    pipeline_status["latest_message"] = stopped_message
 
     # ============================================================
     # Pipeline orchestration
@@ -1250,6 +1294,20 @@ class _PipelineMixin:
         for w in workers:
             w.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
+
+        # If the batch aborted on an internal storage error, the shared
+        # cross-file flush buffers may still hold records from the documents
+        # that were marked FAILED. Discard them now (workers are stopped, so
+        # this does not race a flush) so they are neither re-flushed nor
+        # carried into the next batch — every affected document is reprocessed
+        # on retry. See _discard_pending_index_ops / drop_pending_index_ops.
+        async with pipeline_status_lock:
+            internal_abort = (
+                pipeline_status.get("cancellation_requested", False)
+                and pipeline_status.get("cancellation_reason") == "internal_error"
+            )
+        if internal_abort:
+            await self._discard_pending_index_ops()
 
     async def _validate_and_fix_document_consistency(
         self,
@@ -1793,6 +1851,24 @@ class _PipelineMixin:
                     parsed_data=parsed_data_w,
                     ctx=ctx,
                 )
+            except Exception as e:
+                # process_single_document handles its own per-doc failures; an
+                # escape here means even the FAILED-status write failed (e.g.
+                # the doc_status backend is down). Do NOT let the worker die —
+                # that strands the remaining queued items and hangs
+                # q_process.join() forever, wedging the pipeline busy. Route it
+                # to the batch-abort path (same flag as IndexFlushError) and
+                # keep draining so the batch winds down cleanly. CancelledError
+                # is a BaseException, not caught here, so a normal worker
+                # cancellation at batch end still propagates.
+                logger.error(f"Unhandled error in process worker; aborting batch: {e}")
+                logger.error(traceback.format_exc())
+                async with ctx.pipeline_status_lock:
+                    ctx.pipeline_status["cancellation_requested"] = True
+                    ctx.pipeline_status["cancellation_reason"] = "internal_error"
+                    ctx.pipeline_status["cancellation_detail"] = (
+                        f"process worker unhandled error: {e}"
+                    )
             finally:
                 ctx.q_process.task_done()
 
@@ -2353,6 +2429,16 @@ class _PipelineMixin:
                             file_path=file_path,
                         )
 
+                    # If another in-flight document already triggered an abort
+                    # (e.g. a storage flush error set cancellation_requested),
+                    # do not mark PROCESSED or re-run _insert_done here: the
+                    # shared flush buffer is being torn down, so re-flushing
+                    # would just re-raise the same error. Bail out as cancelled
+                    # so this document is FAILED and retried on the next run.
+                    await self._raise_if_cancelled(
+                        ctx.pipeline_status, ctx.pipeline_status_lock
+                    )
+
                     process_end_time = int(time.time())
                     await self._upsert_doc_status_transition(
                         doc_id=doc_id,
@@ -2383,6 +2469,26 @@ class _PipelineMixin:
                         ctx.pipeline_status["history_messages"].append(log_message)
 
                 except Exception as e:
+                    # A storage flush failure (raised by _insert_done) is not
+                    # attributable to this document: index_done_callback flushes
+                    # a buffer shared across concurrently-processed files. We
+                    # cannot tell whose record failed, so continuing risks
+                    # marking other in-flight files PROCESSED with missing data.
+                    # Abort the whole batch via the cooperative cancellation
+                    # flag, tagging it as an internal error with the driver name
+                    # and root cause so it is distinguishable from a user cancel.
+                    if isinstance(e, IndexFlushError):
+                        async with ctx.pipeline_status_lock:
+                            ctx.pipeline_status["cancellation_requested"] = True
+                            ctx.pipeline_status["cancellation_reason"] = (
+                                "internal_error"
+                            )
+                            ctx.pipeline_status["cancellation_detail"] = (
+                                f"{e.storage_name}[{e.namespace}]: {e.__cause__}"
+                            )
+                        logger.error(
+                            f"Aborting pipeline batch due to storage flush error: {e}"
+                        )
                     await self._finalize_doc_failure(
                         doc_id=doc_id,
                         status_doc=status_doc,
@@ -2532,6 +2638,31 @@ class _PipelineMixin:
             if pipeline_status.get("cancellation_requested", False):
                 raise PipelineCancelledException("User cancelled")
 
+    @staticmethod
+    def _cancellation_label(pipeline_status: dict) -> str:
+        """Human-readable cancel cause: internal error (with detail) vs user.
+
+        Callers building cancellation messages use this so an internal abort
+        (e.g. a storage flush failure) is not mislabeled as a user cancel.
+        """
+        if pipeline_status.get("cancellation_reason") == "internal_error":
+            detail = pipeline_status.get("cancellation_detail") or "unknown"
+            return f"Cancelled by internal error: {detail}"
+        return "User cancelled"
+
+    @staticmethod
+    def _internal_halt_message(label: str) -> str:
+        """Actionable halt message for an internal-error abort.
+
+        Shared by the loop-top cancellation handler and the finally cleanup so
+        the same wording surfaces whichever exit path the batch takes.
+        """
+        return (
+            f"Pipeline halted on internal storage error ({label}). Resolve the "
+            f"storage issue and restart processing; affected documents remain "
+            f"queued (PENDING/FAILED)."
+        )
+
     async def _cancellation_requested(
         self,
         pipeline_status: dict,
@@ -2565,7 +2696,10 @@ class _PipelineMixin:
         sibling tasks (e.g. successful multimodal items inside a doc that is
         being cancelled) survive a server restart.
         """
-        error_msg = f"User cancelled during {stage_label}: {file_path}"
+        error_msg = (
+            f"{self._cancellation_label(pipeline_status)} during "
+            f"{stage_label}: {file_path}"
+        )
         logger.warning(error_msg)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = error_msg
@@ -2609,14 +2743,15 @@ class _PipelineMixin:
         preserves the failed chunks snapshot and processing-time metadata.
         """
         if isinstance(error, PipelineCancelledException):
+            cancel_label = self._cancellation_label(pipeline_status)
             if stage_label == "merge":
                 error_msg = (
-                    f"User cancelled during merge {current_file_number}/"
+                    f"{cancel_label} during merge {current_file_number}/"
                     f"{total_files}: {file_path}"
                 )
             else:
                 error_msg = (
-                    f"User cancelled {current_file_number}/{total_files}: {file_path}"
+                    f"{cancel_label} {current_file_number}/{total_files}: {file_path}"
                 )
             logger.warning(error_msg)
             async with pipeline_status_lock:

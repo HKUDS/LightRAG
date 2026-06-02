@@ -1063,14 +1063,21 @@ class OpenSearchKVStorage(BaseKVStorage):
             retryable_ids, non_retryable_ops = _extract_bulk_failed_ids(failed)
             non_retryable_ids = {op.doc_id for op in non_retryable_ops}
 
-            # Clear successful + non-retryable entries; keep retryable ones.
+            # Keep ONLY retryable ops buffered for the next flush. Successful
+            # ops are popped; non-retryable (permanent 4xx) ops are dropped
+            # here, not retained: a permanently-unwritable op can never land,
+            # so keeping it would replay-and-refail on every later flush and
+            # poison every caller that shares this buffer — including direct
+            # flush paths (e.g. _persist_parsed_full_docs) that never run the
+            # pipeline's cleanup. The raise below (not retention) is what
+            # surfaces the failure and prevents a silent PROCESSED.
+            keep_ids = retryable_ids
             for doc_id in list(pending_upserts.keys()):
-                if doc_id not in retryable_ids:
+                if doc_id not in keep_ids:
                     pending_upserts.pop(doc_id, None)
-            new_deletes: set[str] = set()
-            for doc_id in pending_deletes:
-                if doc_id in retryable_ids:
-                    new_deletes.add(doc_id)
+            new_deletes: set[str] = {
+                doc_id for doc_id in pending_deletes if doc_id in keep_ids
+            }
             pending_deletes.clear()
             pending_deletes.update(new_deletes)
 
@@ -1079,29 +1086,30 @@ class OpenSearchKVStorage(BaseKVStorage):
                     f"[{self.workspace}] {len(retryable_ids)} KV ops will "
                     f"retry on the next flush (transient failure)"
                 )
+            logger.debug(
+                f"[{self.workspace}] Flushed KV ops: {success} ok, "
+                f"retry={len(retryable_ids)}, permanent_fail={len(non_retryable_ids)}"
+            )
             if non_retryable_ops:
                 sample = non_retryable_ops[:5]
                 sample_text = ", ".join(
                     f"{op.op}/{op.doc_id}/status={op.status}/{op.error}"
                     for op in sample
                 )
-                logger.warning(
-                    f"[{self.workspace}] {len(non_retryable_ops)} KV ops "
-                    f"failed permanently and were dropped (non-retryable status). "
-                    f"Sample: {sample_text}"
+                # A permanent (non-retryable) bulk failure means the data did
+                # not land. Raise so index_done_callback surfaces it and the
+                # pipeline aborts instead of marking the document PROCESSED.
+                raise RuntimeError(
+                    f"[{self.workspace}] {self.namespace} flush: "
+                    f"{len(non_retryable_ops)} KV ops failed permanently "
+                    f"(non-retryable). Sample: {sample_text}"
                 )
-                if len(non_retryable_ops) > len(sample):
-                    logger.debug(
-                        f"[{self.workspace}] Remaining permanent failures: "
-                        + ", ".join(
-                            f"{op.op}/{op.doc_id}/status={op.status}/{op.error}"
-                            for op in non_retryable_ops[len(sample) :]
-                        )
-                    )
-            logger.debug(
-                f"[{self.workspace}] Flushed KV ops: {success} ok, "
-                f"retry={len(retryable_ids)}, dropped={len(non_retryable_ids)}"
-            )
+
+    async def drop_pending_index_ops(self) -> None:
+        """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        async with self._flush_lock:
+            self._pending_upserts.clear()
+            self._pending_kv_deletes.clear()
 
     async def index_done_callback(self) -> None:
         """Flush pending KV ops and refresh the index for search visibility.
@@ -1120,8 +1128,7 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
-        except Exception:
-            pass
+            raise
 
     async def is_empty(self) -> bool:
         """Return True if the index (plus pending buffer) contains no docs.
@@ -1414,6 +1421,10 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             )
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error upserting doc statuses: {e}")
+            # Surface the failure instead of returning as if the status write
+            # succeeded — a silently-lost doc-status row corrupts pipeline
+            # bookkeeping (a doc could never be recorded FAILED/PROCESSED).
+            raise
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get document counts grouped by status."""
@@ -1728,8 +1739,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
-        except Exception:
-            pass
+            raise
 
     async def is_empty(self) -> bool:
         """Return True if the index contains no documents."""
@@ -3664,8 +3674,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
                 return
-        except Exception:
-            pass
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Delete both node and edge indices."""
@@ -4126,15 +4135,21 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
             retryable_ids, non_retryable_ops = _extract_bulk_failed_ids(failed)
 
-            # Clear successful and non-retryable entries; keep retryable ones
-            # in place for the next flush.
+            # Keep ONLY retryable ops buffered for the next flush. Successful
+            # ops are popped; non-retryable (permanent 4xx) ops are dropped
+            # here, not retained: a permanently-unwritable op can never land,
+            # so keeping it would replay-and-refail on every later flush and
+            # poison every caller that shares this buffer — including direct
+            # flush paths that never run the pipeline's cleanup. The raise
+            # below (not retention) is what surfaces the failure and prevents
+            # a silent PROCESSED.
+            keep_ids = retryable_ids
             for doc_id in committed_doc_ids:
-                if doc_id not in retryable_ids:
+                if doc_id not in keep_ids:
                     pending_docs.pop(doc_id, None)
-            new_deletes: set[str] = set()
-            for doc_id in pending_deletes:
-                if doc_id in retryable_ids:
-                    new_deletes.add(doc_id)
+            new_deletes: set[str] = {
+                doc_id for doc_id in pending_deletes if doc_id in keep_ids
+            }
             pending_deletes.clear()
             pending_deletes.update(new_deletes)
 
@@ -4149,10 +4164,13 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     f"{op.op}/{op.doc_id}/status={op.status}/{op.error}"
                     for op in sample
                 )
-                logger.warning(
-                    f"[{self.workspace}] {len(non_retryable_ops)} vector ops "
-                    f"failed permanently and were dropped (non-retryable status). "
-                    f"Sample: {sample_text}"
+                # A permanent (non-retryable) bulk failure means the data did
+                # not land. Raise so index_done_callback surfaces it and the
+                # pipeline aborts instead of marking the document PROCESSED.
+                raise RuntimeError(
+                    f"[{self.workspace}] {self.namespace} flush: "
+                    f"{len(non_retryable_ops)} vector ops failed permanently "
+                    f"(non-retryable). Sample: {sample_text}"
                 )
 
     async def query(
@@ -4209,6 +4227,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             logger.error(f"[{self.workspace}] Error querying vectors: {e}")
             return []
 
+    async def drop_pending_index_ops(self) -> None:
+        """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        async with self._flush_lock:
+            self._pending_vector_docs.clear()
+            self._pending_vector_deletes.clear()
+
     async def index_done_callback(self) -> None:
         """Flush pending vector ops and refresh the index for k-NN visibility.
 
@@ -4235,8 +4259,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
-        except Exception:
-            pass
+            raise
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a vector document by ID, with read-your-writes against the buffer.

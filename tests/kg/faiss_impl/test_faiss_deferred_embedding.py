@@ -766,3 +766,59 @@ async def test_flush_recovers_from_index_add_failure_without_re_embedding(tmp_pa
     await reader.initialize()
     hit = await reader.get_by_id("id1")
     assert hit is not None and hit["content"] == "alpha"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_drop_pending_index_ops_clears_buffer(tmp_path):
+    """An internal-error abort calls drop_pending_index_ops to discard the
+    not-yet-flushed buffer without materializing anything into the index."""
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+
+    await storage.upsert({"id1": {"content": "alpha"}, "id2": {"content": "beta"}})
+    assert storage._pending_upserts, "upsert buffers, does not flush"
+
+    await storage.drop_pending_index_ops()
+
+    assert storage._pending_upserts == {}
+    assert embed.call_count == 0, "drop must not embed"
+    assert storage._index.ntotal == 0, "nothing was materialized"
+    _assert_consistent(storage)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_drop_pending_does_not_rollback_materialized(tmp_path):
+    """drop_pending_index_ops discards ONLY the pending buffer; rows already
+    materialized into the index by a flush whose save then failed
+    (``_index_dirty=True``) are intentionally NOT rolled back."""
+    embed = _CountingEmbed()
+    storage = _make_storage(tmp_path, embed)
+    await storage.initialize()
+
+    # Flush id1 into the index, then fail the save so it stays
+    # materialized-but-unsaved (dirty) and the pending buffer is emptied.
+    await storage.upsert({"id1": {"content": "alpha"}})
+
+    def fail_save():
+        raise OSError("save boom")
+
+    storage._save_faiss_index = fail_save
+    with pytest.raises(OSError, match="save boom"):
+        await storage.index_done_callback()
+    assert storage._pending_upserts == {}, "flush succeeded so pending is empty"
+    assert storage._index_dirty is True
+    assert storage._index.ntotal == 1, "id1 materialized, not saved"
+
+    # A new pending op arrives, then the batch aborts and drops pending.
+    await storage.upsert({"id2": {"content": "beta"}})
+    assert "id2" in storage._pending_upserts
+
+    await storage.drop_pending_index_ops()
+
+    assert storage._pending_upserts == {}, "pending id2 dropped"
+    assert storage._index.ntotal == 1, "materialized id1 NOT rolled back"
+    assert storage._index_dirty is True, "still dirty for a later save retry"
+    _assert_consistent(storage)

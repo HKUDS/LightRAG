@@ -32,6 +32,13 @@ def _hermetic_mineru_env(monkeypatch):
     unrelated API/FastAPI tests (``test_bedrock_llm.py``,
     ``test_path_prefixes.py``).
 
+    The ``MINERU_LOCAL_*`` parser options are stripped for the same reason:
+    a developer ``.env`` that pins e.g. ``MINERU_LOCAL_PARSE_METHOD=ocr``
+    leaks a non-default into tests that assume the built-in defaults
+    (``test_client_local_mode_round_trip`` expects ``parse_method=auto``;
+    ``test_invalid_when_local_parser_options_change`` toggles each option
+    and expects the change to invalidate a bundle recorded with defaults).
+
     Strip these variables globally; tests that need a specific mode can
     still ``monkeypatch.setenv(...)`` themselves and monkeypatch will
     restore the inherited value at teardown.
@@ -40,6 +47,10 @@ def _hermetic_mineru_env(monkeypatch):
     monkeypatch.delenv("MINERU_API_TOKEN", raising=False)
     monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
     monkeypatch.delenv("MINERU_OFFICIAL_ENDPOINT", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_BACKEND", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_PARSE_METHOD", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_IMAGE_ANALYSIS", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_START_PAGE_ID", raising=False)
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
 

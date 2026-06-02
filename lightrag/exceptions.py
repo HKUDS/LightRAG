@@ -109,6 +109,20 @@ class PipelineCancelledException(Exception):
         self.message = message
 
 
+class IndexFlushError(Exception):
+    """Raised when a storage backend fails to flush buffered index ops.
+
+    Carries the storage driver name and namespace so the pipeline can abort
+    the batch with an actionable reason. The underlying error is preserved as
+    the exception ``__cause__`` (set via ``raise ... from cause``).
+    """
+
+    def __init__(self, storage_name: str, namespace: str, cause: BaseException):
+        self.storage_name = storage_name
+        self.namespace = namespace
+        super().__init__(f"{storage_name}[{namespace}] index flush failed: {cause}")
+
+
 class ChunkTokenLimitExceededError(ValueError):
     """Raised when a chunk exceeds the configured token limit."""
 

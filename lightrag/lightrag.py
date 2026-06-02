@@ -113,6 +113,7 @@ from lightrag.operate import (
 )
 from lightrag.utils_pipeline import normalize_document_file_path
 from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.exceptions import IndexFlushError
 from lightrag.utils import (
     Tokenizer,
     TiktokenTokenizer,
@@ -1438,7 +1439,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         finally:
             if update_storage:
-                await self._insert_done()
+                await self._insert_done_with_cleanup()
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
@@ -1461,12 +1462,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status["history_messages"].append(error_msg)
             raise e
 
-    async def _insert_done(
-        self, pipeline_status=None, pipeline_status_lock=None
-    ) -> None:
-        tasks = [
-            cast(StorageNameSpace, storage_inst).index_done_callback()
-            for storage_inst in [  # type: ignore
+    def _index_storages(self) -> list:
+        """All storages flushed together by index_done_callback / abort."""
+        return [
+            storage_inst
+            for storage_inst in [
                 self.full_docs,
                 self.doc_status,
                 self.text_chunks,
@@ -1482,7 +1482,130 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ]
             if storage_inst is not None
         ]
-        await asyncio.gather(*tasks)
+
+    async def _discard_pending_index_ops(
+        self, *, skip_enqueue_owned: bool = True
+    ) -> None:
+        """Drop not-yet-flushed buffers on an aborting batch.
+
+        Called when a batch aborts on an internal storage error. Each
+        still-buffered KG/vector record belongs to a document that will be
+        marked FAILED and fully reprocessed, so dropping the shared cross-file
+        buffers is safe and stops the poisoned/stale records from being
+        re-flushed by remaining in-flight documents or carried into the next
+        batch.
+
+        ``skip_enqueue_owned`` controls whether ``full_docs`` / ``doc_status``
+        are cleared:
+
+        * ``True`` (the file pipeline) — skip them. They are written by the
+          concurrent ``apipeline_enqueue_documents`` path (under
+          ``enqueue_serialize_lock``, which this cleanup does not hold), as
+          ``full_docs.upsert -> index_done_callback -> doc_status.upsert``.
+          Clearing ``full_docs``'s buffer in the window between an in-flight
+          upload's upsert and its flush would drop the document body while the
+          PENDING ``doc_status`` row still gets written, leaving an accepted
+          document with no content. Those writes self-flush immediately, so
+          skipping them discards nothing processing-owned.
+        * ``False`` (direct, non-pipeline callers like ``ainsert_custom_chunks``
+          via ``_insert_done_with_cleanup``) — clear them too. There is no
+          concurrent-enqueue contract for these callers, and a permanent
+          ``full_docs`` bulk failure (e.g. OpenSearch KV) must be cleared or it
+          stays buffered and every later ``_insert_done()`` replays the same
+          poisoned record. ``doc_status`` is immediate-write (no buffered
+          backend overrides ``drop_pending_index_ops``), so dropping it is a
+          no-op; only ``full_docs`` is meaningfully cleared. (Edge: a direct
+          insert racing a concurrent enqueue mid-window could still drop that
+          enqueue's in-flight body, but per-item backends only retain the
+          failed item and the enqueue race is a pipeline-only concern.)
+
+        The LLM response cache gets a final flush *before* its buffer is
+        dropped, because — unlike regenerable KG data — re-running LLM calls
+        is expensive, so cached results must be persisted maximally:
+
+        * When the abort was NOT caused by the cache, the cache backend is
+          healthy and this flush commits every still-buffered entry, leaving
+          the buffer empty so the subsequent drop discards nothing persistable.
+        * When a poisoned cache item is itself the abort cause (OpenSearch now
+          raises on non-retryable bulk failures), the flush persists the
+          writable entries (per-item backends pop successes) while the
+          un-writable item stays buffered and the drop then clears it — so a
+          bad cache entry cannot re-flush and re-abort every subsequent batch
+          and wedge the pipeline.
+
+        Backends that materialize writes in memory and only persist on a
+        later save (FAISS / Nano) discard just the pending buffer here and do
+        NOT roll back already-materialized-but-unsaved writes: the FAILED
+        documents are reprocessed idempotently, so the rollback would be
+        non-load-bearing and inconsistent with the server-backed backends
+        (see those backends' ``drop_pending_index_ops`` docstrings).
+
+        Best-effort throughout: a flush/clear failure is logged, not raised,
+        so cleanup never masks the original abort cause.
+        """
+        for storage_inst in self._index_storages():
+            if skip_enqueue_owned and (
+                storage_inst is self.full_docs or storage_inst is self.doc_status
+            ):
+                # enqueue-owned (see docstring): skipped for the file pipeline
+                # to avoid racing a concurrent enqueue; direct callers pass
+                # skip_enqueue_owned=False so a poisoned full_docs op is cleared.
+                continue
+            if storage_inst is self.llm_response_cache:
+                # Persist what can still be written, then fall through to drop
+                # whatever could not (a poisoned item) so it cannot wedge the
+                # next batch.
+                try:
+                    await cast(StorageNameSpace, storage_inst).index_done_callback()
+                except Exception as e:
+                    logger.error(f"Failed to persist LLM cache on abort: {e}")
+            try:
+                await cast(StorageNameSpace, storage_inst).drop_pending_index_ops()
+            except Exception as e:
+                logger.error(
+                    f"Failed to discard pending ops on "
+                    f"{type(storage_inst).__name__}: {e}"
+                )
+
+    async def _insert_done(
+        self, pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
+        storages = self._index_storages()
+
+        async def _flush_one(storage_inst) -> None:
+            # Wrap each flush so a failure carries the driver name + namespace.
+            # The pipeline uses this to abort the batch with an actionable
+            # reason instead of misattributing a shared-buffer flush error to
+            # whichever document happened to trigger index_done_callback.
+            try:
+                await cast(StorageNameSpace, storage_inst).index_done_callback()
+            except Exception as e:
+                namespace = getattr(storage_inst, "final_namespace", None) or getattr(
+                    storage_inst, "namespace", ""
+                )
+                raise IndexFlushError(type(storage_inst).__name__, namespace, e) from e
+
+        # Await every flush to completion (return_exceptions=True) before
+        # raising. With the default gather, the first IndexFlushError is
+        # propagated while sibling flush coroutines keep running detached —
+        # they could commit records or race _discard_pending_index_ops after
+        # the abort decision, and a second failing sibling would surface as a
+        # "Task exception was never retrieved" warning. Collecting all results
+        # first makes teardown deterministic and lets us report every failure.
+        results = await asyncio.gather(
+            *[_flush_one(inst) for inst in storages], return_exceptions=True
+        )
+        errors = [r for r in results if isinstance(r, BaseException)]
+        if errors:
+            # A cooperative cancellation must propagate as-is, not be reported
+            # as a storage flush failure (_flush_one's `except Exception` does
+            # not catch CancelledError, so it lands here as a result).
+            for exc in errors:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise exc
+            for extra in errors[1:]:
+                logger.error(f"Additional index flush failure: {extra}")
+            raise errors[0]
 
         log_message = "In memory DB persist to disk"
         logger.info(log_message)
@@ -1491,6 +1614,37 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
+
+    async def _insert_done_with_cleanup(self) -> None:
+        """``_insert_done`` for UPSERT-oriented direct (non-pipeline) callers,
+        discarding the pending buffers on a flush failure.
+
+        The file pipeline aborts and calls ``_discard_pending_index_ops()``
+        centrally, but direct insert callers (custom KG / chunks insert) have
+        no such cleanup. Without it, a permanent flush failure leaves the
+        poisoned op buffered — OpenSearch keeps a non-retryable bulk item;
+        milvus/qdrant/postgres/mongo keep the whole buffer — and every later
+        ``_insert_done()`` replays it, even after the caller submits otherwise
+        valid work. Discard pending on ``IndexFlushError`` so the buffer is
+        clean for the next attempt, then re-raise so the failure still
+        surfaces to the caller.
+
+        WARNING: do NOT use this on deletion paths. ``_discard_pending_index_ops``
+        drops pending DELETES too, but deletes are not regenerable by
+        reprocessing (the document is being removed, nothing re-issues them).
+        Dropping them — while a deletion may still report success — would leave
+        stale vectors/KV searchable. Deletion paths must use plain
+        ``_insert_done`` so failed deletes stay buffered for a later retry.
+        """
+        try:
+            await self._insert_done()
+        except IndexFlushError:
+            # Direct callers have no concurrent-enqueue contract, so clear
+            # full_docs too (skip_enqueue_owned=False) — otherwise a permanent
+            # full_docs bulk failure stays buffered and replays on every later
+            # _insert_done().
+            await self._discard_pending_index_ops(skip_enqueue_owned=False)
+            raise
 
     def insert_custom_kg(
         self, custom_kg: dict[str, Any], full_doc_id: str = None
@@ -1763,7 +1917,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             raise
         finally:
             if update_storage:
-                await self._insert_done()
+                await self._insert_done_with_cleanup()
 
     def query(
         self,
@@ -2758,6 +2912,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 raise Exception(f"Failed to delete entities: {e}") from e
 
         # ---- 6. Persist pre-rebuild changes ----
+        # Use plain _insert_done (no discard-on-failure): the pending buffer
+        # here holds DELETES, which are not regenerable by reprocessing. On a
+        # flush failure they must stay buffered for a later retry, not be
+        # discarded (see _insert_done_with_cleanup docstring).
         try:
             await self._insert_done()
         except Exception as e:
@@ -3513,6 +3671,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     raise Exception(f"Failed to delete entities: {e}") from e
 
             # Persist changes to graph database before entity and relationship rebuild
+            # Plain _insert_done: pending DELETES must be retained for retry on
+            # failure, not discarded (see _insert_done_with_cleanup docstring).
             try:
                 deletion_stage = "persist_pre_rebuild_changes"
                 await self._insert_done()
@@ -3663,6 +3823,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         finally:
             # ALWAYS ensure persistence if any deletion operations were started
             if deletion_operations_started:
+                # Plain _insert_done: this finally reports the deletion as
+                # successful after logging a persistence error, so discarding
+                # pending DELETES here would drop them with no retry and leave
+                # stale vectors/KV behind. Keep them buffered for a later flush.
                 try:
                     await self._insert_done()
                 except Exception as persistence_error:
