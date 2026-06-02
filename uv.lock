@@ -989,6 +989,27 @@ wheels = [
 ]
 
 [[package]]
+name = "faiss-cpu"
+version = "1.14.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "packaging" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/8b/5d2cd7c9fd60bc4d1ca6e9f5e8b0eb57254a7b301daaa12d5853fdf48afe/faiss_cpu-1.14.2-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:a20011b8a97318e6d5e29143a773277ca71f1c33140024aeec91f05ad56cdd04", size = 4621203, upload-time = "2026-05-22T19:58:27.415Z" },
+    { url = "https://files.pythonhosted.org/packages/84/b1/05876aa7ceafd67a8c53667f574c0354e50ebadfdaf0632d7d9f5c80fffe/faiss_cpu-1.14.2-cp310-abi3-macosx_15_0_x86_64.whl", hash = "sha256:6ba528b5803fe5206bbb38e6ea2c537de0d1482a47c5765982af4e4a48c135e2", size = 6681426, upload-time = "2026-05-22T19:58:29.193Z" },
+    { url = "https://files.pythonhosted.org/packages/35/b4/d130a1908ad548671cd5ee9a1b537c7d3753cfdf0b2b134f3c10ccc6b537/faiss_cpu-1.14.2-cp310-abi3-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:b340c33212351f04d4f167cb7b22c9e756705a634d3b7b58987651f3ba1f6217", size = 9592827, upload-time = "2026-05-22T19:58:30.772Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/66/108f7075591b84852a6b285a81922e773c1c6d3b2c45da8ec4822f1bfab4/faiss_cpu-1.14.2-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ec4784d9a14973f2eead3a3480e6d14e74253b234e2c12717d4319f21dfadfcd", size = 18234781, upload-time = "2026-05-22T19:58:33.268Z" },
+    { url = "https://files.pythonhosted.org/packages/56/69/a7e00faed1c756433830f1c530c1d1c5cd38e78a48f74b9e068eee93ffa6/faiss_cpu-1.14.2-cp310-cp310-win_amd64.whl", hash = "sha256:9bfbbb323347e4bbb861dcc4db80d27ca750a2a1375d6b28c39729d2f9cc6217", size = 16110796, upload-time = "2026-05-22T19:58:36.219Z" },
+    { url = "https://files.pythonhosted.org/packages/56/b9/a4d076acd9eeaf6fb6f5a29de1a7a0a34de411d0fbe3d8f8c91abb9f97e0/faiss_cpu-1.14.2-cp311-cp311-win_amd64.whl", hash = "sha256:a9d81699ff3ae6e25244efda48c52e406963bbce16d5754073725c14620885c6", size = 16111239, upload-time = "2026-05-22T19:58:38.889Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/42/af4df8012e0ed817df2c4094a816b538d99bfbbcbf567cd9f5f36d5fb9b4/faiss_cpu-1.14.2-cp312-cp312-win_amd64.whl", hash = "sha256:292124ba3d2bbeed920ef8519451cfba0f139b77db1607170cffbe68dc72e604", size = 16115701, upload-time = "2026-05-22T19:58:41.85Z" },
+    { url = "https://files.pythonhosted.org/packages/60/04/555551ceec73248e76b758014a6fba702349824270be27d0e5db1f740feb/faiss_cpu-1.14.2-cp313-cp313-win_amd64.whl", hash = "sha256:d81857f1fcf6c5dc76f75b35112158f731aeb7804ca971c51d74edf6e9b1b8c7", size = 16116212, upload-time = "2026-05-22T19:58:45.154Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/59/ff73cb48bd1a98a355ff5a6a2018f3cfe4980ec2196b4938bf8af4fb828b/faiss_cpu-1.14.2-cp314-cp314-win_amd64.whl", hash = "sha256:b736813d853d36693f7b5affdc8788adfa73efa2f45ac6493c8ce2cbb2584f19", size = 16394291, upload-time = "2026-05-22T19:58:48.062Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.136.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2130,6 +2151,7 @@ offline = [
     { name = "configparser" },
     { name = "defusedxml" },
     { name = "distro" },
+    { name = "faiss-cpu" },
     { name = "fastapi" },
     { name = "google-api-core" },
     { name = "google-genai" },
@@ -2194,6 +2216,7 @@ offline-llm = [
 ]
 offline-storage = [
     { name = "asyncpg" },
+    { name = "faiss-cpu" },
     { name = "neo4j" },
     { name = "opensearch-py" },
     { name = "pgvector" },
@@ -2274,6 +2297,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'evaluation'", specifier = ">=4.3.0" },
     { name = "defusedxml", marker = "extra == 'api'", specifier = ">=0.7.0,<1.0.0" },
     { name = "distro", marker = "extra == 'api'" },
+    { name = "faiss-cpu", marker = "extra == 'offline-storage'", specifier = ">=1.7.0,<2.0.0" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.108" },
     { name = "google-api-core", specifier = ">=2.0.0,<3.0.0" },
     { name = "google-api-core", marker = "extra == 'api'", specifier = ">=2.0.0,<3.0.0" },

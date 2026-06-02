@@ -9,6 +9,7 @@
 
 # Storage backend dependencies (with version constraints matching pyproject.toml)
 asyncpg>=0.31.0,<1.0.0
+faiss-cpu>=1.7.0,<2.0.0
 neo4j>=5.0.0,<7.0.0
 opensearch-py>=3.0.0,<4.0.0
 pgvector>=0.4.2,<1.0.0
