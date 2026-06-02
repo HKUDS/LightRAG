@@ -1608,6 +1608,44 @@ def extract_docx_blocks(
             # Check if this is a heading using the new function
             outline_level = get_heading_level(element, styles_outline)
 
+            # A "heading" longer than MAX_HEADING_LENGTH is not a real heading.
+            # The common cause (WPS/Word): the author set an outline level on a
+            # paragraph but typed the body with soft line breaks (Shift+Enter →
+            # <w:br/> → '\n') instead of starting a new paragraph, so heading
+            # text + body live in one <w:p>. Split at the first soft break: the
+            # first line stays the heading, the remainder becomes body text. If
+            # there is no usable soft break (a genuine single-line over-long
+            # heading), demote the whole paragraph to body text. Either way we
+            # avoid crashing via validate_heading_length() and never drop content.
+            demoted_body_text = None
+            if outline_level is not None and len(full_text) > MAX_HEADING_LENGTH:
+                head, sep, rest = full_text.partition("\n")
+                if sep and len(head) <= MAX_HEADING_LENGTH:
+                    full_text = head
+                    demoted_body_text = rest.strip() or None
+                    if parse_warnings is not None:
+                        parse_warnings["heading_softbreak_split_count"] = (
+                            parse_warnings.get("heading_softbreak_split_count", 0) + 1
+                        )
+                    print(
+                        f"Warning: heading paragraph exceeded {MAX_HEADING_LENGTH} "
+                        "chars; split at soft line break — kept first line as "
+                        "heading, rest as body.",
+                        file=sys.stderr,
+                    )
+                else:
+                    outline_level = None
+                    if parse_warnings is not None:
+                        parse_warnings["demoted_oversize_heading_count"] = (
+                            parse_warnings.get("demoted_oversize_heading_count", 0) + 1
+                        )
+                    print(
+                        f"Warning: paragraph has outline level but is "
+                        f"{len(full_text)} chars (> {MAX_HEADING_LENGTH}); treating "
+                        "as body text, not a heading.",
+                        file=sys.stderr,
+                    )
+
             if outline_level is not None:
                 # This is a heading (outline level 0-8)
                 # Convert 0-based to 1-based level
@@ -1708,6 +1746,17 @@ def extract_docx_blocks(
                         {
                             "text": render_heading_line(level, truncated_text),
                             "para_id": para_id,
+                            "is_table": False,
+                        }
+                    )
+
+                # Carry the body text that followed a soft break in an over-long
+                # heading paragraph as a regular body paragraph in the same block.
+                if demoted_body_text:
+                    current_paragraphs.append(
+                        {
+                            "text": demoted_body_text,
+                            "para_id": heading_para_id,
                             "is_table": False,
                         }
                     )
