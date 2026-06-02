@@ -19,7 +19,7 @@ from uuid import uuid4
 import numpy as np
 import pytest
 
-from lightrag.base import DocStatus
+from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc, Tokenizer
 from lightrag.utils_pipeline import (
@@ -364,5 +364,92 @@ async def test_pending_custom_metadata_semantic_lock(tmp_path):
         mixed_stored = await rag.doc_status.get_by_id(stale_plus_custom_id)
         assert mixed_stored["metadata"] == {"process_options": "F"}
         assert "custom_field" not in mixed_stored["metadata"]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_reset_and_normalize_with_string_status(tmp_path):
+    """Non-JSON backends (Redis/Mongo/OpenSearch/Postgres) hydrate
+    ``DocProcessingStatus.status`` as a raw string (``"processing"`` /
+    ``"pending"``) rather than a ``DocStatus`` member.  Because ``DocStatus``
+    subclasses ``str``, the enum-membership checks in
+    ``_validate_and_fix_document_consistency`` still match — this test pins
+    that behaviour so a future change to ``DocStatus`` (e.g. dropping the
+    ``str`` base) cannot silently stop string-status docs from being cleaned.
+
+    Builds the ``to_process_docs`` objects directly with string statuses to
+    exercise the string path (``get_docs_by_status`` would return enum-valued
+    members from the in-memory store).
+    """
+    rag = await _build_rag(tmp_path, "reset_string_status")
+    try:
+        processing_id = "doc-string-processing"
+        pending_id = "doc-string-pending"
+        now = datetime.now(timezone.utc).isoformat()
+        await rag.full_docs.upsert(
+            {
+                processing_id: {"content": "p", "file_path": "proc.pdf"},
+                pending_id: {"content": "q", "file_path": "pend.pdf"},
+            }
+        )
+
+        # Status is a plain string, exactly as a non-JSON backend hydrates it.
+        to_process_docs = {
+            processing_id: DocProcessingStatus(
+                content_summary="p",
+                content_length=1,
+                file_path="proc.pdf",
+                status="processing",
+                created_at=now,
+                updated_at=now,
+                track_id="track-proc",
+                chunks_count=1,
+                chunks_list=["c-1"],
+                error_msg="old error",
+                metadata=dict(_FULL_ATTEMPT_METADATA),
+            ),
+            pending_id: DocProcessingStatus(
+                content_summary="q",
+                content_length=1,
+                file_path="pend.pdf",
+                status="pending",
+                created_at=now,
+                updated_at=now,
+                track_id="track-pend",
+                chunks_count=0,
+                chunks_list=[],
+                error_msg="",
+                metadata={"process_options": "F", "analyzing_start_time": 7},
+            ),
+        }
+        assert isinstance(to_process_docs[processing_id].status, str)
+        assert not isinstance(to_process_docs[processing_id].status, DocStatus)
+
+        pipeline_status = {"latest_message": "", "history_messages": []}
+        await rag._validate_and_fix_document_consistency(
+            to_process_docs=to_process_docs,
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=asyncio.Lock(),
+        )
+
+        # String "processing" is reset to a clean PENDING.
+        proc_stored = await rag.doc_status.get_by_id(processing_id)
+        assert proc_stored is not None
+        assert _status_to_text(proc_stored["status"]) == "pending"
+        assert proc_stored["metadata"] == {
+            "process_options": "iF",
+            "source_file": "report.pdf",
+        }
+        assert to_process_docs[processing_id].metadata == {
+            "process_options": "iF",
+            "source_file": "report.pdf",
+        }
+
+        # String "pending" carrying a stale field is normalized in place.
+        pend_stored = await rag.doc_status.get_by_id(pending_id)
+        assert pend_stored is not None
+        assert pend_stored["metadata"] == {"process_options": "F"}
+        assert to_process_docs[pending_id].metadata == {"process_options": "F"}
     finally:
         await rag.finalize_storages()
