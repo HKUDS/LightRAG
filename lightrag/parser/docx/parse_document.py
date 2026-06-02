@@ -87,14 +87,14 @@ def format_error(title: str, details: str, solution: str) -> str:
     """
     return (
         "\n"
-        + "=" * 70
+        + "=" * 68
         + f"\nERROR: {title}\n"
-        + "=" * 70
+        + "=" * 68
         + f"\n\n{details}"
         + "\n\nSOLUTION:\n"
         + solution
         + "\n\n"
-        + "=" * 70
+        + "=" * 68
         + "\n"
     )
 
@@ -145,8 +145,8 @@ def validate_heading_length(heading_text: str, para_id: str):
         raise DocxContentError(
             format_error(
                 f"Heading too long ({len(heading_text)} characters, max {MAX_HEADING_LENGTH})",
-                f'The following heading exceeds the maximum allowed length:\n\n  "{preview}"\n\n'
-                f"Location: Paragraph ID {para_id}\n"
+                f'The following heading exceeds the maximum allowed length:\n\n{preview}\n\n'
+                f"Location(para_id): {para_id}\n"
                 f"Actual length: {len(heading_text)} characters",
                 "  1. Open the document in Microsoft Word\n"
                 f"  2. Shorten this heading to {MAX_HEADING_LENGTH} characters or less\n"
