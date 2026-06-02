@@ -171,6 +171,21 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
     return getattr(doc, field, default)
 
 
+def read_source_file_basename(data: Any) -> str | None:
+    """Read the source-file basename with backward compatibility.
+
+    The ``source_file_name`` → ``source_file`` rename means documents enqueued
+    before the change persisted the old key in full_docs content_data /
+    doc_status.metadata.  Read through here so resumed/legacy docs still resolve
+    their original source basename; write sites always use the new
+    ``source_file`` key.  Lives here (not in pipeline.py) so utils_pipeline
+    helpers can reuse it without importing back into the pipeline module.
+    """
+    if not isinstance(data, dict):
+        return None
+    return data.get("source_file") or data.get("source_file_name")
+
+
 # Long-lived per-document metadata fields that must survive every
 # doc_status state transition.  ``process_options`` records the user's
 # per-file processing strategy at enqueue time and is read by analyze /
@@ -272,6 +287,91 @@ def doc_status_transition_metadata(
     if extra:
         payload.update(extra)
     return payload
+
+
+# Long-lived per-document *directives* that record how the document should be
+# processed (written at enqueue time by ``_initial_doc_status``).  Unlike the
+# full carry-over list above, this is the subset that must survive a *reset*
+# back to PENDING: it deliberately EXCLUDES the per-attempt timing / result
+# fields (``parse_*`` / ``analyzing_*`` / ``parse_warnings`` / ``chunk_opts``),
+# which the next attempt regenerates and which would otherwise show stale
+# values while the document waits in PENDING.
+_DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
+    "process_options",
+    "source_file",
+)
+
+
+# Per-attempt metadata produced by a parse/analyze/process attempt.  Used as
+# the *precise* trigger for normalising an already-PENDING document's metadata
+# (see ``apipeline_process_enqueue_documents``' consistency check): only a
+# document carrying one of these stale keys is rebuilt to directives-only, so
+# unrelated (future / custom) metadata is never dropped just for being
+# non-directive.  Covers the timing/skip pairs, parser warnings, and the
+# ``extraction_meta`` fields stamped when entering PROCESSING.
+_DOC_STATUS_METADATA_ATTEMPT_KEYS: frozenset[str] = frozenset(
+    {
+        "parse_start_time",
+        "parse_end_time",
+        "parse_stage_skipped",
+        "analyzing_start_time",
+        "analyzing_end_time",
+        "analyzing_stage_skipped",
+        "parse_warnings",
+        "chunk_opts",
+        "process_start_time",
+        "process_end_time",
+        "parse_format",
+        "parse_engine",
+        "chunk_method",
+        "skip_kg",
+        "mm_chunks",
+        "hard_fallback_split",
+    }
+)
+
+
+def doc_status_reset_metadata(status_doc: Any) -> dict[str, Any]:
+    """Build the ``metadata`` payload for a reset back to PENDING.
+
+    Keeps only the long-lived processing directives
+    (``_DOC_STATUS_METADATA_DIRECTIVE_KEYS``) and drops every per-attempt
+    timing/result field, so a document that is interrupted and re-queued does
+    not surface stale parse/analyze timings (or warnings / chunk opts) while it
+    waits in PENDING.  ``source_file`` is read with legacy ``source_file_name``
+    tolerance and normalised onto the new key, mirroring the parse worker's own
+    normalisation so a resumed legacy pending_parse doc keeps its source hint.
+    """
+    payload: dict[str, Any] = {}
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    if not isinstance(raw_metadata, dict):
+        return payload
+    # Iterate the directive whitelist so a future addition to
+    # _DOC_STATUS_METADATA_DIRECTIVE_KEYS is automatically carried across a
+    # reset.  ``source_file`` is read with legacy ``source_file_name``
+    # tolerance and normalised onto the new key; all other directives carry
+    # verbatim when present and non-blank.
+    for key in _DOC_STATUS_METADATA_DIRECTIVE_KEYS:
+        if key == "source_file":
+            value = read_source_file_basename(raw_metadata)
+        else:
+            value = raw_metadata.get(key)
+        if value not in (None, ""):
+            payload[key] = value
+    return payload
+
+
+def doc_status_metadata_has_attempt_fields(status_doc: Any) -> bool:
+    """True when ``status_doc.metadata`` carries any per-attempt field.
+
+    Used to decide whether an already-PENDING document needs its metadata
+    normalised to directives-only — avoids a redundant upsert for documents
+    whose metadata is already clean (or only holds non-attempt custom fields).
+    """
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    if not isinstance(raw_metadata, dict):
+        return False
+    return not _DOC_STATUS_METADATA_ATTEMPT_KEYS.isdisjoint(raw_metadata)
 
 
 def doc_status_value(doc: Any) -> str:

@@ -83,7 +83,10 @@ from lightrag.utils_pipeline import (
     load_lightrag_document_content,
     make_lightrag_doc_content,
     normalize_document_file_path,
+    doc_status_metadata_has_attempt_fields,
+    doc_status_reset_metadata,
     parsed_artifact_dir_for,
+    read_source_file_basename,
     resolve_doc_file_path,
     sidecar_blocks_path,
     sidecar_uri_for,
@@ -126,18 +129,11 @@ def _call_source_file_resolver(
     return resolver(source_file or file_path)
 
 
-def _read_source_file(data: Any) -> str | None:
-    """Read the source-file basename with backward compatibility.
-
-    The ``source_file_name`` → ``source_file`` rename means documents enqueued
-    before the change persisted the old key in full_docs content_data /
-    doc_status.metadata.  Resumed/legacy docs are read through here so they
-    still resolve their original source basename; write sites always use the
-    new ``source_file`` key.
-    """
-    if not isinstance(data, dict):
-        return None
-    return data.get("source_file") or data.get("source_file_name")
+# Backward-compatible source-file reader.  Implementation lives in
+# utils_pipeline so reset/normalisation helpers there can reuse it without a
+# reverse import into this module; kept as a module-level alias for the
+# existing call sites below.
+_read_source_file = read_source_file_basename
 
 
 # Map ``process_options.chunking`` selector → ``extraction_meta.chunk_method``
@@ -1393,51 +1389,80 @@ class _PipelineMixin:
         #     pipeline_status["latest_message"] = final_message
         #     pipeline_status["history_messages"].append(final_message)
 
-        # Reset interrupted documents that pass consistency checks to PENDING status
+        # Bring every to-be-processed document into a clean PENDING state.
+        # Two cases are handled here so stale per-attempt metadata never
+        # survives into the PENDING wait window (where the WebUI would render
+        # last attempt's parse/analyze timings):
+        #   * interrupted docs (PROCESSING/PARSING/ANALYZING/FAILED) are reset
+        #     to PENDING, clearing error_msg and resetting metadata to the
+        #     enqueue-time directives only;
+        #   * docs that are ALREADY PENDING but still carry per-attempt fields
+        #     (e.g. reset by an older build that preserved them) are normalised
+        #     in place to directives-only.
+        # In BOTH cases the cleaned metadata is mirrored back onto the in-memory
+        # ``status_doc`` so the downstream parse worker — which no longer scrubs
+        # stale keys itself — carries the clean dict forward through
+        # ``doc_status_transition_metadata`` at every later transition.
         docs_to_reset = {}
         reset_count = 0
+        normalized_count = 0
 
         for doc_id, status_doc in to_process_docs.items():
             # Check if document has corresponding content in full_docs (consistency check)
             content_data = await self.full_docs.get_by_id(doc_id)
-            if content_data:  # Document passes consistency check
-                # Check if document is in interrupted status
-                if hasattr(status_doc, "status") and status_doc.status in [
-                    DocStatus.PROCESSING,
-                    DocStatus.FAILED,
-                    DocStatus.PARSING,
-                    DocStatus.ANALYZING,
-                ]:
-                    preserved_chunks_list, preserved_chunks_count = (
-                        chunk_fields_from_status_doc(status_doc)
-                    )
-                    resolved_file_path = resolve_doc_file_path(
-                        status_doc=status_doc,
-                        content_data=content_data,
-                    )
-                    # Prepare document for status reset to PENDING
-                    docs_to_reset[doc_id] = {
-                        "status": DocStatus.PENDING,
-                        "content_summary": status_doc.content_summary,
-                        "content_length": status_doc.content_length,
-                        "chunks_count": preserved_chunks_count,
-                        "chunks_list": preserved_chunks_list,
-                        "created_at": status_doc.created_at,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                        "file_path": resolved_file_path,
-                        "track_id": getattr(status_doc, "track_id", ""),
-                        "content_hash": getattr(status_doc, "content_hash", None),
-                        # Clear transient error / processing fields but preserve
-                        # long-lived per-doc metadata (process_options) seeded
-                        # at enqueue time.
-                        "error_msg": "",
-                        "metadata": doc_status_transition_metadata(status_doc),
-                    }
+            if not content_data:  # Fails consistency check; handled above
+                continue
+            status = getattr(status_doc, "status", None)
+            is_interrupted = status in (
+                DocStatus.PROCESSING,
+                DocStatus.FAILED,
+                DocStatus.PARSING,
+                DocStatus.ANALYZING,
+            )
+            # Only normalise an already-PENDING doc when it actually carries a
+            # stale per-attempt field — a precise trigger so unrelated/custom
+            # metadata on a clean PENDING is never rewritten or dropped.
+            needs_pending_normalize = (
+                status == DocStatus.PENDING
+                and doc_status_metadata_has_attempt_fields(status_doc)
+            )
+            if not (is_interrupted or needs_pending_normalize):
+                continue
 
-                    # Update the status in to_process_docs as well
-                    status_doc.status = DocStatus.PENDING
-                    status_doc.file_path = resolved_file_path
-                    reset_count += 1
+            preserved_chunks_list, preserved_chunks_count = (
+                chunk_fields_from_status_doc(status_doc)
+            )
+            resolved_file_path = resolve_doc_file_path(
+                status_doc=status_doc,
+                content_data=content_data,
+            )
+            # Directives-only metadata: drop per-attempt timing/result fields,
+            # keep process_options / source_file (legacy source_file_name
+            # tolerant).
+            reset_metadata = doc_status_reset_metadata(status_doc)
+            docs_to_reset[doc_id] = {
+                "status": DocStatus.PENDING,
+                "content_summary": status_doc.content_summary,
+                "content_length": status_doc.content_length,
+                "chunks_count": preserved_chunks_count,
+                "chunks_list": preserved_chunks_list,
+                "created_at": status_doc.created_at,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "file_path": resolved_file_path,
+                "track_id": getattr(status_doc, "track_id", ""),
+                "content_hash": getattr(status_doc, "content_hash", None),
+                "error_msg": "",
+                "metadata": reset_metadata,
+            }
+
+            # Mirror onto the in-memory status_doc so workers carry it forward.
+            status_doc.status = DocStatus.PENDING
+            status_doc.file_path = resolved_file_path
+            status_doc.metadata = reset_metadata
+            if is_interrupted:
+                reset_count += 1
+            else:
+                normalized_count += 1
 
         # Update doc_status storage if there are documents to reset
         if docs_to_reset:
@@ -1447,6 +1472,12 @@ class _PipelineMixin:
                 reset_message = (
                     f"Reset {reset_count} documents from "
                     "PARSING/ANALYZING/PROCESSING/FAILED to PENDING status"
+                    + (
+                        f"; normalized {normalized_count} PENDING document(s) "
+                        "with stale metadata"
+                        if normalized_count
+                        else ""
+                    )
                 )
                 logger.info(reset_message)
                 pipeline_status["latest_message"] = reset_message
@@ -1563,25 +1594,11 @@ class _PipelineMixin:
                 # subsequent state transition for stage-duration analysis.
                 if not isinstance(status_doc_w.metadata, dict):
                     status_doc_w.metadata = {}
-                # Drop stale per-attempt fields from any prior failed/retried
-                # attempt before stamping the new parse_start_time. All of
-                # these are written by either this worker (cache-hit /
-                # cache-miss branches below) or the downstream analyze worker,
-                # and would otherwise be carried forward via carry-over,
-                # skewing stage-duration metrics and the raw-cache-hit /
-                # skipped signals for the new attempt. The cache-hit mirror
-                # block only writes ``parse_stage_skipped`` when the parser
-                # actually returns a hit; the cache-miss branch only writes
-                # ``parse_end_time`` when parse actually runs; the analyze
-                # worker writes its pair on re-entry.
-                for _stale_key in (
-                    "parse_end_time",
-                    "parse_stage_skipped",
-                    "analyzing_start_time",
-                    "analyzing_end_time",
-                    "analyzing_stage_skipped",
-                ):
-                    status_doc_w.metadata.pop(_stale_key, None)
+                # Stale per-attempt fields (parse_end_time / *_stage_skipped /
+                # analyzing_*) from a prior failed/retried attempt are already
+                # scrubbed when the document is brought to PENDING in
+                # _validate_and_fix_document_consistency (the single cleanup
+                # point), so they are not carried into this PARSING upsert.
                 status_doc_w.metadata["parse_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
                     doc_id=doc_id_w,
