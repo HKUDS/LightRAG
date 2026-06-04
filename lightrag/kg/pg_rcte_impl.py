@@ -112,8 +112,14 @@ class PgRcteGraphStorage(BaseGraphStorage):
     async def initialize(self) -> None:
         async with get_data_init_lock():
             if self.db is None:
+                # PgRcteGraphStorage never needs pgvector.  Pass the
+                # vector_storage value from global_config only if another
+                # PG storage in this process uses it; otherwise fall back
+                # to a non-PGVectorStorage sentinel so ClientManager does
+                # not try to load the vector extension on plain PG instances.
                 self.db = await ClientManager.get_client(
                     vector_storage=self.global_config.get("vector_storage")
+                    or "PgRcteGraphStorage"
                 )
                 # Workspace priority: POSTGRES_WORKSPACE env > self.workspace > "default"
                 if self.db.workspace:
