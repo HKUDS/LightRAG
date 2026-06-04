@@ -6,46 +6,31 @@ CTEs — no Apache AGE extension, no pgvector, no Cypher wrapper required.
 
 Schema (created automatically on initialize):
 
-    graph_nodes(workspace TEXT, id TEXT, properties JSONB)  PK(workspace, id)
-    graph_edges(workspace TEXT, src_id TEXT, tgt_id TEXT, properties JSONB)
-                                                             PK(workspace, src_id, tgt_id)
+    lightrag_graph_nodes(workspace TEXT, id TEXT, properties JSONB)
+                                                  PK(workspace, id)
+    lightrag_graph_edges(workspace TEXT, src_id TEXT, tgt_id TEXT, properties JSONB)
+        Edges are stored in canonical order: src_id = LEAST(a, b), tgt_id = GREATEST(a, b)
+                                                  PK(workspace, src_id, tgt_id)
 
-All edge queries check both directions so the semantics are undirected,
-matching the BaseGraphStorage contract.
-
-Configuration (environment variables, same prefix as PGKVStorage):
-    POSTGRES_HOST      default: localhost
-    POSTGRES_PORT      default: 5432
-    POSTGRES_USER      (required)
-    POSTGRES_PASSWORD  (required)
-    POSTGRES_DATABASE  (required)
-    POSTGRES_MAX_CONNECTIONS  default: 10
+Configuration: inherits all POSTGRES_* / POSTGRES_SSL_* / POSTGRES_WORKSPACE
+environment variables via the shared ClientManager / PostgreSQLDB pool, identical
+to PGKVStorage and PGVectorStorage.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
-import pipmaster as pm
-
-if not pm.is_installed("asyncpg"):
-    pm.install("asyncpg")
-
-import asyncpg  # type: ignore
-
-from dotenv import load_dotenv
-
 from ..base import BaseGraphStorage
+from ..kg.shared_storage import get_data_init_lock
 from ..types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
 from ..utils import logger
-
-load_dotenv(dotenv_path=".env", override=False)
+from .postgres_impl import ClientManager, PostgreSQLDB
 
 # ---------------------------------------------------------------------------
-# DDL — executed once per workspace on initialize()
+# DDL — executed once per process on first initialize()
 # ---------------------------------------------------------------------------
 
 _DDL = """
@@ -68,53 +53,7 @@ CREATE TABLE IF NOT EXISTS lightrag_graph_edges (
 
 CREATE INDEX IF NOT EXISTS idx_lightrag_graph_edges_tgt
     ON lightrag_graph_edges (workspace, tgt_id);
-
-CREATE INDEX IF NOT EXISTS idx_lightrag_graph_nodes_props
-    ON lightrag_graph_nodes USING GIN (properties);
 """
-
-# ---------------------------------------------------------------------------
-# Thin asyncpg pool wrapper
-# ---------------------------------------------------------------------------
-
-
-class _PgPool:
-    def __init__(self) -> None:
-        self._pool: asyncpg.Pool | None = None
-
-    async def initialize(self, dsn: str, min_size: int = 1, max_size: int = 10) -> None:
-        self._pool = await asyncpg.create_pool(
-            dsn, min_size=min_size, max_size=max_size
-        )
-        async with self._pool.acquire() as conn:
-            await conn.execute(_DDL)
-
-    async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
-
-    def _require(self) -> asyncpg.Pool:
-        if self._pool is None:
-            raise RuntimeError("PgRcteGraphStorage not initialized")
-        return self._pool
-
-    async def fetchrow(self, sql: str, *args: Any) -> asyncpg.Record | None:
-        async with self._require().acquire() as conn:
-            return await conn.fetchrow(sql, *args)
-
-    async def fetch(self, sql: str, *args: Any) -> list[asyncpg.Record]:
-        async with self._require().acquire() as conn:
-            return await conn.fetch(sql, *args)
-
-    async def fetchval(self, sql: str, *args: Any) -> Any:
-        async with self._require().acquire() as conn:
-            return await conn.fetchval(sql, *args)
-
-    async def execute(self, sql: str, *args: Any) -> None:
-        async with self._require().acquire() as conn:
-            await conn.execute(sql, *args)
-
 
 # ---------------------------------------------------------------------------
 # Storage class
@@ -128,54 +67,66 @@ class PgRcteGraphStorage(BaseGraphStorage):
     Drop-in replacement for PGGraphStorage that requires no Apache AGE
     extension.  Uses two plain tables (lightrag_graph_nodes,
     lightrag_graph_edges) with JSONB properties and B-tree indexes.
+
+    Edges are stored in canonical order: src_id = LEAST(a, b),
+    tgt_id = GREATEST(a, b).  All write paths normalise before INSERT so
+    upsert_edge(A, B) and upsert_edge(B, A) map to the same row.
     """
 
-    _pool: _PgPool | None = field(default=None, init=False, repr=False)
+    db: PostgreSQLDB | None = field(default=None, init=False, repr=False)
 
     @property
-    def _db(self) -> _PgPool:
-        if self._pool is None:
+    def _db(self) -> PostgreSQLDB:
+        if self.db is None:
             raise RuntimeError(
                 "PgRcteGraphStorage not initialized — call initialize() first"
             )
-        return self._pool
+        return self.db
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Query helpers — thin wrappers over PostgreSQLDB.query / execute
     # ------------------------------------------------------------------
 
-    def _dsn(self) -> str:
-        cfg = self.global_config
-        host = cfg.get("postgres_host", os.environ.get("POSTGRES_HOST", "localhost"))
-        port = cfg.get("postgres_port", os.environ.get("POSTGRES_PORT", "5432"))
-        user = cfg.get("postgres_user", os.environ.get("POSTGRES_USER", ""))
-        password = cfg.get("postgres_password", os.environ.get("POSTGRES_PASSWORD", ""))
-        database = cfg.get("postgres_database", os.environ.get("POSTGRES_DATABASE", ""))
-        if not user or not password or not database:
-            raise ValueError(
-                "PgRcteGraphStorage requires POSTGRES_USER, POSTGRES_PASSWORD, "
-                "and POSTGRES_DATABASE to be set."
-            )
-        return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+    async def _execute(self, sql: str, *args: Any) -> None:
+        data = {str(i): v for i, v in enumerate(args)} if args else None
+        await self._db.execute(sql, data=data)
+
+    async def _fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        result = await self._db.query(sql, list(args) if args else None)
+        return result if isinstance(result, dict) else None  # type: ignore[return-value]
+
+    async def _fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        result = await self._db.query(sql, list(args) if args else None, multirows=True)
+        return result if isinstance(result, list) else []  # type: ignore[return-value]
+
+    async def _fetchval(self, sql: str, *args: Any) -> Any:
+        result = await self._db.query(sql, list(args) if args else None)
+        if not isinstance(result, dict):
+            return None
+        return next(iter(result.values()))
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def initialize(self) -> None:
-        max_conn = int(
-            self.global_config.get(
-                "postgres_max_connections",
-                os.environ.get("POSTGRES_MAX_CONNECTIONS", 10),
-            )
-        )
-        self._pool = _PgPool()
-        await self._pool.initialize(self._dsn(), max_size=max_conn)
+        async with get_data_init_lock():
+            if self.db is None:
+                self.db = await ClientManager.get_client(
+                    vector_storage=self.global_config.get("vector_storage")
+                )
+                # Workspace priority: POSTGRES_WORKSPACE env > self.workspace > "default"
+                if self.db.workspace:
+                    self.workspace = self.db.workspace
+                elif not getattr(self, "workspace", None):
+                    self.workspace = "default"
+                await self._db.execute(_DDL)
         logger.info(f"[{self.workspace}] PgRcteGraphStorage initialized")
 
     async def finalize(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
             logger.info(f"[{self.workspace}] PgRcteGraphStorage finalized")
 
     async def index_done_callback(self) -> None:
@@ -183,10 +134,10 @@ class PgRcteGraphStorage(BaseGraphStorage):
 
     async def drop(self) -> dict[str, str]:
         try:
-            await self._db.execute(
+            await self._execute(
                 "DELETE FROM lightrag_graph_edges WHERE workspace = $1", self.workspace
             )
-            await self._db.execute(
+            await self._execute(
                 "DELETE FROM lightrag_graph_nodes WHERE workspace = $1", self.workspace
             )
             return {"status": "success", "message": "data dropped"}
@@ -198,7 +149,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
     # ------------------------------------------------------------------
 
     async def has_node(self, node_id: str) -> bool:
-        row = await self._db.fetchrow(
+        row = await self._fetchrow(
             "SELECT 1 FROM lightrag_graph_nodes WHERE workspace = $1 AND id = $2",
             self.workspace,
             node_id,
@@ -206,7 +157,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
         return row is not None
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        row = await self._db.fetchrow(
+        row = await self._fetchrow(
             "SELECT properties FROM lightrag_graph_nodes WHERE workspace = $1 AND id = $2",
             self.workspace,
             node_id,
@@ -214,7 +165,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
         return json.loads(row["properties"]) if row else None
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
-        await self._db.execute(
+        await self._execute(
             """
             INSERT INTO lightrag_graph_nodes (workspace, id, properties, updated_at)
             VALUES ($1, $2, $3, now())
@@ -227,12 +178,12 @@ class PgRcteGraphStorage(BaseGraphStorage):
         )
 
     async def delete_node(self, node_id: str) -> None:
-        await self._db.execute(
+        await self._execute(
             "DELETE FROM lightrag_graph_edges WHERE workspace=$1 AND (src_id=$2 OR tgt_id=$2)",
             self.workspace,
             node_id,
         )
-        await self._db.execute(
+        await self._execute(
             "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND id = $2",
             self.workspace,
             node_id,
@@ -241,12 +192,12 @@ class PgRcteGraphStorage(BaseGraphStorage):
     async def remove_nodes(self, nodes: list[str]) -> None:
         if not nodes:
             return
-        await self._db.execute(
+        await self._execute(
             "DELETE FROM lightrag_graph_edges WHERE workspace=$1 AND (src_id=ANY($2) OR tgt_id=ANY($2))",
             self.workspace,
             nodes,
         )
-        await self._db.execute(
+        await self._execute(
             "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND id = ANY($2)",
             self.workspace,
             nodes,
@@ -254,40 +205,39 @@ class PgRcteGraphStorage(BaseGraphStorage):
 
     # ------------------------------------------------------------------
     # Edge operations
+    # All writes normalise to canonical order: src_id = min(a, b), tgt_id = max(a, b).
     # ------------------------------------------------------------------
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        row = await self._db.fetchrow(
-            """
-            SELECT 1 FROM lightrag_graph_edges
-            WHERE workspace = $1
-              AND ((src_id=$2 AND tgt_id=$3) OR (src_id=$3 AND tgt_id=$2))
-            """,
+        src = min(source_node_id, target_node_id)
+        tgt = max(source_node_id, target_node_id)
+        row = await self._fetchrow(
+            "SELECT 1 FROM lightrag_graph_edges WHERE workspace=$1 AND src_id=$2 AND tgt_id=$3",
             self.workspace,
-            source_node_id,
-            target_node_id,
+            src,
+            tgt,
         )
         return row is not None
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        row = await self._db.fetchrow(
-            """
-            SELECT properties FROM lightrag_graph_edges
-            WHERE workspace = $1
-              AND ((src_id=$2 AND tgt_id=$3) OR (src_id=$3 AND tgt_id=$2))
-            """,
+        src = min(source_node_id, target_node_id)
+        tgt = max(source_node_id, target_node_id)
+        row = await self._fetchrow(
+            "SELECT properties FROM lightrag_graph_edges WHERE workspace=$1 AND src_id=$2 AND tgt_id=$3",
             self.workspace,
-            source_node_id,
-            target_node_id,
+            src,
+            tgt,
         )
         return json.loads(row["properties"]) if row else None
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        await self._db.execute(
+        src = min(source_node_id, target_node_id)
+        tgt = max(source_node_id, target_node_id)
+        await self._execute(
             """
             INSERT INTO lightrag_graph_edges (workspace, src_id, tgt_id, properties, updated_at)
             VALUES ($1, $2, $3, $4, now())
@@ -295,17 +245,17 @@ class PgRcteGraphStorage(BaseGraphStorage):
             DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
             """,
             self.workspace,
-            source_node_id,
-            target_node_id,
+            src,
+            tgt,
             json.dumps(edge_data),
         )
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
         if not edges:
             return
-        srcs = [e[0] for e in edges]
-        tgts = [e[1] for e in edges]
-        await self._db.execute(
+        srcs = [min(e[0], e[1]) for e in edges]
+        tgts = [max(e[0], e[1]) for e in edges]
+        await self._execute(
             """
             DELETE FROM lightrag_graph_edges
             WHERE workspace = $1
@@ -314,22 +264,12 @@ class PgRcteGraphStorage(BaseGraphStorage):
             self.workspace,
             srcs,
             tgts,
-        )
-        await self._db.execute(
-            """
-            DELETE FROM lightrag_graph_edges
-            WHERE workspace = $1
-              AND (src_id, tgt_id) IN (SELECT * FROM unnest($2::text[], $3::text[]))
-            """,
-            self.workspace,
-            tgts,
-            srcs,
         )
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         if not await self.has_node(source_node_id):
             return None
-        rows = await self._db.fetch(
+        rows = await self._fetch(
             """
             SELECT src_id, tgt_id FROM lightrag_graph_edges
             WHERE workspace = $1 AND (src_id = $2 OR tgt_id = $2)
@@ -344,7 +284,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
     # ------------------------------------------------------------------
 
     async def node_degree(self, node_id: str) -> int:
-        val = await self._db.fetchval(
+        val = await self._fetchval(
             "SELECT COUNT(*) FROM lightrag_graph_edges WHERE workspace=$1 AND (src_id=$2 OR tgt_id=$2)",
             self.workspace,
             node_id,
@@ -362,14 +302,14 @@ class PgRcteGraphStorage(BaseGraphStorage):
     # ------------------------------------------------------------------
 
     async def get_all_labels(self) -> list[str]:
-        rows = await self._db.fetch(
+        rows = await self._fetch(
             "SELECT id FROM lightrag_graph_nodes WHERE workspace = $1 ORDER BY id",
             self.workspace,
         )
         return [r["id"] for r in rows]
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
-        rows = await self._db.fetch(
+        rows = await self._fetch(
             """
             SELECT id, COUNT(*) AS degree
             FROM (
@@ -387,7 +327,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
         return [r["id"] for r in rows]
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
-        rows = await self._db.fetch(
+        rows = await self._fetch(
             "SELECT id FROM lightrag_graph_nodes WHERE workspace=$1 AND id ILIKE $2 ORDER BY id LIMIT $3",
             self.workspace,
             f"%{query}%",
@@ -396,14 +336,14 @@ class PgRcteGraphStorage(BaseGraphStorage):
         return [r["id"] for r in rows]
 
     async def get_all_nodes(self) -> list[dict]:
-        rows = await self._db.fetch(
+        rows = await self._fetch(
             "SELECT id, properties FROM lightrag_graph_nodes WHERE workspace = $1",
             self.workspace,
         )
         return [{"id": r["id"], **json.loads(r["properties"])} for r in rows]
 
     async def get_all_edges(self) -> list[dict]:
-        rows = await self._db.fetch(
+        rows = await self._fetch(
             "SELECT src_id, tgt_id, properties FROM lightrag_graph_edges WHERE workspace = $1",
             self.workspace,
         )
@@ -426,11 +366,10 @@ class PgRcteGraphStorage(BaseGraphStorage):
         max_depth: int = 3,
         max_nodes: int = 1000,
     ) -> KnowledgeGraph:
-        # RCTE with depth column so max_depth is enforced at the DB level.
-        # UNION deduplicates (id, properties, depth) tuples; the final
-        # SELECT DISTINCT deduplicates by id across depths.
+        # Fetch one extra row to detect true truncation without a separate COUNT.
+        fetch_limit = max_nodes + 1
         if node_label == "*":
-            # $1=workspace  $2=max_depth  $3=max_nodes
+            # $1=workspace  $2=max_depth  $3=fetch_limit
             rcte_sql = """
             WITH RECURSIVE bfs(id, properties, depth) AS (
                 SELECT id, properties, 0
@@ -448,9 +387,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
             )
             SELECT DISTINCT id, properties FROM bfs LIMIT $3
             """
-            params: list[Any] = [self.workspace, max_depth, max_nodes]
+            params: list[Any] = [self.workspace, max_depth, fetch_limit]
         else:
-            # $1=workspace  $2=label pattern  $3=max_depth  $4=max_nodes
+            # $1=workspace  $2=label pattern  $3=max_depth  $4=fetch_limit
             rcte_sql = """
             WITH RECURSIVE bfs(id, properties, depth) AS (
                 SELECT id, properties, 0
@@ -468,11 +407,17 @@ class PgRcteGraphStorage(BaseGraphStorage):
             )
             SELECT DISTINCT id, properties FROM bfs LIMIT $4
             """
-            params = [self.workspace, f"%{node_label}%", max_depth, max_nodes]
+            params = [self.workspace, f"%{node_label}%", max_depth, fetch_limit]
 
-        node_rows = await self._db.fetch(rcte_sql, *params)
+        node_rows = await self._fetch(rcte_sql, *params)
+        is_truncated = len(node_rows) > max_nodes
+        node_rows = node_rows[:max_nodes]
         node_ids = {r["id"] for r in node_rows}
-        is_truncated = len(node_ids) >= max_nodes
+
+        # Sort by degree descending to match AGE backend behaviour under truncation.
+        if node_ids:
+            degrees = await self.node_degrees_batch(list(node_ids))
+            node_rows.sort(key=lambda r: degrees.get(r["id"], 0), reverse=True)
 
         nodes = [
             KnowledgeGraphNode(
@@ -483,7 +428,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
 
         edges: list[KnowledgeGraphEdge] = []
         if node_ids:
-            edge_rows = await self._db.fetch(
+            edge_rows = await self._fetch(
                 """
                 SELECT src_id, tgt_id, properties FROM lightrag_graph_edges
                 WHERE workspace = $1 AND src_id = ANY($2) AND tgt_id = ANY($2)
@@ -505,13 +450,13 @@ class PgRcteGraphStorage(BaseGraphStorage):
         return KnowledgeGraph(nodes=nodes, edges=edges, is_truncated=is_truncated)
 
     # ------------------------------------------------------------------
-    # Batch method overrides — avoid N+1 serial calls
+    # Read batch overrides — avoid N+1 serial calls
     # ------------------------------------------------------------------
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         if not node_ids:
             return {}
-        rows = await self._db.fetch(
+        rows = await self._fetch(
             "SELECT id, properties FROM lightrag_graph_nodes WHERE workspace=$1 AND id=ANY($2)",
             self.workspace,
             node_ids,
@@ -521,7 +466,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         if not node_ids:
             return {}
-        rows = await self._db.fetch(
+        rows = await self._fetch(
             """
             SELECT id, COUNT(*) AS degree
             FROM (
@@ -553,9 +498,10 @@ class PgRcteGraphStorage(BaseGraphStorage):
     ) -> dict[tuple[str, str], dict]:
         if not pairs:
             return {}
-        srcs = [p["src"] for p in pairs]
-        tgts = [p["tgt"] for p in pairs]
-        rows = await self._db.fetch(
+        canonical = [(min(p["src"], p["tgt"]), max(p["src"], p["tgt"])) for p in pairs]
+        srcs = [c[0] for c in canonical]
+        tgts = [c[1] for c in canonical]
+        rows = await self._fetch(
             """
             SELECT src_id, tgt_id, properties FROM lightrag_graph_edges
             WHERE workspace=$1
@@ -565,31 +511,21 @@ class PgRcteGraphStorage(BaseGraphStorage):
             srcs,
             tgts,
         )
-        result: dict[tuple[str, str], dict] = {}
-        for r in rows:
-            result[(r["src_id"], r["tgt_id"])] = json.loads(r["properties"])
-        rev = await self._db.fetch(
-            """
-            SELECT src_id, tgt_id, properties FROM lightrag_graph_edges
-            WHERE workspace=$1
-              AND (src_id, tgt_id) IN (SELECT * FROM unnest($2::text[], $3::text[]))
-            """,
-            self.workspace,
-            tgts,
-            srcs,
-        )
-        for r in rev:
-            key = (r["tgt_id"], r["src_id"])
-            if key not in result:
-                result[key] = json.loads(r["properties"])
-        return result
+        canonical_props = {
+            (r["src_id"], r["tgt_id"]): json.loads(r["properties"]) for r in rows
+        }
+        return {
+            (p["src"], p["tgt"]): canonical_props[c]
+            for p, c in zip(pairs, canonical)
+            if c in canonical_props
+        }
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
     ) -> dict[str, list[tuple[str, str]]]:
         if not node_ids:
             return {}
-        rows = await self._db.fetch(
+        rows = await self._fetch(
             """
             SELECT src_id, tgt_id FROM lightrag_graph_edges
             WHERE workspace=$1 AND (src_id=ANY($2) OR tgt_id=ANY($2))
@@ -605,3 +541,61 @@ class PgRcteGraphStorage(BaseGraphStorage):
             if tgt in result:
                 result[tgt].append((src, tgt))
         return result
+
+    # ------------------------------------------------------------------
+    # Write batch overrides — single-roundtrip bulk upserts via unnest
+    # ------------------------------------------------------------------
+
+    async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
+        if not node_ids:
+            return set()
+        return set(await self.get_nodes_batch(node_ids))
+
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
+        if not nodes:
+            return
+        # Deduplicate: last write for each node_id wins.
+        deduped: dict[str, dict[str, str]] = {}
+        for node_id, node_data in nodes:
+            deduped[node_id] = node_data
+        ids = list(deduped.keys())
+        props = [json.dumps(v) for v in deduped.values()]
+        await self._execute(
+            """
+            INSERT INTO lightrag_graph_nodes (workspace, id, properties, updated_at)
+            SELECT $1, u.id, u.props::jsonb, now()
+            FROM unnest($2::text[], $3::text[]) AS u(id, props)
+            ON CONFLICT (workspace, id)
+            DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
+            """,
+            self.workspace,
+            ids,
+            props,
+        )
+
+    async def upsert_edges_batch(
+        self, edges: list[tuple[str, str, dict[str, str]]]
+    ) -> None:
+        if not edges:
+            return
+        # Normalise to canonical order and deduplicate: last write per edge pair wins.
+        deduped: dict[tuple[str, str], dict[str, str]] = {}
+        for src, tgt, edge_data in edges:
+            key = (min(src, tgt), max(src, tgt))
+            deduped[key] = edge_data
+        srcs = [k[0] for k in deduped]
+        tgts = [k[1] for k in deduped]
+        props = [json.dumps(v) for v in deduped.values()]
+        await self._execute(
+            """
+            INSERT INTO lightrag_graph_edges (workspace, src_id, tgt_id, properties, updated_at)
+            SELECT $1, u.src, u.tgt, u.props::jsonb, now()
+            FROM unnest($2::text[], $3::text[], $4::text[]) AS u(src, tgt, props)
+            ON CONFLICT (workspace, src_id, tgt_id)
+            DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
+            """,
+            self.workspace,
+            srcs,
+            tgts,
+            props,
+        )
