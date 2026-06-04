@@ -969,3 +969,117 @@ class TestPgRcteBatchOrdering:
         _ws, srcs, tgts, _ = execute_args[0]
         assert srcs == ["ANode"]
         assert tgts == ["ZNode"]
+
+
+class TestPgRctePipelineIntegration:
+    """Offline pipeline integration tests for PgRcteGraphStorage.
+
+    Patches all DB-dependent methods (_execute / _fetch / _fetchrow / _fetchval)
+    so no PostgreSQL instance is required, then drives the real
+    ainsert_custom_kg() pipeline to verify:
+
+    1. Batch write methods are invoked (not N+1 serial upserts).
+    2. Edge canonical normalisation flows end-to-end: a relation submitted
+       as (EntityB, EntityA) must reach _execute as (EntityA, EntityB).
+    """
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_batch_writes_and_edge_normalisation_via_pipeline(self):
+        import tempfile
+        from unittest.mock import AsyncMock, patch
+
+        from lightrag import LightRAG
+        from lightrag.kg.pg_rcte_impl import PgRcteGraphStorage
+
+        execute_args: list[tuple] = []
+
+        async def spy_execute(_self, _sql, *args):
+            execute_args.append(args)
+
+        with (
+            patch.object(PgRcteGraphStorage, "initialize", AsyncMock()),
+            patch.object(PgRcteGraphStorage, "finalize", AsyncMock()),
+            patch.object(PgRcteGraphStorage, "index_done_callback", AsyncMock()),
+            # Route all writes through the spy; skip actual SQL
+            patch.object(PgRcteGraphStorage, "_execute", spy_execute),
+            # Make all reads return empty so the pipeline treats everything as new
+            patch.object(PgRcteGraphStorage, "_fetch", AsyncMock(return_value=[])),
+            patch.object(PgRcteGraphStorage, "_fetchrow", AsyncMock(return_value=None)),
+            patch.object(PgRcteGraphStorage, "_fetchval", AsyncMock(return_value=0)),
+        ):
+            # Satisfy env-var checks in LightRAG.__post_init__ without a real DB
+            pg_env = {
+                "POSTGRES_USER": "test",
+                "POSTGRES_PASSWORD": "test",
+                "POSTGRES_DATABASE": "test",
+            }
+            with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", pg_env):
+                rag = LightRAG(
+                    working_dir=tmp,
+                    graph_storage="PgRcteGraphStorage",
+                    llm_model_func=AsyncMock(return_value=""),
+                    embedding_func=mock_embedding_func,
+                )
+                await rag.initialize_storages()
+
+                # Mock non-graph storages to avoid file I/O interference
+                rag.entities_vdb.upsert = AsyncMock()
+                rag.relationships_vdb.upsert = AsyncMock()
+                rag.relationships_vdb.delete = AsyncMock()
+                rag.text_chunks.upsert = AsyncMock()
+                rag.doc_status.upsert = AsyncMock()
+
+                # Two entities + one relation submitted in reverse direction (B→A).
+                # PgRcteGraphStorage must store the edge as (EntityA, EntityB) — canonical order.
+                custom_kg = {
+                    "chunks": [
+                        {"content": "text", "chunk_order_index": 0, "source_id": "s1"}
+                    ],
+                    "entities": [
+                        {
+                            "entity_name": "EntityA",
+                            "entity_type": "CONCEPT",
+                            "description": "A",
+                            "source_id": "s1",
+                            "file_path": "t.pdf",
+                        },
+                        {
+                            "entity_name": "EntityB",
+                            "entity_type": "CONCEPT",
+                            "description": "B",
+                            "source_id": "s1",
+                            "file_path": "t.pdf",
+                        },
+                    ],
+                    "relationships": [
+                        {
+                            "src_id": "EntityB",  # reversed — pipeline sends B→A
+                            "tgt_id": "EntityA",
+                            "description": "relation",
+                            "keywords": "link",
+                            "weight": 1.0,
+                            "source_id": "s1",
+                            "file_path": "t.pdf",
+                        }
+                    ],
+                }
+
+                await rag.ainsert_custom_kg(custom_kg)
+                await rag.finalize_storages()
+
+        # ── Verify batch writes were issued ──────────────────────────────────
+        # Node batch: (workspace, ids_list, props_list) → 3 positional args
+        node_batches = [a for a in execute_args if len(a) == 3 and isinstance(a[1], list)]
+        assert node_batches, "upsert_nodes_batch never called _execute"
+
+        # Edge batch: (workspace, srcs_list, tgts_list, props_list) → 4 positional args
+        edge_batches = [a for a in execute_args if len(a) == 4 and isinstance(a[1], list)]
+        assert edge_batches, "upsert_edges_batch never called _execute"
+
+        # ── Verify canonical edge normalisation ──────────────────────────────
+        # The relation was submitted as (EntityB, EntityA); canonical order is
+        # min(a,b) → src, so it must be stored as (EntityA, EntityB).
+        _ws, srcs, tgts, _props = edge_batches[0]
+        assert srcs == ["EntityA"], f"Edge src not normalised: got {srcs}"
+        assert tgts == ["EntityB"], f"Edge tgt not normalised: got {tgts}"
