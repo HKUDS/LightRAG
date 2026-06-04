@@ -870,3 +870,102 @@ class TestMongoBatchOrdering:
         node_ops = storage.collection.bulk_write.await_args.args[0]
         assert len(node_ops) == 1
         assert node_ops[0]._filter == {"_id": "EntityA"}
+
+
+class TestPgRcteBatchOrdering:
+    """Offline unit tests for PgRcteGraphStorage batch write methods.
+
+    Spies on _execute to verify SQL batch arguments without a real DB.
+    """
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_upsert_nodes_batch_deduplicates_last_write_wins(self):
+        import json
+
+        from lightrag.kg.pg_rcte_impl import PgRcteGraphStorage
+
+        storage = PgRcteGraphStorage.__new__(PgRcteGraphStorage)
+        storage.workspace = "test"
+        execute_args: list[tuple] = []
+
+        async def spy(_sql, *args):
+            execute_args.append(args)
+
+        storage._execute = spy  # type: ignore[assignment]
+
+        await PgRcteGraphStorage.upsert_nodes_batch(
+            storage,
+            [
+                ("EntityA", _make_node("EntityA")),
+                ("EntityA", dict(_make_node("EntityA"), description="latest")),
+                ("EntityB", _make_node("EntityB")),
+            ],
+        )
+
+        # All nodes in a single _execute call
+        assert len(execute_args) == 1
+        _ws, ids, props = execute_args[0]
+        assert ids == ["EntityA", "EntityB"]
+        assert json.loads(props[0])["description"] == "latest"
+        assert json.loads(props[1])["description"] == "Description of EntityB"
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_upsert_edges_batch_normalizes_direction(self):
+        import json
+
+        from lightrag.kg.pg_rcte_impl import PgRcteGraphStorage
+
+        storage = PgRcteGraphStorage.__new__(PgRcteGraphStorage)
+        storage.workspace = "test"
+        execute_args: list[tuple] = []
+
+        async def spy(_sql, *args):
+            execute_args.append(args)
+
+        storage._execute = spy  # type: ignore[assignment]
+
+        await PgRcteGraphStorage.upsert_edges_batch(
+            storage,
+            [
+                ("EntityA", "EntityB", _make_edge(1.0)),
+                ("EntityB", "EntityA", _make_edge(2.0)),  # reversed → same canonical pair
+                ("EntityB", "EntityC", _make_edge(3.0)),
+            ],
+        )
+
+        # (A,B) and (B,A) collapse to one row; all edges in one _execute call
+        assert len(execute_args) == 1
+        _ws, srcs, tgts, props = execute_args[0]
+        edge_pairs = list(zip(srcs, tgts))
+        assert len(edge_pairs) == 2
+        assert ("EntityA", "EntityB") in edge_pairs
+        assert ("EntityB", "EntityC") in edge_pairs
+        # Last write wins: weight 2.0 (from the (B,A) call) survives
+        ab_idx = edge_pairs.index(("EntityA", "EntityB"))
+        assert json.loads(props[ab_idx])["weight"] == 2.0
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_upsert_edges_batch_canonical_order_is_lexicographic(self):
+        """src_id = min(a, b), tgt_id = max(a, b) regardless of call order."""
+        from lightrag.kg.pg_rcte_impl import PgRcteGraphStorage
+
+        storage = PgRcteGraphStorage.__new__(PgRcteGraphStorage)
+        storage.workspace = "test"
+        execute_args: list[tuple] = []
+
+        async def spy(_sql, *args):
+            execute_args.append(args)
+
+        storage._execute = spy  # type: ignore[assignment]
+
+        await PgRcteGraphStorage.upsert_edges_batch(
+            storage,
+            [("ZNode", "ANode", _make_edge())],
+        )
+
+        _ws, srcs, tgts, _ = execute_args[0]
+        assert srcs == ["ANode"]
+        assert tgts == ["ZNode"]
