@@ -233,7 +233,7 @@ def test_invalid_when_options_signature_missing(
     [
         ("MINERU_LOCAL_BACKEND", "pipeline"),
         ("MINERU_LOCAL_PARSE_METHOD", "ocr"),
-        ("MINERU_LOCAL_IMAGE_ANALYSIS", "false"),
+        ("MINERU_LOCAL_IMAGE_ANALYSIS", "true"),
         ("MINERU_LOCAL_START_PAGE_ID", "1"),
     ],
 )
