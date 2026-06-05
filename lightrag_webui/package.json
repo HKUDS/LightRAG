@@ -51,7 +51,7 @@
     "graphology-layout-force": "^0.2.4",
     "graphology-layout-forceatlas2": "^0.10.1",
     "graphology-layout-noverlap": "^0.4.2",
-    "i18next": "^26.2.0",
+    "i18next": "^26.3.0",
     "katex": "^0.17.0",
     "mermaid": "^11.15.0",
     "lucide-react": "^1.17.0",
@@ -78,7 +78,7 @@
     "tailwind-scrollbar": "^4.0.2",
     "typography": "^0.16.24",
     "unist-util-visit": "^5.1.0",
-    "zustand": "^5.0.13"
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
