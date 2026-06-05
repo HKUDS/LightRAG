@@ -94,35 +94,42 @@ BACKENDS = [
 # Dataset generation
 # ---------------------------------------------------------------------------
 
+
 def synthetic_dataset(n_nodes: int = 8000, m: int = 5) -> tuple[list, list]:
     """Barabási-Albert scale-free graph — realistic hub structure."""
     print(f"  Generating BA graph: {n_nodes} nodes, m={m}...")
     G = nx.barabasi_albert_graph(n_nodes, m, seed=42)
     nodes = []
     for i in G.nodes:
-        nodes.append((
-            f"Entity_{i:05d}",
-            {
-                "entity_id": f"Entity_{i:05d}",
-                "entity_type": random.choice(["concept", "process", "system", "metric"]),
-                "description": f"Synthetic entity number {i} in scale-free graph.",
-                "source_id": f"chunk-{i % 500:04d}",
-                "created_at": 1767000000 + i,
-            }
-        ))
+        nodes.append(
+            (
+                f"Entity_{i:05d}",
+                {
+                    "entity_id": f"Entity_{i:05d}",
+                    "entity_type": random.choice(
+                        ["concept", "process", "system", "metric"]
+                    ),
+                    "description": f"Synthetic entity number {i} in scale-free graph.",
+                    "source_id": f"chunk-{i % 500:04d}",
+                    "created_at": 1767000000 + i,
+                },
+            )
+        )
     edges = []
     for src, tgt in G.edges:
-        edges.append((
-            f"Entity_{src:05d}",
-            f"Entity_{tgt:05d}",
-            {
-                "weight": round(random.uniform(0.3, 2.0), 2),
-                "description": f"Relationship between entity {src} and {tgt}.",
-                "keywords": "synthetic,test",
-                "source_id": f"chunk-{src % 500:04d}",
-                "created_at": 1767000000 + src,
-            }
-        ))
+        edges.append(
+            (
+                f"Entity_{src:05d}",
+                f"Entity_{tgt:05d}",
+                {
+                    "weight": round(random.uniform(0.3, 2.0), 2),
+                    "description": f"Relationship between entity {src} and {tgt}.",
+                    "keywords": "synthetic,test",
+                    "source_id": f"chunk-{src % 500:04d}",
+                    "created_at": 1767000000 + src,
+                },
+            )
+        )
     print(f"  Generated {len(nodes)} nodes, {len(edges)} edges")
     return nodes, edges
 
@@ -130,6 +137,7 @@ def synthetic_dataset(n_nodes: int = 8000, m: int = 5) -> tuple[list, list]:
 # ---------------------------------------------------------------------------
 # Storage factory
 # ---------------------------------------------------------------------------
+
 
 async def make_storage(backend: dict, workspace: str):
     import importlib
@@ -144,7 +152,12 @@ async def make_storage(backend: dict, workspace: str):
     # Reset shared ClientManager pool so each backend gets its own connection.
     if name in ("PGGraphStorage", "PgRcteGraphStorage"):
         from lightrag.kg.postgres_impl import ClientManager
-        ClientManager._instances = {"db": None, "ref_count": 0, "vector_signature": None}
+
+        ClientManager._instances = {
+            "db": None,
+            "ref_count": 0,
+            "vector_signature": None,
+        }
 
     initialize_share_data()
 
@@ -173,6 +186,7 @@ async def make_storage(backend: dict, workspace: str):
 
 _SEED_CHUNK = 500
 
+
 async def seed(store, nodes: list, edges: list) -> float:
     t0 = time.monotonic()
     for i in range(0, len(nodes), _SEED_CHUNK):
@@ -185,6 +199,7 @@ async def seed(store, nodes: list, edges: list) -> float:
 # ---------------------------------------------------------------------------
 # Benchmark worker
 # ---------------------------------------------------------------------------
+
 
 async def _worker(store, node_ids: list, duration: float, results: list):
     """Workload mirrors LightRAG's actual graph storage call pattern.
@@ -221,14 +236,21 @@ async def _worker(store, node_ids: list, duration: float, results: list):
                 await store.get_knowledge_graph(nid, max_depth=2, max_nodes=50)
                 op = "get_knowledge_graph"
             elif roll < 0.94:
-                batch = [(n, {"entity_id": n, "entity_type": "bench"})
-                         for n in random.choices(node_ids, k=3)]
+                batch = [
+                    (n, {"entity_id": n, "entity_type": "bench"})
+                    for n in random.choices(node_ids, k=3)
+                ]
                 await store.upsert_nodes_batch(batch)
                 op = "upsert_nodes_batch"
             else:
-                pairs = [(random.choice(node_ids), random.choice(node_ids),
-                          {"weight": "1.0"})
-                         for _ in range(3)]
+                pairs = [
+                    (
+                        random.choice(node_ids),
+                        random.choice(node_ids),
+                        {"weight": "1.0"},
+                    )
+                    for _ in range(3)
+                ]
                 await store.upsert_edges_batch(pairs)
                 op = "upsert_edges_batch"
             results.append((op, (time.monotonic() - t0) * 1000))
@@ -239,6 +261,7 @@ async def _worker(store, node_ids: list, duration: float, results: list):
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
+
 
 def _collect_results(results: list, elapsed: float) -> dict:
     ok = [(op, lat) for op, lat in results if not op.startswith("ERR")]
@@ -268,26 +291,32 @@ def _collect_results(results: list, elapsed: float) -> dict:
 
 
 def _print_results(backend: str, seed_s: float, stats: dict):
-    print(f"\n  [{backend}]  seed={seed_s:.1f}s  "
-          f"ops={stats['total_ops']}  err={stats['errors']}  "
-          f"RPS={stats['rps']:.0f}  "
-          f"p50={stats['p50_ms']:.1f}ms  "
-          f"p95={stats['p95_ms']:.1f}ms  "
-          f"p99={stats['p99_ms']:.1f}ms")
+    print(
+        f"\n  [{backend}]  seed={seed_s:.1f}s  "
+        f"ops={stats['total_ops']}  err={stats['errors']}  "
+        f"RPS={stats['rps']:.0f}  "
+        f"p50={stats['p50_ms']:.1f}ms  "
+        f"p95={stats['p95_ms']:.1f}ms  "
+        f"p99={stats['p99_ms']:.1f}ms"
+    )
     for op, s in stats["per_op"].items():
-        print(f"    {op:<26}  n={s['count']:<6}  p50={s['p50_ms']:.1f}ms  p95={s['p95_ms']:.1f}ms")
+        print(
+            f"    {op:<26}  n={s['count']:<6}  p50={s['p50_ms']:.1f}ms  p95={s['p95_ms']:.1f}ms"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-async def run_dataset(dataset_name: str, nodes: list, edges: list,
-                      workers: int, duration: float) -> list[dict]:
-    print(f"\n{'='*60}")
+
+async def run_dataset(
+    dataset_name: str, nodes: list, edges: list, workers: int, duration: float
+) -> list[dict]:
+    print(f"\n{'=' * 60}")
     print(f"Dataset: {dataset_name}  ({len(nodes)} nodes / {len(edges)} edges)")
     print(f"Pool size: {BENCH_POOL_SIZE} (all PG backends)")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     node_ids = [n[0] for n in nodes]
     summary = []
 
@@ -298,50 +327,66 @@ async def run_dataset(dataset_name: str, nodes: list, edges: list,
             store = await make_storage(backend, ws)
             await store.drop()
 
-            print(f"    Seeding (batch)...", end=" ", flush=True)
+            print("    Seeding (batch)...", end=" ", flush=True)
             seed_s = await seed(store, nodes, edges)
             print(f"{seed_s:.1f}s")
 
-            print(f"    Benchmarking {workers} workers × {duration}s...", end=" ", flush=True)
+            print(
+                f"    Benchmarking {workers} workers × {duration}s...",
+                end=" ",
+                flush=True,
+            )
             results: list = []
             t0 = time.monotonic()
-            await asyncio.gather(*[_worker(store, node_ids, duration, results)
-                                    for _ in range(workers)])
+            await asyncio.gather(
+                *[_worker(store, node_ids, duration, results) for _ in range(workers)]
+            )
             elapsed = time.monotonic() - t0
             print("done")
 
             stats = _collect_results(results, elapsed)
             _print_results(backend["name"], seed_s, stats)
-            summary.append({
-                "dataset": dataset_name,
-                "backend": backend["name"],
-                "pool_size": BENCH_POOL_SIZE,
-                "workers": workers,
-                "duration_s": duration,
-                "seed_s": round(seed_s, 3),
-                **{k: round(v, 3) if isinstance(v, float) else v
-                   for k, v in stats.items() if k != "per_op"},
-                "per_op": stats["per_op"],
-            })
+            summary.append(
+                {
+                    "dataset": dataset_name,
+                    "backend": backend["name"],
+                    "pool_size": BENCH_POOL_SIZE,
+                    "workers": workers,
+                    "duration_s": duration,
+                    "seed_s": round(seed_s, 3),
+                    **{
+                        k: round(v, 3) if isinstance(v, float) else v
+                        for k, v in stats.items()
+                        if k != "per_op"
+                    },
+                    "per_op": stats["per_op"],
+                }
+            )
             await store.finalize()
         except Exception as exc:
             print(f"    FAILED: {exc}")
-            summary.append({
-                "dataset": dataset_name,
-                "backend": backend["name"],
-                "error": str(exc)[:120],
-            })
+            summary.append(
+                {
+                    "dataset": dataset_name,
+                    "backend": backend["name"],
+                    "error": str(exc)[:120],
+                }
+            )
 
     # Summary table
     print(f"\n  --- {dataset_name} Summary ---")
-    print(f"  {'Backend':<12} {'Seed(s)':<9} {'RPS':<8} {'p50(ms)':<10} {'p95(ms)':<10} {'Errors'}")
-    print(f"  {'-'*56}")
+    print(
+        f"  {'Backend':<12} {'Seed(s)':<9} {'RPS':<8} {'p50(ms)':<10} {'p95(ms)':<10} {'Errors'}"
+    )
+    print(f"  {'-' * 56}")
     for r in summary:
         if "error" in r:
             print(f"  {r['backend']:<12} FAILED: {r['error']}")
         else:
-            print(f"  {r['backend']:<12} {r['seed_s']:<9.1f} {r['rps']:<8.0f} "
-                  f"{r['p50_ms']:<10.1f} {r['p95_ms']:<10.1f} {r['errors']}")
+            print(
+                f"  {r['backend']:<12} {r['seed_s']:<9.1f} {r['rps']:<8.0f} "
+                f"{r['p50_ms']:<10.1f} {r['p95_ms']:<10.1f} {r['errors']}"
+            )
 
     return summary
 
@@ -358,11 +403,16 @@ async def main(nodes: int, workers: int, duration: float, output: str | None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--nodes",    type=int,   default=8000,
-                        help="Number of nodes in the BA graph (default: 8000)")
-    parser.add_argument("--workers",  type=int,   default=10)
+    parser.add_argument(
+        "--nodes",
+        type=int,
+        default=8000,
+        help="Number of nodes in the BA graph (default: 8000)",
+    )
+    parser.add_argument("--workers", type=int, default=10)
     parser.add_argument("--duration", type=float, default=30.0)
-    parser.add_argument("--output",   type=str,   default=None,
-                        help="Write raw JSON results to this file")
+    parser.add_argument(
+        "--output", type=str, default=None, help="Write raw JSON results to this file"
+    )
     args = parser.parse_args()
     asyncio.run(main(args.nodes, args.workers, args.duration, args.output))

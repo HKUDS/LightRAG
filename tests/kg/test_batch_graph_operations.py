@@ -930,7 +930,11 @@ class TestPgRcteBatchOrdering:
             storage,
             [
                 ("EntityA", "EntityB", _make_edge(1.0)),
-                ("EntityB", "EntityA", _make_edge(2.0)),  # reversed → same canonical pair
+                (
+                    "EntityB",
+                    "EntityA",
+                    _make_edge(2.0),
+                ),  # reversed → same canonical pair
                 ("EntityB", "EntityC", _make_edge(3.0)),
             ],
         )
@@ -1070,11 +1074,15 @@ class TestPgRctePipelineIntegration:
 
         # ── Verify batch writes were issued ──────────────────────────────────
         # Node batch: (workspace, ids_list, props_list) → 3 positional args
-        node_batches = [a for a in execute_args if len(a) == 3 and isinstance(a[1], list)]
+        node_batches = [
+            a for a in execute_args if len(a) == 3 and isinstance(a[1], list)
+        ]
         assert node_batches, "upsert_nodes_batch never called _execute"
 
         # Edge batch: (workspace, srcs_list, tgts_list, props_list) → 4 positional args
-        edge_batches = [a for a in execute_args if len(a) == 4 and isinstance(a[1], list)]
+        edge_batches = [
+            a for a in execute_args if len(a) == 4 and isinstance(a[1], list)
+        ]
         assert edge_batches, "upsert_edges_batch never called _execute"
 
         # ── Verify canonical edge normalisation ──────────────────────────────

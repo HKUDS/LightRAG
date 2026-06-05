@@ -31,19 +31,24 @@ load_dotenv(dotenv_path=".env", override=False)
 # Backend factory helpers
 # ---------------------------------------------------------------------------
 
+
 async def make_rcte(workspace: str, pool_size: int = 20):
     from lightrag.kg.postgres_impl import ClientManager
+
     ClientManager._instances = {"db": None, "ref_count": 0, "vector_signature": None}
-    os.environ.update({
-        "POSTGRES_HOST": "localhost",
-        "POSTGRES_PORT": "5434",
-        "POSTGRES_USER": "postgres",
-        "POSTGRES_PASSWORD": "postgres",
-        "POSTGRES_DATABASE": "lightrag_test",
-        "POSTGRES_MAX_CONNECTIONS": str(pool_size),
-    })
+    os.environ.update(
+        {
+            "POSTGRES_HOST": "localhost",
+            "POSTGRES_PORT": "5434",
+            "POSTGRES_USER": "postgres",
+            "POSTGRES_PASSWORD": "postgres",
+            "POSTGRES_DATABASE": "lightrag_test",
+            "POSTGRES_MAX_CONNECTIONS": str(pool_size),
+        }
+    )
     from lightrag.kg.pg_rcte_impl import PgRcteGraphStorage
     from lightrag.kg.shared_storage import initialize_share_data
+
     initialize_share_data(workers=1)
     store = PgRcteGraphStorage(
         namespace="compare",
@@ -61,6 +66,7 @@ async def make_neo4j(workspace: str):
     os.environ["NEO4J_PASSWORD"] = "password123"
     os.environ["NEO4J_WORKSPACE"] = workspace
     from lightrag.kg.neo4j_impl import Neo4JStorage
+
     store = Neo4JStorage(
         namespace="compare",
         global_config={"max_graph_nodes": 1000},
@@ -73,6 +79,7 @@ async def make_neo4j(workspace: str):
 
 async def make_age(workspace: str, pool_size: int = 20):
     from lightrag.kg.postgres_impl import ClientManager
+
     ClientManager._instances = {"db": None, "ref_count": 0, "vector_signature": None}
     os.environ["POSTGRES_HOST"] = "localhost"
     os.environ["POSTGRES_PORT"] = "5435"
@@ -82,6 +89,7 @@ async def make_age(workspace: str, pool_size: int = 20):
     os.environ["POSTGRES_MAX_CONNECTIONS"] = str(pool_size)
     os.environ["PG_WORKSPACE"] = workspace
     from lightrag.kg.postgres_impl import PGGraphStorage
+
     store = PGGraphStorage(
         namespace="compare",
         global_config={"vector_storage": "PGVectorStorage", "max_graph_nodes": 1000},
@@ -103,6 +111,7 @@ class AgeDirectStore:
 
     async def initialize(self):
         import asyncpg
+
         self._conn = await asyncpg.connect(
             "postgresql://bench:benchmark123@localhost:5433/graphdb"
         )
@@ -118,9 +127,7 @@ class AgeDirectStore:
 
     async def drop(self):
         try:
-            await self._conn.execute(
-                self._cypher("MATCH (n) DETACH DELETE n")
-            )
+            await self._conn.execute(self._cypher("MATCH (n) DETACH DELETE n"))
         except Exception:
             pass
 
@@ -174,6 +181,7 @@ class AgeDirectStore:
         if not rows:
             return 0
         import json
+
         return int(json.loads(rows[0]["r"]))
 
     async def get_all_labels(self) -> list[str]:
@@ -181,18 +189,26 @@ class AgeDirectStore:
             self._cypher("MATCH (n:Entity) RETURN n.entity_id AS r")
         )
         import json
+
         return [json.loads(r["r"]) for r in rows]
 
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 3, max_nodes: int = 1000):
-        from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 3, max_nodes: int = 1000
+    ):
+        from lightrag.types import KnowledgeGraph, KnowledgeGraphNode
         import json
+
         if node_label == "*":
             seed_rows = await self._conn.fetch(
-                self._cypher(f"MATCH (n:Entity) RETURN n.entity_id AS r LIMIT {max_nodes}")
+                self._cypher(
+                    f"MATCH (n:Entity) RETURN n.entity_id AS r LIMIT {max_nodes}"
+                )
             )
         else:
             seed_rows = await self._conn.fetch(
-                self._cypher(f"MATCH (n:Entity) WHERE n.entity_id CONTAINS '{node_label}' RETURN n.entity_id AS r")
+                self._cypher(
+                    f"MATCH (n:Entity) WHERE n.entity_id CONTAINS '{node_label}' RETURN n.entity_id AS r"
+                )
             )
         seeds = [json.loads(r["r"]) for r in seed_rows]
         visited = set(seeds)
@@ -200,7 +216,9 @@ class AgeDirectStore:
         for _ in range(max_depth):
             if not frontier or len(visited) >= max_nodes:
                 break
-            ids_list = ", ".join(f"'{s.replace(chr(39), chr(92)+chr(39))}'" for s in frontier)
+            ids_list = ", ".join(
+                f"'{s.replace(chr(39), chr(92) + chr(39))}'" for s in frontier
+            )
             if not ids_list:
                 break
             rows = await self._conn.fetch(
@@ -215,8 +233,12 @@ class AgeDirectStore:
                     next_frontier.add(nid)
                     visited.add(nid)
             frontier = next_frontier
-        nodes = [KnowledgeGraphNode(id=nid, labels=[nid], properties={}) for nid in visited]
-        return KnowledgeGraph(nodes=nodes, edges=[], is_truncated=len(visited) >= max_nodes)
+        nodes = [
+            KnowledgeGraphNode(id=nid, labels=[nid], properties={}) for nid in visited
+        ]
+        return KnowledgeGraph(
+            nodes=nodes, edges=[], is_truncated=len(visited) >= max_nodes
+        )
 
     async def get_node(self, node_id: str):
         return None  # not needed for perf
@@ -229,6 +251,7 @@ class AgeDirectStore:
             )
         )
         import json
+
         return [(node_id, json.loads(row["r"])) for row in rows]
 
 
@@ -238,16 +261,16 @@ class AgeDirectStore:
 
 _NODES = {
     "alice": {"entity_id": "alice", "entity_type": "person", "description": "Alice"},
-    "bob":   {"entity_id": "bob",   "entity_type": "person", "description": "Bob"},
+    "bob": {"entity_id": "bob", "entity_type": "person", "description": "Bob"},
     "carol": {"entity_id": "carol", "entity_type": "person", "description": "Carol"},
-    "dave":  {"entity_id": "dave",  "entity_type": "person", "description": "Dave"},
-    "eve":   {"entity_id": "eve",   "entity_type": "person", "description": "Eve"},
+    "dave": {"entity_id": "dave", "entity_type": "person", "description": "Dave"},
+    "eve": {"entity_id": "eve", "entity_type": "person", "description": "Eve"},
 }
 _EDGES = [
-    ("alice", "bob",   {"weight": "1.0", "description": "knows"}),
+    ("alice", "bob", {"weight": "1.0", "description": "knows"}),
     ("alice", "carol", {"weight": "0.8", "description": "works_with"}),
-    ("bob",   "dave",  {"weight": "0.5", "description": "follows"}),
-    ("carol", "eve",   {"weight": "0.6", "description": "friends"}),
+    ("bob", "dave", {"weight": "0.5", "description": "follows"}),
+    ("carol", "eve", {"weight": "0.6", "description": "friends"}),
 ]
 
 
@@ -261,6 +284,7 @@ async def seed(store) -> None:
 # ---------------------------------------------------------------------------
 # Equivalence check
 # ---------------------------------------------------------------------------
+
 
 async def check_equiv(label: tuple[str, str], a, b) -> list[str]:
     """Return list of mismatches between store a and store b (read ops)."""
@@ -326,22 +350,22 @@ async def check_equiv(label: tuple[str, str], a, b) -> list[str]:
                     f"only_a={va_set - vb_set} only_b={vb_set - va_set}"
                 )
         elif (va is None) != (vb is None):
-            mismatches.append(f"get_node_edges({nid!r}): {label[0]}={va} {label[1]}={vb}")
+            mismatches.append(
+                f"get_node_edges({nid!r}): {label[0]}={va} {label[1]}={vb}"
+            )
 
     # get_all_labels
     va = set(await a.get_all_labels())
     vb = set(await b.get_all_labels())
     if va != vb:
-        mismatches.append(f"get_all_labels: only_a={va-vb} only_b={vb-va}")
+        mismatches.append(f"get_all_labels: only_a={va - vb} only_b={vb - va}")
 
     # get_knowledge_graph node sets.
     # Neo4JStorage's APOC path sets KnowledgeGraphNode.id to an internal
     # integer — use labels[0] (always entity_id) for portable comparison.
     def _entity_ids(kg) -> set:
         return {
-            (n.labels[0] if n.labels else None)
-            or n.properties.get("entity_id")
-            or n.id
+            (n.labels[0] if n.labels else None) or n.properties.get("entity_id") or n.id
             for n in kg.nodes
         }
 
@@ -354,7 +378,7 @@ async def check_equiv(label: tuple[str, str], a, b) -> list[str]:
             if ids_a != ids_b:
                 mismatches.append(
                     f"kg({q_label!r},d={depth}) nodes: "
-                    f"only_a={ids_a-ids_b} only_b={ids_b-ids_a}"
+                    f"only_a={ids_a - ids_b} only_b={ids_b - ids_a}"
                 )
 
     return mismatches
@@ -368,9 +392,15 @@ async def check_write_equiv(label: tuple[str, str], a, b) -> list[str]:
     mismatches = []
 
     # --- upsert_node update ---
-    await a.drop(); await b.drop()
-    await seed(a); await seed(b)
-    upd = {"entity_id": "alice", "entity_type": "updated_org", "description": "Alice v2"}
+    await a.drop()
+    await b.drop()
+    await seed(a)
+    await seed(b)
+    upd = {
+        "entity_id": "alice",
+        "entity_type": "updated_org",
+        "description": "Alice v2",
+    }
     await a.upsert_node("alice", upd)
     await b.upsert_node("alice", upd)
     va = await a.get_node("alice")
@@ -396,15 +426,19 @@ async def check_write_equiv(label: tuple[str, str], a, b) -> list[str]:
         )
 
     # --- delete_node cascades to edges ---
-    await a.drop(); await b.drop()
-    await seed(a); await seed(b)
+    await a.drop()
+    await b.drop()
+    await seed(a)
+    await seed(b)
     await a.delete_node("eve")
     await b.delete_node("eve")
     for nid in ("eve",):
         va_has = await a.has_node(nid)
         vb_has = await b.has_node(nid)
         if va_has != vb_has:
-            mismatches.append(f"delete_node({nid!r}) has_node: {label[0]}={va_has} {label[1]}={vb_has}")
+            mismatches.append(
+                f"delete_node({nid!r}) has_node: {label[0]}={va_has} {label[1]}={vb_has}"
+            )
     for s, t in [("carol", "eve"), ("eve", "carol")]:
         va_e = await a.has_edge(s, t)
         vb_e = await b.has_edge(s, t)
@@ -415,8 +449,10 @@ async def check_write_equiv(label: tuple[str, str], a, b) -> list[str]:
             )
 
     # --- remove_edges ---
-    await a.drop(); await b.drop()
-    await seed(a); await seed(b)
+    await a.drop()
+    await b.drop()
+    await seed(a)
+    await seed(b)
     await a.remove_edges([("alice", "bob")])
     await b.remove_edges([("alice", "bob")])
     va_e = await a.has_edge("alice", "bob")
@@ -439,6 +475,7 @@ async def check_write_equiv(label: tuple[str, str], a, b) -> list[str]:
 # ---------------------------------------------------------------------------
 # Performance worker
 # ---------------------------------------------------------------------------
+
 
 async def _worker(store, duration: float, n_nodes: int, results: list):
     node_ids = [f"e_{i}" for i in range(n_nodes)]
@@ -478,7 +515,7 @@ async def seed_bench(store, n_nodes: int):
         nid = f"e_{i}"
         await store.upsert_node(nid, {"entity_id": nid, "entity_type": "bench"})
     for i in range(n_nodes):
-        src, tgt = f"e_{i}", f"e_{random.randint(0, n_nodes-1)}"
+        src, tgt = f"e_{i}", f"e_{random.randint(0, n_nodes - 1)}"
         await store.upsert_edge(src, tgt, {"weight": "1.0"})
 
 
@@ -487,17 +524,18 @@ def _print_perf(name: str, results: list, elapsed: float):
     err = [op for op, _ in results if op.startswith("ERR")]
     lats = sorted(lat * 1000 for _, lat in ok)
     print(f"\n  [{name}]")
-    print(f"    RPS      : {len(ok)/elapsed:.0f}")
-    print(f"    Errors   : {len(err)} ({100*len(err)/max(len(results),1):.1f}%)")
+    print(f"    RPS      : {len(ok) / elapsed:.0f}")
+    print(f"    Errors   : {len(err)} ({100 * len(err) / max(len(results), 1):.1f}%)")
     if lats:
         print(f"    p50      : {statistics.median(lats):.2f} ms")
-        print(f"    p95      : {lats[int(len(lats)*0.95)]:.2f} ms")
-        print(f"    p99      : {lats[int(len(lats)*0.99)]:.2f} ms")
+        print(f"    p95      : {lats[int(len(lats) * 0.95)]:.2f} ms")
+        print(f"    p99      : {lats[int(len(lats) * 0.99)]:.2f} ms")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 async def run_equiv(pool_size: int = 20):
     print(f"\n=== Equivalence Check (pool_size={pool_size}) ===")
@@ -506,9 +544,9 @@ async def run_equiv(pool_size: int = 20):
     errors = {}
 
     for name, factory, ws in [
-        ("RCTE",  lambda w: make_rcte(w, pool_size),  "cmp_rcte"),
-        ("Neo4j", make_neo4j,                          "cmp_neo4j"),
-        ("AGE",   lambda w: make_age(w, pool_size),    "cmp_age"),
+        ("RCTE", lambda w: make_rcte(w, pool_size), "cmp_rcte"),
+        ("Neo4j", make_neo4j, "cmp_neo4j"),
+        ("AGE", lambda w: make_age(w, pool_size), "cmp_age"),
     ]:
         try:
             print(f"  Initializing {name}...", end=" ", flush=True)
@@ -537,7 +575,7 @@ async def run_equiv(pool_size: int = 20):
             for m in mismatches:
                 print(f"    - {m}")
         else:
-            print(f"  ALL MATCH")
+            print("  ALL MATCH")
 
         print(f"\n  --- {a_name} vs {b_name}: write/delete ops ---")
         write_mismatches = await check_write_equiv(
@@ -548,7 +586,7 @@ async def run_equiv(pool_size: int = 20):
             for m in write_mismatches:
                 print(f"    - {m}")
         else:
-            print(f"  ALL MATCH")
+            print("  ALL MATCH")
 
     # Cleanup
     for name, store in backends.items():
@@ -560,12 +598,14 @@ async def run_equiv(pool_size: int = 20):
 
 
 async def run_perf(workers: int, duration: float, n_nodes: int, pool_size: int = 20):
-    print(f"\n=== Performance: {workers} workers, {duration}s, {n_nodes} nodes, pool={pool_size} ===")
+    print(
+        f"\n=== Performance: {workers} workers, {duration}s, {n_nodes} nodes, pool={pool_size} ==="
+    )
 
     for name, factory, ws in [
-        ("RCTE",  lambda w: make_rcte(w, pool_size),  "perf_rcte"),
-        ("Neo4j", make_neo4j,                          "perf_neo4j"),
-        ("AGE",   lambda w: make_age(w, pool_size),    "perf_age"),
+        ("RCTE", lambda w: make_rcte(w, pool_size), "perf_rcte"),
+        ("Neo4j", make_neo4j, "perf_neo4j"),
+        ("AGE", lambda w: make_age(w, pool_size), "perf_age"),
     ]:
         try:
             print(f"  Seeding {name}...", end=" ", flush=True)
@@ -575,9 +615,9 @@ async def run_perf(workers: int, duration: float, n_nodes: int, pool_size: int =
             print("done")
             results = []
             t_start = time.monotonic()
-            await asyncio.gather(*[
-                _worker(store, duration, n_nodes, results) for _ in range(workers)
-            ])
+            await asyncio.gather(
+                *[_worker(store, duration, n_nodes, results) for _ in range(workers)]
+            )
             elapsed = time.monotonic() - t_start
             _print_perf(name, results, elapsed)
             await store.drop()
@@ -595,11 +635,15 @@ async def main(mode: str, workers: int, duration: float, n_nodes: int, pool_size
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode",     choices=["equiv", "perf", "both"], default="both")
-    parser.add_argument("--workers",  type=int,   default=10)
+    parser.add_argument("--mode", choices=["equiv", "perf", "both"], default="both")
+    parser.add_argument("--workers", type=int, default=10)
     parser.add_argument("--duration", type=float, default=30.0)
-    parser.add_argument("--nodes",    type=int,   default=500)
-    parser.add_argument("--pool",     type=int,   default=20,
-                        help="Max connections per PG backend (same for all, for fair comparison)")
+    parser.add_argument("--nodes", type=int, default=500)
+    parser.add_argument(
+        "--pool",
+        type=int,
+        default=20,
+        help="Max connections per PG backend (same for all, for fair comparison)",
+    )
     args = parser.parse_args()
     asyncio.run(main(args.mode, args.workers, args.duration, args.nodes, args.pool))
