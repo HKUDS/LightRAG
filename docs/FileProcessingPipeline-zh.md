@@ -138,15 +138,15 @@ MinerU 客户端支持两种模式，二选一：
 - `local`：自建 MinerU 服务（推荐用官方 Docker Compose 部署），LightRAG 通过 HTTP 调用本地容器。
 - `official`：直连 MinerU 官方精准 API v4，需要在 [mineru.net](https://mineru.net) 申请 token。
 
-**本地化部署（Docker Compose）**
+**使用 Docker Compose 本地部署**
 
-从 [opendatalab/MinerU](https://github.com/opendatalab/MinerU) 克隆官方仓库到本地，进入仓库内的 docker 部署目录后，先构建镜像：
+从 Github官方仓库   [opendatalab/MinerU](https://github.com/opendatalab/MinerU) 把 Dockerfile 和 compose.yaml 拷贝到本地。这两个文件应该在仓库的 docker 目录可以找到。然后通过以下命令构建 docker 镜像:
 
 ```bash
-docker compose -f compose.yaml build
+docker build --tag mineru:latest .
 ```
 
-然后启动 API 服务（带 `--profile api` 才会启用 HTTP API 容器，默认监听 8000 端口）：
+镜像构建好之后通过以下命令启动 API 服务（带 `--profile api` 才会启用 HTTP API 容器，默认监听 8000 端口）：
 
 ```bash
 docker compose -f compose.yaml --profile api up -d

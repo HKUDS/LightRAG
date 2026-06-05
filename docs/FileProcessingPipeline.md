@@ -138,15 +138,15 @@ The MinerU client supports two modes; choose one:
 - `local`: self-hosted MinerU service (the official Docker Compose deployment is recommended); LightRAG calls the local container via HTTP.
 - `official`: directly connects to the MinerU official precise API v4; you need to apply for a token at [mineru.net](https://mineru.net).
 
-**Local deployment (Docker Compose)**
+**Local deployment with Docker Compose**
 
-Clone the official [opendatalab/MinerU](https://github.com/opendatalab/MinerU) repository to your local machine, enter the docker deployment directory inside the repository, and first build the image:
+Copy `Dockerfile` and `compose.yaml` from the official GitHub repository [opendatalab/MinerU](https://github.com/opendatalab/MinerU) to your local machine. Both files can be found in the repository's `docker` directory. Then build the Docker image with the following command:
 
 ```bash
-docker compose -f compose.yaml build
+docker build --tag mineru:latest .
 ```
 
-Then start the API service (`--profile api` is required to enable the HTTP API container; the default listening port is 8000):
+Once the image is built, start the API service with the following command (`--profile api` is required to enable the HTTP API container; the default listening port is 8000):
 
 ```bash
 docker compose -f compose.yaml --profile api up -d

@@ -8,10 +8,10 @@ Four roles are currently supported:
 
 | Role | Purpose |
 | --- | --- |
-| `EXTRACT` | Entity/relation extraction and entity/relation description summarization. |
-| `KEYWORD` | Query keyword extraction for high-level / low-level keyword generation before retrieval. |
-| `QUERY` | Final QA, regular queries, bypass queries, and the query path of the Ollama-compatible API. |
-| `VLM` | Multimodal analysis stage for VLM analysis of images, tables, formulas, and similar content. |
+| `EXTRACT` | The model used during the file insertion stage, mainly for complex entity/relation extraction and summarization. A fast model with thinking mode disabled and the ability to handle complex problems is recommended; a parameter size of 30B or above and a context length of at least 32KB are suggested. |
+| `KEYWORD` | Query-stage keyword extraction for high-level / low-level keyword generation before retrieval. An ultra-fast model with thinking mode disabled is recommended to improve query-stage response speed; a parameter size of 7B or above is suggested. |
+| `QUERY` | The query stage, used to produce the final answer to the question based on the recalled content. A high-quality model with thinking mode enabled is recommended; the stronger the model, the higher the answer quality. A parameter size of 30B or above and a context length of at least 32KB are suggested. |
+| `VLM` | Used during the file insertion stage to analyze images. A high-quality model with image recognition capability is required; a parameter size of 30B or above is suggested. |
 
 If a role has no dedicated configuration, LightRAG uses the base `LLM_*` configuration.
 
