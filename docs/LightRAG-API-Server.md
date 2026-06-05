@@ -503,8 +503,8 @@ Though LightRAG Server uses one worker to process the document indexing pipeline
 WORKERS=2
 ### Number of parallel files to process in one batch
 MAX_PARALLEL_INSERT=3
-### Max concurrent requests to the LLM
-MAX_ASYNC=4
+### Max concurrent requests to the LLM (MAX_ASYNC is still accepted as a deprecated alias)
+MAX_ASYNC_LLM=4
 ```
 
 On macOS, Gunicorn multi-worker mode also requires the Objective-C fork-safety override to be present before the Python process starts. Do not rely on `.env` for this variable; `.env` is loaded after Python startup and is too late for the Objective-C runtime:
@@ -897,7 +897,7 @@ MAX_ASYNC_RERANK=4
 RERANK_TIMEOUT=30
 ```
 
-`MAX_ASYNC_RERANK` falls back to `MAX_ASYNC` when unset. `RERANK_TIMEOUT` has an independent default because reranker requests are usually shorter than LLM generation requests. For comprehensive reranker configuration examples, including Cohere-compatible chunking options and Jina/Aliyun endpoints, refer to the `env.example` file.
+`MAX_ASYNC_RERANK` falls back to `MAX_ASYNC_LLM` when unset (`MAX_ASYNC` is still accepted as a deprecated alias). `RERANK_TIMEOUT` has an independent default because reranker requests are usually shorter than LLM generation requests. For comprehensive reranker configuration examples, including Cohere-compatible chunking options and Jina/Aliyun endpoints, refer to the `env.example` file.
 
 ### Enable Reranking
 
@@ -988,7 +988,7 @@ LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 
 ### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
 TIMEOUT=150
-MAX_ASYNC=4
+MAX_ASYNC_LLM=4
 
 LLM_BINDING=openai
 LLM_MODEL=gpt-4o-mini
@@ -1114,7 +1114,7 @@ For the full routing syntax, supported extensions, parser cache behavior, chunke
 
 ### Pipeline Concurrency
 
-`MAX_PARALLEL_INSERT` controls how many files are processed in parallel. `MAX_ASYNC` controls concurrent LLM calls, including extraction, merging, query keyword generation, and final answer generation. Optional staged-pipeline variables such as `MAX_PARALLEL_PARSE_NATIVE`, `MAX_PARALLEL_PARSE_MINERU`, `MAX_PARALLEL_PARSE_DOCLING`, and `MAX_PARALLEL_ANALYZE` can be used for parser-heavy deployments.
+`MAX_PARALLEL_INSERT` controls how many files are processed in parallel. `MAX_ASYNC_LLM` (deprecated alias: `MAX_ASYNC`) controls concurrent LLM calls, including extraction, merging, query keyword generation, and final answer generation. Optional staged-pipeline variables such as `MAX_PARALLEL_PARSE_NATIVE`, `MAX_PARALLEL_PARSE_MINERU`, `MAX_PARALLEL_PARSE_DOCLING`, and `MAX_PARALLEL_ANALYZE` can be used for parser-heavy deployments.
 
 Uploads and text inserts can be accepted while the processing loop is busy; the running loop is nudged to pick up the new pending work. Destructive jobs such as document clear/delete and the classification phase of `/documents/scan` still reject concurrent enqueues to protect storage consistency. Failed files can be reprocessed from the WebUI or by triggering `/documents/scan`.
 

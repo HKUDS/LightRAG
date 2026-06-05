@@ -28,8 +28,8 @@ LLM_BINDING_API_KEY=your_api_key
 # Default timeout for all LLM requests
 LLM_TIMEOUT=180
 
-# Default maximum concurrency for all LLM calls
-MAX_ASYNC=4
+# Default maximum concurrency for all LLM calls (MAX_ASYNC is still accepted as a deprecated alias)
+MAX_ASYNC_LLM=4
 ```
 
 Common fields:
@@ -41,7 +41,7 @@ Common fields:
 | `LLM_BINDING_HOST` | Base provider endpoint. For SDK default endpoints, use the corresponding sentinel, such as `DEFAULT_GEMINI_ENDPOINT` or `DEFAULT_BEDROCK_ENDPOINT`. |
 | `LLM_BINDING_API_KEY` | Base API key. Bedrock does not use this field. |
 | `LLM_TIMEOUT` | Base LLM timeout. A role inherits it when no role timeout is set. |
-| `MAX_ASYNC` | Base maximum LLM concurrency. A role inherits it when `{ROLE}_MAX_ASYNC_LLM` is not set. |
+| `MAX_ASYNC_LLM` | Base maximum LLM concurrency. A role inherits it when `{ROLE}_MAX_ASYNC_LLM` is not set. `MAX_ASYNC` is still accepted as a deprecated alias. |
 
 ## Role Override Variables
 
@@ -64,7 +64,7 @@ Variable format:
 | `{ROLE}_LLM_MODEL` | Overrides the role model name. |
 | `{ROLE}_LLM_BINDING_HOST` | Overrides the role endpoint. |
 | `{ROLE}_LLM_BINDING_API_KEY` | Overrides the role API key. Bedrock does not support it. |
-| `{ROLE}_MAX_ASYNC_LLM` | Overrides the role maximum concurrency. Inherits `MAX_ASYNC` when unset. |
+| `{ROLE}_MAX_ASYNC_LLM` | Overrides the role maximum concurrency. Inherits `MAX_ASYNC_LLM` when unset. |
 | `{ROLE}_LLM_TIMEOUT` | Overrides the role timeout. Inherits `LLM_TIMEOUT` when unset. |
 
 ## Provider Option Overrides
@@ -110,7 +110,7 @@ If a role does not set `{ROLE}_LLM_BINDING`, or sets it to the same value as the
 - Inherits `LLM_BINDING_HOST` when `{ROLE}_LLM_BINDING_HOST` is not set.
 - Inherits `LLM_BINDING_API_KEY` when `{ROLE}_LLM_BINDING_API_KEY` is not set.
 - Inherits `LLM_TIMEOUT` when `{ROLE}_LLM_TIMEOUT` is not set.
-- Inherits `MAX_ASYNC` when `{ROLE}_MAX_ASYNC_LLM` is not set.
+- Inherits `MAX_ASYNC_LLM` when `{ROLE}_MAX_ASYNC_LLM` is not set.
 - Provider options first inherit the base provider options, then apply role-specific provider options.
 
 Therefore, when you only want to change the model within the same provider, you only need to set the model name:
@@ -245,7 +245,7 @@ LLM_MODEL=gpt-5-mini
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
 LLM_TIMEOUT=180
-MAX_ASYNC=4
+MAX_ASYNC_LLM=4
 
 ###########################################################################
 # IMPORTANT:
