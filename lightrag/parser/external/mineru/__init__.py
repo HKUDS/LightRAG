@@ -29,3 +29,9 @@ __all__ = [
     "is_bundle_valid",
     "raw_dir_for_parsed_dir",
 ]
+
+# Register with the parser registry (RFC #3197)
+from lightrag.parser.external._registry import register_parser
+from lightrag.parser.external.mineru.adapter import MinerUParser
+
+register_parser("mineru", MinerUParser)
