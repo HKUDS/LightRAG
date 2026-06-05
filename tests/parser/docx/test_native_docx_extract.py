@@ -24,6 +24,7 @@ from lxml import etree
 
 from lightrag.parser.docx import parse_document as parse_doc
 from lightrag.parser.docx.parse_document import (
+    DocxContentError,
     extract_docx_blocks,
     extract_paragraph_content,
 )
@@ -379,3 +380,54 @@ def test_empty_tables_are_skipped(tmp_path) -> None:
         "must be dropped before the placeholder is emitted"
     )
     assert any('"A"' in b["content"] and '"B"' in b["content"] for b in blocks)
+
+
+# --- invalid (non-ZIP) .docx files surface an accurate error ---------------
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("header", "format_hint"),
+    [
+        (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"junk", "Word 97-2003"),
+        (b"{\\rtf1\\ansi}", "RTF"),
+        (b"%PDF-1.7\n%binary", "PDF"),
+        (b"<?xml version='1.0'?><html></html>", "HTML or XML"),
+        (b"plain text masquerading as docx", "not a valid DOCX"),
+    ],
+)
+def test_invalid_docx_raises_accurate_error(tmp_path, header, format_hint) -> None:
+    """A file that exists but is not a ZIP/OOXML package must fail with an
+    accurate message — never the misleading python-docx "Package not found".
+
+    The native worker confirms the file exists before parsing, so the only way
+    ``PackageNotFoundError`` can fire here is a corrupt file or a non-DOCX
+    payload wearing a .docx extension. The error must name the real format and
+    keep the file path.
+    """
+    docx_path = tmp_path / "masquerade.docx"
+    docx_path.write_bytes(header)
+
+    with pytest.raises(DocxContentError) as excinfo:
+        extract_docx_blocks(str(docx_path), fixlevel=0)
+
+    message = str(excinfo.value)
+    assert "Package not found" not in message
+    assert "valid DOCX" in message
+    assert str(docx_path) in message
+    assert format_hint in message
+
+
+@pytest.mark.offline
+def test_empty_docx_file_reports_truncation(tmp_path) -> None:
+    """A 0-byte .docx must be diagnosed as empty/truncated, not 'not found'."""
+    docx_path = tmp_path / "empty.docx"
+    docx_path.write_bytes(b"")
+
+    with pytest.raises(DocxContentError) as excinfo:
+        extract_docx_blocks(str(docx_path), fixlevel=0)
+
+    message = str(excinfo.value)
+    assert "Package not found" not in message
+    assert "empty" in message
+    assert str(docx_path) in message

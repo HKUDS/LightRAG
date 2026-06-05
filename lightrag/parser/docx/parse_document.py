@@ -9,6 +9,7 @@ import sys
 
 try:
     from docx import Document
+    from docx.opc.exceptions import PackageNotFoundError
 except ImportError as exc:
     # Raise instead of sys.exit: this module is imported in-process by the
     # gunicorn/uvicorn worker, where a SystemExit would tear down the whole
@@ -102,6 +103,98 @@ def format_error(title: str, details: str, solution: str) -> str:
 def print_error(title: str, details: str, solution: str):
     """Print a friendly, formatted error message to stderr."""
     print(format_error(title, details, solution), file=sys.stderr)
+
+
+def _diagnose_invalid_docx(file_path: str) -> tuple[str, str]:
+    """Diagnose why a ``.docx`` file is not a valid OOXML/ZIP package.
+
+    python-docx raises ``PackageNotFoundError("Package not found at '...'")``
+    both when the path is missing AND when the file exists but is not a valid
+    zip. By the time this runs the file has already been confirmed to exist
+    (the native worker validates ``p.exists()`` first), so the real cause is a
+    corrupt file or a non-DOCX payload wearing a ``.docx`` extension. Sniff the
+    magic bytes to name the actual format so the error message reflects the
+    real problem instead of an empty "not found".
+
+    Returns a ``(details, solution)`` tuple for :func:`format_error`. Reads only
+    the file header and never raises — any IO failure degrades to a generic
+    "cannot read" diagnosis.
+    """
+    import zipfile
+
+    convert_solution = (
+        "  1. Open the file in Microsoft Word or WPS\n"
+        '  2. Use "Save As" and choose "Word Document (*.docx)"\n'
+        "  3. Re-upload the converted .docx to LightRAG"
+    )
+
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(8)
+    except OSError as exc:
+        return (
+            f"The file at '{file_path}' could not be read: {exc}",
+            "  1. Verify the file exists and is readable\n"
+            "  2. Re-upload it to LightRAG",
+        )
+
+    if not head:
+        return (
+            f"The file at '{file_path}' is empty (0 bytes). The upload was "
+            "likely truncated or the source file is corrupt.",
+            "  1. Check the original document opens correctly\n"
+            "  2. Re-upload a complete copy to LightRAG",
+        )
+
+    if head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        # OLE2 Compound File — the legacy binary Word 97-2003 .doc format.
+        return (
+            f"The file at '{file_path}' is a legacy Word 97-2003 (.doc) "
+            "document saved with a .docx extension. The .doc binary format is "
+            "not a ZIP/OOXML package and cannot be parsed by the native engine.",
+            convert_solution,
+        )
+
+    if head.startswith(b"{\\rtf"):
+        return (
+            f"The file at '{file_path}' is an RTF document saved with a .docx "
+            "extension. RTF is not a ZIP/OOXML package.",
+            convert_solution,
+        )
+
+    if head.startswith(b"%PDF"):
+        return (
+            f"The file at '{file_path}' is a PDF saved with a .docx extension. "
+            "It is not a ZIP/OOXML package.",
+            "  1. Convert the PDF to .docx, or upload it through a PDF-capable "
+            "parser engine (e.g. mineru/docling)\n"
+            "  2. Re-upload to LightRAG",
+        )
+
+    stripped = head.lstrip()
+    if stripped.startswith(b"<"):
+        # <?xml ...>, <html ...>, or Word 2003 "<w:wordDocument>" flat XML.
+        return (
+            f"The file at '{file_path}' is an HTML or XML document saved with a "
+            ".docx extension, not a ZIP/OOXML package.",
+            convert_solution,
+        )
+
+    if head.startswith(b"PK\x03\x04") and not zipfile.is_zipfile(file_path):
+        # Has the ZIP local-file-header magic but the archive is unreadable.
+        return (
+            f"The file at '{file_path}' starts like a ZIP archive but is "
+            "truncated or corrupt, so it cannot be opened as a DOCX package.",
+            "  1. Check the original document opens correctly\n"
+            "  2. Re-upload a complete, uncorrupted copy to LightRAG",
+        )
+
+    return (
+        f"The file at '{file_path}' is not a valid DOCX (ZIP/OOXML) package. "
+        "It is either corrupt or a different file format saved with a .docx "
+        "extension.",
+        convert_solution,
+    )
 
 
 def truncate_heading(heading_text: str, para_id: str = None) -> str:
@@ -1555,7 +1648,19 @@ def extract_docx_blocks(
     Returns:
         List of block dictionaries with heading, content, type, and metadata
     """
-    doc = Document(file_path)
+    try:
+        doc = Document(file_path)
+    except PackageNotFoundError as exc:
+        # python-docx surfaces a misleading "Package not found at '...'" for any
+        # file it cannot open as a ZIP/OOXML package — including files that
+        # exist but are corrupt or a different format wearing a .docx extension.
+        # Diagnose the real cause from the magic bytes and raise a DocxContentError
+        # (a ValueError) so the pipeline's per-document handler marks just this
+        # document FAILED with an accurate, actionable message.
+        details, solution = _diagnose_invalid_docx(file_path)
+        raise DocxContentError(
+            format_error("File is not a valid DOCX document", details, solution)
+        ) from exc
     resolver = NumberingResolver(file_path)
     styles_outline = parse_styles_outline_levels(file_path)
 
