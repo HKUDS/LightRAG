@@ -1926,15 +1926,7 @@ class PostgreSQLDB:
         for table_info in tables_to_check:
             table_name = table_info["name"]
             try:
-                # Check if table exists
-                check_table_sql = """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_name = $1
-                AND table_schema = 'public'
-                """
-                params = {"table_name": table_name.lower()}
-                table_exists = await self.query(check_table_sql, list(params.values()))
+                table_exists = await self.check_table_exists(table_name)
 
                 if not table_exists:
                     logger.info(f"Creating table {table_name}")
@@ -2202,12 +2194,7 @@ class PostgreSQLDB:
         Returns:
             bool: True if table exists, False otherwise
         """
-        query = """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_name = $1
-            )
-        """
+        query = "SELECT to_regclass($1) IS NOT NULL AS exists"
         result = await self.query(query, [table_name.lower()])
         return result.get("exists", False) if result else False
 
