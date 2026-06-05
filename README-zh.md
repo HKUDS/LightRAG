@@ -242,7 +242,7 @@ LightRAG 服务器不仅提供给了一个供出选择体验LightRAG功能的Web
 
 ### LLM 模型的选择
 
-LightRAG 的工作过程中需要使用到 4 种角色的 LLM/VLM。应该为不同角色的 LLM 配置不同能力和速度的模型，以获得速度和能力之间的平衡。LightRAG 对大型语言模型（LLM）的能力要求会高于传统 RAG，因为它需要 LLM 执行文档中的实体关系抽取任务。在查询阶段，LLM 模型需要处理 LightRAG 召回的实体、关系和文本块等大量信息，需要模型具备在含有噪声的长上下文中作出高质量回答的能力。详细的模型配置请参见文档：`RoleSpecificLLMConfiguration-zh.md`
+LightRAG 的工作过程中需要使用到 4 种角色的 LLM/VLM。应该为不同角色的 LLM 配置不同能力和速度的模型，以获得速度和能力之间的平衡。LightRAG 对大型语言模型（LLM）的能力要求会高于传统 RAG，因为它需要 LLM 执行文档中的实体关系抽取任务。在查询阶段，LLM 模型需要处理 LightRAG 召回的实体、关系和文本块等大量信息，需要模型具备在含有噪声的长上下文中作出高质量回答的能力。详细的模型配置请参见 [RoleSpecificLLMConfiguration-zh.md](./docs/RoleSpecificLLMConfiguration-zh.md)
 
 ### 查询模式的选择
 
@@ -277,7 +277,7 @@ VLM_PROCESS_ENABLE=true
 VLM_LLM_MODEL=<your_vlm_model_name>
 ```
 
-由于云端的 MinerU 服务有使用量、文件大小和页数等限制，建议使用本地部署的 MinerU。文件处理流水线的具体配置方法请参考 `FileProcessingPipeline-zh.md`
+由于云端的 MinerU 服务有使用量、文件大小和页数等限制，建议使用本地部署的 MinerU。文件处理流水线的具体配置方法请参考 [FileProcessingPipeline-zh.md](./docs/FileProcessingPipeline-zh.md)
 
 ### 文件处理并发优化
 
@@ -365,8 +365,6 @@ python examples/lightrag_openai_demo.py
 ### 使用SDK的注意事项
 
 SDK的使用说明详见 **[docs/ProgramingWithCore.md](./docs/ProgramingWithCore.md)**（英文）。有部份LightRAG功能没有提供 REST API，仅能够通过SDK使用。这部份功能往往是不稳定，不能保证在将来的版本上可以兼容。
-
-LightRAG SDK通常用于嵌入式应用，或供希望进行研究与评估的学者使用。⚠️ **如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API**。
 
 ## 重现论文结果
 

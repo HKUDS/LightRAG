@@ -242,7 +242,7 @@ The LightRAG server offers not only a web-based UI for exploring LightRAG functi
 
 ### Selecting LLM Models
 
-LightRAG requires LLM/VLMs of four different roles during its workflow. You should configure models with different capabilities and speeds for different roles to strike a balance between performance and processing speed. LightRAG has higher capability requirements for Large Language Models (LLMs) than traditional RAG because it requires LLMs to perform complex entity-relation extraction tasks from documents. During the query phase, the LLM needs to process a large volume of retrieved information, including entities, relationships, and text chunks. This requires the model to have the capability of generating high-quality responses in long, noisy contexts. For detailed model configurations, please refer to the document: `RoleSpecificLLMConfiguration.md`
+LightRAG requires LLM/VLMs of four different roles during its workflow. You should configure models with different capabilities and speeds for different roles to strike a balance between performance and processing speed. LightRAG has higher capability requirements for Large Language Models (LLMs) than traditional RAG because it requires LLMs to perform complex entity-relation extraction tasks from documents. During the query phase, the LLM needs to process a large volume of retrieved information, including entities, relationships, and text chunks. This requires the model to have the capability of generating high-quality responses in long, noisy contexts. For detailed model configurations, please refer to [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md)
 
 ### Selecting Query Modes
 
@@ -277,7 +277,7 @@ VLM_PROCESS_ENABLE=true
 VLM_LLM_MODEL=<your_vlm_model_name>
 ```
 
-Since the cloud-based MinerU service has limitations on usage, file size, and page count, it is recommended to use a locally deployed MinerU. For details on configuring the file processing pipeline, please refer to `FileProcessingPipeline.md`
+Since the cloud-based MinerU service has limitations on usage, file size, and page count, it is recommended to use a locally deployed MinerU. For details on configuring the file processing pipeline, please refer to [FileProcessingPipeline.md](./docs/FileProcessingPipeline.md)
 
 ### Concurrency Optimization for File Processing
 
@@ -365,8 +365,6 @@ For a streaming response implementation example, please see `examples/lightrag_o
 ### **Notes on SDK Usage**
 
 For detailed instructions on using the SDK, please refer to **[docs/ProgramingWithCore.md](./docs/ProgramingWithCore.md)**. Some LightRAG features are not exposed via the REST API and are accessible only through the SDK. These features are typically experimental and may not be compatible with future versions.
-
-The LightRAG SDK is primarily intended for embedded applications or academic research and evaluation purposes. ⚠️ **If you plan to integrate LightRAG into your project, we strongly recommend using the REST API provided by the LightRAG Server instead.**
 
 ## Replicating Findings in the Paper
 
