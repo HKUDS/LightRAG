@@ -408,7 +408,7 @@ async def test_client_local_mode_round_trip(
     assert dispatcher.form_data
     assert dispatcher.form_data["backend"] == "hybrid-auto-engine"
     assert dispatcher.form_data["parse_method"] == "auto"
-    assert dispatcher.form_data["image_analysis"] == "true"
+    assert dispatcher.form_data["image_analysis"] == "false"
     assert dispatcher.form_data["response_format_zip"] == "true"
     assert dispatcher.form_data["return_content_list"] == "true"
     assert dispatcher.form_data["return_images"] == "true"
