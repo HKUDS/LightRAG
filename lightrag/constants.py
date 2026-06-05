@@ -340,7 +340,7 @@ DEFAULT_LLM_TIMEOUT = 180
 DEFAULT_EMBEDDING_TIMEOUT = 30
 
 # Rerank async / timeout defaults
-# Concurrency falls back to base MAX_ASYNC when env unset; timeout has its own
+# Concurrency falls back to base MAX_ASYNC_LLM when env unset; timeout has its own
 # default since reranker calls are typically much faster than full LLM generation.
 DEFAULT_RERANK_MAX_ASYNC = DEFAULT_MAX_ASYNC
 DEFAULT_RERANK_TIMEOUT = 30

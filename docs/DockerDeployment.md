@@ -57,7 +57,7 @@ validation rules and provider-specific behavior.
 
 **RAG Configuration**
 
-- `MAX_ASYNC`: Maximum async operations
+- `MAX_ASYNC_LLM`: Maximum async operations (deprecated alias: `MAX_ASYNC`)
 - `MAX_TOKENS`: Maximum token size
 - `EMBEDDING_DIM`: Embedding dimensions
 

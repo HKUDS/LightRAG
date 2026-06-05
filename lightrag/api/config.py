@@ -287,7 +287,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-async",
         type=int,
-        default=get_env_value("MAX_ASYNC", DEFAULT_MAX_ASYNC, int),
+        default=get_env_value(
+            "MAX_ASYNC_LLM", get_env_value("MAX_ASYNC", DEFAULT_MAX_ASYNC, int), int
+        ),
         help=f"Maximum async operations (default: from env or {DEFAULT_MAX_ASYNC})",
     )
     parser.add_argument(
@@ -669,7 +671,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Rerank async/timeout configuration (independent from base LLM)
-    # rerank_max_async falls back to MAX_ASYNC; rerank_timeout has its own default.
+    # rerank_max_async falls back to MAX_ASYNC_LLM; rerank_timeout has its own default.
     args.rerank_max_async = get_env_value("MAX_ASYNC_RERANK", args.max_async, int)
     args.rerank_timeout = get_env_value("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT, int)
 
