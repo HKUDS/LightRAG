@@ -3,12 +3,14 @@ import sys
 import pytest
 
 from lightrag.api.config import parse_args
+from lightrag.constants import DEFAULT_MAX_ASYNC
 
 
 pytestmark = pytest.mark.offline
 
 
 ROLE_MAX_ASYNC_ENV_KEYS = (
+    "MAX_ASYNC_LLM",
     "MAX_ASYNC",
     "EXTRACT_MAX_ASYNC_LLM",
     "KEYWORD_MAX_ASYNC_LLM",
@@ -61,3 +63,33 @@ def test_role_max_async_literal_none_string_is_preserved(monkeypatch):
 
     assert args.max_async == 10
     assert args.query_llm_max_async is None
+
+
+def test_max_async_llm_new_name(monkeypatch):
+    _clear_max_async_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("MAX_ASYNC_LLM", "8")
+
+    args = parse_args()
+
+    assert args.max_async == 8
+
+
+def test_max_async_llm_takes_precedence_over_legacy(monkeypatch):
+    _clear_max_async_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("MAX_ASYNC_LLM", "8")
+    monkeypatch.setenv("MAX_ASYNC", "10")
+
+    args = parse_args()
+
+    assert args.max_async == 8
+
+
+def test_max_async_defaults_when_unset(monkeypatch):
+    _clear_max_async_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+
+    args = parse_args()
+
+    assert args.max_async == DEFAULT_MAX_ASYNC

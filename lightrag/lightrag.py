@@ -438,7 +438,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """Recommended length of LLM summary output."""
 
     llm_model_max_async: int = field(
-        default=int(os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC))
+        default=int(
+            os.getenv("MAX_ASYNC_LLM", os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC))
+        )
     )
     """Maximum number of concurrent LLM calls."""
 
@@ -468,12 +470,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         default=int(
             os.getenv(
                 "MAX_ASYNC_RERANK",
-                os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC),
+                os.getenv("MAX_ASYNC_LLM", os.getenv("MAX_ASYNC", DEFAULT_MAX_ASYNC)),
             )
         )
     )
     """Maximum number of concurrent rerank calls.
-    Falls back to MAX_ASYNC when MAX_ASYNC_RERANK is unset."""
+    Falls back to MAX_ASYNC_LLM when MAX_ASYNC_RERANK is unset
+    (MAX_ASYNC is still accepted as a deprecated alias)."""
 
     default_rerank_timeout: int = field(
         default=int(os.getenv("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT))

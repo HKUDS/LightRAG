@@ -28,8 +28,8 @@ LLM_BINDING_API_KEY=your_api_key
 # 所有 LLM 请求的默认超时时间
 LLM_TIMEOUT=180
 
-# 所有 LLM 调用的默认最大并发数
-MAX_ASYNC=4
+# 所有 LLM 调用的默认最大并发数(MAX_ASYNC 作为兼容旧名仍可用)
+MAX_ASYNC_LLM=4
 ```
 
 常用字段：
@@ -41,7 +41,7 @@ MAX_ASYNC=4
 | `LLM_BINDING_HOST` | 基础 provider endpoint。对于 SDK 默认 endpoint，可使用对应 sentinel，例如 `DEFAULT_GEMINI_ENDPOINT` 或 `DEFAULT_BEDROCK_ENDPOINT`。 |
 | `LLM_BINDING_API_KEY` | 基础 API key。Bedrock 不使用这个字段。 |
 | `LLM_TIMEOUT` | 基础 LLM timeout。角色未设置 timeout 时继承它。 |
-| `MAX_ASYNC` | 基础 LLM 最大并发。角色未设置 `{ROLE}_MAX_ASYNC_LLM` 时继承它。 |
+| `MAX_ASYNC_LLM` | 基础 LLM 最大并发。角色未设置 `{ROLE}_MAX_ASYNC_LLM` 时继承它。`MAX_ASYNC` 作为兼容旧名仍可用。 |
 
 ## 角色覆盖变量
 
@@ -64,7 +64,7 @@ QUERY_LLM_TIMEOUT=240
 | `{ROLE}_LLM_MODEL` | 覆盖角色模型名。 |
 | `{ROLE}_LLM_BINDING_HOST` | 覆盖角色 endpoint。 |
 | `{ROLE}_LLM_BINDING_API_KEY` | 覆盖角色 API key。Bedrock 不支持。 |
-| `{ROLE}_MAX_ASYNC_LLM` | 覆盖角色最大并发。未设置时继承 `MAX_ASYNC`。 |
+| `{ROLE}_MAX_ASYNC_LLM` | 覆盖角色最大并发。未设置时继承 `MAX_ASYNC_LLM`。 |
 | `{ROLE}_LLM_TIMEOUT` | 覆盖角色 timeout。未设置时继承 `LLM_TIMEOUT`。 |
 
 ## Provider 参数覆盖
@@ -110,7 +110,7 @@ VLM_GEMINI_LLM_TEMPERATURE=0.2
 - 未设置 `{ROLE}_LLM_BINDING_HOST` 时继承 `LLM_BINDING_HOST`。
 - 未设置 `{ROLE}_LLM_BINDING_API_KEY` 时继承 `LLM_BINDING_API_KEY`。
 - 未设置 `{ROLE}_LLM_TIMEOUT` 时继承 `LLM_TIMEOUT`。
-- 未设置 `{ROLE}_MAX_ASYNC_LLM` 时继承 `MAX_ASYNC`。
+- 未设置 `{ROLE}_MAX_ASYNC_LLM` 时继承 `MAX_ASYNC_LLM`。
 - provider 参数先继承基础 provider options，再叠加角色专属 provider options。
 
 因此，同一个 provider 下只想换模型时，只需要写模型名：
@@ -245,7 +245,7 @@ LLM_MODEL=gpt-5-mini
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
 LLM_TIMEOUT=180
-MAX_ASYNC=4
+MAX_ASYNC_LLM=4
 
 ###########################################################################
 # IMPORTANT:

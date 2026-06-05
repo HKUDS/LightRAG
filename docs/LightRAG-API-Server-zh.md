@@ -503,8 +503,8 @@ LightRAG 服务器可以在 `Gunicorn + Uvicorn` 预加载模式下运行。Guni
 WORKERS=2
 ### 一批中并行处理的文件数
 MAX_PARALLEL_INSERT=3
-# LLM 的最大并发请求数
-MAX_ASYNC=4
+# LLM 的最大并发请求数(MAX_ASYNC 作为兼容旧名仍可用)
+MAX_ASYNC_LLM=4
 ```
 
 在 macOS 上，Gunicorn 多工作进程模式还要求 Objective-C fork safety 覆盖变量必须在 Python 进程启动前就存在。不要依赖 `.env` 设置这个变量； `.env` 会在 Python 启动后才加载，对 Objective-C 运行时来说已经太晚：
@@ -897,7 +897,7 @@ MAX_ASYNC_RERANK=4
 RERANK_TIMEOUT=30
 ```
 
-`MAX_ASYNC_RERANK` 未设置时回退到 `MAX_ASYNC`。`RERANK_TIMEOUT` 有独立默认值，因为 reranker 请求通常比 LLM 生成请求短。更完整的 reranker 配置示例，包括 Cohere-compatible chunking 选项以及 Jina/阿里云 endpoint，请参阅 `env.example` 文件。
+`MAX_ASYNC_RERANK` 未设置时回退到 `MAX_ASYNC_LLM`(`MAX_ASYNC` 作为兼容旧名仍可用)。`RERANK_TIMEOUT` 有独立默认值，因为 reranker 请求通常比 LLM 生成请求短。更完整的 reranker 配置示例，包括 Cohere-compatible chunking 选项以及 Jina/阿里云 endpoint，请参阅 `env.example` 文件。
 
 ### 启用 Reranking
 
@@ -988,7 +988,7 @@ LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 
 ### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
 TIMEOUT=150
-MAX_ASYNC=4
+MAX_ASYNC_LLM=4
 
 LLM_BINDING=openai
 LLM_MODEL=gpt-4o-mini
@@ -1114,7 +1114,7 @@ notes.[-R].md
 
 ### 流水线并发
 
-`MAX_PARALLEL_INSERT` 控制并行处理的文件数量。`MAX_ASYNC` 控制并发 LLM 调用，包括抽取、合并、查询关键词生成和最终回答生成。解析压力较大的部署可以使用可选的分阶段流水线变量，例如 `MAX_PARALLEL_PARSE_NATIVE`、`MAX_PARALLEL_PARSE_MINERU`、`MAX_PARALLEL_PARSE_DOCLING` 和 `MAX_PARALLEL_ANALYZE`。
+`MAX_PARALLEL_INSERT` 控制并行处理的文件数量。`MAX_ASYNC_LLM`(兼容旧名:`MAX_ASYNC`)控制并发 LLM 调用，包括抽取、合并、查询关键词生成和最终回答生成。解析压力较大的部署可以使用可选的分阶段流水线变量，例如 `MAX_PARALLEL_PARSE_NATIVE`、`MAX_PARALLEL_PARSE_MINERU`、`MAX_PARALLEL_PARSE_DOCLING` 和 `MAX_PARALLEL_ANALYZE`。
 
 当处理循环 busy 时，上传和文本插入仍可被接受；运行中的循环会被通知并拾取新 pending 文档。`/documents/clear`、单文档删除等破坏性任务，以及 `/documents/scan` 的分类阶段仍会拒绝并发入队，以保护存储一致性。失败文件可通过 WebUI 重新处理，也可以触发 `/documents/scan`。
 
