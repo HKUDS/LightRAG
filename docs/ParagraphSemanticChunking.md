@@ -56,6 +56,7 @@ DOCX
   ↓  Stage B: slice oversized tables along row boundaries and assign first/middle/last roles
   ↓  Stage B.1: bidirectional overlap of bridging text between consecutive large tables
   ↓  Stage C: anchor-driven re-splitting of long text chunks
+  ↓  Pre-Stage-D: glue body-less heading blocks forward into their strictly-deeper child
   ↓  Stage D: hierarchy-aware two-phase merging
   ↓  Stage E: [part n] line-level provenance numbering
 Final chunk list
@@ -226,6 +227,29 @@ If no qualifying anchor exists:
 3. **Recursive character splitting**: A single excessively long ordinary text paragraph falls back to the R strategy (`chunking_by_recursive_character`), using `chunk_overlap_token_size` to keep continuity between adjacent text slices.
 
 The no-anchor fallback path guarantees the algorithm **does not discard content** and tries to respect the user-configured chunk size cap.
+
+## 8.5 Pre-Stage-D: Gluing Body-Less Heading Blocks
+
+Some sections carry only a heading and no body of their own (heading-only), for example:
+
+```
+## 2.3   Structural dimensions and weight .....   (level 2, has body)
+## 2.4   Environmental adaptability metrics       (level 2, heading-only, no body)
+### 2.4.1   Overview                               (level 3, has body)
+```
+
+If this goes straight into Stage D, `## 2.4` becomes an independent same-level small chunk and gets **absorbed backward into the tail of the previous peer chunk `## 2.3`** — either via Phase A peer merging or via batched tail absorption — separating this parent heading from its actual child content `### 2.4.1`.
+
+A pre-pass (`_glue_heading_only_blocks`) is therefore inserted before Stage D. A block is heading-only when its `content` consists solely of heading lines (detected via `^#{1,6} +`). Gluing is **forward only**:
+
+- **Trigger**: the heading-only block's immediately following block is **strictly deeper** (greater `level`) and its `table_chunk_role` is `none` or `first`. A `first` slice is the **first slice of a split table** — when a section's body is an oversized table, Stage B's first emitted block for that row has role `first`. The block immediately after a heading-only row can only be the next row's first emitted block, so its role is necessarily `none` or `first` (`middle`/`last` only occur inside the same row's table).
+- **Keep the `first` role when gluing into it**: after gluing `## 2.4` into a `first` slice, the merged block **stays `first`** (the `## 2.4` heading is exactly the preceding context a `first` slice is meant to carry). Stage D then cannot pull it backward into `## 2.3` (a `first` slice cannot be absorbed backward), so the table-boundary protection survives; the `none` case behaves exactly as before.
+- **Action**: glue the heading forward into that child, **keeping the parent heading's identity** (`heading` / `level` / `parent_headings` from the shallower parent). So `## 2.4` bonds with `### 2.4.1`; the heading path stays anchored at `2.4`, and since the child's `parent_headings` already contains 2.4, no hierarchy is lost. A chain of bare ancestor headings (`# 2` → `## 2.4` → `### 2.4.1`) keeps folding down, retaining the **shallowest** identity, until the first child with a body.
+- **No backward gluing**: a heading-only block whose next block is **not** deeper (a shallower/sibling heading, or end of list) is left untouched for Stage D. It is deliberately **not** pulled backward into a deeper previous block (e.g. into `### 2.3.9`): absorbing a shallower `## 2.4` heading into a deeper L3 chunk would invert the hierarchy (deep-absorbs-shallow) and demote the heading's level. Such an orphan heading is simply left for Stage D's normal handling.
+- **Hard-cap preserved**: the child came out of Stage C within `target_max`, but prepending the parent heading line(s) can tip the bonded block over the cap. Since nothing downstream re-splits an oversized chunk (Stage D only refuses to grow it further), an over-cap bonded block is re-split here: the leading heading lines are **peeled off**, the body is split at the **full `target_max`** (so later body-only chunks keep the full budget), and the heading prefix is glued back onto the first body piece. Only if that first piece is too large to also hold the prefix is it (and it alone) re-split with a reduced cap — so a large prefix never over-fragments the whole child section. This keeps the heading with real content — never sliced off as a heading-only orphan (which Stage D would re-absorb backward), and every emitted piece still honours `target_max`. (Degenerate case: when the prefix alone fills the cap — a very long title, or a tiny `chunk_token_size` — it cannot be kept whole, so the whole block is split directly and the oversized heading line is character-split; the cap wins over heading-intactness.)
+- **No extra backfill into the previous block**: because `keep="left"` preserves the parent's `level`, a forward-bonded group enters Stage D as an ordinary small chunk (not pinned independent). Whether it merges back into the previous chunk `2.3` follows Stage D's existing rules entirely — peer merging when `2.3` is still below `target_ideal`, or tail absorption when the group is below `small_tail_threshold` (which can pull it even into an already-saturated `2.3`), both bounded by `target_max` on the re-measured join. This pre-pass only guarantees the heading is never detached FROM its content; letting `2.3 + 2.4 + 2.4.1` share one chunk when sizes allow is the intended anti-fragmentation behaviour.
+
+> Boundary ambiguity: a body line that genuinely begins with `#` + space would be misclassified as a heading line — this is the same accepted heuristic ambiguity documented in `lightrag/parser/_markdown.py`, and is extremely unlikely in real corpora.
 
 ## 9. Stage D: Hierarchy-Aware Two-Phase Merging
 
