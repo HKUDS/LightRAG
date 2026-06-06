@@ -280,6 +280,40 @@ def test_heading_only_cap_split_does_not_orphan_when_body_has_no_anchor():
 
 
 @pytest.mark.offline
+def test_heading_only_cap_split_does_not_shrink_later_body_chunks():
+    # When a glued block must be re-split, only the FIRST piece carries the
+    # heading prefix. The body must split at the FULL target_max so later
+    # body-only chunks keep the full budget; only the first piece reserves room
+    # for the prefix. (Earlier code split the whole body at the reduced budget,
+    # over-fragmenting every later chunk to the leftover first-chunk budget.)
+    tokenizer = _make_tokenizer()
+    # Large heading prefix -> a small leftover budget if wrongly applied to all.
+    parent = "## " + "P" * 47  # 50 tokens
+    body = "\n".join("y" * 28 for _ in range(6))
+    blocks = [
+        _hblock(parent, heading="P", level=2, tokenizer=tokenizer),
+        _hblock("### c\n" + body, heading="c", level=3, tokenizer=tokenizer),
+    ]
+    target_max = 100
+    # prefix = "## P*47" + "### c" = 50 + 1 + 5 = 56 tokens; sep = 1.
+    reduced_max = target_max - 56 - 1  # = 43, the over-shrunk budget to beat.
+
+    out = _glue_heading_only_blocks(
+        blocks, tokenizer=tokenizer, target_max=target_max, target_ideal=75
+    )
+
+    # Cap still honoured everywhere.
+    assert all(b["tokens"] <= target_max for b in out), [b["tokens"] for b in out]
+    # The prefix rides with the first piece.
+    assert out[0]["content"].startswith(parent)
+    # Body-only pieces (everything after the first) keep the FULL budget — at
+    # least one exceeds the reduced prefix budget, proving they were not shrunk.
+    assert max(b["tokens"] for b in out[1:]) > reduced_max, [
+        b["tokens"] for b in out[1:]
+    ]
+
+
+@pytest.mark.offline
 def test_heading_only_chain_collapses_to_shallowest_identity():
     # `# 2` -> `## 2.4` -> `### 2.4.1` (body) collapses into one block whose
     # identity is the shallowest heading (level 1).

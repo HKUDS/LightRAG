@@ -1158,11 +1158,14 @@ def _glue_heading_only_blocks(
     parent heading line(s) can tip the bonded block past the hard cap. Since
     nothing downstream re-splits an oversized chunk (Stage D only refuses to
     *grow* it further), an over-cap bonded block is re-split here: the leading
-    heading lines are peeled off, only the body is fed to Stage C's
-    :func:`_split_long_block` (with a reduced cap reserving room for the
-    prefix), and the heading prefix is then glued back onto the first body
-    piece. This keeps the heading with real content — it is never sliced off
-    as a heading-only orphan that Stage D would re-absorb backward. Non-glued
+    heading lines are peeled off and only the body is fed to Stage C's
+    :func:`_split_long_block` at the FULL ``target_max`` (so later body pieces,
+    which do not carry the prefix, keep the full budget), then the heading
+    prefix is glued back onto the first body piece. Only if that first piece is
+    too large to also hold the prefix is it (and it alone) re-split with a
+    reduced cap — a large prefix therefore never shrinks the whole child
+    section. This keeps the heading with real content — never sliced off as a
+    heading-only orphan that Stage D would re-absorb backward. Non-glued
     passthrough blocks are already within the cap and emitted verbatim.
 
     Because ``keep="left"`` preserves the parent's ``level``, the bonded group
@@ -1188,10 +1191,10 @@ def _glue_heading_only_blocks(
         # Otherwise, when the child body has no short anchor paragraph, the only
         # anchor candidate is the child heading at index 1, and the splitter
         # would slice off ``[## 2.4]`` alone — a heading-only orphan that Stage D
-        # then re-absorbs backward into the previous sibling. Splitting only the
-        # body (with a reduced cap that reserves room for the prefix) and gluing
-        # the prefix back onto the first body piece keeps the heading with real
-        # content while still honouring target_max.
+        # then re-absorbs backward into the previous sibling. Splitting the body
+        # and gluing the prefix back onto the first body piece keeps the heading
+        # with real content while still honouring target_max.
+        role = block.get("table_chunk_role", "none")
         paras = block["paragraphs"]
         n_prefix = 0
         for para in paras:
@@ -1210,7 +1213,7 @@ def _glue_heading_only_blocks(
                 block["heading"],
                 block["parent_headings"],
                 block["level"],
-                block.get("table_chunk_role", "none"),
+                role,
                 tokenizer=tokenizer,
                 target_max=target_max,
                 target_ideal=target_ideal,
@@ -1218,35 +1221,57 @@ def _glue_heading_only_blocks(
                 blockids=block.get("blockids"),
             )
 
-        prefix_tokens = _count_tokens(tokenizer, "\n".join(p["text"] for p in prefix))
-        sep_tokens = _count_tokens(tokenizer, "\n")
-        reduced_max = max(target_max - prefix_tokens - sep_tokens, 1)
+        # Split the body at the FULL target_max so later body pieces (which do
+        # NOT carry the prefix) use the full budget — never shrunk to the
+        # leftover first-chunk budget. Only the prefix is reserved out, and only
+        # from the first piece, below.
         pieces = _split_long_block(
             body,
             block["heading"],
             block["parent_headings"],
             block["level"],
-            block.get("table_chunk_role", "none"),
+            role,
             tokenizer=tokenizer,
-            target_max=reduced_max,
-            target_ideal=min(target_ideal, reduced_max),
+            target_max=target_max,
+            target_ideal=target_ideal,
             chunk_overlap_token_size=chunk_overlap_token_size,
             blockids=block.get("blockids"),
         )
+
+        prefix_tokens = _count_tokens(tokenizer, "\n".join(p["text"] for p in prefix))
+        sep_tokens = _count_tokens(tokenizer, "\n")
+        first, rest = pieces[0], list(pieces[1:])
+        if prefix_tokens + sep_tokens + first["tokens"] > target_max:
+            # The first body piece is too large to also hold the heading
+            # prefix. Re-split ONLY that piece with a reduced cap reserving room
+            # for the prefix; the remaining body pieces keep the full budget, so
+            # a large prefix does not over-fragment the whole child section.
+            reduced_max = max(target_max - prefix_tokens - sep_tokens, 1)
+            refit = _split_long_block(
+                first["paragraphs"],
+                block["heading"],
+                block["parent_headings"],
+                block["level"],
+                role,
+                tokenizer=tokenizer,
+                target_max=reduced_max,
+                target_ideal=min(target_ideal, reduced_max),
+                chunk_overlap_token_size=chunk_overlap_token_size,
+                blockids=first.get("blockids") or block.get("blockids"),
+            )
+            first, rest = refit[0], list(refit[1:]) + rest
         # Glue the heading prefix back onto the first body piece — which carries
-        # real content, so the heading is never orphaned. prefix + body[0] stays
-        # within target_max by the reduced-cap budget above.
-        first = pieces[0]
+        # real content, so the heading is never orphaned.
         rebuilt = _new_block(
             heading=block["heading"],
             parent_headings=block["parent_headings"],
             level=block["level"],
             paragraphs=prefix + first["paragraphs"],
-            table_chunk_role=block.get("table_chunk_role", "none"),
+            table_chunk_role=role,
             tokenizer=tokenizer,
             blockids=first.get("blockids") or block.get("blockids"),
         )
-        return [rebuilt, *pieces[1:]]
+        return [rebuilt, *rest]
 
     def _emit(block: dict[str, Any], *, glued: bool) -> None:
         # A forward-glued block can be tipped over target_max by its prepended
