@@ -142,7 +142,7 @@ When the text is fed to the LLM during entity/relation extraction, internal attr
 When a sidecar file exists, the chunking strategies attach `sidecar = {"type": "block", "id": <primary source blockid>, "refs": [{"type": "block", "id": <blockid>}, …]}` to each output chunk, where:
 
 - Unmerged chunk → `sidecar.refs` has only one element, equal to the `blockid` of the blocks.jsonl line the chunk came from;
-- Chunk merged in Stage D → `refs` preserves the order of all source `blockid`s (deduplicated);
+- Chunk merged in LevelMerge → `refs` preserves the order of all source `blockid`s (deduplicated);
 - Sub-chunks after hard fallback split → share the parent chunk's `sidecar`.
 
 This linkage is the basis for document-level traceability (chunk ↔ block ↔ original paragraph paraId).

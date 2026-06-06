@@ -1,4 +1,4 @@
-"""Regression tests for paragraph-semantic Stage D merging and the top-level R fallback."""
+"""Regression tests for paragraph-semantic LevelMerge merging and the top-level R fallback."""
 
 import pytest
 
@@ -34,6 +34,27 @@ def _make_block(text: str, *, tokenizer: Tokenizer, level: int = 1) -> dict:
         "content": text,
         "tokens": len(tokenizer.encode(text)),
         "table_chunk_role": "none",
+    }
+
+
+def _pblock(
+    text: str,
+    *,
+    heading: str,
+    parent_headings: list[str],
+    level: int,
+    tokenizer: Tokenizer,
+    role: str = "none",
+) -> dict:
+    """Block carrying an explicit heading path — for parent-path gate tests."""
+    return {
+        "heading": heading,
+        "parent_headings": list(parent_headings),
+        "level": level,
+        "paragraphs": [{"text": text, "is_table": False}],
+        "content": text,
+        "tokens": len(tokenizer.encode(text)),
+        "table_chunk_role": role,
     }
 
 
@@ -87,6 +108,169 @@ def test_tail_absorption_still_fires_when_joined_size_fits():
 
 
 @pytest.mark.offline
+def test_phase_a_merges_same_parent_path_siblings():
+    # True siblings under one parent (identical parent_headings) merge.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 40,
+            heading="2.4.1",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 40,
+            heading="2.4.2",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=12,
+    )
+    assert len(merged) == 1
+
+
+@pytest.mark.offline
+def test_phase_a_keeps_different_parent_path_siblings_separate():
+    # Same level but different parents (2.4.x vs 2.5.x) must NOT merge —
+    # the anti-cross-topic-pollution guarantee (§9.1 #4).
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 40,
+            heading="2.4.1",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 40,
+            heading="2.5.1",
+            parent_headings=["2", "2.5"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=12,
+    )
+    assert len(merged) == 2
+
+
+@pytest.mark.offline
+def test_phase_b_shallow_absorbs_descendant_deeper():
+    # Cross-level absorption is allowed when the deep block is nested under the
+    # shallow one: 2.4 (parents [2]) absorbs its child 2.4.1 (parents [2, 2.4]).
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 40,
+            heading="2.4",
+            parent_headings=["2"],
+            level=2,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 40,
+            heading="2.4.1",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=12,
+    )
+    assert len(merged) == 1
+
+
+@pytest.mark.offline
+def test_phase_b_refuses_nondescendant_deeper():
+    # 2.4 must NOT absorb a deeper block from a different branch (2.5.1) even
+    # though it is shallower — that would be cross-topic pollution.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 40,
+            heading="2.4",
+            parent_headings=["2"],
+            level=2,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 40,
+            heading="2.5.1",
+            parent_headings=["2", "2.5"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=12,
+    )
+    assert len(merged) == 2
+
+
+@pytest.mark.offline
+def test_tail_absorption_stops_at_divergent_parent_path():
+    # A saturated block absorbs the same-parent sliver that follows but stops
+    # the run at the first block whose parent path diverges.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 160,
+            heading="2.4.1",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 5,
+            heading="2.4.2",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "c" * 5,
+            heading="2.5.1",
+            parent_headings=["2", "2.5"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=50,
+    )
+    assert len(merged) == 2
+    assert "b" * 5 in merged[0]["content"]  # same-parent sliver absorbed
+    assert merged[1]["content"] == "c" * 5  # divergent-parent block untouched
+
+
+@pytest.mark.offline
 def test_paragraph_semantic_fallback_passes_configured_recursive_overlap(monkeypatch):
     # When ``blocks_path`` is missing, paragraph-semantic chunking
     # delegates to ``chunking_by_recursive_character``. P now permits
@@ -132,7 +316,7 @@ def test_paragraph_semantic_fallback_passes_configured_recursive_overlap(monkeyp
 
 
 # ---------------------------------------------------------------------------
-# Pre-Stage-D — body-less heading glue (forward into child / backward into prev).
+# HeadingGlue — body-less heading glue (forward into child / backward into prev).
 # ---------------------------------------------------------------------------
 
 
@@ -250,7 +434,7 @@ def test_heading_only_cap_split_does_not_orphan_when_body_has_no_anchor():
     # (> _MAX_ANCHOR_CANDIDATE_LENGTH chars), so the only anchor candidate in
     # the glued block is the child heading at index 1. The naive
     # split-the-whole-block path sliced off `[## 2.4]` alone — a heading-only
-    # orphan that Stage D then re-absorbs backward, recreating the separation.
+    # orphan that LevelMerge then re-absorbs backward, recreating the separation.
     # The prefix-aware re-split must keep the heading with real body content.
     tokenizer = _make_tokenizer()
     blocks = [
@@ -365,7 +549,7 @@ def test_heading_only_chain_collapses_to_shallowest_identity():
 
 @pytest.mark.offline
 def test_heading_only_no_glue_when_next_not_deeper():
-    # Next block is same level -> no forced forward glue; left for Stage D.
+    # Next block is same level -> no forced forward glue; left for LevelMerge.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock("## 2.4", heading="2.4", level=2, tokenizer=tokenizer),
@@ -440,7 +624,7 @@ def test_heading_only_group_stays_separate_when_prev_is_saturated():
 @pytest.mark.offline
 def test_heading_only_group_backfills_into_unsaturated_prev():
     # Rule 2 end-to-end: when `## 2.3` is still below target_ideal and the
-    # join fits target_max, Stage D packs 2.3 + 2.4 + 2.4.1 into one chunk.
+    # join fits target_max, LevelMerge packs 2.3 + 2.4 + 2.4.1 into one chunk.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock("## 2.3\n" + "a" * 40, heading="2.3", level=2, tokenizer=tokenizer),
@@ -473,7 +657,7 @@ def test_heading_only_not_glued_into_deeper_prev():
     # `## 2.4` (L2) has no deeper child after it; its previous block is the
     # DEEPER `### 2.3.9` (L3). It must NOT be pulled backward into that deeper
     # block — absorbing a shallower heading into a deeper chunk would invert the
-    # hierarchy. It stays separate, left for Stage D.
+    # hierarchy. It stays separate, left for LevelMerge.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock(
@@ -496,7 +680,7 @@ def test_heading_only_not_glued_into_deeper_prev():
 def test_heading_only_not_glued_into_same_level_prev():
     # The previous block `## 2.3` is the SAME level (a sibling), not deeper, so
     # the body-less `## 2.4` is not glued backward into it — that is the original
-    # mis-merge. It stays standalone for Stage D to handle.
+    # mis-merge. It stays standalone for LevelMerge to handle.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock("## 2.3\n" + "a" * 40, heading="2.3", level=2, tokenizer=tokenizer),
@@ -519,7 +703,7 @@ _TABLE_FIRST = '<table id="t" format="json">[["a","b"],["c","d"]]</table>'
 def test_heading_only_glues_into_first_table_slice():
     # The deeper child's first emitted block is the "first" slice of a split
     # table (its body is an oversized table). The pre-pass must glue the
-    # body-less `## 2.4` into it AND keep the "first" role so Stage D still
+    # body-less `## 2.4` into it AND keep the "first" role so LevelMerge still
     # cannot absorb it backward.
     tokenizer = _make_tokenizer()
     blocks = [
@@ -541,7 +725,7 @@ def test_heading_only_glues_into_first_table_slice():
     assert "## 2.4" in out[0]["content"]
     assert "### 2.4.1" in out[0]["content"]
     assert _TABLE_FIRST in out[0]["content"]
-    # "first" role preserved so Stage D keeps the table boundary protected.
+    # "first" role preserved so LevelMerge keeps the table boundary protected.
     assert out[0]["table_chunk_role"] == "first"
 
 
@@ -549,7 +733,7 @@ def test_heading_only_glues_into_first_table_slice():
 def test_heading_only_with_first_table_child_not_separated_by_stage_d():
     # End-to-end: `## 2.4` whose child starts with a "first" table slice must
     # NOT be left on `## 2.3`. After the glue keeps the merged block "first",
-    # Stage D cannot pull it backward into the previous sibling.
+    # LevelMerge cannot pull it backward into the previous sibling.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock("## 2.3\n" + "a" * 40, heading="2.3", level=2, tokenizer=tokenizer),

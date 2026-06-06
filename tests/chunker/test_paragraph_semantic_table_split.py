@@ -1,4 +1,4 @@
-"""Regression tests for paragraph-semantic Stage B oversized-table handling."""
+"""Regression tests for paragraph-semantic TableRowSplit oversized-table handling."""
 
 import json
 
@@ -55,7 +55,7 @@ def test_split_rows_by_tokens_few_rows_huge_total_no_empty_slice():
 
     assert chunks, "expected at least one chunk"
     for chunk in chunks:
-        assert chunk, "Stage B must never emit an empty row slice"
+        assert chunk, "TableRowSplit must never emit an empty row slice"
     # Concatenation preserves all rows in order.
     flat: list = []
     for chunk in chunks:
@@ -149,7 +149,7 @@ def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     ), "trailing paragraph must glue with the last table slice"
     assert all(
         "表格片段" not in b["heading"] for b in out
-    ), "Stage B should not expose legacy table-fragment heading suffixes"
+    ), "TableRowSplit should not expose legacy table-fragment heading suffixes"
 
 
 @pytest.mark.offline
@@ -271,10 +271,15 @@ def test_expand_block_emits_middle_text_when_table_bridge_is_long():
         chunk_overlap_token_size=45,
     )
 
+    # The standalone middle block carries R-style overlap with the text that
+    # went left (prefix) and right (suffix): because each side's slice is
+    # itself ≤ the overlap budget, the middle re-covers the whole bridge — the
+    # bridge is never fragmented, only its head/tail are *also* duplicated into
+    # the neighbouring table blocks.
     middle_idx = next(
         i
         for i, blk in enumerate(out)
-        if blk["table_chunk_role"] == "none" and blk["content"] == "B" * 50
+        if blk["table_chunk_role"] == "none" and blk["content"] == bridge
     )
     assert out[middle_idx - 1]["table_chunk_role"] == "last"
     assert "A" * 45 in out[middle_idx - 1]["content"]
@@ -282,7 +287,67 @@ def test_expand_block_emits_middle_text_when_table_bridge_is_long():
     assert out[middle_idx + 1]["table_chunk_role"] == "first"
     assert out[middle_idx + 1]["content"].startswith("C" * 45)
     assert "B" * 50 not in out[middle_idx + 1]["content"]
+    # The overlap never drags table markup into the middle text block.
+    assert "<table" not in out[middle_idx]["content"]
     assert all(b["tokens"] <= 400 for b in out), [b["tokens"] for b in out]
+
+
+@pytest.mark.offline
+def test_bridge_single_side_budget_capped_at_half_target_max():
+    # §7 guarantee: even with a huge configured overlap, the bridge text
+    # duplicated into each table boundary block is capped at target_max // 2
+    # so it can never dominate the block. The bridge is a long run of a
+    # character that never appears in the table payload, so counting it in
+    # each boundary block measures exactly how much bridge text was copied in.
+    tokenizer = _make_tokenizer()
+    bridge = "Z" * 1000
+    block = {
+        "heading": "Section",
+        "parent_headings": [],
+        "level": 2,
+        "paragraphs": [
+            {
+                "text": _build_oversized_table_text(num_rows=8, row_payload_size=30),
+                "is_table": True,
+            },
+            {"text": bridge, "is_table": False},
+            {
+                "text": _build_oversized_table_text(num_rows=8, row_payload_size=30),
+                "is_table": True,
+            },
+        ],
+    }
+    target_max = 400
+    half = target_max // 2
+
+    out = _expand_block_with_table_splits(
+        block,
+        tokenizer=tokenizer,
+        table_max=200,
+        table_ideal=140,
+        table_min_last=48,
+        target_max=target_max,
+        chunk_overlap_token_size=10_000,  # huge → only the half-cap can bind
+    )
+
+    # The long bridge yields [... "last"+prefix, "none" full-bridge middle,
+    # suffix+"first" ...]; locate the middle and read its neighbours.
+    middle_idx = next(
+        i
+        for i, blk in enumerate(out)
+        if blk["table_chunk_role"] == "none" and blk["content"] == bridge
+    )
+    left = out[middle_idx - 1]
+    right = out[middle_idx + 1]
+    assert left["table_chunk_role"] == "last"
+    assert right["table_chunk_role"] == "first"
+    left_z = left["content"].count("Z")
+    right_z = right["content"].count("Z")
+    # The huge overlap would have copied far more than `half` without the cap;
+    # the bridge (1000) and the small table slices leave ample headroom, so the
+    # half-cap is the binding constraint and each side gets exactly `half`.
+    assert left_z == half, left_z
+    assert right_z == half, right_z
 
 
 @pytest.mark.offline
@@ -493,10 +558,10 @@ def test_split_table_text_unknown_format_falls_to_character():
 
 @pytest.mark.offline
 def test_expand_block_single_row_table_no_longer_left_intact():
-    # Stage B integration: previously a single-row oversized table was
+    # TableRowSplit integration: previously a single-row oversized table was
     # appended back to cur_paras unchanged, leading the block to reach
-    # Stage C with the table whole and the character fallback shredding
-    # the <table> tag. After the fix, Stage B itself produces multiple
+    # AnchorSplit with the table whole and the character fallback shredding
+    # the <table> tag. After the fix, TableRowSplit itself produces multiple
     # pieces for such a table.
     tokenizer = _make_tokenizer()
     rows = [[{"col": "x" * 2000}]]  # single huge row
@@ -532,7 +597,7 @@ def test_expand_block_single_row_table_no_longer_left_intact():
 
 @pytest.mark.offline
 def test_split_long_block_table_dominant_no_anchor_keeps_some_table_markup():
-    # Stage C integration: a block dominated by an oversized table with no
+    # AnchorSplit integration: a block dominated by an oversized table with no
     # anchor candidates used to be character-split end-to-end, destroying
     # the <table> tag. After the fix, at least some output sub-blocks
     # retain legal <table>...</table> markup for the rows that fit.
