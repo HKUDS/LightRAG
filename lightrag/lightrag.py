@@ -236,7 +236,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """Method for selecting text chunks: 'WEIGHT' for weight-based selection, 'VECTOR' for embedding similarity-based selection."""
 
     enable_content_headings: bool = field(
-        default_factory=lambda: get_env_value("ENABLE_CONTENT_HEADINGS", False, bool)
+        default_factory=lambda: get_env_value("ENABLE_CONTENT_HEADINGS", True, bool)
     )
     """Append each chunk's parent heading path as a `content_headings` field in the chunk JSON sent to the LLM."""
 
