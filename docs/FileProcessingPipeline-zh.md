@@ -323,7 +323,7 @@ DOCLING_DO_FORMULA_ENRICHMENT=true
 - F/R/V/P至多出现一个；同一选项重复时只生效一次但不报错。
 - 大小写敏感：分块选项 F/R/V/P必须大写；其它选项 i/t/e小写。
 - 中括号内出现非法字符时，整个 hint 失效，引擎按默认规则解析，选项按 `LIGHTRAG_PARSER` 默认或全部默认；同时落日志 warning。
-- `P` 仅对 `native` 抽取出的 LightRAG Document 结构化结果有效；对 `legacy` 路径或非结构化输出会自动降级到 `R` 并记录 warning。
+- `P` 对任何能产出 `.blocks.jsonl` sidecar 的引擎（`native` / `mineru` / `docling`）抽取出的结构化结果有效；对 `legacy` 路径或无 sidecar 的输出会自动降级到 `R` 并记录 warning。
 
 ## 三、分块器参数配置（chunk_options）
 
