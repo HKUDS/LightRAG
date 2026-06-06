@@ -792,7 +792,6 @@ The surrounding-context budgets control how much nearby text is included in VLM 
 
 Entity extraction is controlled by the base or `EXTRACT` role LLM. Important server-side options:
 
-- `ENABLE_LLM_CACHE_FOR_EXTRACT`: enable LLM cache for entity extraction (default: `true`). This is useful in test environments and during reprocessing.
 - `ENTITY_EXTRACTION_USE_JSON`: request JSON-structured extraction output. In v1.5 this is recommended for reliability, but it can increase latency.
 - `ENTITY_TYPE_PROMPT_FILE`: file-name-only YAML profile for entity type guidance and examples. The file is loaded from `PROMPT_DIR/entity_type`; do not pass an absolute path here.
 - `MAX_EXTRACT_INPUT_TOKENS`: maximum token budget for one extraction input context.
@@ -808,7 +807,6 @@ PROMPT_DIR=/opt/lightrag/prompts
 MAX_EXTRACT_INPUT_TOKENS=20480
 MAX_EXTRACTION_RECORDS=100
 MAX_EXTRACTION_ENTITIES=40
-ENABLE_LLM_CACHE_FOR_EXTRACT=true
 ```
 
 If an old `.env` still contains `ENTITY_TYPES`, remove it before startup. The server fails fast because this variable has been replaced by prompt profiles.
@@ -974,7 +972,6 @@ WORKERS=2
 # LIGHTRAG_API_PREFIX=/site01
 
 ### Settings for document indexing
-ENABLE_LLM_CACHE_FOR_EXTRACT=true
 ENTITY_EXTRACTION_USE_JSON=true
 # ENTITY_TYPE_PROMPT_FILE=entity_type_prompt.yml
 # MAX_EXTRACT_INPUT_TOKENS=20480

@@ -545,6 +545,7 @@ def parse_args() -> argparse.Namespace:
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
 
     # Inject LLM cache configuration
+    # Should not be disabled； LLM cache is required for entity/realtion rebuild after file deletion.
     args.enable_llm_cache_for_extract = get_env_value(
         "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
     )
