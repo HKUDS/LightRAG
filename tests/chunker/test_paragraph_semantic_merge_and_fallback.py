@@ -37,6 +37,27 @@ def _make_block(text: str, *, tokenizer: Tokenizer, level: int = 1) -> dict:
     }
 
 
+def _pblock(
+    text: str,
+    *,
+    heading: str,
+    parent_headings: list[str],
+    level: int,
+    tokenizer: Tokenizer,
+    role: str = "none",
+) -> dict:
+    """Block carrying an explicit heading path — for parent-path gate tests."""
+    return {
+        "heading": heading,
+        "parent_headings": list(parent_headings),
+        "level": level,
+        "paragraphs": [{"text": text, "is_table": False}],
+        "content": text,
+        "tokens": len(tokenizer.encode(text)),
+        "table_chunk_role": role,
+    }
+
+
 @pytest.mark.offline
 def test_tail_absorption_rejects_when_separator_pushes_over_cap():
     # Tail absorption joins blocks with ``"\n\n"`` but the original
@@ -84,6 +105,169 @@ def test_tail_absorption_still_fires_when_joined_size_fits():
     assert len(merged) == 1
     assert merged[0]["tokens"] == 83
     assert merged[0]["content"] == "x" * 80 + "\n\n" + "y" * 1
+
+
+@pytest.mark.offline
+def test_phase_a_merges_same_parent_path_siblings():
+    # True siblings under one parent (identical parent_headings) merge.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 40,
+            heading="2.4.1",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 40,
+            heading="2.4.2",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=12,
+    )
+    assert len(merged) == 1
+
+
+@pytest.mark.offline
+def test_phase_a_keeps_different_parent_path_siblings_separate():
+    # Same level but different parents (2.4.x vs 2.5.x) must NOT merge —
+    # the anti-cross-topic-pollution guarantee (§9.1 #4).
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 40,
+            heading="2.4.1",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 40,
+            heading="2.5.1",
+            parent_headings=["2", "2.5"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=12,
+    )
+    assert len(merged) == 2
+
+
+@pytest.mark.offline
+def test_phase_b_shallow_absorbs_descendant_deeper():
+    # Cross-level absorption is allowed when the deep block is nested under the
+    # shallow one: 2.4 (parents [2]) absorbs its child 2.4.1 (parents [2, 2.4]).
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 40,
+            heading="2.4",
+            parent_headings=["2"],
+            level=2,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 40,
+            heading="2.4.1",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=12,
+    )
+    assert len(merged) == 1
+
+
+@pytest.mark.offline
+def test_phase_b_refuses_nondescendant_deeper():
+    # 2.4 must NOT absorb a deeper block from a different branch (2.5.1) even
+    # though it is shallower — that would be cross-topic pollution.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 40,
+            heading="2.4",
+            parent_headings=["2"],
+            level=2,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 40,
+            heading="2.5.1",
+            parent_headings=["2", "2.5"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=12,
+    )
+    assert len(merged) == 2
+
+
+@pytest.mark.offline
+def test_tail_absorption_stops_at_divergent_parent_path():
+    # A saturated block absorbs the same-parent sliver that follows but stops
+    # the run at the first block whose parent path diverges.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _pblock(
+            "a" * 160,
+            heading="2.4.1",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "b" * 5,
+            heading="2.4.2",
+            parent_headings=["2", "2.4"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+        _pblock(
+            "c" * 5,
+            heading="2.5.1",
+            parent_headings=["2", "2.5"],
+            level=3,
+            tokenizer=tokenizer,
+        ),
+    ]
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=200,
+        target_ideal=150,
+        small_tail_threshold=50,
+    )
+    assert len(merged) == 2
+    assert "b" * 5 in merged[0]["content"]  # same-parent sliver absorbed
+    assert merged[1]["content"] == "c" * 5  # divergent-parent block untouched
 
 
 @pytest.mark.offline

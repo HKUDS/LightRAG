@@ -613,7 +613,16 @@ def _expand_block_with_table_splits(
         if base_tokens >= target_max:
             return 0
         # The context paragraph is joined to the table fragment with "\n".
-        return max(min(context_overlap, target_max - base_tokens - sep_tokens), 0)
+        # Cap each side at target_max // 2 as well so the duplicated bridge
+        # text can never dominate the whole block (§7).
+        return max(
+            min(
+                context_overlap,
+                target_max - base_tokens - sep_tokens,
+                target_max // 2,
+            ),
+            0,
+        )
 
     def _flush_last_bridge_before_next_first(
         next_first_para: dict[str, Any],
@@ -667,9 +676,18 @@ def _expand_block_with_table_splits(
                 if suffix_len
                 else ""
             )
+            # The standalone middle block keeps R-style overlap with the text
+            # that went left (into the previous table block) and right (into the
+            # next table block): extend it by ``context_overlap`` tokens on each
+            # side, clamped inside ``bridge_tokens``. Because the indices never
+            # leave the bridge — which by this branch contains no table
+            # paragraphs — the overlap is pure text and never duplicates any
+            # ``<table>`` content into the middle block.
+            mid_lo = max(0, middle_start - context_overlap)
+            mid_hi = min(bridge_len, middle_end + context_overlap)
             middle_text = (
-                tokenizer.decode(bridge_tokens[middle_start:middle_end])
-                if middle_end > middle_start
+                tokenizer.decode(bridge_tokens[mid_lo:mid_hi])
+                if mid_hi > mid_lo and middle_end > middle_start
                 else ""
             )
 
@@ -1057,6 +1075,38 @@ def _can_merge_backward(role: str) -> bool:
     return role in {"none", "last"}
 
 
+def _same_parent_path(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when two blocks share the identical parent-heading chain.
+
+    Same-level merging (Phase A, tail absorption) is gated on this so two
+    blocks at the same ``level`` are only fused when they are true siblings
+    under one parent — blocks that merely happen to share a ``level`` but sit
+    under different parents (e.g. ``2.4.1`` vs ``2.5.1``) are NOT merged,
+    which is the documented anti-cross-topic-pollution guarantee (§9.1 #4).
+    Blocks with no parents (preamble / non-hierarchical input) compare equal.
+    """
+    return list(a.get("parent_headings") or []) == list(b.get("parent_headings") or [])
+
+
+def _is_descendant(shallow: dict[str, Any], deep: dict[str, Any]) -> bool:
+    """True when ``deep`` is nested under ``shallow`` in the heading tree.
+
+    Cross-level absorption (Phase B, shallower-absorbs-deeper) is gated on
+    this: the shallow block's full heading path (its ``parent_headings`` plus
+    its own ``heading``) must be a prefix of the deep block's
+    ``parent_headings``. This prevents a shallow block from swallowing a deeper
+    block that belongs to an unrelated branch of the document tree. The
+    shallow heading is stripped of any generated ``[part n]`` suffix first
+    because ``parent_headings`` never carry that suffix. A shallow block with
+    no heading (preamble) yields an empty path that prefixes anything, so such
+    blocks are not blocked from absorbing — they have no hierarchy to violate.
+    """
+    head = _strip_generated_heading_suffixes(shallow.get("heading") or "")
+    shallow_full = list(shallow.get("parent_headings") or []) + ([head] if head else [])
+    deep_parents = list(deep.get("parent_headings") or [])
+    return deep_parents[: len(shallow_full)] == shallow_full
+
+
 def _merged_pair(
     left: dict[str, Any],
     right: dict[str, Any],
@@ -1334,8 +1384,10 @@ def _merge_small_blocks(
 
                     if _can_merge_forward(cur_role, phase="A") and i + 1 < len(result):
                         nxt = result[i + 1]
-                        if nxt.get("level", 1) == current_level and _can_merge_backward(
-                            nxt.get("table_chunk_role", "none")
+                        if (
+                            nxt.get("level", 1) == current_level
+                            and _can_merge_backward(nxt.get("table_chunk_role", "none"))
+                            and _same_parent_path(cur, nxt)
                         ):
                             combined = _merged_pair(
                                 cur, nxt, keep="left", tokenizer=tokenizer
@@ -1354,6 +1406,7 @@ def _merge_small_blocks(
                                 prev.get("table_chunk_role", "none"), phase="A"
                             )
                             and prev["tokens"] < target_ideal
+                            and _same_parent_path(prev, cur)
                         ):
                             combined = _merged_pair(
                                 prev, cur, keep="left", tokenizer=tokenizer
@@ -1381,6 +1434,11 @@ def _merge_small_blocks(
                             if nxt.get("level", 1) != current_level:
                                 break
                             if nxt.get("table_chunk_role", "none") == "middle":
+                                break
+                            # Same-level only is not enough — a sibling under a
+                            # different parent would be cross-topic. Stop the run
+                            # at the first block whose parent path diverges.
+                            if not _same_parent_path(cur, nxt):
                                 break
                             tail_total += nxt["tokens"]
                             end_idx = j + 1
@@ -1440,8 +1498,10 @@ def _merge_small_blocks(
 
                     if _can_merge_forward(cur_role, phase="B") and i + 1 < len(result):
                         nxt = result[i + 1]
-                        if nxt.get("level", 1) > current_level and _can_merge_backward(
-                            nxt.get("table_chunk_role", "none")
+                        if (
+                            nxt.get("level", 1) > current_level
+                            and _can_merge_backward(nxt.get("table_chunk_role", "none"))
+                            and _is_descendant(cur, nxt)
                         ):
                             combined = _merged_pair(
                                 cur, nxt, keep="left", tokenizer=tokenizer
@@ -1460,6 +1520,7 @@ def _merge_small_blocks(
                                 prev.get("table_chunk_role", "none"), phase="B"
                             )
                             and prev["tokens"] < target_ideal
+                            and _is_descendant(prev, cur)
                         ):
                             combined = _merged_pair(
                                 prev, cur, keep="left", tokenizer=tokenizer
