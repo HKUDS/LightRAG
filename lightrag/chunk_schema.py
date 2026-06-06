@@ -35,18 +35,23 @@ def normalize_chunk_heading(dp: dict[str, Any]) -> dict[str, Any] | None:
 
     Accepts:
 
-    - ``dp["heading"]`` already a dict ``{"level", "heading", "parent_headings"}``.
+    - ``dp["heading"]`` already a dict ``{"level", "heading", "parent_headings"}``
+      (optionally with a ``table_header`` recovered for a split table slice).
     - Legacy flat fields ``heading: str`` + ``parent_headings: list[str]`` +
       ``level: int``.
 
     Empty / missing inputs collapse to ``None`` so callers can simply omit
-    the field when writing the chunk record.
+    the field when writing the chunk record — UNLESS a ``table_header`` is
+    present, in which case the dict is preserved (with empty heading/parents)
+    so the recovered header is never dropped.
     """
     nested = dp.get("heading")
+    table_header = ""
     if isinstance(nested, dict):
         heading_text = str(nested.get("heading") or "").strip()
         parents_raw = nested.get("parent_headings") or []
         level_raw = nested.get("level", 0)
+        table_header = str(nested.get("table_header") or "").strip()
     else:
         heading_text = str(nested or "").strip()
         parents_raw = dp.get("parent_headings") or []
@@ -64,14 +69,17 @@ def normalize_chunk_heading(dp: dict[str, Any]) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         level = 0
 
-    if not heading_text and not parent_headings and level == 0:
+    if not heading_text and not parent_headings and level == 0 and not table_header:
         return None
 
-    return {
+    result: dict[str, Any] = {
         "level": level,
         "heading": heading_text,
         "parent_headings": parent_headings,
     }
+    if table_header:
+        result["table_header"] = table_header
+    return result
 
 
 # Zero-width / invisible characters that ``\s`` does NOT match but that only add

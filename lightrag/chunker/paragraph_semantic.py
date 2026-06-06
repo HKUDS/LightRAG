@@ -38,6 +38,11 @@ Pipeline:
   - LevelMerge — bottom-up, level-aware small-block merging: undersized blocks
     get absorbed by same-level neighbours (Phase A), then shallower levels
     (Phase B), with a final tail-absorption pass for the trailing remainders.
+  - HeaderRecovery — at output conversion, a ``middle``/``last`` table slice
+    (which dropped the header row kept by the ``first`` slice) recovers its
+    source table's repeating header from the ``.tables.json`` sidecar (keyed by
+    the slice's ``<table>`` id) and attaches it under ``heading.table_header``.
+    Not a splitting stage; a missing/headerless sidecar silently skips it.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ from typing import Any, Callable
 from lightrag.table_markup import (
     TABLE_TAG_RE as _TABLE_TAG_RE,
     detect_table_format as _detect_table_format,
+    extract_table_id as _extract_table_id,
     serialize_html_rows as _serialize_rows_with_wrappers,
     split_html_rows as _split_html_rows,
 )
@@ -179,6 +185,86 @@ def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
             if isinstance(obj, dict) and obj.get("type") == "content":
                 rows.append(obj)
     return rows
+
+
+def _tables_sidecar_path(blocks_path: str) -> str | None:
+    """Derive the ``.tables.json`` sidecar path beside a ``.blocks.jsonl`` file.
+
+    Mirrors :func:`lightrag.utils_pipeline.sidecar_modality_path` naming
+    (``<base>.blocks.jsonl`` → ``<base>.tables.json``). Returns ``None`` when
+    the path does not follow the ``.blocks.jsonl`` convention.
+    """
+    suffix = ".blocks.jsonl"
+    if not blocks_path.endswith(suffix):
+        return None
+    return blocks_path[: -len(suffix)] + ".tables.json"
+
+
+def _load_table_headers(blocks_path: str) -> dict[str, str]:
+    """Map ``table_id -> repeating-header body`` from the tables.json sidecar.
+
+    Only tables that carry a ``table_header`` field (the cross-page repeating
+    header the parser lifted from the source's header rows) are included; the
+    value is the verbatim JSON 2-D array string the writer stored, e.g.
+    ``'[["X", "Y"]]'``. A missing / unreadable / malformed sidecar degrades
+    silently to ``{}`` — a missing header must never block chunking (same
+    tolerance as :func:`_load_blocks_from_jsonl`).
+    """
+    path = _tables_sidecar_path(blocks_path)
+    if not path:
+        return {}
+    try:
+        with Path(path).open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    tables = data.get("tables") if isinstance(data, dict) else None
+    if not isinstance(tables, dict):
+        return {}
+    headers: dict[str, str] = {}
+    for table_id, entry in tables.items():
+        if not isinstance(entry, dict):
+            continue
+        header = entry.get("table_header")
+        if isinstance(header, str) and header.strip():
+            headers[str(table_id)] = header
+    return headers
+
+
+def _wrap_table_header(header_body: str) -> str:
+    """Wrap a stored header body into a legal standalone ``<table>`` fragment.
+
+    The writer stores ``table_header`` as a JSON 2-D array string regardless of
+    the source table's json/html format, so the recovered header is always
+    re-emitted as a ``format="json"`` table. The internal ``id`` is dropped:
+    this header rides on a chunk's heading as metadata, not as a citable table.
+    """
+    return f'<table format="json">{header_body}</table>'
+
+
+def _table_header_for_block(
+    block: dict[str, Any], table_headers: dict[str, str]
+) -> str | None:
+    """Recover the wrapped repeating header for a middle/last table-slice block.
+
+    Scans the block for its first ``<table>`` fragment, traces it to the source
+    table via the fragment's ``id`` attribute (preserved verbatim through
+    row-splitting), and wraps the stored header body. Returns ``None`` when the
+    block has no table fragment (e.g. a character-fallback slice), the fragment
+    carries no ``id``, or the source table has no repeating header — in every
+    such case the caller simply omits the field.
+    """
+    for para in block.get("paragraphs", []):
+        if not para.get("is_table", False):
+            continue
+        match = _TABLE_TAG_RE.match((para.get("text") or "").strip())
+        if not match:
+            continue
+        table_id = _extract_table_id(match.group("attrs"))
+        if table_id and table_id in table_headers:
+            return _wrap_table_header(table_headers[table_id])
+        return None
+    return None
 
 
 def _split_html_rows_by_tokens(
@@ -1754,6 +1840,11 @@ def chunking_by_paragraph_semantic(
         small_tail_threshold=small_tail_threshold,
     )
 
+    # Repeating-header lookup for table slices that lost their header. Loaded
+    # once here (never on the missing-sidecar fallback path, which returned
+    # above); an absent / unreadable tables.json degrades to an empty map.
+    table_headers = _load_table_headers(blocks_path) if blocks_path else {}
+
     # Convert internal block dicts to the new chunk schema: nested heading
     # dict + sidecar block carrying source blockid refs so the multimodal
     # pipeline (and document-delete cache cleanup) can trace each chunk
@@ -1763,15 +1854,27 @@ def chunking_by_paragraph_semantic(
         body = blk["content"].strip()
         if not body:
             continue
+        heading_block: dict[str, Any] = {
+            "level": int(blk.get("level") or 0),
+            "heading": str(blk.get("heading") or ""),
+            "parent_headings": list(blk.get("parent_headings") or []),
+        }
+        # HeaderRecovery — a "middle"/"last" table slice dropped the header row
+        # that stayed with the "first" slice; recover the source table's
+        # repeating header and attach it under heading.table_header so downstream
+        # KG extraction / embedding still see each column's meaning. "first"
+        # slices carry their own header, and a "last" slice merged back into a
+        # whole table (role → "none") needs nothing — so only middle/last are
+        # eligible. The field is added regardless of whether ``heading`` is empty.
+        if table_headers and blk.get("table_chunk_role") in ("middle", "last"):
+            header = _table_header_for_block(blk, table_headers)
+            if header is not None:
+                heading_block["table_header"] = header
         chunk_dict: dict[str, Any] = {
             "tokens": blk["tokens"],
             "content": body,
             "chunk_order_index": idx,
-            "heading": {
-                "level": int(blk.get("level") or 0),
-                "heading": str(blk.get("heading") or ""),
-                "parent_headings": list(blk.get("parent_headings") or []),
-            },
+            "heading": heading_block,
         }
         blockids = blk.get("blockids") or []
         if blockids:

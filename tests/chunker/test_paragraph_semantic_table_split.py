@@ -667,3 +667,117 @@ def test_split_table_text_budgets_wrapper_overhead_for_target_max():
 
 def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
     return len(tokenizer.encode(text))
+
+
+# ---------------------------------------------------------------------------
+# Repeating-header recovery for middle/last table slices (heading.table_header).
+# ---------------------------------------------------------------------------
+
+
+_HEADER_BODY = '[["H1", "H2"]]'
+_WRAPPED_HEADER = '<table format="json">[["H1", "H2"]]</table>'
+
+
+def _write_tables_json(tmp_path, headers: dict) -> None:
+    """Write a ``doc.tables.json`` beside ``doc.blocks.jsonl``.
+
+    ``headers`` maps table id -> header string; a ``None`` value emits an entry
+    WITHOUT the ``table_header`` field (a table that has no repeating header).
+    """
+    tables: dict = {}
+    for tid, header in headers.items():
+        entry = {"id": tid, "format": "json", "content": "[]", "caption": ""}
+        if header is not None:
+            entry["table_header"] = header
+        tables[tid] = entry
+    path = tmp_path / "doc.tables.json"
+    path.write_text(
+        json.dumps({"version": "1.0", "tables": tables}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _chunk_with_oversized_table(tmp_path, *, heading: str = "Section"):
+    tokenizer = _make_tokenizer()
+    body = "\n".join(
+        [
+            "lead paragraph",
+            _build_oversized_table_text(num_rows=6, row_payload_size=200),
+            "trailing paragraph",
+        ]
+    )
+    path = tmp_path / "doc.blocks.jsonl"
+    row = {
+        "type": "content",
+        "heading": heading,
+        "parent_headings": [],
+        "level": 2 if heading else 0,
+        "content": body,
+    }
+    path.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer,
+        body,
+        chunk_token_size=800,
+        blocks_path=str(path),
+        chunk_overlap_token_size=0,
+    )
+    return chunks
+
+
+@pytest.mark.offline
+def test_extract_table_id_variants():
+    from lightrag.table_markup import extract_table_id
+
+    assert extract_table_id('id="tb-1" format="json"') == "tb-1"
+    assert extract_table_id("format='html' id='tb-h'") == "tb-h"
+    assert extract_table_id('format="json"') is None
+    assert extract_table_id("") is None
+
+
+@pytest.mark.offline
+def test_table_header_recovered_for_middle_and_last_slices(tmp_path):
+    _write_tables_json(tmp_path, {"tb-1": _HEADER_BODY})
+    chunks = _chunk_with_oversized_table(tmp_path)
+
+    assert len(chunks) > 1
+    # The "first" slice (chunk 0, glued with the lead paragraph) keeps its own
+    # header row, so it must NOT receive a recovered table_header.
+    assert "table_header" not in chunks[0]["heading"]
+    # At least one later slice (middle/last) recovers the header, and every
+    # recovered value is the wrapped form of the source table's header.
+    with_header = [c for c in chunks if "table_header" in c["heading"]]
+    assert with_header, "expected middle/last slices to recover the table header"
+    assert all(c["heading"]["table_header"] == _WRAPPED_HEADER for c in with_header)
+
+
+@pytest.mark.offline
+def test_table_header_absent_when_source_table_has_no_header(tmp_path):
+    # tables.json lists the table but WITHOUT a table_header field (no
+    # cross-page repeating header) — nothing must be fabricated.
+    _write_tables_json(tmp_path, {"tb-1": None})
+    chunks = _chunk_with_oversized_table(tmp_path)
+
+    assert len(chunks) > 1
+    assert all("table_header" not in c["heading"] for c in chunks)
+
+
+@pytest.mark.offline
+def test_table_header_absent_when_tables_json_missing(tmp_path):
+    # No tables.json at all → silent degrade: no error, no recovered header.
+    chunks = _chunk_with_oversized_table(tmp_path)
+
+    assert len(chunks) > 1
+    assert all("table_header" not in c["heading"] for c in chunks)
+
+
+@pytest.mark.offline
+def test_table_header_recovered_even_when_source_heading_empty(tmp_path):
+    # A preamble block (empty source heading) still recovers the header so the
+    # field rides on heading.table_header regardless of the heading text.
+    _write_tables_json(tmp_path, {"tb-1": _HEADER_BODY})
+    chunks = _chunk_with_oversized_table(tmp_path, heading="")
+
+    with_header = [c for c in chunks if "table_header" in c["heading"]]
+    assert with_header, "expected a recovered header even with empty source heading"
+    assert all(c["heading"]["table_header"] == _WRAPPED_HEADER for c in with_header)
