@@ -67,7 +67,7 @@ VALID_SOURCE_IDS_LIMIT_METHODS = {
     SOURCE_IDS_LIMIT_METHOD_FIFO,
 }
 # Maximum number of file paths stored in entity/relation file_path field (For displayed only, does not affect query performance)
-DEFAULT_MAX_FILE_PATHS = 100
+DEFAULT_MAX_FILE_PATHS = 75
 
 # Field length of file_path in Milvus Schema for entity and relation (Should not be changed)
 # file_path must store all file paths up to the DEFAULT_MAX_FILE_PATHS limit within the metadata.
