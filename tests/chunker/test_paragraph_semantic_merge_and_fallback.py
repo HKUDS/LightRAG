@@ -320,26 +320,28 @@ def test_heading_only_no_glue_when_next_not_deeper():
 
 
 @pytest.mark.offline
-def test_heading_only_no_glue_into_protected_table_slice():
-    # A deeper next block that is a protected table slice (role != "none")
-    # must not absorb the heading-only block.
+def test_heading_only_no_glue_into_middle_or_last_table_slice():
+    # A deeper next block that is a `middle`/`last` table slice must not absorb
+    # the heading-only block (only `none` and `first` are glue targets — see
+    # test_heading_only_glues_into_first_table_slice for the `first` case).
     tokenizer = _make_tokenizer()
-    blocks = [
-        _hblock("## 2.4", heading="2.4", level=2, tokenizer=tokenizer),
-        _hblock(
-            '<table id="t" format="json">[[1]]</table>',
-            heading="2.4.1",
-            level=3,
-            tokenizer=tokenizer,
-            table_chunk_role="first",
-        ),
-    ]
+    for role in ("middle", "last"):
+        blocks = [
+            _hblock("## 2.4", heading="2.4", level=2, tokenizer=tokenizer),
+            _hblock(
+                '<table id="t" format="json">[[1]]</table>',
+                heading="2.4.1",
+                level=3,
+                tokenizer=tokenizer,
+                table_chunk_role=role,
+            ),
+        ]
 
-    out = _glue_heading_only_blocks(
-        blocks, tokenizer=tokenizer, target_max=10000, target_ideal=7500
-    )
+        out = _glue_heading_only_blocks(
+            blocks, tokenizer=tokenizer, target_max=10000, target_ideal=7500
+        )
 
-    assert len(out) == 2
+        assert len(out) == 2, role
 
 
 @pytest.mark.offline
@@ -448,3 +450,73 @@ def test_heading_only_not_glued_into_same_level_prev():
     assert len(out) == 2
     assert "## 2.4" not in out[0]["content"]
     assert out[1]["heading"] == "2.4"
+
+
+_TABLE_FIRST = '<table id="t" format="json">[["a","b"],["c","d"]]</table>'
+
+
+@pytest.mark.offline
+def test_heading_only_glues_into_first_table_slice():
+    # The deeper child's first emitted block is the "first" slice of a split
+    # table (its body is an oversized table). The pre-pass must glue the
+    # body-less `## 2.4` into it AND keep the "first" role so Stage D still
+    # cannot absorb it backward.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _hblock("## 2.4", heading="2.4", level=2, tokenizer=tokenizer),
+        _hblock(
+            "### 2.4.1\n" + _TABLE_FIRST,
+            heading="2.4.1",
+            level=3,
+            tokenizer=tokenizer,
+            table_chunk_role="first",
+        ),
+    ]
+
+    out = _glue_heading_only_blocks(
+        blocks, tokenizer=tokenizer, target_max=10000, target_ideal=7500
+    )
+
+    assert len(out) == 1
+    assert "## 2.4" in out[0]["content"]
+    assert "### 2.4.1" in out[0]["content"]
+    assert _TABLE_FIRST in out[0]["content"]
+    # "first" role preserved so Stage D keeps the table boundary protected.
+    assert out[0]["table_chunk_role"] == "first"
+
+
+@pytest.mark.offline
+def test_heading_only_with_first_table_child_not_separated_by_stage_d():
+    # End-to-end: `## 2.4` whose child starts with a "first" table slice must
+    # NOT be left on `## 2.3`. After the glue keeps the merged block "first",
+    # Stage D cannot pull it backward into the previous sibling.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _hblock("## 2.3\n" + "a" * 40, heading="2.3", level=2, tokenizer=tokenizer),
+        _hblock("## 2.4", heading="2.4", level=2, tokenizer=tokenizer),
+        _hblock(
+            "### 2.4.1\n" + _TABLE_FIRST,
+            heading="2.4.1",
+            level=3,
+            tokenizer=tokenizer,
+            table_chunk_role="first",
+        ),
+    ]
+
+    glued = _glue_heading_only_blocks(
+        blocks, tokenizer=tokenizer, target_max=10000, target_ideal=7500
+    )
+    final = _merge_small_blocks(
+        glued,
+        tokenizer=tokenizer,
+        target_max=10000,
+        target_ideal=150,
+        small_tail_threshold=12,
+    )
+
+    # `## 2.4` rides with its table child, never glued onto `## 2.3`.
+    chunk_23 = next(b for b in final if b["content"].startswith("## 2.3"))
+    assert "## 2.4" not in chunk_23["content"]
+    chunk_with_table = next(b for b in final if _TABLE_FIRST in b["content"])
+    assert "## 2.4" in chunk_with_table["content"]
+    assert "### 2.4.1" in chunk_with_table["content"]

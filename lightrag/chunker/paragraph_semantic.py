@@ -1130,12 +1130,22 @@ def _glue_heading_only_blocks(
     bonds the bare heading to its child first.
 
     For each block :func:`_is_heading_only` recognises whose NEXT block is
-    STRICTLY DEEPER (greater ``level``) and not a protected table slice, the
-    pair is merged with ``keep="left"`` so the shallower parent heading's
-    identity (``heading`` / ``level`` / ``parent_headings``) is preserved while
-    the child's content is appended. The merged block is re-evaluated in place,
-    so a chain of bare ancestor headings (``# 2`` → ``## 2.4`` → ``### 2.4.1``)
-    collapses into one block keeping the shallowest identity.
+    STRICTLY DEEPER (greater ``level``) and whose ``table_chunk_role`` is
+    ``none`` or ``first``, the pair is merged with ``keep="left"`` so the
+    shallower parent heading's identity (``heading`` / ``level`` /
+    ``parent_headings``) is preserved while the child's content is appended.
+    The merged block is re-evaluated in place, so a chain of bare ancestor
+    headings (``# 2`` → ``## 2.4`` → ``### 2.4.1``) collapses into one block
+    keeping the shallowest identity.
+
+    ``first`` is allowed because a section whose body is an oversized table has
+    its first emitted block tagged ``first`` (Stage B), and the block right
+    after a heading-only row can only be the next row's first emitted block —
+    so its role is necessarily ``none`` or ``first`` (``middle`` / ``last``
+    only occur inside one row's table). When gluing into a ``first`` slice the
+    merged block KEEPS the ``first`` role (the heading is exactly the preceding
+    context a ``first`` slice carries), so Stage D still cannot absorb it
+    backward into the previous sibling and the table boundary stays protected.
 
     Gluing is FORWARD only. A body-less heading whose next block is NOT deeper
     (a shallower/sibling heading, or end of list) is left untouched for Stage D.
@@ -1249,12 +1259,18 @@ def _glue_heading_only_blocks(
     cur = blocks[0]
     cur_glued = False
     for nxt in blocks[1:]:
+        nxt_role = nxt.get("table_chunk_role", "none")
         if (
             _is_heading_only(cur)
             and nxt.get("level", 1) > cur.get("level", 1)
-            and nxt.get("table_chunk_role", "none") == "none"
+            and nxt_role in ("none", "first")
         ):
             cur = _merged_pair(cur, nxt, keep="left", tokenizer=tokenizer)
+            # Preserve a "first" table-slice role so the bonded block still
+            # cannot be absorbed backward into the previous sibling by Stage D
+            # (the prepended heading is exactly the preceding context a "first"
+            # slice is meant to carry). "none" stays "none" — unchanged.
+            cur["table_chunk_role"] = nxt_role
             cur_glued = True
         else:
             _emit(cur, glued=cur_glued)
@@ -1658,10 +1674,12 @@ def chunking_by_paragraph_semantic(
         after_c.extend(_apply_part_suffixes(block_after_c))
 
     # Pre-Stage-D — glue each body-less heading block FORWARD into its
-    # strictly-deeper child, so the bare heading never reaches _merge_small_blocks
-    # detached from its child content nor glued onto an unrelated same-level
-    # sibling. A body-less heading whose next block is not deeper is left for
-    # Stage D (not pulled into a deeper previous block — that would invert the
+    # strictly-deeper child (role "none" or the "first" slice of a split table),
+    # so the bare heading never reaches _merge_small_blocks detached from its
+    # child content nor glued onto an unrelated same-level sibling. Gluing into a
+    # "first" slice keeps the "first" role so Stage D still can't pull it back.
+    # A body-less heading whose next block is not deeper is left for Stage D
+    # (not pulled into a deeper previous block — that would invert the
     # hierarchy). A forward-glued block tipped past target_max is re-split via
     # Stage C so the hard cap holds. Runs across original rows after [part n]
     # tagging is finalised (heading-only rows are never split, so no part suffix).
