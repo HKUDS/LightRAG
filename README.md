@@ -309,12 +309,23 @@ LightRAG requires four types of backend storage:
 
 By default, LightRAG's storage backends are file-persisted, in-memory databases. These default storages are intended only for development and debugging, and are not suitable for production. In a production environment, if you prefer a single backend to handle all four storage types, you can choose PostgreSQL, MongoDB, or OpenSearch. Alternatively, you can select specialized databases for vector or graph storage, such as using Milvus or Qdrant for vector storage, and Neo4j or Memgraph for graph storage.
 
-### Other Important Configurations
+### Other Important Configurations for Document Processing
 
-In practice, you may also want to adjust the following environment variables based on your needs:
+During the document insertion stage, you may also want to adjust the following environment variables based on your needs:
 
 - **SUMMARY_LANGUAGE**: Controls the language used by the LLM when outputting entity-relation names and summaries, e.g., `Chinese`, `English`.
 - **ENTITY_EXTRACTION_USE_JSON**: Controls whether the LLM outputs entity-relation extractions in JSON format. Using JSON format typically yields more stable results, but it consumes more tokens and can be slightly slower.
+- **ENABLE_CONTENT_HEADINGS**: Controls whether the section heading information of a text chunk is sent to the LLM during the query stage (enabled by default, providing more context for the LLM).
+- **FORCE_LLM_SUMMARY_ON_MERGE / MAX_SOURCE_IDS_PER_RELATION**: Controls the maximum number of text chunks an `entity/relation` can be associated with.
+- **SOURCE_IDS_LIMIT_METHOD**: Controls whether to keep updating the entity/relation description once an `entity/relation` exceeds its associated text chunk limit (by default it stops updating, because at that point the entity-relation description is already rich enough and further updates add little value; skipping updates can greatly speed up knowledge base construction).
+- **DEFAULT_MAX_FILE_PATHS**: Controls the maximum number of source files an `entity/relation` can be associated with; once this limit is exceeded, new file names are no longer written to the vector storage.
+
+### Other Important Configurations for Document Querying
+
+During the document query stage, you may also want to adjust the following environment variables based on your needs:
+- **MAX_ENTITY_TOKENS / MAX_RELATION_TOKENS / MAX_TOTAL_TOKENS**: Controls the token length of the retrieved content sent to the LLM context. The retrieved content consists of three parts: `entities`, `relations`, and `text chunks`. The lengths of entities and relations can be controlled independently, while the text chunk length is determined by subtracting the entity and relation lengths from the total length.
+- **ENABLE_CONTENT_HEADINGS**: Controls whether the section heading where a text chunk resides is sent to the LLM; enabled by default, providing richer context for the LLM and improving answer quality.
+- **ENABLE_LLM_CACHE**: Whether to cache query results. Enabled by default; identical query questions, query modes, and LLM model parameters will return the same result.
 
 ### Using LightRAG As SDK
 
