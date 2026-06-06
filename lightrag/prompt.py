@@ -596,7 +596,7 @@ Knowledge Graph Data (Relationship):
 {relations_str}
 ```
 
-Document Chunks (Each entry has a reference_id refer to the `Reference Document List`):
+Document Chunks (Each entry has a reference_id refer to the `Reference Document List`; the optional `content_headings` field gives the chunk's heading path within its source document, e.g. `Section 1 → Subsection 1.2`):
 
 ```json
 {text_chunks_str}
@@ -611,7 +611,7 @@ Reference Document List (Each entry starts with a [reference_id] that correspond
 """
 
 PROMPTS["naive_query_context"] = """
-Document Chunks (Each entry has a reference_id refer to the `Reference Document List`):
+Document Chunks (Each entry has a reference_id refer to the `Reference Document List`; the optional `content_headings` field gives the chunk's heading path within its source document, e.g. `Section 1 → Subsection 1.2`):
 
 ```json
 {text_chunks_str}
