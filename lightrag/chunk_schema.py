@@ -74,17 +74,51 @@ def normalize_chunk_heading(dp: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+# Zero-width / invisible characters that ``\s`` does NOT match but that only add
+# token noise to a heading shown to the LLM. Built from code points + chr() so the
+# source stays pure ASCII and readable (no literal invisible characters inline).
+_HEADING_ZERO_WIDTH_CODEPOINTS = (
+    0x200B,  # ZERO WIDTH SPACE
+    0x200C,  # ZERO WIDTH NON-JOINER
+    0x200D,  # ZERO WIDTH JOINER
+    0x2060,  # WORD JOINER
+    0xFEFF,  # ZERO WIDTH NO-BREAK SPACE (BOM)
+)
+_HEADING_ZERO_WIDTH_RE = re.compile(
+    "[" + "".join(chr(cp) for cp in _HEADING_ZERO_WIDTH_CODEPOINTS) + "]"
+)
+_HEADING_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _clean_heading_text(text: str) -> str:
+    """Flatten a heading into one clean line for the LLM.
+
+    Drops zero-width / invisible characters and collapses every run of
+    whitespace (tab, newline, NBSP, full-width / ideographic space, ...) into a
+    single regular space. Never inserts spaces between adjacent CJK characters,
+    so it is safe for Chinese headings.
+    """
+    text = _HEADING_ZERO_WIDTH_RE.sub("", text)
+    text = _HEADING_WHITESPACE_RE.sub(" ", text)
+    return text.strip()
+
+
 def format_parent_headings(dp: dict[str, Any]) -> str:
     """Join a chunk's parent heading chain into ``h1 → h2 → h3``.
 
     Reuses :func:`normalize_chunk_heading` so both the nested and legacy flat
-    heading shapes are handled. Returns an empty string when the chunk has no
-    parent headings, so callers can simply omit the field when it is empty.
+    heading shapes are handled, then cleans each heading via
+    :func:`_clean_heading_text` so the string sent to the LLM is a single tidy
+    line. Returns an empty string when the chunk has no (non-empty) parent
+    headings, so callers can simply omit the field when it is empty.
     """
     normalized = normalize_chunk_heading(dp)
     if not normalized:
         return ""
-    return " → ".join(normalized["parent_headings"])
+    cleaned = [
+        c for c in (_clean_heading_text(h) for h in normalized["parent_headings"]) if c
+    ]
+    return " → ".join(cleaned)
 
 
 def normalize_chunk_sidecar(dp: dict[str, Any]) -> dict[str, Any] | None:
