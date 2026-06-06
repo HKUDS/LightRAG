@@ -245,6 +245,41 @@ def test_heading_only_glue_respects_target_max_when_child_near_cap():
 
 
 @pytest.mark.offline
+def test_heading_only_cap_split_does_not_orphan_when_body_has_no_anchor():
+    # Regression: child is near the cap and its body is ONE long paragraph
+    # (> _MAX_ANCHOR_CANDIDATE_LENGTH chars), so the only anchor candidate in
+    # the glued block is the child heading at index 1. The naive
+    # split-the-whole-block path sliced off `[## 2.4]` alone — a heading-only
+    # orphan that Stage D then re-absorbs backward, recreating the separation.
+    # The prefix-aware re-split must keep the heading with real body content.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _hblock("## 2.4", heading="2.4", level=2, tokenizer=tokenizer),
+        _hblock(
+            "### 2.4.1\n" + "b" * 110, heading="2.4.1", level=3, tokenizer=tokenizer
+        ),
+    ]
+    # child alone = 10 + 110 = 120 (near cap); bonded = 6 + 2 + 120 = 128 > 120.
+    assert blocks[1]["tokens"] <= 120
+
+    out = _glue_heading_only_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=120,
+        target_ideal=90,
+        chunk_overlap_token_size=0,
+    )
+
+    assert all(b["tokens"] <= 120 for b in out), [b["tokens"] for b in out]
+    # No piece is a heading-only orphan.
+    assert not any(_is_heading_only(b) for b in out)
+    # The heading lines ride with real body content in the first piece.
+    assert "## 2.4" in out[0]["content"]
+    assert "### 2.4.1" in out[0]["content"]
+    assert "b" in out[0]["content"]
+
+
+@pytest.mark.offline
 def test_heading_only_chain_collapses_to_shallowest_identity():
     # `# 2` -> `## 2.4` -> `### 2.4.1` (body) collapses into one block whose
     # identity is the shallowest heading (level 1).
