@@ -32,6 +32,11 @@ Pipeline:
     to any oversized table paragraph and only character-splits the
     residual non-table content. Character fallback for ordinary text uses
     the configured paragraph-semantic overlap.
+  - Pre-Stage-D — body-less heading glue: a section heading with no body
+    of its own is glued forward into its first strictly-deeper child block
+    (keeping the shallower parent heading), so it is never separated from
+    that child nor glued onto an unrelated same-level sibling. A heading
+    with no deeper child following is left untouched for Stage D.
   - Stage D — bottom-up, level-aware small-block merging: undersized
     blocks get absorbed by same-level neighbours (Phase A), shallower
     levels (Phase B), and a final tail-absorption pass eliminates the
@@ -88,6 +93,13 @@ _MAX_ANCHOR_CANDIDATE_LENGTH = 100  # characters
 
 _LEGACY_TABLE_CHUNK_SUFFIX_RE = re.compile(r"\s*\[表格片段\d+\]\s*$")
 _PART_SUFFIX_RE = re.compile(r"\s*\[part\s+\d+\]\s*$", re.IGNORECASE)
+
+# Markdown heading-line pattern — 1-6 ``#`` followed by one or more spaces.
+# Mirrors ``_MD_HEADING_RE`` in ``lightrag/parser/_markdown.py`` (the same
+# pattern ``render_heading_line`` uses to render a heading content line) so a
+# "heading-only" block — one whose content carries nothing but heading lines —
+# can be detected without importing a private symbol across packages.
+_HEADING_LINE_RE = re.compile(r"^#{1,6} +")
 
 
 # ---------------------------------------------------------------------------
@@ -1070,6 +1082,216 @@ def _merged_pair(
     }
 
 
+def _is_heading_only(block: dict[str, Any]) -> bool:
+    """Return True when ``block`` carries a heading but no body content.
+
+    A blocks.jsonl content row always renders its heading as the first line
+    (``render_heading_line`` → ``"#" * level + " " + text``) and appends body
+    paragraphs after it, so a heading-only section's ``content`` consists
+    solely of heading lines. This still holds after two heading-only blocks
+    are glued together, letting :func:`_glue_heading_only_forward` cascade
+    down a chain of bare ancestor headings.
+
+    The ``heading`` guard excludes preamble blocks (text before any heading)
+    and Stage-C anchor sub-blocks, whose body paragraphs are prose rather than
+    heading lines.
+
+    Note: a body line that genuinely begins with ``#`` + space is the same
+    accepted ambiguity documented in ``lightrag/parser/_markdown.py`` and is
+    treated as a heading line here too — rare prose, tolerated.
+    """
+    if not block.get("heading"):
+        return False
+    saw_line = False
+    for line in (block.get("content") or "").split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        saw_line = True
+        if not _HEADING_LINE_RE.match(stripped):
+            return False
+    return saw_line
+
+
+def _glue_heading_only_blocks(
+    blocks: list[dict[str, Any]],
+    *,
+    tokenizer: Tokenizer,
+    target_max: int,
+    target_ideal: int,
+    chunk_overlap_token_size: int = 0,
+) -> list[dict[str, Any]]:
+    """Glue each body-less heading block forward into its deeper child block.
+
+    A section heading with no body of its own (e.g. ``## 2.4`` immediately
+    followed by ``### 2.4.1``) must travel WITH its first child rather than be
+    left as a lone trailing heading, and it must never be glued onto an
+    unrelated same-level sibling (e.g. ``## 2.3``). Running this before Stage D
+    bonds the bare heading to its child first.
+
+    For each block :func:`_is_heading_only` recognises whose NEXT block is
+    STRICTLY DEEPER (greater ``level``) and whose ``table_chunk_role`` is
+    ``none`` or ``first``, the pair is merged with ``keep="left"`` so the
+    shallower parent heading's identity (``heading`` / ``level`` /
+    ``parent_headings``) is preserved while the child's content is appended.
+    The merged block is re-evaluated in place, so a chain of bare ancestor
+    headings (``# 2`` → ``## 2.4`` → ``### 2.4.1``) collapses into one block
+    keeping the shallowest identity.
+
+    ``first`` is allowed because a section whose body is an oversized table has
+    its first emitted block tagged ``first`` (Stage B), and the block right
+    after a heading-only row can only be the next row's first emitted block —
+    so its role is necessarily ``none`` or ``first`` (``middle`` / ``last``
+    only occur inside one row's table). When gluing into a ``first`` slice the
+    merged block KEEPS the ``first`` role (the heading is exactly the preceding
+    context a ``first`` slice carries), so Stage D still cannot absorb it
+    backward into the previous sibling and the table boundary stays protected.
+
+    Gluing is FORWARD only. A body-less heading whose next block is NOT deeper
+    (a shallower/sibling heading, or end of list) is left untouched for Stage D.
+    It is deliberately NOT pulled backward into a deeper previous block:
+    absorbing a shallower heading into a deeper chunk would invert the hierarchy
+    (deep-absorbs-shallow) and demote the heading's level — so that case is left
+    to Stage D rather than force-merged here.
+
+    The child came out of Stage C within ``target_max``, but prepending the
+    parent heading line(s) can tip the bonded block past the hard cap. Since
+    nothing downstream re-splits an oversized chunk (Stage D only refuses to
+    *grow* it further), an over-cap bonded block is re-split here by
+    :func:`_split_to_cap`: the leading heading lines are peeled off, only the
+    body is split (at the full ``target_max``, so later body pieces keep the
+    full budget), and the prefix is glued back onto the first body piece — never
+    handed to the splitter, so it can't be sliced off as a heading-only orphan
+    that Stage D would re-absorb backward. When the prefix alone fills the cap
+    (a very long title, or a tiny ``chunk_token_size``) the whole block is
+    split directly and the oversized heading line is character-split: the cap
+    wins over heading-intactness. Every emitted piece honours ``target_max``;
+    non-glued passthrough blocks are already within the cap and emitted verbatim.
+
+    Because ``keep="left"`` preserves the parent's ``level``, the bonded group
+    is still an ordinary small block — it is NOT pinned as independent. Stage D
+    may legitimately merge it backward into the previous chunk: peer merging
+    when that chunk is still below ``target_ideal``, or tail absorption when the
+    group is below ``small_tail_threshold`` (which can pull it even into an
+    already-saturated previous chunk), both bounded by ``target_max`` on the
+    re-measured join. That is the intended anti-fragmentation behaviour now that
+    the heading carries its child along; this pre-pass only guarantees the
+    heading is never separated FROM that child, not that the group stays
+    separate from its neighbours.
+    """
+    if len(blocks) <= 1:
+        return blocks
+
+    out: list[dict[str, Any]] = []
+
+    def _split_full(paras: list[dict[str, Any]], block: dict[str, Any], **kw):
+        args = {
+            "target_max": target_max,
+            "target_ideal": target_ideal,
+            "chunk_overlap_token_size": chunk_overlap_token_size,
+            "blockids": block.get("blockids"),
+        }
+        args.update(kw)
+        return _split_long_block(
+            paras,
+            block["heading"],
+            block["parent_headings"],
+            block["level"],
+            block.get("table_chunk_role", "none"),
+            tokenizer=tokenizer,
+            **args,
+        )
+
+    def _split_to_cap(block: dict[str, Any]) -> list[dict[str, Any]]:
+        # The bonded block exceeds target_max. Peel the leading run of
+        # heading-line paragraphs (the prepended parent heading plus the child's
+        # own heading line, or a chain) off the body, split only the BODY, then
+        # glue the heading prefix back onto the FIRST body piece. The prefix is
+        # never handed to the splitter, so the bare heading can never be sliced
+        # off as a content-less first chunk — a heading-only orphan that Stage D
+        # would re-absorb backward into the previous sibling. (Fusing the prefix
+        # into the body instead does NOT work: when the fused paragraph itself
+        # exceeds the cap, char-splitting re-separates the headings at their
+        # newline and the orphan returns.)
+        paras = block["paragraphs"]
+        n = 0
+        for para in paras:
+            if para.get("is_table", False) or not _HEADING_LINE_RE.match(
+                para["text"].strip()
+            ):
+                break
+            n += 1
+        prefix, body = paras[:n], paras[n:]
+        prefix_tokens = _count_tokens(tokenizer, "\n".join(p["text"] for p in prefix))
+        sep_tokens = _count_tokens(tokenizer, "\n")
+
+        if not prefix or not body or prefix_tokens + sep_tokens >= target_max:
+            # No prefix to protect; no body to anchor on; OR the prefix alone
+            # fills/exceeds the cap (a very long title, or a tiny
+            # chunk_token_size) so it cannot be kept whole. The hard cap wins
+            # over heading-intactness: split the whole block directly —
+            # _split_long_block char-splits any oversized heading line so every
+            # emitted piece still honours target_max.
+            return _split_full(paras, block)
+
+        # Split the body at the FULL target_max so later body pieces (which do
+        # NOT carry the prefix) keep the full budget — never shrunk to the
+        # leftover first-chunk budget. Reserve room for the prefix only on the
+        # first piece, re-splitting that one piece if it cannot also hold it.
+        pieces = _split_full(body, block)
+        first, rest = pieces[0], list(pieces[1:])
+        if prefix_tokens + sep_tokens + first["tokens"] > target_max:
+            reduced_max = max(target_max - prefix_tokens - sep_tokens, 1)
+            refit = _split_full(
+                first["paragraphs"],
+                block,
+                target_max=reduced_max,
+                target_ideal=min(target_ideal, reduced_max),
+                blockids=first.get("blockids") or block.get("blockids"),
+            )
+            first, rest = refit[0], list(refit[1:]) + rest
+        rebuilt = _new_block(
+            heading=block["heading"],
+            parent_headings=block["parent_headings"],
+            level=block["level"],
+            paragraphs=prefix + first["paragraphs"],
+            table_chunk_role=block.get("table_chunk_role", "none"),
+            tokenizer=tokenizer,
+            blockids=first.get("blockids") or block.get("blockids"),
+        )
+        return [rebuilt, *rest]
+
+    def _emit(block: dict[str, Any], *, glued: bool) -> None:
+        # A forward-glued block can be tipped over target_max by its prepended
+        # heading line(s); re-split via Stage C so the hard cap still holds.
+        if glued and block["tokens"] > target_max:
+            out.extend(_split_to_cap(block))
+        else:
+            out.append(block)
+
+    cur = blocks[0]
+    cur_glued = False
+    for nxt in blocks[1:]:
+        nxt_role = nxt.get("table_chunk_role", "none")
+        if (
+            _is_heading_only(cur)
+            and nxt.get("level", 1) > cur.get("level", 1)
+            and nxt_role in ("none", "first")
+        ):
+            cur = _merged_pair(cur, nxt, keep="left", tokenizer=tokenizer)
+            # Preserve a "first" table-slice role so the bonded block still
+            # cannot be absorbed backward into the previous sibling by Stage D
+            # (the prepended heading is exactly the preceding context a "first"
+            # slice is meant to carry). "none" stays "none" — unchanged.
+            cur["table_chunk_role"] = nxt_role
+            cur_glued = True
+        else:
+            _emit(cur, glued=cur_glued)
+            cur, cur_glued = nxt, False
+    _emit(cur, glued=cur_glued)
+    return out
+
+
 def _merge_small_blocks(
     blocks: list[dict[str, Any]],
     *,
@@ -1463,6 +1685,24 @@ def chunking_by_paragraph_semantic(
                 )
             )
         after_c.extend(_apply_part_suffixes(block_after_c))
+
+    # Pre-Stage-D — glue each body-less heading block FORWARD into its
+    # strictly-deeper child (role "none" or the "first" slice of a split table),
+    # so the bare heading never reaches _merge_small_blocks detached from its
+    # child content nor glued onto an unrelated same-level sibling. Gluing into a
+    # "first" slice keeps the "first" role so Stage D still can't pull it back.
+    # A body-less heading whose next block is not deeper is left for Stage D
+    # (not pulled into a deeper previous block — that would invert the
+    # hierarchy). A forward-glued block tipped past target_max is re-split via
+    # Stage C so the hard cap holds. Runs across original rows after [part n]
+    # tagging is finalised (heading-only rows are never split, so no part suffix).
+    after_c = _glue_heading_only_blocks(
+        after_c,
+        tokenizer=tokenizer,
+        target_max=target_max,
+        target_ideal=target_ideal,
+        chunk_overlap_token_size=overlap,
+    )
 
     # Stage D — bottom-up, level-aware small-block merging.
     final = _merge_small_blocks(
