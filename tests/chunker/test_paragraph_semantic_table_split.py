@@ -1,4 +1,4 @@
-"""Regression tests for paragraph-semantic Stage B oversized-table handling."""
+"""Regression tests for paragraph-semantic TableRowSplit oversized-table handling."""
 
 import json
 
@@ -55,7 +55,7 @@ def test_split_rows_by_tokens_few_rows_huge_total_no_empty_slice():
 
     assert chunks, "expected at least one chunk"
     for chunk in chunks:
-        assert chunk, "Stage B must never emit an empty row slice"
+        assert chunk, "TableRowSplit must never emit an empty row slice"
     # Concatenation preserves all rows in order.
     flat: list = []
     for chunk in chunks:
@@ -149,7 +149,7 @@ def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     ), "trailing paragraph must glue with the last table slice"
     assert all(
         "表格片段" not in b["heading"] for b in out
-    ), "Stage B should not expose legacy table-fragment heading suffixes"
+    ), "TableRowSplit should not expose legacy table-fragment heading suffixes"
 
 
 @pytest.mark.offline
@@ -558,10 +558,10 @@ def test_split_table_text_unknown_format_falls_to_character():
 
 @pytest.mark.offline
 def test_expand_block_single_row_table_no_longer_left_intact():
-    # Stage B integration: previously a single-row oversized table was
+    # TableRowSplit integration: previously a single-row oversized table was
     # appended back to cur_paras unchanged, leading the block to reach
-    # Stage C with the table whole and the character fallback shredding
-    # the <table> tag. After the fix, Stage B itself produces multiple
+    # AnchorSplit with the table whole and the character fallback shredding
+    # the <table> tag. After the fix, TableRowSplit itself produces multiple
     # pieces for such a table.
     tokenizer = _make_tokenizer()
     rows = [[{"col": "x" * 2000}]]  # single huge row
@@ -597,7 +597,7 @@ def test_expand_block_single_row_table_no_longer_left_intact():
 
 @pytest.mark.offline
 def test_split_long_block_table_dominant_no_anchor_keeps_some_table_markup():
-    # Stage C integration: a block dominated by an oversized table with no
+    # AnchorSplit integration: a block dominated by an oversized table with no
     # anchor candidates used to be character-split end-to-end, destroying
     # the <table> tag. After the fix, at least some output sub-blocks
     # retain legal <table>...</table> markup for the rows that fit.

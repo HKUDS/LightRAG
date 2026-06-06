@@ -53,12 +53,12 @@ The P strategy takes as input the `.blocks.jsonl` produced by the native parser 
 DOCX
   ↓  native parser (fixlevel=0)
 .blocks.jsonl + sidecars (.tables.json / .equations.json / .drawings.json / .blocks.assets/)
-  ↓  Stage B: slice oversized tables along row boundaries and assign first/middle/last roles
-  ↓  Stage B.1: bidirectional overlap of bridging text between consecutive large tables
-  ↓  Stage C: anchor-driven re-splitting of long text chunks
-  ↓  Pre-Stage-D: glue body-less heading blocks forward into their strictly-deeper child
-  ↓  Stage D: hierarchy-aware two-phase merging
-  ↓  Stage E: [part n] line-level provenance numbering
+  ↓  TableRowSplit: slice oversized tables along row boundaries and assign first/middle/last roles
+  ↓  TableBridge: bidirectional overlap of bridging text between consecutive large tables
+  ↓  AnchorSplit: anchor-driven re-splitting of long text chunks
+  ↓  PartLabeling: [part n] line-level provenance numbering (per original content line, hence before cross-line merging)
+  ↓  HeadingGlue: glue body-less heading blocks forward into their strictly-deeper child
+  ↓  LevelMerge: hierarchy-aware two-phase merging
 Final chunk list
 ```
 
@@ -138,7 +138,7 @@ P strategy thresholds are not fixed constants; they are dynamically derived from
 
 Proportional constraint relationships: `table_max < target_ideal < target_max`, `table_ideal < table_max`. These ratios originate from empirical values in the audit mode (`large chunk 8000, small table 5000, ideal table 3000, table tail 1600`) and are now proportionally scaled by `chunk_token_size`.
 
-## 5. Stage A: Heading-Level Basic Chunks
+## 5. HeadingBlocks: Heading-Level Basic Chunks
 
 Heading recognition is performed by the native parser; **the P chunker itself does not scan the docx body nor judge heading styles**.
 
@@ -150,11 +150,11 @@ In `fixlevel=0` mode, the native parser:
 4. Extracts tables, formulas, and drawings into single-line tags (`<table id="..." format="json">...</table>` etc.) and writes them to the corresponding sidecars.
 5. All recognizable headings trigger a basic chunk boundary; **no** token-threshold splitting is performed.
 
-The P chunker directly reads `.blocks.jsonl`, treating each content line as an independent unit of processing for subsequent Stages B/C. This implies that `[part n]` numbering is reset independently per original content line.
+The P chunker directly reads `.blocks.jsonl`, treating each content line as an independent unit of processing for subsequent TableRowSplit/AnchorSplit. This implies that `[part n]` numbering is reset independently per original content line.
 
-## 6. Stage B: Row-Boundary Slicing for Oversized Tables
+## 6. TableRowSplit: Row-Boundary Slicing for Oversized Tables
 
-Stage B only processes tables whose token count exceeds `table_max`. Its goal is **not merely to split the table** but to preserve table boundary context based on row-boundary-priority splitting.
+TableRowSplit only processes tables whose token count exceeds `table_max`. Its goal is **not merely to split the table** but to preserve table boundary context based on row-boundary-priority splitting.
 
 ### 6.1 Row-Boundary-Priority Slicing
 
@@ -183,9 +183,9 @@ Each table slice is assigned an internal field `table_chunk_role`, and gluing to
 | `last` | Last slice of the original table | Used as the starting point of a new accumulating chunk so that the **following explanation** is automatically appended after the last slice |
 | `none` | Non-table slice or untouched intact table | Treated as ordinary text chunks |
 
-`table_chunk_role` is an internal field that does not survive in the final output, **but in Stage D it continues to serve as a merging constraint** (see §9.1).
+`table_chunk_role` is an internal field that does not survive in the final output, **but in LevelMerge it continues to serve as a merging constraint** (see §9.1).
 
-## 7. Stage B.1: Bidirectional Overlap of Bridging Text Between Consecutive Large Tables
+## 7. TableBridge: Bidirectional Overlap of Bridging Text Between Consecutive Large Tables
 
 When the pattern "large table A, short bridging text, large table B" appears in the same original content line and both tables are split, the bridging text is distributed bidirectionally according to a context budget:
 
@@ -202,9 +202,9 @@ The difference from ordinary adjacent chunk overlap:
 - Ordinary overlap copies characters or tokens by forward/backward order, regardless of boundary type.
 - The B.1 mechanism is triggered by table slice roles, treating bridging text as both the post-text context of the left table and the pre-text context of the right table, avoiding the bridging description being assigned to only one side or being split off and hard to recall.
 
-## 8. Stage C: Anchor-Driven Re-Splitting of Long Text Chunks
+## 8. AnchorSplit: Anchor-Driven Re-Splitting of Long Text Chunks
 
-Stage C processes content chunks that still exceed `target_max` after Stage B.
+AnchorSplit processes content chunks that still exceed `target_max` after TableRowSplit.
 
 ### 8.1 Short-Paragraph Anchors
 
@@ -222,13 +222,13 @@ Based on the target sub-chunk count, ideal split positions are computed, and the
 
 If no qualifying anchor exists:
 
-1. **Table first**: If oversized tables still exist within the chunk, prioritize Stage B's row-boundary slicing.
+1. **Table first**: If oversized tables still exist within the chunk, prioritize TableRowSplit's row-boundary slicing.
 2. **Greedy packing**: Greedily pack the remaining text by paragraph, approaching `target_max`.
 3. **Recursive character splitting**: A single excessively long ordinary text paragraph falls back to the R strategy (`chunking_by_recursive_character`), using `chunk_overlap_token_size` to keep continuity between adjacent text slices.
 
 The no-anchor fallback path guarantees the algorithm **does not discard content** and tries to respect the user-configured chunk size cap.
 
-## 8.5 Pre-Stage-D: Gluing Body-Less Heading Blocks
+## 8.5 HeadingGlue: Gluing Body-Less Heading Blocks
 
 Some sections carry only a heading and no body of their own (heading-only), for example:
 
@@ -238,31 +238,31 @@ Some sections carry only a heading and no body of their own (heading-only), for 
 ### 2.4.1   Overview                               (level 3, has body)
 ```
 
-If this goes straight into Stage D, `## 2.4` becomes an independent same-level small chunk and gets **absorbed backward into the tail of the previous peer chunk `## 2.3`** — either via Phase A peer merging or via batched tail absorption — separating this parent heading from its actual child content `### 2.4.1`.
+If this goes straight into LevelMerge, `## 2.4` becomes an independent same-level small chunk and gets **absorbed backward into the tail of the previous peer chunk `## 2.3`** — either via Phase A peer merging or via batched tail absorption — separating this parent heading from its actual child content `### 2.4.1`.
 
-A pre-pass (`_glue_heading_only_blocks`) is therefore inserted before Stage D. A block is heading-only when its `content` consists solely of heading lines (detected via `^#{1,6} +`). Gluing is **forward only**:
+A pre-pass (`_glue_heading_only_blocks`) is therefore inserted before LevelMerge. A block is heading-only when its `content` consists solely of heading lines (detected via `^#{1,6} +`). Gluing is **forward only**:
 
-- **Trigger**: the heading-only block's immediately following block is **strictly deeper** (greater `level`) and its `table_chunk_role` is `none` or `first`. A `first` slice is the **first slice of a split table** — when a section's body is an oversized table, Stage B's first emitted block for that row has role `first`. The block immediately after a heading-only row can only be the next row's first emitted block, so its role is necessarily `none` or `first` (`middle`/`last` only occur inside the same row's table).
-- **Keep the `first` role when gluing into it**: after gluing `## 2.4` into a `first` slice, the merged block **stays `first`** (the `## 2.4` heading is exactly the preceding context a `first` slice is meant to carry). Stage D then cannot pull it backward into `## 2.3` (a `first` slice cannot be absorbed backward), so the table-boundary protection survives; the `none` case behaves exactly as before.
+- **Trigger**: the heading-only block's immediately following block is **strictly deeper** (greater `level`) and its `table_chunk_role` is `none` or `first`. A `first` slice is the **first slice of a split table** — when a section's body is an oversized table, TableRowSplit's first emitted block for that row has role `first`. The block immediately after a heading-only row can only be the next row's first emitted block, so its role is necessarily `none` or `first` (`middle`/`last` only occur inside the same row's table).
+- **Keep the `first` role when gluing into it**: after gluing `## 2.4` into a `first` slice, the merged block **stays `first`** (the `## 2.4` heading is exactly the preceding context a `first` slice is meant to carry). LevelMerge then cannot pull it backward into `## 2.3` (a `first` slice cannot be absorbed backward), so the table-boundary protection survives; the `none` case behaves exactly as before.
 - **Action**: glue the heading forward into that child, **keeping the parent heading's identity** (`heading` / `level` / `parent_headings` from the shallower parent). So `## 2.4` bonds with `### 2.4.1`; the heading path stays anchored at `2.4`, and since the child's `parent_headings` already contains 2.4, no hierarchy is lost. A chain of bare ancestor headings (`# 2` → `## 2.4` → `### 2.4.1`) keeps folding down, retaining the **shallowest** identity, until the first child with a body.
-- **No backward gluing**: a heading-only block whose next block is **not** deeper (a shallower/sibling heading, or end of list) is left untouched for Stage D. It is deliberately **not** pulled backward into a deeper previous block (e.g. into `### 2.3.9`): absorbing a shallower `## 2.4` heading into a deeper L3 chunk would invert the hierarchy (deep-absorbs-shallow) and demote the heading's level. Such an orphan heading is simply left for Stage D's normal handling.
-- **Hard-cap preserved**: the child came out of Stage C within `target_max`, but prepending the parent heading line(s) can tip the bonded block over the cap. Since nothing downstream re-splits an oversized chunk (Stage D only refuses to grow it further), an over-cap bonded block is re-split here: the leading heading lines are **peeled off**, the body is split at the **full `target_max`** (so later body-only chunks keep the full budget), and the heading prefix is glued back onto the first body piece. Only if that first piece is too large to also hold the prefix is it (and it alone) re-split with a reduced cap — so a large prefix never over-fragments the whole child section. This keeps the heading with real content — never sliced off as a heading-only orphan (which Stage D would re-absorb backward), and every emitted piece still honours `target_max`. (Degenerate case: when the prefix alone fills the cap — a very long title, or a tiny `chunk_token_size` — it cannot be kept whole, so the whole block is split directly and the oversized heading line is character-split; the cap wins over heading-intactness.)
-- **No extra backfill into the previous block**: because `keep="left"` preserves the parent's `level`, a forward-bonded group enters Stage D as an ordinary small chunk (not pinned independent). Whether it merges back into the previous chunk `2.3` follows Stage D's existing rules entirely — peer merging when `2.3` is still below `target_ideal`, or tail absorption when the group is below `small_tail_threshold` (which can pull it even into an already-saturated `2.3`), both bounded by `target_max` on the re-measured join. This pre-pass only guarantees the heading is never detached FROM its content; letting `2.3 + 2.4 + 2.4.1` share one chunk when sizes allow is the intended anti-fragmentation behaviour.
+- **No backward gluing**: a heading-only block whose next block is **not** deeper (a shallower/sibling heading, or end of list) is left untouched for LevelMerge. It is deliberately **not** pulled backward into a deeper previous block (e.g. into `### 2.3.9`): absorbing a shallower `## 2.4` heading into a deeper L3 chunk would invert the hierarchy (deep-absorbs-shallow) and demote the heading's level. Such an orphan heading is simply left for LevelMerge's normal handling.
+- **Hard-cap preserved**: the child came out of AnchorSplit within `target_max`, but prepending the parent heading line(s) can tip the bonded block over the cap. Since nothing downstream re-splits an oversized chunk (LevelMerge only refuses to grow it further), an over-cap bonded block is re-split here: the leading heading lines are **peeled off**, the body is split at the **full `target_max`** (so later body-only chunks keep the full budget), and the heading prefix is glued back onto the first body piece. Only if that first piece is too large to also hold the prefix is it (and it alone) re-split with a reduced cap — so a large prefix never over-fragments the whole child section. This keeps the heading with real content — never sliced off as a heading-only orphan (which LevelMerge would re-absorb backward), and every emitted piece still honours `target_max`. (Degenerate case: when the prefix alone fills the cap — a very long title, or a tiny `chunk_token_size` — it cannot be kept whole, so the whole block is split directly and the oversized heading line is character-split; the cap wins over heading-intactness.)
+- **No extra backfill into the previous block**: because `keep="left"` preserves the parent's `level`, a forward-bonded group enters LevelMerge as an ordinary small chunk (not pinned independent). Whether it merges back into the previous chunk `2.3` follows LevelMerge's existing rules entirely — peer merging when `2.3` is still below `target_ideal`, or tail absorption when the group is below `small_tail_threshold` (which can pull it even into an already-saturated `2.3`), both bounded by `target_max` on the re-measured join. This pre-pass only guarantees the heading is never detached FROM its content; letting `2.3 + 2.4 + 2.4.1` share one chunk when sizes allow is the intended anti-fragmentation behaviour.
 
 > Boundary ambiguity: a body line that genuinely begins with `#` + space would be misclassified as a heading line — this is the same accepted heuristic ambiguity documented in `lightrag/parser/_markdown.py`, and is extremely unlikely in real corpora.
 
-## 9. Stage D: Hierarchy-Aware Two-Phase Merging
+## 9. LevelMerge: Hierarchy-Aware Two-Phase Merging
 
-Stage D resolves the tension between "chunks too small" and "cross-topic pollution" in fine-grained section scenarios. The core idea is to **process from deeper levels to shallower levels**, first merging small chunks at the same level, then allowing shallow chunks to absorb deep chunks, while introducing size constraints, table slice role constraints, and heading path constraints.
+LevelMerge resolves the tension between "chunks too small" and "cross-topic pollution" in fine-grained section scenarios. The core idea is to **process from deeper levels to shallower levels**, first merging small chunks at the same level, then allowing shallow chunks to absorb deep chunks, while introducing size constraints, table slice role constraints, and heading path constraints.
 
-### 9.1 D.0 Merging Constraints (every merge must satisfy)
+### 9.1 Merging Constraints (every merge must satisfy)
 
 1. **Size constraint**: The actual text token count after merging does not exceed `target_max`; chunks that have reached `target_ideal` in principle do not continue to participate in ordinary peer merging.
 2. **Role constraint**: `middle` table slices are locked as independent; `first` and `last` participate in merging directionally to prevent table boundary context from being incorrectly swallowed.
 3. **Level constraint**: Peer merging happens between equal `level`; cross-level absorption only allows shallow absorbing deep, **disallowing deep absorbing shallow in reverse**.
 4. **Parent heading path consistency constraint**: Adjacent chunks have identical `parent_headings`, or are within a contiguous range constrained by the same parent heading path. This is key to avoiding cross-topic pollution.
 
-### 9.2 D.1 Phase A: Peer Merging
+### 9.2 Phase A: Peer Merging
 
 For adjacent chunks at the current level, if both are below `target_ideal` and satisfy the above constraints, merge them into one chunk.
 
@@ -275,11 +275,11 @@ Directional rules of table slice roles:
 | `middle` | No | No |
 | `last` | No | Yes |
 
-### 9.3 D.2 Batched Tail Absorption
+### 9.3 Batched Tail Absorption
 
 If a chunk that has reached `target_ideal` is followed by a string of peer small chunks, and the total token count of that string is below `small_tail_threshold` and the actual merged token count does not exceed `target_max`, then **absorb that string in one shot**. Stop when encountering a `middle` table slice.
 
-### 9.4 D.3 Phase B: Cross-Level Absorption
+### 9.4 Phase B: Cross-Level Absorption
 
 For small chunks still unsaturated after Phase A, attempt cross-level merging, but only allow shallow absorbing deep:
 
@@ -288,7 +288,7 @@ For small chunks still unsaturated after Phase A, attempt cross-level merging, b
 - Reverse merging is forbidden.
 - In the cross-level phase, the `last` role is allowed to forward-absorb; `middle` still does not participate in merging.
 
-### 9.5 D.4 Post-Merge Actual Token Re-Measurement
+### 9.5 Post-Merge Actual Token Re-Measurement
 
 Because merging inserts newline connectors, chunk-by-chunk token summation may underestimate the merged result. **Before committing each merge, the actual concatenated text must be re-tokenized**, and the merge is committed only after confirming it does not exceed `target_max`.
 
@@ -301,9 +301,9 @@ The P strategy has multiple layers of fallback protection:
 | Trigger | Degradation behavior |
 |---|---|
 | `blocks_path` missing, unreadable, or no valid content line | Fall back entirely to `chunking_by_recursive_character()`, passing in the parsed `chunk_overlap_token_size` |
-| Stage B cannot identify the JSON / HTML structure of a table | That table uses the R strategy's character splitting |
-| Stage B finds a single-row table itself exceeding `table_max` | That single row uses the R strategy's character splitting |
-| Stage C finds a long chunk with no qualifying short-paragraph anchor | Table first → greedy packing → fall back to R character splitting if a single paragraph is too long |
+| TableRowSplit cannot identify the JSON / HTML structure of a table | That table uses the R strategy's character splitting |
+| TableRowSplit finds a single-row table itself exceeding `table_max` | That single row uses the R strategy's character splitting |
+| AnchorSplit finds a long chunk with no qualifying short-paragraph anchor | Table first → greedy packing → fall back to R character splitting if a single paragraph is too long |
 
 **Important**: After the overall fallback, capabilities such as heading hierarchy, table roles, and bidirectional bridging-text overlap are no longer available; however, it still ensures the document produces retrieval chunks and is not silently dropped due to a missing structured sidecar.
 
@@ -369,8 +369,8 @@ jq '.[] | {heading, level, tokens, parent_headings}' \
 
 You should observe:
 
-- Headings of chunks around large tables typically correspond to `[part 1]` / `[part n]` (indicating Stage B splitting occurred).
-- Fine-grained clauses are merged into chunks close to `target_ideal` (indicating Stage D took effect).
+- Headings of chunks around large tables typically correspond to `[part 1]` / `[part n]` (indicating TableRowSplit splitting occurred).
+- Fine-grained clauses are merged into chunks close to `target_ideal` (indicating LevelMerge took effect).
 - `parent_headings` jumps at boundaries between different sections and stays stable within the same section.
 
 ### 12.4 Chunk Size Distribution Check
@@ -395,7 +395,7 @@ Investigate in this order:
 
 ### 13.2 Tables Are Scattered; Preceding and Following Explanations Are Detached
 
-- Check whether the table is truly recognized as `<table format="json">` or `<table format="html">` (see `.blocks.jsonl`). Tables with unrecognized format can only undergo character splitting and cannot trigger Stage B's role mechanism.
+- Check whether the table is truly recognized as `<table format="json">` or `<table format="html">` (see `.blocks.jsonl`). Tables with unrecognized format can only undergo character splitting and cannot trigger TableRowSplit's role mechanism.
 - Check whether the table's token count actually exceeds `table_max`. Tables below the threshold remain intact and never trigger first/middle/last slicing.
 - For consecutive large tables, confirm whether the bridging text between the two tables resides in the **same content line** — bridging across content lines does not participate in B.1 bidirectional overlap.
 
@@ -407,14 +407,14 @@ Investigate in this order:
 
 ### 13.4 A Single Chunk Exceeds `target_max`
 
-Normally, Stage D's actual token re-measurement rejects oversized merges, but oversized chunks may still occur in the following scenarios:
+Normally, LevelMerge's actual token re-measurement rejects oversized merges, but oversized chunks may still occur in the following scenarios:
 
 - A single-row table itself exceeds `target_max` with no anchor to split on; eventually it goes through R character splitting but a single chunk still exceeds the limit.
 - `enforce_chunk_token_limit_before_embedding` performs a final hard cut before embedding; downstream will not actually embed an oversized chunk into the vector store.
 
 ### 13.5 Abnormal `[part n]` Suffixes
 
-- Multiple slices come from the same original content line, but only one `[part 1]` is seen: check whether they were merged in Stage D — after merging, the main chunk's part suffix is retained and multiple part tags are not concatenated.
+- Multiple slices come from the same original content line, but only one `[part 1]` is seen: check whether they were merged in LevelMerge — after merging, the main chunk's part suffix is retained and multiple part tags are not concatenated.
 - Legacy `[表格片段N]` suffix appears: this indicates data output by an older chunker; the new version standardizes on `[part n]`, and re-chunking is required.
 
 ### 13.6 Log Keywords
@@ -424,5 +424,5 @@ P-strategy-related log keywords (for `grep`-based troubleshooting):
 - `paragraph_semantic` — module entry
 - `fallback to recursive_character` — overall or single-paragraph degradation
 - `table_chunk_role` — table role-related
-- `bridge` — Stage B.1 bridging text handling
-- `anchor` — Stage C anchor selection
+- `bridge` — TableBridge bridging text handling
+- `anchor` — AnchorSplit anchor selection

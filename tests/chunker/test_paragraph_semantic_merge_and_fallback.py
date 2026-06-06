@@ -1,4 +1,4 @@
-"""Regression tests for paragraph-semantic Stage D merging and the top-level R fallback."""
+"""Regression tests for paragraph-semantic LevelMerge merging and the top-level R fallback."""
 
 import pytest
 
@@ -316,7 +316,7 @@ def test_paragraph_semantic_fallback_passes_configured_recursive_overlap(monkeyp
 
 
 # ---------------------------------------------------------------------------
-# Pre-Stage-D — body-less heading glue (forward into child / backward into prev).
+# HeadingGlue — body-less heading glue (forward into child / backward into prev).
 # ---------------------------------------------------------------------------
 
 
@@ -434,7 +434,7 @@ def test_heading_only_cap_split_does_not_orphan_when_body_has_no_anchor():
     # (> _MAX_ANCHOR_CANDIDATE_LENGTH chars), so the only anchor candidate in
     # the glued block is the child heading at index 1. The naive
     # split-the-whole-block path sliced off `[## 2.4]` alone — a heading-only
-    # orphan that Stage D then re-absorbs backward, recreating the separation.
+    # orphan that LevelMerge then re-absorbs backward, recreating the separation.
     # The prefix-aware re-split must keep the heading with real body content.
     tokenizer = _make_tokenizer()
     blocks = [
@@ -549,7 +549,7 @@ def test_heading_only_chain_collapses_to_shallowest_identity():
 
 @pytest.mark.offline
 def test_heading_only_no_glue_when_next_not_deeper():
-    # Next block is same level -> no forced forward glue; left for Stage D.
+    # Next block is same level -> no forced forward glue; left for LevelMerge.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock("## 2.4", heading="2.4", level=2, tokenizer=tokenizer),
@@ -624,7 +624,7 @@ def test_heading_only_group_stays_separate_when_prev_is_saturated():
 @pytest.mark.offline
 def test_heading_only_group_backfills_into_unsaturated_prev():
     # Rule 2 end-to-end: when `## 2.3` is still below target_ideal and the
-    # join fits target_max, Stage D packs 2.3 + 2.4 + 2.4.1 into one chunk.
+    # join fits target_max, LevelMerge packs 2.3 + 2.4 + 2.4.1 into one chunk.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock("## 2.3\n" + "a" * 40, heading="2.3", level=2, tokenizer=tokenizer),
@@ -657,7 +657,7 @@ def test_heading_only_not_glued_into_deeper_prev():
     # `## 2.4` (L2) has no deeper child after it; its previous block is the
     # DEEPER `### 2.3.9` (L3). It must NOT be pulled backward into that deeper
     # block — absorbing a shallower heading into a deeper chunk would invert the
-    # hierarchy. It stays separate, left for Stage D.
+    # hierarchy. It stays separate, left for LevelMerge.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock(
@@ -680,7 +680,7 @@ def test_heading_only_not_glued_into_deeper_prev():
 def test_heading_only_not_glued_into_same_level_prev():
     # The previous block `## 2.3` is the SAME level (a sibling), not deeper, so
     # the body-less `## 2.4` is not glued backward into it — that is the original
-    # mis-merge. It stays standalone for Stage D to handle.
+    # mis-merge. It stays standalone for LevelMerge to handle.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock("## 2.3\n" + "a" * 40, heading="2.3", level=2, tokenizer=tokenizer),
@@ -703,7 +703,7 @@ _TABLE_FIRST = '<table id="t" format="json">[["a","b"],["c","d"]]</table>'
 def test_heading_only_glues_into_first_table_slice():
     # The deeper child's first emitted block is the "first" slice of a split
     # table (its body is an oversized table). The pre-pass must glue the
-    # body-less `## 2.4` into it AND keep the "first" role so Stage D still
+    # body-less `## 2.4` into it AND keep the "first" role so LevelMerge still
     # cannot absorb it backward.
     tokenizer = _make_tokenizer()
     blocks = [
@@ -725,7 +725,7 @@ def test_heading_only_glues_into_first_table_slice():
     assert "## 2.4" in out[0]["content"]
     assert "### 2.4.1" in out[0]["content"]
     assert _TABLE_FIRST in out[0]["content"]
-    # "first" role preserved so Stage D keeps the table boundary protected.
+    # "first" role preserved so LevelMerge keeps the table boundary protected.
     assert out[0]["table_chunk_role"] == "first"
 
 
@@ -733,7 +733,7 @@ def test_heading_only_glues_into_first_table_slice():
 def test_heading_only_with_first_table_child_not_separated_by_stage_d():
     # End-to-end: `## 2.4` whose child starts with a "first" table slice must
     # NOT be left on `## 2.3`. After the glue keeps the merged block "first",
-    # Stage D cannot pull it backward into the previous sibling.
+    # LevelMerge cannot pull it backward into the previous sibling.
     tokenizer = _make_tokenizer()
     blocks = [
         _hblock("## 2.3\n" + "a" * 40, heading="2.3", level=2, tokenizer=tokenizer),

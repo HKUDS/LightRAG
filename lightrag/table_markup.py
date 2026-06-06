@@ -1,6 +1,6 @@
 """Shared helpers for parsing and re-emitting ``<table>`` markup.
 
-These primitives are used by the paragraph-semantic chunker (Stage B
+These primitives are used by the paragraph-semantic chunker (TableRowSplit
 oversized-table re-split) and by the native multimodal surrounding-context
 extractor.  Both call sites need to:
 

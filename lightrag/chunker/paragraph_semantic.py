@@ -7,15 +7,16 @@ and produces a chunk list compatible with
 
 The full algorithm and rationale are documented in
 ``docs/ParagraphSemanticChunking-zh.md``. This module re-implements the
-post-Stage-A pipeline (B/C/D) on top of blocks.jsonl input, parameterised
+post-HeadingBlocks pipeline (TableRowSplit/AnchorSplit/LevelMerge) on top of
+blocks.jsonl input, parameterised
 on ``chunk_token_size`` so chunk size targets follow the user's RAG
 configuration rather than the audit-mode constants in
 ``lightrag/parser/docx/parse_document.py``.
 
 Pipeline:
-  - Stage A — heading-driven initial split: already done at parse time and
+  - HeadingBlocks — heading-driven initial split: already done at parse time and
     persisted as one row per block in ``blocks.jsonl``.
-  - Stage B — oversized-table re-split + first/middle/last gluing: invoked
+  - TableRowSplit — oversized-table re-split + first/middle/last gluing: invoked
     here when an embedded ``<table … format="json">`` (or
     ``format="html"``) exceeds ``TABLE_MAX_TOKENS``. Splitting prefers
     structural row boundaries (JSON list items, HTML ``<tr>`` rows) so
@@ -25,19 +26,19 @@ Pipeline:
     that specific fragment. When two oversized tables are separated by
     text inside the same heading block, the bridge text may be duplicated
     into both table boundary chunks so each table keeps nearby context.
-  - Stage C — anchor-driven long-block re-split: short non-table
+  - AnchorSplit — anchor-driven long-block re-split: short non-table
     paragraphs (≤ 100 chars) are promoted as split points and the block
     is rebalanced toward ``IDEAL_BLOCK_TOKENS``. When no anchor exists,
     table-aware fallback applies the same row-boundary-first strategy
     to any oversized table paragraph and only character-splits the
     residual non-table content. Character fallback for ordinary text uses
     the configured paragraph-semantic overlap.
-  - Pre-Stage-D — body-less heading glue: a section heading with no body
+  - HeadingGlue — body-less heading glue: a section heading with no body
     of its own is glued forward into its first strictly-deeper child block
     (keeping the shallower parent heading), so it is never separated from
     that child nor glued onto an unrelated same-level sibling. A heading
-    with no deeper child following is left untouched for Stage D.
-  - Stage D — bottom-up, level-aware small-block merging: undersized
+    with no deeper child following is left untouched for LevelMerge.
+  - LevelMerge — bottom-up, level-aware small-block merging: undersized
     blocks get absorbed by same-level neighbours (Phase A), shallower
     levels (Phase B), and a final tail-absorption pass eliminates the
     last few zero-content remainders.
@@ -273,7 +274,7 @@ def _new_block(
 
 
 # ---------------------------------------------------------------------------
-# Stage B — oversized-table re-split with first/middle/last gluing.
+# TableRowSplit — oversized-table re-split with first/middle/last gluing.
 # ---------------------------------------------------------------------------
 
 
@@ -285,7 +286,7 @@ def _split_rows_by_tokens(
     target_ideal: int,
     last_min: int,
 ) -> list[list[Any]]:
-    """Split ``rows`` into balanced row-bounded chunks (Stage B core)."""
+    """Split ``rows`` into balanced row-bounded chunks (TableRowSplit core)."""
     total = _count_tokens(tokenizer, json.dumps(rows, ensure_ascii=False))
     if total <= target_max or len(rows) <= 1:
         return [rows]
@@ -522,13 +523,13 @@ def _expand_block_with_table_splits(
     target_max: int | None = None,
     chunk_overlap_token_size: int = 0,
 ) -> list[dict[str, Any]]:
-    """Apply Stage B to one heading-driven block.
+    """Apply TableRowSplit to one heading-driven block.
 
     For every embedded table whose tokens exceed ``table_max``:
       - the first row-slice glues with paragraphs already accumulated in
         the current expansion (i.e. content *before* the table);
       - middle slices are emitted as standalone blocks tagged
-        ``table_chunk_role == "middle"`` so Stage D refuses to merge them;
+        ``table_chunk_role == "middle"`` so LevelMerge refuses to merge them;
       - the last slice begins a fresh accumulation that will glue with
         paragraphs *after* the table.
 
@@ -558,7 +559,7 @@ def _expand_block_with_table_splits(
     # Role to assign to ``cur_paras`` when it next flushes. Tracks the
     # boundary semantics across split-table iterations so the merged
     # block carries "first" / "last" instead of defaulting to "none" —
-    # otherwise Stage D's directional protections (a "first" block must
+    # otherwise LevelMerge's directional protections (a "first" block must
     # not absorb backward, a "last" block must not absorb forward) silently
     # disappear after the slice glues with surrounding paragraphs.
     cur_role = "none"
@@ -761,7 +762,7 @@ def _expand_block_with_table_splits(
                 cur_role = "last"
             else:
                 # Middle slice: flush the first-glued block, then emit
-                # this middle slice as a standalone block that Stage D
+                # this middle slice as a standalone block that LevelMerge
                 # MUST keep intact (table_chunk_role == "middle").
                 flush_cur()
                 out.append(
@@ -781,7 +782,7 @@ def _expand_block_with_table_splits(
 
 
 # ---------------------------------------------------------------------------
-# Stage C — anchor-driven long-block re-split.
+# AnchorSplit — anchor-driven long-block re-split.
 # ---------------------------------------------------------------------------
 
 
@@ -802,7 +803,7 @@ def _split_long_block(
 
     Mirrors :func:`lightrag.parser.docx.parse_document.split_long_block`,
     parameterised on ``target_max`` / ``target_ideal``. Tables (``is_table``)
-    are excluded from the anchor candidate pool, so Stage B's row-level
+    are excluded from the anchor candidate pool, so TableRowSplit's row-level
     splits stay intact. When no anchor exists (including the single-
     paragraph oversized case), the no-anchor branch below honors the cap
     via row-boundary splitting (for tables) or character-level splitting
@@ -878,7 +879,7 @@ def _split_long_block(
 
         # Step 1: expand each oversized table paragraph into row-bounded
         # pieces; non-table or in-budget paragraphs pass through verbatim.
-        # ``last_min`` mirrors Stage B's ratio (no separate constant — the
+        # ``last_min`` mirrors TableRowSplit's ratio (no separate constant — the
         # tail-merge threshold is purely a row-balancing heuristic).
         last_min = max(int(target_max * _TABLE_MIN_LAST_RATIO), 1)
         pieces: list[str] = []
@@ -1061,7 +1062,7 @@ def _split_long_block(
 
 
 # ---------------------------------------------------------------------------
-# Stage D — bottom-up, level-aware small-block merging.
+# LevelMerge — bottom-up, level-aware small-block merging.
 # ---------------------------------------------------------------------------
 
 
@@ -1143,7 +1144,7 @@ def _is_heading_only(block: dict[str, Any]) -> bool:
     down a chain of bare ancestor headings.
 
     The ``heading`` guard excludes preamble blocks (text before any heading)
-    and Stage-C anchor sub-blocks, whose body paragraphs are prose rather than
+    and AnchorSplit anchor sub-blocks, whose body paragraphs are prose rather than
     heading lines.
 
     Note: a body line that genuinely begins with ``#`` + space is the same
@@ -1176,7 +1177,7 @@ def _glue_heading_only_blocks(
     A section heading with no body of its own (e.g. ``## 2.4`` immediately
     followed by ``### 2.4.1``) must travel WITH its first child rather than be
     left as a lone trailing heading, and it must never be glued onto an
-    unrelated same-level sibling (e.g. ``## 2.3``). Running this before Stage D
+    unrelated same-level sibling (e.g. ``## 2.3``). Running this before LevelMerge
     bonds the bare heading to its child first.
 
     For each block :func:`_is_heading_only` recognises whose NEXT block is
@@ -1189,37 +1190,37 @@ def _glue_heading_only_blocks(
     keeping the shallowest identity.
 
     ``first`` is allowed because a section whose body is an oversized table has
-    its first emitted block tagged ``first`` (Stage B), and the block right
+    its first emitted block tagged ``first`` (TableRowSplit), and the block right
     after a heading-only row can only be the next row's first emitted block —
     so its role is necessarily ``none`` or ``first`` (``middle`` / ``last``
     only occur inside one row's table). When gluing into a ``first`` slice the
     merged block KEEPS the ``first`` role (the heading is exactly the preceding
-    context a ``first`` slice carries), so Stage D still cannot absorb it
+    context a ``first`` slice carries), so LevelMerge still cannot absorb it
     backward into the previous sibling and the table boundary stays protected.
 
     Gluing is FORWARD only. A body-less heading whose next block is NOT deeper
-    (a shallower/sibling heading, or end of list) is left untouched for Stage D.
+    (a shallower/sibling heading, or end of list) is left untouched for LevelMerge.
     It is deliberately NOT pulled backward into a deeper previous block:
     absorbing a shallower heading into a deeper chunk would invert the hierarchy
     (deep-absorbs-shallow) and demote the heading's level — so that case is left
-    to Stage D rather than force-merged here.
+    to LevelMerge rather than force-merged here.
 
-    The child came out of Stage C within ``target_max``, but prepending the
+    The child came out of AnchorSplit within ``target_max``, but prepending the
     parent heading line(s) can tip the bonded block past the hard cap. Since
-    nothing downstream re-splits an oversized chunk (Stage D only refuses to
+    nothing downstream re-splits an oversized chunk (LevelMerge only refuses to
     *grow* it further), an over-cap bonded block is re-split here by
     :func:`_split_to_cap`: the leading heading lines are peeled off, only the
     body is split (at the full ``target_max``, so later body pieces keep the
     full budget), and the prefix is glued back onto the first body piece — never
     handed to the splitter, so it can't be sliced off as a heading-only orphan
-    that Stage D would re-absorb backward. When the prefix alone fills the cap
+    that LevelMerge would re-absorb backward. When the prefix alone fills the cap
     (a very long title, or a tiny ``chunk_token_size``) the whole block is
     split directly and the oversized heading line is character-split: the cap
     wins over heading-intactness. Every emitted piece honours ``target_max``;
     non-glued passthrough blocks are already within the cap and emitted verbatim.
 
     Because ``keep="left"`` preserves the parent's ``level``, the bonded group
-    is still an ordinary small block — it is NOT pinned as independent. Stage D
+    is still an ordinary small block — it is NOT pinned as independent. LevelMerge
     may legitimately merge it backward into the previous chunk: peer merging
     when that chunk is still below ``target_ideal``, or tail absorption when the
     group is below ``small_tail_threshold`` (which can pull it even into an
@@ -1258,7 +1259,7 @@ def _glue_heading_only_blocks(
         # own heading line, or a chain) off the body, split only the BODY, then
         # glue the heading prefix back onto the FIRST body piece. The prefix is
         # never handed to the splitter, so the bare heading can never be sliced
-        # off as a content-less first chunk — a heading-only orphan that Stage D
+        # off as a content-less first chunk — a heading-only orphan that LevelMerge
         # would re-absorb backward into the previous sibling. (Fusing the prefix
         # into the body instead does NOT work: when the fused paragraph itself
         # exceeds the cap, char-splitting re-separates the headings at their
@@ -1313,7 +1314,7 @@ def _glue_heading_only_blocks(
 
     def _emit(block: dict[str, Any], *, glued: bool) -> None:
         # A forward-glued block can be tipped over target_max by its prepended
-        # heading line(s); re-split via Stage C so the hard cap still holds.
+        # heading line(s); re-split via AnchorSplit so the hard cap still holds.
         if glued and block["tokens"] > target_max:
             out.extend(_split_to_cap(block))
         else:
@@ -1330,7 +1331,7 @@ def _glue_heading_only_blocks(
         ):
             cur = _merged_pair(cur, nxt, keep="left", tokenizer=tokenizer)
             # Preserve a "first" table-slice role so the bonded block still
-            # cannot be absorbed backward into the previous sibling by Stage D
+            # cannot be absorbed backward into the previous sibling by LevelMerge
             # (the prepended heading is exactly the preceding context a "first"
             # slice is meant to carry). "none" stays "none" — unchanged.
             cur["table_chunk_role"] = nxt_role
@@ -1558,9 +1559,9 @@ def chunking_by_paragraph_semantic(
     """Paragraph Semantic Chunking — the ``chunking="P"`` strategy.
 
     Reads structured blocks emitted by the docx native parser at
-    ``fixlevel=0`` (Stage A, persisted to ``blocks.jsonl``) and applies
-    Stage B (table re-split + glue), Stage C (anchor-driven long-block
-    re-split) and Stage D (bottom-up, level-aware merging). Output rows
+    ``fixlevel=0`` (HeadingBlocks, persisted to ``blocks.jsonl``) and applies
+    TableRowSplit (table re-split + glue), AnchorSplit (anchor-driven long-block
+    re-split) and LevelMerge (bottom-up, level-aware merging). Output rows
     match the schema produced by
     :func:`lightrag.chunker.chunking_by_token_size`
     (``tokens``/``content``/``chunk_order_index``), enriched with
@@ -1622,12 +1623,12 @@ def chunking_by_paragraph_semantic(
             lossless because table/equation/drawing tags are emitted as
             single-line replacements.
           - ``heading`` / ``parent_headings`` / ``level`` → consumed
-            directly by Stage C/D for hierarchy-aware merging. If one
+            directly by AnchorSplit/LevelMerge for hierarchy-aware merging. If one
             original content row produces multiple fragments, the current
-            ``heading`` receives a ``[part n]`` suffix after Stage B/C and
-            before Stage D. ``parent_headings`` remain unchanged.
+            ``heading`` receives a ``[part n]`` suffix after TableRowSplit/AnchorSplit and
+            before LevelMerge. ``parent_headings`` remain unchanged.
           - ``<table id="…" format="json">{rows_json}</table>`` tags →
-            JSON body parsed in Stage B for row-level re-split when the
+            JSON body parsed in TableRowSplit for row-level re-split when the
             tag exceeds the per-table token cap. When two split tables
             have short text between them, that text may be repeated in
             both table boundary chunks; longer bridge text leaves any
@@ -1639,8 +1640,8 @@ def chunking_by_paragraph_semantic(
             because the chunking output schema does not require them.
           - ``table_slice`` is always ``"none"`` in blocks.jsonl
             (parse-time ``fixlevel=0`` keeps tables whole), so any
-            ``table_chunk_role`` consumed by Stage D is recomputed
-            on-the-fly inside Stage B.
+            ``table_chunk_role`` consumed by LevelMerge is recomputed
+            on-the-fly inside TableRowSplit.
     """
     target_max = max(int(chunk_token_size), 1)
     target_ideal = max(int(target_max * _IDEAL_RATIO), 1)
@@ -1692,7 +1693,7 @@ def chunking_by_paragraph_semantic(
             chunk_overlap_token_size=overlap,
         )
 
-    # Build initial blocks (Stage A output, already persisted).
+    # Build initial blocks (HeadingBlocks output, already persisted).
     initial: list[dict[str, Any]] = []
     for row in rows:
         text = row.get("content", "") or ""
@@ -1714,9 +1715,9 @@ def chunking_by_paragraph_semantic(
             )
         )
 
-    # Stage B/C are run per original blocks.jsonl content row so split
+    # TableRowSplit/AnchorSplit are run per original blocks.jsonl content row so split
     # fragments can be labelled with [part n] using a row-local counter
-    # before Stage D merges small neighbours.
+    # before LevelMerge merges small neighbours.
     after_c: list[dict[str, Any]] = []
     for blk in initial:
         block_after_b = _expand_block_with_table_splits(
@@ -1747,15 +1748,15 @@ def chunking_by_paragraph_semantic(
             )
         after_c.extend(_apply_part_suffixes(block_after_c))
 
-    # Pre-Stage-D — glue each body-less heading block FORWARD into its
+    # HeadingGlue — glue each body-less heading block FORWARD into its
     # strictly-deeper child (role "none" or the "first" slice of a split table),
     # so the bare heading never reaches _merge_small_blocks detached from its
     # child content nor glued onto an unrelated same-level sibling. Gluing into a
-    # "first" slice keeps the "first" role so Stage D still can't pull it back.
-    # A body-less heading whose next block is not deeper is left for Stage D
+    # "first" slice keeps the "first" role so LevelMerge still can't pull it back.
+    # A body-less heading whose next block is not deeper is left for LevelMerge
     # (not pulled into a deeper previous block — that would invert the
     # hierarchy). A forward-glued block tipped past target_max is re-split via
-    # Stage C so the hard cap holds. Runs across original rows after [part n]
+    # AnchorSplit so the hard cap holds. Runs across original rows after [part n]
     # tagging is finalised (heading-only rows are never split, so no part suffix).
     after_c = _glue_heading_only_blocks(
         after_c,
@@ -1765,7 +1766,7 @@ def chunking_by_paragraph_semantic(
         chunk_overlap_token_size=overlap,
     )
 
-    # Stage D — bottom-up, level-aware small-block merging.
+    # LevelMerge — bottom-up, level-aware small-block merging.
     final = _merge_small_blocks(
         after_c,
         tokenizer=tokenizer,

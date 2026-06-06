@@ -142,7 +142,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 葛总分块策略在sidecar文件存在时，会在其输出的每个 chunk 都会带上 `sidecar = {"type": "block", "id": <主来源 blockid>, "refs": [{"type": "block", "id": <blockid>}, …]}`，其中：
 
 - 未合并的 chunk → `sidecar.refs` 只有一个元素，等于该 chunk 来自的 blocks.jsonl 行的 `blockid`；
-- Stage D 合并后的 chunk → `refs` 顺序保留所有来源 `blockid`（去重）；
+- LevelMerge 合并后的 chunk → `refs` 顺序保留所有来源 `blockid`（去重）；
 - hard fallback split 后的子 chunk → 共享父 chunk 的 `sidecar`。
 
 这条链路是文档级追溯（chunk ↔ block ↔ 原段落 paraId）的基础。

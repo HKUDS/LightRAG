@@ -1,4 +1,4 @@
-"""Regression tests for paragraph-semantic Stage C anchor selection."""
+"""Regression tests for paragraph-semantic AnchorSplit anchor selection."""
 
 import json
 
