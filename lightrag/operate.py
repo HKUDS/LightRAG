@@ -54,7 +54,10 @@ from lightrag.base import (
     QueryResult,
     QueryContextResult,
 )
-from lightrag.chunk_schema import strip_internal_multimodal_markup_for_extraction
+from lightrag.chunk_schema import (
+    format_parent_headings,
+    strip_internal_multimodal_markup_for_extraction,
+)
 from lightrag.prompt import PROMPTS, resolve_entity_extraction_prompt_profile
 from lightrag.constants import (
     GRAPH_FIELD_SEP,
@@ -3805,6 +3808,7 @@ async def kg_query(
         ll_keywords_str,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        global_config.get("enable_content_headings", False),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -3841,6 +3845,9 @@ async def kg_query(
                 "ll_keywords": ll_keywords_str,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "enable_content_headings": global_config.get(
+                    "enable_content_headings", False
+                ),
             }
             await save_to_cache(
                 hashing_kv,
@@ -4573,6 +4580,29 @@ async def _apply_token_truncation(
     }
 
 
+async def _attach_content_headings(
+    chunks: list[dict], text_chunks_db: BaseKVStorage | None
+) -> None:
+    """Backfill the ``content_headings`` field onto chunks in place.
+
+    Vector chunks never carry a ``heading`` field (chunks_vdb does not store it),
+    and the round-robin merge drops the entity/relation headings too. So we look
+    the chunks up by ``chunk_id`` in text_chunks storage and attach the parent
+    heading path. Only chunks that actually have parent headings get the field,
+    so empty paths are omitted from the JSON sent to the LLM.
+    """
+    if not text_chunks_db or not chunks:
+        return
+    chunk_ids = [c.get("chunk_id") for c in chunks]
+    chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
+    for chunk, data in zip(chunks, chunk_data_list):
+        if not isinstance(data, dict):
+            continue
+        headings = format_parent_headings(data)
+        if headings:
+            chunk["content_headings"] = headings
+
+
 async def _merge_all_chunks(
     filtered_entities: list[dict],
     filtered_relations: list[dict],
@@ -4671,6 +4701,12 @@ async def _merge_all_chunks(
     logger.info(
         f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
     )
+
+    # Backfill heading path before token truncation so it counts toward the budget
+    if text_chunks_db and text_chunks_db.global_config.get(
+        "enable_content_headings", False
+    ):
+        await _attach_content_headings(merged_chunks, text_chunks_db)
 
     return merged_chunks
 
@@ -4779,12 +4815,13 @@ async def _build_context_str(
     # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
     chunks_context = []
     for i, chunk in enumerate(truncated_chunks):
-        chunks_context.append(
-            {
-                "reference_id": chunk["reference_id"],
-                "content": chunk["content"],
-            }
-        )
+        entry = {
+            "reference_id": chunk["reference_id"],
+            "content": chunk["content"],
+        }
+        if chunk.get("content_headings"):
+            entry["content_headings"] = chunk["content_headings"]
+        chunks_context.append(entry)
 
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
@@ -5557,6 +5594,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    text_chunks_db: BaseKVStorage | None = None,
     return_raw_data: Literal[True] = True,
 ) -> dict[str, Any]: ...
 
@@ -5569,6 +5607,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    text_chunks_db: BaseKVStorage | None = None,
     return_raw_data: Literal[False] = False,
 ) -> str | AsyncIterator[str]: ...
 
@@ -5580,6 +5619,7 @@ async def naive_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    text_chunks_db: BaseKVStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -5623,6 +5663,10 @@ async def naive_query(
             "[naive_query] No relevant document chunks found; returning no-result."
         )
         return None
+
+    # Backfill heading path before token truncation so it counts toward the budget
+    if global_config.get("enable_content_headings", False):
+        await _attach_content_headings(chunks, text_chunks_db)
 
     # Calculate dynamic token limit for chunks
     max_total_tokens = getattr(
@@ -5704,12 +5748,13 @@ async def naive_query(
     # Build chunks_context from processed chunks with reference IDs
     chunks_context = []
     for i, chunk in enumerate(processed_chunks_with_ref_ids):
-        chunks_context.append(
-            {
-                "reference_id": chunk["reference_id"],
-                "content": chunk["content"],
-            }
-        )
+        entry = {
+            "reference_id": chunk["reference_id"],
+            "content": chunk["content"],
+        }
+        if chunk.get("content_headings"):
+            entry["content_headings"] = chunk["content_headings"]
+        chunks_context.append(entry)
 
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
@@ -5753,6 +5798,7 @@ async def naive_query(
         query_param.max_total_tokens,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        global_config.get("enable_content_headings", False),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -5785,6 +5831,9 @@ async def naive_query(
                 "max_total_tokens": query_param.max_total_tokens,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "enable_content_headings": global_config.get(
+                    "enable_content_headings", False
+                ),
             }
             await save_to_cache(
                 hashing_kv,

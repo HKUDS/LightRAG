@@ -74,6 +74,19 @@ def normalize_chunk_heading(dp: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def format_parent_headings(dp: dict[str, Any]) -> str:
+    """Join a chunk's parent heading chain into ``h1 → h2 → h3``.
+
+    Reuses :func:`normalize_chunk_heading` so both the nested and legacy flat
+    heading shapes are handled. Returns an empty string when the chunk has no
+    parent headings, so callers can simply omit the field when it is empty.
+    """
+    normalized = normalize_chunk_heading(dp)
+    if not normalized:
+        return ""
+    return " → ".join(normalized["parent_headings"])
+
+
 def normalize_chunk_sidecar(dp: dict[str, Any]) -> dict[str, Any] | None:
     """Return the canonical sidecar dict or ``None`` when absent / invalid.
 
@@ -251,6 +264,7 @@ def strip_internal_multimodal_markup_for_extraction(
 
 __all__ = [
     "normalize_chunk_heading",
+    "format_parent_headings",
     "normalize_chunk_sidecar",
     "strip_internal_multimodal_markup_for_extraction",
 ]
