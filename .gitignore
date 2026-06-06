@@ -87,7 +87,3 @@ memory-bank
 
 # native_parser/docx CLI output (audit JSONL + image dir)
 /parse_output/
-
-# Claude Code tool state (session logs, agent state)
-.omc/
-.cwf/

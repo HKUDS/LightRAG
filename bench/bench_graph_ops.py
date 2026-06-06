@@ -24,6 +24,9 @@ Workload mix (approximates LightRAG indexing + retrieval load):
 Usage:
     python bench/bench_graph_ops.py --workers 10 --duration 30 --output results.json
     python bench/bench_graph_ops.py --nodes 4000 --workers 20 --duration 60 --output results.json
+
+Sample raw results (n2-standard-8):
+    https://gist.github.com/ysys143/94de2e121282f9177613ec72e0100af1
 """
 
 from __future__ import annotations
