@@ -622,6 +622,35 @@ def test_adapter_html_table_without_thead_does_not_guess_header(
 
 
 @pytest.mark.offline
+def test_adapter_html_table_attr_with_gt_keeps_inner_body(tmp_path: Path) -> None:
+    """A ``>`` inside a ``<table>`` attribute must not truncate the open tag,
+    so ``body_override`` still strips the full ``<table …>`` wrapper."""
+    table_html = '<table data-x="a>b"><tbody><tr><td>v</td></tr></tbody></table>'
+    raw = _write_bundle(
+        tmp_path,
+        [{"type": "table", "table_body": table_html}],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
+    table = ir.blocks[0].tables[0]
+    assert table.html == table_html
+    assert table.body_override == "<tbody><tr><td>v</td></tr></tbody>"
+
+
+@pytest.mark.offline
+def test_adapter_empty_html_table_falls_back_to_full_html(tmp_path: Path) -> None:
+    """A degenerate ``<table></table>`` has no inner body, so ``body_override``
+    stays None and the writer renders ``table.html`` verbatim."""
+    raw = _write_bundle(
+        tmp_path,
+        [{"type": "table", "table_body": "<table></table>"}],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
+    table = ir.blocks[0].tables[0]
+    assert table.html == "<table></table>"
+    assert table.body_override is None
+
+
+@pytest.mark.offline
 def test_adapter_list_items_joined_with_newline(tmp_path: Path) -> None:
     raw = _write_bundle(
         tmp_path,

@@ -45,6 +45,7 @@ Conversion rules (informed by spec §3-§六):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from html.parser import HTMLParser
 import json
 import os
@@ -409,7 +410,10 @@ class MinerUIRBuilder:
             if _looks_like_html_table_payload(stripped):
                 html = stripped or None
                 if html:
-                    body_override = _html_table_inner_body(html)
+                    # ``or None`` so a degenerate ``<table></table>`` (empty
+                    # inner body) falls back to rendering ``table.html`` in the
+                    # writer instead of emitting an empty ``body_override``.
+                    body_override = _html_table_inner_body(html) or None
             elif stripped.startswith("[") and stripped.endswith("]"):
                 try:
                     decoded = json.loads(stripped)
@@ -575,17 +579,11 @@ def _as_str_list(value: Any) -> list[str]:
     return [s] if s else []
 
 
+@dataclass
 class _HTMLTableInfo:
-    def __init__(
-        self,
-        *,
-        num_rows: int = 0,
-        num_cols: int = 0,
-        table_header: list[list[str]] | None = None,
-    ) -> None:
-        self.num_rows = num_rows
-        self.num_cols = num_cols
-        self.table_header = table_header
+    num_rows: int = 0
+    num_cols: int = 0
+    table_header: list[list[str]] | None = None
 
 
 class _HTMLTableInfoParser(HTMLParser):
@@ -705,11 +703,27 @@ def _html_table_inner_body(html: str) -> str:
     lower = stripped.lower()
     if not _starts_with_html_tag(lower, "table"):
         return stripped
-    open_end = stripped.find(">")
+    open_end = _open_tag_end(stripped)
     close_start = lower.rfind("</table>")
     if open_end < 0 or close_start <= open_end:
         return stripped
     return stripped[open_end + 1 : close_start].strip()
+
+
+def _open_tag_end(html: str) -> int:
+    """Index of the ``>`` closing the leading tag, skipping quoted attribute
+    values so a ``>`` inside an attribute (e.g. ``<table data-x="a>b">``) does
+    not terminate the tag early. Returns -1 when no closing ``>`` is found."""
+    quote: str | None = None
+    for idx, ch in enumerate(html):
+        if quote is not None:
+            if ch == quote:
+                quote = None
+        elif ch in {'"', "'"}:
+            quote = ch
+        elif ch == ">":
+            return idx
+    return -1
 
 
 def _content_list_self_ref(index: int) -> str:
