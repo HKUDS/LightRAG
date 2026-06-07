@@ -304,9 +304,26 @@ def _inject_header_into_table_slice(text: str, header_body: str) -> str | None:
             return None
         if not isinstance(rows, list):
             return None
-        merged = json.dumps(header_rows + rows, ensure_ascii=False)
+        # Drop any leading header rows this slice already carries: the row
+        # splitter may have placed a boundary *inside* a multi-row header,
+        # leaving a trailing run of header rows at the top of a non-first
+        # slice. Strip the longest prefix of `rows` that equals a trailing
+        # run of `header_rows`, then prepend the full header — so a `[H2]`
+        # slice becomes `[H1, H2]`, never `[H1, H2, H2]`.
+        h = len(header_rows)
+        strip = 0
+        for k in range(min(h, len(rows)), 0, -1):
+            if rows[:k] == header_rows[h - k :]:
+                strip = k
+                break
+        merged = json.dumps(header_rows + rows[strip:], ensure_ascii=False)
         return f"<table {attrs}>{merged}</table>"
     if fmt == "html":
+        # If the slice already carries a header (a <thead> the splitter kept
+        # when it cut inside a multi-row header), prepending another would
+        # duplicate it — leave the slice as-is rather than corrupt it.
+        if "<thead" in body.lower():
+            return None
         thead = _header_rows_to_html_thead(header_rows)
         if not thead:
             return None
