@@ -23,7 +23,13 @@ Pipeline:
     cap, does it fall back to ``chunking_by_recursive_character`` on that
     fragment. When two oversized tables are separated by text inside one
     heading block, the bridge text may be duplicated into both table boundary
-    chunks so each table keeps nearby context.
+    chunks so each table keeps nearby context. The source table's repeating
+    header (lifted at parse time into the ``.tables.json`` sidecar, keyed by the
+    slice's ``<table>`` id) is re-injected into the non-first slices *here*, with
+    its tokens budgeted out of the per-slice cap *before* splitting — so every
+    slice stays ``≤ target_max`` including its header. Because the header now
+    lives in the slice from the start, a split table's slices are frozen against
+    LevelMerge (re-merging two slices of one table would duplicate the header).
   - AnchorSplit — anchor-driven long-block re-split: short non-table
     paragraphs (≤ 100 chars) are promoted as split points and the block is
     rebalanced toward ``target_ideal``. With no anchor, table-aware fallback
@@ -42,6 +48,7 @@ Pipeline:
 
 from __future__ import annotations
 
+import html
 import json
 import math
 import re
@@ -51,6 +58,7 @@ from typing import Any, Callable
 from lightrag.table_markup import (
     TABLE_TAG_RE as _TABLE_TAG_RE,
     detect_table_format as _detect_table_format,
+    extract_table_id as _extract_table_id,
     serialize_html_rows as _serialize_rows_with_wrappers,
     split_html_rows as _split_html_rows,
 )
@@ -179,6 +187,131 @@ def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
             if isinstance(obj, dict) and obj.get("type") == "content":
                 rows.append(obj)
     return rows
+
+
+def _tables_sidecar_path(blocks_path: str) -> str | None:
+    """Derive the ``.tables.json`` sidecar path beside a ``.blocks.jsonl`` file.
+
+    Mirrors :func:`lightrag.utils_pipeline.sidecar_modality_path` naming
+    (``<base>.blocks.jsonl`` → ``<base>.tables.json``). Returns ``None`` when
+    the path does not follow the ``.blocks.jsonl`` convention.
+    """
+    suffix = ".blocks.jsonl"
+    if not blocks_path.endswith(suffix):
+        return None
+    return blocks_path[: -len(suffix)] + ".tables.json"
+
+
+def _load_table_headers(blocks_path: str) -> dict[str, str]:
+    """Map ``table_id -> repeating-header body`` from the tables.json sidecar.
+
+    Only tables that carry a ``table_header`` field (the cross-page repeating
+    header the parser lifted from the source's header rows) are included; the
+    value is the verbatim JSON 2-D array string the writer stored, e.g.
+    ``'[["X", "Y"]]'``. A missing / unreadable / malformed sidecar degrades
+    silently to ``{}`` — a missing header must never block chunking (same
+    tolerance as :func:`_load_blocks_from_jsonl`).
+    """
+    path = _tables_sidecar_path(blocks_path)
+    if not path:
+        return {}
+    try:
+        with Path(path).open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    tables = data.get("tables") if isinstance(data, dict) else None
+    if not isinstance(tables, dict):
+        return {}
+    headers: dict[str, str] = {}
+    for table_id, entry in tables.items():
+        if not isinstance(entry, dict):
+            continue
+        header = entry.get("table_header")
+        if isinstance(header, str) and header.strip():
+            headers[str(table_id)] = header
+    return headers
+
+
+def _header_rows_to_html_thead(header_rows: list[Any]) -> str:
+    """Render recovered header rows (a JSON 2-D array) as an HTML ``<thead>``.
+
+    ``table_header`` is always stored as a JSON 2-D array, so when the slice is
+    an HTML table the header rows are emitted as ``<th>`` cells inside a single
+    ``<thead>`` to be prepended to the slice body. Cell text is HTML-escaped.
+    Returns ``""`` when no usable row is present.
+    """
+    trs: list[str] = []
+    for row in header_rows:
+        if not isinstance(row, list):
+            continue
+        cells = "".join(f"<th>{html.escape(str(cell))}</th>" for cell in row)
+        trs.append(f"<tr>{cells}</tr>")
+    return f"<thead>{''.join(trs)}</thead>" if trs else ""
+
+
+def _parse_header_rows(header_body: str) -> list[Any] | None:
+    """Parse a stored ``table_header`` JSON 2-D array, or ``None`` if unusable."""
+    try:
+        header_rows = json.loads(header_body)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(header_rows, list) or not header_rows:
+        return None
+    return header_rows
+
+
+def _header_reserve_tokens(
+    header_rows: list[Any], fmt: str | None, tokenizer: Tokenizer
+) -> int:
+    """Tokens to reserve out of a slice's body budget for the recovered header.
+
+    Conservative on purpose: for JSON we reserve the cost of the header rows
+    serialized on their own (``json.dumps(header_rows)``); the in-place form
+    ``header_rows + data`` is actually a couple of tokens cheaper (one shared
+    set of brackets), so reserving the standalone cost can only over-budget,
+    never under-budget — the safe direction for the cap.
+    """
+    if fmt == "json":
+        return _count_tokens(tokenizer, json.dumps(header_rows, ensure_ascii=False))
+    if fmt == "html":
+        return _count_tokens(tokenizer, _header_rows_to_html_thead(header_rows))
+    return 0
+
+
+def _inject_header_into_table_slice(text: str, header_body: str) -> str | None:
+    """Prepend the recovered header rows into a table slice's body, in place.
+
+    Rebuilds ``<table {attrs}>{header rows}{original body}</table>`` keeping the
+    slice's own ``attrs`` (hence its ``id``). For JSON tables the header rows are
+    prepended to the row array; for HTML tables they are emitted as a leading
+    ``<thead>``. Returns ``None`` when the slice or header cannot be parsed, so
+    the caller leaves the slice untouched.
+    """
+    match = _TABLE_TAG_RE.match((text or "").strip())
+    if not match:
+        return None
+    header_rows = _parse_header_rows(header_body)
+    if header_rows is None:
+        return None
+    attrs = match.group("attrs")
+    body = match.group("body")
+    fmt = _detect_table_format(attrs, body)
+    if fmt == "json":
+        try:
+            rows = json.loads(body)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(rows, list):
+            return None
+        merged = json.dumps(header_rows + rows, ensure_ascii=False)
+        return f"<table {attrs}>{merged}</table>"
+    if fmt == "html":
+        thead = _header_rows_to_html_thead(header_rows)
+        if not thead:
+            return None
+        return f"<table {attrs}>{thead}{body}</table>"
+    return None
 
 
 def _split_html_rows_by_tokens(
@@ -362,6 +495,7 @@ def _split_table_text(
     target_max: int,
     target_ideal: int,
     last_min: int,
+    header_body: str | None = None,
 ) -> list[str]:
     """Split a single oversized ``<table>...</table>`` text into ≤ target_max pieces.
 
@@ -383,6 +517,14 @@ def _split_table_text(
       5. Unknown / unparseable format → character-fallback the entire
          original text.
 
+    When ``header_body`` (a stored ``table_header`` JSON 2-D array string) is
+    supplied, the source table carries a cross-page repeating header. The first
+    slice keeps its own header rows, so the header is re-injected only into the
+    *non-first* slices — and its token cost is budgeted out of the per-slice cap
+    *before* splitting, so each emitted slice stays ``≤ target_max`` including
+    the prepended header (HeaderRecovery, §3.3.3). A header-less table
+    (``header_body is None`` / unparseable) leaves the split untouched.
+
     Output strings are either:
       - a re-wrapped ``<table {attrs}>{rows}</table>`` (legal markup,
         callers may keep ``is_table=True`` for these), or
@@ -402,9 +544,20 @@ def _split_table_text(
     # wrapped chunk can exceed target_max purely from the wrapper, which
     # would force a needless character-fallback below.
     wrapper_overhead = _count_tokens(tokenizer, f"<table {attrs}></table>")
-    body_max = max(target_max - wrapper_overhead, 1)
-    body_ideal = max(min(target_ideal, target_max) - wrapper_overhead, 1)
-    body_last_min = max(last_min - wrapper_overhead, 1)
+    # HeaderRecovery budget: reserve room for the repeating header that will be
+    # prepended into every non-first slice, so a slice + its header never
+    # exceeds target_max. The first slice keeps its own header rows (already in
+    # the body), so reserving uniformly only makes it marginally smaller — safe.
+    header_rows = _parse_header_rows(header_body) if header_body else None
+    header_overhead = (
+        _header_reserve_tokens(header_rows, fmt, tokenizer) if header_rows else 0
+    )
+    body_budget = max(target_max - wrapper_overhead - header_overhead, 1)
+    body_max = body_budget
+    body_ideal = max(
+        min(target_ideal, target_max) - wrapper_overhead - header_overhead, 1
+    )
+    body_last_min = max(last_min - wrapper_overhead - header_overhead, 1)
     row_chunks: list[list[Any]] | None = None
     serialize: Callable[[list[Any]], str] | None = None
     if fmt == "json":
@@ -505,6 +658,17 @@ def _split_table_text(
         # Process the finer cuts before any remaining peer chunks so the
         # output keeps source order.
         pending[0:0] = sub_chunks
+
+    # HeaderRecovery: re-inject the source table's repeating header into every
+    # non-first slice (the first slice kept its own header rows). The header's
+    # tokens were budgeted out above, so the rebuilt slice stays ≤ target_max.
+    # A character-fallback fragment (no <table> wrapper) returns None and is
+    # left untouched. Single-slice tables (no real split) get nothing.
+    if header_body and len(pieces) > 1:
+        for i in range(1, len(pieces)):
+            rebuilt = _inject_header_into_table_slice(pieces[i], header_body)
+            if rebuilt is not None:
+                pieces[i] = rebuilt
     return pieces
 
 
@@ -517,6 +681,7 @@ def _expand_block_with_table_splits(
     table_min_last: int,
     target_max: int | None = None,
     chunk_overlap_token_size: int = 0,
+    table_headers: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Apply TableRowSplit to one heading-driven block.
 
@@ -709,6 +874,17 @@ def _expand_block_with_table_splits(
             cur_paras.append(para)
             continue
 
+        # Trace this oversized table back to its tables.json entry via the
+        # slice's <table> id, so the splitter can budget + re-inject the source
+        # table's repeating header into the non-first slices (HeaderRecovery).
+        header_body: str | None = None
+        if table_headers:
+            tag_match = _TABLE_TAG_RE.match(text.strip())
+            if tag_match:
+                table_id = _extract_table_id(tag_match.group("attrs"))
+                if table_id:
+                    header_body = table_headers.get(table_id)
+
         # Row-boundary first, character fallback last. ``_split_table_text``
         # returns one or more strings: row-wrapped ``<table>...</table>``
         # fragments where row-splitting succeeded, plain text where it
@@ -720,6 +896,7 @@ def _expand_block_with_table_splits(
             target_max=table_max,
             target_ideal=table_ideal,
             last_min=table_min_last,
+            header_body=header_body,
         )
         if len(pieces) <= 1:
             # No reduction was possible (e.g. very small unparseable table
@@ -1061,14 +1238,18 @@ def _split_long_block(
 # ---------------------------------------------------------------------------
 
 
-def _can_merge_forward(role: str, *, phase: str) -> bool:
-    if phase == "A":
-        return role in {"none", "first"}
-    return role in {"none", "first", "last"}
+def _can_merge_forward(role: str) -> bool:
+    # A split-table slice (first/middle/last) is frozen against LevelMerge: its
+    # repeating header is already injected into the slice at TableRowSplit time,
+    # so re-merging two slices of one table would duplicate the header mid-body.
+    # Only ordinary blocks (role "none") may absorb a following block.
+    return role == "none"
 
 
 def _can_merge_backward(role: str) -> bool:
-    return role in {"none", "last"}
+    # Symmetric to _can_merge_forward — only role "none" may be absorbed by a
+    # preceding block. Split-table slices never re-merge (see §3.6 / §3.3.3).
+    return role == "none"
 
 
 def _same_parent_path(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -1354,7 +1535,7 @@ def _merge_small_blocks(
                 if below_ideal and is_cur_lv:
                     merged = False
 
-                    if _can_merge_forward(cur_role, phase="A") and i + 1 < len(result):
+                    if _can_merge_forward(cur_role) and i + 1 < len(result):
                         nxt = result[i + 1]
                         if (
                             nxt.get("level", 1) == current_level
@@ -1374,9 +1555,7 @@ def _merge_small_blocks(
                         prev = new_result[-1]
                         if (
                             prev.get("level", 1) == current_level
-                            and _can_merge_forward(
-                                prev.get("table_chunk_role", "none"), phase="A"
-                            )
+                            and _can_merge_forward(prev.get("table_chunk_role", "none"))
                             and prev["tokens"] < target_ideal
                             and _same_parent_path(prev, cur)
                         ):
@@ -1398,14 +1577,17 @@ def _merge_small_blocks(
                     # combined size stays under SMALL_TAIL_THRESHOLD and
                     # fits within target_max — eliminates the document's
                     # trailing sliver of zero-content remainders.
-                    if is_cur_lv and cur_tokens >= target_ideal:
+                    if is_cur_lv and cur_tokens >= target_ideal and cur_role == "none":
                         tail_total = 0
                         end_idx = i + 1
                         for j in range(i + 1, len(result)):
                             nxt = result[j]
                             if nxt.get("level", 1) != current_level:
                                 break
-                            if nxt.get("table_chunk_role", "none") == "middle":
+                            # A split-table slice (first/middle/last) is frozen —
+                            # never pull one into a tail-absorption run, which
+                            # would re-merge it and duplicate its header.
+                            if nxt.get("table_chunk_role", "none") != "none":
                                 break
                             # Same-level only is not enough — a sibling under a
                             # different parent would be cross-topic. Stop the run
@@ -1468,7 +1650,7 @@ def _merge_small_blocks(
                 if below_ideal and is_cur_lv:
                     merged = False
 
-                    if _can_merge_forward(cur_role, phase="B") and i + 1 < len(result):
+                    if _can_merge_forward(cur_role) and i + 1 < len(result):
                         nxt = result[i + 1]
                         if (
                             nxt.get("level", 1) > current_level
@@ -1488,9 +1670,7 @@ def _merge_small_blocks(
                         prev = new_result[-1]
                         if (
                             prev.get("level", 1) < current_level
-                            and _can_merge_forward(
-                                prev.get("table_chunk_role", "none"), phase="B"
-                            )
+                            and _can_merge_forward(prev.get("table_chunk_role", "none"))
                             and prev["tokens"] < target_ideal
                             and _is_descendant(prev, cur)
                         ):
@@ -1694,6 +1874,14 @@ def chunking_by_paragraph_semantic(
             )
         )
 
+    # Repeating-header lookup for table slices that lose their header during
+    # row-splitting. Loaded once here (never on the missing-sidecar fallback
+    # path, which returned above); an absent / unreadable tables.json degrades
+    # to an empty map, so HeaderRecovery silently no-ops. Fed into TableRowSplit
+    # so the header's tokens are budgeted *before* splitting (the slice + header
+    # never exceeds target_max), rather than backfilled after the cap is set.
+    table_headers = _load_table_headers(blocks_path) if blocks_path else {}
+
     # TableRowSplit/AnchorSplit are run per original blocks.jsonl content row so split
     # fragments can be labelled with [part n] using a row-local counter
     # before LevelMerge merges small neighbours.
@@ -1707,6 +1895,7 @@ def chunking_by_paragraph_semantic(
             table_min_last=table_min_last,
             target_max=target_max,
             chunk_overlap_token_size=overlap,
+            table_headers=table_headers,
         )
 
         block_after_c: list[dict[str, Any]] = []

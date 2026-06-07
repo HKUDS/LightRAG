@@ -7,6 +7,8 @@ import pytest
 from lightrag.chunker.paragraph_semantic import (
     _detect_table_format,
     _expand_block_with_table_splits,
+    _merge_small_blocks,
+    _new_block,
     _split_html_rows,
     _split_long_block,
     _split_rows_by_tokens,
@@ -135,21 +137,21 @@ def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     roles = [b["table_chunk_role"] for b in out]
     assert roles[0] == "first", f"expected leading block role=first, got {roles}"
     assert roles[-1] == "last", f"expected trailing block role=last, got {roles}"
-    assert all(
-        r == "middle" for r in roles[1:-1]
-    ), f"expected middle slices between first/last, got {roles}"
+    assert all(r == "middle" for r in roles[1:-1]), (
+        f"expected middle slices between first/last, got {roles}"
+    )
 
     # Boundary glue still works: leading text sits inside the first block,
     # trailing text sits inside the last block.
-    assert any(
-        p["text"] == "lead paragraph" for p in out[0]["paragraphs"]
-    ), "leading paragraph must glue with the first table slice"
-    assert any(
-        p["text"] == "trailing paragraph" for p in out[-1]["paragraphs"]
-    ), "trailing paragraph must glue with the last table slice"
-    assert all(
-        "表格片段" not in b["heading"] for b in out
-    ), "TableRowSplit should not expose legacy table-fragment heading suffixes"
+    assert any(p["text"] == "lead paragraph" for p in out[0]["paragraphs"]), (
+        "leading paragraph must glue with the first table slice"
+    )
+    assert any(p["text"] == "trailing paragraph" for p in out[-1]["paragraphs"]), (
+        "trailing paragraph must glue with the last table slice"
+    )
+    assert all("表格片段" not in b["heading"] for b in out), (
+        "TableRowSplit should not expose legacy table-fragment heading suffixes"
+    )
 
 
 @pytest.mark.offline
@@ -194,9 +196,9 @@ def test_expand_block_two_oversized_tables_separates_last_and_first_roles():
     # The transition: there must be a "last" immediately followed by a
     # "first" somewhere in the middle of the role sequence.
     transitions = list(zip(roles, roles[1:]))
-    assert (
-        ("last", "first") in transitions
-    ), f"expected a last->first boundary between the two split tables, got {roles}"
+    assert ("last", "first") in transitions, (
+        f"expected a last->first boundary between the two split tables, got {roles}"
+    )
 
 
 @pytest.mark.offline
@@ -590,9 +592,9 @@ def test_expand_block_single_row_table_no_longer_left_intact():
     assert len(out) >= 2
     # First/last role protection still fires when the table was reduced.
     roles = [b["table_chunk_role"] for b in out]
-    assert (
-        "first" in roles or "last" in roles
-    ), f"expected first/last role assignment after table split, got {roles}"
+    assert "first" in roles or "last" in roles, (
+        f"expected first/last role assignment after table split, got {roles}"
+    )
 
 
 @pytest.mark.offline
@@ -628,9 +630,9 @@ def test_split_long_block_table_dominant_no_anchor_keeps_some_table_markup():
     # At least one sub-block keeps an unbroken <table> fragment somewhere
     # in its content (proof that row-boundary preservation kicked in).
     contents = [b["content"] for b in sub_blocks]
-    assert any(
-        ("<table " in c and "</table>" in c) for c in contents
-    ), "expected at least one sub-block to retain a legal <table> fragment"
+    assert any(("<table " in c and "</table>" in c) for c in contents), (
+        "expected at least one sub-block to retain a legal <table> fragment"
+    )
 
 
 @pytest.mark.offline
@@ -667,3 +669,308 @@ def test_split_table_text_budgets_wrapper_overhead_for_target_max():
 
 def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
     return len(tokenizer.encode(text))
+
+
+# ---------------------------------------------------------------------------
+# HeaderRecovery — the source table's repeating header is budgeted out of the
+# per-slice cap and re-injected into the <table> body of every non-first slice
+# AT SPLIT TIME (not backfilled at output), so a slice + its header always
+# stays ≤ target_max, and split slices are frozen against LevelMerge so the
+# header is never duplicated by a re-merge.
+# ---------------------------------------------------------------------------
+
+
+_HEADER_BODY = '[["H1", "H2"]]'
+# After injection (or naturally on the first slice) a JSON slice's <table> body
+# begins with the header row.
+_INJECTED_PREFIX = '<table id="tb-1" format="json">[["H1", "H2"]'
+
+# Sentinel distinguishing "write tables.json without a table_header" from
+# "do not write tables.json at all".
+_NO_SIDECAR = object()
+
+
+def _write_tables_json(tmp_path, headers: dict) -> None:
+    """Write a ``doc.tables.json`` beside ``doc.blocks.jsonl``.
+
+    ``headers`` maps table id -> header string; a ``None`` value emits an entry
+    WITHOUT the ``table_header`` field (a table that has no repeating header).
+    """
+    tables: dict = {}
+    for tid, header in headers.items():
+        entry = {"id": tid, "format": "json", "content": "[]", "caption": ""}
+        if header is not None:
+            entry["table_header"] = header
+        tables[tid] = entry
+    path = tmp_path / "doc.tables.json"
+    path.write_text(
+        json.dumps({"version": "1.0", "tables": tables}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _build_table_with_header(num_data_rows: int, payload_size: int) -> str:
+    # First row is the real header; the rest are data rows. After row-splitting,
+    # only the "first" slice keeps the header row; middle/last slices must have
+    # it re-injected.
+    rows = [["H1", "H2"]] + [
+        [f"r{idx}-" + "x" * payload_size, "y"] for idx in range(num_data_rows)
+    ]
+    return f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+
+
+def _chunk_with_oversized_table(
+    tmp_path,
+    *,
+    heading: str = "Section",
+    sidecar=_HEADER_BODY,
+    num_data_rows: int = 6,
+    payload_size: int = 200,
+    trailing: str = "trailing paragraph",
+    chunk_token_size: int = 800,
+):
+    tokenizer = _make_tokenizer()
+    body = "\n".join(
+        [
+            "lead paragraph",
+            _build_table_with_header(
+                num_data_rows=num_data_rows, payload_size=payload_size
+            ),
+            trailing,
+        ]
+    )
+    if sidecar is _NO_SIDECAR:
+        pass  # leave the directory without a tables.json
+    elif sidecar is None:
+        _write_tables_json(tmp_path, {"tb-1": None})  # entry without table_header
+    else:
+        _write_tables_json(tmp_path, {"tb-1": sidecar})
+    path = tmp_path / "doc.blocks.jsonl"
+    row = {
+        "type": "content",
+        "heading": heading,
+        "parent_headings": [],
+        "level": 2 if heading else 0,
+        "content": body,
+    }
+    path.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer,
+        body,
+        chunk_token_size=chunk_token_size,
+        blocks_path=str(path),
+        chunk_overlap_token_size=0,
+    )
+    return chunks
+
+
+def _table_chunks(chunks):
+    return [c for c in chunks if '<table id="tb-1"' in c["content"]]
+
+
+def _slice_starts_with_header(chunk) -> bool:
+    content = chunk["content"]
+    tbl = content[content.index('<table id="tb-1"') :]
+    return tbl.startswith(_INJECTED_PREFIX)
+
+
+@pytest.mark.offline
+def test_extract_table_id_variants():
+    from lightrag.table_markup import extract_table_id
+
+    assert extract_table_id('id="tb-1" format="json"') == "tb-1"
+    assert extract_table_id("format='html' id='tb-h'") == "tb-h"
+    assert extract_table_id('format="json"') is None
+    assert extract_table_id("") is None
+
+
+@pytest.mark.offline
+def test_inject_header_into_table_slice_json_and_html():
+    from lightrag.chunker.paragraph_semantic import _inject_header_into_table_slice
+
+    # JSON: header rows are prepended to the row array, attrs (incl. id) kept.
+    json_slice = '<table id="tb-1" format="json">[["a", "b"]]</table>'
+    assert (
+        _inject_header_into_table_slice(json_slice, '[["H1", "H2"]]')
+        == '<table id="tb-1" format="json">[["H1", "H2"], ["a", "b"]]</table>'
+    )
+
+    # HTML: header rows become a leading <thead> of <th> cells (escaped).
+    html_slice = (
+        '<table id="tb-h" format="html"><tbody><tr><td>a</td></tr></tbody></table>'
+    )
+    assert _inject_header_into_table_slice(html_slice, '[["H1", "H2"]]') == (
+        '<table id="tb-h" format="html">'
+        "<thead><tr><th>H1</th><th>H2</th></tr></thead>"
+        "<tbody><tr><td>a</td></tr></tbody></table>"
+    )
+
+    # Unparseable header → no injection.
+    assert _inject_header_into_table_slice(json_slice, "not json") is None
+    # Non-<table> fragment → no injection.
+    assert _inject_header_into_table_slice("just text", '[["H1", "H2"]]') is None
+
+
+@pytest.mark.offline
+def test_split_table_text_budgets_header_before_splitting():
+    # With a header supplied, every emitted slice must stay ≤ target_max even
+    # though the header is prepended into the non-first slices — proving the
+    # header tokens were budgeted out BEFORE the split, not backfilled after.
+    tokenizer = _make_tokenizer()
+    header_body = '[["' + "H" * 60 + '", "' + "K" * 60 + '"]]'  # non-trivial header
+    rows = [["H" * 60, "K" * 60]] + [[f"r{i}-" + "y" * 60, "z"] for i in range(8)]
+    table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=300,
+        target_ideal=220,
+        last_min=64,
+        header_body=header_body,
+    )
+
+    assert len(pieces) >= 3, "expected the oversized table to split into 3+ slices"
+    # Every slice honors the cap including its (injected) header.
+    assert all(_count_tokens(tokenizer, p) <= 300 for p in pieces), [
+        _count_tokens(tokenizer, p) for p in pieces
+    ]
+    # Non-first slices carry the recovered header row.
+    assert all(
+        p.startswith('<table id="tb-1" format="json">[["' + "H" * 60)
+        for p in pieces[1:]
+    )
+
+
+@pytest.mark.offline
+def test_header_injected_into_every_table_slice(tmp_path):
+    chunks = _chunk_with_oversized_table(tmp_path)
+    table_chunks = _table_chunks(chunks)
+
+    assert len(table_chunks) >= 2, "expected the oversized table to be split"
+    # Every slice's <table> now begins with the header row: the "first" slice
+    # naturally (it kept the real header row), middle/last via re-injection.
+    assert all(_slice_starts_with_header(c) for c in table_chunks), [
+        c["content"][:90] for c in table_chunks
+    ]
+
+
+@pytest.mark.offline
+def test_every_chunk_respects_cap_after_header_injection(tmp_path):
+    # The Codex P2 finding: a near-cap slice + a recovered header must not push
+    # the chunk past the hard cap. With split-time budgeting this holds for a
+    # table that has substantial trailing prose glued to its last slice too.
+    chunk_token_size = 800
+    long_trailing = " ".join(f"word{i}" for i in range(120))  # ~ hundreds of tokens
+    chunks = _chunk_with_oversized_table(
+        tmp_path,
+        num_data_rows=10,
+        payload_size=120,
+        trailing=long_trailing,
+        chunk_token_size=chunk_token_size,
+    )
+    tokenizer = _make_tokenizer()
+    assert _table_chunks(chunks), "expected a split header-bearing table"
+    for c in chunks:
+        assert _count_tokens(tokenizer, c["content"]) <= chunk_token_size, c["content"][
+            :120
+        ]
+        assert c["tokens"] <= chunk_token_size
+
+
+@pytest.mark.offline
+def test_split_table_slices_never_remerge_no_duplicate_header(tmp_path):
+    # Split slices are frozen against LevelMerge. Two slices of one table are
+    # never recombined into a single chunk (which, post-injection, would carry
+    # the header twice). The header appears at most once per chunk.
+    chunks = _chunk_with_oversized_table(
+        tmp_path, num_data_rows=8, payload_size=120, trailing="", chunk_token_size=800
+    )
+    table_chunks = _table_chunks(chunks)
+
+    assert len(table_chunks) >= 2, "table must remain split, not reassembled"
+    for c in table_chunks:
+        # The header signature must not be duplicated inside any single chunk.
+        assert c["content"].count('"H1", "H2"') <= 1, c["content"]
+
+
+@pytest.mark.offline
+def test_levelmerge_freezes_first_and_last_slices():
+    # Deterministic freeze guard at the LevelMerge layer: a small "first" block
+    # immediately followed by a small "last" block of the SAME 2-slice table —
+    # both under target_ideal and same parent path — would have been reassembled
+    # into one whole table before the freeze. Now neither merge direction fires,
+    # so the two slices stay as two separate chunks (no duplicated header).
+    tokenizer = _make_tokenizer()
+    first = _new_block(
+        heading="Section",
+        parent_headings=["Doc"],
+        level=2,
+        paragraphs=[
+            {
+                "text": '<table id="tb-1" format="json">[["H1","H2"],["a","b"]]</table>',
+                "is_table": True,
+            }
+        ],
+        table_chunk_role="first",
+        tokenizer=tokenizer,
+    )
+    last = _new_block(
+        heading="Section",
+        parent_headings=["Doc"],
+        level=2,
+        paragraphs=[
+            {
+                "text": '<table id="tb-1" format="json">[["H1","H2"],["c","d"]]</table>',
+                "is_table": True,
+            }
+        ],
+        table_chunk_role="last",
+        tokenizer=tokenizer,
+    )
+
+    merged = _merge_small_blocks(
+        [first, last],
+        tokenizer=tokenizer,
+        target_max=10_000,  # generous cap so size never blocks a merge
+        target_ideal=10_000,  # both blocks count as below-ideal
+        small_tail_threshold=10_000,
+    )
+
+    assert len(merged) == 2, "frozen split slices must not be reassembled"
+    assert all(b["content"].count('"H1","H2"') == 1 for b in merged)
+
+
+@pytest.mark.offline
+def test_no_injection_when_source_table_has_no_header(tmp_path):
+    # tables.json lists the table but WITHOUT a table_header field → nothing is
+    # fabricated; only the first slice (which kept the real header) starts with it.
+    chunks = _chunk_with_oversized_table(tmp_path, sidecar=None)
+    table_chunks = _table_chunks(chunks)
+
+    assert len(table_chunks) >= 2
+    starts = [_slice_starts_with_header(c) for c in table_chunks]
+    assert starts[0] is True, "first slice keeps the table's own header row"
+    assert any(s is False for s in starts[1:]), "later slices must not be injected"
+
+
+@pytest.mark.offline
+def test_no_injection_when_tables_json_missing(tmp_path):
+    # No tables.json at all → silent degrade: no error, no injection.
+    chunks = _chunk_with_oversized_table(tmp_path, sidecar=_NO_SIDECAR)
+    table_chunks = _table_chunks(chunks)
+
+    assert len(table_chunks) >= 2
+    starts = [_slice_starts_with_header(c) for c in table_chunks]
+    assert starts[0] is True
+    assert any(s is False for s in starts[1:])
+
+
+@pytest.mark.offline
+def test_injection_works_when_source_heading_empty(tmp_path):
+    # A preamble block (empty source heading) still gets the header injected.
+    chunks = _chunk_with_oversized_table(tmp_path, heading="")
+    table_chunks = _table_chunks(chunks)
+
+    assert len(table_chunks) >= 2
+    assert all(_slice_starts_with_header(c) for c in table_chunks)
