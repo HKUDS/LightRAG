@@ -753,6 +753,23 @@ def _split_table_text(
             rebuilt = _inject_header_into_table_slice(pieces[i], header_body)
             if rebuilt is not None and _count_tokens(tokenizer, rebuilt) <= target_max:
                 pieces[i] = rebuilt
+            else:
+                # Defensive belt-and-braces: this slice should carry the
+                # recovered header but didn't get it — either it no longer
+                # parses as a <table> (``rebuilt is None``) or, despite the
+                # pre-split budget, the rebuilt slice would exceed target_max.
+                # Both are meant to be unreachable (the repair loop routed any
+                # header-incapable slice to the whole-table degrade), so surface
+                # it rather than silently emit a header-less slice.
+                logger.warning(
+                    "Table %s slice %d kept header-less after HeaderRecovery "
+                    "(%s); the recovered header could not be injected within the "
+                    "%d-token cap",
+                    _extract_table_id(attrs) or "<no-id>",
+                    i,
+                    "no longer parses as <table>" if rebuilt is None else "over-cap",
+                    target_max,
+                )
     return pieces
 
 

@@ -791,6 +791,12 @@ def test_extract_table_id_variants():
     assert extract_table_id("format='html' id='tb-h'") == "tb-h"
     assert extract_table_id('format="json"') is None
     assert extract_table_id("") is None
+    # ``id`` that is only the tail of another attribute name must not match —
+    # neither a hyphen-joined one (``data-id``) nor a word-char prefix
+    # (``grid``); a standalone ``id`` alongside such an attribute still wins.
+    assert extract_table_id('data-id="x"') is None
+    assert extract_table_id('grid="y"') is None
+    assert extract_table_id('data-id="x" id="tb-9"') == "tb-9"
 
 
 @pytest.mark.offline
