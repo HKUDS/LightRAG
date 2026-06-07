@@ -57,6 +57,7 @@ The table below maps each rule of §3 to the effect it achieves and the internal
 | Heading-level basic chunks | Chunk boundaries align with the document's native structure, not token counts | HeadingBlocks | §3.1 |
 | Table integrity + row-boundary slicing | Tables are not cut mid-cell; slices remain legal `<table>` | TableRowSplit | §3.2 |
 | Table context gluing (roles + bidirectional bridge overlap) | A table's leading explanation, trailing commentary, and bridge text never detach from the table | TableRowSplit / TableBridge | §3.3 |
+| Header recovery (re-attach the header to middle/last slices at split time) | A split table's `middle`/`last` slices keep their column names when recalled alone, without ever exceeding the cap | HeaderRecovery | §3.3.3 |
 | Anchor-driven long-block re-splitting | Over-long sections are split at semantic points, preserving heading levels | AnchorSplit | §3.4 |
 | Body-less heading gluing | A parent heading is never separated from its child content | HeadingGlue | §3.5 |
 | Hierarchy-aware merging | Fine-grained clauses are gathered toward the ideal size without cross-topic pollution | LevelMerge | §3.6 |
@@ -72,6 +73,7 @@ DOCX / PDF / PPTX / …
   ↓  native(docx, fixlevel=0) / mineru / docling parser —— emit basic blocks by heading, no token splitting
 .blocks.jsonl + sidecar (.tables.json / .equations.json / .drawings.json / .blocks.assets/)
   ↓  TableRowSplit: slice oversized tables along row boundaries and assign first/middle/last roles   → §3.2
+  ↓  HeaderRecovery: budget + re-inject the repeating header into middle/last slices during the split → §3.3.3
   ↓  TableBridge: bidirectional overlap of bridge text between consecutive large tables              → §3.3
   ↓  AnchorSplit: anchor-driven re-splitting of long text chunks                                     → §3.4
   ↓  PartLabeling: [part n] line-level provenance numbering (numbered per original content line, hence before cross-line merging)
@@ -100,7 +102,7 @@ The P chunker reads `.blocks.jsonl` directly, treating each content line as an i
 
 ### 3.2 Table Integrity and Row-Boundary Slicing — Never Cut a Table Mid-Cell 〔TableRowSplit〕
 
-**Rule**: a table whose token count does not exceed `table_max` **stays whole**; only a table exceeding `table_max` is sliced, and it is **sliced along row boundaries first** — degrading to character-level splitting only when a slice has collapsed to a single row that still exceeds the limit.
+**Rule**: a table whose token count does not exceed `table_max` **stays whole**; only a table exceeding `table_max` is sliced, and it is **sliced along row boundaries first** — the whole table degrades to character-level splitting only when a slice has collapsed to a single row that still cannot be expressed within the limit.
 
 **Effect**: a table is never cut in the "middle of a cell"; every slice is re-wrapped as a legal `<table>` tag, so downstream parsing and LLM reading can interpret it as a table rather than as broken markup fragments.
 
@@ -114,17 +116,17 @@ Before slicing, the `<table {attrs}></table>` wrapper token overhead is debited 
 
 #### 3.2.2 Row-Level Recursive Re-Slicing
 
-If a row subset still exceeds `table_max` after re-wrapping, it is subdivided further within that row subset. **Only when a slice has converged to a single row and that single row itself exceeds the limit does it degrade to character-level splitting.** This mechanism keeps table content expressible by row boundaries in legal table structure as much as possible.
+If a row subset still exceeds `table_max` after re-wrapping, it is subdivided further within that row subset. **When a slice has converged to a single row that cannot be kept both `≤ target_max` and header-complete (the row's content itself exceeds the cap, or it fits but leaves no room for the header it would need), the whole table degrades to an R recursive character split of the original `<table>` text (whose body still carries the header), and a `logger.warning` is logged** — the header content survives as plain text along with the original table text and is never silently dropped, nor is a "some `<table>` slices + some orphaned character fragments" mixed output produced. A slice that needs no injected header and whose single row fits `target_max` is still kept whole as legal `<table>` markup. This mechanism keeps table content expressible by row boundaries in legal table structure as much as possible.
 
 #### 3.2.3 Last-Slice Swallow-Back
 
 If a table's last slice has a token count below `table_min_last` and merging it with the previous slice does not exceed `table_max`, the last slice is swallowed back into the previous slice, reducing useless short table chunks.
 
-### 3.3 Table Context Gluing — Leading/Trailing Explanations and Bridges Stay Attached 〔TableRowSplit / TableBridge〕
+### 3.3 Table Context Gluing — Leading/Trailing Explanations, Bridges, and Headers Stay Attached 〔TableRowSplit / TableBridge / HeaderRecovery〕
 
-**Rule**: a sliced table glues to surrounding paragraphs differently by "first/middle/last" role; short bridge text between two consecutive large tables is distributed **bidirectionally** to the table chunks on both sides by budget.
+**Rule**: a sliced table glues to surrounding paragraphs differently by "first/middle/last" role; short bridge text between two consecutive large tables is distributed **bidirectionally** to the table chunks on both sides by budget; middle/last slices that lose the header row get the table's repeating header re-injected into their own `<table>` **during the split** (the header's tokens are budgeted out of each slice's cap before splitting).
 
-**Effect**: a table's **leading explanation** enters the first-slice chunk, its **trailing commentary** enters the last-slice chunk, and **bridge text** serves as both the left table's following context and the right table's preceding context — any table slice carries enough context to be understood on its own at recall, with no "table here, explanation in another chunk" fracture.
+**Effect**: a table's **leading explanation** enters the first-slice chunk, its **trailing commentary** enters the last-slice chunk, and **bridge text** serves as both the left table's following context and the right table's preceding context — any table slice carries enough context to be understood on its own at recall, with no "table here, explanation in another chunk" fracture. A split table's middle/last slices, even though detached from the first slice that carries the header, get the header row re-injected back at the top of their own `<table>`, so they remain interpretable per-column when recalled alone.
 
 #### 3.3.1 Table Slice Roles and Physical Gluing
 
@@ -155,6 +157,16 @@ How this differs from ordinary adjacent chunk overlap:
 
 - Ordinary overlap copies characters or tokens in sequence, regardless of boundary type.
 - The TableBridge mechanism is triggered by table-slice roles, making the bridge text serve simultaneously as the left table's following context and the right table's preceding context, so a bridging explanation is not attributed to only one side's table nor scattered into a separate chunk that is hard to recall.
+
+#### 3.3.3 Header Recovery for Middle/Last Slices 〔HeaderRecovery〕
+
+After a large table is sliced along row boundaries, the header row stays only in the **first slice**; `middle` / `last` slices thus lose the column names and cannot tell each column's meaning when recalled on their own. To fix this, **during TableRowSplit** the header row is re-injected into the non-first slices' own `<table>`, so every slice becomes a complete header-bearing table.
+
+1. **Header source**: at parse time each table's "cross-page repeating header" is written into the sibling `.tables.json` (entry field `table_header`, a JSON 2-D array string; **only tables that genuinely carry a repeating header have this field**). P traces back to the matching table entry via the `id` preserved on the to-be-split `<table>` tag and takes its `table_header`.
+2. **Budgeted reserve, injected at split time**: the header's token cost is reserved out of each slice's body cap **before** splitting (alongside the `<table {attrs}></table>` wrapper overhead). `_split_table_text` splits against that reduced budget, then prepends the header into each non-first slice — a `format="json"` slice prepends the header rows to its row array, a `format="html"` slice emits them as a leading `<thead>` (`<th>` cells, HTML-escaped). The slice keeps its original `attrs` (including the leading `id`). Because the room was reserved, **a slice plus its header still stays `≤ target_max`**, so the hard cap is enforced naturally by every downstream stage — there is no late backfill that can overflow the cap. The first slice keeps its own real header row and is not injected again. If a slice has converged to a single row that can no longer hold both the row content and the header within `target_max` (see §3.2.2), **the whole table degrades to an R recursive character split (header included) and a warning is logged** — never leaving an orphaned header-less slice.
+3. **Never fabricate a header** — none of the following are injected: the source table has no `table_header` field in `.tables.json` (no repeating header), `.tables.json` is missing/unreadable, the slice has degraded to a character-level non-`<table>` fragment (no `id` to trace), or the table was not actually split into multiple pieces.
+
+> Because the header enters the slice at split time, a split table's slices are **completely frozen against LevelMerge — never re-merged with each other** (see §3.6.1); otherwise re-merging two slices of one table would duplicate the header mid-body. The recovered header **enters `content`** and counts toward the chunk's token total (headers are typically tiny); it is **not** stored on `heading`.
 
 ### 3.4 Anchor-Driven Long-Block Re-Splitting — Cut at Semantic Points, Keep Headings 〔AnchorSplit〕
 
@@ -220,7 +232,7 @@ A pre-pass (`_glue_heading_only_blocks`) is therefore inserted before LevelMerge
 #### 3.6.1 Merging Constraints (every merge must satisfy)
 
 1. **Size constraint**: the merged real text token count does not exceed `target_max`; a block that has reached `target_ideal` in principle no longer participates in ordinary same-level merging.
-2. **Role constraint**: a `middle` table slice is locked standalone; `first` and `last` participate in merging directionally, preventing table-boundary context from being wrongly absorbed.
+2. **Role constraint (slice freeze)**: every split-table slice — `first` / `middle` / `last` — is **locked standalone and never participates in any merge** (it neither absorbs forward, nor is absorbed backward, nor joins batched tail absorption). Reason: the repeating header is injected into each slice at TableRowSplit time, so re-merging two slices of one table would duplicate the header mid-body (§3.3.3). A table's boundary explanations were already glued into the first/last slices during the split, so the freeze does not lose context gluing — it only gives up the post-hoc consolidation of small first/last blocks with unrelated neighbours. Only `none` (an ordinary block / an unsplit whole table) may merge.
 3. **Level constraint**: same-level merging happens between equal `level`s; cross-level absorption allows only shallow-absorbs-deep, **forbidding deep from absorbing shallow in reverse**.
 4. **Parent-heading-path consistency constraint**: the key to avoiding cross-topic pollution, with strict semantics by merge direction —
    - **Same-level merging (Phase A / tail absorption)**: the two blocks' `parent_headings` must be **exactly equal** (true siblings). Blocks with the same `level` but different parent chains (e.g. `2.4.1` and `2.5.1`) may not merge.
@@ -231,18 +243,18 @@ A pre-pass (`_glue_heading_only_blocks`) is therefore inserted before LevelMerge
 
 For adjacent blocks at the current level, when **the current block** is below `target_ideal`, the merged real token count is ≤ `target_max`, and the constraints above are satisfied, merge them into one block (the absorbed neighbour need not be below `target_ideal`; a backward merge additionally requires the previous block to be < `target_ideal`).
 
-Directional rules by table-slice role:
+Directional rules by table-slice role (all split-table slices are frozen; only `none` may merge):
 
 | Block role | Can absorb the next block forward | Can be absorbed by the previous block |
 |---|:-:|:-:|
 | `none` | Yes | Yes |
-| `first` | Yes | No |
+| `first` | No | No |
 | `middle` | No | No |
-| `last` | No | Yes |
+| `last` | No | No |
 
 #### 3.6.3 Batched Tail Absorption
 
-If a block that has reached `target_ideal` is immediately followed by a run of same-level small blocks whose total token count is below `small_tail_threshold` and whose merged real token count does not exceed `target_max`, then **absorb that run in one shot**. Stop on encountering a `middle` table slice, or when the parent-heading path diverges.
+If an **ordinary (`none`)** block that has reached `target_ideal` is immediately followed by a run of same-level small blocks whose total token count is below `small_tail_threshold` and whose merged real token count does not exceed `target_max`, then **absorb that run in one shot**. Stop on encountering **any split-table slice** (`first` / `middle` / `last`), or when the parent-heading path diverges; a split-table slice never initiates tail absorption either.
 
 #### 3.6.4 Phase B: Cross-Level Absorption
 
@@ -251,7 +263,7 @@ For small blocks still unsaturated after Phase A, attempt cross-level merging, b
 - When the current block is shallower than the next block, the current block may absorb the next block forward.
 - When the current block is deeper than the previous block, the previous shallower block may absorb the current block.
 - Merging in the reverse direction is forbidden.
-- The cross-level stage allows the `last` role to absorb forward; `middle` still does not participate in merging.
+- Split-table slices (`first` / `middle` / `last`) are likewise frozen in the cross-level stage and do not participate; only `none` blocks take part in cross-level absorption.
 
 #### 3.6.5 Post-Merge Real-Token Re-Measurement
 
@@ -299,6 +311,7 @@ Proportional constraints: `table_max < target_ideal < target_max`, `table_ideal 
 |---|---|---|
 | `content` | `full_docs[doc_id].content` | The concatenated merged text, used for degradation when the sidecar is missing |
 | `blocks_path` | `full_docs[doc_id].lightrag_document_path` | The `.blocks.jsonl` path, the P strategy's main input |
+| `.tables.json` (implicit) | Derived from `blocks_path` (`<base>.blocks.jsonl` → `<base>.tables.json`) | The header source for HeaderRecovery (§3.3.3); silently skipped when missing |
 | `chunk_token_size` | `chunk_options.chunk_token_size` / `CHUNK_P_SIZE` | The target hard cap N, default `2000` |
 | `chunk_overlap_token_size` | `CHUNK_P_OVERLAP_SIZE` / `chunk_overlap_token_size` | The cap on long-body fallback within one content line and on the table bridge budget, default `100` |
 | `tokenizer` | The tokenizer already resolved by LightRAG | The basis for all token counting and text-overlap extraction |
@@ -342,7 +355,7 @@ The final output is an ordered chunk list, each element:
 }
 ```
 
-Note: `level` and `parent_headings` are now folded into the nested `heading` dict and are no longer provided at the top level; the `[part n]` suffix lands on `heading["heading"]`.
+Note: `level` and `parent_headings` are now folded into the nested `heading` dict and are no longer provided at the top level; the `[part n]` suffix lands on `heading["heading"]`. A middle/last table slice's recovered header does not enter `heading`; it is prepended back into the slice's own `<table>` inside the chunk `content` (§3.3.3).
 
 Internally the implementation also uses temporary fields like `paragraphs`, `content`, `table_chunk_role`, `blockids` to aid splitting and merging, but they do **not** enter the final output under those names (`blockids` is materialized as `sidecar` after conversion).
 
@@ -388,8 +401,9 @@ paper.[mineru-P].pdf
 |---|---|
 | `blocks_path` missing, unreadable, or with no valid content lines | Degrade wholesale to `chunking_by_recursive_character()`, passing the resolved `chunk_overlap_token_size` |
 | TableRowSplit cannot identify a table's JSON / HTML structure | That table uses R-strategy character splitting |
-| TableRowSplit finds a single-row table itself exceeding `table_max` | That single row uses R-strategy character splitting |
+| TableRowSplit finds a single row that cannot be kept within `target_max` alongside its header (the row content exceeds the cap, or it fits but the header would push it over) | **The whole table (header included) degrades to R-strategy character splitting and a `logger.warning` is logged**; the header content survives as plain text along with the original table text |
 | AnchorSplit finds a long block with no qualifying short-paragraph anchor | Table first → greedy packing → degrade to R character splitting if a single paragraph is too long |
+| HeaderRecovery finds `.tables.json` missing/unreadable, or the source table has no `table_header` | Skip header injection (that table has no repeating header to begin with; does not affect the rest of chunking) |
 
 **Important**: after a wholesale fallback there is no longer heading hierarchy, table roles, or bidirectional bridge-text overlap; but it guarantees the document still produces retrieval chunks.
 
@@ -484,6 +498,7 @@ P-strategy-related log keywords (for `grep` troubleshooting):
 - `fallback to recursive_character` — wholesale or single-paragraph degradation
 - `table_chunk_role` — table-role related (§3.3)
 - `bridge` — TableBridge bridge-text handling (§3.3.2)
+- `table_header` / `tables.json` — HeaderRecovery header recovery (§3.3.3)
 - `anchor` — AnchorSplit anchor selection (§3.4)
 
 ### 7.6 Stage Name ↔ Rule Mapping
@@ -494,6 +509,7 @@ The following **stage names** are used as cross-reference identifiers in code co
 |---|---|---|---|
 | `HeadingBlocks` | Stage A | Heading-level basic chunks | §3.1 |
 | `TableRowSplit` | Stage B | Table integrity and row-boundary slicing | §3.2 |
+| `HeaderRecovery` | Stage B.2 | Re-attach the header to middle/last slices during the split | §3.3.3 |
 | `TableBridge` | Stage B.1 | Bidirectional bridge-text overlap between consecutive large tables | §3.3.2 |
 | `AnchorSplit` | Stage C | Anchor-driven long-block re-splitting | §3.4 |
 | `PartLabeling` | Stage C.1 | `[part n]` line-level provenance numbering | §4.4 |
