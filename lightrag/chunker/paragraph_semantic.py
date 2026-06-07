@@ -312,9 +312,7 @@ def _block_with_recovered_header(
         table_id = _extract_table_id(match.group("attrs"))
         if not table_id or table_id not in table_headers:
             return None
-        rebuilt = _inject_header_into_table_slice(
-            para["text"], table_headers[table_id]
-        )
+        rebuilt = _inject_header_into_table_slice(para["text"], table_headers[table_id])
         if rebuilt is None:
             return None
         new_paragraphs = list(paragraphs)

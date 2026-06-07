@@ -714,7 +714,9 @@ def _build_table_with_header(num_data_rows: int, payload_size: int) -> str:
 _NO_SIDECAR = object()
 
 
-def _chunk_with_oversized_table(tmp_path, *, heading: str = "Section", sidecar=_HEADER_BODY):
+def _chunk_with_oversized_table(
+    tmp_path, *, heading: str = "Section", sidecar=_HEADER_BODY
+):
     tokenizer = _make_tokenizer()
     body = "\n".join(
         [
@@ -780,7 +782,9 @@ def test_inject_header_into_table_slice_json_and_html():
     )
 
     # HTML: header rows become a leading <thead> of <th> cells (escaped).
-    html_slice = '<table id="tb-h" format="html"><tbody><tr><td>a</td></tr></tbody></table>'
+    html_slice = (
+        '<table id="tb-h" format="html"><tbody><tr><td>a</td></tr></tbody></table>'
+    )
     assert _inject_header_into_table_slice(html_slice, '[["H1", "H2"]]') == (
         '<table id="tb-h" format="html">'
         "<thead><tr><th>H1</th><th>H2</th></tr></thead>"
