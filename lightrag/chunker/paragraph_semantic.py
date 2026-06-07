@@ -621,30 +621,45 @@ def _split_table_text(
         # unknown format) → character-fallback the whole text.
         return _character_split_text(table_text, tokenizer, target_max=target_max)
 
-    # Re-split any chunk whose wrapped form still exceeds target_max
-    # before resorting to character-level shredding. The row splitter's
-    # balanced-cut heuristic can produce uneven chunks when row sizes
-    # vary, and only a chunk that has collapsed to a single row (where
-    # row-boundary splitting can no longer reduce it) belongs in the
-    # character fallback.
+    # Re-split any chunk whose wrapped form exceeds the cap before resorting to
+    # character-level shredding. For non-first slices the cap is the
+    # *header-inclusive* one (``target_max`` minus the header HeaderRecovery
+    # will prepend), so a reducible multi-row slice keeps getting cut at row
+    # boundaries until each piece can still host the header — rather than being
+    # accepted whole and then left header-less. Only a slice that has collapsed
+    # to a single row (row-boundary splitting can no longer reduce it) is kept
+    # whole when it fits ``target_max`` (its header is skipped later); a row
+    # that exceeds even the bare ``target_max`` goes to the character fallback.
+    # The first emitted slice keeps its own in-body header (never injected) so
+    # it is bounded by the full ``target_max``.
+    effective_max = max(target_max - header_overhead, 1)
     pieces: list[str] = []
     pending: list[list[Any]] = list(row_chunks)
     while pending:
         chunk_rows = pending.pop(0)
         wrapped = serialize(chunk_rows)
-        if _count_tokens(tokenizer, wrapped) <= target_max:
+        wrapped_tokens = _count_tokens(tokenizer, wrapped)
+        cap = target_max if not pieces else effective_max
+        if wrapped_tokens <= cap:
             pieces.append(wrapped)
             continue
         if len(chunk_rows) <= 1:
-            pieces.extend(
-                _character_split_text(wrapped, tokenizer, target_max=target_max)
-            )
+            # A single row can't be split at row boundaries. Keep it whole when
+            # it still fits the hard cap (HeaderRecovery skips the header for
+            # this one slice); only shred it when it exceeds target_max itself.
+            if wrapped_tokens <= target_max:
+                pieces.append(wrapped)
+            else:
+                pieces.extend(
+                    _character_split_text(wrapped, tokenizer, target_max=target_max)
+                )
             continue
-        # Force a finer cut: cap the next-pass body budget at half the
-        # current wrapped size so target_chunks >= 2 inside the splitter.
-        # This guarantees forward progress (one row at minimum per
+        # Multi-row slice over the (header-inclusive) cap: force a finer cut so
+        # each sub-slice stays within budget. Cap the next-pass body budget at
+        # half the current wrapped size so target_chunks >= 2 inside the
+        # splitter. This guarantees forward progress (one row at minimum per
         # sub-chunk, see the splitter's len(rows) cap).
-        halved = max(_count_tokens(tokenizer, wrapped) // 2, 1)
+        halved = max(wrapped_tokens // 2, 1)
         sub_max = max(min(body_max, halved), 1)
         sub_ideal = max(sub_max // 2, 1)
         sub_last_min = max(min(body_last_min, sub_max // 2), 1)
@@ -666,26 +681,26 @@ def _split_table_text(
             )
         if len(sub_chunks) <= 1:
             # The splitter could not reduce further (e.g. one row already
-            # dominates the body). Avoid an infinite loop and let the
-            # character fallback handle this stubborn chunk.
-            pieces.extend(
-                _character_split_text(wrapped, tokenizer, target_max=target_max)
-            )
+            # dominates the body). Keep it whole if it fits the hard cap,
+            # otherwise character-fallback — avoids an infinite loop.
+            if wrapped_tokens <= target_max:
+                pieces.append(wrapped)
+            else:
+                pieces.extend(
+                    _character_split_text(wrapped, tokenizer, target_max=target_max)
+                )
             continue
         # Process the finer cuts before any remaining peer chunks so the
         # output keeps source order.
         pending[0:0] = sub_chunks
 
     # HeaderRecovery: re-inject the source table's repeating header into every
-    # non-first slice (the first slice kept its own header rows). The header's
-    # tokens were budgeted out above, so in the common case the rebuilt slice
-    # stays ≤ target_max. The overflow-repair loop validates each piece against
-    # target_max *before* this prepend, so a near-cap single-row slice the
-    # splitter could not reduce further would otherwise exceed the cap once the
-    # header is added — guard against that by re-checking the rebuilt size and
-    # skipping injection (leaving the slice header-less but cap-compliant) when
-    # it would overflow. A character-fallback fragment (no <table> wrapper)
-    # returns None and is left untouched.
+    # non-first slice (the first slice kept its own header rows). The repair
+    # loop above kept every non-first slice within the header-inclusive cap, so
+    # injection fits ≤ target_max — except a genuinely unsplittable single row
+    # that fits target_max only without a header; the size guard below skips
+    # injection for that one case (leaving it header-less but cap-compliant).
+    # A character-fallback fragment (no <table> wrapper) returns None.
     if header_body and len(pieces) > 1:
         for i in range(1, len(pieces)):
             rebuilt = _inject_header_into_table_slice(pieces[i], header_body)

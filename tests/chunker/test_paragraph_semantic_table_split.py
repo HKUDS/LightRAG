@@ -879,6 +879,43 @@ def test_split_table_text_multi_row_header_not_duplicated(tmp_path):
 
 
 @pytest.mark.offline
+def test_split_table_text_resplits_reducible_slice_to_keep_header():
+    # A reducible multi-row non-first slice whose wrapped table fits target_max
+    # but whose table+header would exceed it must be split further at row
+    # boundaries so each sub-slice still carries the header — rather than being
+    # accepted whole and then silently left header-less. Here the splitter
+    # emits two 2-row chunks at 119 tokens (target_max=120, effective cap=106),
+    # which must be re-split so every non-first slice keeps its header.
+    from lightrag.table_markup import TABLE_TAG_RE
+
+    tokenizer = _make_tokenizer()
+    header_row = ["HH", "HH"]
+    header_body = json.dumps([header_row])
+    rows = [header_row] + [[f"D{i}", "x" * 28] for i in range(4)]
+    table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=120,
+        target_ideal=120,
+        last_min=10,
+        header_body=header_body,
+    )
+
+    assert len(pieces) >= 3
+    # Every piece honors the hard cap.
+    assert all(_count_tokens(tokenizer, p) <= 120 for p in pieces), [
+        _count_tokens(tokenizer, p) for p in pieces
+    ]
+    # No non-first slice is left header-less: each carries the recovered header
+    # (every data row here is small enough that header + row fits target_max).
+    for piece in pieces[1:]:
+        body_rows = json.loads(TABLE_TAG_RE.match(piece).group("body"))
+        assert body_rows[0] == header_row, body_rows
+
+
+@pytest.mark.offline
 def test_split_table_text_budgets_header_before_splitting():
     # With a header supplied, every emitted slice must stay ≤ target_max even
     # though the header is prepended into the non-first slices — proving the
