@@ -125,7 +125,7 @@ If a table's last slice has a token count below `table_min_last` and merging it 
 
 **Rule**: a sliced table glues to surrounding paragraphs differently by "first/middle/last" role; short bridge text between two consecutive large tables is distributed **bidirectionally** to the table chunks on both sides by budget; middle/last slices that lost the header row recover the table's repeating header from `.tables.json` at output time.
 
-**Effect**: a table's **leading explanation** enters the first-slice chunk, its **trailing commentary** enters the last-slice chunk, and **bridge text** serves as both the left table's following context and the right table's preceding context — any table slice carries enough context to be understood on its own at recall, with no "table here, explanation in another chunk" fracture. A split table's middle/last slices, even though detached from the first slice that carries the header, still bring back the column names on `heading.table_header`, so they remain interpretable per-column when recalled alone.
+**Effect**: a table's **leading explanation** enters the first-slice chunk, its **trailing commentary** enters the last-slice chunk, and **bridge text** serves as both the left table's following context and the right table's preceding context — any table slice carries enough context to be understood on its own at recall, with no "table here, explanation in another chunk" fracture. A split table's middle/last slices, even though detached from the first slice that carries the header, get the header row re-injected back at the top of their own `<table>`, so they remain interpretable per-column when recalled alone.
 
 #### 3.3.1 Table Slice Roles and Physical Gluing
 
@@ -159,16 +159,16 @@ How this differs from ordinary adjacent chunk overlap:
 
 #### 3.3.3 Header Recovery for Middle/Last Slices 〔HeaderRecovery〕
 
-After a large table is sliced along row boundaries, the header row stays only in the **first slice**; `middle` / `last` slices thus lose the column names and cannot tell each column's meaning when recalled on their own. To fix this, at the **final output-conversion stage**, blocks whose `table_chunk_role` is still `middle` or `last` recover the header:
+After a large table is sliced along row boundaries, the header row stays only in the **first slice**; `middle` / `last` slices thus lose the column names and cannot tell each column's meaning when recalled on their own. To fix this, at the **final output-conversion stage**, blocks whose `table_chunk_role` is still `middle` or `last` get the header row re-injected into the slice's own `<table>`:
 
 1. **Header source**: at parse time each table's "cross-page repeating header" is written into the sibling `.tables.json` (entry field `table_header`, a JSON 2-D array string; **only tables that genuinely carry a repeating header have this field**). P traces back to the matching table entry via the `id` preserved on the slice's `<table>` tag and takes its `table_header`.
-2. **Placement and format**: the header is wrapped as a legal `<table id="…" format="json">…</table>` fragment (the source table's `id` is kept as the first attribute, matching the attribute order of the `<table>` slices inside `content`) and written to the chunk's `heading.table_header` (see §4.3). It is block-level metadata — it does not enter `content`, and does not affect token counting or `[part n]` numbering; the field is attached even when `heading` itself is empty.
-3. **Never fabricate a header** — none of the following are filled:
-   - a `first` slice carries its own header, so nothing is added;
-   - a `last` slice merged back into a whole table (role becomes `none`) already has the header in-block, so nothing is added;
+2. **Injection point and format**: the header **rows** are prepended into the slice's own `<table>` body so the slice becomes a complete header-bearing table again — a `format="json"` slice prepends the header rows to its row array, a `format="html"` slice emits them as a leading `<thead>` (`<th>` cells, HTML-escaped). The slice keeps its original `attrs` (including the leading `id`). The header **enters `content`** and counts toward the chunk's token total (headers are typically tiny).
+3. **Never fabricate a header** — none of the following are injected:
+   - a `first` slice carries its own header, so nothing is injected;
+   - a `last` slice merged back into a whole table (role becomes `none`) already has the header in-block, so nothing is injected;
    - the source table has no `table_header` field in `.tables.json` (no repeating header), `.tables.json` is missing/unreadable, or the slice has degraded to a character-level non-`<table>` fragment (no `id` to trace).
 
-> Header recovery happens at the output-conversion stage, not as a standalone splitting-pipeline step; a missing `.tables.json` silently degrades to "not filled" and never blocks chunking (see §6).
+> Header recovery happens at the output-conversion stage, not as a standalone splitting-pipeline step; a missing `.tables.json` silently degrades to "not injected" and never blocks chunking (see §6).
 
 ### 3.4 Anchor-Driven Long-Block Re-Splitting — Cut at Semantic Points, Keep Headings 〔AnchorSplit〕
 
@@ -346,10 +346,6 @@ The final output is an ordered chunk list, each element:
         "level": int,                 # Heading level
         "heading": str,               # Gets a [part n] suffix after splitting
         "parent_headings": list[str], # Parent-heading chain, no suffix appended
-        # Optional: present only when this block is a header-less middle/last
-        # table slice and the source table carries table_header in .tables.json
-        # (§3.3.3); the field is attached even when heading is empty.
-        "table_header": str,          # Recovered header, wrapped as <table id="…" format="json">…</table>
     },
     # Optional: present only when the input .blocks.jsonl line carries a blockid,
     # for the multimodal pipeline and document deletion to trace back by source block.
@@ -361,7 +357,7 @@ The final output is an ordered chunk list, each element:
 }
 ```
 
-Note: `level` and `parent_headings` are now folded into the nested `heading` dict and are no longer provided at the top level; the `[part n]` suffix lands on `heading["heading"]`. `heading["table_header"]` is an optional field, present only when a middle/last table slice successfully recovers its header (§3.3.3), and is persisted verbatim to the storage backend.
+Note: `level` and `parent_headings` are now folded into the nested `heading` dict and are no longer provided at the top level; the `[part n]` suffix lands on `heading["heading"]`. A middle/last table slice's recovered header does not enter `heading`; it is prepended back into the slice's own `<table>` inside the chunk `content` (§3.3.3).
 
 Internally the implementation also uses temporary fields like `paragraphs`, `content`, `table_chunk_role`, `blockids` to aid splitting and merging, but they do **not** enter the final output under those names (`blockids` is materialized as `sidecar` after conversion).
 
@@ -409,7 +405,7 @@ paper.[mineru-P].pdf
 | TableRowSplit cannot identify a table's JSON / HTML structure | That table uses R-strategy character splitting |
 | TableRowSplit finds a single-row table itself exceeding `table_max` | That single row uses R-strategy character splitting |
 | AnchorSplit finds a long block with no qualifying short-paragraph anchor | Table first → greedy packing → degrade to R character splitting if a single paragraph is too long |
-| HeaderRecovery finds `.tables.json` missing/unreadable, the source table has no `table_header`, or the slice is a non-`<table>` fragment | Skip header recovery; leave `heading.table_header` unset (does not affect the rest of chunking) |
+| HeaderRecovery finds `.tables.json` missing/unreadable, the source table has no `table_header`, or the slice is a non-`<table>` fragment | Skip header injection; the slice stays header-less (does not affect the rest of chunking) |
 
 **Important**: after a wholesale fallback there is no longer heading hierarchy, table roles, or bidirectional bridge-text overlap; but it guarantees the document still produces retrieval chunks.
 

@@ -125,7 +125,7 @@ P chunker 直接读取 `.blocks.jsonl`，每个 content 行作为后续 TableRow
 
 **规则**：被切片的表格按「首/中/末」角色与周围段落做差异化粘连；连续两张大表之间的短桥接文字按预算**双向**分配到两侧表格块；丢失表头的中段/末段切片在输出时从 `.tables.json` 补回该表的重复表头。
 
-**达到的效果**：表格的**前置说明**进入首切片块、**后置解释**进入末切片块、**桥接文字**同时作为左表后文与右表前文——任一表格切片被召回时都带着足以独立理解的上下文，不会出现「表格在这、解释在另一块」的断裂。被拆表的中段/末段切片即使脱离了承载表头的首切片，也会在 `heading.table_header` 上带回列名，使其单独召回时仍能理解每列含义。
+**达到的效果**：表格的**前置说明**进入首切片块、**后置解释**进入末切片块、**桥接文字**同时作为左表后文与右表前文——任一表格切片被召回时都带着足以独立理解的上下文，不会出现「表格在这、解释在另一块」的断裂。被拆表的中段/末段切片即使脱离了承载表头的首切片，也会把表头行重新拼回自身的 `<table>` 开头，使其单独召回时仍能理解每列含义。
 
 #### 3.3.1 表格切片角色与物理粘连
 
@@ -159,16 +159,16 @@ P chunker 直接读取 `.blocks.jsonl`，每个 content 行作为后续 TableRow
 
 #### 3.3.3 中段/末段切片表头恢复 〔HeaderRecovery〕
 
-大表按行边界切片后，表头行只保留在**首切片**内；`middle` / `last` 切片因此丢失列名，单独召回时无法判断每列含义。为此，在**最终输出转换阶段**，对 `table_chunk_role` 仍为 `middle` 或 `last` 的块补回表头：
+大表按行边界切片后，表头行只保留在**首切片**内；`middle` / `last` 切片因此丢失列名，单独召回时无法判断每列含义。为此，在**最终输出转换阶段**，对 `table_chunk_role` 仍为 `middle` 或 `last` 的块，把表头行直接拼回切片自身的 `<table>`：
 
 1. **表头来源**：解析期已把每张表的「跨页重复表头」写入同目录的 `.tables.json`（条目字段 `table_header`，为 JSON 二维数组字符串；**只有真正带重复表头的表才有该字段**）。P 按切片 `<table>` 标签保留的 `id` 关联回对应表条目，取其 `table_header`。
-2. **写入位置与格式**：表头被包裹为合法的 `<table id="…" format="json">…</table>` 片段（保留源表 `id` 并置于首位，与 `content` 内表格切片的属性顺序一致），写入该 chunk 的 `heading.table_header`（见 §4.3）。它是块级元数据，不混入 `content`、不影响 token 计数与 `[part n]` 编号；`heading` 本身为空时该字段照常出现。
-3. **绝不臆造表头**——以下情形均不补：
-   - `first` 切片自带表头，不补；
-   - `last` 切片若被 LevelMerge 合并回完整表（角色变为 `none`），表头已在块内，不补；
+2. **注入位置与格式**：把表头**行**拼回该切片自身 `<table>` body 的最前面，使切片重新成为带表头的完整表格——`format="json"` 切片把表头行 prepend 到行数组，`format="html"` 切片把表头行渲染为前置 `<thead>`（`<th>` 单元格，文本经 HTML 转义）。切片原有 `attrs`（含首位的 `id`）保持不变。表头**进入 `content`**，会计入该 chunk 的 token 数（表头通常很小）。
+3. **绝不臆造表头**——以下情形均不注入：
+   - `first` 切片自带表头，不注入；
+   - `last` 切片若被 LevelMerge 合并回完整表（角色变为 `none`），表头已在块内，不注入；
    - 源表在 `.tables.json` 中没有 `table_header` 字段（无重复表头）、`.tables.json` 缺失/不可读、或切片已退化为字符级非 `<table>` 片段（无 `id` 可关联）。
 
-> 表头恢复发生在输出转换阶段，而非独立的切分流水线步骤；`.tables.json` 缺失时静默降级为「不补」，绝不阻断分块（见 §6）。
+> 表头恢复发生在输出转换阶段，而非独立的切分流水线步骤；`.tables.json` 缺失时静默降级为「不注入」，绝不阻断分块（见 §6）。
 
 ### 3.4 锚点驱动的长块再切分——按语义点切、保留标题 〔AnchorSplit〕
 
@@ -346,10 +346,6 @@ parser 保证「一条标题下的正文作为一个基础块」（native 经 `f
         "level": int,                 # 标题层级
         "heading": str,               # 拆分后追加 [part n] 后缀
         "parent_headings": list[str], # 父级标题链，不追加后缀
-        # 可选：仅当本块是丢失表头的 middle/last 表格切片、
-        # 且源表在 .tables.json 中带 table_header 时出现（§3.3.3）；
-        # heading 为空时该字段仍照常附加。
-        "table_header": str,          # 恢复的表头，包裹为 <table id="…" format="json">…</table>
     },
     # 可选：仅当输入 .blocks.jsonl 行带 blockid 时出现，
     # 供多模态管线与文档删除按源 block 回溯。
@@ -361,7 +357,7 @@ parser 保证「一条标题下的正文作为一个基础块」（native 经 `f
 }
 ```
 
-注意：`level` 与 `parent_headings` 现已收进 `heading` 嵌套 dict，顶层不再单独提供；`[part n]` 后缀落在 `heading["heading"]` 上。`heading["table_header"]` 是可选字段，仅在中段/末段表格切片成功恢复表头时出现（§3.3.3），原样持久化到存储后端。
+注意：`level` 与 `parent_headings` 现已收进 `heading` 嵌套 dict，顶层不再单独提供；`[part n]` 后缀落在 `heading["heading"]` 上。中段/末段表格切片恢复的表头不进入 `heading`，而是直接拼回该 chunk `content` 内切片自身的 `<table>`（§3.3.3）。
 
 实现内部还会临时使用 `paragraphs`、`content`、`table_chunk_role`、`blockids` 等字段辅助拆分和合并，但**不会**以这些名字进入最终输出（`blockids` 经转换后体现为 `sidecar`）。
 
@@ -409,7 +405,7 @@ paper.[mineru-P].pdf
 | TableRowSplit 中表格无法识别 JSON / HTML 结构 | 该表格调用 R 策略字符切分 |
 | TableRowSplit 中单行表格自身超过 `table_max` | 该单行调用 R 策略字符切分 |
 | AnchorSplit 中长块没有合格短段落锚点 | 表格优先 → 贪心打包 → 单段落超长再降级 R 字符切分 |
-| HeaderRecovery 时 `.tables.json` 缺失/不可读、源表无 `table_header`、或切片非 `<table>` 片段 | 跳过表头恢复，不补 `heading.table_header`（不影响其余分块） |
+| HeaderRecovery 时 `.tables.json` 缺失/不可读、源表无 `table_header`、或切片非 `<table>` 片段 | 跳过表头注入，切片保持无表头（不影响其余分块） |
 
 **重要**：整体 fallback 后不再具备标题层级、表格角色和桥接文字双向重叠能力；但能保证文档仍产生检索块。
 

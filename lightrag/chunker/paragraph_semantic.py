@@ -41,12 +41,14 @@ Pipeline:
   - HeaderRecovery — at output conversion, a ``middle``/``last`` table slice
     (which dropped the header row kept by the ``first`` slice) recovers its
     source table's repeating header from the ``.tables.json`` sidecar (keyed by
-    the slice's ``<table>`` id) and attaches it under ``heading.table_header``.
-    Not a splitting stage; a missing/headerless sidecar silently skips it.
+    the slice's ``<table>`` id) and re-injects it back at the top of the slice's
+    own ``<table>`` body. Not a splitting stage; a missing/headerless sidecar
+    silently skips it.
 """
 
 from __future__ import annotations
 
+import html
 import json
 import math
 import re
@@ -231,41 +233,99 @@ def _load_table_headers(blocks_path: str) -> dict[str, str]:
     return headers
 
 
-def _wrap_table_header(table_id: str, header_body: str) -> str:
-    """Wrap a stored header body into a legal standalone ``<table>`` fragment.
+def _header_rows_to_html_thead(header_rows: list[Any]) -> str:
+    """Render recovered header rows (a JSON 2-D array) as an HTML ``<thead>``.
 
-    The writer stores ``table_header`` as a JSON 2-D array string regardless of
-    the source table's json/html format, so the recovered header is always
-    re-emitted as a ``format="json"`` table. The source table's ``id`` is kept
-    as the FIRST attribute (matching the attribute order of the ``<table>``
-    fragments inside chunk content) so the recovered header can still be traced
-    back to its source table.
+    ``table_header`` is always stored as a JSON 2-D array, so when the slice is
+    an HTML table the header rows are emitted as ``<th>`` cells inside a single
+    ``<thead>`` to be prepended to the slice body. Cell text is HTML-escaped.
+    Returns ``""`` when no usable row is present.
     """
-    return f'<table id="{table_id}" format="json">{header_body}</table>'
+    trs: list[str] = []
+    for row in header_rows:
+        if not isinstance(row, list):
+            continue
+        cells = "".join(f"<th>{html.escape(str(cell))}</th>" for cell in row)
+        trs.append(f"<tr>{cells}</tr>")
+    return f"<thead>{''.join(trs)}</thead>" if trs else ""
 
 
-def _table_header_for_block(
-    block: dict[str, Any], table_headers: dict[str, str]
-) -> str | None:
-    """Recover the wrapped repeating header for a middle/last table-slice block.
+def _inject_header_into_table_slice(text: str, header_body: str) -> str | None:
+    """Prepend the recovered header rows into a table slice's body, in place.
 
-    Scans the block for its first ``<table>`` fragment, traces it to the source
-    table via the fragment's ``id`` attribute (preserved verbatim through
-    row-splitting), and wraps the stored header body. Returns ``None`` when the
-    block has no table fragment (e.g. a character-fallback slice), the fragment
-    carries no ``id``, or the source table has no repeating header — in every
-    such case the caller simply omits the field.
+    Rebuilds ``<table {attrs}>{header rows}{original body}</table>`` keeping the
+    slice's own ``attrs`` (hence its ``id``). For JSON tables the header rows are
+    prepended to the row array; for HTML tables they are emitted as a leading
+    ``<thead>``. Returns ``None`` when the slice or header cannot be parsed, so
+    the caller leaves the slice untouched.
     """
-    for para in block.get("paragraphs", []):
+    match = _TABLE_TAG_RE.match((text or "").strip())
+    if not match:
+        return None
+    try:
+        header_rows = json.loads(header_body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(header_rows, list) or not header_rows:
+        return None
+    attrs = match.group("attrs")
+    body = match.group("body")
+    fmt = _detect_table_format(attrs, body)
+    if fmt == "json":
+        try:
+            rows = json.loads(body)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(rows, list):
+            return None
+        merged = json.dumps(header_rows + rows, ensure_ascii=False)
+        return f"<table {attrs}>{merged}</table>"
+    if fmt == "html":
+        thead = _header_rows_to_html_thead(header_rows)
+        if not thead:
+            return None
+        return f"<table {attrs}>{thead}{body}</table>"
+    return None
+
+
+def _block_with_recovered_header(
+    block: dict[str, Any],
+    table_headers: dict[str, str],
+    tokenizer: Tokenizer,
+) -> dict[str, Any] | None:
+    """Re-inject the repeating header into a middle/last block's table slice.
+
+    A row-split ``middle``/``last`` slice dropped the header row that stayed with
+    the ``first`` slice; this rebuilds the slice so the header rows sit back at
+    the top of its own ``<table>`` (traced to the source table via the slice's
+    ``id``). Returns a shallow-updated block (refreshed ``content`` / ``tokens``)
+    or ``None`` when nothing was injected — no table fragment, no ``id``, the
+    source table has no repeating header, or the slice/header failed to parse.
+    """
+    paragraphs = block.get("paragraphs", [])
+    for i, para in enumerate(paragraphs):
         if not para.get("is_table", False):
             continue
         match = _TABLE_TAG_RE.match((para.get("text") or "").strip())
         if not match:
             continue
         table_id = _extract_table_id(match.group("attrs"))
-        if table_id and table_id in table_headers:
-            return _wrap_table_header(table_id, table_headers[table_id])
-        return None
+        if not table_id or table_id not in table_headers:
+            return None
+        rebuilt = _inject_header_into_table_slice(
+            para["text"], table_headers[table_id]
+        )
+        if rebuilt is None:
+            return None
+        new_paragraphs = list(paragraphs)
+        new_paragraphs[i] = {"text": rebuilt, "is_table": True}
+        new_content = "\n".join(p["text"] for p in new_paragraphs)
+        return {
+            **block,
+            "paragraphs": new_paragraphs,
+            "content": new_content,
+            "tokens": _count_tokens(tokenizer, new_content),
+        }
     return None
 
 
@@ -1853,30 +1913,28 @@ def chunking_by_paragraph_semantic(
     # back to its blocks.jsonl row(s).
     chunks: list[dict[str, Any]] = []
     for idx, blk in enumerate(final):
+        # HeaderRecovery — a "middle"/"last" table slice dropped the header row
+        # that stayed with the "first" slice; re-inject the source table's
+        # repeating header back into the slice's own <table> so its content
+        # carries the column names again. "first" slices keep their own header,
+        # and a "last" slice merged back into a whole table (role → "none") needs
+        # nothing — so only middle/last are eligible.
+        if table_headers and blk.get("table_chunk_role") in ("middle", "last"):
+            rebuilt = _block_with_recovered_header(blk, table_headers, tokenizer)
+            if rebuilt is not None:
+                blk = rebuilt
         body = blk["content"].strip()
         if not body:
             continue
-        heading_block: dict[str, Any] = {
-            "level": int(blk.get("level") or 0),
-            "heading": str(blk.get("heading") or ""),
-            "parent_headings": list(blk.get("parent_headings") or []),
-        }
-        # HeaderRecovery — a "middle"/"last" table slice dropped the header row
-        # that stayed with the "first" slice; recover the source table's
-        # repeating header and attach it under heading.table_header so downstream
-        # KG extraction / embedding still see each column's meaning. "first"
-        # slices carry their own header, and a "last" slice merged back into a
-        # whole table (role → "none") needs nothing — so only middle/last are
-        # eligible. The field is added regardless of whether ``heading`` is empty.
-        if table_headers and blk.get("table_chunk_role") in ("middle", "last"):
-            header = _table_header_for_block(blk, table_headers)
-            if header is not None:
-                heading_block["table_header"] = header
         chunk_dict: dict[str, Any] = {
             "tokens": blk["tokens"],
             "content": body,
             "chunk_order_index": idx,
-            "heading": heading_block,
+            "heading": {
+                "level": int(blk.get("level") or 0),
+                "heading": str(blk.get("heading") or ""),
+                "parent_headings": list(blk.get("parent_headings") or []),
+            },
         }
         blockids = blk.get("blockids") or []
         if blockids:

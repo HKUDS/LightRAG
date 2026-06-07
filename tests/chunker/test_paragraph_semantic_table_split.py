@@ -670,12 +670,14 @@ def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Repeating-header recovery for middle/last table slices (heading.table_header).
+# Header recovery — re-inject the source table's repeating header back into the
+# <table> body of middle/last slices (HeaderRecovery).
 # ---------------------------------------------------------------------------
 
 
 _HEADER_BODY = '[["H1", "H2"]]'
-_WRAPPED_HEADER = '<table id="tb-1" format="json">[["H1", "H2"]]</table>'
+# After injection a JSON slice's table body begins with the header row.
+_INJECTED_PREFIX = '<table id="tb-1" format="json">[["H1", "H2"]'
 
 
 def _write_tables_json(tmp_path, headers: dict) -> None:
@@ -697,15 +699,36 @@ def _write_tables_json(tmp_path, headers: dict) -> None:
     )
 
 
-def _chunk_with_oversized_table(tmp_path, *, heading: str = "Section"):
+def _build_table_with_header(num_data_rows: int, payload_size: int) -> str:
+    # First row is the real header; the rest are data rows. After row-splitting,
+    # only the "first" slice keeps the header row; middle/last slices must have
+    # it re-injected.
+    rows = [["H1", "H2"]] + [
+        [f"r{idx}-" + "x" * payload_size, "y"] for idx in range(num_data_rows)
+    ]
+    return f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+
+
+# Sentinel distinguishing "write tables.json without a table_header" from
+# "do not write tables.json at all".
+_NO_SIDECAR = object()
+
+
+def _chunk_with_oversized_table(tmp_path, *, heading: str = "Section", sidecar=_HEADER_BODY):
     tokenizer = _make_tokenizer()
     body = "\n".join(
         [
             "lead paragraph",
-            _build_oversized_table_text(num_rows=6, row_payload_size=200),
+            _build_table_with_header(num_data_rows=6, payload_size=200),
             "trailing paragraph",
         ]
     )
+    if sidecar is _NO_SIDECAR:
+        pass  # leave the directory without a tables.json
+    elif sidecar is None:
+        _write_tables_json(tmp_path, {"tb-1": None})  # entry without table_header
+    else:
+        _write_tables_json(tmp_path, {"tb-1": sidecar})
     path = tmp_path / "doc.blocks.jsonl"
     row = {
         "type": "content",
@@ -725,6 +748,16 @@ def _chunk_with_oversized_table(tmp_path, *, heading: str = "Section"):
     return chunks
 
 
+def _table_chunks(chunks):
+    return [c for c in chunks if '<table id="tb-1"' in c["content"]]
+
+
+def _slice_starts_with_header(chunk) -> bool:
+    content = chunk["content"]
+    tbl = content[content.index('<table id="tb-1"') :]
+    return tbl.startswith(_INJECTED_PREFIX)
+
+
 @pytest.mark.offline
 def test_extract_table_id_variants():
     from lightrag.table_markup import extract_table_id
@@ -736,48 +769,71 @@ def test_extract_table_id_variants():
 
 
 @pytest.mark.offline
-def test_table_header_recovered_for_middle_and_last_slices(tmp_path):
-    _write_tables_json(tmp_path, {"tb-1": _HEADER_BODY})
-    chunks = _chunk_with_oversized_table(tmp_path)
+def test_inject_header_into_table_slice_json_and_html():
+    from lightrag.chunker.paragraph_semantic import _inject_header_into_table_slice
 
-    assert len(chunks) > 1
-    # The "first" slice (chunk 0, glued with the lead paragraph) keeps its own
-    # header row, so it must NOT receive a recovered table_header.
-    assert "table_header" not in chunks[0]["heading"]
-    # At least one later slice (middle/last) recovers the header, and every
-    # recovered value is the wrapped form of the source table's header.
-    with_header = [c for c in chunks if "table_header" in c["heading"]]
-    assert with_header, "expected middle/last slices to recover the table header"
-    assert all(c["heading"]["table_header"] == _WRAPPED_HEADER for c in with_header)
+    # JSON: header rows are prepended to the row array, attrs (incl. id) kept.
+    json_slice = '<table id="tb-1" format="json">[["a", "b"]]</table>'
+    assert (
+        _inject_header_into_table_slice(json_slice, '[["H1", "H2"]]')
+        == '<table id="tb-1" format="json">[["H1", "H2"], ["a", "b"]]</table>'
+    )
 
+    # HTML: header rows become a leading <thead> of <th> cells (escaped).
+    html_slice = '<table id="tb-h" format="html"><tbody><tr><td>a</td></tr></tbody></table>'
+    assert _inject_header_into_table_slice(html_slice, '[["H1", "H2"]]') == (
+        '<table id="tb-h" format="html">'
+        "<thead><tr><th>H1</th><th>H2</th></tr></thead>"
+        "<tbody><tr><td>a</td></tr></tbody></table>"
+    )
 
-@pytest.mark.offline
-def test_table_header_absent_when_source_table_has_no_header(tmp_path):
-    # tables.json lists the table but WITHOUT a table_header field (no
-    # cross-page repeating header) — nothing must be fabricated.
-    _write_tables_json(tmp_path, {"tb-1": None})
-    chunks = _chunk_with_oversized_table(tmp_path)
-
-    assert len(chunks) > 1
-    assert all("table_header" not in c["heading"] for c in chunks)
+    # Unparseable header → no injection.
+    assert _inject_header_into_table_slice(json_slice, "not json") is None
 
 
 @pytest.mark.offline
-def test_table_header_absent_when_tables_json_missing(tmp_path):
-    # No tables.json at all → silent degrade: no error, no recovered header.
+def test_header_injected_into_every_table_slice(tmp_path):
     chunks = _chunk_with_oversized_table(tmp_path)
+    table_chunks = _table_chunks(chunks)
 
-    assert len(chunks) > 1
-    assert all("table_header" not in c["heading"] for c in chunks)
+    assert len(table_chunks) >= 2, "expected the oversized table to be split"
+    # Every slice's <table> now begins with the header row: the "first" slice
+    # naturally (it kept the real header row), middle/last via re-injection.
+    assert all(_slice_starts_with_header(c) for c in table_chunks), [
+        c["content"][:90] for c in table_chunks
+    ]
 
 
 @pytest.mark.offline
-def test_table_header_recovered_even_when_source_heading_empty(tmp_path):
-    # A preamble block (empty source heading) still recovers the header so the
-    # field rides on heading.table_header regardless of the heading text.
-    _write_tables_json(tmp_path, {"tb-1": _HEADER_BODY})
+def test_no_injection_when_source_table_has_no_header(tmp_path):
+    # tables.json lists the table but WITHOUT a table_header field → nothing is
+    # fabricated; only the first slice (which kept the real header) starts with it.
+    chunks = _chunk_with_oversized_table(tmp_path, sidecar=None)
+    table_chunks = _table_chunks(chunks)
+
+    assert len(table_chunks) >= 2
+    starts = [_slice_starts_with_header(c) for c in table_chunks]
+    assert starts[0] is True, "first slice keeps the table's own header row"
+    assert any(s is False for s in starts[1:]), "later slices must not be injected"
+
+
+@pytest.mark.offline
+def test_no_injection_when_tables_json_missing(tmp_path):
+    # No tables.json at all → silent degrade: no error, no injection.
+    chunks = _chunk_with_oversized_table(tmp_path, sidecar=_NO_SIDECAR)
+    table_chunks = _table_chunks(chunks)
+
+    assert len(table_chunks) >= 2
+    starts = [_slice_starts_with_header(c) for c in table_chunks]
+    assert starts[0] is True
+    assert any(s is False for s in starts[1:])
+
+
+@pytest.mark.offline
+def test_injection_works_when_source_heading_empty(tmp_path):
+    # A preamble block (empty source heading) still gets the header injected.
     chunks = _chunk_with_oversized_table(tmp_path, heading="")
+    table_chunks = _table_chunks(chunks)
 
-    with_header = [c for c in chunks if "table_header" in c["heading"]]
-    assert with_header, "expected a recovered header even with empty source heading"
-    assert all(c["heading"]["table_header"] == _WRAPPED_HEADER for c in with_header)
+    assert len(table_chunks) >= 2
+    assert all(_slice_starts_with_header(c) for c in table_chunks)
