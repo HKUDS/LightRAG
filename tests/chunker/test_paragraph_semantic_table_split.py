@@ -137,21 +137,21 @@ def test_expand_block_assigns_first_and_last_roles_to_glued_blocks():
     roles = [b["table_chunk_role"] for b in out]
     assert roles[0] == "first", f"expected leading block role=first, got {roles}"
     assert roles[-1] == "last", f"expected trailing block role=last, got {roles}"
-    assert all(r == "middle" for r in roles[1:-1]), (
-        f"expected middle slices between first/last, got {roles}"
-    )
+    assert all(
+        r == "middle" for r in roles[1:-1]
+    ), f"expected middle slices between first/last, got {roles}"
 
     # Boundary glue still works: leading text sits inside the first block,
     # trailing text sits inside the last block.
-    assert any(p["text"] == "lead paragraph" for p in out[0]["paragraphs"]), (
-        "leading paragraph must glue with the first table slice"
-    )
-    assert any(p["text"] == "trailing paragraph" for p in out[-1]["paragraphs"]), (
-        "trailing paragraph must glue with the last table slice"
-    )
-    assert all("表格片段" not in b["heading"] for b in out), (
-        "TableRowSplit should not expose legacy table-fragment heading suffixes"
-    )
+    assert any(
+        p["text"] == "lead paragraph" for p in out[0]["paragraphs"]
+    ), "leading paragraph must glue with the first table slice"
+    assert any(
+        p["text"] == "trailing paragraph" for p in out[-1]["paragraphs"]
+    ), "trailing paragraph must glue with the last table slice"
+    assert all(
+        "表格片段" not in b["heading"] for b in out
+    ), "TableRowSplit should not expose legacy table-fragment heading suffixes"
 
 
 @pytest.mark.offline
@@ -196,9 +196,9 @@ def test_expand_block_two_oversized_tables_separates_last_and_first_roles():
     # The transition: there must be a "last" immediately followed by a
     # "first" somewhere in the middle of the role sequence.
     transitions = list(zip(roles, roles[1:]))
-    assert ("last", "first") in transitions, (
-        f"expected a last->first boundary between the two split tables, got {roles}"
-    )
+    assert (
+        ("last", "first") in transitions
+    ), f"expected a last->first boundary between the two split tables, got {roles}"
 
 
 @pytest.mark.offline
@@ -592,9 +592,9 @@ def test_expand_block_single_row_table_no_longer_left_intact():
     assert len(out) >= 2
     # First/last role protection still fires when the table was reduced.
     roles = [b["table_chunk_role"] for b in out]
-    assert "first" in roles or "last" in roles, (
-        f"expected first/last role assignment after table split, got {roles}"
-    )
+    assert (
+        "first" in roles or "last" in roles
+    ), f"expected first/last role assignment after table split, got {roles}"
 
 
 @pytest.mark.offline
@@ -630,9 +630,9 @@ def test_split_long_block_table_dominant_no_anchor_keeps_some_table_markup():
     # At least one sub-block keeps an unbroken <table> fragment somewhere
     # in its content (proof that row-boundary preservation kicked in).
     contents = [b["content"] for b in sub_blocks]
-    assert any(("<table " in c and "</table>" in c) for c in contents), (
-        "expected at least one sub-block to retain a legal <table> fragment"
-    )
+    assert any(
+        ("<table " in c and "</table>" in c) for c in contents
+    ), "expected at least one sub-block to retain a legal <table> fragment"
 
 
 @pytest.mark.offline
@@ -840,6 +840,39 @@ def test_split_table_text_budgets_header_before_splitting():
         p.startswith('<table id="tb-1" format="json">[["' + "H" * 60)
         for p in pieces[1:]
     )
+
+
+@pytest.mark.offline
+def test_split_table_text_skips_header_injection_when_it_would_exceed_cap():
+    # Regression for the cap edge: the overflow-repair loop validates a slice
+    # against target_max BEFORE the header is prepended. A near-cap single-row
+    # non-first slice that the splitter cannot reduce further must not be pushed
+    # past the cap by the injected header — injection is skipped (the slice
+    # stays header-less) so the hard cap still holds for every emitted piece.
+    tokenizer = _make_tokenizer()
+    target_max = 200
+    header_body = '[["HHHHHHHHHH", "KKKKKKKKKK"]]'  # ~30 tokens of header
+    # row0 is the real header (kept by the first slice); row1 is small; row2 is
+    # a single big row whose wrapped <table> size sits just under target_max,
+    # so the repair loop accepts it yet leaves no room for the ~30-token header.
+    rows = [["HHHHHHHHHH", "KKKKKKKKKK"], ["s", "y"], ["x" * 140, "y"]]
+    table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=target_max,
+        target_ideal=150,
+        last_min=64,
+        header_body=header_body,
+    )
+
+    assert len(pieces) >= 2
+    # The cap holds for every piece even though the near-cap slice could not
+    # receive the header.
+    assert all(_count_tokens(tokenizer, p) <= target_max for p in pieces), [
+        _count_tokens(tokenizer, p) for p in pieces
+    ]
 
 
 @pytest.mark.offline

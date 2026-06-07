@@ -661,13 +661,18 @@ def _split_table_text(
 
     # HeaderRecovery: re-inject the source table's repeating header into every
     # non-first slice (the first slice kept its own header rows). The header's
-    # tokens were budgeted out above, so the rebuilt slice stays ≤ target_max.
-    # A character-fallback fragment (no <table> wrapper) returns None and is
-    # left untouched. Single-slice tables (no real split) get nothing.
+    # tokens were budgeted out above, so in the common case the rebuilt slice
+    # stays ≤ target_max. The overflow-repair loop validates each piece against
+    # target_max *before* this prepend, so a near-cap single-row slice the
+    # splitter could not reduce further would otherwise exceed the cap once the
+    # header is added — guard against that by re-checking the rebuilt size and
+    # skipping injection (leaving the slice header-less but cap-compliant) when
+    # it would overflow. A character-fallback fragment (no <table> wrapper)
+    # returns None and is left untouched.
     if header_body and len(pieces) > 1:
         for i in range(1, len(pieces)):
             rebuilt = _inject_header_into_table_slice(pieces[i], header_body)
-            if rebuilt is not None:
+            if rebuilt is not None and _count_tokens(tokenizer, rebuilt) <= target_max:
                 pieces[i] = rebuilt
     return pieces
 
