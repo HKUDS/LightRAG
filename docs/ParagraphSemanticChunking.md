@@ -162,7 +162,7 @@ How this differs from ordinary adjacent chunk overlap:
 After a large table is sliced along row boundaries, the header row stays only in the **first slice**; `middle` / `last` slices thus lose the column names and cannot tell each column's meaning when recalled on their own. To fix this, at the **final output-conversion stage**, blocks whose `table_chunk_role` is still `middle` or `last` recover the header:
 
 1. **Header source**: at parse time each table's "cross-page repeating header" is written into the sibling `.tables.json` (entry field `table_header`, a JSON 2-D array string; **only tables that genuinely carry a repeating header have this field**). P traces back to the matching table entry via the `id` preserved on the slice's `<table>` tag and takes its `table_header`.
-2. **Placement and format**: the header is wrapped as a legal `<table format="json">…</table>` fragment (with the internal `id` dropped) and written to the chunk's `heading.table_header` (see §4.3). It is block-level metadata — it does not enter `content`, and does not affect token counting or `[part n]` numbering; the field is attached even when `heading` itself is empty.
+2. **Placement and format**: the header is wrapped as a legal `<table id="…" format="json">…</table>` fragment (the source table's `id` is kept as the first attribute, matching the attribute order of the `<table>` slices inside `content`) and written to the chunk's `heading.table_header` (see §4.3). It is block-level metadata — it does not enter `content`, and does not affect token counting or `[part n]` numbering; the field is attached even when `heading` itself is empty.
 3. **Never fabricate a header** — none of the following are filled:
    - a `first` slice carries its own header, so nothing is added;
    - a `last` slice merged back into a whole table (role becomes `none`) already has the header in-block, so nothing is added;
@@ -349,7 +349,7 @@ The final output is an ordered chunk list, each element:
         # Optional: present only when this block is a header-less middle/last
         # table slice and the source table carries table_header in .tables.json
         # (§3.3.3); the field is attached even when heading is empty.
-        "table_header": str,          # Recovered header, wrapped as <table format="json">…</table>
+        "table_header": str,          # Recovered header, wrapped as <table id="…" format="json">…</table>
     },
     # Optional: present only when the input .blocks.jsonl line carries a blockid,
     # for the multimodal pipeline and document deletion to trace back by source block.

@@ -231,15 +231,17 @@ def _load_table_headers(blocks_path: str) -> dict[str, str]:
     return headers
 
 
-def _wrap_table_header(header_body: str) -> str:
+def _wrap_table_header(table_id: str, header_body: str) -> str:
     """Wrap a stored header body into a legal standalone ``<table>`` fragment.
 
     The writer stores ``table_header`` as a JSON 2-D array string regardless of
     the source table's json/html format, so the recovered header is always
-    re-emitted as a ``format="json"`` table. The internal ``id`` is dropped:
-    this header rides on a chunk's heading as metadata, not as a citable table.
+    re-emitted as a ``format="json"`` table. The source table's ``id`` is kept
+    as the FIRST attribute (matching the attribute order of the ``<table>``
+    fragments inside chunk content) so the recovered header can still be traced
+    back to its source table.
     """
-    return f'<table format="json">{header_body}</table>'
+    return f'<table id="{table_id}" format="json">{header_body}</table>'
 
 
 def _table_header_for_block(
@@ -262,7 +264,7 @@ def _table_header_for_block(
             continue
         table_id = _extract_table_id(match.group("attrs"))
         if table_id and table_id in table_headers:
-            return _wrap_table_header(table_headers[table_id])
+            return _wrap_table_header(table_id, table_headers[table_id])
         return None
     return None
 

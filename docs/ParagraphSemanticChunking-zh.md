@@ -162,7 +162,7 @@ P chunker 直接读取 `.blocks.jsonl`，每个 content 行作为后续 TableRow
 大表按行边界切片后，表头行只保留在**首切片**内；`middle` / `last` 切片因此丢失列名，单独召回时无法判断每列含义。为此，在**最终输出转换阶段**，对 `table_chunk_role` 仍为 `middle` 或 `last` 的块补回表头：
 
 1. **表头来源**：解析期已把每张表的「跨页重复表头」写入同目录的 `.tables.json`（条目字段 `table_header`，为 JSON 二维数组字符串；**只有真正带重复表头的表才有该字段**）。P 按切片 `<table>` 标签保留的 `id` 关联回对应表条目，取其 `table_header`。
-2. **写入位置与格式**：表头被包裹为合法的 `<table format="json">…</table>` 片段（去掉内部 `id`），写入该 chunk 的 `heading.table_header`（见 §4.3）。它是块级元数据，不混入 `content`、不影响 token 计数与 `[part n]` 编号；`heading` 本身为空时该字段照常出现。
+2. **写入位置与格式**：表头被包裹为合法的 `<table id="…" format="json">…</table>` 片段（保留源表 `id` 并置于首位，与 `content` 内表格切片的属性顺序一致），写入该 chunk 的 `heading.table_header`（见 §4.3）。它是块级元数据，不混入 `content`、不影响 token 计数与 `[part n]` 编号；`heading` 本身为空时该字段照常出现。
 3. **绝不臆造表头**——以下情形均不补：
    - `first` 切片自带表头，不补；
    - `last` 切片若被 LevelMerge 合并回完整表（角色变为 `none`），表头已在块内，不补；
@@ -349,7 +349,7 @@ parser 保证「一条标题下的正文作为一个基础块」（native 经 `f
         # 可选：仅当本块是丢失表头的 middle/last 表格切片、
         # 且源表在 .tables.json 中带 table_header 时出现（§3.3.3）；
         # heading 为空时该字段仍照常附加。
-        "table_header": str,          # 恢复的表头，包裹为 <table format="json">…</table>
+        "table_header": str,          # 恢复的表头，包裹为 <table id="…" format="json">…</table>
     },
     # 可选：仅当输入 .blocks.jsonl 行带 blockid 时出现，
     # 供多模态管线与文档删除按源 block 回溯。

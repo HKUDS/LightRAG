@@ -675,7 +675,7 @@ def _count_tokens(tokenizer: Tokenizer, text: str) -> int:
 
 
 _HEADER_BODY = '[["H1", "H2"]]'
-_WRAPPED_HEADER = '<table format="json">[["H1", "H2"]]</table>'
+_WRAPPED_HEADER = '<table id="tb-1" format="json">[["H1", "H2"]]</table>'
 
 
 def _write_tables_json(tmp_path, headers: dict) -> None:
