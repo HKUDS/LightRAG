@@ -812,22 +812,8 @@ def test_inject_header_into_table_slice_json_and_html():
 
 
 @pytest.mark.offline
-def test_inject_header_does_not_duplicate_existing_header_rows():
+def test_inject_header_skips_html_slice_that_already_has_thead():
     from lightrag.chunker.paragraph_semantic import _inject_header_into_table_slice
-
-    two_row_header = '[["H1a", "H1b"], ["H2a", "H2b"]]'
-
-    # JSON: a slice that already begins with a trailing run of the header
-    # (here the 2nd header row, because the splitter cut inside the header)
-    # must NOT have that row duplicated — it becomes [H1, H2, data], not
-    # [H1, H2, H2, data].
-    slice_with_h2 = (
-        '<table id="tb-1" format="json">[["H2a", "H2b"], ["d", "e"]]</table>'
-    )
-    assert _inject_header_into_table_slice(slice_with_h2, two_row_header) == (
-        '<table id="tb-1" format="json">'
-        '[["H1a", "H1b"], ["H2a", "H2b"], ["d", "e"]]</table>'
-    )
 
     # HTML: a slice that already carries a <thead> is left untouched rather
     # than gaining a second one.
@@ -836,46 +822,81 @@ def test_inject_header_does_not_duplicate_existing_header_rows():
         "<thead><tr><th>H2a</th><th>H2b</th></tr></thead>"
         "<tbody><tr><td>d</td></tr></tbody></table>"
     )
-    assert _inject_header_into_table_slice(slice_with_thead, two_row_header) is None
+    assert _inject_header_into_table_slice(slice_with_thead, '[["H1a", "H1b"]]') is None
 
 
 @pytest.mark.offline
-def test_split_table_text_multi_row_header_not_duplicated(tmp_path):
-    # Regression: a 2-row header with a small per-slice budget forces the row
-    # splitter to cut inside the header, so a non-first slice starts with the
-    # 2nd header row. HeaderRecovery must re-inject the full header WITHOUT
-    # duplicating that row.
+def test_split_table_text_multi_row_header_pinned_not_duplicated():
+    # A multi-row header is pinned out of the split body, so every slice gets
+    # the full header exactly once — never a cut remnant duplicated into a
+    # later slice (e.g. [H1, H2, H2, ...]).
     from lightrag.table_markup import TABLE_TAG_RE
 
     tokenizer = _make_tokenizer()
-    # Two sizable header rows: the per-slice body budget can hold one header
-    # row but not both, so the splitter cuts the header in two — the 2nd header
-    # row leads a non-first slice. The FULL header still fits target_max, so it
-    # is recovered, and the dedup must avoid re-adding the row already present.
-    h1 = ["H1", "x" * 38]
-    h2 = ["H2", "y" * 38]
+    h1 = ["H1", "h1"]
+    h2 = ["H2", "h2"]
     header_rows = [h1, h2]
     header_body = json.dumps(header_rows)
-    rows = [h1, h2, ["D", "z" * 5]]
+    rows = [h1, h2] + [[f"D{i}", "x" * 30] for i in range(6)]
     table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
 
     pieces = _split_table_text(
         table_text,
         tokenizer=tokenizer,
-        target_max=180,
-        target_ideal=180,
+        target_max=160,
+        target_ideal=120,
         last_min=10,
         header_body=header_body,
     )
 
-    assert len(pieces) >= 2, "expected the header to be cut across slices"
-    for piece in pieces[1:]:
-        match = TABLE_TAG_RE.match(piece)
-        assert match, piece
-        body_rows = json.loads(match.group("body"))
-        # The recovered header sits exactly once at the top, with no duplicate.
+    assert len(pieces) >= 2, "expected the data rows to be split across slices"
+    for piece in pieces:
+        body_rows = json.loads(TABLE_TAG_RE.match(piece).group("body"))
+        # Full header present exactly once at the top of every slice.
         assert body_rows[:2] == header_rows, body_rows
-        assert body_rows.count(header_rows[-1]) == 1, body_rows
+        assert body_rows[2:].count(h1) == 0 and body_rows[2:].count(h2) == 0, body_rows
+        assert _count_tokens(tokenizer, piece) <= 160
+
+
+@pytest.mark.offline
+def test_split_table_text_preserves_data_row_equal_to_header():
+    # A genuine data row whose values equal the (single-row) header must be
+    # preserved, not mistaken for a header remnant and dropped. Pinning the
+    # header out of the body guarantees this: the body is split as pure data
+    # and the header is prepended verbatim.
+    from lightrag.table_markup import TABLE_TAG_RE
+
+    tokenizer = _make_tokenizer()
+    header_row = ["Label", "Value"]
+    header_body = json.dumps([header_row])
+    # The 3rd data row is identical to the header (e.g. a repeated label row).
+    data_rows = [
+        ["a", "x" * 40],
+        ["b", "y" * 40],
+        ["Label", "Value"],
+        ["c", "z" * 40],
+    ]
+    rows = [header_row] + data_rows
+    table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=130,
+        target_ideal=90,
+        last_min=10,
+        header_body=header_body,
+    )
+
+    assert len(pieces) >= 2, "expected the data to be split across slices"
+    # Reconstruct the data by stripping the one prepended header row from each
+    # slice; every original data row (including the header-lookalike) survives.
+    recovered: list = []
+    for piece in pieces:
+        body_rows = json.loads(TABLE_TAG_RE.match(piece).group("body"))
+        assert body_rows[0] == header_row, body_rows
+        recovered.extend(body_rows[1:])
+    assert recovered == data_rows, recovered
 
 
 @pytest.mark.offline

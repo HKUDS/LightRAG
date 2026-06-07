@@ -304,19 +304,12 @@ def _inject_header_into_table_slice(text: str, header_body: str) -> str | None:
             return None
         if not isinstance(rows, list):
             return None
-        # Drop any leading header rows this slice already carries: the row
-        # splitter may have placed a boundary *inside* a multi-row header,
-        # leaving a trailing run of header rows at the top of a non-first
-        # slice. Strip the longest prefix of `rows` that equals a trailing
-        # run of `header_rows`, then prepend the full header — so a `[H2]`
-        # slice becomes `[H1, H2]`, never `[H1, H2, H2]`.
-        h = len(header_rows)
-        strip = 0
-        for k in range(min(h, len(rows)), 0, -1):
-            if rows[:k] == header_rows[h - k :]:
-                strip = k
-                break
-        merged = json.dumps(header_rows + rows[strip:], ensure_ascii=False)
+        # The JSON caller pins the repeating header out of the split body (see
+        # ``_split_table_text``), so a slice here only ever holds genuine data
+        # rows — prepend the full header verbatim, never heuristically stripping
+        # leading rows (which would corrupt a data row that happens to equal a
+        # header row).
+        merged = json.dumps(header_rows + rows, ensure_ascii=False)
         return f"<table {attrs}>{merged}</table>"
     if fmt == "html":
         # If the slice already carries a header (a <thead> the splitter kept
@@ -577,14 +570,27 @@ def _split_table_text(
     body_last_min = max(last_min - wrapper_overhead - header_overhead, 1)
     row_chunks: list[list[Any]] | None = None
     serialize: Callable[[list[Any]], str] | None = None
+    # HeaderRecovery (JSON): when the repeating header prefixes the body, pin it
+    # OUT of the rows being split so every emitted slice holds only genuine data
+    # rows. The full header is then re-injected into every slice afterwards —
+    # which means slices never carry header remnants, so injection needs no
+    # heuristic dedup (no duplicated header, no dropped data row that happens to
+    # equal a header row). Header-less / non-prefixing tables split as before.
+    json_pinned = False
     if fmt == "json":
         try:
             rows = json.loads(body)
         except json.JSONDecodeError:
             rows = None
         if isinstance(rows, list) and len(rows) > 1:
+            split_rows = rows
+            if header_rows is not None and rows[: len(header_rows)] == header_rows:
+                data_rows = rows[len(header_rows) :]
+                if data_rows:
+                    split_rows = data_rows
+                    json_pinned = True
             row_chunks = _split_rows_by_tokens(
-                rows,
+                split_rows,
                 tokenizer,
                 target_max=body_max,
                 target_ideal=body_ideal,
@@ -630,16 +636,25 @@ def _split_table_text(
     # to a single row (row-boundary splitting can no longer reduce it) is kept
     # whole when it fits ``target_max`` (its header is skipped later); a row
     # that exceeds even the bare ``target_max`` goes to the character fallback.
-    # The first emitted slice keeps its own in-body header (never injected) so
-    # it is bounded by the full ``target_max``.
+    #
+    # Which slices receive an injected header (and so need the header-inclusive
+    # cap): for a pinned JSON table the header was held out of the body, so
+    # EVERY slice is injected; for HTML the first slice keeps its own in-body
+    # <thead> (full target_max) and only later slices are injected.
     effective_max = max(target_max - header_overhead, 1)
+    inject_html_nonfirst = fmt == "html" and header_rows is not None
     pieces: list[str] = []
     pending: list[list[Any]] = list(row_chunks)
     while pending:
         chunk_rows = pending.pop(0)
         wrapped = serialize(chunk_rows)
         wrapped_tokens = _count_tokens(tokenizer, wrapped)
-        cap = target_max if not pieces else effective_max
+        if json_pinned:
+            cap = effective_max
+        elif inject_html_nonfirst and pieces:
+            cap = effective_max
+        else:
+            cap = target_max
         if wrapped_tokens <= cap:
             pieces.append(wrapped)
             continue
@@ -694,15 +709,21 @@ def _split_table_text(
         # output keeps source order.
         pending[0:0] = sub_chunks
 
-    # HeaderRecovery: re-inject the source table's repeating header into every
-    # non-first slice (the first slice kept its own header rows). The repair
-    # loop above kept every non-first slice within the header-inclusive cap, so
-    # injection fits ≤ target_max — except a genuinely unsplittable single row
-    # that fits target_max only without a header; the size guard below skips
-    # injection for that one case (leaving it header-less but cap-compliant).
-    # A character-fallback fragment (no <table> wrapper) returns None.
-    if header_body and len(pieces) > 1:
-        for i in range(1, len(pieces)):
+    # HeaderRecovery: re-inject the repeating header. For a pinned JSON table
+    # the header was held out of the split body, so EVERY slice (the first
+    # included) is a pure-data table that gets the header prepended; for HTML
+    # the first slice keeps its own in-body <thead> and only later slices are
+    # injected. The repair loop kept each injected slice within the
+    # header-inclusive cap, so injection fits ≤ target_max — except a genuinely
+    # unsplittable single row that fits target_max only without a header; the
+    # size guard below skips injection for that one case (leaving it
+    # header-less but cap-compliant). A character-fallback fragment (no <table>
+    # wrapper) returns None.
+    # Pinned JSON injects every slice (start=0; even a lone slice must regain
+    # the header that was pinned out); HTML injects only later slices (start=1).
+    start = 0 if json_pinned else (1 if inject_html_nonfirst else None)
+    if start is not None:
+        for i in range(start, len(pieces)):
             rebuilt = _inject_header_into_table_slice(pieces[i], header_body)
             if rebuilt is not None and _count_tokens(tokenizer, rebuilt) <= target_max:
                 pieces[i] = rebuilt
