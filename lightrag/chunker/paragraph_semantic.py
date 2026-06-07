@@ -126,6 +126,19 @@ def _bounded_overlap(target_max: int, chunk_overlap_token_size: int) -> int:
     return min(overlap, target_max - 1)
 
 
+# Max heading length surfaced in a log line — a heading can be an entire long
+# paragraph, so truncate before logging to keep the line readable.
+_HEADING_LOG_MAX_CHARS = 50
+
+
+def _heading_for_log(heading: str | None) -> str:
+    """Truncate a heading to the first ``_HEADING_LOG_MAX_CHARS`` chars for logs."""
+    text = heading or ""
+    if len(text) <= _HEADING_LOG_MAX_CHARS:
+        return text
+    return text[:_HEADING_LOG_MAX_CHARS] + "…"
+
+
 def _strip_generated_heading_suffixes(heading: str) -> str:
     """Remove generated split suffixes before assigning a fresh part number."""
     cleaned = (heading or "").rstrip()
@@ -1144,7 +1157,7 @@ def _split_long_block(
             "paragraph (≤ %d chars); preferring table row-boundary split, "
             "falling back to recursive-character splitting on residual "
             "content.",
-            heading,
+            _heading_for_log(heading),
             target_max,
             total,
             _MAX_ANCHOR_CANDIDATE_LENGTH,
