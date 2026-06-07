@@ -559,24 +559,66 @@ def test_adapter_missing_content_list_raises(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
-def test_adapter_html_table_fallback(tmp_path: Path) -> None:
-    """If table_body is a string that is not JSON, treat as HTML and keep
-    on IRTable.html so the writer emits format="html"."""
+def test_adapter_html_table_preserves_merged_cells_and_extracts_thead(
+    tmp_path: Path,
+) -> None:
+    """MinerU HTML table_body must stay HTML so rowspan/colspan survive."""
+    table_html = (
+        '<table><thead><tr><th rowspan="2">Metric</th>'
+        '<th colspan="2">Group</th></tr><tr><th>A</th><th>B</th></tr></thead>'
+        "<tbody><tr><td>Accuracy</td><td>91%</td><td>93%</td></tr></tbody></table>"
+    )
     raw = _write_bundle(
         tmp_path,
         [
             {
                 "type": "table",
-                "table_body": "<table><tr><td>a</td></tr></table>",
+                "table_body": table_html,
+                "table_caption": ["Tbl"],
+            }
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
+    table = ir.blocks[0].tables[0]
+
+    assert table.rows is None
+    assert table.html == table_html
+    assert 'rowspan="2"' in table.html
+    assert 'colspan="2"' in table.html
+    assert table.body_override == table_html.removeprefix("<table>").removesuffix(
+        "</table>"
+    )
+    assert table.num_rows == 3
+    assert table.num_cols == 3
+    assert table.caption == "Tbl"
+    assert table.table_header == [["Metric", "Group"], ["A", "B"]]
+
+
+@pytest.mark.offline
+def test_adapter_html_table_without_thead_does_not_guess_header(
+    tmp_path: Path,
+) -> None:
+    """Only a real HTML <thead> should populate table_header."""
+    table_html = (
+        "<table><tbody><tr><td>H1</td><td>H2</td></tr>"
+        "<tr><td>a</td><td>b</td></tr></tbody></table>"
+    )
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "table",
+                "table_body": table_html,
                 "num_rows": 1,
-                "num_cols": 1,
+                "num_cols": 2,
             }
         ],
     )
     ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
     table = ir.blocks[0].tables[0]
     assert table.rows is None
-    assert table.html and "<td>a</td>" in table.html
+    assert table.html == table_html
+    assert table.table_header is None
 
 
 @pytest.mark.offline
