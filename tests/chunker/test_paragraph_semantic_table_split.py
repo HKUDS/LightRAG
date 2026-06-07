@@ -1,6 +1,7 @@
 """Regression tests for paragraph-semantic TableRowSplit oversized-table handling."""
 
 import json
+import logging
 
 import pytest
 
@@ -30,6 +31,14 @@ class _CharTokenizer(TokenizerInterface):
 
 def _make_tokenizer() -> Tokenizer:
     return Tokenizer(model_name="char", tokenizer=_CharTokenizer())
+
+
+@pytest.fixture
+def _propagate_lightrag_logger(monkeypatch):
+    # The ``lightrag`` logger sets ``propagate=False`` (see lightrag.utils), so
+    # caplog's root handler captures nothing by default. Flip it on for the
+    # duration of a test that asserts on the degrade warning.
+    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
 
 
 @pytest.mark.offline
@@ -445,10 +454,11 @@ def test_split_table_text_single_row_oversized_falls_to_character_split():
 
 
 @pytest.mark.offline
-def test_split_table_text_multirow_one_huge_row_mixed_output():
-    # A multi-row table where most rows fit but one row is itself huge.
-    # The fit-able rows must keep <table>...</table> wrapping; the huge
-    # row's chunk falls to character splitting.
+def test_split_table_text_multirow_one_huge_row_degrades_whole_table_to_recursive():
+    # A multi-row table where most rows fit but one row is itself huge. A single
+    # row that exceeds the cap can no longer be expressed at row boundaries, so
+    # the WHOLE table degrades to a recursive character split (rather than
+    # emitting a mix of <table> slices and orphaned character fragments).
     tokenizer = _make_tokenizer()
     small_row = [{"col": "ok"}]
     huge_row = [{"col": "z" * 2000}]
@@ -463,13 +473,12 @@ def test_split_table_text_multirow_one_huge_row_mixed_output():
         last_min=64,
     )
 
+    assert len(pieces) >= 2, "oversized row must force a multi-piece recursive split"
     assert all(_count_tokens(tokenizer, p) <= 500 for p in pieces)
-    # At least one fragment for the small rows must survive as legal markup.
-    table_pieces = [p for p in pieces if p.startswith("<table ")]
-    assert table_pieces, "expected at least one <table>-wrapped piece for fit-able rows"
-    # The huge row must produce non-table text fragments (character split).
-    text_pieces = [p for p in pieces if not p.startswith("<table ")]
-    assert text_pieces, "huge row must yield character-split text fragments"
+    # The whole table degraded: it was shredded as one recursive split, so no
+    # piece survives as a complete re-wrapped <table>...</table> slice (the old
+    # mixed output kept legal per-row table slices alongside text fragments).
+    assert not any(p.startswith("<table ") and p.endswith("</table>") for p in pieces)
 
 
 @pytest.mark.offline
@@ -968,36 +977,84 @@ def test_split_table_text_budgets_header_before_splitting():
 
 
 @pytest.mark.offline
-def test_split_table_text_skips_header_injection_when_it_would_exceed_cap():
-    # Regression for the cap edge: the overflow-repair loop validates a slice
-    # against target_max BEFORE the header is prepended. A near-cap single-row
-    # non-first slice that the splitter cannot reduce further must not be pushed
-    # past the cap by the injected header — injection is skipped (the slice
-    # stays header-less) so the hard cap still holds for every emitted piece.
+def test_split_table_text_degrades_when_header_would_exceed_cap(
+    caplog, _propagate_lightrag_logger
+):
+    # Cap edge: a single-row slice whose wrapped <table> sits just under
+    # target_max yet leaves no room for the header it would need. Rather than
+    # silently keeping it header-less (the old size-guard behaviour), the whole
+    # table degrades to a recursive split so the header is preserved as text,
+    # the hard cap still holds, and a warning is logged.
     tokenizer = _make_tokenizer()
     target_max = 200
     header_body = '[["HHHHHHHHHH", "KKKKKKKKKK"]]'  # ~30 tokens of header
-    # row0 is the real header (kept by the first slice); row1 is small; row2 is
-    # a single big row whose wrapped <table> size sits just under target_max,
-    # so the repair loop accepts it yet leaves no room for the ~30-token header.
+    # row0 is the real header (pinned out of the body); row1 is small; row2 is a
+    # single big row whose wrapped <table> size sits just under target_max, so
+    # it fits the bare cap yet leaves no room for the ~30-token header.
     rows = [["HHHHHHHHHH", "KKKKKKKKKK"], ["s", "y"], ["x" * 140, "y"]]
     table_text = f'<table id="tb-1" format="json">{json.dumps(rows)}</table>'
 
-    pieces = _split_table_text(
-        table_text,
-        tokenizer=tokenizer,
-        target_max=target_max,
-        target_ideal=150,
-        last_min=64,
-        header_body=header_body,
-    )
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        pieces = _split_table_text(
+            table_text,
+            tokenizer=tokenizer,
+            target_max=target_max,
+            target_ideal=150,
+            last_min=64,
+            header_body=header_body,
+        )
 
     assert len(pieces) >= 2
-    # The cap holds for every piece even though the near-cap slice could not
-    # receive the header.
+    # The cap holds for every piece, and the whole table degraded: no piece
+    # survives as a complete re-wrapped <table>...</table> slice.
     assert all(_count_tokens(tokenizer, p) <= target_max for p in pieces), [
         _count_tokens(tokenizer, p) for p in pieces
     ]
+    assert not any(p.startswith("<table ") and p.endswith("</table>") for p in pieces)
+    # The header content survives in the recursive fallback (not dropped).
+    assert "HHHHHHHHHH" in "".join(pieces)
+    assert any("degrading the whole table" in rec.message for rec in caplog.records), [
+        rec.message for rec in caplog.records
+    ]
+
+
+@pytest.mark.offline
+def test_split_table_text_pinned_header_oversized_row_preserves_header(
+    caplog, _propagate_lightrag_logger
+):
+    # Codex P2 regression: a pinned-header JSON table whose data portion holds a
+    # single row larger than target_max. The old code character-split the
+    # header-less ``wrapped`` body, so the later injection pass (which can't
+    # repair a non-<table> fragment) dropped the header entirely. The whole
+    # table must now degrade to a recursive split that keeps the header text.
+    tokenizer = _make_tokenizer()
+    target_max = 300
+    header_body = '[["HEADERCOL_A", "HEADERCOL_B"]]'
+    # row0 repeats the header (pinned out of the body); row1 is a single huge
+    # data row whose content alone blows past target_max.
+    rows = [["HEADERCOL_A", "HEADERCOL_B"], ["x" * 2000, "y"]]
+    table_text = f'<table id="tb-7" format="json">{json.dumps(rows)}</table>'
+
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        pieces = _split_table_text(
+            table_text,
+            tokenizer=tokenizer,
+            target_max=target_max,
+            target_ideal=220,
+            last_min=64,
+            header_body=header_body,
+        )
+
+    assert len(pieces) >= 2
+    assert all(_count_tokens(tokenizer, p) <= target_max for p in pieces), [
+        _count_tokens(tokenizer, p) for p in pieces
+    ]
+    # The header column names survive somewhere in the emitted fragments.
+    assert "HEADERCOL_A" in "".join(pieces)
+    assert any(
+        "tb-7" in rec.message and "degrading the whole table" in rec.message
+        for rec in caplog.records
+    ), [rec.message for rec in caplog.records]
 
 
 @pytest.mark.offline

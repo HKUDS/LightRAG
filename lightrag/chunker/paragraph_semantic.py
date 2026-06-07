@@ -520,10 +520,15 @@ def _split_table_text(
       3. Row-boundary split: JSON via :func:`_split_rows_by_tokens`,
          HTML via :func:`_split_html_rows_by_tokens`. Re-wrap every
          row-chunk as ``<table {attrs}>{rows}</table>``.
-      4. For any wrapped chunk still exceeding ``target_max``
-         (single-row chunks where the row alone exceeds the cap, or
-         row-split returned a single chunk because rows were ≤ 1),
-         character-fallback that specific chunk's text.
+      4. A multi-row chunk over the cap is recursively re-split at row
+         boundaries. When that collapses to a single row that still
+         can't be kept both ``≤ target_max`` and header-complete (the
+         row alone exceeds the cap, or it fits but leaves no room for
+         the header it would need), the WHOLE table degrades to a
+         recursive character split of the original text — its body
+         still carries the header, so the header survives as text —
+         and a warning is logged. A lone row that needs no header and
+         fits the cap is kept whole as legal markup.
       5. Unknown / unparseable format → character-fallback the entire
          original text.
 
@@ -632,10 +637,20 @@ def _split_table_text(
     # *header-inclusive* one (``target_max`` minus the header HeaderRecovery
     # will prepend), so a reducible multi-row slice keeps getting cut at row
     # boundaries until each piece can still host the header — rather than being
-    # accepted whole and then left header-less. Only a slice that has collapsed
-    # to a single row (row-boundary splitting can no longer reduce it) is kept
-    # whole when it fits ``target_max`` (its header is skipped later); a row
-    # that exceeds even the bare ``target_max`` goes to the character fallback.
+    # accepted whole and then left header-less.
+    #
+    # When row-boundary splitting collapses to a single row that still can't
+    # satisfy its cap, the table can no longer be kept both ``≤ target_max`` and
+    # header-complete via row boundaries. Rather than shred just that slice's
+    # body — which for a pinned-header table drops the header entirely, since the
+    # header was held out of the body and the later injection pass cannot repair
+    # a non-<table> character fragment — the WHOLE table degrades to a recursive
+    # character split of the original ``table_text`` (its body still carries the
+    # header, so the header content survives as text). This fires for either a
+    # row whose content alone exceeds ``target_max`` or a row that fits
+    # ``target_max`` but leaves no room for the header it would need; both emit a
+    # warning. A lone row that needs no header and fits ``target_max`` is still
+    # kept whole as legal markup.
     #
     # Which slices receive an injected header (and so need the header-inclusive
     # cap): for a pinned JSON table the header was held out of the body, so
@@ -643,6 +658,20 @@ def _split_table_text(
     # <thead> (full target_max) and only later slices are injected.
     effective_max = max(target_max - header_overhead, 1)
     inject_html_nonfirst = fmt == "html" and header_rows is not None
+
+    def _degrade_to_recursive() -> list[str]:
+        # A single row can no longer be kept both ≤ cap and header-complete via
+        # row boundaries → degrade the whole table to a recursive character
+        # split of the original text (header included in its body).
+        logger.warning(
+            "Table %s has a single row that cannot stay within the %d-token cap "
+            "alongside its header; degrading the whole table to a recursive "
+            "character split (header content preserved as text)",
+            _extract_table_id(attrs) or "<no-id>",
+            target_max,
+        )
+        return _character_split_text(table_text, tokenizer, target_max=target_max)
+
     pieces: list[str] = []
     pending: list[list[Any]] = list(row_chunks)
     while pending:
@@ -658,17 +687,16 @@ def _split_table_text(
         if wrapped_tokens <= cap:
             pieces.append(wrapped)
             continue
+        header_target = json_pinned or (inject_html_nonfirst and bool(pieces))
         if len(chunk_rows) <= 1:
-            # A single row can't be split at row boundaries. Keep it whole when
-            # it still fits the hard cap (HeaderRecovery skips the header for
-            # this one slice); only shred it when it exceeds target_max itself.
-            if wrapped_tokens <= target_max:
+            # A single row can't be split at row boundaries. Keep it whole only
+            # when it needs no injected header and still fits the hard cap;
+            # otherwise the whole table degrades to a recursive split so the
+            # header is never silently dropped.
+            if not header_target and wrapped_tokens <= target_max:
                 pieces.append(wrapped)
-            else:
-                pieces.extend(
-                    _character_split_text(wrapped, tokenizer, target_max=target_max)
-                )
-            continue
+                continue
+            return _degrade_to_recursive()
         # Multi-row slice over the (header-inclusive) cap: force a finer cut so
         # each sub-slice stays within budget. Cap the next-pass body budget at
         # half the current wrapped size so target_chunks >= 2 inside the
@@ -696,15 +724,14 @@ def _split_table_text(
             )
         if len(sub_chunks) <= 1:
             # The splitter could not reduce further (e.g. one row already
-            # dominates the body). Keep it whole if it fits the hard cap,
-            # otherwise character-fallback — avoids an infinite loop.
-            if wrapped_tokens <= target_max:
+            # dominates the body). Keep it whole only when it needs no injected
+            # header and fits the hard cap; otherwise degrade the whole table to
+            # a recursive split (avoids an infinite loop and never drops the
+            # header).
+            if not header_target and wrapped_tokens <= target_max:
                 pieces.append(wrapped)
-            else:
-                pieces.extend(
-                    _character_split_text(wrapped, tokenizer, target_max=target_max)
-                )
-            continue
+                continue
+            return _degrade_to_recursive()
         # Process the finer cuts before any remaining peer chunks so the
         # output keeps source order.
         pending[0:0] = sub_chunks
@@ -714,11 +741,10 @@ def _split_table_text(
     # included) is a pure-data table that gets the header prepended; for HTML
     # the first slice keeps its own in-body <thead> and only later slices are
     # injected. The repair loop kept each injected slice within the
-    # header-inclusive cap, so injection fits ≤ target_max — except a genuinely
-    # unsplittable single row that fits target_max only without a header; the
-    # size guard below skips injection for that one case (leaving it
-    # header-less but cap-compliant). A character-fallback fragment (no <table>
-    # wrapper) returns None.
+    # header-inclusive cap, so injection fits ≤ target_max — any slice that
+    # could not host its header was already routed to the whole-table recursive
+    # degrade above (it never reaches here). The ``rebuilt is not None`` /
+    # size check below is a defensive belt-and-braces guard.
     # Pinned JSON injects every slice (start=0; even a lone slice must regain
     # the header that was pinned out); HTML injects only later slices (start=1).
     start = 0 if json_pinned else (1 if inject_html_nonfirst else None)

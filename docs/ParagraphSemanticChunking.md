@@ -102,7 +102,7 @@ The P chunker reads `.blocks.jsonl` directly, treating each content line as an i
 
 ### 3.2 Table Integrity and Row-Boundary Slicing — Never Cut a Table Mid-Cell 〔TableRowSplit〕
 
-**Rule**: a table whose token count does not exceed `table_max` **stays whole**; only a table exceeding `table_max` is sliced, and it is **sliced along row boundaries first** — degrading to character-level splitting only when a slice has collapsed to a single row that still exceeds the limit.
+**Rule**: a table whose token count does not exceed `table_max` **stays whole**; only a table exceeding `table_max` is sliced, and it is **sliced along row boundaries first** — the whole table degrades to character-level splitting only when a slice has collapsed to a single row that still cannot be expressed within the limit.
 
 **Effect**: a table is never cut in the "middle of a cell"; every slice is re-wrapped as a legal `<table>` tag, so downstream parsing and LLM reading can interpret it as a table rather than as broken markup fragments.
 
@@ -116,7 +116,7 @@ Before slicing, the `<table {attrs}></table>` wrapper token overhead is debited 
 
 #### 3.2.2 Row-Level Recursive Re-Slicing
 
-If a row subset still exceeds `table_max` after re-wrapping, it is subdivided further within that row subset. **Only when a slice has converged to a single row and that single row itself exceeds the limit does it degrade to character-level splitting.** This mechanism keeps table content expressible by row boundaries in legal table structure as much as possible.
+If a row subset still exceeds `table_max` after re-wrapping, it is subdivided further within that row subset. **When a slice has converged to a single row that cannot be kept both `≤ target_max` and header-complete (the row's content itself exceeds the cap, or it fits but leaves no room for the header it would need), the whole table degrades to an R recursive character split of the original `<table>` text (whose body still carries the header), and a `logger.warning` is logged** — the header content survives as plain text along with the original table text and is never silently dropped, nor is a "some `<table>` slices + some orphaned character fragments" mixed output produced. A slice that needs no injected header and whose single row fits `target_max` is still kept whole as legal `<table>` markup. This mechanism keeps table content expressible by row boundaries in legal table structure as much as possible.
 
 #### 3.2.3 Last-Slice Swallow-Back
 
@@ -163,7 +163,7 @@ How this differs from ordinary adjacent chunk overlap:
 After a large table is sliced along row boundaries, the header row stays only in the **first slice**; `middle` / `last` slices thus lose the column names and cannot tell each column's meaning when recalled on their own. To fix this, **during TableRowSplit** the header row is re-injected into the non-first slices' own `<table>`, so every slice becomes a complete header-bearing table.
 
 1. **Header source**: at parse time each table's "cross-page repeating header" is written into the sibling `.tables.json` (entry field `table_header`, a JSON 2-D array string; **only tables that genuinely carry a repeating header have this field**). P traces back to the matching table entry via the `id` preserved on the to-be-split `<table>` tag and takes its `table_header`.
-2. **Budgeted reserve, injected at split time**: the header's token cost is reserved out of each slice's body cap **before** splitting (alongside the `<table {attrs}></table>` wrapper overhead). `_split_table_text` splits against that reduced budget, then prepends the header into each non-first slice — a `format="json"` slice prepends the header rows to its row array, a `format="html"` slice emits them as a leading `<thead>` (`<th>` cells, HTML-escaped). The slice keeps its original `attrs` (including the leading `id`). Because the room was reserved, **a slice plus its header still stays `≤ target_max`**, so the hard cap is enforced naturally by every downstream stage — there is no late backfill that can overflow the cap. The first slice keeps its own real header row and is not injected again.
+2. **Budgeted reserve, injected at split time**: the header's token cost is reserved out of each slice's body cap **before** splitting (alongside the `<table {attrs}></table>` wrapper overhead). `_split_table_text` splits against that reduced budget, then prepends the header into each non-first slice — a `format="json"` slice prepends the header rows to its row array, a `format="html"` slice emits them as a leading `<thead>` (`<th>` cells, HTML-escaped). The slice keeps its original `attrs` (including the leading `id`). Because the room was reserved, **a slice plus its header still stays `≤ target_max`**, so the hard cap is enforced naturally by every downstream stage — there is no late backfill that can overflow the cap. The first slice keeps its own real header row and is not injected again. If a slice has converged to a single row that can no longer hold both the row content and the header within `target_max` (see §3.2.2), **the whole table degrades to an R recursive character split (header included) and a warning is logged** — never leaving an orphaned header-less slice.
 3. **Never fabricate a header** — none of the following are injected: the source table has no `table_header` field in `.tables.json` (no repeating header), `.tables.json` is missing/unreadable, the slice has degraded to a character-level non-`<table>` fragment (no `id` to trace), or the table was not actually split into multiple pieces.
 
 > Because the header enters the slice at split time, a split table's slices are **completely frozen against LevelMerge — never re-merged with each other** (see §3.6.1); otherwise re-merging two slices of one table would duplicate the header mid-body. The recovered header **enters `content`** and counts toward the chunk's token total (headers are typically tiny); it is **not** stored on `heading`.
@@ -401,9 +401,9 @@ paper.[mineru-P].pdf
 |---|---|
 | `blocks_path` missing, unreadable, or with no valid content lines | Degrade wholesale to `chunking_by_recursive_character()`, passing the resolved `chunk_overlap_token_size` |
 | TableRowSplit cannot identify a table's JSON / HTML structure | That table uses R-strategy character splitting |
-| TableRowSplit finds a single-row table itself exceeding `table_max` | That single row uses R-strategy character splitting |
+| TableRowSplit finds a single row that cannot be kept within `target_max` alongside its header (the row content exceeds the cap, or it fits but the header would push it over) | **The whole table (header included) degrades to R-strategy character splitting and a `logger.warning` is logged**; the header content survives as plain text along with the original table text |
 | AnchorSplit finds a long block with no qualifying short-paragraph anchor | Table first → greedy packing → degrade to R character splitting if a single paragraph is too long |
-| HeaderRecovery finds `.tables.json` missing/unreadable, the source table has no `table_header`, or the slice is a non-`<table>` fragment | Skip header injection; the slice stays header-less (does not affect the rest of chunking) |
+| HeaderRecovery finds `.tables.json` missing/unreadable, or the source table has no `table_header` | Skip header injection (that table has no repeating header to begin with; does not affect the rest of chunking) |
 
 **Important**: after a wholesale fallback there is no longer heading hierarchy, table roles, or bidirectional bridge-text overlap; but it guarantees the document still produces retrieval chunks.
 
