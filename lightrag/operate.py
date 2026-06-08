@@ -4680,15 +4680,27 @@ async def _attach_content_headings(
     the chunks up by ``chunk_id`` in text_chunks storage and attach the parent
     heading path. Only chunks that actually have parent headings get the field,
     so empty paths are omitted from the JSON sent to the LLM.
+
+    Each level is char-capped inside ``format_parent_headings`` and the joined
+    path is token-budgeted against ``DEFAULT_MAX_SECTION_CONTEXT_TOKENS`` here —
+    mirroring the extraction breadcrumb (see ``_truncate_section_context``). The
+    query-context token truncation only keeps/drops whole chunks; it never trims
+    this metadata inside a retained chunk, so a deep heading chain (the per-level
+    cap bounds each level's length, not the number of levels) is bounded here.
     """
     if not text_chunks_db or not chunks:
         return
+    tokenizer = text_chunks_db.global_config.get("tokenizer")
     chunk_ids = [c.get("chunk_id") for c in chunks]
     chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
     for chunk, data in zip(chunks, chunk_data_list):
         if not isinstance(data, dict):
             continue
-        headings = format_parent_headings(data)
+        headings = _truncate_section_context(
+            format_parent_headings(data),
+            tokenizer,
+            DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
+        )
         if headings:
             chunk["content_headings"] = headings
 
