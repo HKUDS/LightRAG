@@ -220,7 +220,9 @@ def write_sidecar(
                     table.placeholder_key,
                 )
                 continue
-            tables[tb_id] = _table_item_dict(tb_id, blockid, block.heading, table)
+            tables[tb_id] = _table_item_dict(
+                tb_id, blockid, block.heading, block.parent_headings, table
+            )
         for drawing in block.drawings:
             im_id = drawing_id_by_key[drawing.placeholder_key]
             if im_id not in rendered:
@@ -234,7 +236,13 @@ def write_sidecar(
                 )
                 continue
             drawings[im_id] = _drawing_item_dict(
-                im_id, blockid, block.heading, drawing, asset_paths, asset_prefix
+                im_id,
+                blockid,
+                block.heading,
+                block.parent_headings,
+                drawing,
+                asset_paths,
+                asset_prefix,
             )
         for equation in block.equations:
             if not equation.is_block:
@@ -251,7 +259,7 @@ def write_sidecar(
                 )
                 continue
             equations[eq_id] = _equation_item_dict(
-                eq_id, blockid, block.heading, equation
+                eq_id, blockid, block.heading, block.parent_headings, equation
             )
 
         row: dict[str, Any] = {
@@ -529,6 +537,7 @@ def _table_item_dict(
     table_id: str,
     blockid: str,
     heading: str,
+    parent_headings: list[str],
     table: IRTable,
 ) -> dict[str, Any]:
     if table.rows is not None:
@@ -542,6 +551,7 @@ def _table_item_dict(
         "id": table_id,
         "blockid": blockid,
         "heading": heading,
+        "parent_headings": list(parent_headings),
         "dimension": [int(table.num_rows), int(table.num_cols)],
         "format": fmt,
         "content": content,
@@ -577,6 +587,7 @@ def _drawing_item_dict(
     drawing_id: str,
     blockid: str,
     heading: str,
+    parent_headings: list[str],
     drawing: IRDrawing,
     asset_paths: dict[str, str],
     asset_prefix: str,
@@ -590,6 +601,7 @@ def _drawing_item_dict(
         "id": drawing_id,
         "blockid": blockid,
         "heading": heading,
+        "parent_headings": list(parent_headings),
         "format": drawing.fmt,
         "path": path,
         "src": drawing.src,
@@ -625,12 +637,14 @@ def _equation_item_dict(
     eq_id: str,
     blockid: str,
     heading: str,
+    parent_headings: list[str],
     equation: IREquation,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
         "id": eq_id,
         "blockid": blockid,
         "heading": heading,
+        "parent_headings": list(parent_headings),
         "format": "latex",
         "content": _strip_latex_dollar_wrappers(equation.latex),
         "caption": equation.caption,
