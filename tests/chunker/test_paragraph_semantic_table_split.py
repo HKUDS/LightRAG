@@ -550,6 +550,65 @@ def test_split_table_text_html_preserves_thead_tbody_wrappers():
 
 
 @pytest.mark.offline
+def test_split_table_text_html_injects_thead_into_nonfirst_slices():
+    """A long HTML table with an HTML <thead> header_body: the first slice keeps
+    its own in-body <thead> (not double-injected); every middle/last slice has
+    the raw <thead> spliced in exactly once, with rowspan/colspan preserved;
+    every slice stays within the cap."""
+    tokenizer = _make_tokenizer()
+    header = (
+        '<thead><tr><th rowspan="2">Metric</th><th colspan="2">Group</th></tr></thead>'
+    )
+    head_row = '<tr><th rowspan="2">Metric</th><th colspan="2">Group</th></tr>'
+    body_rows = "".join(f"<tr><td>{'d' * 120}{i}</td></tr>" for i in range(6))
+    # Body carries its own <thead> (the source header) plus the data rows.
+    body = f"<thead>{head_row}</thead><tbody>{body_rows}</tbody>"
+    table_text = f'<table id="tb-h" format="html">{body}</table>'
+
+    pieces = _split_table_text(
+        table_text,
+        tokenizer=tokenizer,
+        target_max=500,
+        target_ideal=350,
+        last_min=64,
+        header_body=header,
+    )
+
+    assert len(pieces) >= 3  # first / middle(s) / last
+    assert all(p.startswith("<table ") and p.endswith("</table>") for p in pieces)
+    assert all(_count_tokens(tokenizer, p) <= 500 for p in pieces)
+
+    # First slice keeps its own header and is NOT injected with a second copy.
+    assert pieces[0].count("<thead>") == 1
+    # Every non-first slice gets the header spliced in exactly once, verbatim
+    # (rowspan/colspan preserved), immediately after the opening <table …>.
+    for piece in pieces[1:]:
+        assert piece.count("<thead>") == 1, piece
+        assert header in piece, piece
+        assert 'rowspan="2"' in piece and 'colspan="2"' in piece, piece
+        # The <thead> sits at the front of the body, ahead of the data rows.
+        assert piece.index("<thead>") < piece.index("<tbody>"), piece
+
+
+@pytest.mark.offline
+def test_split_table_text_raises_on_html_table_with_json_header():
+    """Cross-format guard: an HTML table fed a JSON-array header_body must raise
+    (the sidecar header does not belong to this table)."""
+    tokenizer = _make_tokenizer()
+    body = "".join(f"<tr><td>{'r' * 200}</td></tr>" for _ in range(5))
+    table_text = f'<table id="tb-h1" format="html">{body}</table>'
+    with pytest.raises(ValueError):
+        _split_table_text(
+            table_text,
+            tokenizer=tokenizer,
+            target_max=500,
+            target_ideal=350,
+            last_min=64,
+            header_body='[["H1", "H2"]]',
+        )
+
+
+@pytest.mark.offline
 def test_split_table_text_unknown_format_falls_to_character():
     # No format attr, body that doesn't look like JSON/HTML → unknown.
     tokenizer = _make_tokenizer()
@@ -810,13 +869,15 @@ def test_inject_header_into_table_slice_json_and_html():
         == '<table id="tb-1" format="json">[["H1", "H2"], ["a", "b"]]</table>'
     )
 
-    # HTML: header rows become a leading <thead> of <th> cells (escaped).
+    # HTML: the raw <thead> header is spliced verbatim ahead of the body,
+    # preserving any rowspan/colspan markup it carries.
     html_slice = (
         '<table id="tb-h" format="html"><tbody><tr><td>a</td></tr></tbody></table>'
     )
-    assert _inject_header_into_table_slice(html_slice, '[["H1", "H2"]]') == (
+    html_header = '<thead><tr><th colspan="2">H</th></tr></thead>'
+    assert _inject_header_into_table_slice(html_slice, html_header) == (
         '<table id="tb-h" format="html">'
-        "<thead><tr><th>H1</th><th>H2</th></tr></thead>"
+        '<thead><tr><th colspan="2">H</th></tr></thead>'
         "<tbody><tr><td>a</td></tr></tbody></table>"
     )
 
@@ -824,6 +885,27 @@ def test_inject_header_into_table_slice_json_and_html():
     assert _inject_header_into_table_slice(json_slice, "not json") is None
     # Non-<table> fragment → no injection.
     assert _inject_header_into_table_slice("just text", '[["H1", "H2"]]') is None
+
+
+@pytest.mark.offline
+def test_inject_header_raises_on_cross_format():
+    """A header whose format disagrees with the slice's content format means the
+    sidecar header does not belong to this table — inject must raise, not
+    silently emit a malformed slice."""
+    from lightrag.chunker.paragraph_semantic import _inject_header_into_table_slice
+
+    json_slice = '<table id="tb-1" format="json">[["a", "b"]]</table>'
+    html_slice = (
+        '<table id="tb-h" format="html"><tbody><tr><td>a</td></tr></tbody></table>'
+    )
+    html_header = "<thead><tr><th>H</th></tr></thead>"
+
+    # HTML header into a JSON slice → mismatch.
+    with pytest.raises(ValueError):
+        _inject_header_into_table_slice(json_slice, html_header)
+    # JSON header into an HTML slice → mismatch.
+    with pytest.raises(ValueError):
+        _inject_header_into_table_slice(html_slice, '[["H1", "H2"]]')
 
 
 @pytest.mark.offline
@@ -837,7 +919,80 @@ def test_inject_header_skips_html_slice_that_already_has_thead():
         "<thead><tr><th>H2a</th><th>H2b</th></tr></thead>"
         "<tbody><tr><td>d</td></tr></tbody></table>"
     )
-    assert _inject_header_into_table_slice(slice_with_thead, '[["H1a", "H1b"]]') is None
+    html_header = "<thead><tr><th>H1a</th><th>H1b</th></tr></thead>"
+    assert _inject_header_into_table_slice(slice_with_thead, html_header) is None
+
+
+@pytest.mark.offline
+def test_full_pipeline_injects_html_thead_into_split_html_table(tmp_path):
+    """End-to-end through chunking_by_paragraph_semantic: an oversized HTML table
+    whose tables.json carries a raw <thead> header has that header re-injected
+    (verbatim, spans preserved) into every non-first table chunk."""
+    html_header = (
+        '<thead><tr><th rowspan="2">Metric</th>'
+        '<th colspan="2">Group</th></tr></thead>'
+    )
+    head_row = '<tr><th rowspan="2">Metric</th><th colspan="2">Group</th></tr>'
+    data_rows = "".join(f"<tr><td>{'d' * 160}{i}</td></tr>" for i in range(6))
+    table = (
+        '<table id="tb-h" format="html">'
+        f"<thead>{head_row}</thead><tbody>{data_rows}</tbody></table>"
+    )
+    body = "\n".join(["lead paragraph", table, "trailing paragraph"])
+
+    # tables.json sidecar with an HTML-format header.
+    (tmp_path / "doc.tables.json").write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "tables": {
+                    "tb-h": {
+                        "id": "tb-h",
+                        "format": "html",
+                        "content": table,
+                        "caption": "",
+                        "table_header": html_header,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps(
+            {
+                "type": "content",
+                "heading": "Section",
+                "parent_headings": [],
+                "level": 2,
+                "content": body,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    tokenizer = _make_tokenizer()
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer,
+        body,
+        chunk_token_size=900,
+        blocks_path=str(blocks_path),
+        chunk_overlap_token_size=0,
+    )
+
+    table_chunks = [c for c in chunks if '<table id="tb-h"' in c["content"]]
+    assert len(table_chunks) >= 2  # the table was split
+    # Every table chunk carries exactly one <thead> with spans intact; the
+    # first keeps its own, later ones got the sidecar header spliced in.
+    for chunk in table_chunks:
+        assert chunk["content"].count("<thead>") == 1, chunk["content"]
+        assert 'rowspan="2"' in chunk["content"]
+        assert 'colspan="2"' in chunk["content"]
+    # At least one non-first chunk literally contains the injected header.
+    assert any(html_header in c["content"] for c in table_chunks[1:])
 
 
 @pytest.mark.offline

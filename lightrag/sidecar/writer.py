@@ -45,6 +45,7 @@ from lightrag.sidecar.placeholders import (
     render_template,
     table_body_for_rows,
 )
+from lightrag.table_markup import header_grid_to_thead_html
 from lightrag.utils import logger
 
 
@@ -548,8 +549,23 @@ def _table_item_dict(
         "footnotes": list(table.footnotes),
     }
     if table.table_header is not None:
-        # Spec §5: stored as JSON string.
-        item["table_header"] = json.dumps(table.table_header, ensure_ascii=False)
+        # The header's stored format follows the table's format (spec §5):
+        #   * HTML tables → a raw ``<thead>…</thead>`` string stored verbatim so
+        #     merged cells (``rowspan``/``colspan``) survive; a grid supplied for
+        #     an HTML table is rendered to a (span-less) ``<thead>`` as fallback.
+        #   * JSON tables → a JSON 2-D array string.
+        if fmt == "html":
+            if isinstance(table.table_header, str):
+                item["table_header"] = table.table_header
+            else:
+                item["table_header"] = header_grid_to_thead_html(table.table_header)
+        elif isinstance(table.table_header, str):
+            raise ValueError(
+                f"JSON table {table_id!r} has a string table_header "
+                f"({table.table_header[:40]!r}…); JSON tables require a 2-D grid"
+            )
+        else:
+            item["table_header"] = json.dumps(table.table_header, ensure_ascii=False)
     if table.self_ref:
         item["self_ref"] = table.self_ref
     if table.extras:

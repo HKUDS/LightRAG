@@ -278,10 +278,15 @@ def test_parse_mineru_emits_compliant_sidecar(
             assert table_item["dimension"] == [3, 3]
             assert 'rowspan="2"' in table_item["content"]
             assert 'colspan="2"' in table_item["content"]
-            assert json.loads(table_item["table_header"]) == [
-                ["Metric", "Score", "Score"],
-                ["Metric", "A", "B"],
-            ]
+            # HTML tables store table_header as the raw <thead> (rowspan/colspan
+            # preserved), not a flattened JSON grid.
+            assert table_item["table_header"] == (
+                '<thead><tr><th rowspan="2">Metric</th>'
+                '<th colspan="2">Score</th></tr>'
+                "<tr><th>A</th><th>B</th></tr></thead>"
+            )
+            assert 'rowspan="2"' in table_item["table_header"]
+            assert 'colspan="2"' in table_item["table_header"]
             assert table_item["self_ref"] == "content_list.json#/2"
 
             equations = json.loads((parsed_dir / "demo.equations.json").read_text())[

@@ -591,21 +591,29 @@ def test_adapter_html_table_preserves_merged_cells_and_extracts_thead(
     assert table.num_rows == 3
     assert table.num_cols == 3
     assert table.caption == "Tbl"
-    # Spanned <thead> is expanded into a rectangular grid: ``Metric`` (rowspan)
-    # fills both header rows' first column, ``Group`` (colspan) fills two.
-    assert table.table_header == [["Metric", "Group", "Group"], ["Metric", "A", "B"]]
+    # The <thead> is preserved verbatim (raw HTML) so rowspan/colspan survive —
+    # not flattened into a grid.
+    assert table.table_header == (
+        '<thead><tr><th rowspan="2">Metric</th>'
+        '<th colspan="2">Group</th></tr><tr><th>A</th><th>B</th></tr></thead>'
+    )
+    assert 'rowspan="2"' in table.table_header
+    assert 'colspan="2"' in table.table_header
 
 
 @pytest.mark.offline
-def test_adapter_html_table_header_grid_is_rectangular(tmp_path: Path) -> None:
-    """A spanned <thead> must expand to a rectangular grid so the repeated
-    header (rendered cell-per-<th> downstream) stays column-aligned with the
-    body — every header row must have exactly ``num_cols`` cells."""
-    table_html = (
-        "<table><thead>"
+def test_adapter_html_table_header_preserves_spans(tmp_path: Path) -> None:
+    """A spanned <thead> is stored verbatim — colspan/rowspan markup is kept
+    intact rather than flattened into a rectangular grid (so merged-cell
+    semantics survive into every repeated header chunk downstream)."""
+    thead = (
+        "<thead>"
         '<tr><th>ID</th><th colspan="3">Scores</th></tr>'
         '<tr><th>n</th><th>A</th><th colspan="2">BC</th></tr>'
-        "</thead><tbody>"
+        "</thead>"
+    )
+    table_html = (
+        f"<table>{thead}<tbody>"
         "<tr><td>1</td><td>x</td><td>y</td><td>z</td></tr>"
         "</tbody></table>"
     )
@@ -613,11 +621,9 @@ def test_adapter_html_table_header_grid_is_rectangular(tmp_path: Path) -> None:
     ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
     table = ir.blocks[0].tables[0]
     assert table.num_cols == 4
-    assert table.table_header == [
-        ["ID", "Scores", "Scores", "Scores"],
-        ["n", "A", "BC", "BC"],
-    ]
-    assert all(len(row) == table.num_cols for row in table.table_header)
+    assert table.table_header == thead
+    assert table.table_header.count('colspan="3"') == 1
+    assert table.table_header.count('colspan="2"') == 1
 
 
 @pytest.mark.offline
@@ -692,7 +698,8 @@ def test_adapter_html_table_strips_html_body_wrapper(tmp_path: Path) -> None:
     assert table.html == f"<table>{inner}</table>"  # <html>/<body> wrapper gone
     assert table.body_override == inner  # block text renders only the inner body
     assert table.num_cols == 2
-    assert table.table_header == [["G", "G"]]  # colspan=2 expanded to a 2-col grid
+    # The <thead> is kept verbatim (colspan preserved), not flattened to a grid.
+    assert table.table_header == '<thead><tr><th colspan="2">G</th></tr></thead>'
 
 
 @pytest.mark.offline

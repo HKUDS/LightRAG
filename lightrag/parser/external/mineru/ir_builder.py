@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -466,14 +467,15 @@ class MinerUIRBuilder:
         if not caption and isinstance(captions, list) and captions:
             caption = str(captions[0])
 
+        # The header representation follows the table's format so merged-cell
+        # semantics survive: HTML tables keep the raw ``<thead>…</thead>``
+        # (preserving rowspan/colspan); grid/JSON tables keep a 2-D grid.
         table_header_raw = item.get("header")
-        table_header: list[list[str]] | None = None
-        if isinstance(table_header_raw, list) and table_header_raw:
+        table_header: list[list[str]] | str | None = None
+        if html:
+            table_header = _extract_thead_html(html)
+        elif isinstance(table_header_raw, list) and table_header_raw:
             table_header = _normalize_grid(table_header_raw)
-        elif html:
-            if html_table_info is None:
-                html_table_info = _extract_html_table_info(html)
-            table_header = html_table_info.table_header
 
         return IRTable(
             placeholder_key="",  # filled by caller
@@ -589,76 +591,52 @@ def _as_str_list(value: Any) -> list[str]:
 class _HTMLTableInfo:
     num_rows: int = 0
     num_cols: int = 0
-    table_header: list[list[str]] | None = None
 
 
 class _HTMLTableInfoParser(HTMLParser):
+    """Count ``<tr>`` rows and their (colspan-aware) column widths.
+
+    Used only to recover ``num_rows`` / ``num_cols`` when MinerU did not supply
+    them; the ``<thead>`` header itself is preserved verbatim by
+    :func:`_extract_thead_html`, not reconstructed here.
+    """
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        # Each row is ``(in_thead, cells, col_count)`` where ``cells`` carries
-        # ``(text, colspan, rowspan)`` per cell so a spanned ``<thead>`` can be
-        # expanded into a rectangular grid (see ``_build_header_grid``).
-        self.rows: list[tuple[bool, list[tuple[str, int, int]], int]] = []
-        self._thead_depth = 0
+        # ``col_count`` (sum of colspans) for each completed top-level ``<tr>``.
+        self.row_col_counts: list[int] = []
         self._tr_depth = 0
         self._cell_depth = 0
-        self._row_in_thead = False
-        self._row_cells: list[tuple[str, int, int]] = []
         self._row_col_count = 0
-        self._cell_parts: list[str] = []
         self._cell_colspan = 1
-        self._cell_rowspan = 1
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
-        if tag == "thead":
-            self._thead_depth += 1
-            return
         if tag == "tr":
             if self._tr_depth == 0:
-                self._row_in_thead = self._thead_depth > 0
-                self._row_cells = []
                 self._row_col_count = 0
             self._tr_depth += 1
             return
         if tag in {"td", "th"} and self._tr_depth > 0:
             if self._cell_depth == 0:
-                self._cell_parts = []
                 self._cell_colspan = _cell_span(attrs, "colspan")
-                self._cell_rowspan = _cell_span(attrs, "rowspan")
             self._cell_depth += 1
-
-    def handle_data(self, data: str) -> None:
-        if self._cell_depth > 0:
-            self._cell_parts.append(data)
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
         if tag in {"td", "th"} and self._cell_depth > 0:
             self._cell_depth -= 1
             if self._cell_depth == 0:
-                text = " ".join("".join(self._cell_parts).split())
-                self._row_cells.append((text, self._cell_colspan, self._cell_rowspan))
                 self._row_col_count += self._cell_colspan
-                self._cell_parts = []
                 self._cell_colspan = 1
-                self._cell_rowspan = 1
             return
         if tag == "tr" and self._tr_depth > 0:
             self._tr_depth -= 1
-            if self._tr_depth == 0 and (self._row_cells or self._row_col_count > 0):
-                self.rows.append(
-                    (
-                        self._row_in_thead,
-                        list(self._row_cells),
-                        self._row_col_count,
-                    )
-                )
-                self._row_cells = []
+            # ``col_count > 0`` ⇔ the row held at least one cell (colspan ≥ 1),
+            # so an empty ``<tr></tr>`` is skipped exactly as before.
+            if self._tr_depth == 0 and self._row_col_count > 0:
+                self.row_col_counts.append(self._row_col_count)
                 self._row_col_count = 0
-            return
-        if tag == "thead" and self._thead_depth > 0:
-            self._thead_depth -= 1
 
 
 def _cell_span(attrs: list[tuple[str, str | None]], name: str) -> int:
@@ -681,54 +659,34 @@ def _extract_html_table_info(html: str) -> _HTMLTableInfo:
     except Exception as exc:  # pragma: no cover - HTMLParser is forgiving.
         logger.debug("[mineru_ir_builder] failed to parse table HTML: %s", exc)
         return _HTMLTableInfo()
-
-    thead_rows = [cells for in_thead, cells, _ in parser.rows if in_thead]
-    header_grid = _build_header_grid(thead_rows)
-    # Drop a header that is entirely blank (e.g. a spacer ``<thead>`` row) so
-    # the writer omits ``table_header`` rather than emitting empty ``<th>``s.
-    if not any(cell.strip() for row in header_grid for cell in row):
-        header_grid = []
     return _HTMLTableInfo(
-        num_rows=len(parser.rows),
-        num_cols=max((col_count for _, _, col_count in parser.rows), default=0),
-        table_header=header_grid or None,
+        num_rows=len(parser.row_col_counts),
+        num_cols=max(parser.row_col_counts, default=0),
     )
 
 
-def _build_header_grid(rows: list[list[tuple[str, int, int]]]) -> list[list[str]]:
-    """Expand spanned ``<thead>`` cells into a rectangular text grid.
+def _extract_thead_html(html: str) -> str | None:
+    """Return the first top-level ``<thead …>…</thead>`` substring verbatim.
 
-    ``table_header`` is rendered cell-per-``<th>`` (no spans) when repeated onto
-    later chunks of a split HTML table, so a ragged header (``colspan``/
-    ``rowspan`` collapsed to one cell) would misalign with the table body.
-    Duplicating each spanned cell's text across the columns/rows it covers keeps
-    the recovered header rectangular and column-aligned.
+    The raw markup is kept so merged-cell semantics (``rowspan`` / ``colspan``)
+    survive into ``tables.json`` and, later, into every repeated header chunk
+    of a split table. Returns ``None`` when the table has no ``<thead>`` or the
+    ``<thead>`` carries no visible text (a blank spacer row, which would
+    otherwise emit empty ``<th>`` headers).
     """
-    grid: list[dict[int, str]] = []
-    carry: dict[int, list] = {}  # column -> [text, rows_remaining]
-    for src_cells in rows:
-        row_out: dict[int, str] = {}
-        next_carry: dict[int, list] = {}
-        # Fill columns still occupied by a rowspan started in an earlier row.
-        for col, (text, left) in carry.items():
-            row_out[col] = text
-            if left - 1 > 0:
-                next_carry[col] = [text, left - 1]
-        # Place this row's own cells into the next free columns.
-        col = 0
-        for text, colspan, rowspan in src_cells:
-            while col in row_out:
-                col += 1
-            for k in range(colspan):
-                row_out[col + k] = text
-                if rowspan > 1:
-                    next_carry[col + k] = [text, rowspan - 1]
-            col += colspan
-        carry = next_carry
-        grid.append(row_out)
-
-    width = max((max(row) + 1 for row in grid if row), default=0)
-    return [[row.get(c, "") for c in range(width)] for row in grid]
+    stripped = (html or "").strip()
+    lower = stripped.lower()
+    start = _find_html_tag(lower, "thead")
+    if start < 0:
+        return None
+    close = lower.find("</thead>", start)
+    if close < 0:
+        return None
+    thead = stripped[start : close + len("</thead>")]
+    # Blank check: drop a header whose cells hold no non-whitespace text.
+    if not re.sub(r"<[^>]+>", "", thead).strip():
+        return None
+    return thead
 
 
 def _looks_like_html_table_payload(body: str) -> bool:
@@ -759,12 +717,20 @@ def _unwrap_html_table(payload: str) -> str:
 def _find_table_open(lower: str) -> int:
     """First index of a real ``<table`` start tag (not e.g. ``<tablefoo``).
     Returns -1 when none is present."""
+    return _find_html_tag(lower, "table")
+
+
+def _find_html_tag(lower: str, tag: str) -> int:
+    """First index of a real ``<tag`` start tag (not e.g. ``<tablefoo`` for
+    ``tag="table"``). ``lower`` must already be lower-cased. Returns -1 when
+    none is present."""
+    needle = f"<{tag}"
     idx = 0
     while True:
-        idx = lower.find("<table", idx)
+        idx = lower.find(needle, idx)
         if idx < 0:
             return -1
-        nxt = idx + len("<table")
+        nxt = idx + len(needle)
         if nxt >= len(lower) or lower[nxt] in {" ", "\t", "\r", "\n", ">", "/"}:
             return idx
         idx = nxt
