@@ -410,6 +410,8 @@
       "startPrompt": "Start a retrieval by typing your query below",
       "clear": "Clear",
       "send": "Send",
+      "stop": "Stop",
+      "userTerminated": "User terminated — response may be incomplete",
       "placeholder": "Enter your query (Support prefix: /<Query Mode>)",
       "error": "Error: Failed to get response",
       "queryModeError": "Only supports the following query modes: {{modes}}",

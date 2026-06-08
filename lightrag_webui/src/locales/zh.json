@@ -410,6 +410,8 @@
       "startPrompt": "输入查询开始检索",
       "clear": "清空",
       "send": "发送",
+      "stop": "停止",
+      "userTerminated": "用户已终止，返回内容可能不完整",
       "placeholder": "输入查询内容 (支持模式前缀: /<Query Mode>)",
       "error": "错误：获取响应失败",
       "queryModeError": "仅支持以下查询模式：{{modes}}",
