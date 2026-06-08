@@ -1479,6 +1479,69 @@ def test_format_parent_headings_basic_behavior_preserved():
     assert format_parent_headings(chunk) == "h1 → h2"  # leaf NOT appended
 
 
+class _FakeChunksDB:
+    """Minimal text_chunks_db for _attach_content_headings: get_by_ids + config."""
+
+    def __init__(self, data_by_id: dict, tokenizer):
+        self._data = data_by_id
+        self.global_config = {"tokenizer": tokenizer}
+
+    async def get_by_ids(self, ids):
+        return [self._data.get(i) for i in ids]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_attach_content_headings_token_budgets_deep_path():
+    """A deep heading chain (per-level cap bounds length, not count) is collapsed
+    to fit DEFAULT_MAX_SECTION_CONTEXT_TOKENS, mirroring the extraction stage."""
+    from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
+    from lightrag.constants import DEFAULT_MAX_SECTION_CONTEXT_TOKENS
+    from lightrag.operate import _attach_content_headings
+
+    tok = Tokenizer("dummy", DummyTokenizer())  # 1 char == 1 token
+    deep = [f"Level{i:02d}" for i in range(100)]  # well over the token budget
+    db = _FakeChunksDB(
+        {"c1": {"heading": {"level": 99, "heading": "Leaf", "parent_headings": deep}}},
+        tok,
+    )
+    chunks = [{"chunk_id": "c1"}]
+
+    await _attach_content_headings(chunks, db)
+
+    out = chunks[0]["content_headings"]
+    assert len(tok.encode(out)) <= DEFAULT_MAX_SECTION_CONTEXT_TOKENS
+    # Collapsed to first → … → leaf, so a middle level is gone.
+    assert f"{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}" in out
+    assert "Level50" not in out
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_attach_content_headings_keeps_short_path_intact():
+    """A within-budget path is attached unchanged (no token collapsing)."""
+    from lightrag.operate import _attach_content_headings
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    db = _FakeChunksDB(
+        {
+            "c1": {
+                "heading": {
+                    "level": 2,
+                    "heading": "Leaf",
+                    "parent_headings": ["h1", "h2"],
+                }
+            }
+        },
+        tok,
+    )
+    chunks = [{"chunk_id": "c1"}]
+
+    await _attach_content_headings(chunks, db)
+
+    assert chunks[0]["content_headings"] == "h1 → h2"
+
+
 @pytest.mark.offline
 def test_truncate_section_context_noop_within_budget():
     from lightrag.operate import _truncate_section_context
