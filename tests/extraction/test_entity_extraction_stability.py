@@ -1168,3 +1168,584 @@ def test_runtime_mode_flip_invalidates_cached_prompt_profile(tmp_path):
             rag._build_global_config()
 
     assert "entity_extraction_json_examples" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Section Context (heading breadcrumb) injection into extraction user prompts
+# ---------------------------------------------------------------------------
+
+_SECTION_MARKER = "---Section Context---"
+
+
+def _render_text_user_prompt(heading_context_block: str) -> str:
+    from lightrag.prompt import PROMPTS
+
+    return PROMPTS["entity_extraction_user_prompt"].format(
+        max_total_records=100,
+        max_entity_records=40,
+        completion_delimiter="<|COMPLETE|>",
+        language="English",
+        input_text="Alice founded Acme Corp.",
+        heading_context_block=heading_context_block,
+    )
+
+
+def _render_json_user_prompt(heading_context_block: str) -> str:
+    from lightrag.prompt import PROMPTS
+
+    return PROMPTS["entity_extraction_json_user_prompt"].format(
+        max_total_records=100,
+        max_entity_records=40,
+        language="English",
+        entity_types_guidance="- Person: humans",
+        input_text="Alice founded Acme Corp.",
+        heading_context_block=heading_context_block,
+    )
+
+
+def _section_block(heading_path: str) -> str:
+    from lightrag.prompt import PROMPTS
+
+    return PROMPTS["entity_extraction_section_context"].format(
+        heading_path=heading_path
+    )
+
+
+@pytest.mark.offline
+def test_format_heading_context_full_path_includes_current_heading():
+    """The breadcrumb appends the chunk's own heading after the parent chain."""
+    from lightrag.chunk_schema import format_heading_context
+
+    chunk = {
+        "content": "...",
+        "heading": {
+            "level": 2,
+            "heading": "Data Collection",
+            "parent_headings": ["Methods"],
+        },
+    }
+    assert format_heading_context(chunk) == "Methods → Data Collection"
+
+
+@pytest.mark.offline
+def test_format_heading_context_empty_when_no_heading():
+    """A chunk without heading info yields an empty breadcrumb (block omitted)."""
+    from lightrag.chunk_schema import format_heading_context
+
+    chunk = {
+        "content": "...",
+        "tokens": 1,
+        "full_doc_id": "d",
+        "chunk_order_index": 0,
+    }
+    assert format_heading_context(chunk) == ""
+
+
+@pytest.mark.offline
+def test_text_user_prompt_section_context_hidden_and_byte_identical_when_no_heading():
+    """No heading -> the whole `---Section Context---` block disappears and the
+    rendered text user prompt is byte-identical to the placeholder-free form."""
+    from lightrag.prompt import PROMPTS
+
+    rendered = _render_text_user_prompt("")
+    assert _SECTION_MARKER not in rendered
+
+    # The placeholder is the ONLY change to this template, so rendering it empty
+    # must equal a version with the placeholder physically removed (i.e. the
+    # pre-change template). This is the hard no-noise regression guard.
+    baseline_template = PROMPTS["entity_extraction_user_prompt"].replace(
+        "{heading_context_block}", ""
+    )
+    baseline = baseline_template.format(
+        max_total_records=100,
+        max_entity_records=40,
+        completion_delimiter="<|COMPLETE|>",
+        language="English",
+        input_text="Alice founded Acme Corp.",
+    )
+    assert rendered == baseline
+
+
+@pytest.mark.offline
+def test_json_user_prompt_section_context_hidden_and_byte_identical_when_no_heading():
+    from lightrag.prompt import PROMPTS
+
+    rendered = _render_json_user_prompt("")
+    assert _SECTION_MARKER not in rendered
+
+    baseline_template = PROMPTS["entity_extraction_json_user_prompt"].replace(
+        "{heading_context_block}", ""
+    )
+    baseline = baseline_template.format(
+        max_total_records=100,
+        max_entity_records=40,
+        language="English",
+        entity_types_guidance="- Person: humans",
+        input_text="Alice founded Acme Corp.",
+    )
+    assert rendered == baseline
+
+
+@pytest.mark.offline
+def test_text_user_prompt_includes_section_context_when_heading_present():
+    rendered = _render_text_user_prompt(_section_block("Methods → Data Collection"))
+    assert _SECTION_MARKER in rendered
+    assert "Methods → Data Collection" in rendered
+    # Block sits immediately above the input text section.
+    assert "Methods → Data Collection\n\n---Input Text---" in rendered
+
+
+@pytest.mark.offline
+def test_json_user_prompt_includes_section_context_when_heading_present():
+    rendered = _render_json_user_prompt(_section_block("Methods → Data Collection"))
+    assert _SECTION_MARKER in rendered
+    assert "Methods → Data Collection" in rendered
+    assert "Methods → Data Collection\n\n---Input Text---" in rendered
+
+
+@pytest.mark.offline
+def test_section_context_breadcrumb_is_not_at_line_start():
+    """A heading that looks like a prompt marker must be rendered inline (as
+    data), never at the start of a line where it could forge a new section."""
+    block = _section_block("---Output---")
+    # The breadcrumb follows a label on the same line, so the marker text never
+    # begins a line of its own.
+    assert "\n---Output---" not in block
+    assert "---Output---" in block  # still present, just inert/inline
+
+
+@pytest.mark.offline
+def test_extraction_system_prompts_reference_section_context():
+    """Both system prompts carry the static conditional instruction."""
+    from lightrag.prompt import PROMPTS
+
+    for key in (
+        "entity_extraction_system_prompt",
+        "entity_extraction_json_system_prompt",
+    ):
+        assert _SECTION_MARKER in PROMPTS[key]
+        assert "only as background" in PROMPTS[key]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_extract_entities_injects_section_context_for_chunk_with_heading():
+    """End-to-end: a chunk carrying a heading produces a user prompt containing
+    its full section breadcrumb; a heading-free chunk does not."""
+    from lightrag.operate import extract_entities
+
+    global_config = _make_global_config(use_json=False)
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    chunks = {
+        "chunk-001": {
+            "tokens": 10,
+            "content": "Alice founded Acme Corp.",
+            "full_doc_id": "doc-001",
+            "chunk_order_index": 0,
+            "heading": {
+                "level": 2,
+                "heading": "Data Collection",
+                "parent_headings": ["Methods"],
+            },
+        }
+    }
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=chunks, global_config=global_config)
+
+    assert llm_func.await_count >= 1
+    user_prompt = llm_func.call_args_list[0][0][0]
+    assert _SECTION_MARKER in user_prompt
+    assert "Methods → Data Collection\n\n---Input Text---" in user_prompt
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_extract_entities_omits_section_context_for_chunk_without_heading():
+    from lightrag.operate import extract_entities
+
+    global_config = _make_global_config(use_json=False)
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=_make_chunks(), global_config=global_config)
+
+    assert llm_func.await_count >= 1
+    user_prompt = llm_func.call_args_list[0][0][0]
+    assert _SECTION_MARKER not in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Section Context length bounding: per-level char cap + overall token budget
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_format_heading_context_caps_long_level():
+    """A single runaway heading level is truncated to the per-level char cap."""
+    from lightrag.chunk_schema import (
+        DEFAULT_HEADING_LEVEL_MAX_CHARS,
+        format_heading_context,
+    )
+
+    long_title = "A" * (DEFAULT_HEADING_LEVEL_MAX_CHARS + 50)
+    chunk = {"heading": {"level": 1, "heading": long_title, "parent_headings": []}}
+
+    out = format_heading_context(chunk)
+    assert out.endswith("…")
+    assert len(out) == DEFAULT_HEADING_LEVEL_MAX_CHARS
+
+
+@pytest.mark.offline
+def test_format_heading_context_per_level_cap_can_be_disabled():
+    from lightrag.chunk_schema import format_heading_context
+
+    long_title = "B" * 300
+    chunk = {"heading": {"level": 1, "heading": long_title, "parent_headings": []}}
+
+    assert format_heading_context(chunk, max_heading_len=0) == long_title
+
+
+# ---------------------------------------------------------------------------
+# Query-stage format_parent_headings: same per-level cap + cleaning as extraction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_format_parent_headings_caps_long_level():
+    """A runaway parent heading is truncated to the per-level char cap, matching
+    the extraction-stage format_heading_context."""
+    from lightrag.chunk_schema import (
+        DEFAULT_HEADING_LEVEL_MAX_CHARS,
+        format_parent_headings,
+    )
+
+    long_title = "A" * (DEFAULT_HEADING_LEVEL_MAX_CHARS + 50)
+    chunk = {
+        "heading": {"level": 2, "heading": "Leaf", "parent_headings": [long_title]}
+    }
+
+    out = format_parent_headings(chunk)
+    assert out.endswith("…")
+    assert len(out) == DEFAULT_HEADING_LEVEL_MAX_CHARS  # only the parent, capped
+
+
+@pytest.mark.offline
+def test_format_parent_headings_per_level_cap_can_be_disabled():
+    from lightrag.chunk_schema import format_parent_headings
+
+    long_title = "B" * 300
+    chunk = {
+        "heading": {"level": 2, "heading": "Leaf", "parent_headings": [long_title]}
+    }
+
+    assert format_parent_headings(chunk, max_heading_len=0) == long_title
+
+
+@pytest.mark.offline
+def test_format_parent_headings_cleaning_matches_extraction():
+    """Parent headings get the same cleaning as extraction: → folded to a space,
+    Cc/Cf control chars stripped (shared _clean_heading_text)."""
+    from lightrag.chunk_schema import format_parent_headings
+
+    # chr(0) is a Cc control; chr(0x200B) is ZWSP (Cf) — both stripped. Built
+    # via chr() so the source carries no literal invisible characters.
+    second_level = "x" + chr(0) + "y" + chr(0x200B) + "z"
+    chunk = {
+        "heading": {
+            "level": 2,
+            "heading": "Leaf",
+            "parent_headings": ["A→B", second_level],
+        }
+    }
+    # "A→B" -> "A B"; control + format chars removed from the second level.
+    assert format_parent_headings(chunk) == "A B → xyz"
+
+
+@pytest.mark.offline
+def test_format_parent_headings_basic_behavior_preserved():
+    """Existing behavior is unchanged: empty when no heading, normal multi-level
+    path joined with the breadcrumb separator."""
+    from lightrag.chunk_schema import format_parent_headings
+
+    assert format_parent_headings({"content": "...", "chunk_order_index": 0}) == ""
+
+    chunk = {
+        "heading": {"level": 2, "heading": "Leaf", "parent_headings": ["h1", "h2"]}
+    }
+    assert format_parent_headings(chunk) == "h1 → h2"  # leaf NOT appended
+
+
+class _FakeChunksDB:
+    """Minimal text_chunks_db for _attach_content_headings: get_by_ids + config."""
+
+    def __init__(self, data_by_id: dict, tokenizer):
+        self._data = data_by_id
+        self.global_config = {"tokenizer": tokenizer}
+
+    async def get_by_ids(self, ids):
+        return [self._data.get(i) for i in ids]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_attach_content_headings_token_budgets_deep_path():
+    """A deep heading chain (per-level cap bounds length, not count) is collapsed
+    to fit DEFAULT_MAX_SECTION_CONTEXT_TOKENS, mirroring the extraction stage."""
+    from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
+    from lightrag.constants import DEFAULT_MAX_SECTION_CONTEXT_TOKENS
+    from lightrag.operate import _attach_content_headings
+
+    tok = Tokenizer("dummy", DummyTokenizer())  # 1 char == 1 token
+    deep = [f"Level{i:02d}" for i in range(100)]  # well over the token budget
+    db = _FakeChunksDB(
+        {"c1": {"heading": {"level": 99, "heading": "Leaf", "parent_headings": deep}}},
+        tok,
+    )
+    chunks = [{"chunk_id": "c1"}]
+
+    await _attach_content_headings(chunks, db)
+
+    out = chunks[0]["content_headings"]
+    assert len(tok.encode(out)) <= DEFAULT_MAX_SECTION_CONTEXT_TOKENS
+    # Collapsed to first → … → leaf, so a middle level is gone.
+    assert f"{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}" in out
+    assert "Level50" not in out
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_attach_content_headings_keeps_short_path_intact():
+    """A within-budget path is attached unchanged (no token collapsing)."""
+    from lightrag.operate import _attach_content_headings
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    db = _FakeChunksDB(
+        {
+            "c1": {
+                "heading": {
+                    "level": 2,
+                    "heading": "Leaf",
+                    "parent_headings": ["h1", "h2"],
+                }
+            }
+        },
+        tok,
+    )
+    chunks = [{"chunk_id": "c1"}]
+
+    await _attach_content_headings(chunks, db)
+
+    assert chunks[0]["content_headings"] == "h1 → h2"
+
+
+@pytest.mark.offline
+def test_truncate_section_context_noop_within_budget():
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    path = "Methods → Data Collection"
+    assert _truncate_section_context(path, tok, 256) == path
+
+
+@pytest.mark.offline
+def test_truncate_section_context_keeps_first_and_last_when_over_budget():
+    """Over budget -> keep first (top-level) + last (leaf) section, elide middle."""
+    from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())  # 1 char == 1 token
+    levels = [f"Level{i:02d}" for i in range(100)]
+    path = HEADING_BREADCRUMB_SEP.join(levels)
+    # Budget large enough for the collapsed two-level form (~21 tokens) so the
+    # hard-cap backstop does not also fire here.
+    budget = 40
+
+    out = _truncate_section_context(path, tok, budget)
+    expected = (
+        f"{levels[0]}{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}{levels[-1]}"
+    )
+    assert out == expected
+    assert "Level50" not in out  # middle levels are gone
+    assert len(tok.encode(out)) <= budget
+
+
+@pytest.mark.offline
+def test_truncate_section_context_hard_caps_dense_short_path():
+    """A 1-/2-level path that is itself over budget must still be capped
+    (not bypassed) — guards token-dense / byte-level tokenizers."""
+    from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    path = HEADING_BREADCRUMB_SEP.join(["A" * 50, "B" * 50])  # 103 chars/tokens
+    budget = 10
+
+    out = _truncate_section_context(path, tok, budget)
+    assert out != path
+    assert out.endswith("…")
+    assert len(tok.encode(out)) <= budget
+
+
+@pytest.mark.offline
+def test_truncate_section_context_accounts_for_multitoken_ellipsis():
+    """The hard cap must reserve the tokenizer's actual ellipsis cost."""
+    from lightrag.operate import _truncate_section_context
+
+    class TwoTokenEllipsisTokenizer(TokenizerInterface):
+        def encode(self, content: str):
+            tokens = []
+            for ch in content:
+                if ch == "…":
+                    tokens.extend([0x110000, 0x110001])
+                else:
+                    tokens.append(ord(ch))
+            return tokens
+
+        def decode(self, tokens):
+            return "".join(chr(token) for token in tokens if token <= 0x10FFFF)
+
+    tok = Tokenizer("two-token-ellipsis", TwoTokenEllipsisTokenizer())
+    budget = 10
+
+    out = _truncate_section_context("A" * 20, tok, budget)
+    assert out == "A" * 8 + "…"
+    assert len(tok.encode(out)) <= budget
+
+
+@pytest.mark.offline
+def test_truncate_section_context_hard_caps_collapsed_form_when_still_over():
+    """Even the collapsed first→…→leaf form is capped if it still exceeds."""
+    from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    levels = [f"Level{i:02d}" for i in range(100)]
+    path = HEADING_BREADCRUMB_SEP.join(levels)
+    budget = 8  # smaller than the ~21-token collapsed form
+
+    out = _truncate_section_context(path, tok, budget)
+    assert out.endswith("…")
+    assert len(tok.encode(out)) <= budget
+
+
+@pytest.mark.offline
+def test_heading_level_cap_below_one_third_of_token_budget():
+    """Invariant guard: collapsed first+leaf must fit the token budget."""
+    from lightrag.constants import (
+        DEFAULT_HEADING_LEVEL_MAX_CHARS,
+        DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
+    )
+
+    assert DEFAULT_HEADING_LEVEL_MAX_CHARS * 3 < DEFAULT_MAX_SECTION_CONTEXT_TOKENS
+
+
+@pytest.mark.offline
+def test_truncate_section_context_disabled_or_no_tokenizer():
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    path = "X" * 1000
+    assert _truncate_section_context(path, tok, 0) == path
+    assert _truncate_section_context(path, None, 256) == path
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_extract_entities_bounds_pathological_heading_in_prompt():
+    """A chunk with an absurdly long heading must not inject it verbatim."""
+    from lightrag.chunk_schema import DEFAULT_HEADING_LEVEL_MAX_CHARS
+    from lightrag.operate import extract_entities
+
+    global_config = _make_global_config(use_json=False)
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    long_title = "Z" * 500
+    chunks = {
+        "chunk-001": {
+            "tokens": 10,
+            "content": "Alice founded Acme Corp.",
+            "full_doc_id": "doc-001",
+            "chunk_order_index": 0,
+            "heading": {
+                "level": 1,
+                "heading": long_title,
+                "parent_headings": [],
+            },
+        }
+    }
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=chunks, global_config=global_config)
+
+    user_prompt = llm_func.call_args_list[0][0][0]
+    assert _SECTION_MARKER in user_prompt
+    assert long_title not in user_prompt  # full title never reaches the prompt
+    assert "Z" * DEFAULT_HEADING_LEVEL_MAX_CHARS not in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Heading text symbol cleaning: → -> space, strip Cc/Cf, preserve everything else
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_clean_heading_text_converts_arrow_to_space():
+    """The breadcrumb separator char must never survive inside one heading."""
+    from lightrag.chunk_schema import _clean_heading_text
+
+    assert _clean_heading_text("A→B") == "A B"
+    assert _clean_heading_text("A  →  B") == "A B"
+
+
+@pytest.mark.offline
+def test_clean_heading_text_strips_control_and_format_chars():
+    """Cc (NUL, BEL, file/unit separators) and Cf (zero-width marks) are removed."""
+    from lightrag.chunk_schema import _clean_heading_text
+
+    # \x00 (Cc), ​ ZWSP (Cf), ﻿ BOM (Cf) all vanish.
+    assert _clean_heading_text("a\x00b​c﻿") == "abc"
+    assert _clean_heading_text("x\x07y") == "xy"
+    # \x1c-\x1f are Cc but NOT matched by \s — must be stripped, not kept.
+    assert _clean_heading_text("p\x1c\x1fq") == "pq"
+
+
+@pytest.mark.offline
+def test_clean_heading_text_preserves_normal_characters():
+    """CJK / Latin / digits / punctuation are left untouched; only → is folded."""
+    from lightrag.chunk_schema import _clean_heading_text
+
+    assert _clean_heading_text("方法 → 数据采集 (2024)!") == "方法 数据采集 (2024)!"
+    # Adjacent CJK never gets a space inserted between characters.
+    assert _clean_heading_text("数据采集") == "数据采集"
+
+
+@pytest.mark.offline
+def test_clean_heading_text_whitespace_collapse_is_last():
+    """Newline/tab still fold to a single space (kept through the strip pass)."""
+    from lightrag.chunk_schema import _clean_heading_text
+
+    assert _clean_heading_text("a\nb\tc") == "a b c"
+    # A control char removed between two words must not leave a double space.
+    assert _clean_heading_text("a \x00 b") == "a b"
+
+
+@pytest.mark.offline
+def test_format_heading_context_arrow_in_heading_does_not_forge_level():
+    """A heading containing → is cleaned, so the breadcrumb split stays accurate."""
+    from lightrag.chunk_schema import (
+        HEADING_BREADCRUMB_SEP,
+        format_heading_context,
+    )
+
+    chunk = {
+        "heading": {"level": 2, "heading": "C", "parent_headings": ["A→B"]},
+    }
+    out = format_heading_context(chunk)
+    assert out == "A B → C"
+    # The breadcrumb still splits into exactly the two real levels.
+    assert out.split(HEADING_BREADCRUMB_SEP) == ["A B", "C"]
