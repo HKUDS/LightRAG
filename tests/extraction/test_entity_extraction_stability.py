@@ -1362,3 +1362,104 @@ async def test_extract_entities_omits_section_context_for_chunk_without_heading(
     assert llm_func.await_count >= 1
     user_prompt = llm_func.call_args_list[0][0][0]
     assert _SECTION_MARKER not in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Section Context length bounding: per-level char cap + overall token budget
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_format_heading_context_caps_long_level():
+    """A single runaway heading level is truncated to the per-level char cap."""
+    from lightrag.chunk_schema import (
+        DEFAULT_HEADING_LEVEL_MAX_CHARS,
+        format_heading_context,
+    )
+
+    long_title = "A" * (DEFAULT_HEADING_LEVEL_MAX_CHARS + 50)
+    chunk = {"heading": {"level": 1, "heading": long_title, "parent_headings": []}}
+
+    out = format_heading_context(chunk)
+    assert out.endswith("…")
+    assert len(out) == DEFAULT_HEADING_LEVEL_MAX_CHARS
+
+
+@pytest.mark.offline
+def test_format_heading_context_per_level_cap_can_be_disabled():
+    from lightrag.chunk_schema import format_heading_context
+
+    long_title = "B" * 300
+    chunk = {"heading": {"level": 1, "heading": long_title, "parent_headings": []}}
+
+    assert format_heading_context(chunk, max_heading_len=0) == long_title
+
+
+@pytest.mark.offline
+def test_truncate_section_context_noop_within_budget():
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    path = "Methods → Data Collection"
+    assert _truncate_section_context(path, tok, 256) == path
+
+
+@pytest.mark.offline
+def test_truncate_section_context_keeps_tail_when_over_budget():
+    """Over budget -> keep the nearest (tail) section and mark elision."""
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())  # 1 char == 1 token
+    path = " → ".join(f"Level{i:02d}" for i in range(100))
+    budget = 20
+
+    out = _truncate_section_context(path, tok, budget)
+    assert out.startswith("… ")
+    # The kept tail is exactly the last ``budget`` characters of the path.
+    assert out == "… " + path[-budget:]
+    assert out.endswith(path[-budget:])
+
+
+@pytest.mark.offline
+def test_truncate_section_context_disabled_or_no_tokenizer():
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    path = "X" * 1000
+    assert _truncate_section_context(path, tok, 0) == path
+    assert _truncate_section_context(path, None, 256) == path
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_extract_entities_bounds_pathological_heading_in_prompt():
+    """A chunk with an absurdly long heading must not inject it verbatim."""
+    from lightrag.chunk_schema import DEFAULT_HEADING_LEVEL_MAX_CHARS
+    from lightrag.operate import extract_entities
+
+    global_config = _make_global_config(use_json=False)
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    long_title = "Z" * 500
+    chunks = {
+        "chunk-001": {
+            "tokens": 10,
+            "content": "Alice founded Acme Corp.",
+            "full_doc_id": "doc-001",
+            "chunk_order_index": 0,
+            "heading": {
+                "level": 1,
+                "heading": long_title,
+                "parent_headings": [],
+            },
+        }
+    }
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=chunks, global_config=global_config)
+
+    user_prompt = llm_func.call_args_list[0][0][0]
+    assert _SECTION_MARKER in user_prompt
+    assert long_title not in user_prompt  # full title never reaches the prompt
+    assert "Z" * DEFAULT_HEADING_LEVEL_MAX_CHARS not in user_prompt

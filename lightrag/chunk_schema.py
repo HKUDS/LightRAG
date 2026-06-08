@@ -121,7 +121,26 @@ def format_parent_headings(dp: dict[str, Any]) -> str:
     return " → ".join(cleaned)
 
 
-def format_heading_context(dp: dict[str, Any]) -> str:
+# Per-level character cap for headings rendered into the extraction
+# `---Section Context---` block. Bounds a single pathologically long section
+# title so it cannot dominate the prompt. The overall breadcrumb is
+# additionally token-budgeted by the caller (see ``operate.py``).
+DEFAULT_HEADING_LEVEL_MAX_CHARS = 120
+
+
+def _truncate_heading_level(text: str, max_chars: int) -> str:
+    """Hard-cap a single heading level, marking elision with an ellipsis."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    # Reserve one char for the ellipsis so the result length stays <= max_chars.
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def format_heading_context(
+    dp: dict[str, Any],
+    *,
+    max_heading_len: int = DEFAULT_HEADING_LEVEL_MAX_CHARS,
+) -> str:
     """Join a chunk's full heading chain (parents + current) into ``h1 → h2 → h3``.
 
     Like :func:`format_parent_headings` but appends the chunk's own section
@@ -131,6 +150,10 @@ def format_heading_context(dp: dict[str, Any]) -> str:
     and :func:`_clean_heading_text`. Returns an empty string when the chunk
     carries no (non-empty) heading information, so callers can simply omit the
     field when it is empty.
+
+    Each individual heading level is capped at ``max_heading_len`` characters
+    (set ``<= 0`` to disable) so one runaway title cannot bloat the prompt; the
+    caller is still responsible for token-budgeting the joined breadcrumb.
     """
     normalized = normalize_chunk_heading(dp)
     if not normalized:
@@ -138,7 +161,11 @@ def format_heading_context(dp: dict[str, Any]) -> str:
     chain = list(normalized["parent_headings"])
     if normalized["heading"]:
         chain.append(normalized["heading"])
-    cleaned = [c for c in (_clean_heading_text(h) for h in chain) if c]
+    cleaned = [
+        _truncate_heading_level(c, max_heading_len)
+        for c in (_clean_heading_text(h) for h in chain)
+        if c
+    ]
     return " → ".join(cleaned)
 
 

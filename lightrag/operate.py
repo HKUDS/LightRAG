@@ -64,6 +64,7 @@ from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
+    DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_QUERY_PRIORITY,
@@ -151,6 +152,29 @@ def _truncate_entity_identifier(
         preview,
     )
     return display_value
+
+
+def _truncate_section_context(
+    heading_path: str,
+    tokenizer: "Tokenizer | None",
+    max_tokens: int,
+) -> str:
+    """Token-budget the `---Section Context---` breadcrumb before injection.
+
+    The breadcrumb is metadata layered on top of the (already chunk-sized)
+    input text, so an unbounded heading chain could push an otherwise-valid
+    chunk past the provider context window. When the path exceeds ``max_tokens``
+    we keep the **tail** (the nearest/most-specific section, which is the most
+    relevant context for the chunk) and mark the elision with a leading
+    ellipsis. ``max_tokens <= 0`` or a missing tokenizer disables the cap.
+    """
+    if not heading_path or tokenizer is None or max_tokens <= 0:
+        return heading_path
+    tokens = tokenizer.encode(heading_path)
+    if len(tokens) <= max_tokens:
+        return heading_path
+    kept = tokenizer.decode(tokens[-max_tokens:])
+    return f"… {kept}"
 
 
 def _truncate_vdb_content(content: str, global_config: dict, content_label: str) -> str:
@@ -3353,9 +3377,16 @@ async def extract_entities(
         # Build the optional `---Section Context---` block from the chunk's
         # heading breadcrumb. The marker/wrapping lives entirely in the prompt
         # template; here we only produce the data and decide whether to inject
-        # it. When the chunk carries no heading, the block is an empty string so
-        # the user prompt stays byte-identical to the no-context form.
-        heading_path = format_heading_context(chunk_dp)
+        # it. Each level is char-capped inside format_heading_context, and the
+        # joined path is token-budgeted here so heading metadata can never push
+        # an otherwise-valid chunk past the provider context window. When the
+        # chunk carries no heading, the block is an empty string so the user
+        # prompt stays byte-identical to the no-context form.
+        heading_path = _truncate_section_context(
+            format_heading_context(chunk_dp),
+            extract_tokenizer,
+            DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
+        )
         heading_context_block = (
             PROMPTS["entity_extraction_section_context"].format(
                 heading_path=heading_path
