@@ -36,6 +36,15 @@ DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Maximum token size allowed for entity extraction input context
 DEFAULT_MAX_EXTRACT_INPUT_TOKENS = 20480
+# Maximum token size for the per-chunk `---Section Context---` heading
+# breadcrumb injected into the extraction prompt. Keeps section metadata from
+# pushing an otherwise-valid chunk past the provider context window; over budget
+# the breadcrumb collapses to ``first → … → leaf`` (top-level + nearest section).
+DEFAULT_MAX_SECTION_CONTEXT_TOKENS = 256
+# Per-level character cap for each heading in that breadcrumb. Must stay below
+# 1/3 of DEFAULT_MAX_SECTION_CONTEXT_TOKENS so the collapsed two-level form
+# (first + leaf, plus separator/ellipsis) always fits within the token budget.
+DEFAULT_HEADING_LEVEL_MAX_CHARS = 80
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 
