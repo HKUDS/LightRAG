@@ -1409,6 +1409,139 @@ def test_format_heading_context_per_level_cap_can_be_disabled():
     assert format_heading_context(chunk, max_heading_len=0) == long_title
 
 
+# ---------------------------------------------------------------------------
+# Query-stage format_parent_headings: same per-level cap + cleaning as extraction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_format_parent_headings_caps_long_level():
+    """A runaway parent heading is truncated to the per-level char cap, matching
+    the extraction-stage format_heading_context."""
+    from lightrag.chunk_schema import (
+        DEFAULT_HEADING_LEVEL_MAX_CHARS,
+        format_parent_headings,
+    )
+
+    long_title = "A" * (DEFAULT_HEADING_LEVEL_MAX_CHARS + 50)
+    chunk = {
+        "heading": {"level": 2, "heading": "Leaf", "parent_headings": [long_title]}
+    }
+
+    out = format_parent_headings(chunk)
+    assert out.endswith("…")
+    assert len(out) == DEFAULT_HEADING_LEVEL_MAX_CHARS  # only the parent, capped
+
+
+@pytest.mark.offline
+def test_format_parent_headings_per_level_cap_can_be_disabled():
+    from lightrag.chunk_schema import format_parent_headings
+
+    long_title = "B" * 300
+    chunk = {
+        "heading": {"level": 2, "heading": "Leaf", "parent_headings": [long_title]}
+    }
+
+    assert format_parent_headings(chunk, max_heading_len=0) == long_title
+
+
+@pytest.mark.offline
+def test_format_parent_headings_cleaning_matches_extraction():
+    """Parent headings get the same cleaning as extraction: → folded to a space,
+    Cc/Cf control chars stripped (shared _clean_heading_text)."""
+    from lightrag.chunk_schema import format_parent_headings
+
+    # chr(0) is a Cc control; chr(0x200B) is ZWSP (Cf) — both stripped. Built
+    # via chr() so the source carries no literal invisible characters.
+    second_level = "x" + chr(0) + "y" + chr(0x200B) + "z"
+    chunk = {
+        "heading": {
+            "level": 2,
+            "heading": "Leaf",
+            "parent_headings": ["A→B", second_level],
+        }
+    }
+    # "A→B" -> "A B"; control + format chars removed from the second level.
+    assert format_parent_headings(chunk) == "A B → xyz"
+
+
+@pytest.mark.offline
+def test_format_parent_headings_basic_behavior_preserved():
+    """Existing behavior is unchanged: empty when no heading, normal multi-level
+    path joined with the breadcrumb separator."""
+    from lightrag.chunk_schema import format_parent_headings
+
+    assert format_parent_headings({"content": "...", "chunk_order_index": 0}) == ""
+
+    chunk = {
+        "heading": {"level": 2, "heading": "Leaf", "parent_headings": ["h1", "h2"]}
+    }
+    assert format_parent_headings(chunk) == "h1 → h2"  # leaf NOT appended
+
+
+class _FakeChunksDB:
+    """Minimal text_chunks_db for _attach_content_headings: get_by_ids + config."""
+
+    def __init__(self, data_by_id: dict, tokenizer):
+        self._data = data_by_id
+        self.global_config = {"tokenizer": tokenizer}
+
+    async def get_by_ids(self, ids):
+        return [self._data.get(i) for i in ids]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_attach_content_headings_token_budgets_deep_path():
+    """A deep heading chain (per-level cap bounds length, not count) is collapsed
+    to fit DEFAULT_MAX_SECTION_CONTEXT_TOKENS, mirroring the extraction stage."""
+    from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
+    from lightrag.constants import DEFAULT_MAX_SECTION_CONTEXT_TOKENS
+    from lightrag.operate import _attach_content_headings
+
+    tok = Tokenizer("dummy", DummyTokenizer())  # 1 char == 1 token
+    deep = [f"Level{i:02d}" for i in range(100)]  # well over the token budget
+    db = _FakeChunksDB(
+        {"c1": {"heading": {"level": 99, "heading": "Leaf", "parent_headings": deep}}},
+        tok,
+    )
+    chunks = [{"chunk_id": "c1"}]
+
+    await _attach_content_headings(chunks, db)
+
+    out = chunks[0]["content_headings"]
+    assert len(tok.encode(out)) <= DEFAULT_MAX_SECTION_CONTEXT_TOKENS
+    # Collapsed to first → … → leaf, so a middle level is gone.
+    assert f"{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}" in out
+    assert "Level50" not in out
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_attach_content_headings_keeps_short_path_intact():
+    """A within-budget path is attached unchanged (no token collapsing)."""
+    from lightrag.operate import _attach_content_headings
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    db = _FakeChunksDB(
+        {
+            "c1": {
+                "heading": {
+                    "level": 2,
+                    "heading": "Leaf",
+                    "parent_headings": ["h1", "h2"],
+                }
+            }
+        },
+        tok,
+    )
+    chunks = [{"chunk_id": "c1"}]
+
+    await _attach_content_headings(chunks, db)
+
+    assert chunks[0]["content_headings"] == "h1 → h2"
+
+
 @pytest.mark.offline
 def test_truncate_section_context_noop_within_budget():
     from lightrag.operate import _truncate_section_context

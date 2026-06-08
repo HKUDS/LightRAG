@@ -122,7 +122,34 @@ def _clean_heading_text(text: str) -> str:
     return text.strip()
 
 
-def format_parent_headings(dp: dict[str, Any]) -> str:
+def _truncate_heading_level(text: str, max_chars: int) -> str:
+    """Hard-cap a single heading level, marking elision with an ellipsis."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    # Reserve one char for the ellipsis so the result length stays <= max_chars.
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def _clean_and_cap_headings(headings: list[str], max_heading_len: int) -> list[str]:
+    """Clean each heading, drop empties, then hard-cap each level's length.
+
+    Shared by :func:`format_parent_headings` and :func:`format_heading_context`
+    so both the query-stage and extraction-stage breadcrumbs apply identical
+    cleaning (:func:`_clean_heading_text`) and per-level truncation, and cannot
+    drift apart. Order matters: clean → drop empties → cap.
+    """
+    return [
+        _truncate_heading_level(c, max_heading_len)
+        for c in (_clean_heading_text(h) for h in headings)
+        if c
+    ]
+
+
+def format_parent_headings(
+    dp: dict[str, Any],
+    *,
+    max_heading_len: int = DEFAULT_HEADING_LEVEL_MAX_CHARS,
+) -> str:
     """Join a chunk's parent heading chain into ``h1 → h2 → h3``.
 
     Reuses :func:`normalize_chunk_heading` so both the nested and legacy flat
@@ -130,22 +157,16 @@ def format_parent_headings(dp: dict[str, Any]) -> str:
     :func:`_clean_heading_text` so the string sent to the LLM is a single tidy
     line. Returns an empty string when the chunk has no (non-empty) parent
     headings, so callers can simply omit the field when it is empty.
+
+    Each individual heading level is capped at ``max_heading_len`` characters
+    (set ``<= 0`` to disable), matching :func:`format_heading_context`, so one
+    runaway title cannot bloat the query context before its token truncation.
     """
     normalized = normalize_chunk_heading(dp)
     if not normalized:
         return ""
-    cleaned = [
-        c for c in (_clean_heading_text(h) for h in normalized["parent_headings"]) if c
-    ]
+    cleaned = _clean_and_cap_headings(normalized["parent_headings"], max_heading_len)
     return HEADING_BREADCRUMB_SEP.join(cleaned)
-
-
-def _truncate_heading_level(text: str, max_chars: int) -> str:
-    """Hard-cap a single heading level, marking elision with an ellipsis."""
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    # Reserve one char for the ellipsis so the result length stays <= max_chars.
-    return text[: max_chars - 1].rstrip() + "…"
 
 
 def format_heading_context(
@@ -173,11 +194,7 @@ def format_heading_context(
     chain = list(normalized["parent_headings"])
     if normalized["heading"]:
         chain.append(normalized["heading"])
-    cleaned = [
-        _truncate_heading_level(c, max_heading_len)
-        for c in (_clean_heading_text(h) for h in chain)
-        if c
-    ]
+    cleaned = _clean_and_cap_headings(chain, max_heading_len)
     return HEADING_BREADCRUMB_SEP.join(cleaned)
 
 
