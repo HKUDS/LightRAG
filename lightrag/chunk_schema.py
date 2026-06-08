@@ -121,6 +121,27 @@ def format_parent_headings(dp: dict[str, Any]) -> str:
     return " → ".join(cleaned)
 
 
+def format_heading_context(dp: dict[str, Any]) -> str:
+    """Join a chunk's full heading chain (parents + current) into ``h1 → h2 → h3``.
+
+    Like :func:`format_parent_headings` but appends the chunk's own section
+    heading after the parent chain, so the entity-extraction LLM sees the
+    complete breadcrumb of the section the input text belongs to. Reuses
+    :func:`normalize_chunk_heading` (handles both nested and legacy flat shapes)
+    and :func:`_clean_heading_text`. Returns an empty string when the chunk
+    carries no (non-empty) heading information, so callers can simply omit the
+    field when it is empty.
+    """
+    normalized = normalize_chunk_heading(dp)
+    if not normalized:
+        return ""
+    chain = list(normalized["parent_headings"])
+    if normalized["heading"]:
+        chain.append(normalized["heading"])
+    cleaned = [c for c in (_clean_heading_text(h) for h in chain) if c]
+    return " → ".join(cleaned)
+
+
 def normalize_chunk_sidecar(dp: dict[str, Any]) -> dict[str, Any] | None:
     """Return the canonical sidecar dict or ``None`` when absent / invalid.
 
@@ -299,6 +320,7 @@ def strip_internal_multimodal_markup_for_extraction(
 __all__ = [
     "normalize_chunk_heading",
     "format_parent_headings",
+    "format_heading_context",
     "normalize_chunk_sidecar",
     "strip_internal_multimodal_markup_for_extraction",
 ]

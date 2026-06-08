@@ -55,6 +55,7 @@ from lightrag.base import (
     QueryContextResult,
 )
 from lightrag.chunk_schema import (
+    format_heading_context,
     format_parent_headings,
     strip_internal_multimodal_markup_for_extraction,
 )
@@ -3349,6 +3350,20 @@ async def extract_entities(
         # Get file path from chunk data or use default
         file_path = chunk_dp.get("file_path", "unknown_source")
 
+        # Build the optional `---Section Context---` block from the chunk's
+        # heading breadcrumb. The marker/wrapping lives entirely in the prompt
+        # template; here we only produce the data and decide whether to inject
+        # it. When the chunk carries no heading, the block is an empty string so
+        # the user prompt stays byte-identical to the no-context form.
+        heading_path = format_heading_context(chunk_dp)
+        heading_context_block = (
+            PROMPTS["entity_extraction_section_context"].format(
+                heading_path=heading_path
+            )
+            if heading_path
+            else ""
+        )
+
         # Create cache keys collector for batch processing
         cache_keys_collector = []
 
@@ -3359,7 +3374,13 @@ async def extract_entities(
             ].format(**context_base)
             entity_extraction_user_prompt = PROMPTS[
                 "entity_extraction_json_user_prompt"
-            ].format(**{**context_base, "input_text": content})
+            ].format(
+                **{
+                    **context_base,
+                    "input_text": content,
+                    "heading_context_block": heading_context_block,
+                }
+            )
             entity_continue_extraction_user_prompt = PROMPTS[
                 "entity_continue_extraction_json_user_prompt"
             ].format(**context_base)
@@ -3370,7 +3391,13 @@ async def extract_entities(
             ].format(**context_base)
             entity_extraction_user_prompt = PROMPTS[
                 "entity_extraction_user_prompt"
-            ].format(**{**context_base, "input_text": content})
+            ].format(
+                **{
+                    **context_base,
+                    "input_text": content,
+                    "heading_context_block": heading_context_block,
+                }
+            )
             entity_continue_extraction_user_prompt = PROMPTS[
                 "entity_continue_extraction_user_prompt"
             ].format(**{**context_base, "input_text": content})

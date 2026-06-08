@@ -1168,3 +1168,197 @@ def test_runtime_mode_flip_invalidates_cached_prompt_profile(tmp_path):
             rag._build_global_config()
 
     assert "entity_extraction_json_examples" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Section Context (heading breadcrumb) injection into extraction user prompts
+# ---------------------------------------------------------------------------
+
+_SECTION_MARKER = "---Section Context---"
+
+
+def _render_text_user_prompt(heading_context_block: str) -> str:
+    from lightrag.prompt import PROMPTS
+
+    return PROMPTS["entity_extraction_user_prompt"].format(
+        max_total_records=100,
+        max_entity_records=40,
+        completion_delimiter="<|COMPLETE|>",
+        language="English",
+        input_text="Alice founded Acme Corp.",
+        heading_context_block=heading_context_block,
+    )
+
+
+def _render_json_user_prompt(heading_context_block: str) -> str:
+    from lightrag.prompt import PROMPTS
+
+    return PROMPTS["entity_extraction_json_user_prompt"].format(
+        max_total_records=100,
+        max_entity_records=40,
+        language="English",
+        entity_types_guidance="- Person: humans",
+        input_text="Alice founded Acme Corp.",
+        heading_context_block=heading_context_block,
+    )
+
+
+def _section_block(heading_path: str) -> str:
+    from lightrag.prompt import PROMPTS
+
+    return PROMPTS["entity_extraction_section_context"].format(
+        heading_path=heading_path
+    )
+
+
+@pytest.mark.offline
+def test_format_heading_context_full_path_includes_current_heading():
+    """The breadcrumb appends the chunk's own heading after the parent chain."""
+    from lightrag.chunk_schema import format_heading_context
+
+    chunk = {
+        "content": "...",
+        "heading": {
+            "level": 2,
+            "heading": "Data Collection",
+            "parent_headings": ["Methods"],
+        },
+    }
+    assert format_heading_context(chunk) == "Methods → Data Collection"
+
+
+@pytest.mark.offline
+def test_format_heading_context_empty_when_no_heading():
+    """A chunk without heading info yields an empty breadcrumb (block omitted)."""
+    from lightrag.chunk_schema import format_heading_context
+
+    chunk = {
+        "content": "...",
+        "tokens": 1,
+        "full_doc_id": "d",
+        "chunk_order_index": 0,
+    }
+    assert format_heading_context(chunk) == ""
+
+
+@pytest.mark.offline
+def test_text_user_prompt_section_context_hidden_and_byte_identical_when_no_heading():
+    """No heading -> the whole `---Section Context---` block disappears and the
+    rendered text user prompt is byte-identical to the placeholder-free form."""
+    from lightrag.prompt import PROMPTS
+
+    rendered = _render_text_user_prompt("")
+    assert _SECTION_MARKER not in rendered
+
+    # The placeholder is the ONLY change to this template, so rendering it empty
+    # must equal a version with the placeholder physically removed (i.e. the
+    # pre-change template). This is the hard no-noise regression guard.
+    baseline_template = PROMPTS["entity_extraction_user_prompt"].replace(
+        "{heading_context_block}", ""
+    )
+    baseline = baseline_template.format(
+        max_total_records=100,
+        max_entity_records=40,
+        completion_delimiter="<|COMPLETE|>",
+        language="English",
+        input_text="Alice founded Acme Corp.",
+    )
+    assert rendered == baseline
+
+
+@pytest.mark.offline
+def test_json_user_prompt_section_context_hidden_and_byte_identical_when_no_heading():
+    from lightrag.prompt import PROMPTS
+
+    rendered = _render_json_user_prompt("")
+    assert _SECTION_MARKER not in rendered
+
+    baseline_template = PROMPTS["entity_extraction_json_user_prompt"].replace(
+        "{heading_context_block}", ""
+    )
+    baseline = baseline_template.format(
+        max_total_records=100,
+        max_entity_records=40,
+        language="English",
+        entity_types_guidance="- Person: humans",
+        input_text="Alice founded Acme Corp.",
+    )
+    assert rendered == baseline
+
+
+@pytest.mark.offline
+def test_text_user_prompt_includes_section_context_when_heading_present():
+    rendered = _render_text_user_prompt(_section_block("Methods → Data Collection"))
+    assert f"{_SECTION_MARKER}\nMethods → Data Collection" in rendered
+    # Block sits immediately above the input text section.
+    assert "Methods → Data Collection\n\n---Input Text---" in rendered
+
+
+@pytest.mark.offline
+def test_json_user_prompt_includes_section_context_when_heading_present():
+    rendered = _render_json_user_prompt(_section_block("Methods → Data Collection"))
+    assert f"{_SECTION_MARKER}\nMethods → Data Collection" in rendered
+    assert "Methods → Data Collection\n\n---Input Text---" in rendered
+
+
+@pytest.mark.offline
+def test_extraction_system_prompts_reference_section_context():
+    """Both system prompts carry the static conditional instruction."""
+    from lightrag.prompt import PROMPTS
+
+    for key in (
+        "entity_extraction_system_prompt",
+        "entity_extraction_json_system_prompt",
+    ):
+        assert _SECTION_MARKER in PROMPTS[key]
+        assert "only as background" in PROMPTS[key]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_extract_entities_injects_section_context_for_chunk_with_heading():
+    """End-to-end: a chunk carrying a heading produces a user prompt containing
+    its full section breadcrumb; a heading-free chunk does not."""
+    from lightrag.operate import extract_entities
+
+    global_config = _make_global_config(use_json=False)
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    chunks = {
+        "chunk-001": {
+            "tokens": 10,
+            "content": "Alice founded Acme Corp.",
+            "full_doc_id": "doc-001",
+            "chunk_order_index": 0,
+            "heading": {
+                "level": 2,
+                "heading": "Data Collection",
+                "parent_headings": ["Methods"],
+            },
+        }
+    }
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=chunks, global_config=global_config)
+
+    assert llm_func.await_count >= 1
+    user_prompt = llm_func.call_args_list[0][0][0]
+    assert f"{_SECTION_MARKER}\nMethods → Data Collection" in user_prompt
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_extract_entities_omits_section_context_for_chunk_without_heading():
+    from lightrag.operate import extract_entities
+
+    global_config = _make_global_config(use_json=False)
+    llm_func = global_config["llm_model_func"]
+    llm_func.return_value = _TEXT_MODE_RESPONSE
+
+    with patch("lightrag.operate.logger"):
+        await extract_entities(chunks=_make_chunks(), global_config=global_config)
+
+    assert llm_func.await_count >= 1
+    user_prompt = llm_func.call_args_list[0][0][0]
+    assert _SECTION_MARKER not in user_prompt
