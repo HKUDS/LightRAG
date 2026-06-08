@@ -80,7 +80,11 @@ ignore_this.txt
 
 # AI Agent files
 memory-bank
-.claude/
+.claude/*
+# Track the shared SessionStart hook and settings (keep local overrides ignored)
+!.claude/settings.json
+!.claude/hooks/
+.claude/settings.local.json
 
 # Google Jules
 .jules/
