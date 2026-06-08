@@ -1046,9 +1046,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             field["name"]: field for field in collection_info.get("fields", [])
         }
 
-        for field_name, expected_max_length in (
-            self._get_migrated_metadata_field_limits().items()
-        ):
+        for (
+            field_name,
+            expected_max_length,
+        ) in self._get_migrated_metadata_field_limits().items():
             existing_field = existing_fields.get(field_name)
             if existing_field is None:
                 logger.info(
@@ -1056,9 +1057,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 )
                 return True
 
-            if not self._is_field_compatible(
-                existing_field, {"type": "VarChar"}
-            ):
+            if not self._is_field_compatible(existing_field, {"type": "VarChar"}):
                 logger.info(
                     f"[{self.workspace}] Collection {self.namespace} has incompatible Milvus field '{field_name}', needs migration"
                 )

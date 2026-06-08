@@ -75,7 +75,10 @@ class TestMilvusIndexCreation:
 
         assert expected_fields.issubset(fields_by_name)
         for field_name in expected_fields:
-            assert _field_max_length(fields_by_name[field_name]) == MILVUS_MAX_VARCHAR_BYTES
+            assert (
+                _field_max_length(fields_by_name[field_name])
+                == MILVUS_MAX_VARCHAR_BYTES
+            )
 
     @pytest.mark.parametrize(
         ("namespace", "old_fields"),
