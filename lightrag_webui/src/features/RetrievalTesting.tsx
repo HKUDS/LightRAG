@@ -662,9 +662,18 @@ export default function RetrievalTesting() {
     // aborted) and persist immediately so the terminated state is the
     // authoritative saved history.
     const activeId = activeAssistantIdRef.current
-    const finalizedMessages = messages.map((m) =>
-      m.id === activeId ? { ...m, isThinking: false, isAborted: true } : m
-    )
+    const finalizedMessages = messages.map((m) => {
+      if (m.id !== activeId) return m
+      // Terminated mid-thinking: finalize the COT block so the partial reasoning
+      // stays visible (as a "Thinking time Xs" block, in whatever expand state
+      // the user left it) instead of vanishing once isThinking is cleared — the
+      // thinking block only renders while isThinking || thinkingTime !== null.
+      let thinkingTime = m.thinkingTime ?? null
+      if (m.isThinking && thinkingTime === null && thinkingStartTime.current) {
+        thinkingTime = parseFloat(((Date.now() - thinkingStartTime.current) / 1000).toFixed(2))
+      }
+      return { ...m, isThinking: false, isAborted: true, thinkingTime }
+    })
     setMessages(finalizedMessages)
     try {
       useSettingsStore.getState().setRetrievalHistory(finalizedMessages)
