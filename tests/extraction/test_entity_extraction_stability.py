@@ -1527,3 +1527,66 @@ async def test_extract_entities_bounds_pathological_heading_in_prompt():
     assert _SECTION_MARKER in user_prompt
     assert long_title not in user_prompt  # full title never reaches the prompt
     assert "Z" * DEFAULT_HEADING_LEVEL_MAX_CHARS not in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Heading text symbol cleaning: → -> space, strip Cc/Cf, preserve everything else
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_clean_heading_text_converts_arrow_to_space():
+    """The breadcrumb separator char must never survive inside one heading."""
+    from lightrag.chunk_schema import _clean_heading_text
+
+    assert _clean_heading_text("A→B") == "A B"
+    assert _clean_heading_text("A  →  B") == "A B"
+
+
+@pytest.mark.offline
+def test_clean_heading_text_strips_control_and_format_chars():
+    """Cc (NUL, BEL, file/unit separators) and Cf (zero-width marks) are removed."""
+    from lightrag.chunk_schema import _clean_heading_text
+
+    # \x00 (Cc), ​ ZWSP (Cf), ﻿ BOM (Cf) all vanish.
+    assert _clean_heading_text("a\x00b​c﻿") == "abc"
+    assert _clean_heading_text("x\x07y") == "xy"
+    # \x1c-\x1f are Cc but NOT matched by \s — must be stripped, not kept.
+    assert _clean_heading_text("p\x1c\x1fq") == "pq"
+
+
+@pytest.mark.offline
+def test_clean_heading_text_preserves_normal_characters():
+    """CJK / Latin / digits / punctuation are left untouched; only → is folded."""
+    from lightrag.chunk_schema import _clean_heading_text
+
+    assert _clean_heading_text("方法 → 数据采集 (2024)!") == "方法 数据采集 (2024)!"
+    # Adjacent CJK never gets a space inserted between characters.
+    assert _clean_heading_text("数据采集") == "数据采集"
+
+
+@pytest.mark.offline
+def test_clean_heading_text_whitespace_collapse_is_last():
+    """Newline/tab still fold to a single space (kept through the strip pass)."""
+    from lightrag.chunk_schema import _clean_heading_text
+
+    assert _clean_heading_text("a\nb\tc") == "a b c"
+    # A control char removed between two words must not leave a double space.
+    assert _clean_heading_text("a \x00 b") == "a b"
+
+
+@pytest.mark.offline
+def test_format_heading_context_arrow_in_heading_does_not_forge_level():
+    """A heading containing → is cleaned, so the breadcrumb split stays accurate."""
+    from lightrag.chunk_schema import (
+        HEADING_BREADCRUMB_SEP,
+        format_heading_context,
+    )
+
+    chunk = {
+        "heading": {"level": 2, "heading": "C", "parent_headings": ["A→B"]},
+    }
+    out = format_heading_context(chunk)
+    assert out == "A B → C"
+    # The breadcrumb still splits into exactly the two real levels.
+    assert out.split(HEADING_BREADCRUMB_SEP) == ["A B", "C"]

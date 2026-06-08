@@ -24,6 +24,7 @@ are preserved so the extracted entities can still ground against them.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 from lightrag.constants import DEFAULT_HEADING_LEVEL_MAX_CHARS
@@ -81,31 +82,42 @@ def normalize_chunk_heading(dp: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-# Zero-width / invisible characters that ``\s`` does NOT match but that only add
-# token noise to a heading shown to the LLM. Built from code points + chr() so the
-# source stays pure ASCII and readable (no literal invisible characters inline).
-_HEADING_ZERO_WIDTH_CODEPOINTS = (
-    0x200B,  # ZERO WIDTH SPACE
-    0x200C,  # ZERO WIDTH NON-JOINER
-    0x200D,  # ZERO WIDTH JOINER
-    0x2060,  # WORD JOINER
-    0xFEFF,  # ZERO WIDTH NO-BREAK SPACE (BOM)
-)
-_HEADING_ZERO_WIDTH_RE = re.compile(
-    "[" + "".join(chr(cp) for cp in _HEADING_ZERO_WIDTH_CODEPOINTS) + "]"
-)
 _HEADING_WHITESPACE_RE = re.compile(r"\s+")
+# Unicode categories stripped from a heading: control (Cc) and format (Cf)
+# chars — NULs, zero-width marks (ZWSP/ZWNJ/ZWJ/WORD JOINER/BOM are all Cf),
+# directional/format codes — that only add token noise to the LLM prompt.
+_HEADING_STRIP_CATEGORIES = frozenset({"Cc", "Cf"})
+# The only Cc chars that ``\s`` folds into a space; keep them through the strip
+# pass so they become a space below instead of gluing adjacent words. (Cannot
+# use ``str.isspace()`` for this: Python treats \x1c-\x1f as whitespace but
+# ``\s`` does not, so those would survive the strip — an explicit set matches
+# the regex.)
+_HEADING_KEEP_WS = frozenset("\t\n\r\f\v")
 
 
 def _clean_heading_text(text: str) -> str:
     """Flatten a heading into one clean line for the LLM.
 
-    Drops zero-width / invisible characters and collapses every run of
-    whitespace (tab, newline, NBSP, full-width / ideographic space, ...) into a
-    single regular space. Never inserts spaces between adjacent CJK characters,
-    so it is safe for Chinese headings.
+    Converts the breadcrumb separator ``→`` to a space, drops every Unicode
+    control (Cc) / format (Cf) char (zero-width marks, NULs, directional/format
+    codes), and collapses every run of whitespace (tab, newline, NBSP,
+    full-width / ideographic space, ...) into a single regular space as the
+    final step. Normal CJK, Latin, digits, and punctuation are left untouched,
+    and no spaces are inserted between adjacent CJK characters, so it is safe
+    for Chinese headings.
     """
-    text = _HEADING_ZERO_WIDTH_RE.sub("", text)
+    # ``→`` (U+2192, the breadcrumb separator char) must never survive inside a
+    # single heading, or it would forge an extra level when the breadcrumb is
+    # split back on " → " (see operate._truncate_section_context).
+    text = text.replace("→", " ")
+    text = "".join(
+        ch
+        for ch in text
+        if ch in _HEADING_KEEP_WS
+        or unicodedata.category(ch) not in _HEADING_STRIP_CATEGORIES
+    )
+    # Collapse LAST so the spaces introduced above (→, kept whitespace controls,
+    # and any gap left around a removed control char) all fold into one space.
     text = _HEADING_WHITESPACE_RE.sub(" ", text)
     return text.strip()
 
