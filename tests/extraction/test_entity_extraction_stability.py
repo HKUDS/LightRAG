@@ -1409,6 +1409,76 @@ def test_format_heading_context_per_level_cap_can_be_disabled():
     assert format_heading_context(chunk, max_heading_len=0) == long_title
 
 
+# ---------------------------------------------------------------------------
+# Query-stage format_parent_headings: same per-level cap + cleaning as extraction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_format_parent_headings_caps_long_level():
+    """A runaway parent heading is truncated to the per-level char cap, matching
+    the extraction-stage format_heading_context."""
+    from lightrag.chunk_schema import (
+        DEFAULT_HEADING_LEVEL_MAX_CHARS,
+        format_parent_headings,
+    )
+
+    long_title = "A" * (DEFAULT_HEADING_LEVEL_MAX_CHARS + 50)
+    chunk = {
+        "heading": {"level": 2, "heading": "Leaf", "parent_headings": [long_title]}
+    }
+
+    out = format_parent_headings(chunk)
+    assert out.endswith("…")
+    assert len(out) == DEFAULT_HEADING_LEVEL_MAX_CHARS  # only the parent, capped
+
+
+@pytest.mark.offline
+def test_format_parent_headings_per_level_cap_can_be_disabled():
+    from lightrag.chunk_schema import format_parent_headings
+
+    long_title = "B" * 300
+    chunk = {
+        "heading": {"level": 2, "heading": "Leaf", "parent_headings": [long_title]}
+    }
+
+    assert format_parent_headings(chunk, max_heading_len=0) == long_title
+
+
+@pytest.mark.offline
+def test_format_parent_headings_cleaning_matches_extraction():
+    """Parent headings get the same cleaning as extraction: → folded to a space,
+    Cc/Cf control chars stripped (shared _clean_heading_text)."""
+    from lightrag.chunk_schema import format_parent_headings
+
+    # chr(0) is a Cc control; chr(0x200B) is ZWSP (Cf) — both stripped. Built
+    # via chr() so the source carries no literal invisible characters.
+    second_level = "x" + chr(0) + "y" + chr(0x200B) + "z"
+    chunk = {
+        "heading": {
+            "level": 2,
+            "heading": "Leaf",
+            "parent_headings": ["A→B", second_level],
+        }
+    }
+    # "A→B" -> "A B"; control + format chars removed from the second level.
+    assert format_parent_headings(chunk) == "A B → xyz"
+
+
+@pytest.mark.offline
+def test_format_parent_headings_basic_behavior_preserved():
+    """Existing behavior is unchanged: empty when no heading, normal multi-level
+    path joined with the breadcrumb separator."""
+    from lightrag.chunk_schema import format_parent_headings
+
+    assert format_parent_headings({"content": "...", "chunk_order_index": 0}) == ""
+
+    chunk = {
+        "heading": {"level": 2, "heading": "Leaf", "parent_headings": ["h1", "h2"]}
+    }
+    assert format_parent_headings(chunk) == "h1 → h2"  # leaf NOT appended
+
+
 @pytest.mark.offline
 def test_truncate_section_context_noop_within_budget():
     from lightrag.operate import _truncate_section_context
