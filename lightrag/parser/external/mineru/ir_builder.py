@@ -595,15 +595,19 @@ class _HTMLTableInfo:
 class _HTMLTableInfoParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.rows: list[tuple[bool, list[str], int]] = []
+        # Each row is ``(in_thead, cells, col_count)`` where ``cells`` carries
+        # ``(text, colspan, rowspan)`` per cell so a spanned ``<thead>`` can be
+        # expanded into a rectangular grid (see ``_build_header_grid``).
+        self.rows: list[tuple[bool, list[tuple[str, int, int]], int]] = []
         self._thead_depth = 0
         self._tr_depth = 0
         self._cell_depth = 0
         self._row_in_thead = False
-        self._row_cells: list[str] = []
+        self._row_cells: list[tuple[str, int, int]] = []
         self._row_col_count = 0
         self._cell_parts: list[str] = []
         self._cell_colspan = 1
+        self._cell_rowspan = 1
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
@@ -620,7 +624,8 @@ class _HTMLTableInfoParser(HTMLParser):
         if tag in {"td", "th"} and self._tr_depth > 0:
             if self._cell_depth == 0:
                 self._cell_parts = []
-                self._cell_colspan = _cell_colspan(attrs)
+                self._cell_colspan = _cell_span(attrs, "colspan")
+                self._cell_rowspan = _cell_span(attrs, "rowspan")
             self._cell_depth += 1
 
     def handle_data(self, data: str) -> None:
@@ -633,10 +638,11 @@ class _HTMLTableInfoParser(HTMLParser):
             self._cell_depth -= 1
             if self._cell_depth == 0:
                 text = " ".join("".join(self._cell_parts).split())
-                self._row_cells.append(text)
+                self._row_cells.append((text, self._cell_colspan, self._cell_rowspan))
                 self._row_col_count += self._cell_colspan
                 self._cell_parts = []
                 self._cell_colspan = 1
+                self._cell_rowspan = 1
             return
         if tag == "tr" and self._tr_depth > 0:
             self._tr_depth -= 1
@@ -655,9 +661,10 @@ class _HTMLTableInfoParser(HTMLParser):
             self._thead_depth -= 1
 
 
-def _cell_colspan(attrs: list[tuple[str, str | None]]) -> int:
+def _cell_span(attrs: list[tuple[str, str | None]], name: str) -> int:
+    """Read a ``colspan``/``rowspan`` attribute as an int ``>= 1`` (default 1)."""
     for key, value in attrs:
-        if key.lower() != "colspan":
+        if key.lower() != name:
             continue
         try:
             return max(int(value or "1"), 1)
@@ -675,16 +682,53 @@ def _extract_html_table_info(html: str) -> _HTMLTableInfo:
         logger.debug("[mineru_ir_builder] failed to parse table HTML: %s", exc)
         return _HTMLTableInfo()
 
-    header_rows = [
-        cells
-        for in_thead, cells, _ in parser.rows
-        if in_thead and any(cell.strip() for cell in cells)
-    ]
+    thead_rows = [cells for in_thead, cells, _ in parser.rows if in_thead]
+    header_grid = _build_header_grid(thead_rows)
+    # Drop a header that is entirely blank (e.g. a spacer ``<thead>`` row) so
+    # the writer omits ``table_header`` rather than emitting empty ``<th>``s.
+    if not any(cell.strip() for row in header_grid for cell in row):
+        header_grid = []
     return _HTMLTableInfo(
         num_rows=len(parser.rows),
         num_cols=max((col_count for _, _, col_count in parser.rows), default=0),
-        table_header=header_rows or None,
+        table_header=header_grid or None,
     )
+
+
+def _build_header_grid(rows: list[list[tuple[str, int, int]]]) -> list[list[str]]:
+    """Expand spanned ``<thead>`` cells into a rectangular text grid.
+
+    ``table_header`` is rendered cell-per-``<th>`` (no spans) when repeated onto
+    later chunks of a split HTML table, so a ragged header (``colspan``/
+    ``rowspan`` collapsed to one cell) would misalign with the table body.
+    Duplicating each spanned cell's text across the columns/rows it covers keeps
+    the recovered header rectangular and column-aligned.
+    """
+    grid: list[dict[int, str]] = []
+    carry: dict[int, list] = {}  # column -> [text, rows_remaining]
+    for src_cells in rows:
+        row_out: dict[int, str] = {}
+        next_carry: dict[int, list] = {}
+        # Fill columns still occupied by a rowspan started in an earlier row.
+        for col, (text, left) in carry.items():
+            row_out[col] = text
+            if left - 1 > 0:
+                next_carry[col] = [text, left - 1]
+        # Place this row's own cells into the next free columns.
+        col = 0
+        for text, colspan, rowspan in src_cells:
+            while col in row_out:
+                col += 1
+            for k in range(colspan):
+                row_out[col + k] = text
+                if rowspan > 1:
+                    next_carry[col + k] = [text, rowspan - 1]
+            col += colspan
+        carry = next_carry
+        grid.append(row_out)
+
+    width = max((max(row) + 1 for row in grid if row), default=0)
+    return [[row.get(c, "") for c in range(width)] for row in grid]
 
 
 def _looks_like_html_table_payload(body: str) -> bool:

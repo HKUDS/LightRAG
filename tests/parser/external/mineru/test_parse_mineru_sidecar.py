@@ -279,8 +279,8 @@ def test_parse_mineru_emits_compliant_sidecar(
             assert 'rowspan="2"' in table_item["content"]
             assert 'colspan="2"' in table_item["content"]
             assert json.loads(table_item["table_header"]) == [
-                ["Metric", "Score"],
-                ["A", "B"],
+                ["Metric", "Score", "Score"],
+                ["Metric", "A", "B"],
             ]
             assert table_item["self_ref"] == "content_list.json#/2"
 
