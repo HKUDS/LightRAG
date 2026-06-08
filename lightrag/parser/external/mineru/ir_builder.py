@@ -408,7 +408,11 @@ class MinerUIRBuilder:
         elif isinstance(body, str):
             stripped = body.strip()
             if _looks_like_html_table_payload(stripped):
-                html = stripped or None
+                # MinerU's table model sometimes wraps output in a
+                # ``<html><body>…</body></html>`` document; unwrap to the bare
+                # ``<table>…</table>`` so the sidecar ``content`` stays a single
+                # clean table and the writer does not nest ``<table>`` wrappers.
+                html = _unwrap_html_table(stripped) or None
                 if html:
                     # ``or None`` so a degenerate ``<table></table>`` (empty
                     # inner body) falls back to rendering ``table.html`` in the
@@ -421,7 +425,9 @@ class MinerUIRBuilder:
                         rows = _normalize_grid(decoded)
                 except json.JSONDecodeError:
                     pass
-            if rows is None:
+            if rows is None and html is None:
+                # Non-HTML, non-JSON string (or JSON that failed to parse):
+                # fall back to the raw payload as the html body.
                 html = stripped or None
         elif isinstance(body, dict):
             grid = body.get("grid") or body.get("rows")
@@ -685,8 +691,39 @@ def _looks_like_html_table_payload(body: str) -> bool:
     lower = (body or "").lstrip().lower()
     return any(
         _starts_with_html_tag(lower, tag)
-        for tag in ("table", "thead", "tbody", "tfoot", "tr")
+        for tag in ("table", "thead", "tbody", "tfoot", "tr", "html", "body")
     )
+
+
+def _unwrap_html_table(payload: str) -> str:
+    """Strip a ``<html>/<body>`` document wrapper that MinerU's table model
+    sometimes emits, returning the outermost ``<table…>…</table>`` span. Keeps
+    a single clean ``<table>`` so the writer does not nest tables and the
+    non-greedy ``TABLE_TAG_RE`` is not truncated at an inner ``</table>``.
+    Falls back to the stripped payload when no ``<table>`` element exists."""
+    stripped = (payload or "").strip()
+    lower = stripped.lower()
+    start = _find_table_open(lower)
+    if start < 0:
+        return stripped
+    close = lower.rfind("</table>")
+    if close < start:
+        return stripped
+    return stripped[start : close + len("</table>")]
+
+
+def _find_table_open(lower: str) -> int:
+    """First index of a real ``<table`` start tag (not e.g. ``<tablefoo``).
+    Returns -1 when none is present."""
+    idx = 0
+    while True:
+        idx = lower.find("<table", idx)
+        if idx < 0:
+            return -1
+        nxt = idx + len("<table")
+        if nxt >= len(lower) or lower[nxt] in {" ", "\t", "\r", "\n", ">", "/"}:
+            return idx
+        idx = nxt
 
 
 def _starts_with_html_tag(lower: str, tag: str) -> bool:

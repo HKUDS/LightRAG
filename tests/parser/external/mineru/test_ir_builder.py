@@ -651,6 +651,25 @@ def test_adapter_empty_html_table_falls_back_to_full_html(tmp_path: Path) -> Non
 
 
 @pytest.mark.offline
+def test_adapter_html_table_strips_html_body_wrapper(tmp_path: Path) -> None:
+    """MinerU's table model may wrap output in ``<html><body>``; the adapter
+    must unwrap to a single ``<table>`` so the writer does not nest tables and
+    ``TABLE_TAG_RE`` consumers are not truncated at the inner ``</table>``."""
+    inner = (
+        '<thead><tr><th colspan="2">G</th></tr></thead>'
+        "<tbody><tr><td>a</td><td>b</td></tr></tbody>"
+    )
+    payload = f"<html><body><table>{inner}</table></body></html>"
+    raw = _write_bundle(tmp_path, [{"type": "table", "table_body": payload}])
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
+    table = ir.blocks[0].tables[0]
+    assert table.html == f"<table>{inner}</table>"  # <html>/<body> wrapper gone
+    assert table.body_override == inner  # block text renders only the inner body
+    assert table.num_cols == 2
+    assert table.table_header == [["G"]]
+
+
+@pytest.mark.offline
 def test_adapter_list_items_joined_with_newline(tmp_path: Path) -> None:
     raw = _write_bundle(
         tmp_path,
