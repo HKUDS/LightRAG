@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
-from lightrag.kg.milvus_impl import MilvusVectorDBStorage
+from lightrag.kg.milvus_impl import MILVUS_MAX_VARCHAR_BYTES, MilvusVectorDBStorage
 
 pytestmark = pytest.mark.offline
 
@@ -147,6 +147,48 @@ async def test_index_done_callback_triggers_flush():
     # Buffers cleared after a successful flush.
     assert s._pending_vector_docs == {}
     assert s._pending_vector_deletes == set()
+
+
+@pytest.mark.asyncio
+async def test_upsert_truncates_oversized_content_for_embedding_and_payload():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content"})
+    content = "x" * (MILVUS_MAX_VARCHAR_BYTES + 10)
+
+    await s.upsert({"v1": {"content": content}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    assert len(upserted["content"].encode("utf-8")) == MILVUS_MAX_VARCHAR_BYTES
+    assert embed.texts == [upserted["content"]]
+
+
+@pytest.mark.asyncio
+async def test_upsert_truncates_multibyte_content_on_character_boundary():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content"})
+    content = "源" * (MILVUS_MAX_VARCHAR_BYTES // 3 + 10)
+
+    await s.upsert({"v1": {"content": content}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    assert len(upserted["content"].encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
+    upserted["content"].encode("utf-8").decode("utf-8")
+    assert embed.texts == [upserted["content"]]
+
+
+@pytest.mark.asyncio
+async def test_upsert_truncates_oversized_source_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content", "source_id"})
+    source_id = "s" * (MILVUS_MAX_VARCHAR_BYTES + 10)
+
+    await s.upsert({"v1": {"content": "hello", "source_id": source_id}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    assert len(upserted["source_id"].encode("utf-8")) == MILVUS_MAX_VARCHAR_BYTES
 
 
 @pytest.mark.asyncio

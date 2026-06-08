@@ -43,6 +43,7 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 )  # 32MB, well below the 64MB gRPC ceiling
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
+MILVUS_MAX_VARCHAR_BYTES = 65535
 
 # Supported index types
 SUPPORTED_INDEX_TYPES = {
@@ -433,6 +434,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         # Get vector dimension from embedding_func
         dimension = self.embedding_func.embedding_dim
+        varchar_limits = self._get_varchar_field_limits_for_namespace()
 
         # Base fields (common to all collections)
         base_fields = [
@@ -449,13 +451,25 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="entity_name",
                     dtype=DataType.VARCHAR,
-                    max_length=512,
+                    max_length=varchar_limits["entity_name"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="content",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["content"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="source_id",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["source_id"],
                     nullable=True,
                 ),
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
+                    max_length=varchar_limits["file_path"],
                     nullable=True,
                 ),
             ]
@@ -464,15 +478,33 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         elif self.namespace.endswith("relationships"):
             specific_fields = [
                 FieldSchema(
-                    name="src_id", dtype=DataType.VARCHAR, max_length=512, nullable=True
+                    name="src_id",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["src_id"],
+                    nullable=True,
                 ),
                 FieldSchema(
-                    name="tgt_id", dtype=DataType.VARCHAR, max_length=512, nullable=True
+                    name="tgt_id",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["tgt_id"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="content",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["content"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="source_id",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["source_id"],
+                    nullable=True,
                 ),
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
+                    max_length=varchar_limits["file_path"],
                     nullable=True,
                 ),
             ]
@@ -483,13 +515,19 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="full_doc_id",
                     dtype=DataType.VARCHAR,
-                    max_length=64,
+                    max_length=varchar_limits["full_doc_id"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="content",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["content"],
                     nullable=True,
                 ),
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
+                    max_length=varchar_limits["file_path"],
                     nullable=True,
                 ),
             ]
@@ -501,7 +539,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
+                    max_length=varchar_limits["file_path"],
                     nullable=True,
                 ),
             ]
@@ -515,6 +553,83 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             description=description,
             enable_dynamic_field=True,  # Support dynamic fields
         )
+
+    def _get_varchar_field_limits_for_namespace(self) -> dict[str, int]:
+        base_fields = {
+            "id": 64,
+            "content": MILVUS_MAX_VARCHAR_BYTES,
+            "file_path": DEFAULT_MAX_FILE_PATH_LENGTH,
+        }
+        if self.namespace.endswith("entities"):
+            return {
+                **base_fields,
+                "entity_name": 512,
+                "source_id": MILVUS_MAX_VARCHAR_BYTES,
+            }
+        if self.namespace.endswith("relationships"):
+            return {
+                **base_fields,
+                "src_id": 512,
+                "tgt_id": 512,
+                "source_id": MILVUS_MAX_VARCHAR_BYTES,
+            }
+        if self.namespace.endswith("chunks"):
+            return {**base_fields, "full_doc_id": 64}
+        return base_fields
+
+    def _get_migrated_metadata_field_limits(self) -> dict[str, int]:
+        if self.namespace.endswith("entities"):
+            return {
+                "content": MILVUS_MAX_VARCHAR_BYTES,
+                "source_id": MILVUS_MAX_VARCHAR_BYTES,
+            }
+        if self.namespace.endswith("relationships"):
+            return {
+                "content": MILVUS_MAX_VARCHAR_BYTES,
+                "source_id": MILVUS_MAX_VARCHAR_BYTES,
+            }
+        if self.namespace.endswith("chunks"):
+            return {"content": MILVUS_MAX_VARCHAR_BYTES}
+        return {}
+
+    @staticmethod
+    def _field_max_length(field: dict) -> int | None:
+        max_length = field.get("params", {}).get("max_length")
+        if max_length is None:
+            return None
+        try:
+            return int(max_length)
+        except (TypeError, ValueError):
+            return None
+
+    def _truncate_varchar_value(
+        self, field_name: str, value: Any, record_id: str | None = None
+    ) -> Any:
+        limit = self._varchar_field_limits.get(field_name)
+        if limit is None or not isinstance(value, str):
+            return value
+
+        encoded = value.encode("utf-8")
+        if len(encoded) <= limit:
+            return value
+
+        truncated = encoded[:limit].decode("utf-8", errors="ignore")
+        logger.warning(
+            "[%s] Milvus field '%s' for record '%s' truncated from %d to %d bytes",
+            self.workspace,
+            field_name,
+            record_id or "<unknown>",
+            len(encoded),
+            len(truncated.encode("utf-8")),
+        )
+        return truncated
+
+    def _sanitize_varchar_fields(self, row: dict[str, Any]) -> dict[str, Any]:
+        record_id = str(row.get("id", "")) or None
+        return {
+            field_name: self._truncate_varchar_value(field_name, value, record_id)
+            for field_name, value in row.items()
+        }
 
     def _get_index_params(self):
         """Get IndexParams in a version-compatible way"""
@@ -717,17 +832,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if self.namespace.endswith("entities"):
             specific_fields = {
                 "entity_name": {"type": "VarChar"},
+                "content": {"type": "VarChar"},
+                "source_id": {"type": "VarChar"},
                 "file_path": {"type": "VarChar"},
             }
         elif self.namespace.endswith("relationships"):
             specific_fields = {
                 "src_id": {"type": "VarChar"},
                 "tgt_id": {"type": "VarChar"},
+                "content": {"type": "VarChar"},
+                "source_id": {"type": "VarChar"},
                 "file_path": {"type": "VarChar"},
             }
         elif self.namespace.endswith("chunks"):
             specific_fields = {
                 "full_doc_id": {"type": "VarChar"},
+                "content": {"type": "VarChar"},
                 "file_path": {"type": "VarChar"},
             }
         else:
@@ -921,6 +1041,39 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         return False
 
+    def _check_metadata_schema_migration_needed(self, collection_info: dict) -> bool:
+        existing_fields = {
+            field["name"]: field for field in collection_info.get("fields", [])
+        }
+
+        for field_name, expected_max_length in (
+            self._get_migrated_metadata_field_limits().items()
+        ):
+            existing_field = existing_fields.get(field_name)
+            if existing_field is None:
+                logger.info(
+                    f"[{self.workspace}] Collection {self.namespace} missing explicit Milvus field '{field_name}', needs migration"
+                )
+                return True
+
+            if not self._is_field_compatible(
+                existing_field, {"type": "VarChar"}
+            ):
+                logger.info(
+                    f"[{self.workspace}] Collection {self.namespace} has incompatible Milvus field '{field_name}', needs migration"
+                )
+                return True
+
+            max_length = self._field_max_length(existing_field)
+            if max_length is not None and max_length < expected_max_length:
+                logger.info(
+                    f"[{self.workspace}] Collection {self.namespace} has {field_name} max_length={max_length}, "
+                    f"needs migration to {expected_max_length}"
+                )
+                return True
+
+        return False
+
     def _check_schema_compatibility(self, collection_info: dict):
         """Check schema field compatibility and detect migration needs"""
         existing_fields = {
@@ -944,8 +1097,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             )
             return
 
-        # Check if migration is needed for file_path length restrictions
-        if self._check_file_path_length_restriction(collection_info):
+        if self._check_file_path_length_restriction(
+            collection_info
+        ) or self._check_metadata_schema_migration_needed(collection_info):
             logger.info(
                 f"[{self.workspace}] Starting automatic migration for collection {self.namespace}"
             )
@@ -1052,10 +1206,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         # No more data available
                         break
 
-                    # Insert batch data to new collection
+                    sanitized_batch_data = [
+                        self._sanitize_varchar_fields(row) for row in batch_data
+                    ]
                     try:
                         self._client.insert(
-                            collection_name=temp_collection_name, data=batch_data
+                            collection_name=temp_collection_name,
+                            data=sanitized_batch_data,
                         )
                         total_migrated += len(batch_data)
 
@@ -1435,6 +1592,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # Ensure created_at is in meta_fields
         if "created_at" not in self.meta_fields:
             self.meta_fields.add("created_at")
+        self._varchar_field_limits = self._get_varchar_field_limits_for_namespace()
 
         # Initialize client as None - will be created in initialize() method
         self._client = None
@@ -1540,15 +1698,20 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         pending_docs: list[tuple[str, _PendingVectorDoc]] = []
         for i, (k, v) in enumerate(data.items(), start=1):
-            source = {
-                "id": k,
-                "created_at": current_time,
-                **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
-            }
+            source = self._sanitize_varchar_fields(
+                {
+                    "id": k,
+                    "created_at": current_time,
+                    **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+                }
+            )
+            content = self._truncate_varchar_value("content", v["content"], k)
+            if "content" in self.meta_fields:
+                source["content"] = content
             pending_docs.append(
                 (
                     k,
-                    _PendingVectorDoc(source=source, content=v["content"]),
+                    _PendingVectorDoc(source=source, content=content),
                 )
             )
             await _cooperative_yield(i)
@@ -1771,7 +1934,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # so we can iterate without re-guarding.
             committed_ids: list[str] = list(pending_docs.keys())
             list_data: list[dict[str, Any]] = [
-                {**pending_docs[doc_id].source, "vector": pending_docs[doc_id].vector}
+                self._sanitize_varchar_fields(
+                    {
+                        **pending_docs[doc_id].source,
+                        "vector": pending_docs[doc_id].vector,
+                    }
+                )
                 for doc_id in committed_ids
             ]
 

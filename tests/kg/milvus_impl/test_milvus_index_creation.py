@@ -9,12 +9,117 @@ This test suite validates:
 import asyncio
 import pytest
 from unittest.mock import MagicMock, patch
-from lightrag.kg.milvus_impl import MilvusVectorDBStorage, MilvusIndexConfig
+from lightrag.kg.milvus_impl import (
+    MILVUS_MAX_VARCHAR_BYTES,
+    MilvusIndexConfig,
+    MilvusVectorDBStorage,
+)
+
+
+def _make_storage(namespace="entities"):
+    mock_embedding_func = MagicMock()
+    mock_embedding_func.embedding_dim = 128
+    return MilvusVectorDBStorage(
+        namespace=namespace,
+        workspace="test_workspace",
+        global_config={
+            "embedding_batch_num": 100,
+            "vector_db_storage_cls_kwargs": {
+                "cosine_better_than_threshold": 0.3,
+            },
+        },
+        embedding_func=mock_embedding_func,
+        meta_fields=set(),
+    )
+
+
+def _field_max_length(field):
+    return int(field.params["max_length"])
+
+
+def _collection_info(field_names):
+    fields = [
+        {"name": "id", "type": "VarChar", "is_primary": True},
+        {"name": "vector", "type": "FloatVector", "params": {"dim": 128}},
+        {"name": "created_at", "type": "Int64"},
+    ]
+    fields.extend(
+        {
+            "name": field_name,
+            "type": "VarChar",
+            "params": {"max_length": MILVUS_MAX_VARCHAR_BYTES},
+        }
+        for field_name in field_names
+    )
+    return {"fields": fields}
 
 
 @pytest.mark.offline
 class TestMilvusIndexCreation:
     """Test index creation behavior and error handling"""
+
+    @pytest.mark.parametrize(
+        ("namespace", "expected_fields"),
+        [
+            ("entities", {"content", "source_id"}),
+            ("relationships", {"content", "source_id"}),
+            ("chunks", {"content"}),
+        ],
+    )
+    def test_schema_promotes_core_metadata_fields(self, namespace, expected_fields):
+        storage = _make_storage(namespace=namespace)
+
+        fields_by_name = {
+            field.name: field for field in storage._create_schema_for_namespace().fields
+        }
+
+        assert expected_fields.issubset(fields_by_name)
+        for field_name in expected_fields:
+            assert _field_max_length(fields_by_name[field_name]) == MILVUS_MAX_VARCHAR_BYTES
+
+    @pytest.mark.parametrize(
+        ("namespace", "old_fields"),
+        [
+            ("entities", ["entity_name", "file_path"]),
+            ("relationships", ["src_id", "tgt_id", "file_path"]),
+            ("chunks", ["full_doc_id", "file_path"]),
+        ],
+    )
+    def test_missing_core_metadata_fields_trigger_schema_migration(
+        self, namespace, old_fields
+    ):
+        storage = _make_storage(namespace=namespace)
+
+        with patch.object(storage, "_migrate_collection_schema") as migrate:
+            storage._check_schema_compatibility(_collection_info(old_fields))
+
+        migrate.assert_called_once_with()
+
+    def test_migration_sanitizes_varchar_rows_before_insert(self):
+        storage = _make_storage(namespace="entities")
+        storage.final_namespace = "test_entities"
+        storage._client = MagicMock()
+        iterator = MagicMock()
+        iterator.next.side_effect = [
+            [
+                {
+                    "id": "ent-1",
+                    "vector": [0.0] * 128,
+                    "content": "x" * (MILVUS_MAX_VARCHAR_BYTES + 10),
+                    "source_id": "源" * (MILVUS_MAX_VARCHAR_BYTES // 3 + 10),
+                }
+            ],
+            [],
+        ]
+        storage._client.query_iterator.return_value = iterator
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            storage._migrate_collection_schema()
+
+        inserted = storage._client.insert.call_args.kwargs["data"][0]
+        assert len(inserted["content"].encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
+        assert len(inserted["source_id"].encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
+        inserted["source_id"].encode("utf-8").decode("utf-8")
 
     def test_vector_index_creation_failure_is_raised(self):
         """Test that vector index creation failures are raised to the caller (P2 fix)"""
