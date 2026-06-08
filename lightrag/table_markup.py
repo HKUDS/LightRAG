@@ -16,6 +16,7 @@ either consumer evolves.
 
 from __future__ import annotations
 
+import html as _html
 import json
 import re
 from typing import Any
@@ -77,6 +78,24 @@ def detect_table_format(attrs: str, body: str) -> str | None:
     if "<tr" in stripped.lower():
         return "html"
     return None
+
+
+def header_grid_to_thead_html(grid: list[list[str]]) -> str:
+    """Render a header grid (a 2-D string array) as an HTML ``<thead>``.
+
+    Each row becomes a ``<tr>`` of HTML-escaped ``<th>`` cells inside a single
+    ``<thead>``. Used by the sidecar writer to serialise an HTML table whose
+    recovered header is only available as a grid (e.g. a docx HTML-fallback
+    table) — note this cannot reconstruct ``rowspan``/``colspan`` that the grid
+    already flattened. Returns ``""`` when no usable row is present.
+    """
+    trs: list[str] = []
+    for row in grid:
+        if not isinstance(row, list):
+            continue
+        cells = "".join(f"<th>{_html.escape(str(cell))}</th>" for cell in row)
+        trs.append(f"<tr>{cells}</tr>")
+    return f"<thead>{''.join(trs)}</thead>" if trs else ""
 
 
 def extract_table_id(attrs: str) -> str | None:

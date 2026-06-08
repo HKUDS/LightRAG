@@ -394,6 +394,69 @@ def test_writer_table_self_ref_emitted_only_when_nonempty(tmp_path: Path) -> Non
 
 
 @pytest.mark.offline
+def test_writer_table_header_serialized_by_format(tmp_path: Path) -> None:
+    """``table_header`` is stored in the table's own format: a JSON 2-D array
+    for JSON tables, a raw ``<thead>`` (verbatim) for HTML tables — and a grid
+    supplied for an HTML table is rendered to a span-less ``<thead>``."""
+    parsed = tmp_path / "th.parsed"
+    html_thead = '<thead><tr><th colspan="2">Group</th></tr></thead>'
+    ir = IRDoc(
+        document_name="th.pdf",
+        document_format="pdf",
+        doc_title="th",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="{{TBL:j}} {{TBL:h}} {{TBL:g}}",
+                tables=[
+                    # JSON table: grid header → JSON 2-D array string.
+                    IRTable(
+                        placeholder_key="j",
+                        rows=[["a", "b"]],
+                        num_rows=1,
+                        num_cols=2,
+                        table_header=[["H1", "H2"]],
+                    ),
+                    # HTML table: raw <thead> string → stored verbatim.
+                    IRTable(
+                        placeholder_key="h",
+                        html="<table><tbody><tr><td>a</td><td>b</td></tr></tbody></table>",
+                        num_rows=1,
+                        num_cols=2,
+                        table_header=html_thead,
+                    ),
+                    # HTML table: grid header → rendered to a span-less <thead>.
+                    IRTable(
+                        placeholder_key="g",
+                        html="<table><tbody><tr><td>x</td><td>y</td></tr></tbody></table>",
+                        num_rows=1,
+                        num_cols=2,
+                        table_header=[["P", "Q"]],
+                    ),
+                ],
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-thh1", engine="mineru")
+    tables = json.loads((parsed / "th.tables.json").read_text("utf-8"))["tables"]
+    items = list(tables.values())
+
+    json_item = items[0]
+    assert json_item["format"] == "json"
+    assert json.loads(json_item["table_header"]) == [["H1", "H2"]]
+
+    html_item = items[1]
+    assert html_item["format"] == "html"
+    assert html_item["table_header"] == html_thead  # verbatim, spans preserved
+
+    grid_html_item = items[2]
+    assert grid_html_item["format"] == "html"
+    assert (
+        grid_html_item["table_header"] == "<thead><tr><th>P</th><th>Q</th></tr></thead>"
+    )
+
+
+@pytest.mark.offline
 def test_writer_equation_self_ref_emitted_only_when_nonempty(tmp_path: Path) -> None:
     """Spec §六 ``self_ref``: block equations carry it; inline equations
     never reach equations.json so the field is moot there."""

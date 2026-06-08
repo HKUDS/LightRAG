@@ -48,7 +48,6 @@ Pipeline:
 
 from __future__ import annotations
 
-import html
 import json
 import math
 import re
@@ -220,8 +219,9 @@ def _load_table_headers(blocks_path: str) -> dict[str, str]:
 
     Only tables that carry a ``table_header`` field (the cross-page repeating
     header the parser lifted from the source's header rows) are included; the
-    value is the verbatim JSON 2-D array string the writer stored, e.g.
-    ``'[["X", "Y"]]'``. A missing / unreadable / malformed sidecar degrades
+    value is the verbatim string the writer stored — a JSON 2-D array for JSON
+    tables (e.g. ``'[["X", "Y"]]'``) or a raw ``<thead>…</thead>`` fragment for
+    HTML tables. A missing / unreadable / malformed sidecar degrades
     silently to ``{}`` — a missing header must never block chunking (same
     tolerance as :func:`_load_blocks_from_jsonl`).
     """
@@ -246,23 +246,6 @@ def _load_table_headers(blocks_path: str) -> dict[str, str]:
     return headers
 
 
-def _header_rows_to_html_thead(header_rows: list[Any]) -> str:
-    """Render recovered header rows (a JSON 2-D array) as an HTML ``<thead>``.
-
-    ``table_header`` is always stored as a JSON 2-D array, so when the slice is
-    an HTML table the header rows are emitted as ``<th>`` cells inside a single
-    ``<thead>`` to be prepended to the slice body. Cell text is HTML-escaped.
-    Returns ``""`` when no usable row is present.
-    """
-    trs: list[str] = []
-    for row in header_rows:
-        if not isinstance(row, list):
-            continue
-        cells = "".join(f"<th>{html.escape(str(cell))}</th>" for cell in row)
-        trs.append(f"<tr>{cells}</tr>")
-    return f"<thead>{''.join(trs)}</thead>" if trs else ""
-
-
 def _parse_header_rows(header_body: str) -> list[Any] | None:
     """Parse a stored ``table_header`` JSON 2-D array, or ``None`` if unusable."""
     try:
@@ -274,43 +257,87 @@ def _parse_header_rows(header_body: str) -> list[Any] | None:
     return header_rows
 
 
-def _header_reserve_tokens(
-    header_rows: list[Any], fmt: str | None, tokenizer: Tokenizer
-) -> int:
-    """Tokens to reserve out of a slice's body budget for the recovered header.
+def _classify_header_format(header_body: str | None) -> str | None:
+    """Classify a stored ``table_header`` string as ``"json"`` / ``"html"`` / None.
 
-    Conservative on purpose: for JSON we reserve the cost of the header rows
-    serialized on their own (``json.dumps(header_rows)``); the in-place form
+    The sidecar stores a JSON-format table's header as a JSON 2-D array string
+    (e.g. ``'[["H1","H2"]]'``) and an HTML-format table's header as a raw
+    ``<thead>…</thead>`` fragment (preserving rowspan/colspan). Returns:
+
+      * ``"json"`` — parses as a non-empty JSON list (see :func:`_parse_header_rows`);
+      * ``"html"`` — carries ``<thead`` / ``<tr`` / ``<th`` markup;
+      * ``None``   — empty / whitespace / unusable for either path.
+
+    JSON is checked first (authoritative — a JSON 2-D array can never contain
+    ``<thead``); the HTML check only sniffs for markup, trusting the writer to
+    emit a well-formed ``<thead>``.
+    """
+    if not header_body or not header_body.strip():
+        return None
+    if _parse_header_rows(header_body) is not None:
+        return "json"
+    lowered = header_body.lower()
+    if "<thead" in lowered or "<tr" in lowered or "<th" in lowered:
+        return "html"
+    return None
+
+
+def _header_reserve_tokens(header_rows: list[Any], tokenizer: Tokenizer) -> int:
+    """Tokens to reserve out of a JSON slice's body budget for the header.
+
+    Conservative on purpose: we reserve the cost of the header rows serialized
+    on their own (``json.dumps(header_rows)``); the in-place form
     ``header_rows + data`` is actually a couple of tokens cheaper (one shared
     set of brackets), so reserving the standalone cost can only over-budget,
-    never under-budget — the safe direction for the cap.
+    never under-budget — the safe direction for the cap. (HTML headers reserve
+    the raw ``<thead>`` token cost directly in :func:`_split_table_text`.)
     """
-    if fmt == "json":
-        return _count_tokens(tokenizer, json.dumps(header_rows, ensure_ascii=False))
-    if fmt == "html":
-        return _count_tokens(tokenizer, _header_rows_to_html_thead(header_rows))
-    return 0
+    return _count_tokens(tokenizer, json.dumps(header_rows, ensure_ascii=False))
 
 
 def _inject_header_into_table_slice(text: str, header_body: str) -> str | None:
-    """Prepend the recovered header rows into a table slice's body, in place.
+    """Re-inject the recovered repeating header into a table slice, in place.
 
-    Rebuilds ``<table {attrs}>{header rows}{original body}</table>`` keeping the
-    slice's own ``attrs`` (hence its ``id``). For JSON tables the header rows are
-    prepended to the row array; for HTML tables they are emitted as a leading
-    ``<thead>``. Returns ``None`` when the slice or header cannot be parsed, so
-    the caller leaves the slice untouched.
+    Rebuilds ``<table {attrs}>{header}{original body}</table>`` keeping the
+    slice's own ``attrs`` (hence its ``id``):
+
+      * JSON slice + JSON header → header rows are prepended to the row array.
+      * HTML slice + HTML header → the raw ``<thead>…</thead>`` ``header_body``
+        is spliced verbatim ahead of the body (preserving rowspan/colspan).
+
+    Returns ``None`` (caller leaves the slice untouched) when the slice is not a
+    ``<table>`` tag, the header is unusable, the slice format is indeterminate,
+    or an HTML slice already carries a ``<thead>``.
+
+    Raises ``ValueError`` on a clear cross-format mismatch (a JSON header into an
+    HTML slice, or an HTML header into a JSON slice) — a corrupted / foreign
+    sidecar — rather than silently emitting a malformed slice.
     """
     match = _TABLE_TAG_RE.match((text or "").strip())
     if not match:
         return None
-    header_rows = _parse_header_rows(header_body)
-    if header_rows is None:
+    header_fmt = _classify_header_format(header_body)
+    if header_fmt is None:
         return None
     attrs = match.group("attrs")
     body = match.group("body")
-    fmt = _detect_table_format(attrs, body)
-    if fmt == "json":
+    slice_fmt = _detect_table_format(attrs, body)
+
+    # CONSISTENCY DEFENSIVE CHECK: a clear json-vs-html disagreement means the
+    # sidecar header does not belong to this table (corrupted / foreign).
+    if slice_fmt in {"json", "html"} and slice_fmt != header_fmt:
+        raise ValueError(
+            f"table_header format {header_fmt!r} does not match table slice "
+            f"format {slice_fmt!r} for "
+            f"{_extract_table_id(attrs) or '<no-id>'}; refusing to inject a "
+            "cross-format header (corrupted sidecar?)"
+        )
+
+    if slice_fmt == "json":
+        # header_fmt is guaranteed "json" here (any mismatch raised above).
+        header_rows = _parse_header_rows(header_body)
+        if header_rows is None:
+            return None
         try:
             rows = json.loads(body)
         except json.JSONDecodeError:
@@ -324,16 +351,15 @@ def _inject_header_into_table_slice(text: str, header_body: str) -> str | None:
         # header row).
         merged = json.dumps(header_rows + rows, ensure_ascii=False)
         return f"<table {attrs}>{merged}</table>"
-    if fmt == "html":
-        # If the slice already carries a header (a <thead> the splitter kept
-        # when it cut inside a multi-row header), prepending another would
-        # duplicate it — leave the slice as-is rather than corrupt it.
+    if slice_fmt == "html":
+        # header_fmt is guaranteed "html" here. If the slice already carries a
+        # header (a <thead> the splitter kept when it cut inside a multi-row
+        # header), prepending another would duplicate it — leave it as-is.
         if "<thead" in body.lower():
             return None
-        thead = _header_rows_to_html_thead(header_rows)
-        if not thead:
-            return None
-        return f"<table {attrs}>{thead}{body}</table>"
+        return f"<table {attrs}>{header_body}{body}</table>"
+    # slice_fmt is None (indeterminate): cannot establish consistency, so do
+    # not inject and do not raise — leave the slice untouched.
     return None
 
 
@@ -545,13 +571,24 @@ def _split_table_text(
       5. Unknown / unparseable format → character-fallback the entire
          original text.
 
-    When ``header_body`` (a stored ``table_header`` JSON 2-D array string) is
-    supplied, the source table carries a cross-page repeating header. The first
-    slice keeps its own header rows, so the header is re-injected only into the
-    *non-first* slices — and its token cost is budgeted out of the per-slice cap
-    *before* splitting, so each emitted slice stays ``≤ target_max`` including
-    the prepended header (HeaderRecovery, §3.3.3). A header-less table
-    (``header_body is None`` / unparseable) leaves the split untouched.
+    When ``header_body`` (the stored ``table_header``) is supplied, the source
+    table carries a cross-page repeating header. Its representation follows the
+    table's format: a JSON 2-D array string for JSON tables, a raw
+    ``<thead>…</thead>`` fragment for HTML tables (spans preserved). The header
+    is re-injected so every slice carries it, and its token cost is budgeted out
+    of the per-slice cap *before* splitting, so each emitted slice stays
+    ``≤ target_max`` including the header (HeaderRecovery, §3.3.3):
+
+      * JSON → the header is pinned OUT of the split body and prepended back into
+        *every* slice (the first included).
+      * HTML → the first slice keeps its own in-body ``<thead>``; the raw
+        ``<thead>`` is spliced verbatim only into the *non-first* slices.
+
+    A header whose format clearly disagrees with the table's own format means a
+    corrupted / foreign sidecar — :func:`_classify_header_format` flags it and
+    this function raises ``ValueError`` rather than splitting with it. A
+    header-less table (``header_body is None`` / unusable) leaves the split
+    untouched.
 
     Output strings are either:
       - a re-wrapped ``<table {attrs}>{rows}</table>`` (legal markup,
@@ -572,14 +609,33 @@ def _split_table_text(
     # wrapped chunk can exceed target_max purely from the wrapper, which
     # would force a needless character-fallback below.
     wrapper_overhead = _count_tokens(tokenizer, f"<table {attrs}></table>")
+    # Classify the stored header once: a "json" header parses to row arrays
+    # (pinned out of the JSON body and prepended on injection); an "html" header
+    # is a raw <thead> fragment spliced verbatim into non-first HTML slices.
+    header_fmt = _classify_header_format(header_body) if header_body else None
+    # CONSISTENCY DEFENSIVE CHECK (early): if the table body's own format is
+    # concretely known and disagrees with the header's, the sidecar header does
+    # not belong to this table — raise before doing any splitting work rather
+    # than only discovering it in the per-slice injection loop.
+    if header_fmt is not None and fmt in {"json", "html"} and fmt != header_fmt:
+        raise ValueError(
+            f"table_header format {header_fmt!r} does not match table format "
+            f"{fmt!r} for {_extract_table_id(attrs) or '<no-id>'}; refusing to "
+            "split with a cross-format header (corrupted sidecar?)"
+        )
+    # JSON header rows (used by the json_pinned path below); None for HTML / no header.
+    header_rows = _parse_header_rows(header_body) if header_fmt == "json" else None
     # HeaderRecovery budget: reserve room for the repeating header that will be
     # prepended into every non-first slice, so a slice + its header never
-    # exceeds target_max. The first slice keeps its own header rows (already in
-    # the body), so reserving uniformly only makes it marginally smaller — safe.
-    header_rows = _parse_header_rows(header_body) if header_body else None
-    header_overhead = (
-        _header_reserve_tokens(header_rows, fmt, tokenizer) if header_rows else 0
-    )
+    # exceeds target_max. The first slice keeps its own header (already in the
+    # body), so reserving uniformly only makes it marginally smaller — safe.
+    if header_fmt == "json":
+        header_overhead = _header_reserve_tokens(header_rows, tokenizer)
+    elif header_fmt == "html":
+        # The raw <thead> string is spliced verbatim; reserve its own token cost.
+        header_overhead = _count_tokens(tokenizer, header_body)
+    else:
+        header_overhead = 0
     body_budget = max(target_max - wrapper_overhead - header_overhead, 1)
     body_max = body_budget
     body_ideal = max(
@@ -670,7 +726,7 @@ def _split_table_text(
     # EVERY slice is injected; for HTML the first slice keeps its own in-body
     # <thead> (full target_max) and only later slices are injected.
     effective_max = max(target_max - header_overhead, 1)
-    inject_html_nonfirst = fmt == "html" and header_rows is not None
+    inject_html_nonfirst = fmt == "html" and header_fmt == "html"
 
     def _degrade_to_recursive() -> list[str]:
         # A single row can no longer be kept both ≤ cap and header-complete via

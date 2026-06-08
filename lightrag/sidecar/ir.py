@@ -85,7 +85,15 @@ class IRTable:
     num_cols: int = 0
     caption: str = ""
     footnotes: list[str] = field(default_factory=list)
-    table_header: list[list[str]] | None = None
+    # Repeating (cross-page) header lifted from the source. Its representation
+    # follows the table's format so merged-cell semantics survive end-to-end:
+    #   * JSON tables → a 2-D grid (``list[list[str]]``); the writer stores it
+    #     as a JSON 2-D array string.
+    #   * HTML tables → the raw ``<thead>…</thead>`` HTML string, preserving
+    #     ``rowspan`` / ``colspan``; the writer stores it verbatim.
+    # A grid supplied for an HTML table is rendered to a (span-less) ``<thead>``
+    # by the writer as a fallback.
+    table_header: list[list[str]] | str | None = None
     # Spec §五 ``self_ref``: optional pointer into the engine's raw output
     # (e.g. Docling JSON Pointer ``#/tables/2``). Empty string ⇒ writer
     # omits the field. Used for traceability back to ``.docling_raw/``.
