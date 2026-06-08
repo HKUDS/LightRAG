@@ -4152,6 +4152,7 @@ class _PipelineMixin:
                 IMAGE_TYPE_ENUM,
                 IMAGE_TYPE_FALLBACK,
                 MULTIMODAL_PROMPTS,
+                table_content_format_label,
             )
             from lightrag.constants import (
                 DEFAULT_MM_ANALYSIS_PRIORITY,
@@ -4484,10 +4485,24 @@ class _PipelineMixin:
                     )
                 template = MULTIMODAL_PROMPTS[f"{kind}_analysis"]
 
+                # A table item written by the sidecar writer ALWAYS carries a
+                # valid ``format``; a missing/unknown one means a corrupt or
+                # incompatible sidecar — fail loudly rather than guess.
+                content_format = ""
+                if kind == "table":
+                    fmt = (item.get("format") or "").strip().lower()
+                    if fmt not in ("html", "json"):
+                        raise MultimodalAnalysisError(
+                            f"table/{item_id}: missing or invalid table format "
+                            f"{item.get('format')!r} ({file_path})"
+                        )
+                    content_format = table_content_format_label(fmt)
+
                 def _render(content_value: str) -> str:
                     return template.format(
                         language=language,
                         content=content_value,
+                        content_format=content_format,
                         captions=_captions_value(item),
                         footnotes=_footnotes_value(item),
                         leading=_surrounding_value(item, "leading"),

@@ -548,6 +548,7 @@ async def test_table_routes_to_extract_role_not_vlm(tmp_path):
                     "tables": {
                         "tb-001": {
                             "caption": "Table 1",
+                            "format": "html",
                             "content": "<table><tr><td>A</td></tr></table>",
                         }
                     }
@@ -782,6 +783,7 @@ async def test_oversized_table_content_truncated_to_extract_budget(tmp_path):
                     "tables": {
                         "tb-big": {
                             "caption": "huge table",
+                            "format": "json",
                             "content": big_table,
                         }
                     }
@@ -867,6 +869,7 @@ async def test_max_extract_input_tokens_env_var_lowers_cap_and_logs_warning(
                     "tables": {
                         "tb-mid": {
                             "caption": "mid table",
+                            "format": "json",
                             "content": mid_table,
                         }
                     }
@@ -942,10 +945,11 @@ async def test_extract_cap_below_prompt_frame_fails_item_without_llm_call(
                 {
                     "tables": {
                         "tb-tight": {
+                            "format": "json",
                             "content": (
                                 '<table id="tb-tight" format="json">'
                                 '[["A","B"]]</table>'
-                            )
+                            ),
                         }
                     }
                 }
@@ -982,3 +986,102 @@ async def test_extract_cap_below_prompt_frame_fails_item_without_llm_call(
         assert "MAX_EXTRACT_INPUT_TOKENS" in item["llm_analyze_result"]["message"]
     finally:
         await rag.finalize_storages()
+
+
+# ---------------------------------------------------------------------------
+# Table content-format declaration (prompt tells the LLM html vs json).
+# ---------------------------------------------------------------------------
+
+
+def test_table_content_format_label_html_and_json():
+    from lightrag.prompt_multimodal import table_content_format_label
+
+    html_label = table_content_format_label("html")
+    assert "HTML" in html_label
+    assert "rowspan" in html_label and "colspan" in html_label
+    assert "<thead>" in html_label
+
+    json_label = table_content_format_label("JSON")  # case-insensitive
+    assert "JSON" in json_label
+    assert "2-D" in json_label and "row" in json_label
+
+
+@pytest.mark.parametrize("bad", [None, "", "csv", "markdown"])
+def test_table_content_format_label_rejects_unknown(bad):
+    from lightrag.prompt_multimodal import table_content_format_label
+
+    with pytest.raises(ValueError):
+        table_content_format_label(bad)
+
+
+async def _capture_table_prompt(tmp_path, *, fmt, content):
+    """Run analyze_multimodal on a single table item and return the rendered
+    EXTRACT prompt captured by the mock."""
+    extract_log: list[dict] = []
+    rag = _build_rag(tmp_path, extract_func=_make_extract_mock(extract_log))
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+            encoding="utf-8",
+        )
+        item: dict = {"caption": "Table 1", "content": content}
+        if fmt is not None:
+            item["format"] = fmt
+        (parsed_dir / "doc.tables.json").write_text(
+            json.dumps({"tables": {"tb-001": item}}),
+            encoding="utf-8",
+        )
+        await rag.analyze_multimodal(
+            doc_id="doc-1",
+            file_path="fixture.pdf",
+            parsed_data={"blocks_path": str(blocks_path)},
+            process_options="t",
+        )
+        return extract_log
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_table_prompt_declares_html_format(tmp_path):
+    """The EXTRACT prompt for an HTML table must state it is HTML."""
+    extract_log = await _capture_table_prompt(
+        tmp_path,
+        fmt="html",
+        content="<table><tr><td>A</td></tr></table>",
+    )
+    assert len(extract_log) == 1
+    prompt = extract_log[0]["prompt"]
+    assert "in HTML format —" in prompt
+    assert "rowspan/colspan" in prompt
+
+
+@pytest.mark.asyncio
+async def test_table_prompt_declares_json_format(tmp_path):
+    """The EXTRACT prompt for a JSON table must state it is JSON."""
+    extract_log = await _capture_table_prompt(
+        tmp_path,
+        fmt="json",
+        content='[["A","B"],["1","2"]]',
+    )
+    assert len(extract_log) == 1
+    prompt = extract_log[0]["prompt"]
+    assert "in JSON format —" in prompt
+    assert "2-D array" in prompt
+
+
+@pytest.mark.asyncio
+async def test_table_missing_format_hard_fails(tmp_path):
+    """A table item without a valid ``format`` is a corrupt sidecar — the
+    worker must raise MultimodalAnalysisError, not guess the format."""
+    with pytest.raises(MultimodalAnalysisError) as excinfo:
+        await _capture_table_prompt(
+            tmp_path,
+            fmt=None,
+            content="<table><tr><td>A</td></tr></table>",
+        )
+    assert "tb-001" in str(excinfo.value)
