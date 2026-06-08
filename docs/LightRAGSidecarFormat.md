@@ -156,6 +156,7 @@ The top level is a dict container of the form `{"version": "1.0", "drawings": { 
   "id": "im-f1bee60173d067d88595c00e7d9b0ce5-0004",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 Structural Dimensions and Weight",
+  "parent_headings": ["2 Product Description"],
   "format": "png",
   "path": "m012-manual.blocks.assets/image4.png",
   "src": "",
@@ -188,6 +189,7 @@ The top level is a dict container of the form `{"version": "1.0", "drawings": { 
 | `id` | Form `im-<doc_hash>-<NNNN>` (`doc_hash` is the 32-character md5 portion of `doc_id` with the `doc-` prefix removed) |
 | `blockid` | Points to the content line that produced this drawing |
 | `heading` | The section heading the drawing belongs to |
+| `parent_headings` | String array: the top-down list of ancestor headings, excluding the current `heading` (mirrors the `blocks.jsonl` field of the same name on the block this drawing belongs to) |
 | `format` | Original extension (no dot): `png` / `jpeg` / `gif` / `webp` / `wmf` / `emf` / … |
 | `path` | Resource path relative to the `*.parsed/` directory; **always** points to a file inside `*.blocks.assets/` |
 | `src` | The reference alias of the drawing in the original document (empty in most cases) |
@@ -219,6 +221,7 @@ The top level is a dict container of the form `{"version": "1.0", "tables": { <i
   "id": "tb-f1bee60173d067d88595c00e7d9b0ce5-0007",
   "blockid": "3f33897b5e105d254addc655f1efbf8c",
   "heading": "2.4.4 Temperature-Humidity-Altitude (run with the system)",
+  "parent_headings": ["2 Product Description", "2.4 Environmental Adaptability"],
   "dimension": [16, 8],
   "format": "json",
   "content": "[[\"Step\", \"Temperature (°C)\", \"Altitude (m)\", \"Relative humidity\", \"Time (min)\", \"Auxiliary cooling\", \"System power\", \"Functional/performance check\"],…",
@@ -242,7 +245,7 @@ The top level is a dict container of the form `{"version": "1.0", "tables": { <i
 }
 ```
 
-The `blockid` / `heading` / `surrounding` / `llm_analyze_result` fields of tables.json have the same meaning as in drawings.json. Different or newly added fields are described below:
+The `blockid` / `heading` / `parent_headings` / `surrounding` / `llm_analyze_result` fields of tables.json have the same meaning as in drawings.json. Different or newly added fields are described below:
 
 | Field | Description |
 |---|---|
@@ -264,6 +267,7 @@ The top level is a dict container of the form `{"version": "1.0", "equations": {
   "id": "eq-f1bee60173d067d88595c00e7d9b0ce5-0001",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 Structural Dimensions and Weight",
+  "parent_headings": ["2 Product Description"],
   "format": "latex",
   "content": "C=2∗\\frac{P∗T}{\\left( {V}_{H}^{2}−{V}_{L}^{2} \\right)∗η}",
   "caption": "",
@@ -286,7 +290,7 @@ The top level is a dict container of the form `{"version": "1.0", "equations": {
 }
 ```
 
-The `blockid` / `heading` / `surrounding` / `llm_analyze_result` fields of equations.json have the same meaning as in drawings.json. Different or newly added fields are described below:
+The `blockid` / `heading` / `parent_headings` / `surrounding` / `llm_analyze_result` fields of equations.json have the same meaning as in drawings.json. Different or newly added fields are described below:
 
 | Field | Description |
 |---|---|

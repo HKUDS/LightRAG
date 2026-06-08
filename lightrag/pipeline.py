@@ -3818,6 +3818,7 @@ class _PipelineMixin:
                     "id": eq_id,
                     "blockid": blockid,
                     "heading": current_heading,
+                    "parent_headings": list(current_parent_headings),
                     "format": "latex",
                     "content": eq_text,
                     "caption": caption,
@@ -3861,6 +3862,7 @@ class _PipelineMixin:
                     "id": table_id,
                     "blockid": blockid,
                     "heading": current_heading,
+                    "parent_headings": list(current_parent_headings),
                     "dimension": [
                         _parse_int(item.get("num_rows"), inferred_num_rows),
                         _parse_int(item.get("num_cols"), inferred_num_cols),
@@ -3910,6 +3912,7 @@ class _PipelineMixin:
                     "id": drawing_id,
                     "blockid": blockid,
                     "heading": current_heading,
+                    "parent_headings": list(current_parent_headings),
                     "format": fmt,
                     "path": path_val,
                     "src": src_val,

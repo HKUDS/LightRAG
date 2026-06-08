@@ -156,6 +156,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   "id": "im-f1bee60173d067d88595c00e7d9b0ce5-0004",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 结构尺寸及重量",
+  "parent_headings": ["2 产品说明"],
   "format": "png",
   "path": "m012-manual.blocks.assets/image4.png",
   "src": "",
@@ -188,6 +189,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `id` | `im-<doc_hash>-<NNNN>` 形式（`doc_hash` 为 `doc_id` 去掉 `doc-` 前缀后的 32 位 md5） |
 | `blockid` | 指向产生该图形的 content 行 |
 | `heading` | 所在章节标题 |
+| `parent_headings` | 字符串数组：自顶向下的祖先标题列表，不含当前 `heading`（与该图形所属 block 在 `blocks.jsonl` 中的同名字段一致） |
 | `format` | 原始扩展名（去点）：`png` / `jpeg` / `gif` / `webp` / `wmf` / `emf` / … |
 | `path` | 相对 `*.parsed/` 目录的资源路径，**永远**指向 `*.blocks.assets/` 内文件 |
 | `src` | 原文档里图形的引用别名（多数情况下为空） |
@@ -219,6 +221,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   "id": "tb-f1bee60173d067d88595c00e7d9b0ce5-0007",
   "blockid": "3f33897b5e105d254addc655f1efbf8c",
   "heading": "2.4.4 温度-湿度-高度（随系统进行）",
+  "parent_headings": ["2 产品说明", "2.4 环境适应性"],
   "dimension": [16, 8],
   "format": "json",
   "content": "[[\"试验步骤\", \"温度(℃)\", \"高度(m)\", \"相对湿度\", \"时间(min)\", \"辅助冷却\", \"系统电源\", \"功能、性能检查\"],…",
@@ -242,7 +245,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 }
 ```
 
-tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字段与drawings.json相同。不同或新添加的字段说明如下：
+tables.json 文件的 `blockid` `heading` `parent_headings` `surrounding` `llm_analyze_result` 字段与drawings.json相同。不同或新添加的字段说明如下：
 
 | 字段 | 说明 |
 |---|---|
@@ -264,6 +267,7 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
   "id": "eq-f1bee60173d067d88595c00e7d9b0ce5-0001",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 结构尺寸及重量",
+  "parent_headings": ["2 产品说明"],
   "format": "latex",
   "content": "C=2∗\\frac{P∗T}{\\left( {V}_{H}^{2}−{V}_{L}^{2} \\right)∗η}",
   "caption": "",
@@ -286,7 +290,7 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
 }
 ```
 
-equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字段与drawings.json相同。不同或新添加的字段说明如下：
+equations.json 文件的 `blockid` `heading` `parent_headings` `surrounding` `llm_analyze_result` 字段与drawings.json相同。不同或新添加的字段说明如下：
 
 | 字段 | 说明 |
 |---|---|
