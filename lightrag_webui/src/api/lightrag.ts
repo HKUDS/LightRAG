@@ -587,15 +587,29 @@ export const getDocumentsScanProgress = async (): Promise<LightragDocumentsScanP
   return response.data
 }
 
-export const queryText = async (request: QueryRequest): Promise<QueryResponse> => {
-  const response = await axiosInstance.post('/query', request)
+export const queryText = async (
+  request: QueryRequest,
+  signal?: AbortSignal
+): Promise<QueryResponse> => {
+  const response = await axiosInstance.post('/query', request, { signal })
   return response.data
 }
+
+/**
+ * True when an error originates from the user aborting the request (Stop
+ * button) rather than a real failure. Used to suppress error rendering and any
+ * auth-failure side effects (e.g. redirecting to login) on user cancellation.
+ */
+export const isUserAbortError = (
+  signal: AbortSignal | undefined,
+  error: unknown
+): boolean => Boolean(signal?.aborted) || (error as Error)?.name === 'AbortError'
 
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
-  onError?: (error: string) => void
+  onError?: (error: string) => void,
+  signal?: AbortSignal
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
@@ -615,6 +629,7 @@ export const queryTextStream = async (
       method: 'POST',
       headers: headers,
       body: JSON.stringify(request),
+      signal,
     });
 
     if (!response.ok) {
@@ -638,6 +653,7 @@ export const queryTextStream = async (
               method: 'POST',
               headers: retryHeaders,
               body: JSON.stringify(request),
+              signal,
             });
 
             if (!retryResponse.ok) {
@@ -695,6 +711,11 @@ export const queryTextStream = async (
 
             return; // Successfully completed retry
           } catch (refreshError) {
+            // User aborted the retried stream (Stop button): this is not an auth
+            // failure, so don't redirect to login — exit silently.
+            if (isUserAbortError(signal, refreshError)) {
+              return;
+            }
             console.error('Failed to refresh guest token for streaming:', refreshError);
             navigationService.navigateToLogin();
             throw new Error('Failed to refresh authentication', { cause: refreshError });
@@ -778,6 +799,12 @@ export const queryTextStream = async (
     }
 
   } catch (error) {
+    // User aborted the request (Stop button): exit silently without surfacing
+    // an error, the component handles the terminated state.
+    if (isUserAbortError(signal, error)) {
+      return;
+    }
+
     const message = errorMessage(error);
 
     // Check if this is an authentication error

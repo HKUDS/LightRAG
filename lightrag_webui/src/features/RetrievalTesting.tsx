@@ -9,7 +9,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
-import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
+import { EraserIcon, SendIcon, CopyIcon, SquareIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
@@ -233,6 +233,12 @@ export default function RetrievalTesting() {
 
       const prevMessages = [...messages]
 
+      // Create an abort controller so the user can terminate this query via the
+      // Stop button. Track the active assistant message so handleStop can mark it.
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+      activeAssistantIdRef.current = assistantMessage.id
+
       // Add messages to chatbox
       setMessages([...prevMessages, userMessage, assistantMessage])
 
@@ -373,7 +379,7 @@ export default function RetrievalTesting() {
           let errorMessage = ''
           await queryTextStream(queryParams, updateAssistantMessage, (error) => {
             errorMessage += error
-          })
+          }, controller.signal)
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -381,52 +387,64 @@ export default function RetrievalTesting() {
             updateAssistantMessage(errorMessage, true)
           }
         } else {
-          const response = await queryText(queryParams)
+          const response = await queryText(queryParams, controller.signal)
           updateAssistantMessage(response.response)
         }
       } catch (err) {
-        // Handle error
-        updateAssistantMessage(`${t('retrievePanel.retrieval.error')}\n${errorMessage(err)}`, true)
-      } finally {
-        // Clear loading and add messages to state
-        setIsLoading(false)
-        isReceivingResponseRef.current = false
-
-        // Enhanced cleanup with error handling to prevent memory leaks
-        try {
-          // Final COT state validation and cleanup
-          const finalCotResult = parseCOTContent(assistantMessage.content)
-
-          // Force set final state - stream ended so thinking must be false
-          assistantMessage.isThinking = false
-
-          // If we have a complete thinking block but time wasn't calculated, do final calculation
-          if (finalCotResult.hasValidThinkBlock && thinkingStartTime.current && !assistantMessage.thinkingTime) {
-            const duration = (Date.now() - thinkingStartTime.current) / 1000
-            assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
-          }
-
-          // Ensure display content is correctly set based on final parsing
-          if (finalCotResult.displayContent !== undefined) {
-            assistantMessage.displayContent = finalCotResult.displayContent
-          }
-
-        } catch (error) {
-          console.error('Error in final COT state validation:', error)
-          // Force reset state on error
-          assistantMessage.isThinking = false
-        } finally {
-          // Ensure cleanup happens regardless of errors
-          thinkingStartTime.current = null
+        // If the user terminated the query, handleStop already finalized the
+        // message state; don't render it as an error.
+        if (!controller.signal.aborted) {
+          updateAssistantMessage(`${t('retrievePanel.retrieval.error')}\n${errorMessage(err)}`, true)
         }
+      } finally {
+        // Only the owning, non-terminated query runs global cleanup. A
+        // terminated query has its controller nulled by handleStop (which also
+        // persists the terminated history), and a superseded query no longer
+        // owns the ref — both skip here so we don't reset the shared thinking
+        // refs / isLoading / history out from under a freshly started query
+        // (which would break its COT animation) or undo a post-stop Clear.
+        if (abortControllerRef.current === controller) {
+          // Clear loading and add messages to state
+          setIsLoading(false)
+          isReceivingResponseRef.current = false
+          abortControllerRef.current = null
 
-        // Save history with error handling
-        try {
-          useSettingsStore
-            .getState()
-            .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
-        } catch (error) {
-          console.error('Error saving retrieval history:', error)
+          // Enhanced cleanup with error handling to prevent memory leaks
+          try {
+            // Final COT state validation and cleanup
+            const finalCotResult = parseCOTContent(assistantMessage.content)
+
+            // Force set final state - stream ended so thinking must be false
+            assistantMessage.isThinking = false
+
+            // If we have a complete thinking block but time wasn't calculated, do final calculation
+            if (finalCotResult.hasValidThinkBlock && thinkingStartTime.current && !assistantMessage.thinkingTime) {
+              const duration = (Date.now() - thinkingStartTime.current) / 1000
+              assistantMessage.thinkingTime = parseFloat(duration.toFixed(2))
+            }
+
+            // Ensure display content is correctly set based on final parsing
+            if (finalCotResult.displayContent !== undefined) {
+              assistantMessage.displayContent = finalCotResult.displayContent
+            }
+
+          } catch (error) {
+            console.error('Error in final COT state validation:', error)
+            // Force reset state on error
+            assistantMessage.isThinking = false
+          } finally {
+            // Ensure cleanup happens regardless of errors
+            thinkingStartTime.current = null
+          }
+
+          // Save history with error handling
+          try {
+            useSettingsStore
+              .getState()
+              .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
+          } catch (error) {
+            console.error('Error saving retrieval history:', error)
+          }
         }
       }
     },
@@ -519,6 +537,10 @@ export default function RetrievalTesting() {
   const shouldFollowScrollRef = useRef(true)
   const thinkingStartTime = useRef<number | null>(null)
   const thinkingProcessed = useRef(false)
+  // Abort controller for the in-flight query (streaming or non-streaming)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  // Id of the assistant message currently receiving a response
+  const activeAssistantIdRef = useRef<string | null>(null)
   // Reference to track if user interaction is from the form area
   const isFormInteractionRef = useRef(false)
   // Reference to track if scroll was triggered programmatically
@@ -621,6 +643,54 @@ export default function RetrievalTesting() {
     setMessages([])
     useSettingsStore.getState().setRetrievalHistory([])
   }, [setMessages])
+
+  // Stop the in-flight query. Frees the UI immediately so the user can start a
+  // new query without waiting for the aborted request to unwind. Marks the
+  // active assistant message as terminated and stops its COT spinner.
+  const handleStop = useCallback(() => {
+    const controller = abortControllerRef.current
+    if (!controller) return
+    controller.abort()
+    // Relinquish ownership so the aborted query's deferred `finally` skips its
+    // cleanup. Otherwise it still sees itself as the active query and would
+    // write the stale conversation back into history — undoing a Clear that the
+    // user performs after stopping (the cleared chat would reappear on reload).
+    // eslint-disable-next-line react-hooks/immutability
+    abortControllerRef.current = null
+
+    // Finalize the terminated assistant message (stop its COT spinner, mark it
+    // aborted) and persist immediately so the terminated state is the
+    // authoritative saved history.
+    const activeId = activeAssistantIdRef.current
+    const finalizedMessages = messages.map((m) => {
+      if (m.id !== activeId) return m
+      // Terminated mid-thinking: finalize the COT block so the partial reasoning
+      // stays visible (as a "Thinking time Xs" block, in whatever expand state
+      // the user left it) instead of vanishing once isThinking is cleared — the
+      // thinking block only renders while isThinking || thinkingTime !== null.
+      let thinkingTime = m.thinkingTime ?? null
+      if (m.isThinking && thinkingTime === null && thinkingStartTime.current) {
+        thinkingTime = parseFloat(((Date.now() - thinkingStartTime.current) / 1000).toFixed(2))
+      }
+      return { ...m, isThinking: false, isAborted: true, thinkingTime }
+    })
+    setMessages(finalizedMessages)
+    try {
+      useSettingsStore.getState().setRetrievalHistory(finalizedMessages)
+    } catch (error) {
+      console.error('Error saving retrieval history:', error)
+    }
+
+    // The skipped `finally` won't reset these shared thinking refs.
+    // eslint-disable-next-line react-hooks/immutability
+    thinkingStartTime.current = null
+    // eslint-disable-next-line react-hooks/immutability
+    thinkingProcessed.current = false
+
+    setIsLoading(false)
+    // eslint-disable-next-line react-hooks/immutability
+    isReceivingResponseRef.current = false
+  }, [messages, setMessages])
 
   // Disable auto-scroll when the user clicks inside the messages container.
   // The ref mutation pattern is intentional and matches how it's mutated elsewhere
@@ -809,10 +879,17 @@ export default function RetrievalTesting() {
               <div className="absolute left-0 top-full mt-1 text-xs text-red-500">{inputError}</div>
             )}
           </div>
-          <Button type="submit" variant="default" disabled={isLoading} size="sm">
-            <SendIcon />
-            {t('retrievePanel.retrieval.send')}
-          </Button>
+          {isLoading ? (
+            <Button type="button" variant="destructive" onClick={handleStop} size="sm">
+              <SquareIcon />
+              {t('retrievePanel.retrieval.stop')}
+            </Button>
+          ) : (
+            <Button type="submit" variant="default" size="sm">
+              <SendIcon />
+              {t('retrievePanel.retrieval.send')}
+            </Button>
+          )}
         </form>
       </div>
       <QuerySettings />

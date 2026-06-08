@@ -410,6 +410,8 @@
       "startPrompt": "아래에 질문을 입력하여 검색을 시작하세요",
       "clear": "지우기",
       "send": "전송",
+      "stop": "중지",
+      "userTerminated": "사용자가 중단했습니다. 응답이 불완전할 수 있습니다",
       "placeholder": "질문을 입력하세요 (접두사 지원: /<쿼리 모드>)",
       "error": "오류: 응답을 가져오지 못했습니다",
       "queryModeError": "다음 쿼리 모드만 지원합니다: {{modes}}",
