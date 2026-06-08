@@ -1405,19 +1405,47 @@ def test_truncate_section_context_noop_within_budget():
 
 
 @pytest.mark.offline
-def test_truncate_section_context_keeps_tail_when_over_budget():
-    """Over budget -> keep the nearest (tail) section and mark elision."""
+def test_truncate_section_context_keeps_first_and_last_when_over_budget():
+    """Over budget -> keep first (top-level) + last (leaf) section, elide middle."""
+    from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
     from lightrag.operate import _truncate_section_context
 
     tok = Tokenizer("dummy", DummyTokenizer())  # 1 char == 1 token
-    path = " → ".join(f"Level{i:02d}" for i in range(100))
+    levels = [f"Level{i:02d}" for i in range(100)]
+    path = HEADING_BREADCRUMB_SEP.join(levels)
     budget = 20
 
     out = _truncate_section_context(path, tok, budget)
-    assert out.startswith("… ")
-    # The kept tail is exactly the last ``budget`` characters of the path.
-    assert out == "… " + path[-budget:]
-    assert out.endswith(path[-budget:])
+    expected = (
+        f"{levels[0]}{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}{levels[-1]}"
+    )
+    assert out == expected
+    # Middle levels are gone.
+    assert "Level50" not in out
+
+
+@pytest.mark.offline
+def test_truncate_section_context_two_levels_returned_intact():
+    """A 2-level path has no middle to elide -> returned unchanged."""
+    from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    path = HEADING_BREADCRUMB_SEP.join(["A" * 50, "B" * 50])  # 103 chars
+    # Force "over budget" with a tiny cap to exercise the <=2 branch.
+    out = _truncate_section_context(path, tok, 10)
+    assert out == path
+
+
+@pytest.mark.offline
+def test_heading_level_cap_below_one_third_of_token_budget():
+    """Invariant guard: collapsed first+leaf must fit the token budget."""
+    from lightrag.constants import (
+        DEFAULT_HEADING_LEVEL_MAX_CHARS,
+        DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
+    )
+
+    assert DEFAULT_HEADING_LEVEL_MAX_CHARS * 3 < DEFAULT_MAX_SECTION_CONTEXT_TOKENS
 
 
 @pytest.mark.offline

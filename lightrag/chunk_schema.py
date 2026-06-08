@@ -26,8 +26,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from lightrag.constants import DEFAULT_HEADING_LEVEL_MAX_CHARS
+
 
 _SIDECAR_TYPES = frozenset({"block", "drawing", "table", "equation"})
+
+# Separator joining heading levels into a single breadcrumb line. Shared so the
+# extraction-side token budgeter (see ``operate._truncate_section_context``) can
+# split the rendered breadcrumb back into levels without a drifting magic string.
+HEADING_BREADCRUMB_SEP = " → "
 
 
 def normalize_chunk_heading(dp: dict[str, Any]) -> dict[str, Any] | None:
@@ -118,14 +125,7 @@ def format_parent_headings(dp: dict[str, Any]) -> str:
     cleaned = [
         c for c in (_clean_heading_text(h) for h in normalized["parent_headings"]) if c
     ]
-    return " → ".join(cleaned)
-
-
-# Per-level character cap for headings rendered into the extraction
-# `---Section Context---` block. Bounds a single pathologically long section
-# title so it cannot dominate the prompt. The overall breadcrumb is
-# additionally token-budgeted by the caller (see ``operate.py``).
-DEFAULT_HEADING_LEVEL_MAX_CHARS = 120
+    return HEADING_BREADCRUMB_SEP.join(cleaned)
 
 
 def _truncate_heading_level(text: str, max_chars: int) -> str:
@@ -166,7 +166,7 @@ def format_heading_context(
         for c in (_clean_heading_text(h) for h in chain)
         if c
     ]
-    return " → ".join(cleaned)
+    return HEADING_BREADCRUMB_SEP.join(cleaned)
 
 
 def normalize_chunk_sidecar(dp: dict[str, Any]) -> dict[str, Any] | None:
@@ -348,6 +348,7 @@ __all__ = [
     "normalize_chunk_heading",
     "format_parent_headings",
     "format_heading_context",
+    "HEADING_BREADCRUMB_SEP",
     "normalize_chunk_sidecar",
     "strip_internal_multimodal_markup_for_extraction",
 ]
