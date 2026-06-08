@@ -139,6 +139,11 @@ export default function RetrievalView() {
   })
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  // Briefly disable the Stop button right after a query starts so a fast
+  // double-click on Send (which morphs into Stop at the same position) can't
+  // accidentally abort the query it just launched.
+  const [stopDisabled, setStopDisabled] = useState(false)
+  const stopCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [inputError, setInputError] = useState('') // Error message for input
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
 
@@ -255,6 +260,13 @@ export default function RetrievalView() {
       // Clear input and set loading
       setInputValue('')
       setIsLoading(true)
+      // Disable the Stop button for a short cooldown so a fast double-click on
+      // Send doesn't immediately abort this query. Set synchronously (same batch
+      // as setIsLoading) so the Stop button is already disabled on its first
+      // paint, leaving no enabled gap for the second click to land in.
+      setStopDisabled(true)
+      if (stopCooldownTimerRef.current) clearTimeout(stopCooldownTimerRef.current)
+      stopCooldownTimerRef.current = setTimeout(() => setStopDisabled(false), 500)
 
       // Reset input height to minimum after clearing input
       if (inputRef.current) {
@@ -557,6 +569,10 @@ export default function RetrievalView() {
       if (thinkingStartTime.current) {
         thinkingStartTime.current = null;
       }
+      if (stopCooldownTimerRef.current) {
+        clearTimeout(stopCooldownTimerRef.current);
+        stopCooldownTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -688,6 +704,12 @@ export default function RetrievalView() {
     thinkingProcessed.current = false
 
     setIsLoading(false)
+    // Cancel any pending Stop-button cooldown and reset it for the next query.
+    if (stopCooldownTimerRef.current) {
+      clearTimeout(stopCooldownTimerRef.current)
+      stopCooldownTimerRef.current = null
+    }
+    setStopDisabled(false)
     // eslint-disable-next-line react-hooks/immutability
     isReceivingResponseRef.current = false
   }, [messages, setMessages])
@@ -880,7 +902,7 @@ export default function RetrievalView() {
             )}
           </div>
           {isLoading ? (
-            <Button type="button" variant="destructive" onClick={handleStop} size="sm">
+            <Button type="button" variant="destructive" onClick={handleStop} disabled={stopDisabled} size="sm">
               <SquareIcon />
               {t('retrievePanel.retrieval.stop')}
             </Button>
