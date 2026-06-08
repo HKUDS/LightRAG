@@ -36,8 +36,15 @@ PROMPTS[
 # hardcodes the marker; it produces the breadcrumb string and decides whether
 # to inject this block at all. When a chunk has no heading the block is omitted
 # entirely and the user prompt stays byte-identical to the no-context form.
+#
+# Security: the breadcrumb is document-controlled text. It is collapsed to a
+# single line upstream (``_clean_heading_text``), and here it is placed *after*
+# a descriptive label on the same line so it can never sit at the start of a
+# line. Structural prompt markers (`---X---` sections, ``` fences) are
+# line-start constructs, so a heading such as `---Output---` is rendered inline
+# as inert data and cannot forge an extra prompt section outside the input fence.
 PROMPTS["entity_extraction_section_context"] = """---Section Context---
-{heading_path}
+The input text is an excerpt from this document section path (reference only): {heading_path}
 
 """
 

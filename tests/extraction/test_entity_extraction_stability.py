@@ -1289,7 +1289,8 @@ def test_json_user_prompt_section_context_hidden_and_byte_identical_when_no_head
 @pytest.mark.offline
 def test_text_user_prompt_includes_section_context_when_heading_present():
     rendered = _render_text_user_prompt(_section_block("Methods → Data Collection"))
-    assert f"{_SECTION_MARKER}\nMethods → Data Collection" in rendered
+    assert _SECTION_MARKER in rendered
+    assert "Methods → Data Collection" in rendered
     # Block sits immediately above the input text section.
     assert "Methods → Data Collection\n\n---Input Text---" in rendered
 
@@ -1297,8 +1298,20 @@ def test_text_user_prompt_includes_section_context_when_heading_present():
 @pytest.mark.offline
 def test_json_user_prompt_includes_section_context_when_heading_present():
     rendered = _render_json_user_prompt(_section_block("Methods → Data Collection"))
-    assert f"{_SECTION_MARKER}\nMethods → Data Collection" in rendered
+    assert _SECTION_MARKER in rendered
+    assert "Methods → Data Collection" in rendered
     assert "Methods → Data Collection\n\n---Input Text---" in rendered
+
+
+@pytest.mark.offline
+def test_section_context_breadcrumb_is_not_at_line_start():
+    """A heading that looks like a prompt marker must be rendered inline (as
+    data), never at the start of a line where it could forge a new section."""
+    block = _section_block("---Output---")
+    # The breadcrumb follows a label on the same line, so the marker text never
+    # begins a line of its own.
+    assert "\n---Output---" not in block
+    assert "---Output---" in block  # still present, just inert/inline
 
 
 @pytest.mark.offline
@@ -1344,7 +1357,8 @@ async def test_extract_entities_injects_section_context_for_chunk_with_heading()
 
     assert llm_func.await_count >= 1
     user_prompt = llm_func.call_args_list[0][0][0]
-    assert f"{_SECTION_MARKER}\nMethods → Data Collection" in user_prompt
+    assert _SECTION_MARKER in user_prompt
+    assert "Methods → Data Collection\n\n---Input Text---" in user_prompt
 
 
 @pytest.mark.offline
@@ -1413,28 +1427,50 @@ def test_truncate_section_context_keeps_first_and_last_when_over_budget():
     tok = Tokenizer("dummy", DummyTokenizer())  # 1 char == 1 token
     levels = [f"Level{i:02d}" for i in range(100)]
     path = HEADING_BREADCRUMB_SEP.join(levels)
-    budget = 20
+    # Budget large enough for the collapsed two-level form (~21 tokens) so the
+    # hard-cap backstop does not also fire here.
+    budget = 40
 
     out = _truncate_section_context(path, tok, budget)
     expected = (
         f"{levels[0]}{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}{levels[-1]}"
     )
     assert out == expected
-    # Middle levels are gone.
-    assert "Level50" not in out
+    assert "Level50" not in out  # middle levels are gone
+    assert len(tok.encode(out)) <= budget
 
 
 @pytest.mark.offline
-def test_truncate_section_context_two_levels_returned_intact():
-    """A 2-level path has no middle to elide -> returned unchanged."""
+def test_truncate_section_context_hard_caps_dense_short_path():
+    """A 1-/2-level path that is itself over budget must still be capped
+    (not bypassed) — guards token-dense / byte-level tokenizers."""
     from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
     from lightrag.operate import _truncate_section_context
 
     tok = Tokenizer("dummy", DummyTokenizer())
-    path = HEADING_BREADCRUMB_SEP.join(["A" * 50, "B" * 50])  # 103 chars
-    # Force "over budget" with a tiny cap to exercise the <=2 branch.
-    out = _truncate_section_context(path, tok, 10)
-    assert out == path
+    path = HEADING_BREADCRUMB_SEP.join(["A" * 50, "B" * 50])  # 103 chars/tokens
+    budget = 10
+
+    out = _truncate_section_context(path, tok, budget)
+    assert out != path
+    assert out.endswith("…")
+    assert len(tok.encode(out)) <= budget
+
+
+@pytest.mark.offline
+def test_truncate_section_context_hard_caps_collapsed_form_when_still_over():
+    """Even the collapsed first→…→leaf form is capped if it still exceeds."""
+    from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
+    from lightrag.operate import _truncate_section_context
+
+    tok = Tokenizer("dummy", DummyTokenizer())
+    levels = [f"Level{i:02d}" for i in range(100)]
+    path = HEADING_BREADCRUMB_SEP.join(levels)
+    budget = 8  # smaller than the ~21-token collapsed form
+
+    out = _truncate_section_context(path, tok, budget)
+    assert out.endswith("…")
+    assert len(tok.encode(out)) <= budget
 
 
 @pytest.mark.offline

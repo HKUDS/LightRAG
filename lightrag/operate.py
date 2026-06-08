@@ -165,21 +165,30 @@ def _truncate_section_context(
     The breadcrumb is metadata layered on top of the (already chunk-sized)
     input text, so an unbounded heading chain could push an otherwise-valid
     chunk past the provider context window. When the path exceeds ``max_tokens``
-    we collapse it to the **first** level (top-level document location) and the
-    **last/leaf** level (the chunk's own, most-specific section), eliding the
-    middle with ``first → … → leaf``. ``DEFAULT_HEADING_LEVEL_MAX_CHARS`` is kept
-    below 1/3 of the token budget so this two-level form always fits.
-    ``max_tokens <= 0`` or a missing tokenizer disables the cap.
+    we first collapse it to the **first** level (top-level document location)
+    and the **last/leaf** level (the chunk's own, most-specific section),
+    eliding the middle with ``first → … → leaf``. A token-dense path (emoji /
+    byte-level tokenizers) can still exceed the budget even with one or two
+    levels, so a hard token cap is always applied as a backstop — the returned
+    string is guaranteed to fit ``max_tokens``. ``max_tokens <= 0`` or a missing
+    tokenizer disables the cap.
     """
     if not heading_path or tokenizer is None or max_tokens <= 0:
         return heading_path
     if len(tokenizer.encode(heading_path)) <= max_tokens:
         return heading_path
     levels = heading_path.split(HEADING_BREADCRUMB_SEP)
-    if len(levels) <= 2:
-        # Nothing to elide; the per-level cap + budget invariant keeps this fit.
-        return heading_path
-    return f"{levels[0]}{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}{levels[-1]}"
+    if len(levels) >= 3:
+        heading_path = (
+            f"{levels[0]}{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}{levels[-1]}"
+        )
+    # Backstop: enforce the cap for token-dense short paths (and any collapsed
+    # form that is still over budget) by hard-truncating, reserving one token
+    # for the trailing ellipsis.
+    tokens = tokenizer.encode(heading_path)
+    if len(tokens) > max_tokens:
+        heading_path = tokenizer.decode(tokens[: max(max_tokens - 1, 1)]).rstrip() + "…"
+    return heading_path
 
 
 def _truncate_vdb_content(content: str, global_config: dict, content_label: str) -> str:
