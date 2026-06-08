@@ -101,7 +101,7 @@ const parseCOTContent = (content: string) => {
   }
 }
 
-export default function RetrievalTesting() {
+export default function RetrievalView() {
   const { t } = useTranslation()
   // Get current tab to determine if this tab is active (for performance optimization)
   const currentTab = useSettingsStore.use.currentTab()
