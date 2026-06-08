@@ -1566,6 +1566,7 @@ def test_analyze_multimodal_overwrites_already_analyzed_items(tmp_path):
                         "tbl1": {
                             "id": "tbl1",
                             "caption": "tbl",
+                            "format": "html",
                             "content": "Header|Row",
                         }
                     },
@@ -2788,6 +2789,7 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
                             "id": "id1",
                             "caption": "表1 指标说明",
                             "footnotes": ["单位：国际标准单位"],
+                            "format": "html",
                             "content": "<table><tr><th>符号</th><th>代表意义</th><th>单位</th></tr><tr><td>A</td><td>面积</td><td>m2</td></tr></table>",
                         }
                     },
