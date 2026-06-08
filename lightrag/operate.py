@@ -3546,11 +3546,17 @@ async def extract_entities(
                     }
                 )
                 heading_block = chunk_dp.get("heading")
-                heading_label = "unknown"
+                heading_label = ""
                 if isinstance(heading_block, dict):
-                    heading_label = (
-                        str(heading_block.get("heading") or "").strip() or "unknown"
-                    )
+                    heading_label = str(heading_block.get("heading") or "").strip()
+                # Omit the "in section ..." clause entirely when the chunk has no
+                # real heading — a literal "unknown" filler would otherwise leak
+                # into the relation description, embedding, and retrieval as noise.
+                location = (
+                    f"in section {heading_label} of document"
+                    if heading_label
+                    else "of document"
+                )
                 mm_display_name = _parse_mm_display_name(
                     chunk_dp.get("content", "") or "", sidecar_id
                 )
@@ -3566,8 +3572,8 @@ async def extract_entities(
                             "weight": 1.0,
                             "description": (
                                 f"{tgt} is associated with {sidecar_type} "
-                                f"{mm_display_name} in section {heading_label} "
-                                f'of document "{file_path}"'
+                                f"{mm_display_name} {location} "
+                                f'"{file_path}"'
                             ),
                             "keywords": "associated with, contained in",
                             "source_id": chunk_key,
