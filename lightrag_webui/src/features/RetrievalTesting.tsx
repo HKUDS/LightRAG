@@ -397,20 +397,17 @@ export default function RetrievalTesting() {
           updateAssistantMessage(`${t('retrievePanel.retrieval.error')}\n${errorMessage(err)}`, true)
         }
       } finally {
-        // Only the most-recent query owns global cleanup. If this query was
-        // terminated and a new one has already started, skip cleanup so we
-        // don't reset the shared thinking refs / isLoading / history out from
-        // under the new query (which would break its COT animation).
+        // Only the owning, non-terminated query runs global cleanup. A
+        // terminated query has its controller nulled by handleStop (which also
+        // persists the terminated history), and a superseded query no longer
+        // owns the ref — both skip here so we don't reset the shared thinking
+        // refs / isLoading / history out from under a freshly started query
+        // (which would break its COT animation) or undo a post-stop Clear.
         if (abortControllerRef.current === controller) {
           // Clear loading and add messages to state
           setIsLoading(false)
           isReceivingResponseRef.current = false
           abortControllerRef.current = null
-
-          // Persist the terminated marker so the saved history reflects it.
-          if (controller.signal.aborted) {
-            assistantMessage.isAborted = true
-          }
 
           // Enhanced cleanup with error handling to prevent memory leaks
           try {
@@ -654,20 +651,37 @@ export default function RetrievalTesting() {
     const controller = abortControllerRef.current
     if (!controller) return
     controller.abort()
+    // Relinquish ownership so the aborted query's deferred `finally` skips its
+    // cleanup. Otherwise it still sees itself as the active query and would
+    // write the stale conversation back into history — undoing a Clear that the
+    // user performs after stopping (the cleared chat would reappear on reload).
+    // eslint-disable-next-line react-hooks/immutability
+    abortControllerRef.current = null
 
+    // Finalize the terminated assistant message (stop its COT spinner, mark it
+    // aborted) and persist immediately so the terminated state is the
+    // authoritative saved history.
     const activeId = activeAssistantIdRef.current
-    if (activeId) {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === activeId ? { ...m, isThinking: false, isAborted: true } : m
-        )
-      )
+    const finalizedMessages = messages.map((m) =>
+      m.id === activeId ? { ...m, isThinking: false, isAborted: true } : m
+    )
+    setMessages(finalizedMessages)
+    try {
+      useSettingsStore.getState().setRetrievalHistory(finalizedMessages)
+    } catch (error) {
+      console.error('Error saving retrieval history:', error)
     }
+
+    // The skipped `finally` won't reset these shared thinking refs.
+    // eslint-disable-next-line react-hooks/immutability
+    thinkingStartTime.current = null
+    // eslint-disable-next-line react-hooks/immutability
+    thinkingProcessed.current = false
 
     setIsLoading(false)
     // eslint-disable-next-line react-hooks/immutability
     isReceivingResponseRef.current = false
-  }, [setMessages])
+  }, [messages, setMessages])
 
   // Disable auto-scroll when the user clicks inside the messages container.
   // The ref mutation pattern is intentional and matches how it's mutated elsewhere

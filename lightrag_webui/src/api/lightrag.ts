@@ -595,6 +595,16 @@ export const queryText = async (
   return response.data
 }
 
+/**
+ * True when an error originates from the user aborting the request (Stop
+ * button) rather than a real failure. Used to suppress error rendering and any
+ * auth-failure side effects (e.g. redirecting to login) on user cancellation.
+ */
+export const isUserAbortError = (
+  signal: AbortSignal | undefined,
+  error: unknown
+): boolean => Boolean(signal?.aborted) || (error as Error)?.name === 'AbortError'
+
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
@@ -701,6 +711,11 @@ export const queryTextStream = async (
 
             return; // Successfully completed retry
           } catch (refreshError) {
+            // User aborted the retried stream (Stop button): this is not an auth
+            // failure, so don't redirect to login — exit silently.
+            if (isUserAbortError(signal, refreshError)) {
+              return;
+            }
             console.error('Failed to refresh guest token for streaming:', refreshError);
             navigationService.navigateToLogin();
             throw new Error('Failed to refresh authentication', { cause: refreshError });
@@ -786,7 +801,7 @@ export const queryTextStream = async (
   } catch (error) {
     // User aborted the request (Stop button): exit silently without surfacing
     // an error, the component handles the terminated state.
-    if (signal?.aborted || (error as Error)?.name === 'AbortError') {
+    if (isUserAbortError(signal, error)) {
       return;
     }
 
