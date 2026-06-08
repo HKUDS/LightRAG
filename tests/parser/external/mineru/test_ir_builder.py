@@ -654,6 +654,34 @@ def test_adapter_html_table_without_thead_does_not_guess_header(
 
 
 @pytest.mark.offline
+def test_adapter_html_table_without_thead_falls_back_to_header_grid(
+    tmp_path: Path,
+) -> None:
+    """An HTML table whose markup carries no <thead> but for which MinerU
+    supplied a separate ``header`` grid keeps that grid (the writer renders it to
+    a span-less <thead>) rather than silently dropping the recovered header."""
+    table_html = (
+        "<table><tbody><tr><td>a</td><td>b</td></tr></tbody></table>"  # no <thead>
+    )
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "table",
+                "table_body": table_html,
+                "header": [["H1", "H2"]],
+                "num_rows": 1,
+                "num_cols": 2,
+            }
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="h.pdf")
+    table = ir.blocks[0].tables[0]
+    assert table.html == table_html
+    assert table.table_header == [["H1", "H2"]]  # grid kept, not dropped
+
+
+@pytest.mark.offline
 def test_adapter_html_table_attr_with_gt_keeps_inner_body(tmp_path: Path) -> None:
     """A ``>`` inside a ``<table>`` attribute must not truncate the open tag,
     so ``body_override`` still strips the full ``<table …>`` wrapper."""

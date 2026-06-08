@@ -474,6 +474,16 @@ class MinerUIRBuilder:
         table_header: list[list[str]] | str | None = None
         if html:
             table_header = _extract_thead_html(html)
+            # Fallback: an HTML table whose markup carries no ``<thead>`` but for
+            # which MinerU supplied a separate ``header`` grid keeps that grid —
+            # the writer renders it to a (span-less) ``<thead>`` rather than
+            # silently dropping the recovered header.
+            if (
+                table_header is None
+                and isinstance(table_header_raw, list)
+                and table_header_raw
+            ):
+                table_header = _normalize_grid(table_header_raw)
         elif isinstance(table_header_raw, list) and table_header_raw:
             table_header = _normalize_grid(table_header_raw)
 

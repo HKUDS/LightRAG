@@ -571,13 +571,24 @@ def _split_table_text(
       5. Unknown / unparseable format → character-fallback the entire
          original text.
 
-    When ``header_body`` (a stored ``table_header`` JSON 2-D array string) is
-    supplied, the source table carries a cross-page repeating header. The first
-    slice keeps its own header rows, so the header is re-injected only into the
-    *non-first* slices — and its token cost is budgeted out of the per-slice cap
-    *before* splitting, so each emitted slice stays ``≤ target_max`` including
-    the prepended header (HeaderRecovery, §3.3.3). A header-less table
-    (``header_body is None`` / unparseable) leaves the split untouched.
+    When ``header_body`` (the stored ``table_header``) is supplied, the source
+    table carries a cross-page repeating header. Its representation follows the
+    table's format: a JSON 2-D array string for JSON tables, a raw
+    ``<thead>…</thead>`` fragment for HTML tables (spans preserved). The header
+    is re-injected so every slice carries it, and its token cost is budgeted out
+    of the per-slice cap *before* splitting, so each emitted slice stays
+    ``≤ target_max`` including the header (HeaderRecovery, §3.3.3):
+
+      * JSON → the header is pinned OUT of the split body and prepended back into
+        *every* slice (the first included).
+      * HTML → the first slice keeps its own in-body ``<thead>``; the raw
+        ``<thead>`` is spliced verbatim only into the *non-first* slices.
+
+    A header whose format clearly disagrees with the table's own format means a
+    corrupted / foreign sidecar — :func:`_classify_header_format` flags it and
+    this function raises ``ValueError`` rather than splitting with it. A
+    header-less table (``header_body is None`` / unusable) leaves the split
+    untouched.
 
     Output strings are either:
       - a re-wrapped ``<table {attrs}>{rows}</table>`` (legal markup,
