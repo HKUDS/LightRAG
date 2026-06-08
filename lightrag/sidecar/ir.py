@@ -108,6 +108,11 @@ class IRTable:
     # in the adapter (``rows`` is None), ``html`` is used as the structured
     # fallback and the writer renders ``format="html"`` with the body_override
     # string verbatim — keeping the original (unparseable) bytes intact.
+    #
+    # MinerU HTML tables also use this: ``rows`` is None, ``html`` holds the
+    # unwrapped ``<table>…</table>`` for the sidecar ``content``, and
+    # ``body_override`` holds that table's *inner* body so the writer's own
+    # ``<table …>`` wrapper is not nested.
     body_override: str | None = None
 
 

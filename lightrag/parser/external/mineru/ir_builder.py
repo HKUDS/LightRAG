@@ -20,10 +20,13 @@ Conversion rules (informed by spec §3-§六):
   ``Preface/Uncategorized`` block at level 0.
 - ``list`` items joined with ``\n``; ``code`` body taken from ``code_body``
   if present.
-- ``table`` → IRTable + ``{{TBL:k}}`` placeholder. ``table_body`` (HTML) or
-  the ``rows`` field (2D array) become ``html`` / ``rows`` on IRTable.
-  ``num_rows`` / ``num_cols`` are taken from MinerU if present, otherwise
-  inferred. ``header`` populates ``table_header`` (per spec §5).
+- ``table`` → IRTable + ``{{TBL:k}}`` placeholder. MinerU HTML tables are
+  preserved verbatim on ``IRTable.html`` so merged cells (``rowspan`` /
+  ``colspan``) survive in ``tables.json``; the block placeholder receives
+  only the table's inner HTML to avoid nested ``<table>`` wrappers. ``rows``
+  is reserved for explicit 2D-array / non-HTML compatibility inputs. A real
+  HTML ``<thead>`` populates ``table_header`` (per spec §5); otherwise the
+  adapter does not guess a header row.
 - ``image`` / ``picture`` / ``drawing`` → IRDrawing + ``{{IMG:k}}`` placeholder.
   Asset bytes are referenced via ``img_path`` relative to the raw dir.
 - ``equation`` → IREquation. ``is_block`` is decided by whether
@@ -42,6 +45,8 @@ Conversion rules (informed by spec §3-§六):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -394,6 +399,7 @@ class MinerUIRBuilder:
     def _build_ir_table(self, item: dict) -> IRTable | None:
         rows: list[list[str]] | None = None
         html: str | None = None
+        body_override: str | None = None
         body_field = item.get("rows")
         body = body_field if body_field is not None else item.get("table_body")
 
@@ -401,14 +407,27 @@ class MinerUIRBuilder:
             rows = _normalize_grid(body)
         elif isinstance(body, str):
             stripped = body.strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
+            if _looks_like_html_table_payload(stripped):
+                # MinerU's table model sometimes wraps output in a
+                # ``<html><body>…</body></html>`` document; unwrap to the bare
+                # ``<table>…</table>`` so the sidecar ``content`` stays a single
+                # clean table and the writer does not nest ``<table>`` wrappers.
+                html = _unwrap_html_table(stripped) or None
+                if html:
+                    # ``or None`` so a degenerate ``<table></table>`` (empty
+                    # inner body) falls back to rendering ``table.html`` in the
+                    # writer instead of emitting an empty ``body_override``.
+                    body_override = _html_table_inner_body(html) or None
+            elif stripped.startswith("[") and stripped.endswith("]"):
                 try:
                     decoded = json.loads(stripped)
                     if isinstance(decoded, list):
                         rows = _normalize_grid(decoded)
                 except json.JSONDecodeError:
                     pass
-            if rows is None:
+            if rows is None and html is None:
+                # Non-HTML, non-JSON string (or JSON that failed to parse):
+                # fall back to the raw payload as the html body.
                 html = stripped or None
         elif isinstance(body, dict):
             grid = body.get("grid") or body.get("rows")
@@ -434,6 +453,13 @@ class MinerUIRBuilder:
         num_rows = int(item.get("num_rows") or (len(rows) if rows else 0) or 0)
         num_cols_default = max((len(r) for r in rows), default=0) if rows else 0
         num_cols = int(item.get("num_cols") or num_cols_default or 0)
+        html_table_info: _HTMLTableInfo | None = None
+        if html and (num_rows <= 0 or num_cols <= 0):
+            html_table_info = _extract_html_table_info(html)
+            if num_rows <= 0:
+                num_rows = html_table_info.num_rows
+            if num_cols <= 0:
+                num_cols = html_table_info.num_cols
 
         captions = item.get("table_caption")
         caption = str(item.get("caption") or "")
@@ -444,6 +470,10 @@ class MinerUIRBuilder:
         table_header: list[list[str]] | None = None
         if isinstance(table_header_raw, list) and table_header_raw:
             table_header = _normalize_grid(table_header_raw)
+        elif html:
+            if html_table_info is None:
+                html_table_info = _extract_html_table_info(html)
+            table_header = html_table_info.table_header
 
         return IRTable(
             placeholder_key="",  # filled by caller
@@ -454,6 +484,7 @@ class MinerUIRBuilder:
             caption=caption,
             footnotes=_as_str_list(item.get("table_footnote") or item.get("footnotes")),
             table_header=table_header,
+            body_override=body_override,
         )
 
     def _build_ir_drawing(
@@ -552,6 +583,228 @@ def _as_str_list(value: Any) -> list[str]:
         return [str(x) for x in value if str(x).strip()]
     s = str(value).strip()
     return [s] if s else []
+
+
+@dataclass
+class _HTMLTableInfo:
+    num_rows: int = 0
+    num_cols: int = 0
+    table_header: list[list[str]] | None = None
+
+
+class _HTMLTableInfoParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        # Each row is ``(in_thead, cells, col_count)`` where ``cells`` carries
+        # ``(text, colspan, rowspan)`` per cell so a spanned ``<thead>`` can be
+        # expanded into a rectangular grid (see ``_build_header_grid``).
+        self.rows: list[tuple[bool, list[tuple[str, int, int]], int]] = []
+        self._thead_depth = 0
+        self._tr_depth = 0
+        self._cell_depth = 0
+        self._row_in_thead = False
+        self._row_cells: list[tuple[str, int, int]] = []
+        self._row_col_count = 0
+        self._cell_parts: list[str] = []
+        self._cell_colspan = 1
+        self._cell_rowspan = 1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag == "thead":
+            self._thead_depth += 1
+            return
+        if tag == "tr":
+            if self._tr_depth == 0:
+                self._row_in_thead = self._thead_depth > 0
+                self._row_cells = []
+                self._row_col_count = 0
+            self._tr_depth += 1
+            return
+        if tag in {"td", "th"} and self._tr_depth > 0:
+            if self._cell_depth == 0:
+                self._cell_parts = []
+                self._cell_colspan = _cell_span(attrs, "colspan")
+                self._cell_rowspan = _cell_span(attrs, "rowspan")
+            self._cell_depth += 1
+
+    def handle_data(self, data: str) -> None:
+        if self._cell_depth > 0:
+            self._cell_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"td", "th"} and self._cell_depth > 0:
+            self._cell_depth -= 1
+            if self._cell_depth == 0:
+                text = " ".join("".join(self._cell_parts).split())
+                self._row_cells.append((text, self._cell_colspan, self._cell_rowspan))
+                self._row_col_count += self._cell_colspan
+                self._cell_parts = []
+                self._cell_colspan = 1
+                self._cell_rowspan = 1
+            return
+        if tag == "tr" and self._tr_depth > 0:
+            self._tr_depth -= 1
+            if self._tr_depth == 0 and (self._row_cells or self._row_col_count > 0):
+                self.rows.append(
+                    (
+                        self._row_in_thead,
+                        list(self._row_cells),
+                        self._row_col_count,
+                    )
+                )
+                self._row_cells = []
+                self._row_col_count = 0
+            return
+        if tag == "thead" and self._thead_depth > 0:
+            self._thead_depth -= 1
+
+
+def _cell_span(attrs: list[tuple[str, str | None]], name: str) -> int:
+    """Read a ``colspan``/``rowspan`` attribute as an int ``>= 1`` (default 1)."""
+    for key, value in attrs:
+        if key.lower() != name:
+            continue
+        try:
+            return max(int(value or "1"), 1)
+        except ValueError:
+            return 1
+    return 1
+
+
+def _extract_html_table_info(html: str) -> _HTMLTableInfo:
+    parser = _HTMLTableInfoParser()
+    try:
+        parser.feed(html or "")
+        parser.close()
+    except Exception as exc:  # pragma: no cover - HTMLParser is forgiving.
+        logger.debug("[mineru_ir_builder] failed to parse table HTML: %s", exc)
+        return _HTMLTableInfo()
+
+    thead_rows = [cells for in_thead, cells, _ in parser.rows if in_thead]
+    header_grid = _build_header_grid(thead_rows)
+    # Drop a header that is entirely blank (e.g. a spacer ``<thead>`` row) so
+    # the writer omits ``table_header`` rather than emitting empty ``<th>``s.
+    if not any(cell.strip() for row in header_grid for cell in row):
+        header_grid = []
+    return _HTMLTableInfo(
+        num_rows=len(parser.rows),
+        num_cols=max((col_count for _, _, col_count in parser.rows), default=0),
+        table_header=header_grid or None,
+    )
+
+
+def _build_header_grid(rows: list[list[tuple[str, int, int]]]) -> list[list[str]]:
+    """Expand spanned ``<thead>`` cells into a rectangular text grid.
+
+    ``table_header`` is rendered cell-per-``<th>`` (no spans) when repeated onto
+    later chunks of a split HTML table, so a ragged header (``colspan``/
+    ``rowspan`` collapsed to one cell) would misalign with the table body.
+    Duplicating each spanned cell's text across the columns/rows it covers keeps
+    the recovered header rectangular and column-aligned.
+    """
+    grid: list[dict[int, str]] = []
+    carry: dict[int, list] = {}  # column -> [text, rows_remaining]
+    for src_cells in rows:
+        row_out: dict[int, str] = {}
+        next_carry: dict[int, list] = {}
+        # Fill columns still occupied by a rowspan started in an earlier row.
+        for col, (text, left) in carry.items():
+            row_out[col] = text
+            if left - 1 > 0:
+                next_carry[col] = [text, left - 1]
+        # Place this row's own cells into the next free columns.
+        col = 0
+        for text, colspan, rowspan in src_cells:
+            while col in row_out:
+                col += 1
+            for k in range(colspan):
+                row_out[col + k] = text
+                if rowspan > 1:
+                    next_carry[col + k] = [text, rowspan - 1]
+            col += colspan
+        carry = next_carry
+        grid.append(row_out)
+
+    width = max((max(row) + 1 for row in grid if row), default=0)
+    return [[row.get(c, "") for c in range(width)] for row in grid]
+
+
+def _looks_like_html_table_payload(body: str) -> bool:
+    lower = (body or "").lstrip().lower()
+    return any(
+        _starts_with_html_tag(lower, tag)
+        for tag in ("table", "thead", "tbody", "tfoot", "tr", "html", "body")
+    )
+
+
+def _unwrap_html_table(payload: str) -> str:
+    """Strip a ``<html>/<body>`` document wrapper that MinerU's table model
+    sometimes emits, returning the outermost ``<table…>…</table>`` span. Keeps
+    a single clean ``<table>`` so the writer does not nest tables and the
+    non-greedy ``TABLE_TAG_RE`` is not truncated at an inner ``</table>``.
+    Falls back to the stripped payload when no ``<table>`` element exists."""
+    stripped = (payload or "").strip()
+    lower = stripped.lower()
+    start = _find_table_open(lower)
+    if start < 0:
+        return stripped
+    close = lower.rfind("</table>")
+    if close < start:
+        return stripped
+    return stripped[start : close + len("</table>")]
+
+
+def _find_table_open(lower: str) -> int:
+    """First index of a real ``<table`` start tag (not e.g. ``<tablefoo``).
+    Returns -1 when none is present."""
+    idx = 0
+    while True:
+        idx = lower.find("<table", idx)
+        if idx < 0:
+            return -1
+        nxt = idx + len("<table")
+        if nxt >= len(lower) or lower[nxt] in {" ", "\t", "\r", "\n", ">", "/"}:
+            return idx
+        idx = nxt
+
+
+def _starts_with_html_tag(lower: str, tag: str) -> bool:
+    prefix = f"<{tag}"
+    if not lower.startswith(prefix):
+        return False
+    if len(lower) == len(prefix):
+        return True
+    return lower[len(prefix)] in {" ", "\t", "\r", "\n", ">", "/"}
+
+
+def _html_table_inner_body(html: str) -> str:
+    stripped = (html or "").strip()
+    lower = stripped.lower()
+    if not _starts_with_html_tag(lower, "table"):
+        return stripped
+    open_end = _open_tag_end(stripped)
+    close_start = lower.rfind("</table>")
+    if open_end < 0 or close_start <= open_end:
+        return stripped
+    return stripped[open_end + 1 : close_start].strip()
+
+
+def _open_tag_end(html: str) -> int:
+    """Index of the ``>`` closing the leading tag, skipping quoted attribute
+    values so a ``>`` inside an attribute (e.g. ``<table data-x="a>b">``) does
+    not terminate the tag early. Returns -1 when no closing ``>`` is found."""
+    quote: str | None = None
+    for idx, ch in enumerate(html):
+        if quote is not None:
+            if ch == quote:
+                quote = None
+        elif ch in {'"', "'"}:
+            quote = ch
+        elif ch == ">":
+            return idx
+    return -1
 
 
 def _content_list_self_ref(index: int) -> str:

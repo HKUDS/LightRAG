@@ -66,14 +66,19 @@ def _new_rag(tmp_path: Path) -> LightRAG:
     )
 
 
+_FAKE_TABLE_HTML = (
+    '<table><thead><tr><th rowspan="2">Metric</th>'
+    '<th colspan="2">Score</th></tr><tr><th>A</th><th>B</th></tr></thead>'
+    "<tbody><tr><td>Accuracy</td><td>91%</td><td>93%</td></tr></tbody></table>"
+)
+
+
 _FAKE_CONTENT_LIST = [
     {"type": "text", "text": "1 Introduction", "text_level": 1},
     {"type": "text", "text": "Body paragraph."},
     {
         "type": "table",
-        "table_body": [["A", "B"], ["1", "2"]],
-        "num_rows": 2,
-        "num_cols": 2,
+        "table_body": _FAKE_TABLE_HTML,
         "table_caption": ["Tbl"],
         "page_idx": 0,
         "bbox": [10, 10, 100, 50],
@@ -236,7 +241,10 @@ def test_parse_mineru_emits_compliant_sidecar(
             # Spec fix: <table> placeholder inline, not <cite>
             contents = " ".join(row.get("content", "") for row in rows)
             assert '<table id="tb-' in contents
-            assert 'format="json"' in contents
+            assert 'format="html"' in contents
+            assert 'format="json"' not in contents
+            assert 'rowspan="2"' in contents
+            assert 'colspan="2"' in contents
             assert "<cite" not in contents
 
             # bbox positions present on at least one block
@@ -265,6 +273,15 @@ def test_parse_mineru_emits_compliant_sidecar(
             tables = json.loads((parsed_dir / "demo.tables.json").read_text())["tables"]
             (_, table_item) = next(iter(tables.items()))
             assert "image" not in table_item
+            assert table_item["format"] == "html"
+            assert table_item["content"] == _FAKE_TABLE_HTML
+            assert table_item["dimension"] == [3, 3]
+            assert 'rowspan="2"' in table_item["content"]
+            assert 'colspan="2"' in table_item["content"]
+            assert json.loads(table_item["table_header"]) == [
+                ["Metric", "Score", "Score"],
+                ["Metric", "A", "B"],
+            ]
             assert table_item["self_ref"] == "content_list.json#/2"
 
             equations = json.loads((parsed_dir / "demo.equations.json").read_text())[
