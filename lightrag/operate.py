@@ -183,11 +183,23 @@ def _truncate_section_context(
             f"{levels[0]}{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}{levels[-1]}"
         )
     # Backstop: enforce the cap for token-dense short paths (and any collapsed
-    # form that is still over budget) by hard-truncating, reserving one token
-    # for the trailing ellipsis.
+    # form that is still over budget). Prefer a trailing ellipsis when it fits,
+    # but re-encode each candidate because custom/BPE tokenizers may tokenize
+    # the suffix differently when it is appended to decoded prefix text.
     tokens = tokenizer.encode(heading_path)
     if len(tokens) > max_tokens:
-        heading_path = tokenizer.decode(tokens[: max(max_tokens - 1, 1)]).rstrip() + "…"
+        ellipsis = "…"
+        ellipsis_token_count = len(tokenizer.encode(ellipsis))
+        if ellipsis_token_count <= max_tokens:
+            for keep in range(max_tokens - ellipsis_token_count, -1, -1):
+                candidate = tokenizer.decode(tokens[:keep]).rstrip() + ellipsis
+                if len(tokenizer.encode(candidate)) <= max_tokens:
+                    return candidate
+        for keep in range(max_tokens, -1, -1):
+            candidate = tokenizer.decode(tokens[:keep]).rstrip()
+            if len(tokenizer.encode(candidate)) <= max_tokens:
+                return candidate
+        return ""
     return heading_path
 
 

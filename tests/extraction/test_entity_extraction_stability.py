@@ -1458,6 +1458,32 @@ def test_truncate_section_context_hard_caps_dense_short_path():
 
 
 @pytest.mark.offline
+def test_truncate_section_context_accounts_for_multitoken_ellipsis():
+    """The hard cap must reserve the tokenizer's actual ellipsis cost."""
+    from lightrag.operate import _truncate_section_context
+
+    class TwoTokenEllipsisTokenizer(TokenizerInterface):
+        def encode(self, content: str):
+            tokens = []
+            for ch in content:
+                if ch == "…":
+                    tokens.extend([0x110000, 0x110001])
+                else:
+                    tokens.append(ord(ch))
+            return tokens
+
+        def decode(self, tokens):
+            return "".join(chr(token) for token in tokens if token <= 0x10FFFF)
+
+    tok = Tokenizer("two-token-ellipsis", TwoTokenEllipsisTokenizer())
+    budget = 10
+
+    out = _truncate_section_context("A" * 20, tok, budget)
+    assert out == "A" * 8 + "…"
+    assert len(tok.encode(out)) <= budget
+
+
+@pytest.mark.offline
 def test_truncate_section_context_hard_caps_collapsed_form_when_still_over():
     """Even the collapsed first→…→leaf form is capped if it still exceeds."""
     from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
