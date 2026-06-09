@@ -319,6 +319,7 @@ During the document insertion stage, you may also want to adjust the following e
 - **FORCE_LLM_SUMMARY_ON_MERGE / MAX_SOURCE_IDS_PER_RELATION**: Controls the maximum number of text chunks an `entity/relation` can be associated with.
 - **SOURCE_IDS_LIMIT_METHOD**: Controls whether to keep updating the entity/relation description once an `entity/relation` exceeds its associated text chunk limit (by default it stops updating, because at that point the entity-relation description is already rich enough and further updates add little value; skipping updates can greatly speed up knowledge base construction).
 - **DEFAULT_MAX_FILE_PATHS**: Controls the maximum number of source files an `entity/relation` can be associated with; once this limit is exceeded, new file names are no longer written to the vector storage.
+- **OPENAI_LLM_MAX_TOKENS / OPENAI_LLM_MAX_COMPLETION_TOKENS**: Set a max output token limit to prevent endless output from certain LLMs, which may trigger timeout errors during entity and relation extraction. Different LLM providers require distinct parameter configurations, as detailed in the `env.example`.
 
 ### Other Important Configurations for Document Querying
 
@@ -327,7 +328,7 @@ During the document query stage, you may also want to adjust the following envir
 - **ENABLE_CONTENT_HEADINGS**: Controls whether the section heading where a text chunk resides is sent to the LLM; enabled by default, providing richer context for the LLM and improving answer quality.
 - **ENABLE_LLM_CACHE**: Whether to cache query results. Enabled by default; identical query questions, query modes, and LLM model parameters will return the same result.
 
-### Using LightRAG As SDK
+## Using LightRAG As SDK
 
 > ⚠️ **For integration into your project, we strongly recommend using the REST API provided by the LightRAG Server.** The LightRAG SDK is primarily intended for embedded applications or academic research and evaluation purposes.
 
