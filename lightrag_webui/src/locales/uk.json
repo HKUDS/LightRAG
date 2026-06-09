@@ -233,6 +233,9 @@
       "disease": "Хвороба",
       "drug": "Ліки",
       "food": "Їжа",
+      "table": "Таблиця",
+      "drawing": "Малюнок",
+      "equation": "Рівняння",
       "other": "Інше"
     },
     "sideBar": {

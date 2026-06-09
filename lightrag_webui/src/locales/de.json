@@ -233,6 +233,9 @@
       "disease": "Krankheit",
       "drug": "Medikament",
       "food": "Lebensmittel",
+      "table": "Tabelle",
+      "drawing": "Zeichnung",
+      "equation": "Gleichung",
       "other": "Sonstiges"
     },
     "sideBar": {

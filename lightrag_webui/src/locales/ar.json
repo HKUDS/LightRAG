@@ -233,6 +233,9 @@
       "disease": "مرض",
       "drug": "دواء",
       "food": "طعام",
+      "table": "جدول",
+      "drawing": "رسم",
+      "equation": "معادلة",
       "other": "أخرى"
     },
     "sideBar": {

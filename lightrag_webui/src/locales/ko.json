@@ -233,6 +233,9 @@
       "disease": "질병",
       "drug": "의약품",
       "food": "식품",
+      "table": "표",
+      "drawing": "그림",
+      "equation": "수식",
       "other": "기타"
     },
     "sideBar": {

@@ -233,6 +233,9 @@
       "disease": "Disease",
       "drug": "Drug",
       "food": "Food",
+      "table": "Table",
+      "drawing": "Drawing",
+      "equation": "Equation",
       "other": "Other"
     },
     "sideBar": {

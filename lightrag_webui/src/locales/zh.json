@@ -233,6 +233,9 @@
       "disease": "疾病",
       "drug": "药物",
       "food": "食物",
+      "table": "表格",
+      "drawing": "图片",
+      "equation": "公式",
       "other": "其他"
     },
     "sideBar": {

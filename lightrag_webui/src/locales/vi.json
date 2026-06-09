@@ -233,6 +233,9 @@
       "disease": "Bệnh",
       "drug": "Thuốc",
       "food": "Thực Phẩm",
+      "table": "Bảng",
+      "drawing": "Hình Vẽ",
+      "equation": "Phương Trình",
       "other": "Khác"
     },
     "sideBar": {

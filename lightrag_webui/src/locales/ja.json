@@ -233,6 +233,9 @@
       "disease": "病気",
       "drug": "薬",
       "food": "食品",
+      "table": "表",
+      "drawing": "図",
+      "equation": "数式",
       "other": "その他"
     },
     "sideBar": {
