@@ -10,6 +10,7 @@ Covers:
 
 import json
 import os
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -245,23 +246,50 @@ def test_default_entity_types_guidance_covers_all_types():
 
 @pytest.mark.offline
 def test_builtin_entity_extraction_examples_are_format_only():
-    """Built-in examples must not contain extractable sample source text."""
+    """Built-in examples must be placeholder templates, not extractable demos.
+
+    Rather than denylisting specific sample names (brittle: any new concrete
+    content with different names would slip through), assert the structural
+    shape of a format-only template: no per-example section headers that would
+    reintroduce a sample ``---Input Text---`` / ``---Output---`` demo, and every
+    data value is an angle-bracket placeholder rather than concrete prose.
+    """
     from lightrag.prompt import PROMPTS
 
-    examples = (
-        PROMPTS["entity_extraction_examples"]
-        + PROMPTS["entity_extraction_json_examples"]
-    )
-    forbidden_fragments = [
-        "---Input Text---",
-        "Alex",
-        "Taylor",
-        "NASBench-360",
-    ]
+    section_markers = ("---Input Text---", "---Output---", "---Entity Types---")
+    placeholder = re.compile(r"<[^<>]+>")
+    tuple_delimiter = PROMPTS["DEFAULT_TUPLE_DELIMITER"]
+    completion_delimiter = PROMPTS["DEFAULT_COMPLETION_DELIMITER"]
 
-    for example in examples:
-        for fragment in forbidden_fragments:
-            assert fragment not in example
+    # Text examples: every field after the leading entity/relation tag must be a
+    # bare placeholder; concrete sample values would not match.
+    for example in PROMPTS["entity_extraction_examples"]:
+        for marker in section_markers:
+            assert marker not in example
+        rendered = example.format(
+            tuple_delimiter=tuple_delimiter,
+            completion_delimiter=completion_delimiter,
+        )
+        for line in rendered.splitlines():
+            line = line.strip()
+            if not line or line == completion_delimiter:
+                continue
+            tag, *fields = line.split(tuple_delimiter)
+            assert tag in {"entity", "relation"}
+            assert fields  # data rows must carry at least one value field
+            for field in fields:
+                assert placeholder.fullmatch(field), field
+
+    # JSON examples: every entity/relationship field value must be a placeholder.
+    for example in PROMPTS["entity_extraction_json_examples"]:
+        for marker in section_markers:
+            assert marker not in example
+        parsed = json.loads(example)
+        records = parsed["entities"] + parsed["relationships"]
+        assert records
+        for record in records:
+            for value in record.values():
+                assert placeholder.fullmatch(value), value
 
 
 @pytest.mark.offline

@@ -1,3 +1,6 @@
+import json
+import re
+
 import pytest
 
 from lightrag.prompt import PROMPTS
@@ -17,23 +20,25 @@ def test_keywords_extraction_prompt_template_formats_with_literal_json_braces():
 
 @pytest.mark.offline
 def test_keywords_extraction_examples_are_format_only():
-    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+    """Keyword examples must be placeholder-only JSON templates, not sample demos.
 
-    forbidden_fragments = [
-        "Query:",
-        "international trade",
-        "deforestation",
-        "education",
-        "Tariffs",
-        "Biodiversity",
-        "Job training",
-    ]
+    Rather than denylisting specific sample queries (brittle: generic words like
+    "education" would both false-match unrelated content and let new samples slip
+    through), assert the structural shape: no ``Query:``/``Output:`` demo framing,
+    and every keyword is an angle-bracket placeholder.
+    """
+    placeholder = re.compile(r"<[^<>]+>")
 
-    for fragment in forbidden_fragments:
-        assert fragment not in examples
+    for example in PROMPTS["keywords_extraction_examples"]:
+        assert "Query:" not in example
+        assert "Output:" not in example
 
-    assert '"high_level_keywords": ["<high_level_keyword>"]' in examples
-    assert '"low_level_keywords": ["<low_level_keyword>"]' in examples
+        parsed = json.loads(example)
+        assert set(parsed) == {"high_level_keywords", "low_level_keywords"}
+        keywords = parsed["high_level_keywords"] + parsed["low_level_keywords"]
+        assert keywords
+        for keyword in keywords:
+            assert placeholder.fullmatch(keyword), keyword
 
 
 @pytest.mark.offline
