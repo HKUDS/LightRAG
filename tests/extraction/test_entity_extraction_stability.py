@@ -244,22 +244,85 @@ def test_default_entity_types_guidance_covers_all_types():
 
 
 @pytest.mark.offline
-def test_json_examples_define_all_relationship_endpoints_as_entities():
-    """JSON examples must define every relationship endpoint in the entities list."""
+def test_builtin_entity_extraction_examples_are_format_only():
+    """Built-in examples must not contain extractable sample source text."""
+    from lightrag.prompt import PROMPTS
+
+    examples = (
+        PROMPTS["entity_extraction_examples"]
+        + PROMPTS["entity_extraction_json_examples"]
+    )
+    forbidden_fragments = [
+        "---Input Text---",
+        "Alex",
+        "Taylor",
+        "NASBench-360",
+    ]
+
+    for example in examples:
+        for fragment in forbidden_fragments:
+            assert fragment not in example
+
+
+@pytest.mark.offline
+def test_entity_extraction_system_prompts_label_examples_as_format_templates():
+    from lightrag.prompt import PROMPTS
+
+    for prompt_key in (
+        "entity_extraction_system_prompt",
+        "entity_extraction_json_system_prompt",
+    ):
+        prompt = PROMPTS[prompt_key]
+        assert "---Output Format Template---" in prompt
+        assert "---Examples---" not in prompt
+        assert "output format template only" in prompt
+        assert "not source text" in prompt
+        assert "must never be used as extraction content" in prompt
+
+
+@pytest.mark.offline
+def test_text_examples_render_tuple_and_completion_delimiters():
+    from lightrag.prompt import PROMPTS
+
+    rendered = "\n".join(PROMPTS["entity_extraction_examples"]).format(
+        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+    )
+
+    assert (
+        "entity<|#|><entity_name><|#|><entity_type><|#|><entity_description>"
+        in rendered
+    )
+    assert (
+        "relation<|#|><source_entity><|#|><target_entity><|#|>"
+        "<relationship_keywords><|#|><relationship_description>"
+        in rendered
+    )
+    assert "<|COMPLETE|>" in rendered
+    assert "{tuple_delimiter}" not in rendered
+    assert "{completion_delimiter}" not in rendered
+
+
+@pytest.mark.offline
+def test_json_examples_are_parseable_format_templates():
+    """JSON examples must be raw JSON templates with valid endpoint references."""
     from lightrag.prompt import PROMPTS
 
     for example in PROMPTS["entity_extraction_json_examples"]:
-        if "<Output>" in example:
-            output = example.split("<Output>", 1)[1].strip()
-        else:
-            output = example.split("---Output---", 1)[1].strip()
-        parsed = json.loads(output)
+        parsed = json.loads(example)
+        assert set(parsed) == {"entities", "relationships"}
+        assert isinstance(parsed["entities"], list)
+        assert isinstance(parsed["relationships"], list)
+        assert parsed["entities"]
+        assert parsed["relationships"]
+
         entity_names = {
             entity["name"] for entity in parsed.get("entities", []) if entity
         }
         for relationship in parsed.get("relationships", []):
             assert relationship["source"] in entity_names
             assert relationship["target"] in entity_names
+        assert "<entity_name>" in entity_names
 
 
 # ---------------------------------------------------------------------------
@@ -1209,6 +1272,25 @@ def _section_block(heading_path: str) -> str:
     return PROMPTS["entity_extraction_section_context"].format(
         heading_path=heading_path
     )
+
+
+@pytest.mark.offline
+def test_user_prompts_keep_single_real_input_text_section():
+    """Only the rendered task prompt should carry the real input section marker."""
+
+    text_markers = [
+        line
+        for line in _render_text_user_prompt("").splitlines()
+        if line == "---Input Text---"
+    ]
+    json_markers = [
+        line
+        for line in _render_json_user_prompt("").splitlines()
+        if line == "---Input Text---"
+    ]
+
+    assert len(text_markers) == 1
+    assert len(json_markers) == 1
 
 
 @pytest.mark.offline
