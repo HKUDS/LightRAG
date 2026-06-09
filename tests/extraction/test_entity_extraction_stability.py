@@ -10,6 +10,7 @@ Covers:
 
 import json
 import os
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -244,22 +245,111 @@ def test_default_entity_types_guidance_covers_all_types():
 
 
 @pytest.mark.offline
-def test_json_examples_define_all_relationship_endpoints_as_entities():
-    """JSON examples must define every relationship endpoint in the entities list."""
+def test_builtin_entity_extraction_examples_are_format_only():
+    """Built-in examples must be placeholder templates, not extractable demos.
+
+    Rather than denylisting specific sample names (brittle: any new concrete
+    content with different names would slip through), assert the structural
+    shape of a format-only template: no per-example section headers that would
+    reintroduce a sample ``---Input Text---`` / ``---Output---`` demo, and every
+    data value is an angle-bracket placeholder rather than concrete prose.
+    """
+    from lightrag.prompt import PROMPTS
+
+    section_markers = ("---Input Text---", "---Output---", "---Entity Types---")
+    placeholder = re.compile(r"<[^<>]+>")
+    tuple_delimiter = PROMPTS["DEFAULT_TUPLE_DELIMITER"]
+    completion_delimiter = PROMPTS["DEFAULT_COMPLETION_DELIMITER"]
+
+    # Text examples: every field after the leading entity/relation tag must be a
+    # bare placeholder; concrete sample values would not match.
+    for example in PROMPTS["entity_extraction_examples"]:
+        for marker in section_markers:
+            assert marker not in example
+        rendered = example.format(
+            tuple_delimiter=tuple_delimiter,
+            completion_delimiter=completion_delimiter,
+        )
+        for line in rendered.splitlines():
+            line = line.strip()
+            if not line or line == completion_delimiter:
+                continue
+            tag, *fields = line.split(tuple_delimiter)
+            assert tag in {"entity", "relation"}
+            assert fields  # data rows must carry at least one value field
+            for field in fields:
+                assert placeholder.fullmatch(field), field
+
+    # JSON examples: every entity/relationship field value must be a placeholder.
+    for example in PROMPTS["entity_extraction_json_examples"]:
+        for marker in section_markers:
+            assert marker not in example
+        parsed = json.loads(example)
+        records = parsed["entities"] + parsed["relationships"]
+        assert records
+        for record in records:
+            for value in record.values():
+                assert placeholder.fullmatch(value), value
+
+
+@pytest.mark.offline
+def test_entity_extraction_system_prompts_label_examples_as_format_templates():
+    from lightrag.prompt import PROMPTS
+
+    for prompt_key in (
+        "entity_extraction_system_prompt",
+        "entity_extraction_json_system_prompt",
+    ):
+        prompt = PROMPTS[prompt_key]
+        assert "---Output Format Template---" in prompt
+        assert "---Examples---" not in prompt
+        assert "output format template only" in prompt
+        assert "not source text" in prompt
+        assert "must never be used as extraction content" in prompt
+
+
+@pytest.mark.offline
+def test_text_examples_render_tuple_and_completion_delimiters():
+    from lightrag.prompt import PROMPTS
+
+    rendered = "\n".join(PROMPTS["entity_extraction_examples"]).format(
+        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+    )
+
+    assert (
+        "entity<|#|><entity_name><|#|><entity_type><|#|><entity_description>"
+        in rendered
+    )
+    assert (
+        "relation<|#|><source_entity><|#|><target_entity><|#|>"
+        "<relationship_keywords><|#|><relationship_description>" in rendered
+    )
+    assert "<|COMPLETE|>" in rendered
+    assert "{tuple_delimiter}" not in rendered
+    assert "{completion_delimiter}" not in rendered
+
+
+@pytest.mark.offline
+def test_json_examples_are_parseable_format_templates():
+    """JSON examples must be raw JSON templates with valid endpoint references."""
     from lightrag.prompt import PROMPTS
 
     for example in PROMPTS["entity_extraction_json_examples"]:
-        if "<Output>" in example:
-            output = example.split("<Output>", 1)[1].strip()
-        else:
-            output = example.split("---Output---", 1)[1].strip()
-        parsed = json.loads(output)
+        parsed = json.loads(example)
+        assert set(parsed) == {"entities", "relationships"}
+        assert isinstance(parsed["entities"], list)
+        assert isinstance(parsed["relationships"], list)
+        assert parsed["entities"]
+        assert parsed["relationships"]
+
         entity_names = {
             entity["name"] for entity in parsed.get("entities", []) if entity
         }
         for relationship in parsed.get("relationships", []):
             assert relationship["source"] in entity_names
             assert relationship["target"] in entity_names
+        assert "<entity_name>" in entity_names
 
 
 # ---------------------------------------------------------------------------
@@ -1209,6 +1299,25 @@ def _section_block(heading_path: str) -> str:
     return PROMPTS["entity_extraction_section_context"].format(
         heading_path=heading_path
     )
+
+
+@pytest.mark.offline
+def test_user_prompts_keep_single_real_input_text_section():
+    """Only the rendered task prompt should carry the real input section marker."""
+
+    text_markers = [
+        line
+        for line in _render_text_user_prompt("").splitlines()
+        if line == "---Input Text---"
+    ]
+    json_markers = [
+        line
+        for line in _render_json_user_prompt("").splitlines()
+        if line == "---Input Text---"
+    ]
+
+    assert len(text_markers) == 1
+    assert len(json_markers) == 1
 
 
 @pytest.mark.offline
