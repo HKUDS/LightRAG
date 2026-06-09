@@ -47,8 +47,7 @@ def test_keywords_extraction_prompt_labels_template_as_not_source_text():
     assert "not source text" in prompt
     assert "must never be used as keyword extraction content" in prompt
     assert (
-        "derived only from the `User Query` in the `---Real Data---` section"
-        in prompt
+        "derived only from the `User Query` in the `---Real Data---` section" in prompt
     )
 
 

@@ -295,8 +295,7 @@ def test_text_examples_render_tuple_and_completion_delimiters():
     )
     assert (
         "relation<|#|><source_entity><|#|><target_entity><|#|>"
-        "<relationship_keywords><|#|><relationship_description>"
-        in rendered
+        "<relationship_keywords><|#|><relationship_description>" in rendered
     )
     assert "<|COMPLETE|>" in rendered
     assert "{tuple_delimiter}" not in rendered
