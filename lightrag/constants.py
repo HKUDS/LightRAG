@@ -335,7 +335,7 @@ DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS = 100
 # Minimum image side (width or height) in pixels accepted for VLM analysis.
 # Anything smaller is treated as decorative (icons, separators, etc.) and
 # written as status="skipped".
-DEFAULT_MM_IMAGE_MIN_PIXEL = 32
+DEFAULT_MM_IMAGE_MIN_PIXEL = 64
 
 # Embedding configuration defaults
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
