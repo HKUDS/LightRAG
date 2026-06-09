@@ -493,14 +493,17 @@ Given a user query, your task is to extract two distinct types of keywords:
    - `"high_level_keywords"`: an array of strings
    - `"low_level_keywords"`: an array of strings
 3. **JSON Boundary**: The first character of your response must be `{{` and the last character must be `}}`.
-4. **Source of Truth**: All keywords must be explicitly derived from the user query. Do not infer unsupported facts. Do not invent entities, products, organizations, dates, or technical terms that are not grounded in the query.
-5. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept. For example, from "latest financial report of Apple Inc.", extract "latest financial report" and "Apple Inc." rather than "latest", "financial", "report", and "Apple".
+4. **Source of Truth**: All keywords must be explicitly derived only from the `User Query` in the `---Real Data---` section. Do not infer unsupported facts. Do not invent entities, products, organizations, dates, or technical terms that are not grounded in the query.
+5. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept instead of splitting meaningful phrases into isolated words.
 6. **Handle Edge Cases**: For queries that are too simple, vague, or nonsensical (e.g., "hello", "ok", "asdfghjkl"), return:
    `{{"high_level_keywords": [], "low_level_keywords": []}}`
 7. **No Duplicates**: Do not repeat the same keyword within a list. Keep the lists short and high-signal.
 8. **Language**: All extracted keywords MUST be in {language}. Proper nouns (e.g., personal names, place names, organization names) should be kept in their original language.
+9. **Output Format Template Safety**: The `---Output Format Template---` section contains an output JSON template only. It is never source text. Do not extract, infer, or copy keywords from the template. Angle-bracket tokens such as `<high_level_keyword>` are placeholders; replace them only with keywords derived from the current `User Query` and never output the placeholders literally.
 
----Examples---
+---Output Format Template---
+The following content is an output JSON format template only. It is not source text and must never be used as keyword extraction content.
+
 {examples}
 
 ---Real Data---
@@ -510,39 +513,11 @@ User Query: {query}
 Output:"""
 
 PROMPTS["keywords_extraction_examples"] = [
-    """Example 1:
-
-Query: "How does international trade influence global economic stability?"
-
-Output:
-{
-  "high_level_keywords": ["International trade", "Global economic stability", "Economic impact"],
-  "low_level_keywords": ["Trade agreements", "Tariffs", "Currency exchange", "Imports", "Exports"]
+    """{
+  "high_level_keywords": ["<high_level_keyword>"],
+  "low_level_keywords": ["<low_level_keyword>"]
 }
-
 """,
-    """Example 2:
-
-Query: "What are the environmental consequences of deforestation on biodiversity?"
-
-Output:
-{
-  "high_level_keywords": ["Environmental consequences", "Deforestation", "Biodiversity loss"],
-  "low_level_keywords": ["Species extinction", "Habitat destruction", "Carbon emissions", "Rainforest", "Ecosystem"]
-}
-
-""",
-    """Example 3:
-
-Query: "What is the role of education in reducing poverty?"
-
-Output:
-{
-  "high_level_keywords": ["Education", "Poverty reduction", "Socioeconomic development"],
-  "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]
-}
-
-    """,
 ]
 
 
