@@ -129,6 +129,9 @@ DEFAULT_CHUNK_P_SIZE = 2000
 
 # LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]
+# Post-parse persistence marker: full_docs rows written by the parsers carry
+# this parse_format; on resume/retry they route to ReuseParser. Not a valid
+# enqueue docs_format (the 'lightrag' ingestion entrypoint was removed).
 FULL_DOCS_FORMAT_LIGHTRAG = "lightrag"  # content in LightRAG Document files
 FULL_DOCS_FORMAT_PENDING_PARSE = (
     "pending_parse"  # file saved but not yet parsed; parse_native will read from disk

@@ -86,7 +86,6 @@ from lightrag.utils_pipeline import (
     get_existing_doc_by_file_basename,
     has_known_document_source,
     input_dir_path,
-    load_lightrag_document_content,
     make_lightrag_doc_content,
     normalize_document_file_path,
     doc_status_metadata_has_attempt_fields,
@@ -95,7 +94,6 @@ from lightrag.utils_pipeline import (
     read_source_file_basename,
     resolve_doc_file_path,
     resolve_doc_status_parse_engine,
-    sidecar_blocks_path,
     sidecar_uri_for,
     strip_lightrag_doc_prefix,
 )
@@ -236,7 +234,6 @@ class _PipelineMixin:
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
         docs_format: str = FULL_DOCS_FORMAT_RAW,
-        lightrag_document_paths: str | list[str] | None = None,
         parse_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
         chunk_options: dict | list[dict] | None = None,
@@ -245,18 +242,19 @@ class _PipelineMixin:
         """
         Pipeline for Processing Documents
 
-        1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents (skip content dedup when format is lightrag)
+        1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         2. Generate document initial status
         3. Filter out already processed documents
         4. Enqueue document in status
 
         Args:
-            input: Single document string or list of document strings (can be empty when docs_format is lightrag)
-            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated (from content or file_path when lightrag)
+            input: Single document string or list of document strings (can be empty when docs_format is pending_parse)
+            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated (from content or file_path)
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status
-            docs_format: "raw" (default) or "lightrag"; when "lightrag" content may be empty and content-dedup is skipped
-            lightrag_document_paths: paths to LightRAG Document (e.g. .blocks.jsonl dir or base path), when docs_format is lightrag
+            docs_format: "raw" (default) or "pending_parse"; "pending_parse" defers
+                extraction to the parse worker (content may be empty and
+                content-dedup happens after parsing)
             parse_engine: file extraction engine already used or target engine for pending_parse
             process_options: per-document processing options string (i/t/e/!/F/R/V/P);
                 accepted as a single string broadcast to every input or as a list
@@ -346,10 +344,6 @@ class _PipelineMixin:
             ids = [ids]
         if isinstance(file_paths, str):
             file_paths = [file_paths]
-        if isinstance(lightrag_document_paths, str):
-            lightrag_document_paths = (
-                [lightrag_document_paths] if lightrag_document_paths else None
-            )
         if isinstance(parse_engine, str):
             parse_engine = [parse_engine] * len(input)
         if isinstance(process_options, str):
@@ -372,23 +366,14 @@ class _PipelineMixin:
         else:
             file_paths = ["unknown_source"] * len(input)
 
-        is_lightrag_format = docs_format == FULL_DOCS_FORMAT_LIGHTRAG
-        if is_lightrag_format or lightrag_document_paths is not None:
-            # DEPRECATED ingestion entrypoint: no production caller enqueues a
-            # pre-existing sidecar this way (the upper layer doesn't know the
-            # backend sidecar layout). Scheduled for removal; the lightrag
-            # resume/reuse path (post-parse persist -> ReuseParser) is
-            # unaffected. See the unified-parser plan §11.
-            logger.warning(
-                "[apipeline_enqueue_documents] docs_format='lightrag' / "
-                "lightrag_document_paths is deprecated and will be removed in a "
-                "future release; it has no production caller."
+        if docs_format not in (FULL_DOCS_FORMAT_RAW, FULL_DOCS_FORMAT_PENDING_PARSE):
+            raise ValueError(
+                f"Unsupported docs_format {docs_format!r}; expected "
+                f"{FULL_DOCS_FORMAT_RAW!r} or {FULL_DOCS_FORMAT_PENDING_PARSE!r}. "
+                "The 'lightrag' enqueue format was removed; already-parsed "
+                "documents are resumed via the full_docs parse_format marker "
+                "and ReuseParser."
             )
-        if is_lightrag_format and lightrag_document_paths is not None:
-            if len(lightrag_document_paths) != len(input):
-                raise ValueError(
-                    "Number of lightrag_document_paths must match the number of documents"
-                )
         if parse_engine is not None and len(parse_engine) != len(input):
             raise ValueError(
                 "Number of parse engines must match the number of documents"
@@ -464,36 +449,20 @@ class _PipelineMixin:
         source_to_doc_id: dict[str, str] = {}
         content_hash_to_doc_id: dict[str, str] = {}
         duplicate_attempts: list[dict[str, Any]] = []
-        # Per-doc I/O failures from the lightrag-format branch.  Populated when
-        # ``load_lightrag_document_content`` cannot read the user-supplied
-        # blocks.jsonl; flushed as FAILED stubs via
-        # ``apipeline_enqueue_error_documents`` inside the critical section so
-        # the UI surfaces the root cause instead of a silent empty document.
-        lightrag_load_errors: list[dict[str, Any]] = []
 
         def _add_content(
             index: int,
             content: str,
             doc_format: str,
-            *,
-            sidecar_location: str | None = None,
         ) -> None:
             file_path_canonical = file_paths_canonical[index]
 
-            # Body length excludes the {{LRdoc}} marker so duplicate-attempt
-            # bookkeeping reports the same units as raw documents.
-            # strip_lightrag_doc_prefix is a no-op for non-lightrag formats.
-            body_length = len(strip_lightrag_doc_prefix(content, doc_format))
+            body_length = len(content)
 
             # Compute content hash: skip for pending_parse (content extracted later).
-            # RAW and LIGHTRAG both hash the bare merged text so the same body
-            # carried by different envelopes (raw text vs sidecar) dedupes
-            # against itself across formats.
             content_hash: str | None = None
-            if doc_format in (FULL_DOCS_FORMAT_RAW, FULL_DOCS_FORMAT_LIGHTRAG):
-                content_hash = compute_text_content_hash(
-                    strip_lightrag_doc_prefix(content or "", doc_format)
-                )
+            if doc_format == FULL_DOCS_FORMAT_RAW:
+                content_hash = compute_text_content_hash(content or "")
 
             known_source = has_known_document_source(file_path_canonical)
             if ids is not None:
@@ -502,8 +471,6 @@ class _PipelineMixin:
                 doc_id = compute_mdhash_id(file_path_canonical, prefix="doc-")
             elif doc_format == FULL_DOCS_FORMAT_RAW:
                 doc_id = compute_mdhash_id(content or "", prefix="doc-")
-            elif content_hash:
-                doc_id = compute_mdhash_id(content_hash, prefix="doc-")
             else:
                 doc_id = compute_mdhash_id(
                     f"{file_path_canonical}-{track_id}-{index}", prefix="doc-"
@@ -549,8 +516,6 @@ class _PipelineMixin:
             }
             if content_hash:
                 content_data["content_hash"] = content_hash
-            if sidecar_location:
-                content_data["sidecar_location"] = sidecar_location
             if engine := _parse_engine_at(index):
                 content_data["parse_engine"] = engine
             if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
@@ -567,70 +532,7 @@ class _PipelineMixin:
             content_data["chunk_options"] = _chunk_options_at(index)
             contents[doc_id] = content_data
 
-        if is_lightrag_format:
-            # LightRAG Document: no content hash dedup; content may be empty
-            for i in range(len(file_paths)):
-                path = file_paths[i]
-                raw_path = (
-                    lightrag_document_paths[i] if lightrag_document_paths else ""
-                ) or path
-                # Resolve to an absolute path so the sidecar URI carries
-                # full location info; relative paths are interpreted under
-                # input_dir.
-                p = Path(raw_path)
-                if not p.is_absolute():
-                    p = input_dir_path() / p
-                # The user may point at the ``*.blocks.jsonl`` file itself
-                # or at its containing ``*.parsed/`` directory.  Sidecars
-                # are addressed by directory, so step up when given a file.
-                sidecar_dir = (
-                    p.parent
-                    if p.suffix == ".jsonl" and p.name.endswith(".blocks.jsonl")
-                    else p
-                )
-                sidecar_location = sidecar_uri_for(sidecar_dir)
-                # Per docs/FileProcessingConfiguration-zh.md, full_docs.content
-                # for format=lightrag must be "{{LRdoc}}" + the merged body.
-                # If the blocks file cannot be read (permission, truncation,
-                # invalid JSON line), recording an empty body would let an
-                # untrue "{{LRdoc}}" record land in full_docs and desync from
-                # the on-disk blocks.jsonl.  Instead, skip this doc and flush
-                # a FAILED stub via apipeline_enqueue_error_documents after
-                # the critical section so /documents surfaces the cause and
-                # /documents/scan retries cleanly once the file is fixed.
-                try:
-                    merged_text, _ = await load_lightrag_document_content(
-                        sidecar_location
-                    )
-                except Exception as exc:
-                    error_msg = f"load_lightrag_document_content failed: {exc}"
-                    logger.warning(f"[apipeline_enqueue] {error_msg} ({raw_path})")
-                    file_size = 0
-                    blocks_path_str = sidecar_blocks_path(sidecar_location)
-                    if blocks_path_str:
-                        try:
-                            file_size = Path(blocks_path_str).stat().st_size
-                        except OSError:
-                            file_size = 0
-                    lightrag_load_errors.append(
-                        {
-                            "file_path": path,
-                            "error_description": (
-                                "Failed to load LightRAG Document blocks"
-                            ),
-                            "original_error": error_msg,
-                            "file_size": file_size,
-                        }
-                    )
-                    continue
-                summary_content = make_lightrag_doc_content(merged_text)
-                _add_content(
-                    i,
-                    summary_content,
-                    FULL_DOCS_FORMAT_LIGHTRAG,
-                    sidecar_location=sidecar_location,
-                )
-        elif ids is not None:
+        if ids is not None:
             for i, doc in enumerate(input):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 _add_content(
@@ -652,16 +554,7 @@ class _PipelineMixin:
 
         # 2. Generate document initial status (without content)
         def _initial_doc_status(content_data: dict[str, Any]) -> dict[str, Any]:
-            # For lightrag-format full_docs the persisted content carries the
-            # ``{{LRdoc}}`` marker; strip it so summary/length match raw
-            # semantics (the marker is full_docs internal bookkeeping and
-            # must not leak into doc_status).  strip_lightrag_doc_prefix
-            # internally checks parse_format, so non-lightrag formats pass
-            # through untouched.
-            body_text = strip_lightrag_doc_prefix(
-                content_data.get("content", ""),
-                content_data.get("parse_format"),
-            )
+            body_text = content_data.get("content", "")
             base: dict[str, Any] = {
                 "status": DocStatus.PENDING,
                 "content_summary": get_content_summary(body_text),
@@ -865,16 +758,6 @@ class _PipelineMixin:
                         f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
                     )
 
-            # Flush lightrag-format I/O failures as FAILED stubs.  Done
-            # inside the critical section so concurrent enqueues either see
-            # the failure rows in full or not at all, and so a subsequent
-            # /documents/scan finds the stub-without-full_docs combination
-            # that document_routes treats as "delete and re-extract".
-            if lightrag_load_errors:
-                await self.apipeline_enqueue_error_documents(
-                    lightrag_load_errors, track_id=track_id
-                )
-
             # Filter new_docs to only include documents with unique IDs
             new_docs = {
                 doc_id: new_docs[doc_id]
@@ -884,13 +767,6 @@ class _PipelineMixin:
 
             if not new_docs:
                 logger.warning("No new unique documents were found.")
-                # If FAILED stubs were just flushed (lightrag-format I/O
-                # errors), the caller needs the track_id to query their
-                # status; a bare ``return None`` would also be interpreted
-                # by document_routes upload paths as "all duplicate —
-                # archive the source", silently hiding the failure.
-                if lightrag_load_errors:
-                    return track_id
                 return
 
             # 4. Store document content in full_docs and status in doc_status
@@ -908,10 +784,6 @@ class _PipelineMixin:
                 if contents[doc_id].get("content_hash"):
                     full_docs_data[doc_id]["content_hash"] = contents[doc_id][
                         "content_hash"
-                    ]
-                if contents[doc_id].get("sidecar_location"):
-                    full_docs_data[doc_id]["sidecar_location"] = contents[doc_id][
-                        "sidecar_location"
                     ]
                 if contents[doc_id].get("parse_engine"):
                     full_docs_data[doc_id]["parse_engine"] = contents[doc_id][
