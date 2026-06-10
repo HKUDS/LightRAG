@@ -375,6 +375,17 @@ class _PipelineMixin:
             file_paths = ["unknown_source"] * len(input)
 
         is_lightrag_format = docs_format == FULL_DOCS_FORMAT_LIGHTRAG
+        if is_lightrag_format or lightrag_document_paths is not None:
+            # DEPRECATED ingestion entrypoint: no production caller enqueues a
+            # pre-existing sidecar this way (the upper layer doesn't know the
+            # backend sidecar layout). Scheduled for removal; the lightrag
+            # resume/reuse path (post-parse persist -> ReuseParser) is
+            # unaffected. See the unified-parser plan §11.
+            logger.warning(
+                "[apipeline_enqueue_documents] docs_format='lightrag' / "
+                "lightrag_document_paths is deprecated and will be removed in a "
+                "future release; it has no production caller."
+            )
         if is_lightrag_format and lightrag_document_paths is not None:
             if len(lightrag_document_paths) != len(input):
                 raise ValueError(
