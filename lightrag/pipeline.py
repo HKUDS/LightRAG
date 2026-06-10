@@ -1315,9 +1315,18 @@ class _PipelineMixin:
                 return owner.default_concurrency
             return self.max_parallel_parse_native
 
+        # Resolve every group's worker count BEFORE spawning any task:
+        # _group_concurrency can still raise (a queue_group with multiple
+        # concurrency owners). Raising here — while zero workers exist — avoids
+        # orphaning already-spawned workers outside the try/finally below (they
+        # would block forever on an empty queue, never cancelled).
+        group_worker_counts = {
+            group: max(1, _group_concurrency(group)) for group in parse_queues
+        }
+
         workers: list[asyncio.Task] = []
         for group, queue in parse_queues.items():
-            for _ in range(max(1, _group_concurrency(group))):
+            for _ in range(group_worker_counts[group]):
                 workers.append(
                     asyncio.create_task(self._parse_worker(group, queue, ctx))
                 )
