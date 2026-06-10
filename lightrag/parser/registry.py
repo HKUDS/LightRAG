@@ -272,35 +272,22 @@ def supported_parser_engines(
     )
 
 
-# Engines shipped with LightRAG. Used to tell third-party registrations apart
-# (e.g. the API upload allowlist is a curated subset of the BUILT-IN engines'
-# suffixes — mineru's image suffixes are deliberately not uploadable — while
-# a third-party engine's suffixes are admitted automatically).
-BUILTIN_PARSER_ENGINES = frozenset(
-    {
-        PARSER_ENGINE_NATIVE,
-        PARSER_ENGINE_LEGACY,
-        PARSER_ENGINE_MINERU,
-        PARSER_ENGINE_DOCLING,
-        PARSER_ENGINE_REUSE,
-        PARSER_ENGINE_PASSTHROUGH,
-    }
-)
-
-
-def third_party_engine_suffixes(
+def available_engine_suffixes(
     specs: dict[str, ParserSpec] | None = None,
 ) -> frozenset[str]:
-    """Suffixes (lowercase, no dot) of user-selectable non-built-in engines.
+    """Suffixes (lowercase, no dot) parseable by a *currently usable* engine.
 
-    The API layer unions these into ``DocumentManager.supported_extensions``
-    so a pip-installed parser plugin's file types become uploadable and
-    scannable without LightRAG code changes — while the curated built-in
-    allowlist stays untouched.
+    Union over user-selectable engines whose ``endpoint_configured()`` gate
+    passes. This is the single source for the API upload allowlist and the
+    input-directory scan (``DocumentManager.supported_extensions``): in a
+    default deployment (no external endpoints) it equals the local engines'
+    suffixes (legacy ∪ native); configuring e.g. ``MINERU_LOCAL_ENDPOINT``
+    admits mineru's image/office suffixes; a registered third-party engine's
+    suffixes join automatically (subject to its own endpoint gate).
     """
     out: set[str] = set()
-    for name, spec in _table(specs).items():
-        if spec.user_selectable and name not in BUILTIN_PARSER_ENGINES:
+    for spec in _table(specs).values():
+        if spec.user_selectable and spec.endpoint_configured():
             out |= spec.suffixes
     return frozenset(out)
 

@@ -1976,26 +1976,43 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
     assert engine == "reuse"
 
 
-def test_upload_allowlist_subset_of_registry_suffixes(tmp_path):
-    """Every extension the upload endpoint accepts must be parseable by at
-    least one registered engine (directional; the allowlist is curated and is
-    NOT required to cover every engine suffix)."""
+def test_default_allowlist_equals_local_engine_suffixes(tmp_path, monkeypatch):
+    """With no external endpoints configured, the registry-derived allowlist
+    must equal the local engines' (legacy ∪ native) suffixes — i.e. exactly
+    the historical hardcoded upload allowlist."""
     from lightrag.parser import registry
 
-    dm = DocumentManager(str(tmp_path))
-    all_suffixes = set()
-    for engine in registry.supported_parser_engines():
-        all_suffixes |= {f".{s}" for s in registry.suffix_capabilities(engine)}
+    for var in ("MINERU_LOCAL_ENDPOINT", "MINERU_API_TOKEN", "DOCLING_ENDPOINT"):
+        monkeypatch.delenv(var, raising=False)
 
-    allowlist = {ext.lower() for ext in dm.supported_extensions}
-    missing = allowlist - all_suffixes
-    assert not missing, f"upload allowlist has unparseable extensions: {missing}"
+    dm = DocumentManager(str(tmp_path))
+    local = {f".{s}" for s in registry.suffix_capabilities("legacy")} | {
+        f".{s}" for s in registry.suffix_capabilities("native")
+    }
+    assert set(dm.supported_extensions) == local
+    # External-only suffixes stay out while their endpoints are unset.
+    assert ".png" not in dm.supported_extensions
+    assert ".doc" not in dm.supported_extensions
+
+
+def test_configured_endpoint_admits_engine_suffixes(tmp_path, monkeypatch):
+    """Configuring an external engine's endpoint admits its suffixes into the
+    upload allowlist live (the gate is ParserSpec.endpoint_configured)."""
+    monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
+
+    dm = DocumentManager(str(tmp_path))
+    assert dm.is_supported_file("scan.png")
+    assert ".doc" in dm.supported_extensions
+    # docling-only suffixes stay out (its endpoint is still unset).
+    assert ".xhtml" not in dm.supported_extensions
 
 
 def test_third_party_engine_suffixes_join_allowlist_and_scan(tmp_path):
     """A registered third-party engine's suffixes become uploadable
-    (is_supported_file) and scannable (directory glob) live — while built-in
-    engines' non-curated suffixes (e.g. mineru's images) stay excluded."""
+    (is_supported_file) and scannable (directory glob) live, and revert on
+    unregister."""
     from lightrag.parser import registry
 
     dm = DocumentManager(str(tmp_path))
@@ -2019,10 +2036,6 @@ def test_third_party_engine_suffixes_join_allowlist_and_scan(tmp_path):
         assert ".foo" in dm.supported_extensions
         scanned = dm.scan_directory_for_new_files()
         assert [p for p in scanned if p.suffix == ".foo"]
-        # Curated guard: built-in mineru supports png, but images must NOT
-        # leak into the upload allowlist through the dynamic union.
-        assert "png" in registry.suffix_capabilities("mineru")
-        assert ".png" not in dm.supported_extensions
     finally:
         registry._REGISTRY.pop("allowlist-test-engine", None)
     assert not dm.is_supported_file("sample.foo")

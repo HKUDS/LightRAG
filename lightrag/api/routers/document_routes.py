@@ -967,53 +967,10 @@ class DocumentManager:
         self,
         input_dir: str,
         workspace: str = "",  # New parameter for workspace isolation
-        supported_extensions: tuple = (
-            ".txt",
-            ".md",
-            ".mdx",  # MDX (Markdown + JSX)
-            ".pdf",
-            ".docx",
-            ".pptx",
-            ".xlsx",
-            ".rtf",  # Rich Text Format
-            ".odt",  # OpenDocument Text
-            ".tex",  # LaTeX
-            ".epub",  # Electronic Publication
-            ".html",  # HyperText Markup Language
-            ".htm",  # HyperText Markup Language
-            ".csv",  # Comma-Separated Values
-            ".json",  # JavaScript Object Notation
-            ".xml",  # eXtensible Markup Language
-            ".yaml",  # YAML Ain't Markup Language
-            ".yml",  # YAML
-            ".log",  # Log files
-            ".conf",  # Configuration files
-            ".ini",  # Initialization files
-            ".properties",  # Java properties files
-            ".sql",  # SQL scripts
-            ".bat",  # Batch files
-            ".sh",  # Shell scripts
-            ".c",  # C source code
-            ".h",  # C header
-            ".cpp",  # C++ source code
-            ".hpp",  # C++ header
-            ".py",  # Python source code
-            ".java",  # Java source code
-            ".js",  # JavaScript source code
-            ".ts",  # TypeScript source code
-            ".swift",  # Swift source code
-            ".go",  # Go source code
-            ".rb",  # Ruby source code
-            ".php",  # PHP source code
-            ".css",  # Cascading Style Sheets
-            ".scss",  # Sassy CSS
-            ".less",  # LESS CSS
-        ),
     ):
         # Store the base input directory and workspace
         self.base_input_dir = Path(input_dir)
         self.workspace = workspace
-        self._base_supported_extensions = supported_extensions
         self.indexed_files = set()
 
         # Create workspace-specific input directory
@@ -1028,23 +985,17 @@ class DocumentManager:
 
     @property
     def supported_extensions(self) -> tuple:
-        """Curated built-in allowlist ∪ third-party engine suffixes.
+        """Upload/scan allowlist, derived live from the parser registry.
 
-        Computed live from the parser registry so a `lightrag.parsers`
-        plugin's file types become uploadable/scannable as soon as the
-        plugin is registered — without widening the curated built-in set
-        (e.g. mineru's image suffixes stay non-uploadable by default).
+        Union of the suffixes of every user-selectable engine whose endpoint
+        gate passes (see ``available_engine_suffixes``): a default deployment
+        equals the local engines' types (legacy ∪ native); configuring an
+        external engine's endpoint (or registering a third-party plugin)
+        admits its types automatically — no hardcoded list to keep in sync.
         """
-        from lightrag.parser.registry import third_party_engine_suffixes
+        from lightrag.parser.registry import available_engine_suffixes
 
-        extra = tuple(
-            sorted(
-                f".{s}"
-                for s in third_party_engine_suffixes()
-                if f".{s}" not in self._base_supported_extensions
-            )
-        )
-        return self._base_supported_extensions + extra
+        return tuple(sorted(f".{s}" for s in available_engine_suffixes()))
 
     def scan_directory_for_new_files(self) -> List[Path]:
         """Scan input directory for new files"""
