@@ -68,6 +68,7 @@ from lightrag.utils import (
     get_llm_cache_identity,
     handle_cache,
     logger,
+    repair_vlm_json_escape_damage,
     sanitize_text_for_encoding,
     save_to_cache,
     serialize_llm_cache_identity,
@@ -3877,6 +3878,13 @@ class _PipelineMixin:
                 3. Fall back to a greedy ``{...}`` regex slice for outputs
                    that wrap the JSON object in prose, then re-run
                    ``json_repair.loads`` on the slice.
+
+                String values in the recovered object are passed through
+                ``repair_vlm_json_escape_damage``: models writing LaTeX
+                inside JSON strings routinely under-escape backslashes
+                (``"\\frac"`` is valid JSON meaning form feed + ``rac``),
+                and this is the single choke point both fresh responses
+                and cache hits flow through.
                 """
                 if not text:
                     return {}
@@ -3891,7 +3899,7 @@ class _PipelineMixin:
                 try:
                     obj = json_repair.loads(candidate)
                     if isinstance(obj, dict):
-                        return obj
+                        return _repair_parsed_values(obj)
                 except Exception:
                     pass
                 m = re.search(r"\{[\s\S]*\}", candidate)
@@ -3899,10 +3907,30 @@ class _PipelineMixin:
                     try:
                         obj = json_repair.loads(m.group(0))
                         if isinstance(obj, dict):
-                            return obj
+                            return _repair_parsed_values(obj)
                     except Exception:
                         pass
                 return {}
+
+            def _repair_parsed_values(obj: dict[str, Any]) -> dict[str, Any]:
+                """Repair LaTeX escape damage in every string the analysis
+                consumes (top-level strings and strings inside lists)."""
+                repaired: dict[str, Any] = {}
+                for key, value in obj.items():
+                    if isinstance(value, str):
+                        repaired[key] = repair_vlm_json_escape_damage(
+                            value, context=key
+                        )
+                    elif isinstance(value, list):
+                        repaired[key] = [
+                            repair_vlm_json_escape_damage(v, context=key)
+                            if isinstance(v, str)
+                            else v
+                            for v in value
+                        ]
+                    else:
+                        repaired[key] = value
+                return repaired
 
             def _normalize_text(value: Any) -> str:
                 if value is None:

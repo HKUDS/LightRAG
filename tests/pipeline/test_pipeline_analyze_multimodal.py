@@ -521,6 +521,45 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_latex_escape_damage_repaired_before_sidecar_write(tmp_path):
+    """Regression: a VLM that under-escapes LaTeX in its JSON response
+    (``"\\frac"`` — valid JSON meaning form feed + ``rac``) must not leave
+    control characters in the persisted ``llm_analyze_result``.
+    ``_json_extract`` repairs the parsed values via
+    ``repair_vlm_json_escape_damage`` so the sidecar carries the intact
+    ``\\frac`` command."""
+    call_log: list[dict] = []
+
+    async def vlm_func(prompt, **kwargs):
+        call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        # Raw response text exactly as a sloppy model emits it: \frac
+        # single-escaped (decodes to \x0c + "rac"), \times correctly
+        # double-escaped — mirrors the mixed escaping observed in the wild.
+        return (
+            '{"name": "cost-formula", "type": "Chart", '
+            '"description": "calls $\\frac{610 \\\\times 1000}{C}$ shown"}'
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["description"] == "calls $\\frac{610 \\times 1000}{C}$ shown"
+        assert "\x0c" not in result["description"]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_table_routes_to_extract_role_not_vlm(tmp_path):
     """Per design §3.1 tables (and equations) must hit the EXTRACT role,
     not VLM. The mocks below assert exactly that."""
