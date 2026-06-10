@@ -19,6 +19,7 @@ from lightrag.utils import (
     is_float_regex,
     sanitize_and_normalize_extracted_text,
     sanitize_text_for_encoding,
+    repair_vlm_json_escape_damage_nested,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -745,6 +746,13 @@ async def _process_json_extraction_result(
             f"{chunk_key}: JSON extraction result is not a dict, got {type(parsed).__name__}"
         )
         return dict(maybe_nodes), dict(maybe_edges)
+
+    # Models quoting LaTeX in descriptions routinely under-escape backslashes
+    # ("\frac" is valid JSON meaning form feed + "rac"); restore the zero-risk
+    # cases before sanitization would otherwise delete the control characters
+    # and leave a maimed formula. Covers initial extraction, gleaning, and
+    # cache-rebuild — all three flow through this parser.
+    parsed = repair_vlm_json_escape_damage_nested(parsed, context=chunk_key)
 
     # Process entities
     entities_list = parsed.get("entities", [])

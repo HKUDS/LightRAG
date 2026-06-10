@@ -121,3 +121,49 @@ def test_prompts_require_double_escaped_backslashes():
         assert (
             "escape backslashes" in template or "double-escaped" in template
         ), f"{key}: missing backslash escaping rule in OUTPUT RULES"
+
+
+@pytest.mark.offline
+def test_extraction_system_prompt_requires_double_escaped_backslashes():
+    """The JSON entity-extraction system prompt governs both the initial
+    round and the gleaning round (same system prompt is passed to the
+    gleaning call), so the escaping rule lives there — the user prompts
+    deliberately carry no copy."""
+    from lightrag.prompt import PROMPTS
+
+    template = PROMPTS["entity_extraction_json_system_prompt"]
+    assert "escape backslashes" in template and "double-escaped" in template, (
+        "entity_extraction_json_system_prompt: missing backslash escaping "
+        "rule in JSON Contract"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_extraction_json_result_repairs_latex_escape_damage():
+    """Wiring regression for the extraction side: a raw LLM response with
+    single-escaped LaTeX must yield entity/relation descriptions carrying
+    the intact command — covers initial extraction, gleaning, and rebuild,
+    which all parse through _process_json_extraction_result."""
+    from lightrag.operate import _process_json_extraction_result
+
+    raw_response = (
+        '{"entities": [{"name": "LightRAG", "type": "Other", '
+        '"description": "成本为 $\\frac{610}{C}$ 次调用"}], '
+        '"relationships": [{"source": "LightRAG", "target": "GraphRAG", '
+        '"keywords": "cost", '
+        '"description": "比较 $\\frac{a}{b}$ 与 $\\\\times$ 系数"}]}'
+    )
+
+    nodes, edges = await _process_json_extraction_result(
+        raw_response, chunk_key="chunk-test", timestamp=0
+    )
+
+    (entity_list,) = [nodes[k] for k in nodes if k == "LightRAG"]
+    assert "\\frac{610}{C}" in entity_list[0]["description"]
+    assert "\x0c" not in entity_list[0]["description"]
+
+    (edge_list,) = list(edges.values())
+    assert "\\frac{a}{b}" in edge_list[0]["description"]
+    assert "\\times" in edge_list[0]["description"]
+    assert "\x0c" not in edge_list[0]["description"]

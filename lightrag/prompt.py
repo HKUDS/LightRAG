@@ -213,6 +213,8 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 
 7. **JSON Contract:**
   - Return one valid JSON object with `entities` and `relationships` arrays only.
+  - All string values must be properly escaped JSON strings (escape `"` as `\\"`, escape backslashes as `\\\\`, newlines as `\\n`).
+  - Any LaTeX quoted inside a string value must use double-escaped backslashes (e.g. `\\frac` is written as `"\\\\frac"` in the JSON).
   - If the record limit is reached, stop adding new objects immediately and return the JSON object with the allowed items only.
 
 8. **Output Format Template Safety:**

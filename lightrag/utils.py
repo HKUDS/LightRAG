@@ -3059,6 +3059,31 @@ def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
     return repaired
 
 
+def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
+    """Apply :func:`repair_vlm_json_escape_damage` to every string inside a
+    parsed JSON structure (dicts / lists nested arbitrarily).
+
+    Used on the output of ``json_repair.loads`` for LLM responses that may
+    quote LaTeX — multimodal analysis objects and entity-extraction results
+    (``{"entities": [{...}], "relationships": [{...}]}``). Non-string leaves
+    are returned untouched.
+    """
+    if isinstance(obj, str):
+        return repair_vlm_json_escape_damage(obj, context=context)
+    if isinstance(obj, dict):
+        return {
+            key: repair_vlm_json_escape_damage_nested(
+                value, context=f"{context}.{key}" if context else str(key)
+            )
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [
+            repair_vlm_json_escape_damage_nested(item, context=context) for item in obj
+        ]
+    return obj
+
+
 def check_storage_env_vars(storage_name: str) -> None:
     """Check if all required environment variables for storage implementation exist
 
