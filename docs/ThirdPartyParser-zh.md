@@ -152,7 +152,7 @@ register_parser(ParserSpec(
 
 - pipeline 每批为**每个 `queue_group` 建一条队列 + 一组 worker**;
 - 组的 worker 数:内置组(`native`/`mineru`/`docling`)由 LightRAG 实例字段 `max_parallel_parse_*` 决定(支持构造参数覆盖);第三方独立组取该组唯一 owner spec 的 `concurrency`;一个组**只能有一个**声明了 `concurrency` 的 spec,多个会在批启动时报错;
-- `queue_group="native"` 蹭内置池时,`concurrency` 不生效(池大小由 `max_parallel_parse_native` 决定)——本地轻量引擎(如 legacy)适合这种方式,外部服务引擎建议独立组以免慢请求拖住本地解析。
+- `queue_group="native"` 蹭内置池时,`concurrency` 不生效(池大小由 `max_parallel_parse_native` 决定,被忽略的 spec 级 `concurrency` 会在批启动时记录 warning 日志)——本地轻量引擎(如 legacy)适合这种方式,外部服务引擎建议独立组以免慢请求拖住本地解析。
 
 ## 4. 注册:entry point 自动发现(推荐)
 

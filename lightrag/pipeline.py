@@ -1284,6 +1284,24 @@ class _PipelineMixin:
             # override at registration); an unowned group shares native's.
             field_name = f"max_parallel_parse_{group}"
             if hasattr(self, field_name):
+                # A spec declaring ``concurrency`` on a built-in group is a
+                # plugin-author misconfig: the pool is sized by the instance
+                # field, so surface the ignored value instead of silently
+                # dropping it.
+                ignored = [
+                    s.engine_name
+                    for s in parser_specs.values()
+                    if s.queue_group == group and s.concurrency is not None
+                ]
+                if ignored:
+                    logger.warning(
+                        "[parse] queue_group %r is built-in (sized by %s=%d); "
+                        "spec-level concurrency from %s is ignored",
+                        group,
+                        field_name,
+                        getattr(self, field_name),
+                        ignored,
+                    )
                 return getattr(self, field_name)
             owners = [
                 s
