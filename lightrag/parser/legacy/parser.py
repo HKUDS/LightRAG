@@ -40,10 +40,10 @@ class LegacyParser(BaseParser):
             )
 
         file_bytes = await asyncio.to_thread(source.read_bytes)
-        # The PDF password is sourced from env only. The API layer's
-        # ``global_args.pdf_decrypt_password`` is filled from this same env
-        # var; the parser layer must not read ``global_args`` (that would
-        # invert the parser -> API dependency direction).
+        # The PDF password is sourced from env only: the parser layer reads
+        # ``PDF_DECRYPT_PASSWORD`` directly rather than from the API layer's
+        # ``global_args`` (which would invert the parser -> API dependency
+        # direction).
         pdf_password = os.getenv("PDF_DECRYPT_PASSWORD") or None
         text = await asyncio.to_thread(
             extract_text, file_bytes, suffix, pdf_password=pdf_password
