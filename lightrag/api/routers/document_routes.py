@@ -13,7 +13,6 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
-from io import BytesIO
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -28,7 +27,6 @@ from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
-    PARSER_ENGINE_LEGACY,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_FIXED,
@@ -969,53 +967,10 @@ class DocumentManager:
         self,
         input_dir: str,
         workspace: str = "",  # New parameter for workspace isolation
-        supported_extensions: tuple = (
-            ".txt",
-            ".md",
-            ".mdx",  # MDX (Markdown + JSX)
-            ".pdf",
-            ".docx",
-            ".pptx",
-            ".xlsx",
-            ".rtf",  # Rich Text Format
-            ".odt",  # OpenDocument Text
-            ".tex",  # LaTeX
-            ".epub",  # Electronic Publication
-            ".html",  # HyperText Markup Language
-            ".htm",  # HyperText Markup Language
-            ".csv",  # Comma-Separated Values
-            ".json",  # JavaScript Object Notation
-            ".xml",  # eXtensible Markup Language
-            ".yaml",  # YAML Ain't Markup Language
-            ".yml",  # YAML
-            ".log",  # Log files
-            ".conf",  # Configuration files
-            ".ini",  # Initialization files
-            ".properties",  # Java properties files
-            ".sql",  # SQL scripts
-            ".bat",  # Batch files
-            ".sh",  # Shell scripts
-            ".c",  # C source code
-            ".h",  # C header
-            ".cpp",  # C++ source code
-            ".hpp",  # C++ header
-            ".py",  # Python source code
-            ".java",  # Java source code
-            ".js",  # JavaScript source code
-            ".ts",  # TypeScript source code
-            ".swift",  # Swift source code
-            ".go",  # Go source code
-            ".rb",  # Ruby source code
-            ".php",  # PHP source code
-            ".css",  # Cascading Style Sheets
-            ".scss",  # Sassy CSS
-            ".less",  # LESS CSS
-        ),
     ):
         # Store the base input directory and workspace
         self.base_input_dir = Path(input_dir)
         self.workspace = workspace
-        self.supported_extensions = supported_extensions
         self.indexed_files = set()
 
         # Create workspace-specific input directory
@@ -1028,21 +983,87 @@ class DocumentManager:
         # Create input directory if it doesn't exist
         self.input_dir.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def supported_extensions(self) -> tuple:
+        """Suffixes accepted for an unhinted filename, derived live.
+
+        A suffix is advertised only when it is *routable without extra
+        directives*: the engine that ``resolve_file_parser_engine`` picks for
+        a bare ``x.<suffix>`` (filename hint absent; ``LIGHTRAG_PARSER``
+        rules + default apply) must itself support the suffix. This keeps
+        "uploadable" aligned with "will actually parse": e.g. mineru's
+        ``png`` joins only when its endpoint is configured AND a routing
+        rule (or per-file hint, see ``is_supported_file``) sends pngs to it
+        — otherwise the default ``legacy`` engine would fail the suffix gate
+        at the parse stage. A default deployment equals the local engines'
+        (legacy ∪ native) types; no hardcoded list to keep in sync.
+        """
+        from lightrag.parser.registry import available_engine_suffixes
+        from lightrag.parser.routing import (
+            parser_engine_supports_suffix,
+            resolve_file_parser_engine,
+        )
+
+        out = []
+        for s in sorted(available_engine_suffixes()):
+            engine = resolve_file_parser_engine(f"x.{s}")
+            if parser_engine_supports_suffix(engine, s):
+                out.append(f".{s}")
+        return tuple(out)
+
     def scan_directory_for_new_files(self) -> List[Path]:
-        """Scan input directory for new files"""
+        """Scan input directory for new, routable files.
+
+        Globs over every *available* engine suffix (capability surface, so a
+        hint-carrying file like ``img.[mineru].png`` is discoverable even
+        when bare ``.png`` is not advertised), then keeps only files whose
+        resolved engine actually supports them (``is_supported_file``).
+        """
+        from lightrag.parser.registry import available_engine_suffixes
+        from lightrag.parser.routing import FilenameParserHintError
+
         new_files = []
-        for ext in self.supported_extensions:
+        for s in sorted(available_engine_suffixes()):
+            ext = f".{s}"
             logger.debug(f"Scanning for {ext} files in {self.input_dir}")
             for file_path in self.input_dir.glob(f"*{ext}"):
-                if file_path not in self.indexed_files:
-                    new_files.append(file_path)
+                if file_path in self.indexed_files:
+                    continue
+                try:
+                    if not self.is_supported_file(file_path.name):
+                        continue
+                except FilenameParserHintError:
+                    # Malformed hint: pass the file through — the enqueue
+                    # path reports a detailed error document, instead of the
+                    # scan silently ignoring the user's file.
+                    pass
+                new_files.append(file_path)
         return new_files
 
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
 
     def is_supported_file(self, filename: str) -> bool:
-        return any(filename.lower().endswith(ext) for ext in self.supported_extensions)
+        """True when THIS filename routes to an engine that can parse it.
+
+        Resolves the engine for the concrete name — so a per-file hint
+        (``img.[mineru].png``) is honoured — and checks the resolved engine
+        supports the suffix. A bare suffix that would fall through to the
+        default ``legacy`` engine is rejected here instead of failing later
+        at the parse worker's suffix gate.
+
+        Raises :class:`FilenameParserHintError` for a malformed hint —
+        callers surface it (upload → HTTP 400 with the detailed message;
+        scan passes the file through so enqueue emits an error document).
+        """
+        from lightrag.parser.routing import (
+            parser_engine_supports_suffix,
+            parser_suffix,
+            resolve_file_parser_engine,
+        )
+
+        engine = resolve_file_parser_engine(filename)
+        return parser_engine_supports_suffix(engine, parser_suffix(filename))
 
 
 def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[Path]:
@@ -1545,253 +1566,8 @@ async def record_scan_warning(rag: LightRAG, message: str) -> None:
         pass
 
 
-# Document processing helper functions (synchronous)
-# These functions run in thread pool via asyncio.to_thread() to avoid blocking the event loop
-
-
-def _extract_pdf_pypdf(file_bytes: bytes, password: str = None) -> str:
-    """Extract PDF content using pypdf (synchronous).
-
-    Args:
-        file_bytes: PDF file content as bytes
-        password: Optional password for encrypted PDFs
-
-    Returns:
-        str: Extracted text content
-
-    Raises:
-        Exception: If PDF is encrypted and password is incorrect or missing
-    """
-    from pypdf import PdfReader  # type: ignore
-
-    pdf_file = BytesIO(file_bytes)
-    reader = PdfReader(pdf_file)
-
-    # Check if PDF is encrypted
-    if reader.is_encrypted:
-        # Try empty password first (covers permission-only encrypted PDFs)
-        decrypt_result = reader.decrypt(password or "")
-        if decrypt_result == 0:
-            if password:
-                raise Exception("Incorrect PDF password")
-            else:
-                raise Exception("PDF is encrypted but no password provided")
-
-    # Extract text from all pages
-    content = ""
-    for page in reader.pages:
-        content += page.extract_text() + "\n"
-
-    return content
-
-
-def _extract_docx(file_bytes: bytes) -> str:
-    """Extract DOCX content including tables in document order (synchronous).
-
-    Args:
-        file_bytes: DOCX file content as bytes
-
-    Returns:
-        str: Extracted text content with tables in their original positions.
-             Tables are separated from paragraphs with blank lines for clarity.
-    """
-    from docx import Document  # type: ignore
-    from docx.table import Table  # type: ignore
-    from docx.text.paragraph import Paragraph  # type: ignore
-
-    docx_file = BytesIO(file_bytes)
-    doc = Document(docx_file)
-
-    def escape_cell(cell_value: str | None) -> str:
-        """Escape characters that would break tab-delimited layout.
-
-        Escape order is critical: backslashes first, then tabs/newlines.
-        This prevents double-escaping issues.
-
-        Args:
-            cell_value: The cell value to escape (can be None or str)
-
-        Returns:
-            str: Escaped cell value safe for tab-delimited format
-        """
-        if cell_value is None:
-            return ""
-        text = str(cell_value)
-        # CRITICAL: Escape backslash first to avoid double-escaping
-        return (
-            text.replace("\\", "\\\\")  # Must be first: \ -> \\
-            .replace("\t", "&emsp;&emsp;")  # Tab -> \t (visible)
-            .replace("\r\n", "<br>")  # Windows newline -> \n
-            .replace("\r", "<br>")  # Mac newline -> \n
-            .replace("\n", "<br>")  # Unix newline -> \n
-        )
-
-    content_parts = []
-    in_table = False  # Track if we're currently processing a table
-
-    # Iterate through all body elements in document order
-    for element in doc.element.body:
-        # Check if element is a paragraph
-        if element.tag.endswith("p"):
-            # If coming out of a table, add blank line after table
-            if in_table:
-                content_parts.append("")  # Blank line after table
-                in_table = False
-
-            paragraph = Paragraph(element, doc)
-            text = paragraph.text
-            # Always append to preserve document spacing (including blank paragraphs)
-            content_parts.append(text)
-
-        # Check if element is a table
-        elif element.tag.endswith("tbl"):
-            # Add blank line before table (if content exists)
-            if content_parts and not in_table:
-                content_parts.append("")  # Blank line before table
-
-            in_table = True
-            table = Table(element, doc)
-            for row in table.rows:
-                row_text = []
-                for cell in row.cells:
-                    cell_text = cell.text
-                    # Escape special characters to preserve tab-delimited structure
-                    row_text.append(escape_cell(cell_text))
-                # Only add row if at least one cell has content
-                if any(cell for cell in row_text):
-                    content_parts.append("\t".join(row_text))
-
-    return "\n".join(content_parts)
-
-
-def _extract_pptx(file_bytes: bytes) -> str:
-    """Extract PPTX content (synchronous).
-
-    Args:
-        file_bytes: PPTX file content as bytes
-
-    Returns:
-        str: Extracted text content
-    """
-    from pptx import Presentation  # type: ignore
-
-    pptx_file = BytesIO(file_bytes)
-    prs = Presentation(pptx_file)
-    content = ""
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if hasattr(shape, "text"):
-                content += shape.text + "\n"
-    return content
-
-
-def _extract_xlsx(file_bytes: bytes) -> str:
-    """Extract XLSX content in tab-delimited format with clear sheet separation.
-
-    This function processes Excel workbooks and converts them to a structured text format
-    suitable for LLM prompts and RAG systems. Each sheet is clearly delimited with
-    separator lines, and special characters are escaped to preserve the tab-delimited structure.
-
-    Features:
-    - Each sheet is wrapped with '====================' separators for visual distinction
-    - Special characters (tabs, newlines, backslashes) are escaped to prevent structure corruption
-    - Column alignment is preserved across all rows to maintain tabular structure
-    - Empty rows are preserved as blank lines to maintain row structure
-    - Uses sheet.max_column to determine column width efficiently
-
-    Args:
-        file_bytes: XLSX file content as bytes
-
-    Returns:
-        str: Extracted text content with all sheets in tab-delimited format.
-             Format: Sheet separators, sheet name, then tab-delimited rows.
-
-    Example output:
-        ==================== Sheet: Data ====================
-        Name\tAge\tCity
-        Alice\t30\tNew York
-        Bob\t25\tLondon
-
-        ==================== Sheet: Summary ====================
-        Total\t2
-        ====================
-    """
-    from openpyxl import load_workbook  # type: ignore
-
-    xlsx_file = BytesIO(file_bytes)
-    wb = load_workbook(xlsx_file)
-
-    def escape_cell(cell_value: str | int | float | None) -> str:
-        """Escape characters that would break tab-delimited layout.
-
-        Escape order is critical: backslashes first, then tabs/newlines.
-        This prevents double-escaping issues.
-
-        Args:
-            cell_value: The cell value to escape (can be None, str, int, or float)
-
-        Returns:
-            str: Escaped cell value safe for tab-delimited format
-        """
-        if cell_value is None:
-            return ""
-        text = str(cell_value)
-        # CRITICAL: Escape backslash first to avoid double-escaping
-        return (
-            text.replace("\\", "\\\\")  # Must be first: \ -> \\
-            .replace("\t", "\\t")  # Tab -> \t (visible)
-            .replace("\r\n", "\\n")  # Windows newline -> \n
-            .replace("\r", "\\n")  # Mac newline -> \n
-            .replace("\n", "\\n")  # Unix newline -> \n
-        )
-
-    def escape_sheet_title(title: str) -> str:
-        """Escape sheet title to prevent formatting issues in separators.
-
-        Args:
-            title: Original sheet title
-
-        Returns:
-            str: Sanitized sheet title with tabs/newlines replaced
-        """
-        return str(title).replace("\n", " ").replace("\t", " ").replace("\r", " ")
-
-    content_parts: list[str] = []
-    sheet_separator = "=" * 20
-
-    for idx, sheet in enumerate(wb):
-        if idx > 0:
-            content_parts.append("")  # Blank line between sheets for readability
-
-        # Escape sheet title to handle edge cases with special characters
-        safe_title = escape_sheet_title(sheet.title)
-        content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
-
-        # Use sheet.max_column to get the maximum column width directly
-        max_columns = sheet.max_column if sheet.max_column else 0
-
-        # Extract rows with consistent width to preserve column alignment
-        for row in sheet.iter_rows(values_only=True):
-            row_parts = []
-
-            # Build row up to max_columns width
-            for idx in range(max_columns):
-                if idx < len(row):
-                    row_parts.append(escape_cell(row[idx]))
-                else:
-                    row_parts.append("")  # Pad short rows
-
-            # Check if row is completely empty
-            if all(part == "" for part in row_parts):
-                # Preserve empty rows as blank lines (maintains row structure)
-                content_parts.append("")
-            else:
-                # Join all columns to maintain consistent column count
-                content_parts.append("\t".join(row_parts))
-
-    # Final separator for symmetry (makes parsing easier)
-    content_parts.append(sheet_separator)
-    return "\n".join(content_parts)
+# Legacy text extractors moved to lightrag.parser.legacy.extractors; the
+# legacy engine now extracts at the worker stage (LegacyParser), not here.
 
 
 async def pipeline_enqueue_file(
@@ -1819,8 +1595,6 @@ async def pipeline_enqueue_file(
         track_id = generate_track_id("unknown")
 
     try:
-        content = ""
-        ext = file_path.suffix.lower()
         file_size = 0
 
         # Get file size for error reporting
@@ -1850,379 +1624,45 @@ async def pipeline_enqueue_file(
             return False, track_id
 
         api_process_options = process_options or PROCESS_OPTION_CHUNK_FIXED
-        if extraction_engine != PARSER_ENGINE_LEGACY:
-            try:
-                enqueue_kwargs = {
-                    "file_paths": str(file_path),
-                    "track_id": track_id,
-                    "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-                    "parse_engine": extraction_engine,
-                    "process_options": api_process_options,
-                    "from_scan": from_scan,
-                }
-                enqueue_result = await rag.apipeline_enqueue_documents(
-                    "", **enqueue_kwargs
-                )
-                if enqueue_result is None:
-                    try:
-                        await move_file_to_parsed_dir(file_path)
-                    except Exception as move_error:
-                        logger.error(
-                            f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
-                        )
-                    return False, track_id
-                logger.info(
-                    f"[File Extraction]Deferred {file_path.name} to {extraction_engine} parser"
-                )
-                return True, track_id
-            except Exception as e:
-                error_files = [
-                    {
-                        "file_path": str(file_path.name),
-                        "error_description": "[File Extraction]Parser enqueue error",
-                        "original_error": f"Failed to enqueue file for parser: {str(e)}",
-                        "file_size": file_size,
-                    }
-                ]
-                await rag.apipeline_enqueue_error_documents(error_files, track_id)
-                logger.error(
-                    f"[File Extraction]Error enqueuing {file_path.name} for {extraction_engine}: {str(e)}"
-                )
-                return False, track_id
-
-        file = None
+        # All engines defer parsing to the worker stage: the file is already
+        # saved on disk, so we enqueue PENDING_PARSE with the chosen engine.
+        # Legacy now extracts at the worker (LegacyParser) instead of eagerly
+        # here, so every engine shares one ingestion path.
         try:
-            async with aiofiles.open(file_path, "rb") as f:
-                file = await f.read()
-        except PermissionError as e:
-            error_files = [
-                {
-                    "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]Permission denied - cannot read file",
-                    "original_error": str(e),
-                    "file_size": file_size,
-                }
-            ]
-            await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(
-                f"[File Extraction]Permission denied reading file: {file_path.name}"
-            )
-            return False, track_id
-        except FileNotFoundError as e:
-            error_files = [
-                {
-                    "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]File not found",
-                    "original_error": str(e),
-                    "file_size": file_size,
-                }
-            ]
-            await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(f"[File Extraction]File not found: {file_path.name}")
-            return False, track_id
-        except Exception as e:
-            error_files = [
-                {
-                    "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]File reading error",
-                    "original_error": str(e),
-                    "file_size": file_size,
-                }
-            ]
-            await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(
-                f"[File Extraction]Error reading file {file_path.name}: {str(e)}"
-            )
-            return False, track_id
-
-        # Process based on file type
-        try:
-            match ext:
-                case (
-                    ".txt"
-                    | ".md"
-                    | ".mdx"
-                    | ".html"
-                    | ".htm"
-                    | ".tex"
-                    | ".json"
-                    | ".xml"
-                    | ".yaml"
-                    | ".yml"
-                    | ".rtf"
-                    | ".odt"
-                    | ".epub"
-                    | ".csv"
-                    | ".log"
-                    | ".conf"
-                    | ".ini"
-                    | ".properties"
-                    | ".sql"
-                    | ".bat"
-                    | ".sh"
-                    | ".c"
-                    | ".h"
-                    | ".cpp"
-                    | ".hpp"
-                    | ".py"
-                    | ".java"
-                    | ".js"
-                    | ".ts"
-                    | ".swift"
-                    | ".go"
-                    | ".rb"
-                    | ".php"
-                    | ".css"
-                    | ".scss"
-                    | ".less"
-                ):
-                    try:
-                        # Try to decode as UTF-8 (offloaded to thread to avoid blocking the event loop)
-                        content = await asyncio.to_thread(file.decode, "utf-8")
-
-                        # Validate content
-                        if not content or len(content.strip()) == 0:
-                            error_files = [
-                                {
-                                    "file_path": str(file_path.name),
-                                    "error_description": "[File Extraction]Empty file content",
-                                    "original_error": "File contains no content or only whitespace",
-                                    "file_size": file_size,
-                                }
-                            ]
-                            await rag.apipeline_enqueue_error_documents(
-                                error_files, track_id
-                            )
-                            logger.error(
-                                f"[File Extraction]Empty content in file: {file_path.name}"
-                            )
-                            return False, track_id
-
-                        # Check if content looks like binary data string representation
-                        if content.startswith("b'") or content.startswith('b"'):
-                            error_files = [
-                                {
-                                    "file_path": str(file_path.name),
-                                    "error_description": "[File Extraction]Binary data in text file",
-                                    "original_error": "File appears to contain binary data representation instead of text",
-                                    "file_size": file_size,
-                                }
-                            ]
-                            await rag.apipeline_enqueue_error_documents(
-                                error_files, track_id
-                            )
-                            logger.error(
-                                f"[File Extraction]File {file_path.name} appears to contain binary data representation instead of text"
-                            )
-                            return False, track_id
-
-                    except UnicodeDecodeError as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]UTF-8 encoding error, please convert it to UTF-8 before processing",
-                                "original_error": f"File is not valid UTF-8 encoded text: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
-                        )
-                        return False, track_id
-
-                case ".pdf":
-                    try:
-                        content = await asyncio.to_thread(
-                            _extract_pdf_pypdf,
-                            file,
-                            global_args.pdf_decrypt_password,
-                        )
-                    except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]PDF processing error",
-                                "original_error": f"Failed to extract text from PDF: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing PDF {file_path.name}: {str(e)}"
-                        )
-                        return False, track_id
-
-                case ".docx":
-                    try:
-                        content = await asyncio.to_thread(_extract_docx, file)
-                    except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]DOCX processing error",
-                                "original_error": f"Failed to extract text from DOCX: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing DOCX {file_path.name}: {str(e)}"
-                        )
-                        return False, track_id
-
-                case ".pptx":
-                    try:
-                        content = await asyncio.to_thread(_extract_pptx, file)
-                    except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]PPTX processing error",
-                                "original_error": f"Failed to extract text from PPTX: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing PPTX {file_path.name}: {str(e)}"
-                        )
-                        return False, track_id
-
-                case ".xlsx":
-                    try:
-                        content = await asyncio.to_thread(_extract_xlsx, file)
-                    except Exception as e:
-                        error_files = [
-                            {
-                                "file_path": str(file_path.name),
-                                "error_description": "[File Extraction]XLSX processing error",
-                                "original_error": f"Failed to extract text from XLSX: {str(e)}",
-                                "file_size": file_size,
-                            }
-                        ]
-                        await rag.apipeline_enqueue_error_documents(
-                            error_files, track_id
-                        )
-                        logger.error(
-                            f"[File Extraction]Error processing XLSX {file_path.name}: {str(e)}"
-                        )
-                        return False, track_id
-
-                case _:
-                    error_files = [
-                        {
-                            "file_path": str(file_path.name),
-                            "error_description": f"[File Extraction]Unsupported file type: {ext}",
-                            "original_error": f"File extension {ext} is not supported",
-                            "file_size": file_size,
-                        }
-                    ]
-                    await rag.apipeline_enqueue_error_documents(error_files, track_id)
-                    logger.error(
-                        f"[File Extraction]Unsupported file type: {file_path.name} (extension {ext})"
-                    )
-                    return False, track_id
-
-        except Exception as e:
-            error_files = [
-                {
-                    "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]File format processing error",
-                    "original_error": f"Unexpected error during file extracting: {str(e)}",
-                    "file_size": file_size,
-                }
-            ]
-            await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(
-                f"[File Extraction]Unexpected error during {file_path.name} extracting: {str(e)}"
-            )
-            return False, track_id
-
-        # Insert into the RAG queue
-        if content:
-            # Check if content contains only whitespace characters
-            if not content.strip():
-                error_files = [
-                    {
-                        "file_path": str(file_path.name),
-                        "error_description": "[File Extraction]File contains only whitespace",
-                        "original_error": "File content contains only whitespace characters",
-                        "file_size": file_size,
-                    }
-                ]
-                await rag.apipeline_enqueue_error_documents(error_files, track_id)
-                logger.warning(
-                    f"[File Extraction]File contains only whitespace characters: {file_path.name}"
-                )
-                return False, track_id
-
-            try:
-                enqueue_kwargs = {
-                    "file_paths": file_path.name,
-                    "track_id": track_id,
-                    "parse_engine": PARSER_ENGINE_LEGACY,
-                    "process_options": api_process_options,
-                    "from_scan": from_scan,
-                }
-                enqueue_result = await rag.apipeline_enqueue_documents(
-                    content, **enqueue_kwargs
-                )
-                if enqueue_result is None:
-                    try:
-                        await move_file_to_parsed_dir(file_path)
-                    except Exception as move_error:
-                        logger.error(
-                            f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
-                        )
-                    return False, track_id
-
-                logger.info(
-                    f"Successfully extracted and enqueued file: {file_path.name}"
-                )
-
-                # Move file to __parsed__ directory after enqueuing (LR2-PRD: parsed output dir)
+            enqueue_kwargs = {
+                "file_paths": str(file_path),
+                "track_id": track_id,
+                "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                "parse_engine": extraction_engine,
+                "process_options": api_process_options,
+                "from_scan": from_scan,
+            }
+            enqueue_result = await rag.apipeline_enqueue_documents("", **enqueue_kwargs)
+            if enqueue_result is None:
                 try:
                     await move_file_to_parsed_dir(file_path)
                 except Exception as move_error:
                     logger.error(
-                        f"Failed to move file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
+                        f"Failed to move duplicate file {file_path.name} to {PARSED_DIR_NAME} directory: {move_error}"
                     )
-                    # Don't affect the main function's success status
-
-                return True, track_id
-
-            except Exception as e:
-                error_files = [
-                    {
-                        "file_path": str(file_path.name),
-                        "error_description": "Document enqueue error",
-                        "original_error": f"Failed to enqueue document: {str(e)}",
-                        "file_size": file_size,
-                    }
-                ]
-                await rag.apipeline_enqueue_error_documents(error_files, track_id)
-                logger.error(f"Error enqueueing document {file_path.name}: {str(e)}")
                 return False, track_id
-        else:
+            logger.info(
+                f"[File Extraction]Deferred {file_path.name} to {extraction_engine} parser"
+            )
+            return True, track_id
+        except Exception as e:
             error_files = [
                 {
                     "file_path": str(file_path.name),
-                    "error_description": "No content extracted",
-                    "original_error": "No content could be extracted from file",
+                    "error_description": "[File Extraction]Parser enqueue error",
+                    "original_error": f"Failed to enqueue file for parser: {str(e)}",
                     "file_size": file_size,
                 }
             ]
             await rag.apipeline_enqueue_error_documents(error_files, track_id)
-            logger.error(f"No content extracted from file: {file_path.name}")
+            logger.error(
+                f"[File Extraction]Error enqueuing {file_path.name} for {extraction_engine}: {str(e)}"
+            )
             return False, track_id
 
     except Exception as e:
@@ -3157,7 +2597,14 @@ def create_document_routes(
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
 
-            if not doc_manager.is_supported_file(safe_filename):
+            try:
+                filename_supported = doc_manager.is_supported_file(safe_filename)
+            except FilenameParserHintError as hint_error:
+                # Reject malformed hints synchronously with the detailed
+                # message (previously surfaced asynchronously as an error
+                # document after the upload was accepted).
+                raise HTTPException(status_code=400, detail=str(hint_error))
+            if not filename_supported:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",

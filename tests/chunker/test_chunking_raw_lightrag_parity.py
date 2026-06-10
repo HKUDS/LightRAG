@@ -595,6 +595,7 @@ def test_pending_parse_lightrag_summary_populated_after_processed(
                 "",
                 file_paths="summary.docx",
                 docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                parse_engine="native",
                 track_id="track-summary",
             )
 

@@ -138,100 +138,13 @@ FULL_DOCS_FORMAT_PENDING_PARSE = (
 # leading summary of the parsed document so paginated APIs can show a real
 # preview without loading the full LightRAG Document file.
 LIGHTRAG_DOC_CONTENT_PREFIX = "{{LRdoc}}"
+# Engine identifier strings (registry keys). The set of user-selectable
+# engines and their suffix capabilities now live in
+# lightrag.parser.registry (ParserSpec table) — the single source of truth.
 PARSER_ENGINE_LEGACY = "legacy"
 PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"
 PARSER_ENGINE_DOCLING = "docling"
-SUPPORTED_PARSER_ENGINES = frozenset(
-    {
-        PARSER_ENGINE_LEGACY,
-        PARSER_ENGINE_NATIVE,
-        PARSER_ENGINE_MINERU,
-        PARSER_ENGINE_DOCLING,
-    }
-)
-PARSER_ENGINE_SUFFIX_CAPABILITIES = {
-    PARSER_ENGINE_LEGACY: frozenset(
-        {
-            "txt",
-            "md",
-            "mdx",
-            "pdf",
-            "docx",
-            "pptx",
-            "xlsx",
-            "rtf",
-            "odt",
-            "tex",
-            "epub",
-            "html",
-            "htm",
-            "csv",
-            "json",
-            "xml",
-            "yaml",
-            "yml",
-            "log",
-            "conf",
-            "ini",
-            "properties",
-            "sql",
-            "bat",
-            "sh",
-            "c",
-            "h",
-            "cpp",
-            "hpp",
-            "py",
-            "java",
-            "js",
-            "ts",
-            "swift",
-            "go",
-            "rb",
-            "php",
-            "css",
-            "scss",
-            "less",
-        }
-    ),
-    PARSER_ENGINE_NATIVE: frozenset({"docx"}),
-    PARSER_ENGINE_MINERU: frozenset(
-        {
-            "pdf",
-            "doc",
-            "docx",
-            "ppt",
-            "pptx",
-            "xls",
-            "xlsx",
-            "png",
-            "jpg",
-            "jpeg",
-            "jp2",
-            "webp",
-            "gif",
-            "bmp",
-        }
-    ),
-    PARSER_ENGINE_DOCLING: frozenset(
-        {
-            "pdf",
-            "docx",
-            "pptx",
-            "xlsx",
-            "md",
-            "html",
-            "xhtml",
-            "png",
-            "jpg",
-            "jpeg",
-            "tiff",
-            "webp",
-            "bmp",
-        }
-    ),
-}
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
 
 # Suffixes for parser artifact subdirectories under ``<input>/__parsed__/``.

@@ -459,7 +459,7 @@ File enqueue and extraction results are written into `full_docs`:
 | `canonical_basename` | The canonicalized basename with the processing hint stripped (e.g., `abc.docx`). Filename deduplication uses this field as the index key, ensuring `abc.docx` and `abc.[native-iet].docx` are treated as the same logical document. |
 | `source_path` | The original path provided at enqueue time (written only when it contains a directory separator or is an absolute path), used by the `native` / `mineru` / `docling` parsers to locate the actual file. |
 | `parse_format` | Content format: `pending_parse`, `raw`, `lightrag`. |
-| `content` | When `raw`, holds the extracted text; when `pending_parse`, it is an empty string; when `lightrag`, holds the **complete merged text** starting with `{{LRdoc}}` (concatenated body segments of all `type=="content"` lines in `.blocks.jsonl`). During chunking, `parse_native` strips the prefix and hands it to the chunking_func, going through exactly the same code path as `raw`. |
+| `content` | When `raw`, holds the extracted text; when `pending_parse`, it is an empty string; when `lightrag`, holds the **complete merged text** starting with `{{LRdoc}}` (concatenated body segments of all `type=="content"` lines in `.blocks.jsonl`). At the parse stage, the reuse handler (`ReuseParser`) strips the prefix and hands it to the chunking_func, going through exactly the same code path as `raw`. |
 | `content_hash` | MD5 of the content, used for cross-filename deduplication. For `parse_format=raw`, takes the hash of text after `sanitize_text_for_encoding`; for `parse_format=lightrag`, takes the hash of the `*.blocks.jsonl` file; for `parse_format=pending_parse`, not written, filled in after extraction completes. |
 | `lightrag_document_path` | When `parse_format=lightrag`, saves the path to the structured LightRAG Document; new records prefer to save the path relative to `INPUT_DIR`, e.g., `__parsed__/report.docx.parsed/report.blocks.jsonl`. Note that the subdirectories and the blocks filename in the path both use the canonicalized basename (without hint). |
 | `parse_engine` | The engine that actually completed extraction: `legacy`, `native`, `mineru`, `docling`. For files awaiting extraction, can also temporarily store the target engine. |
@@ -711,12 +711,13 @@ The lock does **not** cover the `request_pending` nudge (outside the lock; only 
 The locks around `pipeline_status` solve the correctness problem of "who can write"; this section's set of parameters solves the throughput problem of "how many workers run concurrently". The pipeline is divided into 3 stages, each with an independently tunable worker pool:
 
 ```
-          ┌─ q_native  ──► [native parser  × N1] ─┐
-PENDING ─►├─ q_mineru  ──► [mineru parser  × N2] ─┼─► q_analyze ─►[analyzer × N4] ─► q_process ─►[processor × N5]
-          └─ q_docling ──► [docling parser × N3] ─┘
+          ┌─ parse_queues["native"]  ─► [native pool  × N1] ─┐   ← legacy shares this pool
+PENDING ─►├─ parse_queues["mineru"]  ─► [mineru pool  × N2] ─┼─► q_analyze ─►[analyzer × N4] ─► q_process ─►[processor × N5]
+          ├─ parse_queues["docling"] ─► [docling pool × N3] ─┤
+          └─ parse_queues[<3rd-party group>] ─► [custom pool] ┘   ← created per ParserSpec.queue_group
 ```
 
-At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the three parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
+Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): the built-in native/mineru/docling each own a group, legacy shares the native pool (local, no network), and a third-party engine may declare its own group with a custom worker count (see `docs/ThirdPartyParser-zh.md`). At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
 
 | Environment variable | Default | Effect | Tuning advice |
 | --- | --- | --- | --- |
@@ -762,7 +763,7 @@ Read `full_docs[doc_id]`:
 
 ### 7.2 Branch A: Not Extracted
 
-Go through the full pipeline (`parse_native` / `parse_mineru` / `parse_docling` → `analyze_multimodal` → chunking → entity extraction), with each stage's behavior determined by `full_docs.process_options`. This is the normal flow of a "first-time enqueue".
+Go through the full pipeline (registry-dispatched parsing `get_parser(engine).parse(...)` → `analyze_multimodal` → chunking → entity extraction), with each stage's behavior determined by `full_docs.process_options`. This is the normal flow of a "first-time enqueue".
 
 ### 7.3 Branch B: Already Extracted
 

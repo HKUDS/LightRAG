@@ -551,9 +551,6 @@ def parse_args() -> argparse.Namespace:
     )
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
 
-    # PDF decryption password
-    args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)
-
     # --- Per-role LLM configuration (driven by lightrag.ROLES registry) ---
     for spec in ROLES:
         prefix = spec.env_prefix

@@ -16,6 +16,8 @@ _base = importlib.import_module("lightrag.base")
 _constants = importlib.import_module("lightrag.constants")
 _utils = importlib.import_module("lightrag.utils")
 _parser_routing = importlib.import_module("lightrag.parser.routing")
+_parser_registry = importlib.import_module("lightrag.parser.registry")
+_parser_base = importlib.import_module("lightrag.parser.base")
 sys.argv = _original_argv
 
 DocStatus = _base.DocStatus
@@ -29,6 +31,18 @@ LightRAG = _lightrag.LightRAG
 resolve_stored_document_parser_engine = (
     _parser_routing.resolve_stored_document_parser_engine
 )
+get_parser = _parser_registry.get_parser
+ParseContext = _parser_base.ParseContext
+
+
+async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
+    """Drive a parser the way the pipeline worker does (registry dispatch)."""
+    result = await get_parser(engine).parse(
+        ParseContext(rag, doc_id, file_path, content_data)
+    )
+    return result.to_dict()
+
+
 pipeline_index_file = _document_routes.pipeline_index_file
 pipeline_index_files = _document_routes.pipeline_index_files
 pipeline_index_texts = _document_routes.pipeline_index_texts
@@ -337,13 +351,10 @@ async def test_pipeline_enqueue_lightrag_document_docx_does_not_move_source(
     assert rag.enqueued[0]["parse_engine"] == "native"
 
 
-async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
-    tmp_path, monkeypatch
-):
+async def test_pipeline_enqueue_docx_defers_to_legacy_parser(tmp_path, monkeypatch):
+    # Legacy now defers extraction to the worker stage; enqueue just records a
+    # PENDING_PARSE row with parse_engine=legacy (no eager extraction here).
     monkeypatch.setenv("LIGHTRAG_PARSER", "docx:legacy")
-    monkeypatch.setattr(
-        _document_routes, "_extract_docx", lambda file_bytes: "plain docx content"
-    )
     file_path = tmp_path / "plain.docx"
     file_path.write_bytes(b"docx bytes")
     rag = _FakeRag()
@@ -356,21 +367,23 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
     assert returned_track_id == "track-docx"
     assert rag.enqueued == [
         {
-            "input": "plain docx content",
-            "file_path": file_path.name,
+            "input": "",
+            "file_path": str(file_path),
             "track_id": "track-docx",
-            "docs_format": None,
+            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parse_engine": "legacy",
             "process_options": PROCESS_OPTION_CHUNK_FIXED,
             "chunk_options": None,
             "from_scan": False,
         }
     ]
-    assert not file_path.exists()
-    assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
+    # Deferred: the source stays in place until the worker archives it.
+    assert file_path.exists()
 
 
-async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
+async def test_pipeline_enqueue_md_defers_to_legacy_parser(tmp_path, monkeypatch):
+    # Unhinted .md defaults to the legacy engine and now defers extraction to
+    # the worker stage (PENDING_PARSE), like every other engine.
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     file_path = tmp_path / "notes.md"
     file_path.write_text("# Notes\n\nmarkdown content", encoding="utf-8")
@@ -382,18 +395,18 @@ async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
     assert returned_track_id == "track-md"
     assert rag.enqueued == [
         {
-            "input": "# Notes\n\nmarkdown content",
-            "file_path": file_path.name,
+            "input": "",
+            "file_path": str(file_path),
             "track_id": "track-md",
-            "docs_format": None,
+            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parse_engine": "legacy",
             "process_options": PROCESS_OPTION_CHUNK_FIXED,
             "chunk_options": None,
             "from_scan": False,
         }
     ]
-    assert not file_path.exists()
-    assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
+    # Deferred: the source stays in place until the worker archives it.
+    assert file_path.exists()
 
 
 async def test_pipeline_enqueue_legacy_duplicate_archives_with_unique_name(
@@ -427,10 +440,8 @@ async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
     monkeypatch.setenv("MINERU_API_MODE", "local")
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
-    def _fail_pdf_extract(*args, **kwargs):
-        raise AssertionError("parser-routed PDF should not be extracted before enqueue")
-
-    monkeypatch.setattr(_document_routes, "_extract_pdf_pypdf", _fail_pdf_extract)
+    # Extraction is always deferred now (no enqueue-stage extraction for any
+    # engine), so the pdf simply enqueues as PENDING_PARSE for mineru.
     file_path = tmp_path / "paper.pdf"
     file_path.write_bytes(b"fake-pdf")
     rag = _FakeRag()
@@ -994,6 +1005,33 @@ async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monke
     assert excinfo.value.status_code == 409
     assert "existing.docx" in excinfo.value.detail
     assert not (tmp_path / "existing.[native].docx").exists()
+
+
+async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
+    """A malformed filename hint fails the upload synchronously with the
+    detailed hint error in the 400 body (it used to be accepted and only
+    surface later as an error document)."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        # F and R are two chunking modes -> invalid hint combination.
+        filename="bad.[native-FR].docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+    assert excinfo.value.status_code == 400
+    assert "multiple chunking modes" in excinfo.value.detail
 
 
 async def test_upload_succeeds_concurrent_with_pipeline_busy(tmp_path, monkeypatch):
@@ -1844,8 +1882,9 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
         _fake_extract,
     )
 
-    result = await LightRAG.parse_native(
+    result = await _parse_via_registry(
         rag,
+        "native",
         "doc-test",
         str(source_path),
         {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -1906,18 +1945,15 @@ async def test_parse_native_docx_content_list_failure_raises_without_fallback(
     def _raise_parser(file_path, fixlevel=None, drawing_context=None, **kwargs):
         raise RuntimeError("content list boom")
 
-    def _fail_fallback(file_bytes):
-        raise AssertionError("plain text fallback should not run")
-
     monkeypatch.setattr(
         "lightrag.parser.docx.parse_document.extract_docx_blocks",
         _raise_parser,
     )
-    monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
 
     with pytest.raises(RuntimeError, match="content list boom"):
-        await LightRAG.parse_native(
+        await _parse_via_registry(
             rag,
+            "native",
             "doc-test",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -1934,18 +1970,15 @@ async def test_parse_native_docx_empty_content_list_result_raises_without_fallba
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
 
-    def _fail_fallback(file_bytes):
-        raise AssertionError("plain text fallback should not run")
-
     monkeypatch.setattr(
         "lightrag.parser.docx.parse_document.extract_docx_blocks",
         lambda *args, **kwargs: [],
     )
-    monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
 
     with pytest.raises(ValueError, match="empty content"):
-        await LightRAG.parse_native(
+        await _parse_via_registry(
             rag,
+            "native",
             "doc-test",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -1965,4 +1998,97 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
         },
     )
 
-    assert engine == "native"
+    # All lightrag rows route to the internal reuse handler (reuse the stored
+    # sidecar without re-parsing) regardless of the originating engine.
+    assert engine == "reuse"
+
+
+def test_default_allowlist_equals_local_engine_suffixes(tmp_path, monkeypatch):
+    """With no external endpoints and no routing rules, the registry-derived
+    allowlist must equal the local engines' (legacy ∪ native) suffixes —
+    i.e. exactly the historical hardcoded upload allowlist."""
+    from lightrag.parser import registry
+
+    for var in (
+        "MINERU_LOCAL_ENDPOINT",
+        "MINERU_API_TOKEN",
+        "DOCLING_ENDPOINT",
+        "LIGHTRAG_PARSER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    dm = DocumentManager(str(tmp_path))
+    local = {f".{s}" for s in registry.suffix_capabilities("legacy")} | {
+        f".{s}" for s in registry.suffix_capabilities("native")
+    }
+    assert set(dm.supported_extensions) == local
+    # External-only suffixes stay out while their endpoints are unset.
+    assert ".png" not in dm.supported_extensions
+    assert ".doc" not in dm.supported_extensions
+
+
+def test_unroutable_suffix_needs_rule_or_hint(tmp_path, monkeypatch):
+    """An endpoint-configured engine's suffix is accepted only when routing
+    actually reaches that engine: a bare filename needs a LIGHTRAG_PARSER
+    rule; a per-file hint works without one. Otherwise the file would pass
+    upload only to fail the parse worker's legacy suffix gate."""
+    monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
+
+    dm = DocumentManager(str(tmp_path))
+    # Capable (endpoint up) but unroutable: bare png defaults to legacy.
+    assert ".png" not in dm.supported_extensions
+    assert not dm.is_supported_file("scan.png")
+    # A per-file hint routes this specific name to mineru.
+    assert dm.is_supported_file("scan.[mineru].png")
+    # A routing rule makes the bare suffix routable (and advertised).
+    monkeypatch.setenv("LIGHTRAG_PARSER", "png:mineru")
+    assert ".png" in dm.supported_extensions
+    assert dm.is_supported_file("scan.png")
+    # docling-only suffixes stay out (endpoint unset), rule or not.
+    assert ".xhtml" not in dm.supported_extensions
+
+
+def test_third_party_engine_suffixes_join_allowlist_and_scan(tmp_path, monkeypatch):
+    """A registered third-party engine's suffixes become uploadable and
+    scannable once routable (rule for bare names, hint for individual
+    files), and revert on unregister."""
+    from lightrag.parser import registry
+
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
+    dm = DocumentManager(str(tmp_path))
+
+    # Before registration: .foo rejected by upload and invisible to scan.
+    assert not dm.is_supported_file("sample.foo")
+    (dm.input_dir / "sample.foo").write_text("x", encoding="utf-8")
+    (dm.input_dir / "hinted.[fooengine].foo").write_text("x", encoding="utf-8")
+    assert not [p for p in dm.scan_directory_for_new_files() if p.suffix == ".foo"]
+
+    registry.register_parser(
+        registry.ParserSpec(
+            engine_name="fooengine",
+            impl="x:Y",
+            suffixes=frozenset({"foo"}),
+            queue_group="fooengine",
+            concurrency=1,
+        )
+    )
+    try:
+        # Registered but bare .foo is still unroutable (defaults to legacy).
+        assert not dm.is_supported_file("sample.foo")
+        # The hinted file routes to fooengine: uploadable AND discoverable
+        # by scan (glob covers the capability surface, filter is per-name).
+        assert dm.is_supported_file("hinted.[fooengine].foo")
+        scanned = {p.name for p in dm.scan_directory_for_new_files()}
+        assert "hinted.[fooengine].foo" in scanned
+        assert "sample.foo" not in scanned
+        # A routing rule makes the bare suffix routable.
+        monkeypatch.setenv("LIGHTRAG_PARSER", "foo:fooengine")
+        assert ".foo" in dm.supported_extensions
+        assert dm.is_supported_file("sample.foo")
+        assert "sample.foo" in {p.name for p in dm.scan_directory_for_new_files()}
+    finally:
+        registry._REGISTRY.pop("fooengine", None)
+    assert not dm.is_supported_file("sample.foo")

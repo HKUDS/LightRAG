@@ -35,9 +35,6 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
     PARSED_DIR_NAME,
-    PARSER_ENGINE_DOCLING,
-    PARSER_ENGINE_MINERU,
-    PARSER_ENGINE_NATIVE,
 )
 from lightrag.exceptions import (
     MultimodalAnalysisError,
@@ -46,7 +43,15 @@ from lightrag.exceptions import (
 )
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.operate import merge_nodes_and_edges
+from lightrag.parser.base import ParseContext
+from lightrag.parser.registry import (
+    get_parser,
+    parser_specs_snapshot,
+    supported_parser_engines,
+    suffix_capabilities,
+)
 from lightrag.parser.routing import (
+    parser_suffix,
     resolve_file_parser_directives,
     resolve_stored_document_parser_engine,
 )
@@ -198,9 +203,12 @@ class _BatchRunContext:
     pipeline_status_lock: Any
     semaphore: asyncio.Semaphore
     total_files: int
-    q_native: asyncio.Queue
-    q_mineru: asyncio.Queue
-    q_docling: asyncio.Queue
+    # Parse queues are dynamic: one per ParserSpec.queue_group (always at
+    # least "native"). ``parser_specs`` is the batch snapshot threaded through
+    # routing + the parse workers so a mid-batch register_parser cannot change
+    # the engine set for this run.
+    parse_queues: dict[str, asyncio.Queue]
+    parser_specs: dict
     q_analyze: asyncio.Queue
     q_process: asyncio.Queue
     processed_count: int = 0
@@ -364,6 +372,17 @@ class _PipelineMixin:
             file_paths = ["unknown_source"] * len(input)
 
         is_lightrag_format = docs_format == FULL_DOCS_FORMAT_LIGHTRAG
+        if is_lightrag_format or lightrag_document_paths is not None:
+            # DEPRECATED ingestion entrypoint: no production caller enqueues a
+            # pre-existing sidecar this way (the upper layer doesn't know the
+            # backend sidecar layout). Scheduled for removal; the lightrag
+            # resume/reuse path (post-parse persist -> ReuseParser) is
+            # unaffected. See the unified-parser plan §11.
+            logger.warning(
+                "[apipeline_enqueue_documents] docs_format='lightrag' / "
+                "lightrag_document_paths is deprecated and will be removed in a "
+                "future release; it has no production caller."
+            )
         if is_lightrag_format and lightrag_document_paths is not None:
             if len(lightrag_document_paths) != len(input):
                 raise ValueError(
@@ -1238,31 +1257,81 @@ class _PipelineMixin:
             to_process_docs, total_files
         )
 
+        # Lock one registry snapshot for the whole batch; build one parse
+        # queue per distinct queue_group (always includes "native").
+        parser_specs = parser_specs_snapshot()
+        queue_groups = {spec.queue_group for spec in parser_specs.values()}
+        parse_queues = {
+            group: asyncio.Queue(maxsize=self.queue_size_parse)
+            for group in queue_groups
+        }
+
         ctx = _BatchRunContext(
             pipeline_status=pipeline_status,
             pipeline_status_lock=pipeline_status_lock,
             semaphore=asyncio.Semaphore(self.max_parallel_insert),
             total_files=total_files,
-            q_native=asyncio.Queue(maxsize=self.queue_size_parse),
-            q_mineru=asyncio.Queue(maxsize=self.queue_size_parse),
-            q_docling=asyncio.Queue(maxsize=self.queue_size_parse),
+            parse_queues=parse_queues,
+            parser_specs=parser_specs,
             q_analyze=asyncio.Queue(maxsize=self.queue_size_analyze),
             q_process=asyncio.Queue(maxsize=self.queue_size_insert),
         )
 
+        def _group_concurrency(group: str) -> int:
+            # Built-in groups keep their existing LightRAG fields (env +
+            # programmatic overrides preserved). Third-party groups use the
+            # owner spec's ``concurrency`` (the registrant baked in any env
+            # override at registration); an unowned group shares native's.
+            field_name = f"max_parallel_parse_{group}"
+            if hasattr(self, field_name):
+                # A spec declaring ``concurrency`` on a built-in group is a
+                # plugin-author misconfig: the pool is sized by the instance
+                # field, so surface the ignored value instead of silently
+                # dropping it.
+                ignored = [
+                    s.engine_name
+                    for s in parser_specs.values()
+                    if s.queue_group == group and s.concurrency is not None
+                ]
+                if ignored:
+                    logger.warning(
+                        "[parse] queue_group %r is built-in (sized by %s=%d); "
+                        "spec-level concurrency from %s is ignored",
+                        group,
+                        field_name,
+                        getattr(self, field_name),
+                        ignored,
+                    )
+                return getattr(self, field_name)
+            owners = [
+                s
+                for s in parser_specs.values()
+                if s.queue_group == group and s.concurrency is not None
+            ]
+            if len(owners) > 1:
+                raise ValueError(
+                    f"queue_group {group!r} has multiple concurrency owners: "
+                    f"{[s.engine_name for s in owners]}"
+                )
+            if owners:
+                return owners[0].concurrency
+            return self.max_parallel_parse_native
+
+        # Resolve every group's worker count BEFORE spawning any task:
+        # _group_concurrency can still raise (a queue_group with multiple
+        # concurrency owners). Raising here — while zero workers exist — avoids
+        # orphaning already-spawned workers outside the try/finally below (they
+        # would block forever on an empty queue, never cancelled).
+        group_worker_counts = {
+            group: max(1, _group_concurrency(group)) for group in parse_queues
+        }
+
         workers: list[asyncio.Task] = []
-        for _ in range(max(1, self.max_parallel_parse_native)):
-            workers.append(
-                asyncio.create_task(self._parse_worker("native", ctx.q_native, ctx))
-            )
-        for _ in range(max(1, self.max_parallel_parse_mineru)):
-            workers.append(
-                asyncio.create_task(self._parse_worker("mineru", ctx.q_mineru, ctx))
-            )
-        for _ in range(max(1, self.max_parallel_parse_docling)):
-            workers.append(
-                asyncio.create_task(self._parse_worker("docling", ctx.q_docling, ctx))
-            )
+        for group, queue in parse_queues.items():
+            for _ in range(group_worker_counts[group]):
+                workers.append(
+                    asyncio.create_task(self._parse_worker(group, queue, ctx))
+                )
         for _ in range(max(1, self.max_parallel_analyze)):
             workers.append(asyncio.create_task(self._analyze_worker(ctx)))
         for _ in range(max(1, self.max_parallel_insert)):
@@ -1305,20 +1374,20 @@ class _PipelineMixin:
                         pipeline_status_lock=pipeline_status_lock,
                     )
                     continue
-                engine = resolve_stored_document_parser_engine(
+                # Select the concurrency pool by the engine's queue_group
+                # (snapshot). The worker re-resolves the actual parser per-doc;
+                # this only picks which queue/pool the doc waits in. Unknown
+                # group -> native pool (defensive; never KeyError).
+                key = resolve_stored_document_parser_engine(
                     file_path=file_path,
                     content_data=content_data,
                 )
-                if engine == "mineru":
-                    await ctx.q_mineru.put((doc_id, status_doc))
-                elif engine == "docling":
-                    await ctx.q_docling.put((doc_id, status_doc))
-                else:
-                    await ctx.q_native.put((doc_id, status_doc))
+                spec = parser_specs.get(key)
+                group = spec.queue_group if spec is not None else "native"
+                queue = ctx.parse_queues.get(group, ctx.parse_queues["native"])
+                await queue.put((doc_id, status_doc))
 
-            await asyncio.gather(
-                ctx.q_native.join(), ctx.q_mineru.join(), ctx.q_docling.join()
-            )
+            await asyncio.gather(*(q.join() for q in ctx.parse_queues.values()))
             await ctx.q_analyze.join()
             await ctx.q_process.join()
         finally:
@@ -1646,18 +1715,49 @@ class _PipelineMixin:
                     logger.info(log_message)
                     ctx.pipeline_status["latest_message"] = log_message
                     ctx.pipeline_status["history_messages"].append(log_message)
-                if engine == "mineru":
-                    parsed_data_w = await self.parse_mineru(
-                        doc_id_w, file_path_w, content_data_w
+                # Resolve the actual parser per-doc from the batch snapshot
+                # (snapshot-consistent: a mid-batch register_parser cannot be
+                # picked up here). ``engine`` is only the queue-group/pool id.
+                specs = ctx.parser_specs
+                doc_format_w = content_data_w.get("parse_format", FULL_DOCS_FORMAT_RAW)
+                key = resolve_stored_document_parser_engine(
+                    file_path=file_path_w, content_data=content_data_w
+                )
+                # PENDING_PARSE must resolve to a real (user-selectable) engine;
+                # an internal key (reuse/passthrough) wrongly stored as
+                # parse_engine is corrupt -> fail just this doc.
+                if doc_format_w == FULL_DOCS_FORMAT_PENDING_PARSE:
+                    key_spec = specs.get(key)
+                    if key_spec is not None and not key_spec.user_selectable:
+                        raise ValueError(
+                            f"internal parser {key!r} is not a valid "
+                            f"PENDING_PARSE engine: doc_id={doc_id_w}"
+                        )
+                parser = get_parser(key, specs=specs)
+                if parser is None:
+                    logger.warning(
+                        "[parse] engine %r not registered; falling back to legacy",
+                        key,
                     )
-                elif engine == "docling":
-                    parsed_data_w = await self.parse_docling(
-                        doc_id_w, file_path_w, content_data_w
+                effective_key = key if parser is not None else "legacy"
+                parser = parser or get_parser("legacy", specs=specs)
+                # Suffix gate only for real engines on a PENDING_PARSE parse;
+                # reuse/passthrough (raw/lightrag/unknown_source) are skipped.
+                if (
+                    doc_format_w == FULL_DOCS_FORMAT_PENDING_PARSE
+                    and effective_key in supported_parser_engines(specs)
+                ):
+                    suffix_w = parser_suffix(file_path_w)
+                    if suffix_w not in suffix_capabilities(effective_key, specs):
+                        raise ValueError(
+                            f"engine {effective_key!r} does not support "
+                            f".{suffix_w or '<no suffix>'}: doc_id={doc_id_w}"
+                        )
+                parsed_data_w = (
+                    await parser.parse(
+                        ParseContext(self, doc_id_w, file_path_w, content_data_w)
                     )
-                else:
-                    parsed_data_w = await self.parse_native(
-                        doc_id_w, file_path_w, content_data_w
-                    )
+                ).to_dict()
 
                 # Mirror non-fatal parser warnings (e.g. legacy docx tables
                 # missing w14:paraId) onto the in-memory status_doc so the
@@ -2889,444 +2989,6 @@ class _PipelineMixin:
             },
             metadata_extra=metadata_extra,
         )
-
-    # ============================================================
-    # Parser engines (also called by tests directly)
-    # ============================================================
-
-    async def parse_native(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Phase 1 parse for native/raw, lightrag and pending_parse formats."""
-        doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
-        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
-            # full_docs.content carries the merged text with the {{LRdoc}}
-            # marker; strip it so the chunking path is identical to raw.
-            # blocks_path is still resolved for downstream multimodal
-            # sidecar reads (_build_mm_chunks_from_sidecars).
-            # No re-parse happens here — content + sidecar are reused from a
-            # prior parse, so this is semantically a cache-hit and mirrors
-            # the parse_mineru / parse_docling raw-bundle skip path by
-            # setting ``parse_stage_skipped``.
-            merged_text = strip_lightrag_doc_prefix(
-                content_data.get("content"), doc_format
-            )
-            blocks_path = (
-                sidecar_blocks_path(content_data.get("sidecar_location")) or ""
-            )
-
-            return {
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "parse_format": doc_format,
-                "content": merged_text,
-                "blocks_path": blocks_path,
-                "parse_stage_skipped": True,
-            }
-
-        if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-            source_path = _call_source_file_resolver(
-                self,
-                file_path,
-                source_file=_read_source_file(content_data),
-                parser_engine=PARSER_ENGINE_NATIVE,
-            )
-            p = Path(source_path)
-            if not (p.exists() and p.is_file() and p.suffix.lower() == ".docx"):
-                raise ValueError(
-                    f"Native parser does not support pending file: {file_path}"
-                )
-
-            # Lazy imports keep this module import-cheap and avoid pulling
-            # the docx parser into call paths that never touch the native
-            # engine (mirrors parse_mineru).
-            from lightrag.parser.docx.drawing_image_extractor import (
-                DrawingExtractionContext,
-                load_relationships,
-            )
-            from lightrag.parser.docx.parse_document import (
-                extract_docx_blocks,
-            )
-            from lightrag.parser.docx.ir_builder import NativeDocxIRBuilder
-            from lightrag.sidecar import write_sidecar
-
-            # ``file_path`` is canonical at the worker layer; canonicalize
-            # again defensively so direct callers (tests, CLI) may pass
-            # absolute paths or hint-bearing names.
-            document_name = normalize_document_file_path(file_path)
-            if document_name == "unknown_source":
-                document_name = p.name or f"{doc_id}.bin"
-            base_name = Path(document_name).stem or document_name
-            parsed_dir = parsed_artifact_dir_for(document_name, parent_hint=p.parent)
-            asset_dir = parsed_dir / f"{base_name}.blocks.assets"
-
-            def _extract_blocks_sync() -> (
-                tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]
-            ):
-                # Pre-clean parsed_dir and pre-create the asset dir so the
-                # drawing extractor can write image bytes BEFORE write_sidecar
-                # runs (which is then called with clean_parsed_dir=False to
-                # keep those bytes). ``parsed_artifact_dir_for`` returns
-                # a unique dir per source (with ``_001``/``_002`` suffixes on
-                # collision), so the rmtree here only ever clobbers stale
-                # artifacts from a previous attempt at the same doc_id.
-                if parsed_dir.exists():
-                    shutil.rmtree(parsed_dir)
-                parsed_dir.mkdir(parents=True, exist_ok=True)
-                asset_dir.mkdir(parents=True, exist_ok=True)
-                ctx = DrawingExtractionContext(
-                    docx_path=p,
-                    blocks_output_path=parsed_dir / f"{base_name}.blocks.jsonl",
-                    export_dir_name=asset_dir.name,
-                    export_dir_path=asset_dir,
-                )
-                load_relationships(ctx)
-                warnings: dict[str, Any] = {}
-                metadata: dict[str, Any] = {}
-                extracted = extract_docx_blocks(
-                    str(p),
-                    debug=False,
-                    fixlevel=0,
-                    drawing_context=ctx,
-                    parse_warnings=warnings,
-                    parse_metadata=metadata,
-                )
-                return extracted, warnings, metadata
-
-            try:
-                blocks, parse_warnings, parse_metadata = await asyncio.to_thread(
-                    _extract_blocks_sync
-                )
-            except BaseException:
-                # ``_extract_blocks_sync`` pre-creates ``parsed_dir`` and
-                # ``asset_dir`` before invoking the extractor; if extraction
-                # raises, those (possibly partially-populated) dirs would be
-                # left on disk. Roll them back so the next attempt starts clean.
-                if parsed_dir.exists():
-                    shutil.rmtree(parsed_dir, ignore_errors=True)
-                raise
-            if not blocks:
-                # Same cleanup path for the "extractor returned []" case —
-                # ``write_sidecar`` would never run, so without this the
-                # pre-created (empty) dirs would persist.
-                if parsed_dir.exists():
-                    shutil.rmtree(parsed_dir, ignore_errors=True)
-                raise ValueError(f"DOCX parser returned empty content for {file_path}")
-
-            missing_paraid_count = int(
-                parse_warnings.get("missing_paraid_count", 0) or 0
-            )
-            if missing_paraid_count > 0:
-                # Surface once per document — the parser may encounter many
-                # missing paraIds (legacy / non-Word authors omit
-                # ``w14:paraId``), but a single warning with the count is
-                # enough. Affected blocks emit
-                # ``positions: [{"type": "paraid", "range": null}]``.
-                logger.warning(
-                    "[parse_native] %s: %d paragraphs lack paraId; "
-                    "Re-saving file in Word 2013+ to regenerate ids.",
-                    p.name,
-                    missing_paraid_count,
-                )
-
-            ir = NativeDocxIRBuilder().normalize(
-                blocks,
-                document_name=document_name,
-                asset_dir_name=asset_dir.name,
-                parse_metadata=parse_metadata,
-            )
-            parsed_data = write_sidecar(
-                ir,
-                parsed_dir=parsed_dir,
-                doc_id=doc_id,
-                engine=PARSER_ENGINE_NATIVE,
-                clean_parsed_dir=False,  # we pre-populated the asset dir
-                block_drawing_path_style="basename_only",  # legacy native shape
-            )
-
-            await self._persist_parsed_full_docs(
-                doc_id,
-                {
-                    "content": make_lightrag_doc_content(parsed_data["content"]),
-                    "file_path": file_path,
-                    "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                    "sidecar_location": sidecar_uri_for(parsed_dir),
-                    "parse_engine": PARSER_ENGINE_NATIVE,
-                    "update_time": int(time.time()),
-                },
-            )
-            await archive_docx_source_after_full_docs_sync(str(p))
-            logger.info(
-                f"[parse_native] pending_parse completed for {file_path} "
-                f"via parser/docx"
-            )
-            result: dict[str, Any] = {
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "parse_engine": PARSER_ENGINE_NATIVE,
-                "content": parsed_data["content"],
-                "blocks_path": parsed_data["blocks_path"],
-            }
-            if missing_paraid_count > 0:
-                # Pipeline reads this from the parsed_data dict and writes it
-                # to ``doc_status.metadata.parse_warnings`` so admin/list APIs
-                # can surface the issue alongside the document record.
-                result["parse_warnings"] = {
-                    "missing_paraid_count": missing_paraid_count
-                }
-            return result
-
-        # FULL_DOCS_FORMAT_RAW: no parser ran — the content was supplied
-        # at insert time and we pass it through verbatim. Mark as skipped
-        # so post-mortem doesn't credit the worker with a synthetic parse
-        # duration (mirrors the LIGHTRAG-format branch above).
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_RAW,
-            "content": content_data.get("content", ""),
-            "blocks_path": "",
-            "parse_stage_skipped": True,
-        }
-
-    async def parse_mineru(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Parse a document through MinerU and emit a spec-compliant sidecar.
-
-        Layout produced under ``inputs/<space>/__parsed__/``:
-
-        - ``<base>.parsed/``       — sidecar (blocks.jsonl + per-modality JSONs + assets)
-        - ``<base>.mineru_raw/``   — preserved MinerU bundle (content_list.json,
-          full.md, middle.json, images/, ...) plus ``_manifest.json``
-
-        The raw bundle is kept on disk so subsequent re-parses with the same
-        source content can skip the upload+poll+download round trip. It is
-        cleaned only when the user explicitly deletes the document with the
-        "also delete original file" option; see
-        :func:`lightrag.api.routers.document_routes.delete_file_variants_by_file_path`.
-        """
-        # Lazy imports keep this module import-cheap and avoid pulling httpx
-        # into call paths that never touch the MinerU engine.
-        from lightrag.parser.external.mineru import (
-            MinerUIRBuilder,
-            MinerURawClient,
-            clear_dir_contents,
-            is_bundle_valid,
-            raw_dir_for_parsed_dir,
-        )
-        from lightrag.sidecar import write_sidecar
-
-        source_file_path = Path(
-            _call_source_file_resolver(
-                self,
-                file_path,
-                source_file=_read_source_file(content_data),
-                parser_engine=PARSER_ENGINE_MINERU,
-            )
-        )
-        if not source_file_path.is_file():
-            raise FileNotFoundError(f"MinerU source file not found: {source_file_path}")
-
-        # Canonicalize defensively so direct callers (tests, CLI) may pass
-        # absolute paths or hint-bearing names.
-        document_name = normalize_document_file_path(file_path)
-        if document_name == "unknown_source":
-            document_name = source_file_path.name or f"{doc_id}.bin"
-        parsed_dir = parsed_artifact_dir_for(
-            document_name, parent_hint=source_file_path.parent
-        )
-        raw_dir = raw_dir_for_parsed_dir(parsed_dir)
-
-        force_reparse = os.getenv("LIGHTRAG_FORCE_REPARSE_MINERU", "").lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-
-        parse_stage_skipped = False
-        if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
-            # Cache hit: keep the path purely local so a re-parse still
-            # succeeds if MinerU credentials/endpoint are temporarily
-            # unavailable (key rotation, debugging, etc.). Network config
-            # is only required on cache miss below.
-            parse_stage_skipped = True
-            logger.info("[parse_mineru] raw cache hit doc_id=%s", doc_id)
-        else:
-            if force_reparse and raw_dir.exists():
-                logger.info(
-                    "[parse_mineru] LIGHTRAG_FORCE_REPARSE_MINERU set; "
-                    "discarding bundle at %s",
-                    raw_dir,
-                )
-            raw_dir.mkdir(parents=True, exist_ok=True)
-            clear_dir_contents(raw_dir)
-            client = MinerURawClient()
-            logger.info(
-                "[MinerU] Parsing %s %s (may take a few minutes)",
-                doc_id,
-                source_file_path.name,
-            )
-            await client.download_into(
-                raw_dir,
-                source_file_path,
-                upload_name=document_name,
-            )
-
-        ir_builder = MinerUIRBuilder()
-        ir = ir_builder.normalize_from_workdir(raw_dir, document_name=document_name)
-        parsed_data = write_sidecar(
-            ir,
-            parsed_dir=parsed_dir,
-            doc_id=doc_id,
-            engine=PARSER_ENGINE_MINERU,
-        )
-
-        # Keep full_docs in sync so restart/reprocess can directly use the
-        # sidecar (matches the native_docx and content_list paths).
-        await self._persist_parsed_full_docs(
-            doc_id,
-            {
-                "content": make_lightrag_doc_content(parsed_data["content"]),
-                "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "sidecar_location": sidecar_uri_for(parsed_dir),
-                "parse_engine": PARSER_ENGINE_MINERU,
-                "update_time": int(time.time()),
-            },
-        )
-        await archive_docx_source_after_full_docs_sync(str(source_file_path))
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-            "parse_engine": PARSER_ENGINE_MINERU,
-            "content": parsed_data["content"],
-            "blocks_path": parsed_data["blocks_path"],
-            "parse_stage_skipped": parse_stage_skipped,
-        }
-
-    async def parse_docling(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Parse a document through Docling Serve and emit a spec-compliant sidecar.
-
-        Produces the same dual-directory layout as ``parse_mineru``:
-
-        - ``<base>.parsed/``       — sidecar (blocks.jsonl + per-modality JSONs + assets)
-        - ``<base>.docling_raw/``  — preserved Docling bundle (``<stem>.json``,
-          ``<stem>.md``, ``artifacts/``) plus ``_manifest.json``
-
-        The raw bundle is kept so subsequent re-parses with the same source
-        bytes skip the upload + poll + download round trip.
-        """
-        # Lazy imports keep this module import-cheap and avoid pulling httpx
-        # into call paths that never touch the Docling engine.
-        from lightrag.parser.external.docling import (
-            DoclingIRBuilder,
-            DoclingRawClient,
-            clear_dir_contents,
-            is_bundle_valid,
-            raw_dir_for_parsed_dir,
-        )
-        from lightrag.sidecar import write_sidecar
-
-        source_file_path = Path(
-            _call_source_file_resolver(
-                self,
-                file_path,
-                source_file=_read_source_file(content_data),
-                parser_engine=PARSER_ENGINE_DOCLING,
-            )
-        )
-        if not source_file_path.is_file():
-            raise FileNotFoundError(
-                f"Docling source file not found: {source_file_path}"
-            )
-
-        document_name = normalize_document_file_path(file_path)
-        if document_name == "unknown_source":
-            document_name = source_file_path.name or f"{doc_id}.bin"
-        parsed_dir = parsed_artifact_dir_for(
-            document_name, parent_hint=source_file_path.parent
-        )
-        raw_dir = raw_dir_for_parsed_dir(parsed_dir)
-
-        force_reparse = os.getenv("LIGHTRAG_FORCE_REPARSE_DOCLING", "").lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-
-        parse_stage_skipped = False
-        if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
-            # Cache hit: keep purely local so re-parses still work when the
-            # docling-serve endpoint is temporarily unavailable.
-            parse_stage_skipped = True
-            logger.info("[parse_docling] raw cache hit doc_id=%s", doc_id)
-        else:
-            if force_reparse and raw_dir.exists():
-                logger.info(
-                    "[parse_docling] LIGHTRAG_FORCE_REPARSE_DOCLING set; "
-                    "discarding bundle at %s",
-                    raw_dir,
-                )
-            # ``download_into`` mkdir's the raw_dir itself; we only need to
-            # wipe the existing contents (manifest + stale bundle files).
-            clear_dir_contents(raw_dir)
-            client = DoclingRawClient()
-            logger.info(
-                "[Docling] Parsing %s %s (may take a few minutes)",
-                doc_id,
-                source_file_path.name,
-            )
-            # Pass the canonical (hint-stripped) name so docling-serve names
-            # the bundle's main JSON ``<canonical_stem>.json`` instead of
-            # ``<hinted_stem>.json``. Otherwise the IR builder — which only sees
-            # the canonical ``document_name`` — cannot locate the bundle JSON
-            # via the preferred-path lookup.
-            await client.download_into(
-                raw_dir, source_file_path, upload_filename=document_name
-            )
-
-        ir_builder = DoclingIRBuilder()
-        ir = ir_builder.normalize_from_workdir(raw_dir, document_name=document_name)
-        if not ir.blocks:
-            raise ValueError(
-                f"Docling IR builder produced zero blocks for {file_path} "
-                f"(raw_dir={raw_dir})"
-            )
-        parsed_data = write_sidecar(
-            ir,
-            parsed_dir=parsed_dir,
-            doc_id=doc_id,
-            engine=PARSER_ENGINE_DOCLING,
-        )
-
-        await self._persist_parsed_full_docs(
-            doc_id,
-            {
-                "content": make_lightrag_doc_content(parsed_data["content"]),
-                "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "sidecar_location": sidecar_uri_for(parsed_dir),
-                "parse_engine": PARSER_ENGINE_DOCLING,
-                "update_time": int(time.time()),
-            },
-        )
-        await archive_docx_source_after_full_docs_sync(str(source_file_path))
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-            "parse_engine": PARSER_ENGINE_DOCLING,
-            "content": parsed_data["content"],
-            "blocks_path": parsed_data["blocks_path"],
-            "parse_stage_skipped": parse_stage_skipped,
-        }
 
     # ============================================================
     # Parser internals
