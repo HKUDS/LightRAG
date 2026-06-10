@@ -68,6 +68,7 @@ from lightrag.utils import (
     get_llm_cache_identity,
     handle_cache,
     logger,
+    repair_vlm_json_escape_damage_nested,
     sanitize_text_for_encoding,
     save_to_cache,
     serialize_llm_cache_identity,
@@ -3877,6 +3878,13 @@ class _PipelineMixin:
                 3. Fall back to a greedy ``{...}`` regex slice for outputs
                    that wrap the JSON object in prose, then re-run
                    ``json_repair.loads`` on the slice.
+
+                String values in the recovered object are passed through
+                ``repair_vlm_json_escape_damage``: models writing LaTeX
+                inside JSON strings routinely under-escape backslashes
+                (``"\\frac"`` is valid JSON meaning form feed + ``rac``),
+                and this is the single choke point both fresh responses
+                and cache hits flow through.
                 """
                 if not text:
                     return {}
@@ -3891,7 +3899,7 @@ class _PipelineMixin:
                 try:
                     obj = json_repair.loads(candidate)
                     if isinstance(obj, dict):
-                        return obj
+                        return repair_vlm_json_escape_damage_nested(obj)
                 except Exception:
                     pass
                 m = re.search(r"\{[\s\S]*\}", candidate)
@@ -3899,7 +3907,7 @@ class _PipelineMixin:
                     try:
                         obj = json_repair.loads(m.group(0))
                         if isinstance(obj, dict):
-                            return obj
+                            return repair_vlm_json_escape_damage_nested(obj)
                     except Exception:
                         pass
                 return {}

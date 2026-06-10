@@ -2994,6 +2994,96 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     return text.strip()
 
 
+# LLMs emitting LaTeX inside JSON strings routinely under-escape backslashes:
+# "\frac" is *valid* JSON meaning form feed + "rac", so JSON parsers
+# (including json_repair) silently decode it and the LaTeX command is
+# destroyed. Form feed (\x0c) and backspace (\x08) followed by a letter have
+# no legitimate use in LLM-generated prose, so restoring the backslash is
+# unconditionally safe. The other three decodable escapes (\t, \n, \r) map to
+# legitimate whitespace and cannot be restored without guessing; they are only
+# *detected* (see _WS_LATEX_SUSPECT_PATTERN) so real-world frequency can be
+# observed before deciding on heuristic restoration.
+_FORMFEED_LATEX_PATTERN = re.compile(r"\x0c(?=[A-Za-z])")
+_BACKSPACE_LATEX_PATTERN = re.compile(r"\x08(?=[A-Za-z])")
+# Whitespace + residue spelling that completes a common LaTeX command whose
+# remainder collides with no English word ("eq"/"o"/"exists" are deliberately
+# absent: "eq." abbreviations, the word "o"/"exists" would false-positive).
+_WS_LATEX_SUSPECT_PATTERN = re.compile(
+    r"\t(?=(?:au|heta|imes|ext|ilde|herefore|riangle)\b)"
+    r"|\r(?=(?:ho|ight|angle|ceil)\b)"
+    r"|\n(?=(?:abla|otin)\b)"
+)
+
+
+def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
+    """Restore LaTeX backslashes destroyed by JSON escape decoding.
+
+    Applied to string values parsed out of VLM/LLM JSON responses, where an
+    un-doubled LaTeX command like ``"\\frac"`` arrives as ``\\x0c`` + ``rac``.
+    Only the two zero-risk cases are repaired:
+
+    - form feed + letter  -> ``\\f`` + letter (``\\frac``, ``\\forall``, ...)
+    - backspace + letter  -> ``\\b`` + letter (``\\beta``, ``\\bar``, ...)
+
+    Isolated control characters (not followed by a letter) are left alone for
+    downstream sanitization to drop. Whitespace-class damage (``\\tau`` ->
+    tab + ``au`` etc.) is ambiguous with legitimate whitespace and is only
+    logged at WARNING level, never rewritten.
+
+    Args:
+        text: Parsed string value to repair.
+        context: Optional label (e.g. ``"table/t1.description"``) included in
+            the detection log line.
+    """
+    if not text:
+        return text
+
+    repaired = _FORMFEED_LATEX_PATTERN.sub(r"\\f", text)
+    repaired = _BACKSPACE_LATEX_PATTERN.sub(r"\\b", repaired)
+    if repaired != text:
+        logger.warning(
+            "Repaired LaTeX escape damage (\\f/\\b decoded by JSON parser)%s",
+            f" in {context}" if context else "",
+        )
+
+    suspect = _WS_LATEX_SUSPECT_PATTERN.search(repaired)
+    if suspect:
+        snippet = repaired[max(0, suspect.start() - 30) : suspect.start() + 30]
+        logger.warning(
+            "Suspected whitespace-class LaTeX escape damage%s "
+            "(not auto-repaired): %r",
+            f" in {context}" if context else "",
+            snippet,
+        )
+
+    return repaired
+
+
+def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
+    """Apply :func:`repair_vlm_json_escape_damage` to every string inside a
+    parsed JSON structure (dicts / lists nested arbitrarily).
+
+    Used on the output of ``json_repair.loads`` for LLM responses that may
+    quote LaTeX — multimodal analysis objects and entity-extraction results
+    (``{"entities": [{...}], "relationships": [{...}]}``). Non-string leaves
+    are returned untouched.
+    """
+    if isinstance(obj, str):
+        return repair_vlm_json_escape_damage(obj, context=context)
+    if isinstance(obj, dict):
+        return {
+            key: repair_vlm_json_escape_damage_nested(
+                value, context=f"{context}.{key}" if context else str(key)
+            )
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [
+            repair_vlm_json_escape_damage_nested(item, context=context) for item in obj
+        ]
+    return obj
+
+
 def check_storage_env_vars(storage_name: str) -> None:
     """Check if all required environment variables for storage implementation exist
 
