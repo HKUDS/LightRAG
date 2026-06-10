@@ -473,10 +473,12 @@ async def test_env_workspace_override_shares_flush_lock(patch_namespace_lock):
     with patch.dict(os.environ, {"MILVUS_WORKSPACE": "shared_ws"}, clear=False):
         a = _make_storage(embed, workspace="caller_a")
         b = _make_storage(embed, workspace="caller_b")
-        assert a.final_namespace == b.final_namespace == "shared_ws_entities"
+        assert (
+            a.final_namespace == b.final_namespace == "shared_ws_entities_mock_embed_8d"
+        )
         assert a._flush_lock is b._flush_lock
         # Sanity: only one lock object was cached for that final_namespace.
-        assert len([k for k in cache if k[0] == "shared_ws_entities"]) == 1
+        assert len([k for k in cache if k[0] == a.final_namespace]) == 1
 
 
 @pytest.mark.asyncio

@@ -54,6 +54,55 @@ def _collection_info(field_names):
     return {"fields": fields}
 
 
+class _EmbeddingFunc:
+    def __init__(self, dim=128, model_name="text-embedding-3-small"):
+        self.embedding_dim = dim
+        self.model_name = model_name
+
+
+def _make_model_storage(namespace="entities", workspace="test_workspace", dim=128):
+    return MilvusVectorDBStorage(
+        namespace=namespace,
+        workspace=workspace,
+        global_config={
+            "embedding_batch_num": 100,
+            "vector_db_storage_cls_kwargs": {
+                "cosine_better_than_threshold": 0.3,
+            },
+        },
+        embedding_func=_EmbeddingFunc(dim=dim),
+        meta_fields=set(),
+    )
+
+
+def _wire_collection_state(storage, collections, describe_by_name=None):
+    storage._client = MagicMock()
+    describe_by_name = describe_by_name or {}
+
+    def has_collection(collection_name):
+        return collection_name in collections
+
+    def create_collection(collection_name, schema):
+        collections.add(collection_name)
+
+    def drop_collection(collection_name):
+        collections.discard(collection_name)
+
+    def rename_collection(source, target):
+        collections.discard(source)
+        collections.add(target)
+
+    def describe_collection(collection_name):
+        return describe_by_name.get(collection_name, _collection_info([]))
+
+    storage._client.has_collection.side_effect = has_collection
+    storage._client.create_collection.side_effect = create_collection
+    storage._client.drop_collection.side_effect = drop_collection
+    storage._client.rename_collection.side_effect = rename_collection
+    storage._client.describe_collection.side_effect = describe_collection
+    return storage._client
+
+
 @pytest.mark.offline
 class TestMilvusIndexCreation:
     """Test index creation behavior and error handling"""
@@ -123,6 +172,237 @@ class TestMilvusIndexCreation:
         assert len(inserted["content"].encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
         assert len(inserted["source_id"].encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
         inserted["source_id"].encode("utf-8").decode("utf-8")
+
+    def test_model_suffix_collection_naming_with_workspace(self):
+        storage = MilvusVectorDBStorage(
+            namespace="chunks",
+            workspace="space1",
+            global_config={
+                "embedding_batch_num": 100,
+                "vector_db_storage_cls_kwargs": {
+                    "cosine_better_than_threshold": 0.3,
+                },
+            },
+            embedding_func=_EmbeddingFunc(
+                dim=3072, model_name="text-embedding-3-large"
+            ),
+            meta_fields=set(),
+        )
+
+        assert storage.legacy_namespace == "space1_chunks"
+        assert storage.final_namespace == "space1_chunks_text_embedding_3_large_3072d"
+
+    @pytest.mark.parametrize("model_name", ["", 123])
+    def test_missing_or_invalid_model_name_keeps_legacy_collection_name(
+        self, model_name
+    ):
+        storage = MilvusVectorDBStorage(
+            namespace="entities",
+            workspace="space1",
+            global_config={
+                "embedding_batch_num": 100,
+                "vector_db_storage_cls_kwargs": {
+                    "cosine_better_than_threshold": 0.3,
+                },
+            },
+            embedding_func=_EmbeddingFunc(model_name=model_name),
+            meta_fields=set(),
+        )
+
+        assert storage.model_suffix is None
+        assert storage.legacy_namespace == "space1_entities"
+        assert storage.final_namespace == "space1_entities"
+
+    def test_creates_suffixed_collection_when_no_collection_exists(self):
+        storage = _make_model_storage()
+        client = _wire_collection_state(storage, set())
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            storage._create_collection_if_not_exist()
+
+        client.create_collection.assert_called_once()
+        assert client.create_collection.call_args.kwargs["collection_name"] == (
+            storage.final_namespace
+        )
+        client.query_iterator.assert_not_called()
+        client.load_collection.assert_called_with(storage.final_namespace)
+
+    def test_existing_suffixed_collection_is_validated_and_used(self):
+        storage = _make_model_storage()
+        client = _wire_collection_state(
+            storage,
+            {storage.final_namespace},
+            {
+                storage.final_namespace: _collection_info(
+                    ["entity_name", "content", "source_id", "file_path"]
+                )
+            },
+        )
+
+        with patch.object(storage, "_migrate_collection_schema") as migrate:
+            storage._create_collection_if_not_exist()
+
+        migrate.assert_not_called()
+        client.create_collection.assert_not_called()
+        client.load_collection.assert_called_with(storage.final_namespace)
+
+    def test_legacy_old_meta_schema_migrates_once_to_suffixed_collection(self):
+        storage = _make_model_storage()
+        collections = {storage.legacy_namespace}
+        client = _wire_collection_state(
+            storage,
+            collections,
+            {
+                storage.legacy_namespace: _collection_info(
+                    ["entity_name", "file_path"]
+                ),
+                storage.final_namespace: _collection_info(
+                    ["entity_name", "content", "source_id", "file_path"]
+                ),
+            },
+        )
+        iterator = MagicMock()
+        iterator.next.side_effect = [
+            [
+                {
+                    "id": "ent-1",
+                    "vector": [0.0] * 128,
+                    "entity_name": "Entity",
+                    "$meta": {"content": "body", "source_id": "doc-1"},
+                }
+            ],
+            [],
+        ]
+        client.query_iterator.return_value = iterator
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            storage._create_collection_if_not_exist()
+
+        client.query_iterator.assert_called_once_with(
+            collection_name=storage.legacy_namespace,
+            batch_size=2000,
+            output_fields=["*"],
+        )
+        inserted = client.insert.call_args.kwargs["data"][0]
+        assert inserted["content"] == "body"
+        assert inserted["source_id"] == "doc-1"
+        assert "$meta" not in inserted
+        assert storage.legacy_namespace in collections
+        assert storage.final_namespace in collections
+
+    def test_legacy_new_schema_still_migrates_to_suffixed_collection(self):
+        storage = _make_model_storage(namespace="chunks")
+        collections = {storage.legacy_namespace}
+        client = _wire_collection_state(
+            storage,
+            collections,
+            {
+                storage.legacy_namespace: _collection_info(
+                    ["full_doc_id", "content", "file_path"]
+                ),
+                storage.final_namespace: _collection_info(
+                    ["full_doc_id", "content", "file_path"]
+                ),
+            },
+        )
+        iterator = MagicMock()
+        iterator.next.side_effect = [
+            [{"id": "chunk-1", "vector": [0.0] * 128, "content": "body"}],
+            [],
+        ]
+        client.query_iterator.return_value = iterator
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            storage._create_collection_if_not_exist()
+
+        client.query_iterator.assert_called_once()
+        assert client.query_iterator.call_args.kwargs["collection_name"] == (
+            storage.legacy_namespace
+        )
+        client.rename_collection.assert_any_call(
+            f"{storage.final_namespace}_temp", storage.final_namespace
+        )
+        assert storage.final_namespace in collections
+
+    def test_legacy_dimension_mismatch_creates_suffixed_collection_without_migration(
+        self,
+    ):
+        storage = _make_model_storage()
+        legacy_info = _collection_info(["entity_name", "content", "source_id"])
+        for field in legacy_info["fields"]:
+            if field["name"] == "vector":
+                field["params"]["dim"] = 256
+        client = _wire_collection_state(
+            storage,
+            {storage.legacy_namespace},
+            {storage.legacy_namespace: legacy_info},
+        )
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with patch.object(storage, "_migrate_collection_schema") as migrate:
+                storage._create_collection_if_not_exist()
+
+        migrate.assert_not_called()
+        client.query_iterator.assert_not_called()
+        client.create_collection.assert_called_once()
+        assert client.create_collection.call_args.kwargs["collection_name"] == (
+            storage.final_namespace
+        )
+
+    def test_migration_insert_batches_use_build_upsert_batches(self):
+        storage = _make_model_storage()
+        storage._max_upsert_payload_bytes = 1024
+        storage._max_upsert_records_per_batch = 2000
+        client = _wire_collection_state(storage, {storage.legacy_namespace})
+        iterator = MagicMock()
+        iterator.next.side_effect = [
+            [
+                {
+                    "id": f"ent-{i}",
+                    "vector": [0.0] * 128,
+                    "content": "x" * 300,
+                }
+                for i in range(2000)
+            ],
+            [],
+        ]
+        client.query_iterator.return_value = iterator
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with patch.object(
+                storage, "_build_upsert_batches", wraps=storage._build_upsert_batches
+            ) as build_batches:
+                with patch.object(storage, "_flush_pending_vector_ops") as flush:
+                    storage._migrate_collection_schema(
+                        source_collection_name=storage.legacy_namespace,
+                        target_collection_name=storage.final_namespace,
+                    )
+
+        build_batches.assert_called()
+        assert client.insert.call_count > 1
+        flush.assert_not_called()
+
+    def test_failed_legacy_migration_cleans_temp_and_keeps_legacy_collection(self):
+        storage = _make_model_storage()
+        collections = {storage.legacy_namespace}
+        client = _wire_collection_state(storage, collections)
+        iterator = MagicMock()
+        iterator.next.side_effect = [
+            [{"id": "ent-1", "vector": [0.0] * 128, "content": "body"}],
+        ]
+        client.query_iterator.return_value = iterator
+        client.insert.side_effect = RuntimeError("insert failed")
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with pytest.raises(RuntimeError, match="Iterator-based migration failed"):
+                storage._migrate_collection_schema(
+                    source_collection_name=storage.legacy_namespace,
+                    target_collection_name=storage.final_namespace,
+                )
+
+        assert storage.legacy_namespace in collections
+        assert f"{storage.final_namespace}_temp" not in collections
+        assert storage.final_namespace not in collections
 
     def test_vector_index_creation_failure_is_raised(self):
         """Test that vector index creation failures are raised to the caller (P2 fix)"""
