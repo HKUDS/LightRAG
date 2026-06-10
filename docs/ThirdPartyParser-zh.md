@@ -184,7 +184,7 @@ def register() -> None:
 
 `pip install my-pkg` 之后即装即用,无需改动 LightRAG 代码:
 
-- **API Server**:`create_app()` 在校验 `LIGHTRAG_PARSER` 路由规则**之前**调用 `load_third_party_parsers()`,因此路由规则可以直接引用第三方引擎名(如 `LIGHTRAG_PARSER="foo:myengine"`)。上传白名单与目录扫描的文件类型(`DocumentManager.supported_extensions`)**完全由注册表实时派生**:所有 user-selectable 且 `endpoint_configured()` 通过的引擎后缀并集——第三方引擎注册后其 `suffixes` 自动变为可上传/可扫描;声明了 endpoint 闭包的引擎在 endpoint 未配置时,其独有后缀不会进入白名单(与内置 mineru/docling 的图片格式同一规则);
+- **API Server**:`create_app()` 在校验 `LIGHTRAG_PARSER` 路由规则**之前**调用 `load_third_party_parsers()`,因此路由规则可以直接引用第三方引擎名(如 `LIGHTRAG_PARSER="foo:myengine"`)。上传与扫描的文件类型守门**完全由注册表 + 路由实时派生**,判据是"这份文件能否路由到一个支持它的引擎":裸后缀(无 hint)要求 `LIGHTRAG_PARSER` 规则把它指到你的引擎(否则默认 legacy 接不住会被拒,而不是收下后在解析阶段 FAILED);带文件名 hint 的上传(如 `report.[myengine].foo`)无需规则即可通过;endpoint 未配置的引擎其独有后缀不参与(与内置 mineru/docling 的图片格式同一规则)。**实践建议:发布第三方引擎时,在部署说明里让用户配套 `LIGHTRAG_PARSER="foo:myengine"` 规则**,裸文件名上传与目录扫描即自动生效;
 - **调试 CLI**:`python -m lightrag.parser.cli sample.foo --engine myengine` 直接可用(`main()` 在构建 `--engine` choices 前加载插件)。无 sidecar 的引擎(`blocks_path=""`)CLI 会打印纯文本摘要而非 blocks 摘要;继承 `ExternalParserBase` 的引擎自动获得 raw 缓存展示与 `--force-reparse` 支持;
 - **库内嵌用法**(不经 server/CLI 直接用 LightRAG 类):在构建 pipeline 前自行调用一次:
 

@@ -1007,6 +1007,33 @@ async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monke
     assert not (tmp_path / "existing.[native].docx").exists()
 
 
+async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
+    """A malformed filename hint fails the upload synchronously with the
+    detailed hint error in the 400 body (it used to be accepted and only
+    surface later as an error document)."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        # F and R are two chunking modes -> invalid hint combination.
+        filename="bad.[native-FR].docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+    assert excinfo.value.status_code == 400
+    assert "multiple chunking modes" in excinfo.value.detail
+
+
 async def test_upload_succeeds_concurrent_with_pipeline_busy(tmp_path, monkeypatch):
     """Under the new contract, ``busy=True`` no longer blocks uploads.
     The upload reserves a pending-enqueue slot, schedules its bg task,
@@ -1977,12 +2004,17 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
 
 
 def test_default_allowlist_equals_local_engine_suffixes(tmp_path, monkeypatch):
-    """With no external endpoints configured, the registry-derived allowlist
-    must equal the local engines' (legacy ∪ native) suffixes — i.e. exactly
-    the historical hardcoded upload allowlist."""
+    """With no external endpoints and no routing rules, the registry-derived
+    allowlist must equal the local engines' (legacy ∪ native) suffixes —
+    i.e. exactly the historical hardcoded upload allowlist."""
     from lightrag.parser import registry
 
-    for var in ("MINERU_LOCAL_ENDPOINT", "MINERU_API_TOKEN", "DOCLING_ENDPOINT"):
+    for var in (
+        "MINERU_LOCAL_ENDPOINT",
+        "MINERU_API_TOKEN",
+        "DOCLING_ENDPOINT",
+        "LIGHTRAG_PARSER",
+    ):
         monkeypatch.delenv(var, raising=False)
 
     dm = DocumentManager(str(tmp_path))
@@ -1995,47 +2027,68 @@ def test_default_allowlist_equals_local_engine_suffixes(tmp_path, monkeypatch):
     assert ".doc" not in dm.supported_extensions
 
 
-def test_configured_endpoint_admits_engine_suffixes(tmp_path, monkeypatch):
-    """Configuring an external engine's endpoint admits its suffixes into the
-    upload allowlist live (the gate is ParserSpec.endpoint_configured)."""
+def test_unroutable_suffix_needs_rule_or_hint(tmp_path, monkeypatch):
+    """An endpoint-configured engine's suffix is accepted only when routing
+    actually reaches that engine: a bare filename needs a LIGHTRAG_PARSER
+    rule; a per-file hint works without one. Otherwise the file would pass
+    upload only to fail the parse worker's legacy suffix gate."""
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     monkeypatch.setenv("MINERU_API_MODE", "local")
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
     dm = DocumentManager(str(tmp_path))
+    # Capable (endpoint up) but unroutable: bare png defaults to legacy.
+    assert ".png" not in dm.supported_extensions
+    assert not dm.is_supported_file("scan.png")
+    # A per-file hint routes this specific name to mineru.
+    assert dm.is_supported_file("scan.[mineru].png")
+    # A routing rule makes the bare suffix routable (and advertised).
+    monkeypatch.setenv("LIGHTRAG_PARSER", "png:mineru")
+    assert ".png" in dm.supported_extensions
     assert dm.is_supported_file("scan.png")
-    assert ".doc" in dm.supported_extensions
-    # docling-only suffixes stay out (its endpoint is still unset).
+    # docling-only suffixes stay out (endpoint unset), rule or not.
     assert ".xhtml" not in dm.supported_extensions
 
 
-def test_third_party_engine_suffixes_join_allowlist_and_scan(tmp_path):
-    """A registered third-party engine's suffixes become uploadable
-    (is_supported_file) and scannable (directory glob) live, and revert on
-    unregister."""
+def test_third_party_engine_suffixes_join_allowlist_and_scan(tmp_path, monkeypatch):
+    """A registered third-party engine's suffixes become uploadable and
+    scannable once routable (rule for bare names, hint for individual
+    files), and revert on unregister."""
     from lightrag.parser import registry
 
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     dm = DocumentManager(str(tmp_path))
 
     # Before registration: .foo rejected by upload and invisible to scan.
     assert not dm.is_supported_file("sample.foo")
     (dm.input_dir / "sample.foo").write_text("x", encoding="utf-8")
+    (dm.input_dir / "hinted.[fooengine].foo").write_text("x", encoding="utf-8")
     assert not [p for p in dm.scan_directory_for_new_files() if p.suffix == ".foo"]
 
     registry.register_parser(
         registry.ParserSpec(
-            engine_name="allowlist-test-engine",
+            engine_name="fooengine",
             impl="x:Y",
             suffixes=frozenset({"foo"}),
-            queue_group="allowlist-test-engine",
+            queue_group="fooengine",
             concurrency=1,
         )
     )
     try:
-        assert dm.is_supported_file("sample.foo")
+        # Registered but bare .foo is still unroutable (defaults to legacy).
+        assert not dm.is_supported_file("sample.foo")
+        # The hinted file routes to fooengine: uploadable AND discoverable
+        # by scan (glob covers the capability surface, filter is per-name).
+        assert dm.is_supported_file("hinted.[fooengine].foo")
+        scanned = {p.name for p in dm.scan_directory_for_new_files()}
+        assert "hinted.[fooengine].foo" in scanned
+        assert "sample.foo" not in scanned
+        # A routing rule makes the bare suffix routable.
+        monkeypatch.setenv("LIGHTRAG_PARSER", "foo:fooengine")
         assert ".foo" in dm.supported_extensions
-        scanned = dm.scan_directory_for_new_files()
-        assert [p for p in scanned if p.suffix == ".foo"]
+        assert dm.is_supported_file("sample.foo")
+        assert "sample.foo" in {p.name for p in dm.scan_directory_for_new_files()}
     finally:
-        registry._REGISTRY.pop("allowlist-test-engine", None)
+        registry._REGISTRY.pop("fooengine", None)
     assert not dm.is_supported_file("sample.foo")
