@@ -1299,7 +1299,20 @@ class _PipelineMixin:
                 )
             if owners:
                 owner = owners[0]
-                return int(os.getenv(owner.concurrency_env, owner.default_concurrency))
+                raw_value = os.getenv(owner.concurrency_env)
+                if raw_value is not None:
+                    try:
+                        return int(raw_value)
+                    except ValueError:
+                        # A malformed third-party env var must not abort the
+                        # whole batch; fall back to the spec default.
+                        logger.warning(
+                            "[parse] invalid %s=%r; using default %d",
+                            owner.concurrency_env,
+                            raw_value,
+                            owner.default_concurrency,
+                        )
+                return owner.default_concurrency
             return self.max_parallel_parse_native
 
         workers: list[asyncio.Task] = []

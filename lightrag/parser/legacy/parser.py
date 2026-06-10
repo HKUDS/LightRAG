@@ -21,7 +21,10 @@ class LegacyParser(BaseParser):
     engine_name = PARSER_ENGINE_LEGACY
 
     async def parse(self, ctx: ParseContext) -> ParseResult:
-        from lightrag.parser.legacy.extractors import extract_text
+        from lightrag.parser.legacy.extractors import (
+            LegacyExtractionError,
+            extract_text,
+        )
         from lightrag.parser.registry import suffix_capabilities
 
         rs = ctx.resolve(self.engine_name)
@@ -41,6 +44,15 @@ class LegacyParser(BaseParser):
         text = await asyncio.to_thread(
             extract_text, file_bytes, suffix, pdf_password=pdf_password
         )
+        # The binary extractors (pdf/docx/pptx/xlsx) return whatever the
+        # library yields — a scanned PDF with no text layer extracts to pure
+        # whitespace. Fail the parse (like the text-decode path already does)
+        # instead of persisting an empty document into chunking.
+        if not text.strip():
+            raise LegacyExtractionError(
+                f"extracted no usable text from {ctx.file_path} "
+                f"(doc_id={ctx.doc_id})"
+            )
 
         await ctx.rag._persist_parsed_full_docs(
             ctx.doc_id,
