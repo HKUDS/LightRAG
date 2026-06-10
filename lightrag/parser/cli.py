@@ -141,6 +141,19 @@ def _print_summary(blocks_path: Path, raw_dir: Path | None, preview: int) -> Non
             )
 
 
+def _print_raw_summary(result: dict, preview: int) -> None:
+    """Summary for engines that emit plain content with no sidecar (legacy /
+    any non-sidecar third-party engine: ``blocks_path`` is empty)."""
+    content = result.get("content") or ""
+    print(f"engine     : {result.get('parse_engine')}")
+    print(f"format     : {result.get('parse_format')}")
+    print(f"content    : {len(content)} chars")
+    if preview > 0 and content:
+        snippet = content[:400]
+        print(f"--- preview (first {len(snippet)} of {len(content)} chars) ---")
+        print(snippet + ("..." if len(content) > len(snippet) else ""))
+
+
 async def _run(args: argparse.Namespace) -> int:
     # Pipeline + heavy parser imports are deferred so ``--help`` and the
     # input-file existence check don't pay for them.
@@ -274,8 +287,13 @@ async def _run(args: argparse.Namespace) -> int:
             print(str(exc), file=sys.stderr)
             return 1
 
-    blocks_path = Path(result["blocks_path"])
-    _print_summary(blocks_path, raw_dir, args.preview)
+    blocks_path = result.get("blocks_path") or ""
+    if blocks_path:
+        _print_summary(Path(blocks_path), raw_dir, args.preview)
+    else:
+        # No sidecar (legacy / non-sidecar third-party engine): the result
+        # carries plain content, so summarize that instead of a blocks file.
+        _print_raw_summary(result, args.preview)
     return 0
 
 
