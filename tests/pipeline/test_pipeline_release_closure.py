@@ -25,12 +25,22 @@ from lightrag.parser.routing import (
     resolve_stored_document_parser_engine,
     validate_parser_routing_config,
 )
+from lightrag.parser.base import ParseContext
+from lightrag.parser.registry import get_parser
 from lightrag.utils import (
     EmbeddingFunc,
     Tokenizer,
     compute_mdhash_id,
     safe_vdb_operation_with_exception,
 )
+
+
+async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
+    """Drive a parser the way the pipeline worker does (registry dispatch)."""
+    result = await get_parser(engine).parse(
+        ParseContext(rag, doc_id, file_path, content_data)
+    )
+    return result.to_dict()
 
 
 class _SimpleTokenizerImpl:
@@ -2268,22 +2278,15 @@ def test_three_phase_status_flow(tmp_path, monkeypatch):
         async def _fake_merge(*args, **kwargs):
             return None
 
-        async def _fake_parse_native(doc_id, file_path, content_data):
-            return {
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "parse_format": "raw",
-                "content": "hello world",
-                "blocks_path": "",
-            }
-
         async def _fake_analyze(doc_id, file_path, parsed_data, **kwargs):
             parsed_data["multimodal_processed"] = True
             return parsed_data
 
         monkeypatch.setattr(rag, "_process_extract_entities", _fake_extract)
         monkeypatch.setattr("lightrag.pipeline.merge_nodes_and_edges", _fake_merge)
-        monkeypatch.setattr(rag, "parse_native", _fake_parse_native)
+        # "sample text" enqueues as RAW; the worker dispatches it to the
+        # PassthroughParser (no parse_* wrapper involved), so no parse stub is
+        # needed — the status-flow assertions below exercise the real path.
         monkeypatch.setattr(rag, "analyze_multimodal", _fake_analyze)
 
         status_seq: list[str] = []
@@ -2943,7 +2946,9 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
         monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
-        parsed = await rag.parse_mineru(
+        parsed = await _parse_via_registry(
+            rag,
+            "mineru",
             doc_id="doc-1",
             file_path=str(src_file),
             content_data={"content": ""},
@@ -3061,7 +3066,9 @@ def test_parse_mineru_uses_hint_source_and_canonical_upload_name(tmp_path, monke
         assert content_data is not None
         content_data["source_file"] = status["metadata"]["source_file"]
 
-        parsed = await rag.parse_mineru(
+        parsed = await _parse_via_registry(
+            rag,
+            "mineru",
             doc_id=doc_id,
             file_path=status["file_path"],
             content_data=content_data,
@@ -3357,7 +3364,9 @@ def test_parse_mineru_empty_service_result_raises_without_fallback(
         monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake")
 
         with pytest.raises(FileNotFoundError, match="content_list.json"):
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id="doc-local-1",
                 file_path=str(src_file),
                 content_data={"content": "native fallback content"},

@@ -16,6 +16,8 @@ _base = importlib.import_module("lightrag.base")
 _constants = importlib.import_module("lightrag.constants")
 _utils = importlib.import_module("lightrag.utils")
 _parser_routing = importlib.import_module("lightrag.parser.routing")
+_parser_registry = importlib.import_module("lightrag.parser.registry")
+_parser_base = importlib.import_module("lightrag.parser.base")
 sys.argv = _original_argv
 
 DocStatus = _base.DocStatus
@@ -29,6 +31,18 @@ LightRAG = _lightrag.LightRAG
 resolve_stored_document_parser_engine = (
     _parser_routing.resolve_stored_document_parser_engine
 )
+get_parser = _parser_registry.get_parser
+ParseContext = _parser_base.ParseContext
+
+
+async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
+    """Drive a parser the way the pipeline worker does (registry dispatch)."""
+    result = await get_parser(engine).parse(
+        ParseContext(rag, doc_id, file_path, content_data)
+    )
+    return result.to_dict()
+
+
 pipeline_index_file = _document_routes.pipeline_index_file
 pipeline_index_files = _document_routes.pipeline_index_files
 pipeline_index_texts = _document_routes.pipeline_index_texts
@@ -1841,8 +1855,9 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
         _fake_extract,
     )
 
-    result = await LightRAG.parse_native(
+    result = await _parse_via_registry(
         rag,
+        "native",
         "doc-test",
         str(source_path),
         {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -1909,8 +1924,9 @@ async def test_parse_native_docx_content_list_failure_raises_without_fallback(
     )
 
     with pytest.raises(RuntimeError, match="content list boom"):
-        await LightRAG.parse_native(
+        await _parse_via_registry(
             rag,
+            "native",
             "doc-test",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
@@ -1933,8 +1949,9 @@ async def test_parse_native_docx_empty_content_list_result_raises_without_fallba
     )
 
     with pytest.raises(ValueError, match="empty content"):
-        await LightRAG.parse_native(
+        await _parse_via_registry(
             rag,
+            "native",
             "doc-test",
             str(source_path),
             {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},

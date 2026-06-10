@@ -46,16 +46,16 @@ class DebugDocStatus:
 
 
 def build_debug_rag():
-    """Build a minimal LightRAG stand-in that exposes what ``parse_*`` reads.
+    """Build a minimal LightRAG stand-in that exposes what a parser reads.
 
     The import of ``LightRAG`` is intentionally function-local: deferring
     it avoids a circular import when this helper is loaded during package
     init (the parser CLI resolves ``lightrag.parser.debug`` before
     ``lightrag`` itself is fully bound).
 
-    LightRAG-side attributes the three ``parse_*`` methods read off ``self`` —
-    every entry MUST be provided by this stand-in, or the debug CLI / golden
-    tests / regen script will all break in sync:
+    A parser is driven via ``get_parser(engine).parse(ParseContext(rag, ...))``
+    (CLI / golden tests / regen script). ``ParseContext`` reads these off the
+    ``rag`` it is handed — every entry MUST be provided by this stand-in:
 
     - **methods** (rebound from :class:`LightRAG`):
         - ``_persist_parsed_full_docs(doc_id, payload)`` — async; touches
@@ -69,17 +69,14 @@ def build_debug_rag():
         - ``self.doc_status.get_by_id(...)`` / ``.upsert(...)`` —
           :class:`DebugDocStatus` covers both.
 
-    When any of the three ``LightRAG.parse_*`` methods grows a new
-    dependency on ``self``, extend this stand-in (and update the list
-    above) rather than copy-pasting a parallel stub into the call sites.
+    When a parser grows a new dependency on the ``rag`` handed to
+    ``ParseContext``, extend this stand-in (and update the list above) rather
+    than copy-pasting a parallel stub into the call sites.
     """
     from lightrag import LightRAG
 
     class _DebugRag:
         _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-        parse_native = LightRAG.parse_native
-        parse_mineru = LightRAG.parse_mineru
-        parse_docling = LightRAG.parse_docling
 
         def __init__(self) -> None:
             self.full_docs = DebugFullDocs()

@@ -35,9 +35,6 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
     PARSED_DIR_NAME,
-    PARSER_ENGINE_DOCLING,
-    PARSER_ENGINE_MINERU,
-    PARSER_ENGINE_NATIVE,
 )
 from lightrag.exceptions import (
     MultimodalAnalysisError,
@@ -2974,55 +2971,6 @@ class _PipelineMixin:
             },
             metadata_extra=metadata_extra,
         )
-
-    # ============================================================
-    # Parser engines (also called by tests directly)
-    # ============================================================
-
-    async def parse_native(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Deprecated thin wrapper; the pipeline dispatches via the registry.
-
-        Kept for the CLI / debug entrypoints. Maps the document *format* to a
-        handler (raw -> passthrough, lightrag -> reuse, pending_parse ->
-        native) so direct ``parse_native`` callers keep the historical
-        "native means native for a pending docx" semantics.
-        """
-        from lightrag.parser.registry import (
-            PARSER_ENGINE_PASSTHROUGH,
-            PARSER_ENGINE_REUSE,
-        )
-
-        doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
-        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
-            handler = PARSER_ENGINE_REUSE
-        elif doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-            handler = PARSER_ENGINE_NATIVE
-        else:
-            handler = PARSER_ENGINE_PASSTHROUGH
-        parser = get_parser(handler)
-        return (
-            await parser.parse(ParseContext(self, doc_id, file_path, content_data))
-        ).to_dict()
-
-    async def parse_mineru(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Deprecated thin wrapper; the pipeline dispatches via the registry."""
-        parser = get_parser(PARSER_ENGINE_MINERU)
-        return (
-            await parser.parse(ParseContext(self, doc_id, file_path, content_data))
-        ).to_dict()
-
-    async def parse_docling(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Deprecated thin wrapper; the pipeline dispatches via the registry."""
-        parser = get_parser(PARSER_ENGINE_DOCLING)
-        return (
-            await parser.parse(ParseContext(self, doc_id, file_path, content_data))
-        ).to_dict()
 
     # ============================================================
     # Parser internals

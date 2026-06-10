@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
@@ -172,7 +172,9 @@ async def _run_worker_until_drained(
 
 
 @pytest.mark.asyncio
-async def test_parse_worker_drains_queue_when_cancelled_before_start(tmp_path):
+async def test_parse_worker_drains_queue_when_cancelled_before_start(
+    tmp_path, monkeypatch
+):
     """Cancellation set BEFORE the worker pulls any item: parser must not
     run, every queued doc is FAILED with a friendly message, q.join()
     returns quickly."""
@@ -181,9 +183,10 @@ async def test_parse_worker_drains_queue_when_cancelled_before_start(tmp_path):
     try:
         ctx, pipeline_status, _ = await _make_ctx(rag)
 
-        rag.parse_native = AsyncMock(
-            side_effect=AssertionError("parse_native must not be called")
-        )
+        # The worker resolves its parser via the registry; if the boundary
+        # cancellation check works, get_parser is never reached.
+        get_parser_spy = Mock(side_effect=AssertionError("parser must not be resolved"))
+        monkeypatch.setattr("lightrag.pipeline.get_parser", get_parser_spy)
 
         for i in range(3):
             doc_id = f"doc-{i}"
@@ -215,7 +218,7 @@ async def test_parse_worker_drains_queue_when_cancelled_before_start(tmp_path):
         elapsed = time.monotonic() - start
 
         assert elapsed < 1.0, f"queue drain should be fast, took {elapsed:.2f}s"
-        assert rag.parse_native.await_count == 0
+        assert get_parser_spy.call_count == 0
 
         cancel_messages = [
             m
