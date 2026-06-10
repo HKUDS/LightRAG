@@ -21,9 +21,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
 from lightrag.constants import (
-    DEFAULT_MAX_PARALLEL_PARSE_DOCLING,
-    DEFAULT_MAX_PARALLEL_PARSE_MINERU,
-    DEFAULT_MAX_PARALLEL_PARSE_NATIVE,
     PARSER_ENGINE_DOCLING,
     PARSER_ENGINE_LEGACY,
     PARSER_ENGINE_MINERU,
@@ -81,8 +78,13 @@ class ParserSpec:
     suffixes: frozenset[str]
     user_selectable: bool = True
     queue_group: str = PARSER_ENGINE_NATIVE
-    concurrency_env: str | None = None
-    default_concurrency: int | None = None
+    # Worker count for this spec's queue_group. The registrant bakes in any
+    # env override at registration time (e.g.
+    # ``concurrency=int(os.getenv("MAX_PARALLEL_PARSE_MYENGINE", "3"))``),
+    # mirroring how the built-in ``max_parallel_parse_*`` LightRAG fields read
+    # their env. ``None`` means this spec does not own its group's concurrency
+    # (built-in groups are sized by the LightRAG instance field instead).
+    concurrency: int | None = None
     endpoint_configured: Callable[[], bool] = field(default=lambda: True)
     endpoint_requirement: Callable[[], str | None] = field(default=lambda: None)
 
@@ -178,8 +180,9 @@ _REGISTRY: dict[str, ParserSpec] = {
         impl="lightrag.parser.docx.parser:NativeDocxParser",
         suffixes=frozenset({"docx"}),
         queue_group=PARSER_ENGINE_NATIVE,
-        concurrency_env="MAX_PARALLEL_PARSE_NATIVE",
-        default_concurrency=DEFAULT_MAX_PARALLEL_PARSE_NATIVE,
+        # Built-in groups are sized by the LightRAG ``max_parallel_parse_*``
+        # instance field (supports constructor override), so no spec-level
+        # ``concurrency`` here.
     ),
     PARSER_ENGINE_LEGACY: ParserSpec(
         engine_name=PARSER_ENGINE_LEGACY,
@@ -191,9 +194,7 @@ _REGISTRY: dict[str, ParserSpec] = {
         engine_name=PARSER_ENGINE_MINERU,
         impl="lightrag.parser.external.mineru.parser:MinerUParser",
         suffixes=_MINERU_SUFFIXES,
-        queue_group=PARSER_ENGINE_MINERU,
-        concurrency_env="MAX_PARALLEL_PARSE_MINERU",
-        default_concurrency=DEFAULT_MAX_PARALLEL_PARSE_MINERU,
+        queue_group=PARSER_ENGINE_MINERU,  # sized by max_parallel_parse_mineru
         endpoint_configured=_mineru_endpoint_configured,
         endpoint_requirement=_mineru_endpoint_requirement,
     ),
@@ -201,9 +202,7 @@ _REGISTRY: dict[str, ParserSpec] = {
         engine_name=PARSER_ENGINE_DOCLING,
         impl="lightrag.parser.external.docling.parser:DoclingParser",
         suffixes=_DOCLING_SUFFIXES,
-        queue_group=PARSER_ENGINE_DOCLING,
-        concurrency_env="MAX_PARALLEL_PARSE_DOCLING",
-        default_concurrency=DEFAULT_MAX_PARALLEL_PARSE_DOCLING,
+        queue_group=PARSER_ENGINE_DOCLING,  # sized by max_parallel_parse_docling
         endpoint_configured=_env_endpoint_configured("DOCLING_ENDPOINT"),
         endpoint_requirement=lambda: "DOCLING_ENDPOINT",
     ),
@@ -227,17 +226,7 @@ _INSTANCE_CACHE: dict[tuple[str, str], "BaseParser"] = {}
 
 
 def register_parser(spec: ParserSpec) -> None:
-    """Register (or override) a parser engine spec.
-
-    A spec that declares ``concurrency_env`` must also provide a
-    ``default_concurrency`` so the pipeline never evaluates ``int(None)``
-    when the env var is unset.
-    """
-    if spec.concurrency_env and spec.default_concurrency is None:
-        raise ValueError(
-            f"ParserSpec {spec.engine_name!r} sets concurrency_env="
-            f"{spec.concurrency_env!r} but no default_concurrency"
-        )
+    """Register (or override) a parser engine spec."""
     _REGISTRY[spec.engine_name] = spec
 
 

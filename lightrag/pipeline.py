@@ -1282,15 +1282,16 @@ class _PipelineMixin:
 
         def _group_concurrency(group: str) -> int:
             # Built-in groups keep their existing LightRAG fields (env +
-            # programmatic overrides preserved). Third-party groups read the
-            # owner spec's concurrency_env; an unowned group shares native's.
+            # programmatic overrides preserved). Third-party groups use the
+            # owner spec's ``concurrency`` (the registrant baked in any env
+            # override at registration); an unowned group shares native's.
             field_name = f"max_parallel_parse_{group}"
             if hasattr(self, field_name):
                 return getattr(self, field_name)
             owners = [
                 s
                 for s in parser_specs.values()
-                if s.queue_group == group and s.concurrency_env
+                if s.queue_group == group and s.concurrency is not None
             ]
             if len(owners) > 1:
                 raise ValueError(
@@ -1298,21 +1299,7 @@ class _PipelineMixin:
                     f"{[s.engine_name for s in owners]}"
                 )
             if owners:
-                owner = owners[0]
-                raw_value = os.getenv(owner.concurrency_env)
-                if raw_value is not None:
-                    try:
-                        return int(raw_value)
-                    except ValueError:
-                        # A malformed third-party env var must not abort the
-                        # whole batch; fall back to the spec default.
-                        logger.warning(
-                            "[parse] invalid %s=%r; using default %d",
-                            owner.concurrency_env,
-                            raw_value,
-                            owner.default_concurrency,
-                        )
-                return owner.default_concurrency
+                return owners[0].concurrency
             return self.max_parallel_parse_native
 
         # Resolve every group's worker count BEFORE spawning any task:

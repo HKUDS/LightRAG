@@ -3,7 +3,6 @@
 import subprocess
 import sys
 
-import pytest
 
 from lightrag.parser import registry
 
@@ -32,15 +31,24 @@ def test_get_parser_instances_are_cached():
     assert a is b and a is not None
 
 
-def test_register_parser_requires_default_concurrency_with_env():
-    bad = registry.ParserSpec(
-        engine_name="bad-engine",
+def test_register_parser_roundtrips_concurrency():
+    # The registrant bakes any env override into a concrete ``concurrency``
+    # value at registration; the spec carries it verbatim.
+    spec = registry.ParserSpec(
+        engine_name="third-party-engine",
         impl="x:Y",
-        suffixes=frozenset(),
-        concurrency_env="MAX_PARALLEL_PARSE_BAD",
+        suffixes=frozenset({"foo"}),
+        queue_group="third-party-engine",
+        concurrency=7,
     )
-    with pytest.raises(ValueError):
-        registry.register_parser(bad)
+    try:
+        registry.register_parser(spec)
+        snapshot = registry.parser_specs_snapshot()
+        assert snapshot["third-party-engine"].concurrency == 7
+        assert snapshot["third-party-engine"].queue_group == "third-party-engine"
+    finally:
+        # Keep the module-level registry clean for other tests.
+        registry._REGISTRY.pop("third-party-engine", None)
 
 
 def test_mineru_endpoint_requirement_tracks_api_mode(monkeypatch):
