@@ -80,6 +80,7 @@ from lightrag.utils_pipeline import (
     chunk_fields_from_status_doc,
     compute_text_content_hash,
     doc_status_field,
+    doc_status_parse_failure_fields,
     doc_status_transition_metadata,
     get_duplicate_doc_by_content_hash,
     get_existing_doc_by_content_hash,
@@ -1656,6 +1657,9 @@ class _PipelineMixin:
         """
         while True:
             item = await in_q.get()
+            # Best-effort engine attribution for the FAILED metadata when the
+            # failure happens before the per-doc engine is resolved below.
+            resolved_engine_w: str | None = None
             try:
                 doc_id_w, status_doc_w = item
                 file_path_w = getattr(status_doc_w, "file_path", "unknown_source")
@@ -1741,6 +1745,7 @@ class _PipelineMixin:
                         key,
                     )
                 effective_key = key if parser is not None else "legacy"
+                resolved_engine_w = effective_key
                 parser = parser or get_parser("legacy", specs=specs)
                 # Suffix gate only for real engines on a PENDING_PARSE parse;
                 # reuse/passthrough (raw/lightrag/unknown_source) are skipped.
@@ -1880,13 +1885,23 @@ class _PipelineMixin:
                 )
             except Exception as e:
                 logger.error(f"Parse worker failed ({engine}): {e}")
+                # Mirror the pre-deferral enqueue-time error documents:
+                # content_summary (when empty) + metadata error_type /
+                # error_stage / parse_engine, so the WebUI list and detail
+                # views describe the failure instead of showing a blank row.
+                extra_fields_w, metadata_extra_w = doc_status_parse_failure_fields(
+                    e,
+                    status_doc=status_doc_w,
+                    engine_hint=resolved_engine_w or engine,
+                )
                 try:
                     await self._upsert_doc_status_transition(
                         doc_id=doc_id_w,
                         status=DocStatus.FAILED,
                         status_doc=status_doc_w,
                         file_path=getattr(status_doc_w, "file_path", "unknown_source"),
-                        extra_fields={"error_msg": str(e)},
+                        extra_fields=extra_fields_w,
+                        metadata_extra=metadata_extra_w,
                     )
                 except Exception:
                     pass

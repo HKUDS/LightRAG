@@ -29,6 +29,7 @@ from lightrag.constants import (
 from lightrag.parser.routing import canonicalize_parser_hinted_basename
 from lightrag.utils import (
     compute_mdhash_id,
+    get_content_summary,
     logger,
     move_file_to_parsed_dir,
 )
@@ -355,6 +356,8 @@ _DOC_STATUS_METADATA_ATTEMPT_KEYS: frozenset[str] = frozenset(
         "skip_kg",
         "mm_chunks",
         "hard_fallback_split",
+        "error_type",
+        "error_stage",
     }
 )
 
@@ -387,6 +390,51 @@ def doc_status_reset_metadata(status_doc: Any) -> dict[str, Any]:
         if value not in (None, ""):
             payload[key] = value
     return payload
+
+
+def doc_status_parse_failure_fields(
+    error: BaseException,
+    *,
+    status_doc: Any,
+    engine_hint: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the FAILED-upsert extras for a parse-stage failure.
+
+    Returns ``(extra_fields, metadata_extra)`` for
+    ``_upsert_doc_status_transition``.  Restores the UI fields that the
+    pre-deferral enqueue-time error documents carried: a human-readable
+    ``content_summary`` (written only when the document has none —
+    ``pending_parse`` docs enqueue with an empty summary, while raw
+    passthrough docs keep their real one) plus ``metadata.error_type`` /
+    ``metadata.error_stage`` for error classification.  ``error_type``
+    keeps the legacy ``file_extraction_error`` value consumers may match
+    on; ``error_stage`` distinguishes the parse-worker failure from an
+    enqueue-time error document.  Both metadata keys ride
+    ``metadata_extra`` and are deliberately NOT in the carry-over /
+    directive whitelists, so the next transition (retry reset, PARSING)
+    drops them automatically — mirroring how ``error_msg`` is cleared.
+
+    ``engine_hint`` (the parse worker's resolved engine key, falling back
+    to its queue-group id) is stamped as ``parse_engine`` only when the
+    failure happened before the post-parse stamp put one on
+    ``status_doc.metadata``; an existing value always wins via carry-over.
+    """
+    error_text = str(error)
+    extra_fields: dict[str, Any] = {"error_msg": error_text}
+    current_summary = doc_status_field(status_doc, "content_summary", "")
+    if not str(current_summary or "").strip():
+        extra_fields["content_summary"] = "[File Extraction]" + get_content_summary(
+            error_text
+        )
+    metadata_extra: dict[str, Any] = {
+        "error_type": "file_extraction_error",
+        "error_stage": "parse",
+    }
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    has_engine = isinstance(raw_metadata, dict) and raw_metadata.get("parse_engine")
+    if engine_hint and not has_engine:
+        metadata_extra["parse_engine"] = engine_hint
+    return extra_fields, metadata_extra
 
 
 def doc_status_metadata_has_attempt_fields(status_doc: Any) -> bool:
