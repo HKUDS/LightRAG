@@ -192,7 +192,24 @@ class TestMilvusIndexCreation:
         assert storage.legacy_namespace == "space1_chunks"
         assert storage.final_namespace == "space1_chunks_text_embedding_3_large_3072d"
 
-    @pytest.mark.parametrize("model_name", ["", 123])
+    def test_model_suffix_collection_naming_without_workspace(self):
+        storage = MilvusVectorDBStorage(
+            namespace="entities",
+            workspace="",
+            global_config={
+                "embedding_batch_num": 100,
+                "vector_db_storage_cls_kwargs": {
+                    "cosine_better_than_threshold": 0.3,
+                },
+            },
+            embedding_func=_EmbeddingFunc(dim=2560, model_name=" qwen3-embedding:4b "),
+            meta_fields=set(),
+        )
+
+        assert storage.legacy_namespace == "entities"
+        assert storage.final_namespace == "entities_qwen3_embedding_4b_2560d"
+
+    @pytest.mark.parametrize("model_name", ["", "   ", 123])
     def test_missing_or_invalid_model_name_keeps_legacy_collection_name(
         self, model_name
     ):
