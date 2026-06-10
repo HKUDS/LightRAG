@@ -18,6 +18,7 @@ from lightrag.utils import (
     Tokenizer,
     is_float_regex,
     sanitize_and_normalize_extracted_text,
+    sanitize_text_for_encoding,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -291,8 +292,11 @@ async def _handle_entity_relation_summary(
         return "", False
 
     # If only one description, return it directly (no need for LLM call)
+    # Still sanitize: descriptions read back from existing graph nodes (or
+    # injected by non-extraction producers) may carry XML-illegal control
+    # characters that would crash the GraphML flush downstream.
     if len(description_list) == 1:
-        return description_list[0], False
+        return sanitize_text_for_encoding(description_list[0]), False
 
     # Get configuration
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -319,7 +323,12 @@ async def _handle_entity_relation_summary(
                 and total_tokens < summary_max_tokens
             ):
                 # no LLM needed, just join the descriptions
-                final_description = separator.join(current_list)
+                # Sanitize for the same reason as the single-description
+                # early return above: inputs merged from pre-existing graph
+                # data are not guaranteed XML-safe.
+                final_description = sanitize_text_for_encoding(
+                    separator.join(current_list)
+                )
                 return final_description if final_description else "", llm_was_used
             else:
                 if total_tokens > summary_context_size and len(current_list) <= 2:
@@ -466,6 +475,12 @@ async def _summarize_descriptions(
         cache_type="summary",
         llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
     )
+
+    # The LLM response is the only description path that bypasses
+    # extraction-time sanitization; control chars / surrogates left here
+    # would later break GraphML (XML) serialization on write. Strip them
+    # at the source, symmetric with how extracted descriptions are cleaned.
+    summary = sanitize_text_for_encoding(summary)
 
     # Check summary token length against embedding limit
     embedding_token_limit = global_config.get("embedding_token_limit")

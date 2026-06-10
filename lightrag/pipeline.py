@@ -4648,26 +4648,30 @@ class _PipelineMixin:
             if v is None:
                 return []
             if isinstance(v, list):
-                return [str(x).strip() for x in v if str(x).strip()]
-            s = str(v).strip()
+                cleaned = (sanitize_text_for_encoding(str(x)) for x in v)
+                return [s for s in cleaned if s]
+            s = sanitize_text_for_encoding(str(v))
             return [s] if s else []
 
         def _norm_parent_headings(value: Any) -> list[str]:
             if not isinstance(value, list):
                 return []
-            return [str(p).strip() for p in value if str(p or "").strip()]
+            cleaned = (sanitize_text_for_encoding(str(p or "")) for p in value)
+            return [p for p in cleaned if p]
 
         def _build_heading_dict(item: dict[str, Any]) -> dict[str, Any] | None:
             heading_raw = item.get("heading")
             if isinstance(heading_raw, dict):
-                heading_text = str(heading_raw.get("heading") or "").strip()
+                heading_text = sanitize_text_for_encoding(
+                    str(heading_raw.get("heading") or "")
+                )
                 parents = _norm_parent_headings(heading_raw.get("parent_headings"))
                 try:
                     level = int(heading_raw.get("level") or 0)
                 except (TypeError, ValueError):
                     level = 0
             else:
-                heading_text = str(heading_raw or "").strip()
+                heading_text = sanitize_text_for_encoding(str(heading_raw or ""))
                 parents = _norm_parent_headings(item.get("parent_headings"))
                 try:
                     level = int(item.get("level") or 0)
@@ -4745,10 +4749,21 @@ class _PipelineMixin:
                     # Treat unknown / legacy status as missing — no chunk.
                     continue
 
-                name = str(analysis.get("name") or "").strip()
-                description = str(analysis.get("description") or "").strip()
-                equation_body = str(analysis.get("equation") or "").strip()
-                image_type = str(analysis.get("type") or "").strip()
+                # Sanitize every VLM-produced field: analysis results are
+                # parsed from LLM JSON where unescaped LaTeX (e.g. "\frac")
+                # decodes into control characters ("\f" -> \x0c). These
+                # strings feed text_chunks, vector stores and — via the
+                # multimodal entity injection in operate.extract_entities —
+                # graph node/edge attributes, where XML-illegal characters
+                # crash the GraphML flush.
+                name = sanitize_text_for_encoding(str(analysis.get("name") or ""))
+                description = sanitize_text_for_encoding(
+                    str(analysis.get("description") or "")
+                )
+                equation_body = sanitize_text_for_encoding(
+                    str(analysis.get("equation") or "")
+                )
+                image_type = sanitize_text_for_encoding(str(analysis.get("type") or ""))
                 if not name:
                     raise MultimodalAnalysisError(
                         f"{root_key}/{item_id}: success result missing 'name'"
