@@ -36,6 +36,7 @@ from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.pipeline import _BatchRunContext
+from lightrag.parser.registry import parser_specs_snapshot
 from lightrag.utils import EmbeddingFunc, Tokenizer
 
 
@@ -128,9 +129,12 @@ async def _make_ctx(rag: LightRAG) -> tuple[_BatchRunContext, dict, Any]:
         pipeline_status_lock=pipeline_status_lock,
         semaphore=asyncio.Semaphore(2),
         total_files=0,
-        q_native=asyncio.Queue(),
-        q_mineru=asyncio.Queue(),
-        q_docling=asyncio.Queue(),
+        parse_queues={
+            "native": asyncio.Queue(),
+            "mineru": asyncio.Queue(),
+            "docling": asyncio.Queue(),
+        },
+        parser_specs=parser_specs_snapshot(),
         q_analyze=asyncio.Queue(),
         q_process=asyncio.Queue(),
     )
@@ -199,14 +203,14 @@ async def test_parse_worker_drains_queue_when_cancelled_before_start(tmp_path):
                     }
                 }
             )
-            await ctx.q_native.put((doc_id, _make_status_doc(doc_id)))
+            await ctx.parse_queues["native"].put((doc_id, _make_status_doc(doc_id)))
 
         pipeline_status["cancellation_requested"] = True
 
         start = time.monotonic()
         await _run_worker_until_drained(
-            lambda: rag._parse_worker("native", ctx.q_native, ctx),
-            ctx.q_native,
+            lambda: rag._parse_worker("native", ctx.parse_queues["native"], ctx),
+            ctx.parse_queues["native"],
         )
         elapsed = time.monotonic() - start
 

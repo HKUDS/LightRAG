@@ -92,6 +92,18 @@ class ParseContext:
         )
         return ResolvedSource(source_path, document_name, parsed_dir)
 
+    async def archive_source(self, source_path: str) -> str | None:
+        """Archive the source after a successful parse + full_docs sync.
+
+        Resolved through the pipeline module's namespace (where the function
+        is imported) so existing tests that patch
+        ``lightrag.pipeline.archive_docx_source_after_full_docs_sync`` keep
+        intercepting it now that the call site lives in the parser layer.
+        """
+        import lightrag.pipeline as _pipeline
+
+        return await _pipeline.archive_docx_source_after_full_docs_sync(source_path)
+
 
 @dataclass
 class ParseResult:

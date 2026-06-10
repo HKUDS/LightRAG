@@ -1965,4 +1965,6 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
         },
     )
 
-    assert engine == "native"
+    # All lightrag rows route to the internal reuse handler (reuse the stored
+    # sidecar without re-parsing) regardless of the originating engine.
+    assert engine == "reuse"

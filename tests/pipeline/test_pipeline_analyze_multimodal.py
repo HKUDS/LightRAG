@@ -618,6 +618,7 @@ async def test_analyze_worker_marks_doc_failed_on_multimodal_error(tmp_path):
     from dataclasses import asdict
     from lightrag.base import DocProcessingStatus, DocStatus
     from lightrag.pipeline import _BatchRunContext
+    from lightrag.parser.registry import parser_specs_snapshot
 
     async def vlm_func(prompt, **kwargs):
         return ""
@@ -656,9 +657,12 @@ async def test_analyze_worker_marks_doc_failed_on_multimodal_error(tmp_path):
             pipeline_status_lock=asyncio.Lock(),
             semaphore=asyncio.Semaphore(1),
             total_files=1,
-            q_native=asyncio.Queue(),
-            q_mineru=asyncio.Queue(),
-            q_docling=asyncio.Queue(),
+            parse_queues={
+                "native": asyncio.Queue(),
+                "mineru": asyncio.Queue(),
+                "docling": asyncio.Queue(),
+            },
+            parser_specs=parser_specs_snapshot(),
             q_analyze=asyncio.Queue(),
             q_process=asyncio.Queue(),
         )

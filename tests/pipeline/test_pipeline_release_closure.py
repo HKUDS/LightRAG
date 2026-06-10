@@ -98,9 +98,11 @@ def test_parse_engine_routing_by_filename_and_env(monkeypatch):
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru-iet,*:native")
     assert resolve_stored_document_parser_engine("paper.pdf", {}) == "mineru"
+    # A row that is not pending_parse is already-extracted content -> the
+    # passthrough handler (legacy now means worker-stage extraction).
     assert (
         resolve_stored_document_parser_engine("paper.pdf", {"parse_engine": "native"})
-        == "legacy"
+        == "passthrough"
     )
 
 

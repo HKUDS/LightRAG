@@ -77,7 +77,6 @@ class NativeParserBase(BaseParser):
     async def parse(self, ctx: ParseContext) -> ParseResult:
         from lightrag.sidecar import write_sidecar
         from lightrag.utils_pipeline import (
-            archive_source_after_full_docs_sync,
             make_lightrag_doc_content,
             sidecar_uri_for,
         )
@@ -146,7 +145,7 @@ class NativeParserBase(BaseParser):
                 "update_time": int(time.time()),
             },
         )
-        await archive_source_after_full_docs_sync(str(source))
+        await ctx.archive_source(str(source))
         return ParseResult(
             doc_id=ctx.doc_id,
             file_path=ctx.file_path,

@@ -23,7 +23,6 @@ class LegacyParser(BaseParser):
     async def parse(self, ctx: ParseContext) -> ParseResult:
         from lightrag.parser.legacy.extractors import extract_text
         from lightrag.parser.registry import suffix_capabilities
-        from lightrag.utils_pipeline import archive_source_after_full_docs_sync
 
         rs = ctx.resolve(self.engine_name)
         source = rs.source_path
@@ -53,7 +52,7 @@ class LegacyParser(BaseParser):
                 "update_time": int(time.time()),
             },
         )
-        await archive_source_after_full_docs_sync(str(source))
+        await ctx.archive_source(str(source))
         return ParseResult(
             doc_id=ctx.doc_id,
             file_path=ctx.file_path,

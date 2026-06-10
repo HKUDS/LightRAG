@@ -881,21 +881,32 @@ def resolve_stored_document_parser_engine(
     file_path: str | Path,
     content_data: dict[str, Any] | None,
 ) -> str:
-    """Resolve parser engine for a full_docs row during pipeline processing."""
+    """Resolve the parser engine key for a full_docs row during processing.
+
+    Returns a registry key: the internal ``reuse``/``passthrough`` handlers for
+    the no-op formats, or a real engine name for ``pending_parse``.  Never
+    raises and never filters an unknown stored engine — the parse worker
+    decides fallback/validation (so its warning path actually fires).
+    """
+    from lightrag.parser.registry import (
+        PARSER_ENGINE_PASSTHROUGH,
+        PARSER_ENGINE_REUSE,
+    )
+
     if content_data:
         doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
-        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG and content_data.get(
-            "sidecar_location"
-        ):
-            return PARSER_ENGINE_NATIVE
+        # All lightrag rows reuse the already-parsed sidecar (sidecar optional;
+        # ReuseParser tolerates a missing one). Reached on resume/retry.
+        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
+            return PARSER_ENGINE_REUSE
+        # Anything not pending is already-extracted content (raw direct-insert
+        # or legacy-extracted RAW) -> pass through verbatim.
         if doc_format != FULL_DOCS_FORMAT_PENDING_PARSE:
-            return PARSER_ENGINE_LEGACY
-
-        suffix = parser_suffix(file_path)
+            return PARSER_ENGINE_PASSTHROUGH
+        # PENDING_PARSE: honour the stored engine verbatim; fall back to
+        # filename rules only when it is absent.
         pending_engine = normalize_parser_engine(content_data.get("parse_engine"))
-        if pending_engine in SUPPORTED_PARSER_ENGINES and parser_engine_supports_suffix(
-            pending_engine, suffix
-        ):
+        if pending_engine:
             return pending_engine
 
     return resolve_file_parser_engine(file_path)
