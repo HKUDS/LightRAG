@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -3182,6 +3183,82 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
         # covers chunk assembly. The companion regression below
         # (test_parse_mm_display_name_matches_chunk_format) pins the
         # builder/consumer format contract.
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_mm_chunks_sanitize_vlm_control_characters(tmp_path):
+    """Regression: VLM analysis fields parsed from LLM JSON can carry
+    control characters (unescaped LaTeX ``\\frac`` decodes as ``\\x0c`` +
+    ``rac``). The builder must strip them — they propagate into chunk
+    content, vector stores and graph node attributes, where XML-illegal
+    characters crash the GraphML flush with "All strings must be XML
+    compatible".
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            json.dumps(
+                {
+                    "type": "meta",
+                    "format": "lightrag",
+                    "version": "1.0",
+                    "doc_id": "doc-1",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        tables = tmp_path / "demo.tables.json"
+        tables.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "tables": {
+                        "t1": {
+                            "id": "t1",
+                            "heading": "章节\x0bB",
+                            "footnotes": ["脚注\x00一"],
+                            "llm_analyze_result": {
+                                "name": "成本对比表\x00",
+                                "description": "GraphRAG消耗$\x0crac{610}{C}$次调用",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        mm_chunks = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+        )
+        assert len(mm_chunks) == 1
+        chunk = mm_chunks[0]
+
+        illegal = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+        assert not illegal.search(chunk["content"])
+        assert not illegal.search(chunk["heading"]["heading"])
+        # Control chars are removed, surrounding text retained.
+        assert "[Table Name]成本对比表" in chunk["content"]
+        assert "$rac{610}{C}$" in chunk["content"]
+        assert "[Table Footnotes]脚注一" in chunk["content"]
+        assert chunk["heading"]["heading"] == "章节B"
 
         await rag.finalize_storages()
 
