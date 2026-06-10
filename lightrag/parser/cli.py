@@ -298,6 +298,12 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Discover third-party parser engines before --engine choices are built,
+    # so a `lightrag.parsers` entry-point engine is selectable here exactly
+    # like in the server (which loads plugins in create_app).
+    from lightrag.parser.plugins import load_third_party_parsers
+
+    load_third_party_parsers()
     args = _build_parser().parse_args(argv)
     return asyncio.run(_run(args))
 

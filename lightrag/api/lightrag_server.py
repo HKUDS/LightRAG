@@ -51,6 +51,7 @@ from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
 )
+from lightrag.parser.plugins import load_third_party_parsers
 from lightrag.parser.routing import (
     parser_rules_from_env,
     validate_parser_routing_config,
@@ -804,6 +805,9 @@ def create_app(args):
     # Setup logging
     logger.setLevel(args.log_level)
     set_verbose_debug(args.verbose)
+    # Discover third-party parser engines (``lightrag.parsers`` entry points)
+    # BEFORE validating routing rules, so LIGHTRAG_PARSER may reference them.
+    load_third_party_parsers()
     validate_parser_routing_config()
 
     # Create configuration cache (this will output configuration logs)

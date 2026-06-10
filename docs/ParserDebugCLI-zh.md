@@ -1,6 +1,6 @@
 # Parser CLI Debuger使用指南
 
-本工具用于本地调试 LightRAG 的三个内容解析引擎（`native` / `mineru` / `docling`），针对**单个文件**触发 `LightRAG.parse_<engine>` 生产代码路径，并把解析产物（sidecar 与 raw 缓存）输出到一个**扁平目录布局**——与生产入库目录相比，区别仅在于：
+本工具用于本地调试 LightRAG 注册表中的任意内容解析引擎（内置 `native` / `legacy` / `mineru` / `docling`，以及通过 `lightrag.parsers` entry point 注册的第三方引擎，见 `docs/ThirdPartyParser-zh.md`），针对**单个文件**触发与 pipeline worker 相同的注册表派发路径（`get_parser(engine).parse(...)`），并把解析产物（sidecar 与 raw 缓存）输出到一个**扁平目录布局**——与生产入库目录相比，区别仅在于：
 
 - **无 `__parsed__/` 中间层**：产物直接落在指定父目录下，便于查看；
 - **源文件不会被归档**：源文件保留在原位置（生产路径会把源文件移到 `<INPUT_DIR>/__parsed__/`）；
@@ -12,7 +12,7 @@
 
 ```bash
 python -m lightrag.parser.cli <input_file> \
-    --engine {native|mineru|docling} \
+    --engine <engine> \
     [-o <sidecar_parent_dir>] \
     [--doc-id <doc-id>] \
     [--force-reparse] \
@@ -22,11 +22,11 @@ python -m lightrag.parser.cli <input_file> \
 | 参数 | 说明 |
 |---|---|
 | `input_file` | 待解析的源文件路径（位置参数，必填）。文件必须实际存在。 |
-| `--engine` | 必填：`native`（仅 `.docx`，本地解析）/ `mineru`（PDF/办公文档，调 MinerU 服务）/ `docling`（PDF/办公文档，调 docling-serve）。 |
+| `--engine` | 必填，可选值来自注册表：内置 `native`（仅 `.docx`，本地解析）/ `legacy`（纯文本抽取，无 sidecar）/ `mineru`（PDF/办公文档，调 MinerU 服务）/ `docling`（PDF/办公文档，调 docling-serve），以及任何已注册的第三方引擎。 |
 | `-o / --sidecar-parent-dir` | sidecar 与 raw 目录的父目录，默认 = 源文件所在目录。 |
 | `--doc-id` | 自定义文档 ID，默认 `doc-<md5(源文件绝对路径)>`（同一文件多次跑结果稳定）。 |
-| `--force-reparse` | 仅对 `mineru` / `docling` 生效：清空 raw 目录、强制重新下载与解析。默认行为是 raw 目录非空即复用。 |
-| `--preview N` | 解析完成后打印前 N 个 block 的预览（headings + 内容片段），默认 5；`0` 关闭。 |
+| `--force-reparse` | 仅对外部服务引擎（`mineru` / `docling` 及继承 `ExternalParserBase` 的第三方引擎）生效：清空 raw 目录、强制重新下载与解析。默认行为是 raw 目录非空即复用。 |
+| `--preview N` | 解析完成后打印前 N 个 block 的预览（headings + 内容片段），默认 5；`0` 关闭。对无 sidecar 的引擎（如 `legacy`），改为打印解析文本的前 400 字符。 |
 
 ## 输出目录布局
 
