@@ -64,7 +64,7 @@ python -m lightrag.parser.cli ./inputs/workspace/sample.docx --engine native
 python -m lightrag.parser.cli ./inputs/workspace/sample.pdf --engine mineru
 # 第二次（无任何修改）：raw 目录非空 → 直接复用 → 仅重建 sidecar，速度快
 python -m lightrag.parser.cli ./inputs/workspace/sample.pdf --engine mineru
-# 日志会显示： [parse_mineru] raw cache hit doc_id=... raw_dir=.../sample.pdf.mineru_raw
+# 日志会显示： [mineru] raw cache hit doc_id=...
 ```
 
 ### C. 用 Docling 解析 PDF + 复用已有 raw 目录
@@ -113,17 +113,17 @@ python -m lightrag.parser.cli ./inputs/workspace/sample.pdf \
 | raw 目录存在但 sidecar 内容仍是旧的 | 默认会**复用** raw 重建 sidecar。如果 raw 本身就过期或被替换，加 `--force-reparse` 清空重下。 |
 | MinerU 报 `MINERU_API_TOKEN` 缺失 / Docling 连接 `DOCLING_ENDPOINT` 失败 | 缓存未命中触发了外部服务调用——核对对应环境变量；或确认 raw 目录是否非空（命中缓存时无需服务）。 |
 | 源文件被意外移动 | 不应发生：CLI 已 mock 归档函数。若复现请提 issue（可能是 pipeline 内增加了新的归档调用点）。 |
-| `parse_docling` 报 `produced zero blocks` | docling raw 中的主 JSON 内容不可解析或为空。检查 raw 目录的 `*.json` 是否合法。 |
+| docling 报 `produced zero blocks` | docling raw 中的主 JSON 内容不可解析或为空。检查 raw 目录的 `*.json` 是否合法。 |
 
-## 与 `LightRAG.parse_*` 生产路径的等价性
+## 与生产解析路径的等价性
 
-本 CLI 直接调用生产代码路径 `LightRAG.parse_native` / `parse_mineru` / `parse_docling`（通过 `lightrag/parser/debug.py` 的轻量 RAG 替身），因此：
+本 CLI 与 pipeline parse worker 走同一条注册表派发路径——`get_parser(engine).parse(ParseContext(rag, ...))`（`rag` 是 `lightrag/parser/debug.py` 的轻量替身），因此：
 
 - sidecar 字段、命名、内容格式与生产入库完全一致；
 - IR 构建器、`write_sidecar` 调用、`_persist_parsed_full_docs` 行为完全一致；
 - 三处差异均由 CLI 内的 `monkey-patch` 实现，**不修改任何生产代码**：
-  1. `parsed_artifact_dir_for_source` → 返回扁平路径（无 `__parsed__/`）；
-  2. `is_bundle_valid` → 「raw 非空即有效」；
+  1. `parsed_artifact_dir_for` → 返回扁平路径（无 `__parsed__/`）；
+  2. 解析器实例的 `is_bundle_valid` → 「raw 非空即有效」（仅外部服务引擎）；
   3. `archive_docx_source_after_full_docs_sync` → no-op，保留源文件。
 
 可与 `tests/parser/docx/golden/native_docx/` 下的 golden fixture 对比验证（CLI 不冻结时间戳，比对时排除 `created_at` 等时间字段即可）。

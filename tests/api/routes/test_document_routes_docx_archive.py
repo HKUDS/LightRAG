@@ -1990,3 +1990,39 @@ def test_upload_allowlist_subset_of_registry_suffixes(tmp_path):
     allowlist = {ext.lower() for ext in dm.supported_extensions}
     missing = allowlist - all_suffixes
     assert not missing, f"upload allowlist has unparseable extensions: {missing}"
+
+
+def test_third_party_engine_suffixes_join_allowlist_and_scan(tmp_path):
+    """A registered third-party engine's suffixes become uploadable
+    (is_supported_file) and scannable (directory glob) live — while built-in
+    engines' non-curated suffixes (e.g. mineru's images) stay excluded."""
+    from lightrag.parser import registry
+
+    dm = DocumentManager(str(tmp_path))
+
+    # Before registration: .foo rejected by upload and invisible to scan.
+    assert not dm.is_supported_file("sample.foo")
+    (dm.input_dir / "sample.foo").write_text("x", encoding="utf-8")
+    assert not [p for p in dm.scan_directory_for_new_files() if p.suffix == ".foo"]
+
+    registry.register_parser(
+        registry.ParserSpec(
+            engine_name="allowlist-test-engine",
+            impl="x:Y",
+            suffixes=frozenset({"foo"}),
+            queue_group="allowlist-test-engine",
+            concurrency=1,
+        )
+    )
+    try:
+        assert dm.is_supported_file("sample.foo")
+        assert ".foo" in dm.supported_extensions
+        scanned = dm.scan_directory_for_new_files()
+        assert [p for p in scanned if p.suffix == ".foo"]
+        # Curated guard: built-in mineru supports png, but images must NOT
+        # leak into the upload allowlist through the dynamic union.
+        assert "png" in registry.suffix_capabilities("mineru")
+        assert ".png" not in dm.supported_extensions
+    finally:
+        registry._REGISTRY.pop("allowlist-test-engine", None)
+    assert not dm.is_supported_file("sample.foo")

@@ -1013,7 +1013,7 @@ class DocumentManager:
         # Store the base input directory and workspace
         self.base_input_dir = Path(input_dir)
         self.workspace = workspace
-        self.supported_extensions = supported_extensions
+        self._base_supported_extensions = supported_extensions
         self.indexed_files = set()
 
         # Create workspace-specific input directory
@@ -1025,6 +1025,26 @@ class DocumentManager:
 
         # Create input directory if it doesn't exist
         self.input_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def supported_extensions(self) -> tuple:
+        """Curated built-in allowlist ∪ third-party engine suffixes.
+
+        Computed live from the parser registry so a `lightrag.parsers`
+        plugin's file types become uploadable/scannable as soon as the
+        plugin is registered — without widening the curated built-in set
+        (e.g. mineru's image suffixes stay non-uploadable by default).
+        """
+        from lightrag.parser.registry import third_party_engine_suffixes
+
+        extra = tuple(
+            sorted(
+                f".{s}"
+                for s in third_party_engine_suffixes()
+                if f".{s}" not in self._base_supported_extensions
+            )
+        )
+        return self._base_supported_extensions + extra
 
     def scan_directory_for_new_files(self) -> List[Path]:
         """Scan input directory for new files"""
