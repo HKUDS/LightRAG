@@ -337,13 +337,10 @@ async def test_pipeline_enqueue_lightrag_document_docx_does_not_move_source(
     assert rag.enqueued[0]["parse_engine"] == "native"
 
 
-async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
-    tmp_path, monkeypatch
-):
+async def test_pipeline_enqueue_docx_defers_to_legacy_parser(tmp_path, monkeypatch):
+    # Legacy now defers extraction to the worker stage; enqueue just records a
+    # PENDING_PARSE row with parse_engine=legacy (no eager extraction here).
     monkeypatch.setenv("LIGHTRAG_PARSER", "docx:legacy")
-    monkeypatch.setattr(
-        _document_routes, "_extract_docx", lambda file_bytes: "plain docx content"
-    )
     file_path = tmp_path / "plain.docx"
     file_path.write_bytes(b"docx bytes")
     rag = _FakeRag()
@@ -356,21 +353,23 @@ async def test_pipeline_enqueue_docx_plain_text_extracts_before_enqueue(
     assert returned_track_id == "track-docx"
     assert rag.enqueued == [
         {
-            "input": "plain docx content",
-            "file_path": file_path.name,
+            "input": "",
+            "file_path": str(file_path),
             "track_id": "track-docx",
-            "docs_format": None,
+            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parse_engine": "legacy",
             "process_options": PROCESS_OPTION_CHUNK_FIXED,
             "chunk_options": None,
             "from_scan": False,
         }
     ]
-    assert not file_path.exists()
-    assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
+    # Deferred: the source stays in place until the worker archives it.
+    assert file_path.exists()
 
 
-async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
+async def test_pipeline_enqueue_md_defers_to_legacy_parser(tmp_path, monkeypatch):
+    # Unhinted .md defaults to the legacy engine and now defers extraction to
+    # the worker stage (PENDING_PARSE), like every other engine.
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     file_path = tmp_path / "notes.md"
     file_path.write_text("# Notes\n\nmarkdown content", encoding="utf-8")
@@ -382,18 +381,18 @@ async def test_pipeline_enqueue_md_moves_after_enqueue(tmp_path, monkeypatch):
     assert returned_track_id == "track-md"
     assert rag.enqueued == [
         {
-            "input": "# Notes\n\nmarkdown content",
-            "file_path": file_path.name,
+            "input": "",
+            "file_path": str(file_path),
             "track_id": "track-md",
-            "docs_format": None,
+            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
             "parse_engine": "legacy",
             "process_options": PROCESS_OPTION_CHUNK_FIXED,
             "chunk_options": None,
             "from_scan": False,
         }
     ]
-    assert not file_path.exists()
-    assert (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
+    # Deferred: the source stays in place until the worker archives it.
+    assert file_path.exists()
 
 
 async def test_pipeline_enqueue_legacy_duplicate_archives_with_unique_name(
@@ -427,10 +426,8 @@ async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
     monkeypatch.setenv("MINERU_API_MODE", "local")
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
-    def _fail_pdf_extract(*args, **kwargs):
-        raise AssertionError("parser-routed PDF should not be extracted before enqueue")
-
-    monkeypatch.setattr(_document_routes, "_extract_pdf_pypdf", _fail_pdf_extract)
+    # Extraction is always deferred now (no enqueue-stage extraction for any
+    # engine), so the pdf simply enqueues as PENDING_PARSE for mineru.
     file_path = tmp_path / "paper.pdf"
     file_path.write_bytes(b"fake-pdf")
     rag = _FakeRag()
@@ -1906,14 +1903,10 @@ async def test_parse_native_docx_content_list_failure_raises_without_fallback(
     def _raise_parser(file_path, fixlevel=None, drawing_context=None, **kwargs):
         raise RuntimeError("content list boom")
 
-    def _fail_fallback(file_bytes):
-        raise AssertionError("plain text fallback should not run")
-
     monkeypatch.setattr(
         "lightrag.parser.docx.parse_document.extract_docx_blocks",
         _raise_parser,
     )
-    monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
 
     with pytest.raises(RuntimeError, match="content list boom"):
         await LightRAG.parse_native(
@@ -1934,14 +1927,10 @@ async def test_parse_native_docx_empty_content_list_result_raises_without_fallba
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
 
-    def _fail_fallback(file_bytes):
-        raise AssertionError("plain text fallback should not run")
-
     monkeypatch.setattr(
         "lightrag.parser.docx.parse_document.extract_docx_blocks",
         lambda *args, **kwargs: [],
     )
-    monkeypatch.setattr(_document_routes, "_extract_docx", _fail_fallback)
 
     with pytest.raises(ValueError, match="empty content"):
         await LightRAG.parse_native(
@@ -1968,3 +1957,19 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
     # All lightrag rows route to the internal reuse handler (reuse the stored
     # sidecar without re-parsing) regardless of the originating engine.
     assert engine == "reuse"
+
+
+def test_upload_allowlist_subset_of_registry_suffixes(tmp_path):
+    """Every extension the upload endpoint accepts must be parseable by at
+    least one registered engine (directional; the allowlist is curated and is
+    NOT required to cover every engine suffix)."""
+    from lightrag.parser import registry
+
+    dm = DocumentManager(str(tmp_path))
+    all_suffixes = set()
+    for engine in registry.supported_parser_engines():
+        all_suffixes |= {f".{s}" for s in registry.suffix_capabilities(engine)}
+
+    allowlist = {ext.lower() for ext in dm.supported_extensions}
+    missing = allowlist - all_suffixes
+    assert not missing, f"upload allowlist has unparseable extensions: {missing}"
