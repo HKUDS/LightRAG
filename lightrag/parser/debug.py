@@ -1,4 +1,4 @@
-"""Shared debug LightRAG stand-in for the parse_* entry points.
+"""Shared debug LightRAG stand-in for registry-dispatched parsing.
 
 A minimal ``LightRAG`` stand-in plus a deterministic ``datetime`` shim,
 shared by the unified parser debug CLI (``lightrag/parser/cli.py``),
@@ -6,11 +6,12 @@ the golden-fixture regen script (``scripts/regen_native_docx_golden.py``),
 and the byte-equivalence golden tests
 (``tests/parser/docx/test_native_docx_golden.py``).
 
-All three engines (``native`` / ``mineru`` / ``docling``) read the same
-``self`` surface (``_persist_parsed_full_docs``, ``_resolve_source_file_for_parser``,
+Every engine is driven the same way — ``get_parser(engine).parse(
+ParseContext(rag, ...))`` — and ``ParseContext`` reads the same ``rag``
+surface (``_persist_parsed_full_docs``, ``_resolve_source_file_for_parser``,
 ``self.full_docs``, ``self.doc_status``), so a single stand-in covers every
-``parse_*`` method — when one of them grows a new dependency, extend
-this module rather than copy-pasting parallel stubs into each call site.
+engine — when a parser grows a new dependency, extend this module rather
+than copy-pasting parallel stubs into each call site.
 """
 
 from __future__ import annotations
