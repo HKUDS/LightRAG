@@ -166,7 +166,9 @@ async def test_parse_worker_drops_body_and_sets_summary_length(tmp_path):
             (doc_id, _make_status_doc(doc_id, content_hash="hash-raw"))
         )
 
-        worker = asyncio.create_task(rag._parse_worker("native", ctx.parse_queues["native"], ctx))
+        worker = asyncio.create_task(
+            rag._parse_worker("native", ctx.parse_queues["native"], ctx)
+        )
         try:
             await asyncio.wait_for(ctx.parse_queues["native"].join(), timeout=2.0)
         finally:

@@ -1299,9 +1299,7 @@ class _PipelineMixin:
                 )
             if owners:
                 owner = owners[0]
-                return int(
-                    os.getenv(owner.concurrency_env, owner.default_concurrency)
-                )
+                return int(os.getenv(owner.concurrency_env, owner.default_concurrency))
             return self.max_parallel_parse_native
 
         workers: list[asyncio.Task] = []
@@ -1365,9 +1363,7 @@ class _PipelineMixin:
                 queue = ctx.parse_queues.get(group, ctx.parse_queues["native"])
                 await queue.put((doc_id, status_doc))
 
-            await asyncio.gather(
-                *(q.join() for q in ctx.parse_queues.values())
-            )
+            await asyncio.gather(*(q.join() for q in ctx.parse_queues.values()))
             await ctx.q_analyze.join()
             await ctx.q_process.join()
         finally:
@@ -1699,9 +1695,7 @@ class _PipelineMixin:
                 # (snapshot-consistent: a mid-batch register_parser cannot be
                 # picked up here). ``engine`` is only the queue-group/pool id.
                 specs = ctx.parser_specs
-                doc_format_w = content_data_w.get(
-                    "parse_format", FULL_DOCS_FORMAT_RAW
-                )
+                doc_format_w = content_data_w.get("parse_format", FULL_DOCS_FORMAT_RAW)
                 key = resolve_stored_document_parser_engine(
                     file_path=file_path_w, content_data=content_data_w
                 )
