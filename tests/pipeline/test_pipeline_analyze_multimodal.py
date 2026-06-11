@@ -522,6 +522,76 @@ async def test_invalid_vlm_response_retries_once_then_succeeds(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_malformed_cached_analysis_bypassed_and_overwritten(tmp_path):
+    """A malformed analysis cache entry (e.g. persisted by an older version)
+    is served on the first attempt, bypassed on the retry, and the fresh
+    successful response overwrites the same cache key."""
+    call_log: list[dict] = []
+
+    async def vlm_func(prompt, **kwargs):
+        call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        name = "seed-fig" if len(call_log) == 1 else "fresh-fig"
+        return json.dumps(
+            {
+                "name": name,
+                "type": "Chart",
+                "description": "concise figure description",
+            }
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+
+        # First run populates the analysis cache with a valid response.
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 1
+
+        # Corrupt the cache entry in place: same key, malformed body.
+        # JsonKVStorage shares one in-process store per (namespace,
+        # workspace), so go through the storage API rather than the file.
+        await rag.llm_response_cache.index_done_callback()
+        cache_file = (
+            Path(rag.working_dir) / rag.workspace / "kv_store_llm_response_cache.json"
+        )
+        cache_blob = json.loads(cache_file.read_text(encoding="utf-8"))
+        analysis_keys = [k for k in cache_blob if k.startswith("default:analysis:")]
+        assert len(analysis_keys) == 1
+        cache_key = analysis_keys[0]
+        corrupted_entry = dict(cache_blob[cache_key])
+        corrupted_entry["return"] = "not-json"
+        await rag.llm_response_cache.upsert({cache_key: corrupted_entry})
+
+        # Re-run: the first attempt consumes the malformed cache entry
+        # without a model call; the retry bypasses the cache and calls the
+        # VLM exactly once.
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 2
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "fresh-fig"
+
+        # The fresh response overwrote the malformed entry under the same key.
+        overwritten = await rag.llm_response_cache.get_by_id(cache_key)
+        assert overwritten is not None
+        assert json.loads(overwritten["return"])["name"] == "fresh-fig"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_invalid_vlm_response_hard_fails(tmp_path):
     """Invalid model JSON propagates MultimodalAnalysisError and lands a
     status=failure marker after one retry so re-runs don't silently

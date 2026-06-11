@@ -3865,31 +3865,28 @@ class _PipelineMixin:
                 fresh response can overwrite the same cache key after success.
                 """
 
-                last_error: _MMJSONConformanceError | None = None
-                for attempt_index in range(2):
-                    use_cached_response = attempt_index == 0 and cached is not None
-                    if use_cached_response:
-                        result_text = cached[0]
-                        fresh = False
-                    else:
-                        result_text = await call_model_once()
-                        fresh = True
+                def _attempt(raw: Any, fresh: bool) -> tuple[dict[str, str], str, bool]:
+                    text = str(raw)
+                    return validate_result(_json_extract(text)), text, fresh
 
-                    try:
-                        parsed = _json_extract(str(result_text))
-                        return validate_result(parsed), str(result_text), fresh
-                    except _MMJSONConformanceError as exc:
-                        last_error = exc
-                        if attempt_index == 0:
-                            source = "cache" if use_cached_response else "model"
-                            logger.warning(
-                                f"[analyze_multimodal] {prefix}: invalid JSON "
-                                f"schema from {source}; retrying once: {exc}"
-                            )
-                            continue
-                        raise MultimodalAnalysisError(str(exc)) from exc
+                use_cached_response = cached is not None
+                first_text = (
+                    cached[0] if use_cached_response else await call_model_once()
+                )
+                try:
+                    return _attempt(first_text, fresh=not use_cached_response)
+                except _MMJSONConformanceError as exc:
+                    source = "cache" if use_cached_response else "model"
+                    logger.warning(
+                        f"[analyze_multimodal] {prefix}: invalid JSON schema "
+                        f"from {source}; retrying once: {exc} "
+                        f"(response snippet: {str(first_text)[:200]!r})"
+                    )
 
-                raise MultimodalAnalysisError(str(last_error)) from last_error
+                try:
+                    return _attempt(await call_model_once(), fresh=True)
+                except _MMJSONConformanceError as exc:
+                    raise MultimodalAnalysisError(str(exc)) from exc
 
             def _normalize_text(value: Any) -> str:
                 if value is None:
