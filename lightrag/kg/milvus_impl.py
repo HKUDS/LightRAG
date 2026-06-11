@@ -44,6 +44,9 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
 MILVUS_MAX_VARCHAR_BYTES = 65535
+MILVUS_IDENTITY_VARCHAR_FIELDS = frozenset(
+    {"id", "entity_name", "full_doc_id", "src_id", "tgt_id"}
+)
 
 # Supported index types
 SUPPORTED_INDEX_TYPES = {
@@ -619,6 +622,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if len(encoded) <= limit:
             return value
 
+        if field_name in MILVUS_IDENTITY_VARCHAR_FIELDS:
+            raise ValueError(
+                f"[{self.workspace}] Milvus field '{field_name}' for record "
+                f"'{record_id or '<unknown>'}' exceeds {limit} bytes "
+                f"({len(encoded)} bytes); identity fields cannot be truncated"
+            )
+
         truncated = encoded[:limit].decode("utf-8", errors="ignore")
         logger.warning(
             "[%s] Milvus field '%s' for record '%s' truncated from %d to %d bytes",
@@ -1029,6 +1039,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             f"[{self.workspace}] Consider recreating the collection for optimal performance."
         )
         return
+
+    @staticmethod
+    def _is_vector_dimension_mismatch_error(error: ValueError) -> bool:
+        return "Vector dimension mismatch" in str(error)
 
     def _check_file_path_length_restriction(self, collection_info: dict) -> bool:
         """Check if collection has file_path length restrictions that need migration
@@ -1502,10 +1516,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     self._validate_collection_and_load()
                     return
                 except ValueError as migration_skip_error:
+                    if not self._is_vector_dimension_mismatch_error(
+                        migration_skip_error
+                    ):
+                        raise RuntimeError(
+                            f"Legacy collection migration failed for "
+                            f"'{self.legacy_namespace}': {migration_skip_error}"
+                        ) from migration_skip_error
                     logger.warning(
                         f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' is not compatible, "
                         f"creating new collection '{self.final_namespace}': {migration_skip_error}"
                     )
+                except Exception as migration_error:
+                    raise RuntimeError(
+                        f"Legacy collection migration failed for "
+                        f"'{self.legacy_namespace}': {migration_error}"
+                    ) from migration_error
 
             # Collection doesn't exist, create new collection
             logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")

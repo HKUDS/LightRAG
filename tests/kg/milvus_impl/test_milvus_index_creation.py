@@ -366,6 +366,42 @@ class TestMilvusIndexCreation:
             storage.final_namespace
         )
 
+    def test_legacy_describe_failure_does_not_create_empty_suffixed_collection(self):
+        storage = _make_model_storage()
+        collections = {storage.legacy_namespace}
+        client = _wire_collection_state(storage, collections)
+        client.describe_collection.side_effect = RuntimeError("milvus unavailable")
+
+        with pytest.raises(RuntimeError, match="Legacy collection migration failed"):
+            storage._create_collection_if_not_exist()
+
+        client.create_collection.assert_not_called()
+        assert storage.legacy_namespace in collections
+        assert storage.final_namespace not in collections
+
+    def test_legacy_migration_failure_does_not_create_empty_suffixed_collection(self):
+        storage = _make_model_storage()
+        legacy_info = _collection_info(["entity_name", "content", "source_id"])
+        collections = {storage.legacy_namespace}
+        client = _wire_collection_state(
+            storage,
+            collections,
+            {storage.legacy_namespace: legacy_info},
+        )
+
+        with patch.object(
+            storage,
+            "_migrate_collection_schema",
+            side_effect=RuntimeError("migration failed"),
+        ):
+            with pytest.raises(RuntimeError, match="Legacy collection migration failed"):
+                storage._create_collection_if_not_exist()
+
+        client.query_iterator.assert_not_called()
+        client.create_collection.assert_not_called()
+        assert storage.legacy_namespace in collections
+        assert storage.final_namespace not in collections
+
     def test_migration_insert_batches_use_build_upsert_batches(self):
         storage = _make_model_storage()
         storage._max_upsert_payload_bytes = 1024

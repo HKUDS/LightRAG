@@ -161,6 +161,7 @@ async def test_upsert_truncates_oversized_content_for_payload_only():
     upserted = s._client.upsert.call_args.kwargs["data"][0]
     assert len(upserted["content"].encode("utf-8")) == MILVUS_MAX_VARCHAR_BYTES
     assert embed.texts == [content]
+    assert s._pending_vector_docs == {}
 
 
 @pytest.mark.asyncio
@@ -176,6 +177,70 @@ async def test_upsert_truncates_multibyte_content_on_character_boundary():
     assert len(upserted["content"].encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
     upserted["content"].encode("utf-8").decode("utf-8")
     assert embed.texts == [content]
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_oversized_primary_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    long_id = "v" * 65
+
+    with pytest.raises(ValueError, match="identity fields cannot be truncated"):
+        await s.upsert({long_id: {"content": "hello"}})
+
+    assert s._pending_vector_docs == {}
+    assert embed.call_count == 0
+    s._client.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_oversized_entity_name():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content", "entity_name"})
+    long_entity_name = "e" * 513
+
+    with pytest.raises(ValueError, match="identity fields cannot be truncated"):
+        await s.upsert({"ent-1": {"content": "hello", "entity_name": long_entity_name}})
+
+    assert s._pending_vector_docs == {}
+    assert embed.call_count == 0
+    s._client.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_oversized_relation_identity_fields():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="relationships")
+    long_entity_id = "e" * 513
+
+    with pytest.raises(ValueError, match="identity fields cannot be truncated"):
+        await s.upsert(
+            {
+                "rel-1": {
+                    "content": "hello",
+                    "src_id": long_entity_id,
+                    "tgt_id": "B",
+                }
+            }
+        )
+
+    assert s._pending_vector_docs == {}
+    assert embed.call_count == 0
+    s._client.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_oversized_full_doc_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", meta_fields={"content", "full_doc_id"})
+    long_doc_id = "d" * 65
+
+    with pytest.raises(ValueError, match="identity fields cannot be truncated"):
+        await s.upsert({"chunk-1": {"content": "hello", "full_doc_id": long_doc_id}})
+
+    assert s._pending_vector_docs == {}
+    assert embed.call_count == 0
+    s._client.upsert.assert_not_called()
 
 
 @pytest.mark.asyncio
