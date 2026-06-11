@@ -834,6 +834,19 @@ class QueueFullError(Exception):
     pass
 
 
+class VectorStorageConsistencyError(Exception):
+    """Raised when a vector storage write fails after the graph has already been updated.
+
+    The knowledge graph (plus the text_chunks KV store) is the authoritative data
+    source, so no data is lost — but the vector storage no longer mirrors the graph
+    and query results may be incomplete until it is rebuilt. Stop the LightRAG
+    server and run the offline rebuild tool (``lightrag-rebuild-vdb``) to restore
+    consistency.
+    """
+
+    pass
+
+
 class WorkerTimeoutError(Exception):
     """Worker-level timeout exception with specific timeout information"""
 

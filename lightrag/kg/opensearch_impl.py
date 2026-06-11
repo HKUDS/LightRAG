@@ -3156,7 +3156,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 if k
                 not in (
                     "_id",
-                    "entity_id",
                     "source_ids",
                     "connected_edges",
                     "edge_count",

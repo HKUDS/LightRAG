@@ -1505,9 +1505,18 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """
-        Return the full node document, or None if missing.
+        Return the node properties, or None if missing.
+
+        The Mongo-managed ``_id`` (which holds the entity name) is stripped so
+        the returned dict carries only node properties, matching the contract
+        honored by the other backends. Leaving it in lets callers that re-upsert
+        a fetched node (e.g. entity rename) push ``_id`` into ``$set``, which
+        MongoDB rejects as a modification of the immutable ``_id``.
         """
-        return await self.collection.find_one({"_id": node_id})
+        doc = await self.collection.find_one({"_id": node_id})
+        if doc is not None:
+            doc.pop("_id", None)
+        return doc
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
@@ -1515,9 +1524,15 @@ class MongoGraphStorage(BaseGraphStorage):
         # Canonical (edge_lo, edge_hi) point lookup served by the compound unique
         # index (see has_edge); the fail-fast migration guarantees the endpoints.
         edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
-        return await self.edge_collection.find_one(
+        doc = await self.edge_collection.find_one(
             {"edge_lo": edge_lo, "edge_hi": edge_hi}
         )
+        if doc is not None:
+            # Strip the Mongo-managed ``_id`` so re-upserting a fetched edge
+            # (e.g. relation rewrite during entity rename) cannot push ``_id``
+            # into ``$set`` and trip the immutable-field error.
+            doc.pop("_id", None)
+        return doc
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
@@ -1548,7 +1563,8 @@ class MongoGraphStorage(BaseGraphStorage):
         result = {}
 
         async for doc in self.collection.find({"_id": {"$in": node_ids}}):
-            result[doc.get("_id")] = doc
+            node_id = doc.pop("_id")
+            result[node_id] = doc
         return result
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:

@@ -457,6 +457,16 @@ async def test_graph_advanced(storage):
             len(kg.edges) == 2
         ), f"The knowledge graph should have 2 edges, but got {len(kg.edges)}"
 
+        # 6.1 Every returned node must carry its entity_id in properties: the
+        # WebUI reads properties['entity_id'] to render the node "Name" row and
+        # neighbour/edge-endpoint labels. A backend that strips it leaves the
+        # property panel nameless (regression guard for all backends).
+        expected_ids = {node1_id, node2_id, node3_id}
+        for kg_node in kg.nodes:
+            assert (
+                kg_node.properties.get("entity_id") in expected_ids
+            ), f"Node {kg_node.id} is missing entity_id in properties: {kg_node.properties}"
+
         # 7. Test delete_node - delete a node
         print(f"== Testing delete_node: {node3_id}")
         await storage.delete_node(node3_id)
