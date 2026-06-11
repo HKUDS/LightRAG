@@ -4,7 +4,7 @@ Offline Vector Storage (VDB) Rebuild Tool for LightRAG
 
 The knowledge graph and the text_chunks KV store are the authoritative data
 sources in LightRAG. If a vector storage write fails at runtime (e.g. during
-an entity merge, see issue #2917), graph and vector storage drift apart:
+an entity editing with WebUI), graph and vector storage drift apart:
 graph records lose their vector counterparts (and stale vector records may
 remain). This tool restores consistency by dropping each vector storage and
 rebuilding it from scratch from its authoritative source:
@@ -12,6 +12,11 @@ rebuilding it from scratch from its authoritative source:
     entities_vdb       <- graph nodes
     relationships_vdb  <- graph edges
     chunks_vdb         <- text_chunks KV store
+
+It can also be used after changing the embedding model or embedding
+dimension. Run it with the updated embedding configuration and rebuild all
+vector storages so stored vectors match the embedding space the server will
+query.
 
 A diagnostic consistency check mode is also provided so users can decide
 whether a (potentially expensive, full re-embedding) rebuild is needed. The

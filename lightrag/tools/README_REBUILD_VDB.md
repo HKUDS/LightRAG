@@ -29,6 +29,15 @@ A full drop + rebuild also clears *reverse* orphans (records present in the
 vector storage but absent from the graph), which incremental repair cannot
 reliably do.
 
+You can also use this tool after changing the embedding model or embedding
+dimension. Existing vector records were generated in the old embedding space
+(and some vector backends bind collections/tables to the configured dimension),
+so run the tool with the updated `.env` and choose **Rebuild ALL vector
+storages** to regenerate `entities_vdb`, `relationships_vdb`, and `chunks_vdb`
+from the authoritative graph/KV sources. The consistency check is not enough
+for this case because it only detects missing graph → VDB records, not vectors
+that exist but were embedded with a previous model or dimension.
+
 ## Usage
 
 ```bash
@@ -64,13 +73,18 @@ Menu options:
 2. **Rebuild entities + relationships VDB** — sufficient for the #2917
    merge-failure scenario.
 3. **Rebuild chunks VDB**.
-4. **Rebuild ALL vector storages**.
+4. **Rebuild ALL vector storages** — use this after changing the embedding
+   model or embedding dimension.
 
 ## Important notes
 
 - **Stop the server first.** The tool drops and rewrites vector storages;
   concurrent writers (any backend, not just file-based ones) can corrupt
   data or lose updates.
+- **Embedding model/dimension changes.** Run the tool with the new embedding
+  configuration and rebuild all vector storages. A consistency check can still
+  pass when every vector record exists but was created with the old embedding
+  model or dimension.
 - **Embedding cost.** A rebuild re-embeds every affected record. On large
   datasets this means real API cost and time. Use the check mode first, and
   rebuild only the storages that need it.
