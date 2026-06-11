@@ -2380,8 +2380,8 @@ def test_analyze_multimodal_invalid_json_hard_fails(tmp_path):
 
         drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
-        # No retry: VLM mock called exactly once.
-        assert calls["n"] == 1
+        # One JSON conformance retry, then the hard failure surfaces.
+        assert calls["n"] == 2
         # Sidecar carries a failure marker so a re-run sees the prior failure
         # and does not silently consume it.
         assert result["status"] == "failure"

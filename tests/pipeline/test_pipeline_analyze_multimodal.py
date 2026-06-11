@@ -262,6 +262,7 @@ async def test_vlm_call_carries_image_inputs(tmp_path):
         kwargs = call_log[0]["kwargs"]
         assert kwargs.get("stream") is False
         assert kwargs.get("image_inputs") is not None
+        assert kwargs.get("response_format") == {"type": "json_object"}
         assert "messages" not in kwargs
         # _priority is consumed by the wrapper (see lightrag.utils
         # priority_limit_async_func_call); not observable on the raw mock.
@@ -479,9 +480,51 @@ async def test_tiny_image_writes_skipped_without_vlm_call(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_invalid_vlm_response_retries_once_then_succeeds(tmp_path):
+    """A transient malformed VLM JSON response should be retried once in the
+    item analysis layer, then persist the successful second response."""
+    call_log: list[dict] = []
+
+    async def vlm_func(prompt, **kwargs):
+        call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        if len(call_log) == 1:
+            return "not-json"
+        return json.dumps(
+            {
+                "name": "retry-fig",
+                "type": "Chart",
+                "description": "valid after retry",
+            }
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 2
+        assert all(
+            call["kwargs"].get("response_format") == {"type": "json_object"}
+            for call in call_log
+        )
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "retry-fig"
+        assert result["description"] == "valid after retry"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_invalid_vlm_response_hard_fails(tmp_path):
     """Invalid model JSON propagates MultimodalAnalysisError and lands a
-    status=failure marker on the sidecar so re-runs don't silently
+    status=failure marker after one retry so re-runs don't silently
     consume the failure."""
     call_log: list[dict] = []
 
@@ -500,7 +543,7 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
                 parsed_data=parsed_data,
                 process_options="i",
             )
-        assert len(call_log) == 1
+        assert len(call_log) == 2
         await rag.llm_response_cache.index_done_callback()
         cache_file = (
             Path(rag.working_dir) / rag.workspace / "kv_store_llm_response_cache.json"
@@ -516,6 +559,76 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         item = payload["drawings"]["im-001"]
         assert item["llm_analyze_result"]["status"] == "failure"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_table_extract_json_conformance_retry_succeeds(tmp_path):
+    """Table analysis uses the EXTRACT role and retries once when the JSON
+    object is valid but missing required schema fields."""
+    extract_log: list[dict] = []
+    vlm_log: list[dict] = []
+
+    async def extract_func(prompt, **kwargs):
+        extract_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        if len(extract_log) == 1:
+            return json.dumps({"description": "missing name"})
+        return json.dumps(
+            {
+                "name": "retry-table",
+                "description": "valid table summary",
+            }
+        )
+
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=True,
+        vlm_func=_make_vlm_mock(vlm_log),
+        extract_func=extract_func,
+    )
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+            encoding="utf-8",
+        )
+        tables_path = parsed_dir / "doc.tables.json"
+        tables_path.write_text(
+            json.dumps(
+                {
+                    "tables": {
+                        "tb-001": {
+                            "caption": "Table 1",
+                            "format": "html",
+                            "content": "<table><tr><td>A</td></tr></table>",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        await rag.analyze_multimodal(
+            doc_id="doc-1",
+            file_path="fixture.pdf",
+            parsed_data={"blocks_path": str(blocks_path)},
+            process_options="t",
+        )
+        assert vlm_log == []
+        assert len(extract_log) == 2
+        assert all(
+            call["kwargs"].get("response_format") == {"type": "json_object"}
+            for call in extract_log
+        )
+        payload = json.loads(tables_path.read_text(encoding="utf-8"))
+        result = payload["tables"]["tb-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "retry-table"
+        assert result["description"] == "valid table summary"
     finally:
         await rag.finalize_storages()
 
