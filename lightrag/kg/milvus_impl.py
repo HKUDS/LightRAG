@@ -1504,34 +1504,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 and self._client.has_collection(self.legacy_namespace)
             )
             if legacy_collection_exists:
-                try:
-                    legacy_collection_info = self._client.describe_collection(
-                        self.legacy_namespace
-                    )
-                    self._check_vector_dimension(legacy_collection_info)
-                    self._migrate_collection_schema(
-                        source_collection_name=self.legacy_namespace,
-                        target_collection_name=self.final_namespace,
-                    )
-                    self._validate_collection_and_load()
-                    return
-                except ValueError as migration_skip_error:
-                    if not self._is_vector_dimension_mismatch_error(
-                        migration_skip_error
-                    ):
-                        raise RuntimeError(
-                            f"Legacy collection migration failed for "
-                            f"'{self.legacy_namespace}': {migration_skip_error}"
-                        ) from migration_skip_error
-                    logger.warning(
-                        f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' is not compatible, "
-                        f"creating new collection '{self.final_namespace}': {migration_skip_error}"
-                    )
-                except Exception as migration_error:
-                    raise RuntimeError(
-                        f"Legacy collection migration failed for "
-                        f"'{self.legacy_namespace}': {migration_error}"
-                    ) from migration_error
+                logger.warning(
+                    f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' exists, "
+                    f"creating new collection '{self.final_namespace}' without migration"
+                )
 
             # Collection doesn't exist, create new collection
             logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")

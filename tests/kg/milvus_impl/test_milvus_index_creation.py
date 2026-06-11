@@ -263,7 +263,7 @@ class TestMilvusIndexCreation:
         client.create_collection.assert_not_called()
         client.load_collection.assert_called_with(storage.final_namespace)
 
-    def test_legacy_old_meta_schema_migrates_once_to_suffixed_collection(self):
+    def test_legacy_old_meta_schema_creates_empty_suffixed_collection(self):
         storage = _make_model_storage()
         collections = {storage.legacy_namespace}
         client = _wire_collection_state(
@@ -278,36 +278,22 @@ class TestMilvusIndexCreation:
                 ),
             },
         )
-        iterator = MagicMock()
-        iterator.next.side_effect = [
-            [
-                {
-                    "id": "ent-1",
-                    "vector": [0.0] * 128,
-                    "entity_name": "Entity",
-                    "$meta": {"content": "body", "source_id": "doc-1"},
-                }
-            ],
-            [],
-        ]
-        client.query_iterator.return_value = iterator
 
         with patch.object(storage, "_create_indexes_after_collection"):
-            storage._create_collection_if_not_exist()
+            with patch.object(storage, "_migrate_collection_schema") as migrate:
+                storage._create_collection_if_not_exist()
 
-        client.query_iterator.assert_called_once_with(
-            collection_name=storage.legacy_namespace,
-            batch_size=2000,
-            output_fields=["*"],
+        migrate.assert_not_called()
+        client.query_iterator.assert_not_called()
+        client.insert.assert_not_called()
+        client.create_collection.assert_called_once()
+        assert client.create_collection.call_args.kwargs["collection_name"] == (
+            storage.final_namespace
         )
-        inserted = client.insert.call_args.kwargs["data"][0]
-        assert inserted["content"] == "body"
-        assert inserted["source_id"] == "doc-1"
-        assert "$meta" not in inserted
         assert storage.legacy_namespace in collections
         assert storage.final_namespace in collections
 
-    def test_legacy_new_schema_still_migrates_to_suffixed_collection(self):
+    def test_legacy_new_schema_creates_empty_suffixed_collection(self):
         storage = _make_model_storage(namespace="chunks")
         collections = {storage.legacy_namespace}
         client = _wire_collection_state(
@@ -322,24 +308,65 @@ class TestMilvusIndexCreation:
                 ),
             },
         )
-        iterator = MagicMock()
-        iterator.next.side_effect = [
-            [{"id": "chunk-1", "vector": [0.0] * 128, "content": "body"}],
-            [],
-        ]
-        client.query_iterator.return_value = iterator
 
         with patch.object(storage, "_create_indexes_after_collection"):
-            storage._create_collection_if_not_exist()
+            with patch.object(storage, "_migrate_collection_schema") as migrate:
+                storage._create_collection_if_not_exist()
 
-        client.query_iterator.assert_called_once()
-        assert client.query_iterator.call_args.kwargs["collection_name"] == (
-            storage.legacy_namespace
-        )
-        client.rename_collection.assert_any_call(
-            f"{storage.final_namespace}_temp", storage.final_namespace
+        migrate.assert_not_called()
+        client.query_iterator.assert_not_called()
+        client.insert.assert_not_called()
+        client.rename_collection.assert_not_called()
+        client.create_collection.assert_called_once()
+        assert client.create_collection.call_args.kwargs["collection_name"] == (
+            storage.final_namespace
         )
         assert storage.final_namespace in collections
+
+    def test_legacy_same_dimension_creates_suffixed_collection_without_migration(self):
+        storage = _make_model_storage()
+        client = _wire_collection_state(
+            storage,
+            {storage.legacy_namespace},
+            {
+                storage.legacy_namespace: _collection_info(
+                    ["entity_name", "content", "source_id"]
+                )
+            },
+        )
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with patch.object(storage, "_migrate_collection_schema") as migrate:
+                storage._create_collection_if_not_exist()
+
+        migrate.assert_not_called()
+        client.describe_collection.assert_not_called()
+        client.query_iterator.assert_not_called()
+        client.create_collection.assert_called_once()
+        assert client.create_collection.call_args.kwargs["collection_name"] == (
+            storage.final_namespace
+        )
+
+    def test_no_model_suffix_old_meta_schema_migrates_in_place(self):
+        storage = _make_storage(namespace="entities")
+        storage.model_suffix = None
+        storage.legacy_namespace = storage.final_namespace
+        client = _wire_collection_state(
+            storage,
+            {storage.final_namespace},
+            {
+                storage.final_namespace: _collection_info(
+                    ["entity_name", "file_path"]
+                )
+            },
+        )
+
+        with patch.object(storage, "_migrate_collection_schema") as migrate:
+            storage._create_collection_if_not_exist()
+
+        migrate.assert_called_once_with()
+        client.create_collection.assert_not_called()
+        client.load_collection.assert_called_with(storage.final_namespace)
 
     def test_legacy_dimension_mismatch_creates_suffixed_collection_without_migration(
         self,
@@ -366,20 +393,22 @@ class TestMilvusIndexCreation:
             storage.final_namespace
         )
 
-    def test_legacy_describe_failure_does_not_create_empty_suffixed_collection(self):
+    def test_legacy_describe_failure_does_not_block_suffixed_collection_creation(self):
         storage = _make_model_storage()
         collections = {storage.legacy_namespace}
         client = _wire_collection_state(storage, collections)
         client.describe_collection.side_effect = RuntimeError("milvus unavailable")
 
-        with pytest.raises(RuntimeError, match="Legacy collection migration failed"):
+        with patch.object(storage, "_create_indexes_after_collection"):
             storage._create_collection_if_not_exist()
 
-        client.create_collection.assert_not_called()
+        client.describe_collection.assert_not_called()
+        client.query_iterator.assert_not_called()
+        client.create_collection.assert_called_once()
         assert storage.legacy_namespace in collections
-        assert storage.final_namespace not in collections
+        assert storage.final_namespace in collections
 
-    def test_legacy_migration_failure_does_not_create_empty_suffixed_collection(self):
+    def test_legacy_migration_path_is_not_invoked_for_suffixed_collection(self):
         storage = _make_model_storage()
         legacy_info = _collection_info(["entity_name", "content", "source_id"])
         collections = {storage.legacy_namespace}
@@ -393,14 +422,15 @@ class TestMilvusIndexCreation:
             storage,
             "_migrate_collection_schema",
             side_effect=RuntimeError("migration failed"),
-        ):
-            with pytest.raises(RuntimeError, match="Legacy collection migration failed"):
+        ) as migrate:
+            with patch.object(storage, "_create_indexes_after_collection"):
                 storage._create_collection_if_not_exist()
 
+        migrate.assert_not_called()
         client.query_iterator.assert_not_called()
-        client.create_collection.assert_not_called()
+        client.create_collection.assert_called_once()
         assert storage.legacy_namespace in collections
-        assert storage.final_namespace not in collections
+        assert storage.final_namespace in collections
 
     def test_migration_insert_batches_use_build_upsert_batches(self):
         storage = _make_model_storage()
