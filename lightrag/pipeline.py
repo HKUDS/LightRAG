@@ -249,12 +249,19 @@ class _PipelineMixin:
 
         Args:
             input: Single document string or list of document strings (can be empty when docs_format is pending_parse)
-            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated (from content or file_path)
+            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated (from content or file_path).
+                **Providing ``ids`` marks the SDK raw direct-insert path**
+                (:meth:`LightRAG.ainsert`) and takes precedence over
+                ``docs_format``: the documents are always enqueued as RAW
+                — sanitized verbatim content, no parse-worker deferral —
+                by design, not as an oversight. ``pending_parse`` is the
+                server upload path, which never passes ``ids``.
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status
             docs_format: "raw" (default) or "pending_parse"; "pending_parse" defers
                 extraction to the parse worker (content may be empty and
-                content-dedup happens after parsing)
+                content-dedup happens after parsing). Ignored when ``ids``
+                is provided (see ``ids`` above).
             parse_engine: file extraction engine already used or target engine for pending_parse
             process_options: per-document processing options string (i/t/e/!/F/R/V/P);
                 accepted as a single string broadcast to every input or as a list
@@ -532,6 +539,10 @@ class _PipelineMixin:
             content_data["chunk_options"] = _chunk_options_at(index)
             contents[doc_id] = content_data
 
+        # ``ids`` outranks ``docs_format`` by design: explicit ids mark the
+        # SDK raw direct-insert path (ainsert), which always enqueues the
+        # sanitized body as RAW. pending_parse (server upload) never passes
+        # ids, so the two never legitimately combine.
         if ids is not None:
             for i, doc in enumerate(input):
                 cleaned_content = sanitize_text_for_encoding(doc)
