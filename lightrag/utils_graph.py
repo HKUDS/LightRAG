@@ -527,7 +527,7 @@ async def _edit_entity_impl(
         chunk_entity_relation_graph,
         entities_vdb,
         entity_name,
-        include_vector_data=True,
+        include_vector_data=False,
     )
 
 
@@ -730,7 +730,7 @@ async def aedit_entity(
                             chunk_entity_relation_graph,
                             entities_vdb,
                             entity_name,
-                            include_vector_data=True,
+                            include_vector_data=False,
                         )
                         return {**entity_info, "operation_summary": operation_summary}
 
@@ -932,7 +932,7 @@ async def aedit_relation(
                 relationships_vdb,
                 source_entity,
                 target_entity,
-                include_vector_data=True,
+                include_vector_data=False,
             )
         except Exception as e:
             logger.error(
@@ -1052,7 +1052,7 @@ async def acreate_entity(
                 chunk_entity_relation_graph,
                 entities_vdb,
                 entity_name,
-                include_vector_data=True,
+                include_vector_data=False,
             )
         except Exception as e:
             logger.error(f"Error while creating entity '{entity_name}': {e}")
@@ -1204,7 +1204,7 @@ async def acreate_relation(
                 relationships_vdb,
                 source_entity,
                 target_entity,
-                include_vector_data=True,
+                include_vector_data=False,
             )
         except Exception as e:
             logger.error(
@@ -1701,7 +1701,7 @@ async def _merge_entities_impl(
         chunk_entity_relation_graph,
         entities_vdb,
         target_entity,
-        include_vector_data=True,
+        include_vector_data=False,
     )
 
 

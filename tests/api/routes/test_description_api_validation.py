@@ -319,6 +319,39 @@ async def test_merge_entities_preserves_file_path_in_vector_updates(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_merge_response_is_built_from_graph_without_reading_vdb():
+    # The merge response is built from graph data only. Reading the vector
+    # store is redundant (the graph is authoritative) and previously leaked a
+    # non-JSON-serializable embedding (pgvector -> numpy) into the API
+    # response, causing a 500 on /graph/entity/edit with all-PostgreSQL.
+    graph = DummyMergeGraphStorage()
+    entities_vdb = DummyVectorStorage()
+    relationships_vdb = DummyVectorStorage()
+
+    vdb_reads = []
+    inner_get_by_id = entities_vdb.get_by_id
+
+    async def _tracked_get_by_id(id_):
+        vdb_reads.append(id_)
+        return await inner_get_by_id(id_)
+
+    entities_vdb.get_by_id = _tracked_get_by_id
+
+    result = await utils_graph._merge_entities_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        source_entities=["Alias", "Canonical"],
+        target_entity="Canonical",
+    )
+
+    assert "graph_data" in result
+    assert "vector_data" not in result
+    # The response did not read the entity vector store.
+    assert vdb_reads == []
+
+
+@pytest.mark.asyncio
 async def test_aedit_entity_merge_propagates_consistency_error(monkeypatch):
     """rename-with-merge must surface VectorStorageConsistencyError, not swallow it.
 
