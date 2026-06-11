@@ -7,7 +7,13 @@ from typing import Any, cast
 from .base import DeletionResult
 from .kg.shared_storage import get_storage_keyed_lock
 from .constants import GRAPH_FIELD_SEP
-from .utils import compute_mdhash_id, logger, make_relation_vdb_ids
+from .utils import (
+    VectorStorageConsistencyError,
+    compute_mdhash_id,
+    logger,
+    make_relation_vdb_ids,
+    safe_vdb_operation_with_exception,
+)
 from .base import StorageNameSpace
 
 
@@ -1229,6 +1235,15 @@ async def _merge_entities_impl(
     Note:
         Caller must acquire appropriate locks before calling this function.
         All source entities and the target entity should be locked together.
+
+    Failure semantics:
+        The knowledge graph is the authoritative data source. If a vector
+        storage upsert fails after retries (steps 7/8), this function raises
+        VectorStorageConsistencyError instead of attempting any rollback: the
+        graph already holds the merged state, no data is lost, and the source
+        entities have NOT been deleted yet (step 10 is never reached). The
+        vector storage may then lag behind the graph; running the offline
+        rebuild tool (``lightrag-rebuild-vdb``) restores full consistency.
     """
     # Default merge strategy for entities
     default_entity_merge_strategy = {
@@ -1388,7 +1403,7 @@ async def _merge_entities_impl(
             }
 
     # Apply relationship updates
-    logger.info(f"Entity Merge: updatign {len(relation_updates)} relations")
+    logger.info(f"Entity Merge: updating {len(relation_updates)} relations")
     for rel_data in relation_updates.values():
         await chunk_entity_relation_graph.upsert_edge(
             rel_data["graph_src"], rel_data["graph_tgt"], rel_data["data"]
@@ -1447,7 +1462,25 @@ async def _merge_entities_impl(
                 "file_path": edge_data.get("file_path", ""),
             }
         }
-        await relationships_vdb.upsert(relation_data_for_vdb)
+        try:
+            await safe_vdb_operation_with_exception(
+                operation=lambda payload=relation_data_for_vdb: relationships_vdb.upsert(
+                    payload
+                ),
+                operation_name="merge_relation_upsert",
+                entity_name=f"{normalized_src}-{normalized_tgt}",
+                max_retries=3,
+                retry_delay=0.2,
+            )
+        except Exception as e:
+            raise VectorStorageConsistencyError(
+                f"Vector storage upsert failed for relation `{normalized_src}`~`{normalized_tgt}` "
+                f"while merging entities into '{target_entity}': {e}. "
+                "The knowledge graph was updated but the vector storage was not, so they may "
+                "now be inconsistent. No data is lost (the graph is the authoritative source "
+                "and the source entities were not deleted). Stop the LightRAG server and run "
+                "the offline rebuild tool (lightrag-rebuild-vdb) to restore consistency."
+            ) from e
         logger.debug(
             f"Entity Merge: updating vdb `{normalized_src}`~`{normalized_tgt}`"
         )
@@ -1471,7 +1504,22 @@ async def _merge_entities_impl(
             "file_path": merged_entity_data.get("file_path", ""),
         }
     }
-    await entities_vdb.upsert(entity_data_for_vdb)
+    try:
+        await safe_vdb_operation_with_exception(
+            operation=lambda payload=entity_data_for_vdb: entities_vdb.upsert(payload),
+            operation_name="merge_entity_upsert",
+            entity_name=target_entity,
+            max_retries=3,
+            retry_delay=0.2,
+        )
+    except Exception as e:
+        raise VectorStorageConsistencyError(
+            f"Vector storage upsert failed for entity '{target_entity}' during entity merge: {e}. "
+            "The knowledge graph was updated but the vector storage was not, so they may "
+            "now be inconsistent. No data is lost (the graph is the authoritative source "
+            "and the source entities were not deleted). Stop the LightRAG server and run "
+            "the offline rebuild tool (lightrag-rebuild-vdb) to restore consistency."
+        ) from e
     logger.info(f"Entity Merge: updating vdb `{target_entity}`")
 
     # 9. Merge entity chunk tracking (source entities first, then target entity)
