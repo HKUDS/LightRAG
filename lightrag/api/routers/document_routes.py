@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.constants import (
+    FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
@@ -1612,7 +1613,8 @@ async def pipeline_enqueue_file(
             error_files = [
                 {
                     "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]Filename hint error",
+                    "error_description": FILE_EXTRACTION_SUMMARY_PREFIX
+                    + "Filename hint error",
                     "original_error": str(e),
                     "file_size": file_size,
                 }
@@ -1654,7 +1656,8 @@ async def pipeline_enqueue_file(
             error_files = [
                 {
                     "file_path": str(file_path.name),
-                    "error_description": "[File Extraction]Parser enqueue error",
+                    "error_description": FILE_EXTRACTION_SUMMARY_PREFIX
+                    + "Parser enqueue error",
                     "original_error": f"Failed to enqueue file for parser: {str(e)}",
                     "file_size": file_size,
                 }

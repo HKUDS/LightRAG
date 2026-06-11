@@ -146,6 +146,12 @@ PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"
 PARSER_ENGINE_DOCLING = "docling"
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
+# Prefix marking a doc_status content_summary as GENERATED from a file
+# extraction error (enqueue-time error documents and parse-stage FAILED
+# upserts). Doubles as the match sentinel that lets a later failure replace
+# a stale generated summary while real raw-document summaries are preserved —
+# keep every producer on this constant so the match never drifts.
+FILE_EXTRACTION_SUMMARY_PREFIX = "[File Extraction]"
 
 # Suffixes for parser artifact subdirectories under ``<input>/__parsed__/``.
 # Centralising them here keeps the sidecar writer, engine cache modules and
