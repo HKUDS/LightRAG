@@ -800,6 +800,17 @@ class RebuildTool:
 
         return _print_progress
 
+    def print_rebuild_section(self, label: str) -> None:
+        """Visually separate each vector storage's rebuild output.
+
+        The per-storage drop/flush logs (and the progress bar) otherwise run
+        together across entities/relationships/chunks; this header marks where
+        one storage's rebuild starts.
+        """
+        print(f"\n{BOLD_CYAN}{'─' * 60}{RESET}")
+        print(f"{BOLD_CYAN}▶ Rebuilding {label} vector storage{RESET}")
+        print(f"{BOLD_CYAN}{'─' * 60}{RESET}")
+
     def print_rebuild_stats(self, stats: Dict[str, Any]):
         print(f"\n  {BOLD_CYAN}{stats['label']}{RESET}:")
         print(f"    Source records:  {stats['source_total']:,}")
@@ -885,6 +896,7 @@ class RebuildTool:
 
     async def run_rebuild_entities_relations(self) -> List[Dict[str, Any]]:
         all_stats = []
+        self.print_rebuild_section("entities")
         all_stats.append(
             await rebuild_entities_vdb(
                 self.graph,
@@ -894,6 +906,7 @@ class RebuildTool:
                 progress_callback=self.make_progress_printer("entities"),
             )
         )
+        self.print_rebuild_section("relationships")
         all_stats.append(
             await rebuild_relationships_vdb(
                 self.graph,
@@ -906,6 +919,7 @@ class RebuildTool:
         return all_stats
 
     async def run_rebuild_chunks(self) -> List[Dict[str, Any]]:
+        self.print_rebuild_section("chunks")
         return [
             await rebuild_chunks_vdb(
                 self.text_chunks,
