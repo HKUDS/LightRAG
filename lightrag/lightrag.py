@@ -29,6 +29,35 @@ from typing import (
     Dict,
     Union,
 )
+def _check_sync_in_async_context(
+    sync_name: str, async_name: str
+) -> None:
+    """Raise a clear error when a sync wrapper is called from within
+    a running asyncio event loop, which would otherwise deadlock.
+
+    All sync wrappers (``insert``, ``query``, ``delete_by_entity``,
+    etc.) call ``loop.run_until_complete()`` internally.  When the
+    caller is already inside an async function — e.g. a FastAPI
+    handler — this blocks the running loop and causes a deadlock that
+    is silent until the request times out.
+
+    ``asyncio.get_running_loop()`` (Python ≥ 3.7) raises
+    ``RuntimeError`` when *no* loop is running, so the presence of a
+    running loop means the caller is in an async context that would
+    deadlock.  The error message points directly to the correct async
+    alternative.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # No running loop — safe to call sync wrapper
+    raise RuntimeError(
+        f"{sync_name}() cannot be called from within a running "
+        f"async event loop (this would deadlock). "
+        f"Use `await {async_name}(...)` instead."
+    )
+
+
 from lightrag.prompt import (
     PROMPTS,
     get_default_entity_extraction_prompt_profile,
@@ -1295,7 +1324,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Returns:
             str: tracking ID for monitoring processing status
+
+        Raises:
+            RuntimeError: if called from within a running async event loop.
+                Use ``ainsert()`` instead.
         """
+        _check_sync_in_async_context("insert", "ainsert")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.ainsert(
@@ -1384,6 +1418,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         text_chunks: list[str],
         doc_id: str | list[str] | None = None,
     ) -> None:
+        _check_sync_in_async_context("insert_custom_chunks", "ainsert_custom_chunks")
         loop = always_get_an_event_loop()
         loop.run_until_complete(
             self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
@@ -1657,6 +1692,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def insert_custom_kg(
         self, custom_kg: dict[str, Any], full_doc_id: str = None
     ) -> None:
+        _check_sync_in_async_context("insert_custom_kg", "ainsert_custom_kg")
         loop = always_get_an_event_loop()
         loop.run_until_complete(self.ainsert_custom_kg(custom_kg, full_doc_id))
 
@@ -1944,6 +1980,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             str: The result of the query execution.
         """
+        _check_sync_in_async_context("query", "aquery")
         loop = always_get_an_event_loop()
 
         return loop.run_until_complete(self.aquery(query, param, system_prompt))  # type: ignore
@@ -1999,6 +2036,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Same structured data result as aquery_data.
         """
+        _check_sync_in_async_context("query_data", "aquery_data")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.aquery_data(query, param))
 
@@ -2369,6 +2407,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Same complete response format as aquery_llm.
         """
+        _check_sync_in_async_context("query_llm", "aquery_llm")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.aquery_llm(query, param, system_prompt))
 
@@ -3908,7 +3947,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
+
+        Raises:
+            RuntimeError: if called from within a running async event loop.
+                Use ``adelete_by_entity()`` instead.
         """
+        _check_sync_in_async_context("delete_by_entity", "adelete_by_entity")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.adelete_by_entity(entity_name))
 
@@ -3944,7 +3988,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
+
+        Raises:
+            RuntimeError: if called from within a running async event loop.
+                Use ``adelete_by_relation()`` instead.
         """
+        _check_sync_in_async_context("delete_by_relation", "adelete_by_relation")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.adelete_by_relation(source_entity, target_entity)
@@ -4075,6 +4124,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         allow_rename: bool = True,
         allow_merge: bool = False,
     ) -> dict[str, Any]:
+        _check_sync_in_async_context("edit_entity", "aedit_entity")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.aedit_entity(entity_name, updated_data, allow_rename, allow_merge)
@@ -4111,6 +4161,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def edit_relation(
         self, source_entity: str, target_entity: str, updated_data: dict[str, Any]
     ) -> dict[str, Any]:
+        _check_sync_in_async_context("edit_relation", "aedit_relation")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.aedit_relation(source_entity, target_entity, updated_data)
@@ -4143,6 +4194,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def create_entity(
         self, entity_name: str, entity_data: dict[str, Any]
     ) -> dict[str, Any]:
+        _check_sync_in_async_context("create_entity", "acreate_entity")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.acreate_entity(entity_name, entity_data))
 
@@ -4175,6 +4227,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def create_relation(
         self, source_entity: str, target_entity: str, relation_data: dict[str, Any]
     ) -> dict[str, Any]:
+        _check_sync_in_async_context("create_relation", "acreate_relation")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.acreate_relation(source_entity, target_entity, relation_data)
@@ -4228,6 +4281,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         merge_strategy: dict[str, str] = None,
         target_entity_data: dict[str, Any] = None,
     ) -> dict[str, Any]:
+        _check_sync_in_async_context("merge_entities", "amerge_entities")
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.amerge_entities(

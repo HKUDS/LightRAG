@@ -2471,6 +2471,41 @@ class _PipelineMixin:
                     pipeline_status=ctx.pipeline_status,
                     pipeline_status_lock=ctx.pipeline_status_lock,
                 )
+                # Best-effort cleanup of chunks already upserted before the
+                # extraction failure.  Chunk IDs are doc-scoped (``doc_id-``
+                # prefix) so this does not affect other documents.  If the
+                # cleanup fails we log and move on — the chunks will be
+                # cleaned up when the document is re-processed via
+                # ``_purge_stale_extraction_if_resuming``.
+                if chunks:
+                    orphaned_ids = list(chunks.keys())
+                    try:
+                        await self.chunks_vdb.delete(orphaned_ids)
+                    except Exception:
+                        logger.warning(
+                            "Failed to clean up %d chunk(s) from "
+                            "chunks_vdb after extraction failure "
+                            "for d-id %s",
+                            len(orphaned_ids),
+                            doc_id,
+                            exc_info=True,
+                        )
+                    try:
+                        await self.text_chunks.delete(orphaned_ids)
+                    except Exception:
+                        logger.warning(
+                            "Failed to clean up %d chunk(s) from "
+                            "text_chunks after extraction failure "
+                            "for d-id %s",
+                            len(orphaned_ids),
+                            doc_id,
+                            exc_info=True,
+                        )
+                    # Clear the chunks_list on the status_doc so
+                    # re-processing starts from scratch rather than
+                    # attempting to purge chunks that are already gone.
+                    status_doc.chunks_list = []
+                    status_doc.chunks_count = 0
 
             # Concurrency is controlled by keyed lock for individual
             # entities and relationships.
