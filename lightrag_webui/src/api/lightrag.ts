@@ -605,17 +605,91 @@ export const isUserAbortError = (
   error: unknown
 ): boolean => Boolean(signal?.aborted) || (error as Error)?.name === 'AbortError'
 
-export const queryTextStream = async (
-  request: QueryRequest,
+/**
+ * Read an NDJSON (application/x-ndjson) stream from a fetch Response body
+ * and dispatch each parsed line to ``onChunk`` / ``onError``.
+ *
+ * Extracted from ``queryTextStream`` so the normal path and the guest-token
+ * retry path share the same parsing logic without duplication.
+ */
+async function _readNdjsonStream(
+  response: Response,
   onChunk: (chunk: string) => void,
-  onError?: (error: string) => void,
-  signal?: AbortSignal
-) => {
+  onError: ((error: string) => void) | undefined,
+  _signal?: AbortSignal
+): Promise<void> {
+  if (!response.body) {
+    throw new Error('Response body is null');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process complete lines (NDJSON)
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed.response) {
+            onChunk(parsed.response);
+          } else if (parsed.error) {
+            onError?.(parsed.error);
+          }
+          // references-only lines are silently consumed —
+          // the caller only cares about response chunks and errors.
+        } catch {
+          // Truncated or malformed JSON — log and skip the line so one
+          // bad line does not kill the whole stream.
+          console.warn('Failed to parse NDJSON line:', trimmed.substring(0, 120));
+        }
+      }
+    }
+  } finally {
+    // Always release the reader lock, even on abort
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released or never acquired
+    }
+  }
+
+  // Process any remaining data in the buffer after the stream ends
+  if (buffer.trim()) {
+    try {
+      const parsed = JSON.parse(buffer);
+      if (parsed.response) {
+        onChunk(parsed.response);
+      } else if (parsed.error) {
+        onError?.(parsed.error);
+      }
+    } catch {
+      console.warn('Failed to parse final NDJSON buffer:', buffer.substring(0, 120));
+    }
+  }
+}
+
+/**
+ * Build auth headers for the streaming fetch request.
+ */
+function _buildStreamHeaders(): HeadersInit {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
-    'Accept': 'application/x-ndjson',
+    Accept: 'application/x-ndjson',
   };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
@@ -623,265 +697,157 @@ export const queryTextStream = async (
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
   }
+  return headers;
+}
+
+/**
+ * Classify a fetch error and produce a user-friendly message for
+ * ``onError``, or ``null`` when the error should be silently swallowed
+ * (e.g. user-initiated abort).
+ */
+function _classifyStreamError(
+  error: unknown,
+  signal: AbortSignal | undefined
+): string | null {
+  if (isUserAbortError(signal, error)) {
+    return null; // Stop button — exit silently
+  }
+
+  const message = errorMessage(error);
+
+  if (message === 'Authentication required') {
+    return 'Authentication required';
+  }
+
+  const statusCodeMatch = message.match(/^(\d{3})\s/);
+  if (statusCodeMatch) {
+    const statusCode = parseInt(statusCodeMatch[1], 10);
+    switch (statusCode) {
+      case 403:
+        return 'You do not have permission to access this resource (403 Forbidden)';
+      case 404:
+        return 'The requested resource does not exist (404 Not Found)';
+      case 429:
+        return 'Too many requests, please try again later (429 Too Many Requests)';
+      case 500:
+      case 502:
+      case 503:
+      case 504:
+        return `Server error, please try again later (${statusCode})`;
+      default:
+        return message;
+    }
+  }
+
+  if (
+    message.includes('NetworkError') ||
+    message.includes('Failed to fetch') ||
+    message.includes('Network request failed')
+  ) {
+    return 'Network connection error, please check your internet connection';
+  }
+
+  if (message.includes('Error parsing') || message.includes('SyntaxError')) {
+    return 'Error processing response data';
+  }
+
+  return message;
+}
+
+export const queryTextStream = async (
+  request: QueryRequest,
+  onChunk: (chunk: string) => void,
+  onError?: (error: string) => void,
+  signal?: AbortSignal
+) => {
+  const headers = _buildStreamHeaders();
 
   try {
     const response = await fetch(`${backendBaseUrl}/query/stream`, {
       method: 'POST',
-      headers: headers,
+      headers,
       body: JSON.stringify(request),
       signal,
     });
 
     if (!response.ok) {
-      // Handle 401 Unauthorized error specifically
+      // --- 401 guest-token retry -------------------------------------------
       if (response.status === 401) {
-        // Check if in guest mode
-        const authStore = useAuthStore.getState();
         const currentToken = localStorage.getItem('LIGHTRAG-API-TOKEN');
-        const isGuest = currentToken && authStore.isGuestMode;
+        const isGuest =
+          currentToken && useAuthStore.getState().isGuestMode;
 
         if (isGuest) {
           try {
-            // Silent refresh token for guest mode
             const newToken = await silentRefreshGuestToken();
-
-            // Retry stream request with new token
             const retryHeaders = { ...headers };
             retryHeaders['Authorization'] = `Bearer ${newToken}`;
 
-            const retryResponse = await fetch(`${backendBaseUrl}/query/stream`, {
-              method: 'POST',
-              headers: retryHeaders,
-              body: JSON.stringify(request),
-              signal,
-            });
+            const retryResponse = await fetch(
+              `${backendBaseUrl}/query/stream`,
+              {
+                method: 'POST',
+                headers: retryHeaders,
+                body: JSON.stringify(request),
+                signal,
+              }
+            );
 
             if (!retryResponse.ok) {
-              throw new Error(`HTTP error! status: ${retryResponse.status}`);
+              throw new Error(
+                `HTTP error! status: ${retryResponse.status}`
+              );
             }
 
-            // Retry successful, process stream response
-            // Re-execute the stream processing logic with retryResponse
-            if (!retryResponse.body) {
-              throw new Error('Response body is null');
-            }
-
-            const reader = retryResponse.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split('\n');
-              buffer = lines.pop() || '';
-
-              for (const line of lines) {
-                if (line.trim()) {
-                  try {
-                    const parsed = JSON.parse(line);
-                    if (parsed.response) {
-                      onChunk(parsed.response);
-                    } else if (parsed.error) {
-                      onError?.(parsed.error);
-                    }
-                  } catch (parseError) {
-                    console.error('Failed to parse JSON:', parseError, 'Line:', line);
-                    onError?.(`JSON parse error: ${parseError}`);
-                  }
-                }
-              }
-            }
-
-            // Process any remaining data in buffer
-            if (buffer.trim()) {
-              try {
-                const parsed = JSON.parse(buffer);
-                if (parsed.response) {
-                  onChunk(parsed.response);
-                } else if (parsed.error) {
-                  onError?.(parsed.error);
-                }
-              } catch (parseError) {
-                console.error('Failed to parse final buffer:', parseError);
-              }
-            }
-
-            return; // Successfully completed retry
+            await _readNdjsonStream(
+              retryResponse,
+              onChunk,
+              onError,
+              signal
+            );
+            return;
           } catch (refreshError) {
-            // User aborted the retried stream (Stop button): this is not an auth
-            // failure, so don't redirect to login — exit silently.
             if (isUserAbortError(signal, refreshError)) {
               return;
             }
-            console.error('Failed to refresh guest token for streaming:', refreshError);
+            console.error(
+              'Failed to refresh guest token for streaming:',
+              refreshError
+            );
             navigationService.navigateToLogin();
-            throw new Error('Failed to refresh authentication', { cause: refreshError });
+            throw new Error('Failed to refresh authentication', {
+              cause: refreshError,
+            });
           }
         }
 
-        // Non-guest mode: navigate to login page
+        // Non-guest 401 → login
         navigationService.navigateToLogin();
-
-        // Create a specific authentication error
-        const authError = new Error('Authentication required');
-        throw authError;
+        throw new Error('Authentication required');
       }
 
-      // Handle other common HTTP errors with specific messages
+      // --- Other HTTP errors -----------------------------------------------
       let errorBody = 'Unknown error';
       try {
-        errorBody = await response.text(); // Try to get error details from body
-      } catch { /* ignore */ }
+        errorBody = await response.text();
+      } catch {
+        /* ignore */
+      }
 
-      // Format error message similar to axios interceptor for consistency
-      const url = `${backendBaseUrl}/query/stream`;
       throw new Error(
-        `${response.status} ${response.statusText}\n${JSON.stringify(
-          { error: errorBody }
-        )}\n${url}`
+        `${response.status} ${response.statusText}\n${JSON.stringify({ error: errorBody })}\n${backendBaseUrl}/query/stream`
       );
     }
 
-    if (!response.body) {
-      throw new Error('Response body is null');
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break; // Stream finished
-      }
-
-      // Decode the chunk and add to buffer
-      buffer += decoder.decode(value, { stream: true }); // stream: true handles multi-byte chars split across chunks
-
-      // Process complete lines (NDJSON)
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || ''; // Keep potentially incomplete line in buffer
-
-      for (const line of lines) {
-        if (line.trim()) {
-          try {
-            const parsed = JSON.parse(line);
-            if (parsed.response) {
-              onChunk(parsed.response);
-            } else if (parsed.error && onError) {
-              onError(parsed.error);
-            }
-          } catch (error) {
-            console.error('Error parsing stream chunk:', line, error);
-            if (onError) onError(`Error parsing server response: ${line}`);
-          }
-        }
-      }
-    }
-
-    // Process any remaining data in the buffer after the stream ends
-    if (buffer.trim()) {
-      try {
-        const parsed = JSON.parse(buffer);
-        if (parsed.response) {
-          onChunk(parsed.response);
-        } else if (parsed.error && onError) {
-          onError(parsed.error);
-        }
-      } catch (error) {
-        console.error('Error parsing final chunk:', buffer, error);
-        if (onError) onError(`Error parsing final server response: ${buffer}`);
-      }
-    }
-
+    // --- Happy path: read the NDJSON stream --------------------------------
+    await _readNdjsonStream(response, onChunk, onError, signal);
   } catch (error) {
-    // User aborted the request (Stop button): exit silently without surfacing
-    // an error, the component handles the terminated state.
-    if (isUserAbortError(signal, error)) {
-      return;
+    const classified = _classifyStreamError(error, signal);
+    if (classified === null) {
+      return; // User abort — silent exit
     }
-
-    const message = errorMessage(error);
-
-    // Check if this is an authentication error
-    if (message === 'Authentication required') {
-      // Already navigated to login page in the response.status === 401 block
-      console.error('Authentication required for stream request');
-      if (onError) {
-        onError('Authentication required');
-      }
-      return; // Exit early, no need for further error handling
-    }
-
-    // Check for specific HTTP error status codes in the error message
-    const statusCodeMatch = message.match(/^(\d{3})\s/);
-    if (statusCodeMatch) {
-      const statusCode = parseInt(statusCodeMatch[1], 10);
-
-      // Handle specific status codes with user-friendly messages
-      let userMessage = message;
-
-      switch (statusCode) {
-        case 403:
-          userMessage = 'You do not have permission to access this resource (403 Forbidden)';
-          console.error('Permission denied for stream request:', message);
-          break;
-        case 404:
-          userMessage = 'The requested resource does not exist (404 Not Found)';
-          console.error('Resource not found for stream request:', message);
-          break;
-        case 429:
-          userMessage = 'Too many requests, please try again later (429 Too Many Requests)';
-          console.error('Rate limited for stream request:', message);
-          break;
-        case 500:
-        case 502:
-        case 503:
-        case 504:
-          userMessage = `Server error, please try again later (${statusCode})`;
-          console.error('Server error for stream request:', message);
-          break;
-        default:
-          console.error('Stream request failed with status code:', statusCode, message);
-      }
-
-      if (onError) {
-        onError(userMessage);
-      }
-      return;
-    }
-
-    // Handle network errors (like connection refused, timeout, etc.)
-    if (message.includes('NetworkError') ||
-        message.includes('Failed to fetch') ||
-        message.includes('Network request failed')) {
-      console.error('Network error for stream request:', message);
-      if (onError) {
-        onError('Network connection error, please check your internet connection');
-      }
-      return;
-    }
-
-    // Handle JSON parsing errors during stream processing
-    if (message.includes('Error parsing') || message.includes('SyntaxError')) {
-      console.error('JSON parsing error in stream:', message);
-      if (onError) {
-        onError('Error processing response data');
-      }
-      return;
-    }
-
-    // Handle other errors
-    console.error('Unhandled stream error:', message);
-    if (onError) {
-      onError(message);
-    } else {
-      console.error('No error handler provided for stream error:', message);
-    }
+    console.error('Stream request error:', classified);
+    onError?.(classified);
   }
 };
 
