@@ -15,10 +15,14 @@ rebuilding it from scratch from its authoritative source:
 
 A diagnostic consistency check mode is also provided so users can decide
 whether a (potentially expensive, full re-embedding) rebuild is needed. The
-check itself only issues read queries and never drops or rewrites vector
-data, but note that connecting initializes each storage: for some backends
-(e.g. Qdrant) that can create an empty collection or payload index on first
-connect. It never drops, rewrites, or deletes existing records.
+check itself only issues read queries and does not run a rebuild (no drop +
+re-embed). It is NOT, however, strictly side-effect-free: the tool
+initializes every storage on startup — the same initialization the server
+performs — and for some backends that includes schema/DDL setup and one-time
+legacy migrations (e.g. Qdrant upserts data into the new collection,
+PostgreSQL batch-inserts into the new table, Milvus may create a temp
+collection and drop/rename the original). Run it like a server startup, not
+like a pure read.
 
 IMPORTANT: Shut down the LightRAG Server (and any other writers) before
 running this tool.
@@ -868,10 +872,7 @@ class RebuildTool:
     # ------------------------------------------------------------------
 
     async def run_check(self):
-        print(
-            "\nRunning consistency check "
-            "(read queries only; never drops or rewrites vectors)..."
-        )
+        print("\nRunning consistency check (read queries only; no rebuild)...")
         start = time.time()
         report = await check_vdb_consistency(
             self.graph,
@@ -945,7 +946,7 @@ class RebuildTool:
 
             while True:
                 print("\n=== Rebuild Options ===")
-                print("[1] Consistency check (diagnose only; no drop/rewrite)")
+                print("[1] Consistency check (diagnose only; no rebuild)")
                 if self.embedding_available:
                     print("[2] Rebuild entities + relationships VDB")
                     print("[3] Rebuild chunks VDB")

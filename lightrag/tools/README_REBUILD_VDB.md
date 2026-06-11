@@ -53,10 +53,14 @@ Menu options:
    the graph → VDB direction only; reverse orphans can only be cleared by a
    full rebuild. Legacy reverse-order relation ids (from old custom-KG
    imports) are recognized and not misreported as missing. The check issues
-   read queries only and never drops or rewrites vector data — but it is not
-   strictly side-effect-free: connecting initializes each storage, and some
-   backends (e.g. Qdrant) create an empty collection or payload index on
-   first connect. It never drops, rewrites, or deletes existing records.
+   read queries only and does not run a rebuild (no drop + re-embed). It is
+   **not** strictly side-effect-free, though: the tool initializes every
+   storage on startup — exactly as the server does — and for some backends
+   that includes schema/DDL setup and one-time legacy migrations (e.g. Qdrant
+   upserts into the new collection, PostgreSQL batch-inserts into the new
+   table, Milvus may create a temp collection and drop/rename the original).
+   Treat running the tool — even just for a check — like starting the server:
+   stop other writers first.
 2. **Rebuild entities + relationships VDB** — sufficient for the #2917
    merge-failure scenario.
 3. **Rebuild chunks VDB**.
