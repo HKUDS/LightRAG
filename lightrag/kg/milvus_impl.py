@@ -1504,9 +1504,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 and self._client.has_collection(self.legacy_namespace)
             )
             if legacy_collection_exists:
-                logger.warning(
-                    f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' exists, "
-                    f"creating new collection '{self.final_namespace}' without migration"
+                raise RuntimeError(
+                    f"[{self.workspace}] Legacy Milvus collection "
+                    f"'{self.legacy_namespace}' exists, but target collection "
+                    f"'{self.final_namespace}' does not. Refusing to create an empty "
+                    f"model-suffixed collection or migrate legacy vectors because "
+                    f"the legacy embedding model cannot be verified."
                 )
 
             # Collection doesn't exist, create new collection
