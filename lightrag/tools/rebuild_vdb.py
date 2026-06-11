@@ -60,11 +60,9 @@ from lightrag.utils import (
     setup_logger,
 )
 
-# Load environment variables
-load_dotenv(dotenv_path=".env", override=False)
-
-# Setup logger
-setup_logger("lightrag", level="INFO")
+# NOTE: .env loading and logger setup are deferred to main() so that importing
+# this module as a library (see README "Library usage") has no side effects on
+# the caller's environment or logging configuration.
 
 DEFAULT_BATCH_SIZE = 500
 
@@ -107,6 +105,11 @@ def _new_stats(label: str, source_total: int) -> Dict[str, Any]:
         "source_total": source_total,
         "prepared": 0,
         "rebuilt": 0,
+        # Records upserted but not yet confirmed flushed to disk. For
+        # deferred-embedding backends (nano/faiss) the embedding+persist
+        # happens in index_done_callback, so a record only counts as
+        # "rebuilt" once a flush succeeds.
+        "staged": 0,
         "skipped": 0,
         "duplicates": 0,
         "batches": 0,
@@ -120,6 +123,39 @@ async def _drop_vdb(vdb, label: str) -> None:
     if not isinstance(drop_result, dict) or drop_result.get("status") != "success":
         raise RuntimeError(f"Failed to drop {label} vector storage: {drop_result}")
     logger.info(f"Dropped {label} vector storage")
+
+
+async def _flush(vdb, stats: Dict[str, Any]) -> None:
+    """Flush staged records to disk and credit them as rebuilt.
+
+    Deferred-embedding backends (nano/faiss) compute embeddings and persist
+    inside ``index_done_callback``, so an embedder outage surfaces here rather
+    than in ``upsert``. Treat such a failure the same way as a failed upsert
+    batch: record it, drop the staged count, and continue (sources are never
+    modified, so the user can re-run). ``rebuilt`` is only incremented after a
+    flush succeeds, so it never overstates what was actually persisted.
+    """
+    if stats["staged"] == 0:
+        return
+    label = stats["label"]
+    try:
+        await vdb.index_done_callback()
+        stats["rebuilt"] += stats["staged"]
+    except Exception as e:
+        logger.error(
+            f"Rebuild {label}: flush of {stats['staged']} staged record(s) failed: {e}"
+        )
+        stats["failed_batches"] += 1
+        stats["errors"].append(
+            {
+                "batch": f"flush@batch-{stats['batches']}",
+                "records_lost": stats["staged"],
+                "error_type": type(e).__name__,
+                "error_msg": str(e),
+            }
+        )
+    finally:
+        stats["staged"] = 0
 
 
 async def _upsert_batch(
@@ -139,7 +175,7 @@ async def _upsert_batch(
             max_retries=3,
             retry_delay=0.2,
         )
-        stats["rebuilt"] += len(batch_payload)
+        stats["staged"] += len(batch_payload)
     except Exception as e:
         logger.error(f"Rebuild {label}: batch {batch_no}/{total_batches} failed: {e}")
         stats["failed_batches"] += 1
@@ -153,7 +189,7 @@ async def _upsert_batch(
         )
     stats["batches"] += 1
     if stats["batches"] % FLUSH_EVERY_N_BATCHES == 0:
-        await vdb.index_done_callback()
+        await _flush(vdb, stats)
 
 
 async def _drop_and_upsert(
@@ -176,7 +212,7 @@ async def _drop_and_upsert(
             progress_callback(batch_no, total_batches)
 
     # Final flush persists any remaining deferred embeddings
-    await vdb.index_done_callback()
+    await _flush(vdb, stats)
     return stats
 
 
@@ -223,6 +259,7 @@ async def rebuild_entities_vdb(
             "entity_type": node.get("entity_type") or "",
             "content": entity_content,
             "source_id": node.get("source_id") or "",
+            "description": description,
             "file_path": node.get("file_path") or "",
         }
 
@@ -411,7 +448,7 @@ async def rebuild_chunks_vdb(
         if progress_callback:
             progress_callback(batch_no, total_batches)
 
-    await chunks_vdb.index_done_callback()
+    await _flush(chunks_vdb, stats)
     return stats
 
 
@@ -966,6 +1003,9 @@ async def async_main():
 
 def main():
     """Synchronous entry point for CLI command"""
+    # Load environment and configure logging only when run as a tool, never on import.
+    load_dotenv(dotenv_path=".env", override=False)
+    setup_logger("lightrag", level="INFO")
     asyncio.run(async_main())
 
 

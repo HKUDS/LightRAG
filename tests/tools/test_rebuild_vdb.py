@@ -136,6 +136,7 @@ async def test_rebuild_entities_payload_matches_authoritative_format():
             "entity_type": "person",
             "content": "Alice\ndescription of Alice",
             "source_id": "chunk-abc",
+            "description": "description of Alice",
             "file_path": "doc.txt",
         }
     }
@@ -485,6 +486,7 @@ def make_merge_graph():
     graph.upsert_node = AsyncMock()
     graph.upsert_edge = AsyncMock()
     graph.delete_node = AsyncMock()
+    graph.index_done_callback = AsyncMock()
     return graph
 
 
@@ -582,3 +584,60 @@ async def test_merge_success_path_unaffected(single_attempt_vdb_ops):
     relationships_vdb.upsert.assert_awaited()
     entities_vdb.upsert.assert_awaited()
     graph.delete_node.assert_awaited_with("Bob")
+
+
+@pytest.mark.asyncio
+async def test_merge_deferred_flush_failure_raises_before_delete(
+    single_attempt_vdb_ops,
+):
+    # Deferred-embedding backends (nano/faiss) buffer in upsert() and only embed
+    # in index_done_callback, so an embedder outage surfaces at flush time. The
+    # fail-loud guarantee must still hold: raise before deleting source entities.
+    from lightrag.utils_graph import _merge_entities_impl
+
+    graph = make_merge_graph()
+    entities_vdb = MockVDB()
+    relationships_vdb = MockVDB()
+    # upsert succeeds (buffers); the embedding failure happens at flush.
+    relationships_vdb.index_done_callback = AsyncMock(
+        side_effect=RuntimeError("embedder down")
+    )
+
+    with pytest.raises(VectorStorageConsistencyError) as excinfo:
+        await _merge_entities_impl(
+            graph, entities_vdb, relationships_vdb, ["Bob"], "Alice"
+        )
+
+    assert "lightrag-rebuild-vdb" in str(excinfo.value)
+    # upsert succeeded; the failure is the deferred flush
+    relationships_vdb.upsert.assert_awaited()
+    relationships_vdb.index_done_callback.assert_awaited()
+    # Source entities NOT deleted (step 10 never reached), so the message holds
+    graph.delete_node.assert_not_awaited()
+    entities_vdb.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_merge_entity_deferred_flush_failure_raises_before_delete(
+    single_attempt_vdb_ops,
+):
+    from lightrag.utils_graph import _merge_entities_impl
+
+    graph = make_merge_graph()
+    entities_vdb = MockVDB()
+    relationships_vdb = MockVDB()
+    entities_vdb.index_done_callback = AsyncMock(
+        side_effect=RuntimeError("embedder down")
+    )
+
+    with pytest.raises(VectorStorageConsistencyError) as excinfo:
+        await _merge_entities_impl(
+            graph, entities_vdb, relationships_vdb, ["Bob"], "Alice"
+        )
+
+    assert "lightrag-rebuild-vdb" in str(excinfo.value)
+    # Relation flush succeeded before the entity flush failed
+    relationships_vdb.index_done_callback.assert_awaited()
+    entities_vdb.index_done_callback.assert_awaited()
+    graph.delete_node.assert_not_awaited()
+    entities_vdb.delete.assert_not_awaited()

@@ -1522,6 +1522,41 @@ async def _merge_entities_impl(
         ) from e
     logger.info(f"Entity Merge: updating vdb `{target_entity}`")
 
+    # 8b. Persist the graph and vector storages now — before any source-entity
+    # deletion (step 10). Deferred-embedding backends (e.g. nano/faiss) do NOT
+    # call the embedder inside upsert(); they embed and persist in
+    # index_done_callback, so an embedder outage surfaces only at flush time,
+    # outside the upsert try/except above. Flushing here, while the source
+    # entities are still intact, keeps the fail-loud guarantee true for those
+    # backends: on failure we raise VectorStorageConsistencyError before
+    # deleting anything, and the error message ("source entities not deleted")
+    # remains accurate. The graph is flushed first so it is the authoritative
+    # on-disk source the offline rebuild tool can recover from.
+    await chunk_entity_relation_graph.index_done_callback()
+    try:
+        await safe_vdb_operation_with_exception(
+            operation=relationships_vdb.index_done_callback,
+            operation_name="merge_relation_flush",
+            entity_name=target_entity,
+            max_retries=3,
+            retry_delay=0.2,
+        )
+        await safe_vdb_operation_with_exception(
+            operation=entities_vdb.index_done_callback,
+            operation_name="merge_entity_flush",
+            entity_name=target_entity,
+            max_retries=3,
+            retry_delay=0.2,
+        )
+    except Exception as e:
+        raise VectorStorageConsistencyError(
+            f"Vector storage flush failed after merging entities into '{target_entity}': {e}. "
+            "The knowledge graph was updated but the vector storage embeddings could not be "
+            "persisted, so they may now be inconsistent. No data is lost (the graph is the "
+            "authoritative source and the source entities were not deleted). Stop the LightRAG "
+            "server and run the offline rebuild tool (lightrag-rebuild-vdb) to restore consistency."
+        ) from e
+
     # 9. Merge entity chunk tracking (source entities first, then target entity)
     if entity_chunks_storage is not None:
         all_chunk_id_lists = []
