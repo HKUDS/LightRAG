@@ -59,7 +59,10 @@ async def fetch_data(url, headers, data):
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=2048, max_token_size=8192, model_name="jina-embeddings-v4"
+    embedding_dim=2048,
+    max_token_size=8192,
+    model_name="jina-embeddings-v4",
+    supports_asymmetric=True,
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -76,6 +79,8 @@ async def jina_embed(
     late_chunking: bool = False,
     base_url: str = None,
     api_key: str = None,
+    context: str | None = None,
+    task: str | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using Jina AI's API.
 
@@ -92,6 +97,17 @@ async def jina_embed(
         late_chunking: Whether to use late chunking.
         base_url: Optional base URL for the Jina API.
         api_key: Optional Jina API key. If None, uses the JINA_API_KEY environment variable.
+        context: The embedding context - "query" for search queries, "document" for indexed content.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
+            when supports_asymmetric=True. When ``task`` is left at its default of None,
+            ``context`` drives the task selection.
+        task: Embedding task mode. Default is None so that ``context`` (when present)
+            picks the right Jina task:
+            - "retrieval.query" for context="query"
+            - "retrieval.passage" for context="document"
+            - "text-matching" otherwise (true backward-compatible default)
+            Any explicit non-None task value overrides context-based selection.
+
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -111,9 +127,19 @@ async def jina_embed(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {os.environ['JINA_API_KEY']}",
     }
+
+    # Determine task based on context if not explicitly provided
+    if task is None:
+        if context == "query":
+            task = "retrieval.query"
+        elif context == "document":
+            task = "retrieval.passage"
+        else:
+            task = "text-matching"  # Default for backward compatibility
+
     data = {
         "model": model,
-        "task": "text-matching",
+        "task": task,
         "dimensions": embedding_dim,
         "embedding_type": "base64",
         "input": texts,

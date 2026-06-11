@@ -7,6 +7,54 @@ This file provides command-line options and fixtures for test configuration.
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_mineru_env(monkeypatch):
+    """Make every test start with parser-routing env vars in their unset state.
+
+    ``lightrag/api/{auth,config}.py`` call ``load_dotenv(override=False)``
+    at import time, leaking the developer's local ``.env`` into the test
+    process. The MinerU test fixtures assume ``MINERU_API_MODE`` is unset
+    (so it defaults to ``"local"`` per ``MinerURawClient.__init__`` /
+    ``parser_engine_endpoint_requirement``):
+
+    - A leaked ``MINERU_API_MODE=offical`` typo (or any invalid value)
+      makes ``MinerURawClient()`` raise at construction.
+    - A leaked ``MINERU_API_MODE=official`` flips
+      ``parser_engine_endpoint_requirement`` to return
+      ``"MINERU_API_TOKEN"`` instead of ``"MINERU_LOCAL_ENDPOINT"``,
+      breaking the validation-error string match.
+
+    ``LIGHTRAG_PARSER`` is cleared for the same reason: a routing rule
+    like ``docx:mineru-iet`` in the developer's ``.env`` forces
+    ``parser_routing.validate_parser_routing_config`` to require the
+    corresponding endpoint (``MINERU_LOCAL_ENDPOINT`` /
+    ``DOCLING_ENDPOINT``) at every ``create_app`` call, which then trips
+    unrelated API/FastAPI tests (``test_bedrock_llm.py``,
+    ``test_path_prefixes.py``).
+
+    The ``MINERU_LOCAL_*`` parser options are stripped for the same reason:
+    a developer ``.env`` that pins e.g. ``MINERU_LOCAL_PARSE_METHOD=ocr``
+    leaks a non-default into tests that assume the built-in defaults
+    (``test_client_local_mode_round_trip`` expects ``parse_method=auto``;
+    ``test_invalid_when_local_parser_options_change`` toggles each option
+    and expects the change to invalidate a bundle recorded with defaults).
+
+    Strip these variables globally; tests that need a specific mode can
+    still ``monkeypatch.setenv(...)`` themselves and monkeypatch will
+    restore the inherited value at teardown.
+    """
+    monkeypatch.delenv("MINERU_API_MODE", raising=False)
+    monkeypatch.delenv("MINERU_API_TOKEN", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_ENDPOINT", raising=False)
+    monkeypatch.delenv("MINERU_OFFICIAL_ENDPOINT", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_BACKEND", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_PARSE_METHOD", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_IMAGE_ANALYSIS", raising=False)
+    monkeypatch.delenv("MINERU_LOCAL_START_PAGE_ID", raising=False)
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
+    monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+
+
 def pytest_configure(config):
     """Register custom markers for LightRAG tests."""
     config.addinivalue_line(

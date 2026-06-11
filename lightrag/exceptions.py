@@ -109,6 +109,20 @@ class PipelineCancelledException(Exception):
         self.message = message
 
 
+class IndexFlushError(Exception):
+    """Raised when a storage backend fails to flush buffered index ops.
+
+    Carries the storage driver name and namespace so the pipeline can abort
+    the batch with an actionable reason. The underlying error is preserved as
+    the exception ``__cause__`` (set via ``raise ... from cause``).
+    """
+
+    def __init__(self, storage_name: str, namespace: str, cause: BaseException):
+        self.storage_name = storage_name
+        self.namespace = namespace
+        super().__init__(f"{storage_name}[{namespace}] index flush failed: {cause}")
+
+
 class ChunkTokenLimitExceededError(ValueError):
     """Raised when a chunk exceeds the configured token limit."""
 
@@ -131,9 +145,50 @@ class ChunkTokenLimitExceededError(ValueError):
         self.chunk_preview = truncated_preview
 
 
+class ChunkBlockMatchError(ValueError):
+    """Raised when a chunk cannot be located in the document's blocks.jsonl.
+
+    Sidecar backfill (``lightrag.sidecar.backfill``) maps F/R/V chunks back to
+    their source block(s) by matching chunk content against the parse-time
+    ``*.blocks.jsonl`` merged text. When a sidecar-less chunk cannot be located,
+    this is raised so the pipeline marks the document FAILED rather than
+    persisting chunks with missing/incorrect provenance.
+    """
+
+    def __init__(
+        self,
+        chunk_order_index: int,
+        chunk_preview: str | None = None,
+        blocks_path: str | None = None,
+    ) -> None:
+        preview = chunk_preview.strip() if chunk_preview else None
+        truncated_preview = preview[:80] if preview else None
+        preview_note = f" Preview: '{truncated_preview}'" if truncated_preview else ""
+        path_note = f" (blocks: {blocks_path})" if blocks_path else ""
+        message = (
+            f"Chunk #{chunk_order_index} could not be located in the document "
+            f"blocks during sidecar backfill.{preview_note}{path_note}"
+        )
+        super().__init__(message)
+        self.chunk_order_index = chunk_order_index
+        self.chunk_preview = truncated_preview
+        self.blocks_path = blocks_path
+
+
 class DataMigrationError(Exception):
     """Raised when data migration from legacy collection/table fails."""
 
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message
+
+
+class MultimodalAnalysisError(RuntimeError):
+    """Raised when multimodal analysis must fail the current document.
+
+    Hard failures (missing required field, schema mismatch, model not
+    available, sidecar already carries ``status="failure"``) bubble this
+    exception so the pipeline marks the document failed instead of writing
+    an unusable analyze result. Callers persist a ``status="failure"``
+    sidecar entry alongside the raise so a re-run sees the failure.
+    """

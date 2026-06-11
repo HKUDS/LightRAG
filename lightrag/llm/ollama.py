@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 import os
 import re
+import warnings
 
 import pipmaster as pm
 
@@ -24,7 +25,7 @@ from lightrag.exceptions import (
 from lightrag.api import __api_version__
 
 import numpy as np
-from typing import Optional, Union
+from typing import Any, Optional, Union
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     logger,
@@ -51,6 +52,34 @@ def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional
     return host
 
 
+def _normalize_ollama_response_format(kwargs: dict) -> None:
+    """Translate OpenAI-style response_format into Ollama's native format field.
+
+    Precedence: an explicit ``format`` value (Ollama's native field) wins over
+    ``response_format`` — if ``format`` is already set, ``response_format`` is
+    dropped silently. Otherwise, ``{"type": "json_object"}`` maps to
+    ``format="json"`` and any other payload is passed through unchanged so
+    callers can supply JSON schemas directly.
+    """
+
+    response_format = kwargs.pop("response_format", None)
+    if kwargs.get("format") is not None or response_format is None:
+        return
+
+    if isinstance(response_format, dict):
+        if response_format.get("type") == "json_object":
+            kwargs["format"] = "json"
+            return
+        if response_format.get("type") == "json_schema":
+            json_schema = response_format.get("json_schema")
+            if isinstance(json_schema, dict):
+                kwargs["format"] = json_schema.get("schema", json_schema)
+                return
+
+    # Fall back to passing through schema-like payloads for native Ollama support.
+    kwargs["format"] = response_format
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -64,14 +93,49 @@ async def _ollama_model_if_cache(
     system_prompt=None,
     history_messages=[],
     enable_cot: bool = False,
+    image_inputs: list[Any] | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    """Call Ollama chat API with OpenAI-style structured-output compatibility.
+
+    Structured output note:
+    - This adapter accepts OpenAI-style ``response_format`` and translates it
+      to Ollama's native ``format`` field.
+    - ``response_format={"type": "json_object"}`` maps to ``format="json"``.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      compatibility shims; when no explicit ``response_format`` is supplied,
+      they are mapped to ``{"type": "json_object"}``.
+    """
     if enable_cot:
         logger.debug("enable_cot=True is not supported for ollama and will be ignored.")
     stream = True if kwargs.get("stream") else False
 
     kwargs.pop("max_tokens", None)
-    # kwargs.pop("response_format", None) # allow json
+    # Deprecation shims: map legacy boolean flags to response_format only when
+    # an explicit response_format was not supplied by the caller.
+    if kwargs.get("response_format") is None:
+        if kwargs.pop("entity_extraction", False):
+            warnings.warn(
+                "_ollama_model_if_cache(entity_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs["response_format"] = {"type": "json_object"}
+        elif kwargs.pop("keyword_extraction", False):
+            warnings.warn(
+                "_ollama_model_if_cache(keyword_extraction=True) is deprecated; "
+                "pass response_format={'type': 'json_object'} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs["response_format"] = {"type": "json_object"}
+    else:
+        # response_format was supplied explicitly; drop legacy flags silently.
+        kwargs.pop("entity_extraction", None)
+        kwargs.pop("keyword_extraction", None)
+
+    _normalize_ollama_response_format(kwargs)
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
     if timeout == 0:
@@ -97,7 +161,13 @@ async def _ollama_model_if_cache(
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.extend(history_messages)
-        messages.append({"role": "user", "content": prompt})
+        user_message: dict[str, Any] = {"role": "user", "content": prompt}
+        if image_inputs:
+            from lightrag.llm._vision_utils import normalize_image_inputs
+
+            normalized_images = normalize_image_inputs(image_inputs)
+            user_message["images"] = [img.base64_str for img in normalized_images]
+        messages.append(user_message)
 
         response = await ollama_client.chat(model=model, messages=messages, **kwargs)
         if stream:
@@ -156,11 +226,15 @@ async def ollama_model_complete(
     history_messages=[],
     enable_cot: bool = False,
     keyword_extraction=False,
+    entity_extraction=False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
-    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    # Forward legacy extraction flags as kwargs so _ollama_model_if_cache can
+    # emit a single DeprecationWarning with the correct stack frame.
     if keyword_extraction:
-        kwargs["format"] = "json"
+        kwargs.setdefault("keyword_extraction", True)
+    if entity_extraction:
+        kwargs.setdefault("entity_extraction", True)
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await _ollama_model_if_cache(
         model_name,
@@ -173,12 +247,18 @@ async def ollama_model_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1024, max_token_size=8192, model_name="bge-m3:latest"
+    embedding_dim=1024,
+    max_token_size=8192,
+    model_name="bge-m3:latest",
+    supports_asymmetric=True,
 )
 async def ollama_embed(
     texts: list[str],
     embed_model: str = "bge-m3:latest",
     max_token_size: int | None = None,
+    context: str = "document",
+    query_prefix: str | None = None,
+    document_prefix: str | None = None,
     **kwargs,
 ) -> np.ndarray:
     """Generate embeddings using Ollama's API.
@@ -191,6 +271,11 @@ async def ollama_embed(
             signature supports it (via inspect.signature check). Ollama will
             automatically truncate texts exceeding the model's context length
             (num_ctx), so no client-side truncation is needed.
+        context: The embedding context - "query" for search queries, "document" for indexed content.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
+            when supports_asymmetric=True. Default is "document".
+        query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
+        document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
         **kwargs: Additional arguments passed to the Ollama client.
 
     Returns:
@@ -200,6 +285,12 @@ async def ollama_embed(
         - Ollama API automatically truncates texts exceeding the model's context length
         - The max_token_size parameter is received but not used for client-side truncation
     """
+    # Apply context-based prefixes if provided
+    if context == "query" and query_prefix:
+        texts = [query_prefix + text for text in texts]
+    elif context == "document" and document_prefix:
+        texts = [document_prefix + text for text in texts]
+
     # Note: max_token_size is received but not used for client-side truncation.
     # Ollama API handles truncation automatically based on the model's num_ctx setting.
     _ = max_token_size  # Acknowledge parameter to avoid unused variable warning

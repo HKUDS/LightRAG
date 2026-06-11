@@ -83,7 +83,11 @@ async def adelete_by_entity(
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
     """
-    # Use keyed lock for entity to ensure atomic graph and vector db operations
+    # Use keyed lock for entity to ensure atomic graph and vector db operations.
+    # The doc-ingest pipeline locks edges under sorted([src, tgt]) in this same
+    # namespace, so [entity_name] already mutually excludes any concurrent edge
+    # write that touches this entity — get_storage_keyed_lock acquires one
+    # mutex per key, and identical key strings share the same mutex.
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
     async with get_storage_keyed_lock(
@@ -585,6 +589,11 @@ async def aedit_entity(
     new_entity_name = updated_data.get("entity_name", entity_name)
     is_renaming = new_entity_name != entity_name
 
+    # Lock the (old, new) entity names. The doc-ingest pipeline acquires
+    # edge locks as sorted([src, tgt]) in the same namespace, and
+    # get_storage_keyed_lock takes one mutex per key — so locking the
+    # entity name already mutually excludes any concurrent edge write that
+    # touches it, no need to enumerate incident edges here.
     lock_keys = sorted({entity_name, new_entity_name}) if is_renaming else [entity_name]
 
     workspace = entities_vdb.global_config.get("workspace", "")

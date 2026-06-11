@@ -3,37 +3,37 @@
 
 declare -ag KV_STORAGE_OPTIONS=(
   "JsonKVStorage"
-  "RedisKVStorage"
   "PGKVStorage"
   "MongoKVStorage"
   "OpenSearchKVStorage"
+  "RedisKVStorage"
 )
 
 declare -ag GRAPH_STORAGE_OPTIONS=(
   "NetworkXStorage"
-  "Neo4JStorage"
   "PGGraphStorage"
   "MongoGraphStorage"
-  "MemgraphStorage"
   "OpenSearchGraphStorage"
+  "MemgraphStorage"
+  "Neo4JStorage"
 )
 
 declare -ag VECTOR_STORAGE_OPTIONS=(
   "NanoVectorDBStorage"
-  "MilvusVectorDBStorage"
   "PGVectorStorage"
-  "FaissVectorDBStorage"
-  "QdrantVectorDBStorage"
   "MongoVectorDBStorage"
   "OpenSearchVectorDBStorage"
+  "MilvusVectorDBStorage"
+  "FaissVectorDBStorage"
+  "QdrantVectorDBStorage"
 )
 
 declare -ag DOC_STATUS_STORAGE_OPTIONS=(
   "JsonDocStatusStorage"
-  "RedisDocStatusStorage"
   "PGDocStatusStorage"
   "MongoDocStatusStorage"
   "OpenSearchDocStatusStorage"
+  "RedisDocStatusStorage"
 )
 
 declare -Ag STORAGE_ENV_REQUIREMENTS=(

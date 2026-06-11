@@ -1,0 +1,46 @@
+### When ENTITY_EXTRACTION_USE_JSON=false, entity_extraction_examples section must include in this file
+### When ENTITY_EXTRACTION_USE_JSON=true, entity_extraction_json_examples section must include in this file
+
+entity_types_guidance: |
+  Classify each entity using one of the following types. If no type fits, use `Other`.
+
+  - Person: Human individuals, real or fictional
+  - Creature: Non-human living beings (animals, mythical beings, etc.)
+  - Organization: Companies, institutions, government bodies, groups
+  - Location: Geographic places (cities, countries, buildings, regions)
+  - Event: Occurrences, incidents, ceremonies, meetings
+  - Concept: Abstract ideas, theories, principles, beliefs
+  - Method: Procedures, techniques, algorithms, workflows
+  - Content: Creative or informational works (books, articles, films, reports)
+  - Data: Quantitative or structured information (statistics, datasets, measurements)
+  - Artifact: Physical or digital objects created by humans (tools, software, devices)
+  - NaturalObject: Natural non-living objects (minerals, celestial bodies, chemical compounds)
+entity_extraction_examples:
+  - |
+    entity{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>
+    relation{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_description>
+    {completion_delimiter}
+entity_extraction_json_examples:
+  - |
+    {
+      "entities": [
+        {
+          "name": "<entity_name>",
+          "type": "<entity_type>",
+          "description": "<entity_description>"
+        },
+        {
+          "name": "<related_entity_name>",
+          "type": "<related_entity_type>",
+          "description": "<related_entity_description>"
+        }
+      ],
+      "relationships": [
+        {
+          "source": "<entity_name>",
+          "target": "<related_entity_name>",
+          "keywords": "<relationship_keywords>",
+          "description": "<relationship_description>"
+        }
+      ]
+    }

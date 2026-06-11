@@ -32,6 +32,7 @@ export type MessageWithError = Message & {
   id: string // Unique identifier for stable React keys
   isError?: boolean
   isThinking?: boolean // Flag to indicate if the message is in a "thinking" state
+  isAborted?: boolean // Flag to indicate the user terminated this query (response may be incomplete)
   /**
    * Indicates if the mermaid diagram in this message has been rendered.
    * Used to persist the rendering state across updates and prevent flickering.
@@ -60,13 +61,21 @@ export const ChatMessage = ({
   // Directly use props passed from the parent.
   const { thinkingContent, displayContent, thinkingTime, isThinking } = message
 
-  // Reset expansion state when new thinking starts
-  useEffect(() => {
+  // Reset expansion state when new thinking starts.
+  // Render-time comparison avoids cascading renders from setState-in-useEffect.
+  const [previousThinkingState, setPreviousThinkingState] = useState({
+    isThinking,
+    messageId: message.id
+  })
+  if (
+    previousThinkingState.isThinking !== isThinking ||
+    previousThinkingState.messageId !== message.id
+  ) {
+    setPreviousThinkingState({ isThinking, messageId: message.id })
     if (isThinking) {
-      // When thinking starts, always reset to collapsed state
       setIsThinkingExpanded(false)
     }
-  }, [isThinking, message.id])
+  }
 
   // The content to display is now non-ambiguous.
   const finalThinkingContent = thinkingContent
@@ -260,8 +269,14 @@ export const ChatMessage = ({
           </div>
         </div>
       )}
+      {/* User-terminated hint - response may be incomplete */}
+      {message.isAborted && (
+        <div className="mt-1 text-xs italic text-muted-foreground">
+          {t('retrievePanel.retrieval.userTerminated')}
+        </div>
+      )}
       {/* Loading indicator - only show in active tab */}
-      {isTabActive && (() => {
+      {isTabActive && !message.isAborted && (() => {
         // More comprehensive loading state check
         const hasVisibleContent = finalDisplayContent && finalDisplayContent.trim() !== '';
         const isLoadingState = !hasVisibleContent && !isThinking && !thinkingTime;

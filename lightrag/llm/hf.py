@@ -1,5 +1,6 @@
 import copy
 import os
+import warnings
 from functools import lru_cache
 
 import pipmaster as pm  # Pipmaster for dynamic library install
@@ -126,10 +127,35 @@ async def hf_model_complete(
     system_prompt=None,
     history_messages=[],
     keyword_extraction=False,
+    entity_extraction=False,
     enable_cot: bool = False,
     **kwargs,
 ) -> str:
-    kwargs.pop("keyword_extraction", None)
+    """Run local Hugging Face inference with LightRAG-compatible shims.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before generation.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+    """
+    # HuggingFace local inference has no JSON mode; drop response_format and
+    # warn when legacy shim flags are set.
+    if kwargs.pop("keyword_extraction", False) or keyword_extraction:
+        warnings.warn(
+            "hf_model_complete(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if kwargs.pop("entity_extraction", False) or entity_extraction:
+        warnings.warn(
+            "hf_model_complete(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    kwargs.pop("response_format", None)
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     result = await hf_model_if_cache(
         model_name,
@@ -143,9 +169,32 @@ async def hf_model_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1024, max_token_size=8192, model_name="hf_embedding_model"
+    embedding_dim=1024,
+    max_token_size=8192,
+    model_name="hf_embedding_model",
+    supports_asymmetric=True,
 )
-async def hf_embed(texts: list[str], tokenizer, embed_model) -> np.ndarray:
+async def hf_embed(
+    texts: list[str],
+    tokenizer,
+    embed_model,
+    context: str = "document",
+    query_prefix: str | None = None,
+    document_prefix: str | None = None,
+) -> np.ndarray:
+    """Generate embeddings for a list of texts using a Hugging Face model.
+
+    Args:
+        texts (list[str]): List of input texts to embed.
+        tokenizer: Hugging Face tokenizer.
+        embed_model: Hugging Face model for generating embeddings.
+        context (str): Context indicating whether the texts are "query" or "document".
+        query_prefix (str | None): Optional prefix to add to query texts.
+        document_prefix (str | None): Optional prefix to add to document texts.
+
+    Returns:
+        np.ndarray: Array of embeddings.
+    """
     # Detect the appropriate device
     if torch.cuda.is_available():
         device = next(embed_model.parameters()).device  # Use CUDA if available
@@ -156,6 +205,12 @@ async def hf_embed(texts: list[str], tokenizer, embed_model) -> np.ndarray:
 
     # Move the model to the detected device
     embed_model = embed_model.to(device)
+
+    # Apply context-based prefixes if provided
+    if context == "query" and query_prefix:
+        texts = [query_prefix + text for text in texts]
+    elif context == "document" and document_prefix:
+        texts = [document_prefix + text for text in texts]
 
     # Tokenize the input texts and move them to the same device
     encoded_texts = tokenizer(

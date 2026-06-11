@@ -1,0 +1,312 @@
+"""Unified sidecar debug CLI for any registered parser engine.
+
+Dispatches one source file through the parser registry
+(``get_parser(engine).parse(...)``) and writes the resulting sidecar (and
+raw bundle, for external engines) into a flat layout — no ``__parsed__/``
+middle layer, source file never archived — so the artifacts can be
+inspected next to the input file. Because dispatch goes through the
+registry, a third-party engine registered via ``register_parser`` is a
+valid ``--engine`` choice with no CLI changes.
+
+Invocation::
+
+    python -m lightrag.parser.cli path/to/sample.docx --engine native
+    python -m lightrag.parser.cli path/to/sample.pdf  --engine mineru
+    python -m lightrag.parser.cli path/to/sample.pdf  --engine docling --force-reparse
+
+See ``docs/ParserDebugCLI-zh.md`` for the full reference.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from contextlib import ExitStack
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+
+def _normalize_direct_script_sys_path() -> None:
+    if __package__:
+        return
+
+    parser_dir = Path(__file__).resolve().parent
+    repo_root = parser_dir.parent.parent
+
+    # Direct execution adds lightrag/parser to sys.path, which makes the
+    # native parser's third-party ``docx`` import resolve to parser/docx.
+    sys.path[:] = [
+        entry for entry in sys.path if Path(entry or ".").resolve() != parser_dir
+    ]
+    repo_root_str = str(repo_root)
+    if repo_root_str in sys.path:
+        sys.path.remove(repo_root_str)
+    sys.path.insert(0, repo_root_str)
+
+
+_normalize_direct_script_sys_path()
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    # Registry import is cheap by design (no parser impl is pulled in), so
+    # deriving --engine choices here keeps third-party engines selectable
+    # without making --help pay for a heavy import.
+    from lightrag.parser.registry import supported_parser_engines
+
+    engines = sorted(supported_parser_engines())
+
+    parser = argparse.ArgumentParser(
+        prog="parse_sidecar",
+        description=(
+            "Run a registered parser engine on a single file and emit sidecar "
+            "artifacts (plus a raw bundle for external engines) into a flat "
+            "layout alongside the source. No __parsed__/ middle layer; the "
+            "source file is never moved."
+        ),
+    )
+    parser.add_argument("input_file", type=Path, help="Source file to parse.")
+    parser.add_argument(
+        "--engine",
+        required=True,
+        choices=engines,
+        help="Parser engine to drive.",
+    )
+    parser.add_argument(
+        "-o",
+        "--sidecar-parent-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Parent directory for <name>.parsed/ and <name>.<engine>_raw/. "
+            "Default: the source file's parent directory."
+        ),
+    )
+    parser.add_argument(
+        "--doc-id",
+        default=None,
+        help="Override the doc id. Default: doc-<md5(absolute input path)>.",
+    )
+    parser.add_argument(
+        "--force-reparse",
+        action="store_true",
+        help=(
+            "Only affects mineru/docling. By default a non-empty raw_dir is "
+            "treated as a valid cache and reused without manifest checks; "
+            "this flag clears raw_dir and forces a fresh download/parse."
+        ),
+    )
+    parser.add_argument(
+        "--preview",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Number of block rows to preview after parsing (0 disables).",
+    )
+    return parser
+
+
+def _print_summary(blocks_path: Path, raw_dir: Path | None, preview: int) -> None:
+    with blocks_path.open("r", encoding="utf-8") as fh:
+        meta_line = fh.readline().strip()
+        if not meta_line:
+            raise SystemExit(f"empty blocks file at {blocks_path}")
+        meta = json.loads(meta_line)
+        rows = [json.loads(line) for line in fh if line.strip()]
+    parsed_dir = blocks_path.parent
+    print(f"parsed dir : {parsed_dir} (exists={parsed_dir.exists()})")
+    if raw_dir is not None:
+        print(f"raw dir    : {raw_dir} (exists={raw_dir.exists()})")
+    print(f"document   : {meta.get('document_name')}")
+    print(f"doc_id     : {meta.get('doc_id')}")
+    print(f"engine     : {meta.get('parse_engine')}")
+    print(f"blocks     : {meta.get('blocks')}")
+    print(
+        f"sidecars   : tables={meta.get('table_file')} "
+        f"drawings={meta.get('drawing_file')} "
+        f"equations={meta.get('equation_file')} "
+        f"asset_dir={meta.get('asset_dir')}"
+    )
+    if preview > 0 and rows:
+        shown = min(preview, len(rows))
+        print(f"--- preview (first {shown} of {len(rows)} blocks) ---")
+        for row in rows[:preview]:
+            heading = row.get("heading") or ""
+            content = (row.get("content") or "").replace("\n", " ")
+            snippet = content if len(content) <= 80 else content[:77] + "..."
+            print(
+                f"  [{row.get('blockid', '')[:8]}] " f"heading={heading!r} :: {snippet}"
+            )
+
+
+def _print_raw_summary(result: dict, preview: int) -> None:
+    """Summary for engines that emit plain content with no sidecar (legacy /
+    any non-sidecar third-party engine: ``blocks_path`` is empty)."""
+    content = result.get("content") or ""
+    print(f"engine     : {result.get('parse_engine')}")
+    print(f"format     : {result.get('parse_format')}")
+    print(f"content    : {len(content)} chars")
+    if preview > 0 and content:
+        snippet = content[:400]
+        print(f"--- preview (first {len(snippet)} of {len(content)} chars) ---")
+        print(snippet + ("..." if len(content) > len(snippet) else ""))
+
+
+async def _run(args: argparse.Namespace) -> int:
+    # Pipeline + heavy parser imports are deferred so ``--help`` and the
+    # input-file existence check don't pay for them.
+    from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
+    from lightrag.parser.base import ParseContext
+    from lightrag.parser.external._base import ExternalParserBase
+    from lightrag.parser.registry import get_parser, suffix_capabilities
+    from lightrag.parser.debug import build_debug_rag
+    from lightrag.parser.docx.parse_document import DocxContentError
+    from lightrag.utils import compute_mdhash_id
+    import lightrag.pipeline as pipeline_mod
+    import lightrag.utils_pipeline as utils_pipeline_mod
+
+    source = args.input_file.resolve()
+    if not source.is_file():
+        print(f"error: input file does not exist: {source}", file=sys.stderr)
+        return 1
+
+    # Reject suffix/engine mismatches up-front: the pipeline would otherwise
+    # fail deep inside the IR builder with a less helpful message.
+    suffix = source.suffix.lstrip(".").lower()
+    supported = suffix_capabilities(args.engine)
+    if suffix not in supported:
+        print(
+            f"error: engine '{args.engine}' does not support .{suffix or '<no suffix>'} "
+            f"files (supported: {', '.join(sorted(supported))})",
+            file=sys.stderr,
+        )
+        return 1
+
+    parser = get_parser(args.engine)
+    if parser is None:
+        print(f"error: engine '{args.engine}' is not registered", file=sys.stderr)
+        return 1
+    is_external = isinstance(parser, ExternalParserBase)
+
+    sidecar_parent = (args.sidecar_parent_dir or source.parent).resolve()
+    sidecar_parent.mkdir(parents=True, exist_ok=True)
+
+    parsed_dir = sidecar_parent / f"{source.name}.parsed"
+    # External engines preserve a raw bundle next to the sidecar; its name is
+    # derived from the engine's own raw_dir_suffix (mirrors the flattened
+    # raw_dir_for_parsed_dir layout), so any external engine works here.
+    raw_dir = (
+        sidecar_parent / f"{source.name}{parser.raw_dir_suffix}"
+        if is_external
+        else None
+    )
+
+    doc_id = args.doc_id or compute_mdhash_id(str(source), prefix="doc-")
+
+    def _patched_artifact_dir(
+        file_path: str | None = None,
+        *,
+        parent_hint: Any | None = None,
+    ) -> Path:
+        # Flatten the production "<INPUT_DIR>/__parsed__/<base>.parsed/"
+        # layout to "<sidecar_parent>/<source.name>.parsed/" so the sidecar
+        # and the source file sit side by side.
+        return parsed_dir
+
+    def _lenient_bundle(raw_dir_arg: Path, _source_file: Path) -> bool:
+        return raw_dir_arg.exists() and any(raw_dir_arg.iterdir())
+
+    def _force_miss(*_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    bundle_check = _force_miss if args.force_reparse else _lenient_bundle
+
+    async def _noop_archive(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    rag = build_debug_rag()
+
+    with ExitStack() as stack:
+        # Patch 1: redirect sidecar output to the flat layout.
+        # parsed_artifact_dir_for is from-imported into pipeline at
+        # module load, so patch both namespaces.
+        stack.enter_context(
+            mock.patch.object(
+                utils_pipeline_mod,
+                "parsed_artifact_dir_for",
+                _patched_artifact_dir,
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                pipeline_mod,
+                "parsed_artifact_dir_for",
+                _patched_artifact_dir,
+            )
+        )
+
+        # Patch 2: raw cache strategy. ExternalParserBase.parse calls
+        # ``self.is_bundle_valid(...)``, so patch the resolved instance method
+        # directly — works for any external engine without knowing its module.
+        if is_external:
+            stack.enter_context(
+                mock.patch.object(parser, "is_bundle_valid", bundle_check)
+            )
+
+        # Patch 3: keep the source file in place. Every engine archives via
+        # ctx.archive_source -> lightrag.pipeline.archive_docx_source_after_...
+        stack.enter_context(
+            mock.patch.object(
+                pipeline_mod,
+                "archive_docx_source_after_full_docs_sync",
+                _noop_archive,
+            )
+        )
+
+        try:
+            result = (
+                await parser.parse(
+                    ParseContext(
+                        rag,
+                        doc_id,
+                        str(source),
+                        {
+                            "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                            "content": "",
+                        },
+                    )
+                )
+            ).to_dict()
+        except DocxContentError as exc:
+            # The native DOCX parser now raises (instead of sys.exit) on a
+            # content-limit violation so the server pipeline can fail just the
+            # offending document. Preserve the friendly CLI UX: print the
+            # formatted message and return a non-zero exit code, no traceback.
+            print(str(exc), file=sys.stderr)
+            return 1
+
+    blocks_path = result.get("blocks_path") or ""
+    if blocks_path:
+        _print_summary(Path(blocks_path), raw_dir, args.preview)
+    else:
+        # No sidecar (legacy / non-sidecar third-party engine): the result
+        # carries plain content, so summarize that instead of a blocks file.
+        _print_raw_summary(result, args.preview)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Discover third-party parser engines before --engine choices are built,
+    # so a `lightrag.parsers` entry-point engine is selectable here exactly
+    # like in the server (which loads plugins in create_app).
+    from lightrag.parser.plugins import load_third_party_parsers
+
+    load_third_party_parsers()
+    args = _build_parser().parse_args(argv)
+    return asyncio.run(_run(args))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

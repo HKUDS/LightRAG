@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
@@ -32,6 +32,7 @@ interface EditablePropertyRowProps {
   onValueChange?: (newValue: any) => void  // Optional callback when value changes
   isEditable?: boolean         // Whether this property can be edited
   tooltip?: string             // Optional tooltip to display on hover
+  pipelineBusy?: boolean       // When true, hide edit entry & disable save (pipeline writing)
 }
 
 /**
@@ -51,7 +52,8 @@ const EditablePropertyRow = ({
   targetId,
   onValueChange,
   isEditable = false,
-  tooltip
+  tooltip,
+  pipelineBusy = false
 }: EditablePropertyRowProps) => {
   const { t } = useTranslation()
   const [isEditing, setIsEditing] = useState(false)
@@ -66,11 +68,17 @@ const EditablePropertyRow = ({
     sourceEntity: string
   } | null>(null)
 
-  useEffect(() => {
+  // Sync currentValue when the incoming initialValue prop changes.
+  // Uses a render-time previous-value comparison instead of useEffect to avoid
+  // cascading renders flagged by react-hooks/set-state-in-effect.
+  const [previousInitialValue, setPreviousInitialValue] = useState(initialValue)
+  if (initialValue !== previousInitialValue) {
+    setPreviousInitialValue(initialValue)
     setCurrentValue(initialValue)
-  }, [initialValue])
+  }
 
   const handleEditClick = () => {
+    if (pipelineBusy) return
     if (isEditable && !isEditing) {
       setDraftValue(String(currentValue))
       setDraftAllowMerge(false)
@@ -270,7 +278,7 @@ const EditablePropertyRow = ({
   return (
     <div className="flex items-center gap-1 overflow-hidden">
       <PropertyName name={name} />
-      <EditIcon onClick={handleEditClick} />:
+      {!pipelineBusy && <EditIcon onClick={handleEditClick} />}:
       <PropertyValue
         value={currentValue}
         onClick={onClick}
@@ -287,6 +295,7 @@ const EditablePropertyRow = ({
         onAllowMergeChange={setDraftAllowMerge}
         isSubmitting={isSubmitting}
         errorMessage={errorMessage}
+        disableSave={pipelineBusy}
       />
 
       <MergeDialog

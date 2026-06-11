@@ -5,6 +5,7 @@ from typing import Any, final
 from lightrag.base import (
     BaseKVStorage,
 )
+from lightrag.file_atomic import reap_orphan_tmp_files
 from lightrag.utils import (
     _cooperative_yield,
     load_json,
@@ -26,6 +27,110 @@ from .shared_storage import (
 @final
 @dataclass
 class JsonKVStorage(BaseKVStorage):
+    """JSON-file-backed KV storage with **shared in-memory state across processes**.
+
+    This class uses a *fundamentally different* cross-process model from
+    ``NanoVectorDBStorage`` / ``FaissVectorDBStorage`` / ``NetworkXStorage``
+    (which keep one in-memory copy per process and reconcile via file
+    reloads). Compare carefully before changing either side.
+
+    Storage model:
+        ``self._data`` is **not** a per-process dict — it is the value
+        returned by ``get_namespace_data(namespace, workspace=...)``, i.e.
+        a reference into ``shared_storage._shared_dicts``. In multi-
+        process mode this is a ``multiprocessing.Manager().dict()`` proxy
+        that every worker sees the **same instance** of; in single-
+        process mode it degrades to a plain ``dict``. Either way, a
+        mutation in any process is *immediately* visible to every other
+        process — there is no reload needed.
+
+        The on-disk file at
+        ``working_dir/[workspace/]kv_store_<namespace>.json`` exists for
+        durability only. It is the source of truth at startup and the
+        target of ``index_done_callback`` flushes, but is **not** part of
+        the steady-state read/write path.
+
+    First-time load (``initialize``):
+        ``try_initialize_namespace`` is a global init lock that returns
+        ``True`` to exactly one process per ``(namespace, workspace)``.
+        That process reads the JSON file and populates ``self._data``
+        under ``_storage_lock``. Other processes skip the load — they
+        will see the data through the same shared ``self._data`` proxy.
+
+    Cross-process sync protocol (note: reversed semantics vs file-backed
+    classes):
+        Anyone writing (``upsert`` / ``delete`` / ``drop``):
+            1. Mutate ``self._data`` under ``_storage_lock`` (same lock,
+               same dict, all processes see the change immediately).
+            2. Call ``set_all_update_flags`` to mark **every** process's
+               ``storage_updated`` flag ``True``. Here ``True`` means
+               *"there is dirty data that still needs to be flushed"*,
+               not *"there is fresher data on disk that I need to
+               reload"* as in the file-backed implementations.
+        Commit (``index_done_callback``):
+            1. Under ``_storage_lock``, if ``storage_updated.value`` is
+               ``True``, snapshot ``self._data`` and write it to disk
+               via ``write_json`` (atomic).
+            2. ``clear_all_update_flags`` — wipe every process's flag
+               back to ``False``. Because the in-memory state is already
+               consistent across processes, there is nothing for the
+               *other* processes to do; the clear is just a
+               "the dirty data has been persisted" signal.
+
+    Lock scope:
+        ``_storage_lock`` is a per-``(namespace, workspace)`` keyed lock
+        spanning intra-process coroutines **and** inter-process workers.
+        Unlike the file-backed classes (which only lock reload/commit
+        critical sections), this class **holds the lock over every
+        ``self._data`` access** — read or write — because the underlying
+        ``Manager().dict()`` is not free-threaded across processes.
+
+        Two places intentionally do work outside the lock for latency
+        reasons:
+            * ``upsert`` performs its per-key timestamp prep loop inside
+              the lock but yields to the event loop via
+              ``_cooperative_yield`` between keys (safe: ``NamespaceLock``
+              is non-reentrant, so siblings blocked on it stay blocked).
+            * ``JsonDocStatusStorage.upsert`` prepares its caller-supplied
+              dict outside the lock (it only mutates the input, not the
+              shared store).
+
+    Who can write:
+        Pipeline ``busy`` still serializes the document ingest / purge
+        flows, but the *file-flush trigger* is symmetric: any process
+        whose ``storage_updated.value`` is ``True`` when
+        ``index_done_callback`` fires will perform the write. In a
+        single-writer pipeline this is always the same process; if you
+        ever permit multiple writers, two processes may race to flush
+        the same in-memory state — that race is safe (both flush the
+        same shared dict, ``write_json`` is atomic per file) but
+        wasteful, and the ``clear_all_update_flags`` after each flush
+        means subsequent re-flushes are no-ops.
+
+    Caveats vs file-backed implementations:
+        * **No reload path.** If something writes to the on-disk file
+          out of band, this class will not pick it up until restart.
+          The file is only ever written by ``index_done_callback`` and
+          read once in ``initialize``.
+        * **No ``_get_*`` entry method.** Adding one would be wrong —
+          there's nothing to "get fresher than" since the in-memory
+          state is already the shared, authoritative view.
+        * **``write_json`` may sanitize.** If sanitization happens, the
+          on-disk JSON differs from what was in memory; the callback
+          re-reads the cleaned file back into ``self._data`` under the
+          same lock so the shared view stays consistent with disk.
+
+    Non-pipeline write paths:
+        * ``drop`` — destructive, **not** serialized by this storage
+          class. Currently gated by the API layer
+          (``/documents/clear``); any new caller must hold the pipeline
+          ``busy`` reservation.
+        * ``upsert`` / ``delete`` invoked from non-pipeline admin flows
+          (cache management, etc.) — safe under the shared-lock model,
+          but consumers should still respect the pipeline gate to avoid
+          interleaving with batched ingest work.
+    """
+
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
         if self.workspace:
@@ -42,8 +147,22 @@ class JsonKVStorage(BaseKVStorage):
         self._storage_lock = None
         self.storage_updated = None
 
+        reap_orphan_tmp_files(self._file_name, self.workspace or "_")
+
     async def initialize(self):
-        """Initialize storage data"""
+        """Bind to the shared namespace dict and load from disk on first init.
+
+        ``try_initialize_namespace`` is a global init lock that returns
+        ``True`` for exactly one process per ``(namespace, workspace)``;
+        that process reads the JSON file and populates the shared
+        ``self._data`` under ``_storage_lock``. Subsequent processes
+        skip the file read — they will see the same shared dict via
+        ``get_namespace_data``.
+
+        For ``*_cache`` namespaces an extra
+        ``_migrate_legacy_cache_structure`` pass runs against the loaded
+        data and may rewrite the on-disk file if a migration was applied.
+        """
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
         )
@@ -75,6 +194,30 @@ class JsonKVStorage(BaseKVStorage):
                     )
 
     async def index_done_callback(self) -> None:
+        """Flush dirty in-memory state to disk and clear all dirty flags.
+
+        Commit point in the shared-memory protocol (see class docstring,
+        *Cross-process sync protocol*). Steps:
+            1. Under ``_storage_lock``, check this process's
+               ``storage_updated.value``. If ``False``, nothing to do —
+               return.
+            2. Snapshot ``self._data`` (converting from ``Manager.dict``
+               proxy to a plain ``dict`` so the JSON encoder doesn't trip
+               over the proxy) and write it via ``write_json``.
+            3. If ``write_json`` reports sanitization was applied, the
+               on-disk file no longer matches what was in memory — reload
+               the cleaned data back into ``self._data`` under the same
+               lock so the shared view stays consistent.
+            4. ``clear_all_update_flags`` — wipe every process's
+               ``storage_updated`` flag back to ``False``, signaling
+               that the dirty data has been persisted.
+
+        Note the **semantic difference** from the file-backed classes'
+        commit: there is no ``set_all_update_flags`` here. The shared
+        dict is already consistent across processes; the only thing
+        ``index_done_callback`` does globally is *clear* the dirty
+        flags.
+        """
         async with self._storage_lock:
             if self.storage_updated.value:
                 data_dict = (
@@ -139,10 +282,28 @@ class JsonKVStorage(BaseKVStorage):
             return set(keys) - set(self._data.keys())
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """
-        Importance notes for in-memory storage:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed
+        """Insert or update KV records in shared memory; mark all processes dirty.
+
+        Two side effects under ``_storage_lock``:
+            1. Stamp ``create_time`` / ``update_time`` / ``_id`` on each
+               value, then ``self._data.update(data)``. Because
+               ``self._data`` is the shared ``Manager.dict()`` proxy, the
+               update is visible to all processes immediately — no
+               reload needed.
+            2. ``set_all_update_flags`` — flip every process's
+               ``storage_updated.value`` to ``True``. Here ``True``
+               means *"there is dirty data that still needs to be
+               flushed to disk"*, **not** *"there is fresher data on
+               disk"* as in the file-backed classes (see class docstring
+               for the contrast).
+
+        Persistence is deferred to the next ``index_done_callback`` (the
+        pipeline calls this via ``_insert_done()`` after each batch).
+
+        Note: the per-key prep loop calls ``_cooperative_yield`` inside
+        the lock. That is safe because ``NamespaceLock`` is non-
+        reentrant — siblings waiting on this lock stay blocked across
+        the yield; only unrelated coroutines benefit from the yield.
         """
         if not data:
             return
@@ -182,17 +343,18 @@ class JsonKVStorage(BaseKVStorage):
             await set_all_update_flags(self.namespace, workspace=self.workspace)
 
     async def delete(self, ids: list[str]) -> None:
-        """Delete specific records from storage by their IDs
+        """Remove records from shared memory; mark all processes dirty if any deleted.
 
-        Importance notes for in-memory storage:
-        1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed
+        Under ``_storage_lock``: ``self._data.pop(doc_id, None)`` for
+        each id. Only calls ``set_all_update_flags`` if at least one key
+        was actually present (avoids creating spurious dirty state for
+        no-op deletes).
+
+        See class docstring for the shared-memory + dirty-flag protocol
+        and the semantic contrast vs file-backed classes.
 
         Args:
-            ids (list[str]): List of document IDs to be deleted from storage
-
-        Returns:
-            None
+            ids: List of document IDs to be deleted from storage
         """
         async with self._storage_lock:
             any_deleted = False
@@ -214,13 +376,24 @@ class JsonKVStorage(BaseKVStorage):
             return len(self._data) == 0
 
     async def drop(self) -> dict[str, str]:
-        """Drop all data from storage and clean up resources
-           This action will persistent the data to disk immediately.
+        """Clear shared memory and immediately persist the empty state.
 
         This method will:
-        1. Clear all data from memory
-        2. Update flags to notify other processes
-        3. Trigger index_done_callback to save the empty state
+            1. Clear the shared ``self._data`` dict under
+               ``_storage_lock`` (visible to all processes immediately).
+            2. ``set_all_update_flags`` so every process knows there is
+               dirty state pending persistence.
+            3. Call ``index_done_callback`` synchronously to flush the
+               empty state to disk and clear the dirty flags.
+
+        Caller contract:
+            ``drop`` is destructive and **not** serialized by this
+            storage class. The caller must hold the pipeline ``busy``
+            reservation (the ``/documents/clear`` endpoint does this)
+            before invoking it — running ``drop`` concurrently with an
+            active document pipeline will wipe out in-flight work and
+            silently lose data. See class docstring,
+            *Non-pipeline write paths*.
 
         Returns:
             dict[str, str]: Operation status and message
@@ -300,8 +473,17 @@ class JsonKVStorage(BaseKVStorage):
         return migrated_data
 
     async def finalize(self):
-        """Finalize storage resources
-        Persistence cache data to disk before exiting
+        """On shutdown, flush ``*_cache`` namespaces to disk.
+
+        Cache namespaces are routinely written to during query/extract
+        without triggering an immediate ``index_done_callback`` (caches
+        churn fast and the pipeline doesn't always end at a natural
+        commit point). This hook ensures whatever dirty cache state is
+        in shared memory at process exit gets persisted, so the next
+        run can pick it up.
+
+        Non-cache namespaces don't need this — their writes already
+        flow through pipeline-driven ``_insert_done()`` commits.
         """
         if self.namespace.endswith("_cache"):
             await self.index_done_callback()

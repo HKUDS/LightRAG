@@ -136,10 +136,20 @@
         "metadata": "メタデータ",
         "select": "選択"
       },
+      "filters": {
+        "all": "すべて",
+        "completed": "完了",
+        "parse": "抽出",
+        "analyze": "分析",
+        "process": "処理",
+        "failed": "失敗"
+      },
       "status": {
         "all": "すべて",
         "completed": "完了",
         "preprocessed": "前処理済み",
+        "parsing": "解析中",
+        "analyzing": "分析中",
         "processing": "処理中",
         "pending": "保留中",
         "failed": "失敗"
@@ -153,7 +163,16 @@
       "showButton": "表示",
       "hideButton": "非表示",
       "showFileNameTooltip": "ファイル名を表示",
-      "hideFileNameTooltip": "ファイル名を非表示"
+      "hideFileNameTooltip": "ファイル名を非表示",
+      "details": {
+        "title": "ステータス詳細",
+        "openTooltip": "ステータス詳細を表示",
+        "content": "詳細",
+        "copyButton": "コピー",
+        "copyTooltip": "ステータス詳細をコピー",
+        "copySuccess": "ステータス詳細をコピーしました",
+        "copyFailed": "ステータス詳細のコピーに失敗しました"
+      }
     },
     "pipelineStatus": {
       "title": "パイプラインステータス",
@@ -214,6 +233,9 @@
       "disease": "病気",
       "drug": "薬",
       "food": "食品",
+      "table": "表",
+      "drawing": "図",
+      "equation": "数式",
       "other": "その他"
     },
     "sideBar": {
@@ -275,11 +297,12 @@
     "statusCard": {
       "unavailable": "ステータス情報が利用できません",
       "serverInfo": "サーバー情報",
-      "workingDirectory": "作業ディレクトリ",
       "inputDirectory": "入力ディレクトリ",
-      "maxParallelInsert": "同時ドキュメント処理",
-      "summarySettings": "概要設定",
-      "llmConfig": "LLM設定",
+      "parser": "パーサー",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "その他の設定",
+      "llmConfig": "モデル設定",
       "llmBinding": "LLMバインディング",
       "llmBindingHost": "LLMエンドポイント",
       "llmModel": "LLMモデル",
@@ -293,15 +316,14 @@
       "graphStorage": "グラフストレージ",
       "vectorStorage": "ベクトルストレージ",
       "workspace": "ワークスペース",
-      "maxGraphNodes": "最大グラフノード数",
       "rerankerConfig": "リランカー設定",
       "rerankerBindingHost": "リランカーエンドポイント",
       "rerankerModel": "リランカーモデル",
-      "lockStatus": "ロックステータス",
-      "threshold": "しきい値"
+      "lockStatus": "ロックステータス"
     },
     "propertiesView": {
       "editProperty": "{{property}}を編集",
+      "editLockedByPipeline": "パイプライン処理中のため、編集できません",
       "editPropertyDescription": "下のテキストエリアでプロパティ値を編集してください。",
       "errors": {
         "duplicateName": "ノード名が既に存在します",
@@ -391,6 +413,8 @@
       "startPrompt": "下にクエリを入力して検索を開始",
       "clear": "クリア",
       "send": "送信",
+      "stop": "停止",
+      "userTerminated": "ユーザーが中断しました。応答が不完全な可能性があります",
       "placeholder": "クエリを入力（プレフィックス対応: /<クエリモード>）",
       "error": "エラー: 応答の取得に失敗しました",
       "queryModeError": "次のクエリモードのみサポートされています: {{modes}}",

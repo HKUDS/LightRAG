@@ -1,10 +1,14 @@
 """
 This module contains all the routers for the LightRAG API.
+
+The document/query/graph routers are intentionally NOT re-exported here:
+they are constructed per-app via the `create_*_routes` factory functions
+in their respective modules. A module-level singleton would accumulate
+duplicate routes if the factory is invoked more than once in the same
+process (e.g. across tests), which produced "Duplicate Operation ID"
+warnings before the factories were converted to local routers.
 """
 
-from .document_routes import router as document_router
-from .query_routes import router as query_router
-from .graph_routes import router as graph_router
 from .ollama_api import OllamaAPI
 
-__all__ = ["document_router", "query_router", "graph_router", "OllamaAPI"]
+__all__ = ["OllamaAPI"]

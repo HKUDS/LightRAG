@@ -136,10 +136,20 @@
         "metadata": "Metadaten",
         "select": "Auswählen"
       },
+      "filters": {
+        "all": "Alle",
+        "completed": "Abgeschlossen",
+        "parse": "Extraktion",
+        "analyze": "Analyse",
+        "process": "Verarbeitung",
+        "failed": "Fehlgeschlagen"
+      },
       "status": {
         "all": "Alle",
         "completed": "Abgeschlossen",
         "preprocessed": "Vorverarbeitet",
+        "parsing": "Wird geparst",
+        "analyzing": "Wird analysiert",
         "processing": "Verarbeitung",
         "pending": "Ausstehend",
         "failed": "Fehlgeschlagen"
@@ -153,7 +163,16 @@
       "showButton": "Anzeigen",
       "hideButton": "Ausblenden",
       "showFileNameTooltip": "Dateiname anzeigen",
-      "hideFileNameTooltip": "Dateiname ausblenden"
+      "hideFileNameTooltip": "Dateiname ausblenden",
+      "details": {
+        "title": "Statusdetails",
+        "openTooltip": "Statusdetails anzeigen",
+        "content": "Details",
+        "copyButton": "Kopieren",
+        "copyTooltip": "Statusdetails kopieren",
+        "copySuccess": "Statusdetails kopiert",
+        "copyFailed": "Statusdetails konnten nicht kopiert werden"
+      }
     },
     "pipelineStatus": {
       "title": "Pipeline-Status",
@@ -214,6 +233,9 @@
       "disease": "Krankheit",
       "drug": "Medikament",
       "food": "Lebensmittel",
+      "table": "Tabelle",
+      "drawing": "Zeichnung",
+      "equation": "Gleichung",
       "other": "Sonstiges"
     },
     "sideBar": {
@@ -275,11 +297,12 @@
     "statusCard": {
       "unavailable": "Statusinformationen nicht verfügbar",
       "serverInfo": "Server-Informationen",
-      "workingDirectory": "Arbeitsverzeichnis",
       "inputDirectory": "Eingabeverzeichnis",
-      "maxParallelInsert": "Gleichzeitige Dokumentenverarbeitung",
-      "summarySettings": "Zusammenfassungseinstellungen",
-      "llmConfig": "LLM-Konfiguration",
+      "parser": "Parser",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Weitere Einstellungen",
+      "llmConfig": "Modellkonfiguration",
       "llmBinding": "LLM-Bindung",
       "llmBindingHost": "LLM-Endpunkt",
       "llmModel": "LLM-Modell",
@@ -293,15 +316,14 @@
       "graphStorage": "Graph-Speicher",
       "vectorStorage": "Vektor-Speicher",
       "workspace": "Arbeitsbereich",
-      "maxGraphNodes": "Maximale Graph-Knotenanzahl",
       "rerankerConfig": "Reranker-Konfiguration",
       "rerankerBindingHost": "Reranker-Endpunkt",
       "rerankerModel": "Reranker-Modell",
-      "lockStatus": "Sperrstatus",
-      "threshold": "Schwellenwert"
+      "lockStatus": "Sperrstatus"
     },
     "propertiesView": {
       "editProperty": "{{property}} bearbeiten",
+      "editLockedByPipeline": "Pipeline ist ausgelastet; Bearbeitung deaktiviert",
       "editPropertyDescription": "Bearbeiten Sie den Eigenschaftswert im Textbereich unten.",
       "errors": {
         "duplicateName": "Knotenname existiert bereits",
@@ -391,6 +413,8 @@
       "startPrompt": "Starten Sie eine Abfrage, indem Sie Ihre Frage unten eingeben",
       "clear": "Löschen",
       "send": "Senden",
+      "stop": "Stopp",
+      "userTerminated": "Vom Benutzer abgebrochen — die Antwort ist möglicherweise unvollständig",
       "placeholder": "Geben Sie Ihre Abfrage ein (Präfix unterstützt: /<Abfragemodus>)",
       "error": "Fehler: Antwort konnte nicht abgerufen werden",
       "queryModeError": "Nur die folgenden Abfragemodi werden unterstützt: {{modes}}",

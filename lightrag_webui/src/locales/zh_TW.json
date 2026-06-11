@@ -136,10 +136,20 @@
         "metadata": "元資料",
         "select": "選擇"
       },
+      "filters": {
+        "all": "全部",
+        "completed": "已完成",
+        "parse": "內容解析",
+        "analyze": "模態分析",
+        "process": "抽取處理",
+        "failed": "失敗"
+      },
       "status": {
         "all": "全部",
         "completed": "已完成",
         "preprocessed": "預處理",
+        "parsing": "內容擷取",
+        "analyzing": "分析中",
         "processing": "處理中",
         "pending": "等待中",
         "failed": "失敗"
@@ -153,7 +163,16 @@
       "showButton": "顯示",
       "hideButton": "隱藏",
       "showFileNameTooltip": "顯示檔案名稱",
-      "hideFileNameTooltip": "隱藏檔案名稱"
+      "hideFileNameTooltip": "隱藏檔案名稱",
+      "details": {
+        "title": "狀態詳情",
+        "openTooltip": "檢視狀態詳情",
+        "content": "詳情",
+        "copyButton": "複製",
+        "copyTooltip": "複製狀態詳情",
+        "copySuccess": "狀態詳情已複製",
+        "copyFailed": "複製狀態詳情失敗"
+      }
     },
     "pipelineStatus": {
       "title": "流水線狀態",
@@ -214,6 +233,9 @@
       "disease": "疾病",
       "drug": "藥物",
       "food": "食物",
+      "table": "表格",
+      "drawing": "圖片",
+      "equation": "公式",
       "other": "其他"
     },
     "sideBar": {
@@ -275,11 +297,12 @@
     "statusCard": {
       "unavailable": "狀態資訊不可用",
       "serverInfo": "伺服器資訊",
-      "workingDirectory": "工作目錄",
       "inputDirectory": "輸入目錄",
-      "maxParallelInsert": "並行處理文档",
-      "summarySettings": "摘要設定",
-      "llmConfig": "LLM 設定",
+      "parser": "解析器",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "其它設定",
+      "llmConfig": "模型設定",
       "llmBinding": "LLM 綁定",
       "llmBindingHost": "LLM 端點",
       "llmModel": "LLM 模型",
@@ -293,15 +316,14 @@
       "graphStorage": "圖形儲存",
       "vectorStorage": "向量儲存",
       "workspace": "工作空間",
-      "maxGraphNodes": "最大圖形節點數",
       "rerankerConfig": "重排序設定",
       "rerankerBindingHost": "重排序端點",
       "rerankerModel": "重排序模型",
-      "lockStatus": "鎖定狀態",
-      "threshold": "閾值"
+      "lockStatus": "鎖定狀態"
     },
     "propertiesView": {
       "editProperty": "編輯{{property}}",
+      "editLockedByPipeline": "流水線正忙,暫時無法編輯",
       "editPropertyDescription": "在下方文字區域編輯屬性值。",
       "errors": {
         "duplicateName": "節點名稱已存在",
@@ -391,6 +413,8 @@
       "startPrompt": "輸入查詢開始檢索",
       "clear": "清空",
       "send": "送出",
+      "stop": "停止",
+      "userTerminated": "使用者已終止，回應內容可能不完整",
       "placeholder": "輸入查詢內容 (支援模式前綴：/<Query Mode>)",
       "error": "錯誤：取得回應失敗",
       "queryModeError": "僅支援以下查詢模式：{{modes}}",

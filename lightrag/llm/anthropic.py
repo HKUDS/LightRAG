@@ -2,7 +2,7 @@ from ..utils import verbose_debug, VERBOSE_DEBUG
 import sys
 import os
 import logging
-import numpy as np
+import warnings
 from typing import Any, Union, AsyncIterator
 import pipmaster as pm  # Pipmaster for dynamic library install
 
@@ -14,11 +14,6 @@ else:
 # Install Anthropic SDK if not present
 if not pm.is_installed("anthropic"):
     pm.install("anthropic")
-
-# Add Voyage AI import
-if not pm.is_installed("voyageai"):
-    pm.install("voyageai")
-import voyageai
 
 from anthropic import (
     AsyncAnthropic,
@@ -62,8 +57,17 @@ async def anthropic_complete_if_cache(
     enable_cot: bool = False,
     base_url: str | None = None,
     api_key: str | None = None,
+    image_inputs: list[Any] | None = None,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    """Call Anthropic Messages API with LightRAG-compatible shims.
+
+    Structured output note:
+    - This adapter does not support OpenAI-style ``response_format`` JSON mode.
+    - If callers pass ``response_format``, it is stripped before the request.
+    - Deprecated ``keyword_extraction`` and ``entity_extraction`` booleans are
+      accepted only as compatibility shims; they emit warnings and are ignored.
+    """
     if history_messages is None:
         history_messages = []
     if enable_cot:
@@ -83,8 +87,30 @@ async def anthropic_complete_if_cache(
         logging.getLogger("anthropic").setLevel(logging.INFO)
 
     kwargs.pop("hashing_kv", None)
-    kwargs.pop("keyword_extraction", None)
+    # Anthropic Messages API has no JSON mode; drop legacy flags and
+    # response_format. Emit DeprecationWarning when the booleans were set.
+    if kwargs.pop("keyword_extraction", False):
+        warnings.warn(
+            "anthropic_complete_if_cache(keyword_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if kwargs.pop("entity_extraction", False):
+        warnings.warn(
+            "anthropic_complete_if_cache(entity_extraction=True) is deprecated; "
+            "pass response_format={'type': 'json_object'} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    kwargs.pop("response_format", None)
     timeout = kwargs.pop("timeout", None)
+
+    # Require max_tokens; the Anthropic SDK errors if it's missing
+    kwargs.setdefault("max_tokens", 8192)
+    # Pop stream from kwargs so it doesn't leak into create_params;
+    # default to False (non-streaming) for consistency with other providers
+    stream = kwargs.pop("stream", False)
 
     anthropic_async_client = (
         AsyncAnthropic(
@@ -101,7 +127,26 @@ async def anthropic_complete_if_cache(
 
     messages: list[dict[str, Any]] = []
     messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
+    if image_inputs:
+        from lightrag.llm._vision_utils import normalize_image_inputs
+
+        normalized_images = normalize_image_inputs(image_inputs)
+        user_content: list[dict[str, Any]] = []
+        for img in normalized_images:
+            user_content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.mime_type,
+                        "data": img.base64_str,
+                    },
+                }
+            )
+        user_content.append({"type": "text", "text": prompt})
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": prompt})
 
     logger.debug("===== Sending Query to Anthropic LLM =====")
     logger.debug(f"Model: {model}   Base URL: {base_url}")
@@ -110,11 +155,15 @@ async def anthropic_complete_if_cache(
     verbose_debug(f"System prompt: {system_prompt}")
 
     try:
-        create_params = {"model": model, "messages": messages, "stream": True, **kwargs}
+        create_params = {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+            **kwargs,
+        }
         if system_prompt:
             create_params["system"] = system_prompt
         response = await anthropic_async_client.messages.create(**create_params)
-
     except APIConnectionError as e:
         logger.error(f"Anthropic API Connection Error: {e}")
         raise
@@ -140,6 +189,9 @@ async def anthropic_complete_if_cache(
             f"Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
         )
         raise
+
+    if not stream:
+        return response.content[0].text
 
     async def stream_response():
         try:
@@ -244,103 +296,27 @@ async def claude_3_haiku_complete(
     )
 
 
-# Embedding function (placeholder, as Anthropic does not provide embeddings)
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
-)
-async def anthropic_embed(
-    texts: list[str],
-    model: str = "voyage-3",  # Default to voyage-3 as a good general-purpose model
-    base_url: str = None,
-    api_key: str = None,
-) -> np.ndarray:
+# Backward-compatibility shim: the previous embedding implementation lived in
+# this module under the (misleading) name ``anthropic_embed`` even though it
+# called Voyage AI under the hood. The real implementation now lives in
+# ``lightrag.llm.voyageai.voyageai_embed``. Keep the old name importable for one
+# release cycle so downstream users get a clear deprecation warning instead of
+# an ImportError. Remove in a future major version.
+def anthropic_embed(*args, **kwargs):
+    """Deprecated alias for :func:`lightrag.llm.voyageai.voyageai_embed`.
+
+    This shim accepts the same arguments as the original ``anthropic_embed``
+    function (which was always backed by VoyageAI) and forwards them to
+    :func:`voyageai_embed`. It will be removed in a future release.
     """
-    Generate embeddings using Voyage AI since Anthropic doesn't provide native embedding support.
 
-    Args:
-        texts: List of text strings to embed
-        model: Voyage AI model name (e.g., "voyage-3", "voyage-3-large", "voyage-code-3")
-        base_url: Optional custom base URL (not used for Voyage AI)
-        api_key: API key for Voyage AI (defaults to VOYAGE_API_KEY environment variable)
+    warnings.warn(
+        "lightrag.llm.anthropic.anthropic_embed is deprecated and will be "
+        "removed in a future release. Import "
+        "lightrag.llm.voyageai.voyageai_embed instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from lightrag.llm.voyageai import voyageai_embed
 
-    Returns:
-        numpy array of shape (len(texts), embedding_dimension) containing the embeddings
-    """
-    if not api_key:
-        api_key = os.environ.get("VOYAGE_API_KEY")
-        if not api_key:
-            logger.error("VOYAGE_API_KEY environment variable not set")
-            raise ValueError(
-                "VOYAGE_API_KEY environment variable is required for embeddings"
-            )
-
-    try:
-        # Initialize Voyage AI client
-        voyage_client = voyageai.Client(api_key=api_key)
-
-        # Get embeddings
-        result = voyage_client.embed(
-            texts,
-            model=model,
-            input_type="document",  # Assuming document context; could be made configurable
-        )
-
-        # Convert list of embeddings to numpy array
-        embeddings = np.array(result.embeddings, dtype=np.float32)
-
-        logger.debug(f"Generated embeddings for {len(texts)} texts using {model}")
-        verbose_debug(f"Embedding shape: {embeddings.shape}")
-
-        return embeddings
-
-    except Exception as e:
-        logger.error(f"Voyage AI embedding failed: {str(e)}")
-        raise
-
-
-# Optional: a helper function to get available embedding models
-def get_available_embedding_models() -> dict[str, dict]:
-    """
-    Returns a dictionary of available Voyage AI embedding models and their properties.
-    """
-    return {
-        "voyage-3-large": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "Best general-purpose and multilingual",
-        },
-        "voyage-3": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "General-purpose and multilingual",
-        },
-        "voyage-3-lite": {
-            "context_length": 32000,
-            "dimension": 512,
-            "description": "Optimized for latency and cost",
-        },
-        "voyage-code-3": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "Optimized for code",
-        },
-        "voyage-finance-2": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "Optimized for finance",
-        },
-        "voyage-law-2": {
-            "context_length": 16000,
-            "dimension": 1024,
-            "description": "Optimized for legal",
-        },
-        "voyage-multimodal-3": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "Multimodal text and images",
-        },
-    }
+    return voyageai_embed.func(*args, **kwargs)

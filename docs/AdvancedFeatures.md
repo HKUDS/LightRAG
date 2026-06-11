@@ -1,10 +1,12 @@
 # Advanced Features
 
-## Multimodal Document Processing (RAG-Anything Integration)
+## Multimodal Document Processing
 
-LightRAG integrates with [RAG-Anything](https://github.com/HKUDS/RAG-Anything), an **All-in-One Multimodal Document Processing RAG system** that enables advanced parsing and RAG capabilities across diverse document formats including PDFs, images, Office documents, tables, and formulas.
+LightRAG Server includes a multimodal document pipeline for text, images, tables, and equations. Document parsing is handled through external MinerU or Docling services configured by endpoint, so the server no longer needs to install or import the `raganything` package locally.
 
-**Key Features:**
+**Status:** the multimodal post-process hook is currently a placeholder; image, table, and equation processors are planned but not yet wired up. Ingestion via external MinerU/Docling parsers and native text indexing already work today.
+
+**Planned Capabilities:**
 - End-to-End Multimodal Pipeline: complete workflow from document ingestion to multimodal query answering
 - Universal Document Support: PDFs, Office documents (DOC/DOCX/PPT/PPTX/XLS/XLSX), images, and diverse file formats
 - Specialized Content Analysis: dedicated processors for images, tables, mathematical equations
@@ -13,94 +15,16 @@ LightRAG integrates with [RAG-Anything](https://github.com/HKUDS/RAG-Anything), 
 
 ### Quick Start
 
-* Install Rag-Anything
+Configure parser routing and external parser service endpoints in `.env`:
 
 ```bash
-pip install raganything
+LIGHTRAG_PARSER=pdf:mineru,docx:docling,pptx:docling,xlsx:docling,*:legacy
+MINERU_API_MODE=local
+MINERU_LOCAL_ENDPOINT=http://localhost:8000
+DOCLING_ENDPOINT=http://localhost:5001/v1/convert/file/async
 ```
 
-* RAGAnything Usage Example
-
-```python
-import asyncio
-from raganything import RAGAnything
-from lightrag import LightRAG
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.utils import EmbeddingFunc
-import os
-
-async def load_existing_lightrag():
-    lightrag_working_dir = "./existing_lightrag_storage"
-
-    from functools import partial
-
-    lightrag_instance = LightRAG(
-        working_dir=lightrag_working_dir,
-        llm_model_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs: openai_complete_if_cache(
-            "gpt-4o-mini",
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            api_key="your-api-key",
-            **kwargs,
-        ),
-        embedding_func=EmbeddingFunc(
-            embedding_dim=3072,
-            max_token_size=8192,
-            model="text-embedding-3-large",
-            func=partial(
-                openai_embed.func,
-                model="text-embedding-3-large",
-                api_key=api_key,
-                base_url=base_url,
-            ),
-        )
-    )
-
-    await lightrag_instance.initialize_storages()
-
-    rag = RAGAnything(
-        lightrag=lightrag_instance,
-        vision_model_func=lambda prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs: openai_complete_if_cache(
-            "gpt-4o",
-            "",
-            system_prompt=None,
-            history_messages=[],
-            messages=[
-                {"role": "system", "content": system_prompt} if system_prompt else None,
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
-                ]} if image_data else {"role": "user", "content": prompt}
-            ],
-            api_key="your-api-key",
-            **kwargs,
-        ) if image_data else openai_complete_if_cache(
-            "gpt-4o-mini",
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            api_key="your-api-key",
-            **kwargs,
-        )
-    )
-
-    result = await rag.query_with_multimodal(
-        "What data has been processed in this LightRAG instance?",
-        mode="hybrid"
-    )
-    print("Query result:", result)
-
-    await rag.process_document_complete(
-        file_path="path/to/new/multimodal_document.pdf",
-        output_dir="./output"
-    )
-
-if __name__ == "__main__":
-    asyncio.run(load_existing_lightrag())
-```
-
-* For detailed documentation and advanced usage, see the [RAG-Anything repository](https://github.com/HKUDS/RAG-Anything).
+Then upload documents through LightRAG Server. `LIGHTRAG_PARSER` rules match suffixes such as `pdf`, may be separated with commas or semicolons, and are evaluated from left to right. If a rule enables MinerU or Docling, the matching endpoint must be configured before server startup. Per-file hints such as `paper.[mineru].pdf` and `memo.[native].docx` override the default rules. Parsed multimodal sidecars are written by the pipeline and consumed by the normal indexing flow. See [File Processing Configuration](./FileProcessingConfiguration-zh.md) for detailed routing rules and examples.
 
 ---
 
@@ -108,37 +32,109 @@ if __name__ == "__main__":
 
 **Overview and Usage**
 
-LightRAG provides a `TokenTracker` tool to monitor and manage token consumption by large language models. This feature is useful for controlling API costs and optimizing performance.
+LightRAG provides a `TokenTracker` tool to monitor token consumption reported by supported LLM providers. This feature is useful for controlling API costs and optimizing performance.
+
+`TokenTracker` does not automatically inject itself into LLM calls. Pass it to the provider binding directly, bind it through `llm_model_kwargs`, or capture it in your custom LLM function.
+
+**Method 1: Track direct LLM calls**
 
 ```python
+from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import TokenTracker
 
 token_tracker = TokenTracker()
 
-# Method 1: Using context manager (Recommended)
 with token_tracker:
-    result1 = await llm_model_func("your question 1")
-    result2 = await llm_model_func("your question 2")
+    result1 = await openai_complete_if_cache(
+        "gpt-4o-mini",
+        "your question 1",
+        token_tracker=token_tracker,
+    )
+    result2 = await openai_complete_if_cache(
+        "gpt-4o-mini",
+        "your question 2",
+        token_tracker=token_tracker,
+    )
+```
 
-# Method 2: Manually adding token usage records
+The context manager resets the tracker when entering the block and prints usage when leaving it. The `token_tracker=token_tracker` argument is still required.
+
+**Method 2: Track LightRAG calls**
+
+```python
+from lightrag import LightRAG, QueryParam
+from lightrag.llm.openai import gpt_4o_mini_complete
+from lightrag.utils import TokenTracker
+
+token_tracker = TokenTracker()
+
+rag = LightRAG(
+    working_dir="./rag_storage",
+    llm_model_func=gpt_4o_mini_complete,
+    llm_model_kwargs={"token_tracker": token_tracker},
+    embedding_func=embedding_func,
+)
+
+await rag.initialize_storages()
+
 token_tracker.reset()
+await rag.ainsert(["document one", "document two"])
+await rag.aquery("your question 1", param=QueryParam(mode="naive"))
+await rag.aquery("your question 2", param=QueryParam(mode="mix"))
 
-rag.insert()
+print("Token usage:", token_tracker.get_usage())
+```
 
-rag.query("your question 1", param=QueryParam(mode="naive"))
-rag.query("your question 2", param=QueryParam(mode="mix"))
+`llm_model_kwargs={"token_tracker": token_tracker}` is passed to the default role LLM wrappers used by extraction, keyword generation, querying, and VLM calls. If you configure role-specific LLM kwargs, put `token_tracker` in the relevant role kwargs as well, or use the closure pattern below.
+
+**Robust custom wrapper pattern**
+
+```python
+from lightrag import LightRAG
+from lightrag.llm.gemini import gemini_complete_if_cache
+from lightrag.utils import TokenTracker
+
+
+def make_llm_func(token_tracker: TokenTracker):
+    async def _llm_model_func(
+        prompt,
+        system_prompt=None,
+        history_messages=None,
+        **kwargs,
+    ):
+        return await gemini_complete_if_cache(
+            "gemini-2.5-flash-lite",
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            token_tracker=token_tracker,
+            **kwargs,
+        )
+
+    return _llm_model_func
+
+
+token_tracker = TokenTracker()
+
+rag = LightRAG(
+    working_dir="./rag_storage",
+    llm_model_func=make_llm_func(token_tracker),
+    embedding_func=embedding_func,
+)
+
+await rag.initialize_storages()
+
+token_tracker.reset()
+await rag.ainsert(["document one", "document two"])
 
 print("Token usage:", token_tracker.get_usage())
 ```
 
 **Usage Tips:**
-- Use context managers for long sessions or batch operations to automatically track all token consumption
-- For segmented statistics, use manual mode and call `reset()` when appropriate
+- Use context managers for direct LLM sessions when you want automatic reset and final printing
+- For segmented statistics, call `reset()` before each indexing or query phase
+- LLM cache hits do not create new provider calls, so token usage does not increase for cached responses
 - Regular checking of token usage helps detect abnormal consumption early
-
-**Example files:**
-- `examples/lightrag_gemini_track_token_demo.py`: Token tracking with Google Gemini
-- `examples/lightrag_siliconcloud_track_token_demo.py`: Token tracking with SiliconCloud
 
 ---
 

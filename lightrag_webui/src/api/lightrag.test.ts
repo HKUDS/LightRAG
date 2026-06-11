@@ -186,7 +186,7 @@ describe('getDocumentsPaginated', () => {
     }
 
     let callCount = 0
-    let resolveSharedRequest: ((value: any) => void) | null = null
+    let resolveSharedRequest: ((value: any) => void) | undefined
     let abortCount = 0
 
     apiModule.__setPaginatedDocumentsPostForTests((_request, controller) => {
@@ -238,5 +238,28 @@ describe('getDocumentsPaginated', () => {
       },
       status_counts: { all: 0 }
     })
+  })
+})
+
+describe('isUserAbortError', () => {
+  // Regression: the Stop button must suppress query cancellation everywhere it
+  // surfaces — both the main stream catch and the guest-token retry catch (which
+  // otherwise redirects an aborting guest to the login page). Both sites share
+  // this predicate, so locking down its behavior guards both fixes.
+  test('treats an aborted signal as a user abort regardless of the error', () => {
+    const controller = new AbortController()
+    controller.abort()
+    expect(apiModule.isUserAbortError(controller.signal, new Error('boom'))).toBe(true)
+  })
+
+  test('treats an AbortError as a user abort even when the signal is absent', () => {
+    const abortError = new DOMException('Aborted', 'AbortError')
+    expect(apiModule.isUserAbortError(undefined, abortError)).toBe(true)
+  })
+
+  test('does not treat a real failure on a live signal as a user abort', () => {
+    const controller = new AbortController()
+    expect(apiModule.isUserAbortError(controller.signal, new Error('network down'))).toBe(false)
+    expect(apiModule.isUserAbortError(undefined, new Error('network down'))).toBe(false)
   })
 })

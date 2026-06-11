@@ -17,6 +17,7 @@ venv/
 
 # Generated Docker Compose files (output of setup wizard)
 docker-compose.*.yml
+!docker-compose.podman.yml
 
 # Build / Distribution
 dist/
@@ -54,6 +55,9 @@ output/
 rag_storage/
 data/
 
+# User cumstomized prompt directory
+prompts/entity_type/
+
 # Evaluation results
 lightrag/evaluation/results/
 
@@ -74,13 +78,16 @@ ignore_this.txt
 # temporary test files in project root
 /test_*
 
-# Cline files
+# AI Agent files
 memory-bank
-.claude/CLAUDE.md
-.claude/
-
-# Claude Code
-CLAUDE.md
+# Ignore .claude/ by default; only track the shared hook and settings
+# (local overrides like settings.local.json stay ignored via .claude/*)
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 
 # Google Jules
 .jules/
+
+# native_parser/docx CLI output (audit JSONL + image dir)
+/parse_output/

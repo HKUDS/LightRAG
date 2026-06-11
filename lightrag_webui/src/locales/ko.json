@@ -136,10 +136,20 @@
         "metadata": "메타데이터",
         "select": "선택"
       },
+      "filters": {
+        "all": "전체",
+        "completed": "완료",
+        "parse": "추출",
+        "analyze": "분석",
+        "process": "처리",
+        "failed": "실패"
+      },
       "status": {
         "all": "전체",
         "completed": "완료",
         "preprocessed": "전처리 완료",
+        "parsing": "파싱 중",
+        "analyzing": "분석 중",
         "processing": "처리 중",
         "pending": "대기 중",
         "failed": "실패"
@@ -153,7 +163,16 @@
       "showButton": "표시",
       "hideButton": "숨기기",
       "showFileNameTooltip": "파일명 표시",
-      "hideFileNameTooltip": "파일명 숨기기"
+      "hideFileNameTooltip": "파일명 숨기기",
+      "details": {
+        "title": "상태 상세",
+        "openTooltip": "상태 상세 보기",
+        "content": "상세",
+        "copyButton": "복사",
+        "copyTooltip": "상태 상세 복사",
+        "copySuccess": "상태 상세가 복사되었습니다",
+        "copyFailed": "상태 상세 복사 실패"
+      }
     },
     "pipelineStatus": {
       "title": "파이프라인 상태",
@@ -214,6 +233,9 @@
       "disease": "질병",
       "drug": "의약품",
       "food": "식품",
+      "table": "표",
+      "drawing": "그림",
+      "equation": "수식",
       "other": "기타"
     },
     "sideBar": {
@@ -275,11 +297,12 @@
     "statusCard": {
       "unavailable": "상태 정보를 사용할 수 없음",
       "serverInfo": "서버 정보",
-      "workingDirectory": "작업 디렉토리",
       "inputDirectory": "입력 디렉토리",
-      "maxParallelInsert": "동시 문서 처리",
-      "summarySettings": "요약 설정",
-      "llmConfig": "LLM 구성",
+      "parser": "파서",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "기타 설정",
+      "llmConfig": "모델 구성",
       "llmBinding": "LLM 바인딩",
       "llmBindingHost": "LLM 엔드포인트",
       "llmModel": "LLM 모델",
@@ -293,15 +316,14 @@
       "graphStorage": "그래프 스토리지",
       "vectorStorage": "벡터 스토리지",
       "workspace": "작업 공간",
-      "maxGraphNodes": "최대 그래프 노드",
       "rerankerConfig": "Reranker 구성",
       "rerankerBindingHost": "Reranker 엔드포인트",
       "rerankerModel": "Reranker 모델",
-      "lockStatus": "잠금 상태",
-      "threshold": "임계값"
+      "lockStatus": "잠금 상태"
     },
     "propertiesView": {
       "editProperty": "{{property}} 수정",
+      "editLockedByPipeline": "파이프라인 사용 중 - 편집이 비활성화되었습니다",
       "editPropertyDescription": "아래 텍스트 영역에서 속성 값을 수정하세요.",
       "errors": {
         "duplicateName": "노드 이름이 이미 존재합니다",
@@ -391,6 +413,8 @@
       "startPrompt": "아래에 질문을 입력하여 검색을 시작하세요",
       "clear": "지우기",
       "send": "전송",
+      "stop": "중지",
+      "userTerminated": "사용자가 중단했습니다. 응답이 불완전할 수 있습니다",
       "placeholder": "질문을 입력하세요 (접두사 지원: /<쿼리 모드>)",
       "error": "오류: 응답을 가져오지 못했습니다",
       "queryModeError": "다음 쿼리 모드만 지원합니다: {{modes}}",

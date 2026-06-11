@@ -66,6 +66,7 @@ STORAGE_SERVICES=(
 DEFAULT_RUNTIME_TARGET="host"
 COMPOSE_LIGHTRAG_WORKING_DIR="/app/data/rag_storage"
 COMPOSE_LIGHTRAG_INPUT_DIR="/app/data/inputs"
+COMPOSE_LIGHTRAG_PROMPT_DIR="/app/data/prompts"
 # shellcheck disable=SC2034
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -151,6 +152,28 @@ normalize_vllm_rerank_binding_state() {
   fi
 }
 
+# Backfill sentinel hosts for bedrock/gemini bindings when LLM_BINDING_HOST or
+# EMBEDDING_BINDING_HOST is missing or empty. Flows that skip collect_llm_config /
+# collect_embedding_config (--server, --storage) would otherwise let the openai URL
+# hardcoded in env.example leak into the regenerated .env.
+normalize_provider_binding_hosts() {
+  local llm_sentinel="" embedding_sentinel=""
+  case "${ENV_VALUES[LLM_BINDING]:-}" in
+    bedrock) llm_sentinel="DEFAULT_BEDROCK_ENDPOINT" ;;
+    gemini) llm_sentinel="DEFAULT_GEMINI_ENDPOINT" ;;
+  esac
+  case "${ENV_VALUES[EMBEDDING_BINDING]:-}" in
+    bedrock) embedding_sentinel="DEFAULT_BEDROCK_ENDPOINT" ;;
+    gemini) embedding_sentinel="DEFAULT_GEMINI_ENDPOINT" ;;
+  esac
+  if [[ -n "$llm_sentinel" && -z "${ENV_VALUES[LLM_BINDING_HOST]:-}" ]]; then
+    ENV_VALUES["LLM_BINDING_HOST"]="$llm_sentinel"
+  fi
+  if [[ -n "$embedding_sentinel" && -z "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" ]]; then
+    ENV_VALUES["EMBEDDING_BINDING_HOST"]="$embedding_sentinel"
+  fi
+}
+
 load_existing_env_if_present() {
   local env_file="${REPO_ROOT}/.env"
 
@@ -159,6 +182,7 @@ load_existing_env_if_present() {
     load_env_file "$env_file"
     clear_deprecated_vllm_dtype_state
     normalize_vllm_rerank_binding_state
+    normalize_provider_binding_hosts
     if [[ "${ENV_VALUES[SSL]:-false}" == "true" ]]; then
       SSL_CERT_SOURCE_PATH="${ENV_VALUES[SSL_CERTFILE]:-}"
       SSL_KEY_SOURCE_PATH="${ENV_VALUES[SSL_KEYFILE]:-}"
@@ -321,7 +345,7 @@ normalize_redis_uri_for_local_service() {
   local uri="$1"
 
   if [[ "$uri" =~ ^rediss?://([^/?#]+@)?(redis|localhost|127\.0\.0\.1|0\.0\.0\.0)(:([0-9]+))?(/.*)?$ ]]; then
-    printf 'redis://localhost:6379%s' "${BASH_REMATCH[5]:-/}"
+    printf 'redis://localhost:6379%s' "${BASH_REMATCH[5]}"
     return 0
   fi
 
@@ -661,6 +685,7 @@ prepare_compose_data_path_overrides() {
   # storage into a different location.
   set_compose_override "WORKING_DIR" "$COMPOSE_LIGHTRAG_WORKING_DIR"
   set_compose_override "INPUT_DIR" "$COMPOSE_LIGHTRAG_INPUT_DIR"
+  set_compose_override "PROMPT_DIR" "$COMPOSE_LIGHTRAG_PROMPT_DIR"
 }
 
 prepare_compose_env_overrides() {
@@ -1093,9 +1118,9 @@ select_storage_backends() {
 
   while true; do
     kv_storage="$(prompt_choice "KV storage" "$kv_default" "${KV_STORAGE_OPTIONS[@]}")"
+    doc_storage="$(prompt_choice "Doc status storage" "$doc_default" "${DOC_STATUS_STORAGE_OPTIONS[@]}")"
     vector_storage="$(prompt_choice "Vector storage" "$vector_default" "${VECTOR_STORAGE_OPTIONS[@]}")"
     graph_storage="$(prompt_choice "Graph storage" "$graph_default" "${GRAPH_STORAGE_OPTIONS[@]}")"
-    doc_storage="$(prompt_choice "Doc status storage" "$doc_default" "${DOC_STATUS_STORAGE_OPTIONS[@]}")"
 
     if check_storage_compatibility "$kv_storage" "$vector_storage" "$graph_storage" "$doc_storage"; then
       break
@@ -1314,21 +1339,15 @@ collect_postgres_config() {
     set_compose_override "POSTGRES_PORT" ""
   fi
 
+  # The bundled postgres image creates its user/password/database from the
+  # POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB env vars on first start, so docker
+  # and host deployments share the same prompts and defaults (rag/rag/lightrag).
   existing_user="${ORIGINAL_ENV_VALUES[POSTGRES_USER]-${ENV_VALUES[POSTGRES_USER]:-}}"
   existing_password="${ORIGINAL_ENV_VALUES[POSTGRES_PASSWORD]-${ENV_VALUES[POSTGRES_PASSWORD]:-}}"
   existing_database="${ORIGINAL_ENV_VALUES[POSTGRES_DATABASE]-${ENV_VALUES[POSTGRES_DATABASE]:-}}"
-  if [[ "$use_docker" == "yes" && -z "$existing_user" && -z "$existing_password" ]]; then
-    user="rag"
-    password="rag"
-  else
-    user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
-    password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
-  fi
-  if [[ "$use_docker" == "yes" && -z "$existing_database" ]]; then
-    database="rag"
-  else
-    database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
-  fi
+  user="$(prompt_with_default "PostgreSQL user" "${existing_user:-rag}")"
+  password="$(prompt_secret_with_default "PostgreSQL password: " "${existing_password:-rag}")"
+  database="$(prompt_with_default "PostgreSQL database" "${existing_database:-lightrag}")"
 
   ENV_VALUES["POSTGRES_HOST"]="$host"
   ENV_VALUES["POSTGRES_PORT"]="$port"
@@ -1720,21 +1739,10 @@ clear_bedrock_credentials() {
   unset 'ENV_VALUES[AWS_REGION]'
 }
 
-bedrock_binding_in_use() {
-  [[ "${ENV_VALUES[LLM_BINDING]:-}" == "aws_bedrock" ||
-    "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "aws_bedrock" ]]
-}
-
-clear_bedrock_credentials_if_unused() {
-  if ! bedrock_binding_in_use; then
-    clear_bedrock_credentials
-  fi
-}
-
 collect_bedrock_credentials() {
   local access_key secret_key session_token region
 
-  log_info "Bedrock uses the AWS credential chain instead of LLM_BINDING_API_KEY/EMBEDDING_BINDING_API_KEY."
+  log_info "Bedrock ignores LLM_BINDING_API_KEY/EMBEDDING_BINDING_API_KEY; use SigV4 credentials or AWS_BEARER_TOKEN_BEDROCK."
   if [[ -n "${ENV_VALUES[AWS_ACCESS_KEY_ID]:-}" && -n "${ENV_VALUES[AWS_SECRET_ACCESS_KEY]:-}" ]]; then
     if confirm_default_yes "Reuse existing AWS Bedrock credentials?"; then
       region="$(prompt_with_default "AWS region" "${ENV_VALUES[AWS_REGION]:-us-east-1}")"
@@ -1804,7 +1812,7 @@ default_llm_model_for_binding() {
     gemini)
       printf 'gemini-flash-latest'
       ;;
-    aws_bedrock)
+    bedrock)
       printf 'anthropic.claude-3-5-sonnet-20241022-v2:0'
       ;;
     *)
@@ -1829,7 +1837,7 @@ default_embedding_model_for_binding() {
     gemini)
       printf 'gemini-embedding-001'
       ;;
-    aws_bedrock)
+    bedrock)
       printf 'amazon.titan-embed-text-v2:0'
       ;;
     lollms)
@@ -1848,7 +1856,7 @@ default_embedding_dim_for_binding() {
     openai|azure_openai)
       printf '3072'
       ;;
-    ollama|aws_bedrock|lollms)
+    ollama|bedrock|lollms)
       printf '1024'
       ;;
     jina)
@@ -1864,7 +1872,7 @@ default_embedding_dim_for_binding() {
 }
 
 collect_llm_config() {
-  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "aws_bedrock")
+  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
   local binding model model_default host host_default api_key
 
@@ -1894,12 +1902,12 @@ collect_llm_config() {
       api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key azure_openai)"
       ;;
     gemini)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://generativelanguage.googleapis.com")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "DEFAULT_GEMINI_ENDPOINT")"
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key gemini)"
       ;;
-    aws_bedrock)
-      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "https://bedrock.amazonaws.com")"
+    bedrock)
+      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "DEFAULT_BEDROCK_ENDPOINT")"
       api_key=""
       collect_bedrock_credentials
       ;;
@@ -1914,11 +1922,19 @@ collect_llm_config() {
   ENV_VALUES["LLM_MODEL"]="$model"
   ENV_VALUES["LLM_BINDING_HOST"]="$host"
   store_optional_env_value "LLM_BINDING_API_KEY" "$api_key"
-  clear_bedrock_credentials_if_unused
+
+  # Role-specific LLM models — default to the base LLM_MODEL when unset in .env.
+  local keyword_default query_default keyword_model query_model
+  keyword_default="${ENV_VALUES[KEYWORD_LLM_MODEL]:-$model}"
+  query_default="${ENV_VALUES[QUERY_LLM_MODEL]:-$model}"
+  keyword_model="$(prompt_with_default "Keyword LLM model" "$keyword_default")"
+  query_model="$(prompt_with_default "Query LLM model" "$query_default")"
+  ENV_VALUES["KEYWORD_LLM_MODEL"]="$keyword_model"
+  ENV_VALUES["QUERY_LLM_MODEL"]="$query_model"
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "aws_bedrock")
+  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 
@@ -1958,12 +1974,12 @@ collect_embedding_config() {
       api_key="$(prompt_secret_until_valid_with_default "Azure OpenAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key azure_openai)"
       ;;
     gemini)
-      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://generativelanguage.googleapis.com}")"
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-DEFAULT_GEMINI_ENDPOINT}")"
       host="$(prompt_with_default "Gemini endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Gemini API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key gemini)"
       ;;
-    aws_bedrock)
-      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://bedrock.amazonaws.com}")"
+    bedrock)
+      host="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-DEFAULT_BEDROCK_ENDPOINT}")"
       api_key=""
       collect_bedrock_credentials
       ;;
@@ -1984,7 +2000,6 @@ collect_embedding_config() {
   ENV_VALUES["EMBEDDING_DIM"]="$dim"
   ENV_VALUES["EMBEDDING_BINDING_HOST"]="$host"
   store_optional_env_value "EMBEDDING_BINDING_API_KEY" "$api_key"
-  clear_bedrock_credentials_if_unused
   # User chose a remote provider — clear the Docker deployment marker.
   unset 'ENV_VALUES[LIGHTRAG_SETUP_EMBEDDING_PROVIDER]'
 }

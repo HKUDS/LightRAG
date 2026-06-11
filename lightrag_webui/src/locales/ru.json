@@ -136,10 +136,20 @@
         "metadata": "Метаданные",
         "select": "Выбрать"
       },
+      "filters": {
+        "all": "Все",
+        "completed": "Завершено",
+        "parse": "Извлечение",
+        "analyze": "Анализ",
+        "process": "Обработка",
+        "failed": "Ошибка"
+      },
       "status": {
         "all": "Все",
         "completed": "Завершено",
         "preprocessed": "Предобработано",
+        "parsing": "Разбор",
+        "analyzing": "Анализ",
         "processing": "Обработка",
         "pending": "Ожидание",
         "failed": "Ошибка"
@@ -153,7 +163,16 @@
       "showButton": "Показать",
       "hideButton": "Скрыть",
       "showFileNameTooltip": "Показать имя файла",
-      "hideFileNameTooltip": "Скрыть имя файла"
+      "hideFileNameTooltip": "Скрыть имя файла",
+      "details": {
+        "title": "Сведения о статусе",
+        "openTooltip": "Показать сведения о статусе",
+        "content": "Сведения",
+        "copyButton": "Копировать",
+        "copyTooltip": "Копировать сведения о статусе",
+        "copySuccess": "Сведения о статусе скопированы",
+        "copyFailed": "Не удалось скопировать сведения о статусе"
+      }
     },
     "pipelineStatus": {
       "title": "Статус конвейера",
@@ -214,6 +233,9 @@
       "disease": "Болезнь",
       "drug": "Лекарство",
       "food": "Еда",
+      "table": "Таблица",
+      "drawing": "Рисунок",
+      "equation": "Уравнение",
       "other": "Другое"
     },
     "sideBar": {
@@ -275,11 +297,12 @@
     "statusCard": {
       "unavailable": "Информация о статусе недоступна",
       "serverInfo": "Информация о сервере",
-      "workingDirectory": "Рабочая директория",
       "inputDirectory": "Входная директория",
-      "maxParallelInsert": "Параллельная обработка документов",
-      "summarySettings": "Настройки краткого содержания",
-      "llmConfig": "Конфигурация LLM",
+      "parser": "Парсер",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Другие настройки",
+      "llmConfig": "Конфигурация модели",
       "llmBinding": "Привязка LLM",
       "llmBindingHost": "Конечная точка LLM",
       "llmModel": "Модель LLM",
@@ -293,15 +316,14 @@
       "graphStorage": "Хранилище графа",
       "vectorStorage": "Векторное хранилище",
       "workspace": "Рабочее пространство",
-      "maxGraphNodes": "Максимальное количество узлов графа",
       "rerankerConfig": "Конфигурация ранжирования",
       "rerankerBindingHost": "Конечная точка ранжирования",
       "rerankerModel": "Модель ранжирования",
-      "lockStatus": "Статус блокировки",
-      "threshold": "Порог"
+      "lockStatus": "Статус блокировки"
     },
     "propertiesView": {
       "editProperty": "Редактировать {{property}}",
+      "editLockedByPipeline": "Конвейер занят; редактирование отключено",
       "editPropertyDescription": "Отредактируйте значение свойства в текстовой области ниже.",
       "errors": {
         "duplicateName": "Имя узла уже существует",
@@ -391,6 +413,8 @@
       "startPrompt": "Начните поиск, введя ваш запрос ниже",
       "clear": "Очистить",
       "send": "Отправить",
+      "stop": "Остановить",
+      "userTerminated": "Прервано пользователем — ответ может быть неполным",
       "placeholder": "Введите ваш запрос (Поддержка префикса: /<Режим запроса>)",
       "error": "Ошибка: Не удалось получить ответ",
       "queryModeError": "Поддерживаются только следующие режимы запроса: {{modes}}",

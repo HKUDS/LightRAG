@@ -1,0 +1,43 @@
+# Build stage: compile Apache AGE against PostgreSQL 18 on top of pgvector
+FROM pgvector/pgvector:pg18-trixie AS build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --no-install-suggests \
+       ca-certificates \
+       git \
+       bison \
+       build-essential \
+       flex \
+       postgresql-server-dev-18
+
+RUN git clone --depth 1 --branch release/PG18/1.7.0 https://github.com/apache/age.git /usr/src/age \
+    && cd /usr/src/age \
+    && make \
+    && make install
+
+# Final stage: Create a final image by copying the files created in the build stage
+FROM pgvector/pgvector:pg18-trixie
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --no-install-suggests \
+    locales
+
+RUN echo "en_US.UTF-8 UTF-8" > /etc/locale.gen \
+    && locale-gen \
+    && update-locale LANG=en_US.UTF-8
+
+ENV LANG=en_US.UTF-8
+ENV LC_COLLATE=en_US.UTF-8
+ENV LC_CTYPE=en_US.UTF-8
+
+COPY --from=build /usr/lib/postgresql/18/lib/age.so /usr/lib/postgresql/18/lib/
+COPY --from=build /usr/share/postgresql/18/extension/age--1.7.0.sql /usr/share/postgresql/18/extension/
+COPY --from=build /usr/share/postgresql/18/extension/age.control /usr/share/postgresql/18/extension/
+
+RUN printf '%s\n' \
+    'CREATE EXTENSION IF NOT EXISTS vector;' \
+    'CREATE EXTENSION IF NOT EXISTS age CASCADE;' \
+    > /docker-entrypoint-initdb.d/00-create-extensions.sql
+
+# Note: AGE extension require to be loaded  shared_preload_libraries
+CMD ["postgres", "-c", "shared_preload_libraries=age"]

@@ -136,10 +136,20 @@
         "metadata": "Метадані",
         "select": "Вибрати"
       },
+      "filters": {
+        "all": "Усі",
+        "completed": "Завершено",
+        "parse": "Видобування",
+        "analyze": "Аналіз",
+        "process": "Обробка",
+        "failed": "Помилка"
+      },
       "status": {
         "all": "Всі",
         "completed": "Завершено",
         "preprocessed": "Попередньо оброблено",
+        "parsing": "Розбір",
+        "analyzing": "Аналіз",
         "processing": "Обробка",
         "pending": "Очікування",
         "failed": "Невдало"
@@ -153,7 +163,16 @@
       "showButton": "Показати",
       "hideButton": "Приховати",
       "showFileNameTooltip": "Показати ім'я файлу",
-      "hideFileNameTooltip": "Приховати ім'я файлу"
+      "hideFileNameTooltip": "Приховати ім'я файлу",
+      "details": {
+        "title": "Відомості про статус",
+        "openTooltip": "Показати відомості про статус",
+        "content": "Відомості",
+        "copyButton": "Копіювати",
+        "copyTooltip": "Копіювати відомості про статус",
+        "copySuccess": "Відомості про статус скопійовано",
+        "copyFailed": "Не вдалося скопіювати відомості про статус"
+      }
     },
     "pipelineStatus": {
       "title": "Статус пайплайну",
@@ -214,6 +233,9 @@
       "disease": "Хвороба",
       "drug": "Ліки",
       "food": "Їжа",
+      "table": "Таблиця",
+      "drawing": "Малюнок",
+      "equation": "Рівняння",
       "other": "Інше"
     },
     "sideBar": {
@@ -275,11 +297,12 @@
     "statusCard": {
       "unavailable": "Інформація про статус недоступна",
       "serverInfo": "Інформація про сервер",
-      "workingDirectory": "Робоча директорія",
       "inputDirectory": "Вхідна директорія",
-      "maxParallelInsert": "Паралельна обробка документів",
-      "summarySettings": "Налаштування резюме",
-      "llmConfig": "Конфігурація LLM",
+      "parser": "Парсер",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Інші налаштування",
+      "llmConfig": "Конфігурація моделі",
       "llmBinding": "Прив'язка LLM",
       "llmBindingHost": "Кінцева точка LLM",
       "llmModel": "Модель LLM",
@@ -293,15 +316,14 @@
       "graphStorage": "Сховище графа",
       "vectorStorage": "Векторне сховище",
       "workspace": "Робочий простір",
-      "maxGraphNodes": "Максимальна кількість вузлів графа",
       "rerankerConfig": "Конфігурація реранкера",
       "rerankerBindingHost": "Кінцева точка реранкера",
       "rerankerModel": "Модель реранкера",
-      "lockStatus": "Статус блокування",
-      "threshold": "Поріг"
+      "lockStatus": "Статус блокування"
     },
     "propertiesView": {
       "editProperty": "Редагувати {{property}}",
+      "editLockedByPipeline": "Конвеєр зайнятий; редагування вимкнено",
       "editPropertyDescription": "Редагуйте значення властивості в текстовій області нижче.",
       "errors": {
         "duplicateName": "Ім'я вузла вже існує",
@@ -391,6 +413,8 @@
       "startPrompt": "Почніть пошук, ввівши ваш запит нижче",
       "clear": "Очистити",
       "send": "Відправити",
+      "stop": "Зупинити",
+      "userTerminated": "Перервано користувачем — відповідь може бути неповною",
       "placeholder": "Введіть ваш запит (Підтримка префіксу: /<Режим запиту>)",
       "error": "Помилка: Не вдалося отримати відповідь",
       "queryModeError": "Підтримуються лише наступні режими запиту: {{modes}}",

@@ -20,8 +20,8 @@ const StatusDialog = ({ open, onOpenChange, status }: StatusDialogProps) => {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[700px]">
-        <DialogHeader>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[920px]">
+        <DialogHeader className="pr-6">
           <DialogTitle>{t('graphPanel.statusDialog.title')}</DialogTitle>
           <DialogDescription>
             {t('graphPanel.statusDialog.description')}

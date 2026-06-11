@@ -136,10 +136,20 @@
         "metadata": "Siêu Dữ Liệu",
         "select": "Chọn"
       },
+      "filters": {
+        "all": "Tất cả",
+        "completed": "Hoàn tất",
+        "parse": "Trích xuất",
+        "analyze": "Phân tích",
+        "process": "Xử lý",
+        "failed": "Thất bại"
+      },
       "status": {
         "all": "Tất cả",
         "completed": "Hoàn thành",
         "preprocessed": "Đã tiền xử lý",
+        "parsing": "Đang phân tích cú pháp",
+        "analyzing": "Đang phân tích",
         "processing": "Đang xử lý",
         "pending": "Đang chờ",
         "failed": "Thất bại"
@@ -153,7 +163,16 @@
       "showButton": "Hiện",
       "hideButton": "Ẩn",
       "showFileNameTooltip": "Hiện tên tệp",
-      "hideFileNameTooltip": "Ẩn tên tệp"
+      "hideFileNameTooltip": "Ẩn tên tệp",
+      "details": {
+        "title": "Chi tiết trạng thái",
+        "openTooltip": "Xem chi tiết trạng thái",
+        "content": "Chi tiết",
+        "copyButton": "Sao chép",
+        "copyTooltip": "Sao chép chi tiết trạng thái",
+        "copySuccess": "Đã sao chép chi tiết trạng thái",
+        "copyFailed": "Sao chép chi tiết trạng thái thất bại"
+      }
     },
     "pipelineStatus": {
       "title": "Trạng Thái Quy Trình",
@@ -214,6 +233,9 @@
       "disease": "Bệnh",
       "drug": "Thuốc",
       "food": "Thực Phẩm",
+      "table": "Bảng",
+      "drawing": "Hình Vẽ",
+      "equation": "Phương Trình",
       "other": "Khác"
     },
     "sideBar": {
@@ -275,11 +297,12 @@
     "statusCard": {
       "unavailable": "Thông tin trạng thái không khả dụng",
       "serverInfo": "Thông Tin Máy Chủ",
-      "workingDirectory": "Thư Mục Làm Việc",
       "inputDirectory": "Thư Mục Đầu Vào",
-      "maxParallelInsert": "Xử Lý Tài Liệu Đồng Thời",
-      "summarySettings": "Cài Đặt Tóm Tắt",
-      "llmConfig": "Cấu Hình LLM",
+      "parser": "Bộ Phân Tích",
+      "mineru": "MinerU",
+      "docling": "Docling",
+      "otherSettings": "Cài Đặt Khác",
+      "llmConfig": "Cấu Hình Mô Hình",
       "llmBinding": "LLM Binding",
       "llmBindingHost": "Điểm Cuối LLM",
       "llmModel": "Mô Hình LLM",
@@ -293,15 +316,14 @@
       "graphStorage": "Graph Storage",
       "vectorStorage": "Vector Storage",
       "workspace": "Không Gian Làm Việc",
-      "maxGraphNodes": "Số Nút Đồ Thị Tối Đa",
       "rerankerConfig": "Cấu Hình Reranker",
       "rerankerBindingHost": "Điểm Cuối Reranker",
       "rerankerModel": "Mô Hình Reranker",
-      "lockStatus": "Trạng Thái Khóa",
-      "threshold": "Ngưỡng"
+      "lockStatus": "Trạng Thái Khóa"
     },
     "propertiesView": {
       "editProperty": "Chỉnh Sửa {{property}}",
+      "editLockedByPipeline": "Pipeline đang bận; chỉnh sửa đã bị tắt",
       "editPropertyDescription": "Chỉnh sửa giá trị thuộc tính trong vùng văn bản bên dưới.",
       "errors": {
         "duplicateName": "Tên nút đã tồn tại",
@@ -391,6 +413,8 @@
       "startPrompt": "Bắt đầu truy xuất bằng cách nhập truy vấn của bạn bên dưới",
       "clear": "Xóa",
       "send": "Gửi",
+      "stop": "Dừng",
+      "userTerminated": "Người dùng đã dừng — phản hồi có thể chưa hoàn chỉnh",
       "placeholder": "Nhập truy vấn của bạn (Hỗ trợ tiền tố: /<Chế Độ Truy Vấn>)",
       "error": "Lỗi: Không thể nhận phản hồi",
       "queryModeError": "Chỉ hỗ trợ các chế độ truy vấn sau: {{modes}}",

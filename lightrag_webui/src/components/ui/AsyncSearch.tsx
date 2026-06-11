@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
 
@@ -76,18 +76,13 @@ export function AsyncSearch<T>({
   className,
   noResultsMessage
 }: AsyncSearchProps<T>) {
-  const [mounted, setMounted] = useState(false)
   const [open, setOpen] = useState(false)
-  const [options, setOptions] = useState<T[]>([])
+  const [fetchedOptions, setFetchedOptions] = useState<T[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : 150)
   const containerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    setMounted(true)
-  }, [])
 
   // Handle clicks outside of the component
   useEffect(() => {
@@ -112,7 +107,7 @@ export function AsyncSearch<T>({
       setLoading(true)
       setError(null)
       const data = await fetcher(query)
-      setOptions(data)
+      setFetchedOptions(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch options')
     } finally {
@@ -120,28 +115,31 @@ export function AsyncSearch<T>({
     }
   }, [fetcher])
 
-  // Load options when search term changes
+  // Fetch options from server when not in preload mode (search term changes).
+  // The fetch is a genuine external side effect; setState happens inside fetchOptions
+  // after the async call resolves, so the rule fires on the synchronous loading flag.
   useEffect(() => {
-    if (!mounted) return
-
-    if (preload) {
-      if (debouncedSearchTerm) {
-        setOptions((prev) =>
-          prev.filter((option) =>
-            filterFn ? filterFn(option, debouncedSearchTerm) : true
-          )
-        )
-      }
-    } else {
-      fetchOptions(debouncedSearchTerm)
-    }
-  }, [mounted, debouncedSearchTerm, preload, filterFn, fetchOptions])
+    if (preload) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchOptions(debouncedSearchTerm)
+  }, [preload, debouncedSearchTerm, fetchOptions])
 
   // Load initial value
   useEffect(() => {
-    if (!mounted || !value) return
+    if (!value) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchOptions(value)
-  }, [mounted, value, fetchOptions])
+  }, [value, fetchOptions])
+
+  // In preload mode, derive filtered options without mutating state
+  const options = useMemo(() => {
+    if (preload && debouncedSearchTerm) {
+      return fetchedOptions.filter((option) =>
+        filterFn ? filterFn(option, debouncedSearchTerm) : true
+      )
+    }
+    return fetchedOptions
+  }, [preload, debouncedSearchTerm, filterFn, fetchedOptions])
 
   const handleSelect = useCallback((currentValue: string) => {
     onChange(currentValue)
