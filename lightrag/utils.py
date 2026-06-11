@@ -4107,3 +4107,40 @@ def generate_reference_list_from_chunks(
         reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
 
     return reference_list, updated_chunks
+
+
+def sanitize_workspace(workspace: str) -> str:
+    """Sanitize workspace name to prevent path traversal attacks.
+
+    This function ensures workspace names are safe for use in file paths by:
+    - Removing path traversal sequences (../, ..\, etc.)
+    - Allowing only alphanumeric characters, underscores, and hyphens
+    - Preventing empty results
+
+    Args:
+        workspace: Raw workspace name from user input or environment variables
+
+    Returns:
+        Sanitized workspace name safe for file system operations
+
+    Raises:
+        ValueError: If workspace is empty after sanitization
+
+    Examples:
+        >>> sanitize_workspace("my_workspace")
+        'my_workspace'
+        >>> sanitize_workspace("../../../etc/passwd")
+        'etc_passwd'
+        >>> sanitize_workspace("workspace-123")
+        'workspace-123'
+    """
+    if not workspace:
+        raise ValueError("Workspace name cannot be empty")
+
+    # Replace all non-alphanumeric (except underscore and hyphen) with underscore
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", workspace.strip())
+
+    if not sanitized:
+        raise ValueError(f"Workspace name '{workspace}' resulted in empty string after sanitization")
+
+    return sanitized

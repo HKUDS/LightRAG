@@ -150,6 +150,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
     """
 
     def __post_init__(self):
+        from lightrag.utils import sanitize_workspace
         self._validate_embedding_func()
         # Initialize basic attributes
         self._client = None
@@ -168,6 +169,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         working_dir = self.global_config["working_dir"]
         if self.workspace:
             # Include workspace in the file path for data isolation
+            self.workspace = sanitize_workspace(self.workspace)
             workspace_dir = os.path.join(working_dir, self.workspace)
             self.final_namespace = f"{self.workspace}_{self.namespace}"
         else:

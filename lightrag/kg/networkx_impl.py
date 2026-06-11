@@ -139,8 +139,12 @@ class NetworkXStorage(BaseGraphStorage):
         )
 
     def __post_init__(self):
+        from lightrag.utils import sanitize_workspace
+
         working_dir = self.global_config["working_dir"]
         if self.workspace:
+            # Sanitize workspace to prevent path traversal
+            self.workspace = sanitize_workspace(self.workspace)
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
         else:

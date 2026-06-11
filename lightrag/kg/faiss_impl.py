@@ -200,6 +200,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
     """
 
     def __post_init__(self):
+        from lightrag.utils import sanitize_workspace
         self._validate_embedding_func()
         # Grab config values if available
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
@@ -214,6 +215,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         working_dir = self.global_config["working_dir"]
         if self.workspace:
             # Include workspace in the file path for data isolation
+            self.workspace = sanitize_workspace(self.workspace)
             workspace_dir = os.path.join(working_dir, self.workspace)
 
         else:

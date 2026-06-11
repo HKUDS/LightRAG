@@ -75,9 +75,11 @@ class JsonDocStatusStorage(DocStatusStorage):
     """
 
     def __post_init__(self):
+        from lightrag.utils import sanitize_workspace
         working_dir = self.global_config["working_dir"]
         if self.workspace:
             # Include workspace in the file path for data isolation
+            self.workspace = sanitize_workspace(self.workspace)
             workspace_dir = os.path.join(working_dir, self.workspace)
         else:
             # Default behavior when workspace is empty
