@@ -3810,6 +3810,84 @@ class _PipelineMixin:
                         pass
                 return {}
 
+            class _MMJSONConformanceError(Exception):
+                """Raised only when an LLM/VLM response violates MM JSON schema."""
+
+            def _required_json_string(
+                parsed: dict[str, Any], prefix: str, field: str
+            ) -> str:
+                value = parsed.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise _MMJSONConformanceError(
+                        f"{prefix}: missing or invalid field '{field}'"
+                    )
+                return value.strip()
+
+            def _validate_drawing_analysis(
+                item_id: str, parsed: dict[str, Any]
+            ) -> dict[str, str]:
+                prefix = f"drawings/{item_id}"
+                name = _required_json_string(parsed, prefix, "name")
+                description = _required_json_string(parsed, prefix, "description")
+                type_value = _required_json_string(parsed, prefix, "type")
+                if type_value not in _IMAGE_TYPE_VALUES:
+                    type_value = IMAGE_TYPE_FALLBACK
+                return {
+                    "name": name,
+                    "type": type_value,
+                    "description": description,
+                }
+
+            def _validate_text_analysis(
+                kind: str, item_id: str, parsed: dict[str, Any]
+            ) -> dict[str, str]:
+                prefix = f"{kind}/{item_id}"
+                result_obj = {
+                    "name": _required_json_string(parsed, prefix, "name"),
+                    "description": _required_json_string(parsed, prefix, "description"),
+                }
+                if kind == "equation":
+                    result_obj["equation"] = _required_json_string(
+                        parsed, prefix, "equation"
+                    )
+                return result_obj
+
+            async def _run_json_conformance_retry(
+                prefix: str,
+                cached: tuple[str, int] | None,
+                call_model_once,
+                validate_result,
+            ) -> tuple[dict[str, str], str, bool]:
+                """Retry once only for JSON/schema conformance failures.
+
+                The first attempt may use the analysis cache.  If that cached
+                response is malformed, bypass the cache on the retry so a good
+                fresh response can overwrite the same cache key after success.
+                """
+
+                def _attempt(raw: Any, fresh: bool) -> tuple[dict[str, str], str, bool]:
+                    text = str(raw)
+                    return validate_result(_json_extract(text)), text, fresh
+
+                use_cached_response = cached is not None
+                first_text = (
+                    cached[0] if use_cached_response else await call_model_once()
+                )
+                try:
+                    return _attempt(first_text, fresh=not use_cached_response)
+                except _MMJSONConformanceError as exc:
+                    source = "cache" if use_cached_response else "model"
+                    logger.warning(
+                        f"[analyze_multimodal] {prefix}: invalid JSON schema "
+                        f"from {source}; retrying once: {exc} "
+                        f"(response snippet: {str(first_text)[:200]!r})"
+                    )
+
+                try:
+                    return _attempt(await call_model_once(), fresh=True)
+                except _MMJSONConformanceError as exc:
+                    raise MultimodalAnalysisError(str(exc)) from exc
+
             def _normalize_text(value: Any) -> str:
                 if value is None:
                     return ""
@@ -3956,40 +4034,29 @@ class _PipelineMixin:
                     mode="default",
                     cache_type="analysis",
                 )
-                if cached is not None:
-                    result_text = cached[0]
-                    fresh = False
-                else:
+
+                async def _call_vlm_once() -> str:
                     try:
-                        result_text = await use_vlm_func(
+                        return await use_vlm_func(
                             prompt,
                             stream=False,
                             image_inputs=[img_payload],
+                            response_format={"type": "json_object"},
                             _priority=DEFAULT_MM_ANALYSIS_PRIORITY,
                         )
+                    except PipelineCancelledException:
+                        raise
                     except Exception as exc:
                         raise MultimodalAnalysisError(
                             f"drawings/{item_id}: VLM call failed: {exc}"
                         ) from exc
-                    fresh = True
-                parsed = _json_extract(str(result_text))
-                name = parsed.get("name")
-                type_value = parsed.get("type")
-                description = parsed.get("description")
-                if not isinstance(name, str) or not name.strip():
-                    raise MultimodalAnalysisError(
-                        f"drawings/{item_id}: missing or invalid field 'name'"
-                    )
-                if not isinstance(description, str) or not description.strip():
-                    raise MultimodalAnalysisError(
-                        f"drawings/{item_id}: missing or invalid field 'description'"
-                    )
-                if not isinstance(type_value, str) or not type_value.strip():
-                    raise MultimodalAnalysisError(
-                        f"drawings/{item_id}: missing or invalid field 'type'"
-                    )
-                if type_value not in _IMAGE_TYPE_VALUES:
-                    type_value = IMAGE_TYPE_FALLBACK
+
+                analysis_fields, result_text, fresh = await _run_json_conformance_retry(
+                    f"drawings/{item_id}",
+                    cached,
+                    _call_vlm_once,
+                    lambda parsed: _validate_drawing_analysis(item_id, parsed),
+                )
                 cache_id_to_attach: str | None = None
                 if fresh and analysis_cache_enabled:
                     audit_blob = image_audit_metadata(normalized_images)
@@ -4018,9 +4085,9 @@ class _PipelineMixin:
                     cache_id_to_attach = cache_id
                 return (
                     {
-                        "name": name.strip(),
-                        "type": type_value,
-                        "description": description.strip(),
+                        "name": analysis_fields["name"],
+                        "type": analysis_fields["type"],
+                        "description": analysis_fields["description"],
                         "analyze_time": int(time.time()),
                         "status": "success",
                         "message": "",
@@ -4170,50 +4237,37 @@ class _PipelineMixin:
                     mode="default",
                     cache_type="analysis",
                 )
-                if cached is not None:
-                    result_text = cached[0]
-                    fresh = False
-                else:
+
+                async def _call_extract_once() -> str:
                     try:
-                        result_text = await use_extract_func(
+                        return await use_extract_func(
                             prompt,
                             stream=False,
                             response_format={"type": "json_object"},
                             _priority=DEFAULT_MM_ANALYSIS_PRIORITY,
                         )
+                    except PipelineCancelledException:
+                        raise
                     except Exception as exc:
                         raise MultimodalAnalysisError(
                             f"{kind}/{item_id}: EXTRACT call failed: {exc}"
                         ) from exc
-                    fresh = True
-                parsed = _json_extract(str(result_text))
-                name = parsed.get("name")
-                description = parsed.get("description")
-                if not isinstance(name, str) or not name.strip():
-                    raise MultimodalAnalysisError(
-                        f"{kind}/{item_id}: missing or invalid field 'name'"
-                    )
-                if not isinstance(description, str) or not description.strip():
-                    raise MultimodalAnalysisError(
-                        f"{kind}/{item_id}: missing or invalid field 'description'"
-                    )
+
+                analysis_fields, result_text, fresh = await _run_json_conformance_retry(
+                    f"{kind}/{item_id}",
+                    cached,
+                    _call_extract_once,
+                    lambda parsed: _validate_text_analysis(kind, item_id, parsed),
+                )
                 result_obj: dict[str, Any] = {
-                    "name": name.strip(),
-                    "description": description.strip(),
+                    "name": analysis_fields["name"],
+                    "description": analysis_fields["description"],
                     "analyze_time": int(time.time()),
                     "status": "success",
                     "message": "",
                 }
                 if kind == "equation":
-                    equation_value = parsed.get("equation")
-                    if (
-                        not isinstance(equation_value, str)
-                        or not equation_value.strip()
-                    ):
-                        raise MultimodalAnalysisError(
-                            f"equation/{item_id}: missing or invalid field 'equation'"
-                        )
-                    result_obj["equation"] = equation_value.strip()
+                    result_obj["equation"] = analysis_fields["equation"]
                 cache_id_to_attach: str | None = None
                 if fresh and analysis_cache_enabled:
                     await save_to_cache(

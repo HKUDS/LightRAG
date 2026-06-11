@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import final
 import configparser
 
-from ..utils import logger
+from ..utils import logger, validate_workspace
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
@@ -49,6 +49,7 @@ class MemgraphStorage(BaseGraphStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
+        validate_workspace(self.workspace)
 
         # Log after super().__init__() to ensure self.workspace is initialized
         if memgraph_workspace and memgraph_workspace.strip():

@@ -7,7 +7,12 @@ import re
 import shutil
 import time
 from uuid import uuid4
-from lightrag.utils import logger, get_pinyin_sort_key, performance_timing_log
+from lightrag.utils import (
+    logger,
+    get_pinyin_sort_key,
+    performance_timing_log,
+    validate_workspace,
+)
 import aiofiles
 import traceback
 from datetime import datetime, timezone
@@ -969,6 +974,8 @@ class DocumentManager:
         input_dir: str,
         workspace: str = "",  # New parameter for workspace isolation
     ):
+        # Reject path traversal before using workspace in the upload path
+        validate_workspace(workspace)
         # Store the base input directory and workspace
         self.base_input_dir = Path(input_dir)
         self.workspace = workspace
