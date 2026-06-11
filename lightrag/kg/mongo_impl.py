@@ -17,7 +17,13 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..utils import logger, compute_mdhash_id, _cooperative_yield, merge_source_ids
+from ..utils import (
+    logger,
+    compute_mdhash_id,
+    _cooperative_yield,
+    merge_source_ids,
+    validate_workspace,
+)
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
 from .._version import __version__
@@ -326,6 +332,7 @@ class MongoKVStorage(BaseKVStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
@@ -574,6 +581,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
@@ -1084,6 +1092,7 @@ class MongoGraphStorage(BaseGraphStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
+        validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
@@ -2845,6 +2854,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
 
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)

@@ -4107,3 +4107,44 @@ def generate_reference_list_from_chunks(
         reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
 
     return reference_list, updated_chunks
+
+
+def validate_workspace(workspace: str) -> str:
+    """Validate a workspace name used to build per-workspace directories.
+
+    File-based storages place their data in a subdirectory named after the
+    workspace under ``working_dir`` (``os.path.join(working_dir, workspace)``).
+    To prevent path traversal, the workspace must be a single path component:
+    it may not contain a path separator nor be a relative path reference.
+
+    Unlike a sanitizing approach, this validator does not rewrite the name.
+    Legitimate names containing dots (e.g. ``"v1.0"``) are accepted unchanged,
+    while unsafe names are rejected so the caller fails fast instead of
+    silently reading or writing outside the intended directory.
+
+    Args:
+        workspace: Workspace name from configuration or environment variables.
+
+    Returns:
+        The workspace name unchanged when it is valid.
+
+    Raises:
+        ValueError: If the workspace contains ``/`` or ``\\``, or is ``"."`` or
+            ``".."``.
+
+    Examples:
+        >>> validate_workspace("my_workspace")
+        'my_workspace'
+        >>> validate_workspace("v1.0")
+        'v1.0'
+        >>> validate_workspace("../../../etc")
+        Traceback (most recent call last):
+            ...
+        ValueError: Invalid workspace name '../../../etc': must not contain path separators ('/', '\\') or be a relative path reference ('.', '..')
+    """
+    if "/" in workspace or "\\" in workspace or workspace in (".", ".."):
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: must not contain path "
+            "separators ('/', '\\') or be a relative path reference ('.', '..')"
+        )
+    return workspace

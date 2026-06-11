@@ -14,7 +14,7 @@ from ..base import BaseVectorStorage
 from ..constants import DEFAULT_QUERY_PRIORITY
 from ..exceptions import DataMigrationError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
-from ..utils import _cooperative_yield, compute_mdhash_id, logger
+from ..utils import _cooperative_yield, compute_mdhash_id, logger, validate_workspace
 
 if not pm.is_installed("qdrant-client"):
     pm.install("qdrant-client")
@@ -428,6 +428,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
         # Check for QDRANT_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Qdrant storage instances
