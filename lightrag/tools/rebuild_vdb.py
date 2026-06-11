@@ -612,6 +612,15 @@ class RebuildTool:
     def build_global_config(self) -> Dict[str, Any]:
         global_config: Dict[str, Any] = {
             "working_dir": os.getenv("WORKING_DIR", "./rag_storage"),
+            # Backend selection, mirroring LightRAG._build_global_config. PG
+            # storages derive enable_vector from global_config["vector_storage"]
+            # (ClientManager.get_config defaults enable_vector=True when it is
+            # absent), so a legal mixed config like PGGraphStorage +
+            # QdrantVectorDBStorage would otherwise make the tool wrongly try to
+            # initialize pgvector. Keep all three names for parity.
+            "kv_storage": self.storage_names["kv"],
+            "vector_storage": self.storage_names["vector"],
+            "graph_storage": self.storage_names["graph"],
             "embedding_batch_num": get_env_value(
                 "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
             ),

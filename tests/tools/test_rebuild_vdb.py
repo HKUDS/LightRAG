@@ -535,6 +535,31 @@ def single_attempt_vdb_ops(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_merge_relation_vdb_delete_failure_raises_consistency_error(
+    single_attempt_vdb_ops,
+):
+    # The step-7 delete of stale relation records runs after the graph is
+    # updated; a failure there must fail loud (and not be swallowed upstream).
+    from lightrag.utils_graph import _merge_entities_impl
+
+    graph = make_merge_graph()
+    entities_vdb = MockVDB()
+    relationships_vdb = MockVDB()
+    relationships_vdb.delete = AsyncMock(side_effect=RuntimeError("vdb delete down"))
+
+    with pytest.raises(VectorStorageConsistencyError) as excinfo:
+        await _merge_entities_impl(
+            graph, entities_vdb, relationships_vdb, ["Bob"], "Alice"
+        )
+
+    assert "lightrag-rebuild-vdb" in str(excinfo.value)
+    relationships_vdb.delete.assert_awaited()
+    # Failure is before source-entity deletion (step 10)
+    graph.delete_node.assert_not_awaited()
+    entities_vdb.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_merge_relation_vdb_failure_raises_consistency_error(
     single_attempt_vdb_ops,
 ):

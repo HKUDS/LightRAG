@@ -1446,7 +1446,25 @@ async def _merge_entities_impl(
     logger.debug(
         f"Entity Merge: deleting {len(relations_to_delete)} relations from vdb"
     )
-    await relationships_vdb.delete(relations_to_delete)
+    if relations_to_delete:
+        try:
+            await safe_vdb_operation_with_exception(
+                operation=lambda ids=relations_to_delete: relationships_vdb.delete(ids),
+                operation_name="merge_relation_delete",
+                entity_name=target_entity,
+                max_retries=3,
+                retry_delay=0.2,
+            )
+        except Exception as e:
+            raise VectorStorageConsistencyError(
+                f"Vector storage delete of {len(relations_to_delete)} stale relation "
+                f"record(s) failed while merging entities into '{target_entity}': {e}. "
+                "The knowledge graph was updated but the vector storage was not, so they "
+                "may now be inconsistent. No data is lost (the graph is the authoritative "
+                "source and the source entities were not deleted). Stop the LightRAG server "
+                "and run the offline rebuild tool (lightrag-rebuild-vdb) to restore "
+                "consistency."
+            ) from e
 
     for rel_data in relation_updates.values():
         edge_data = rel_data["data"]
