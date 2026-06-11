@@ -411,12 +411,15 @@ async def rebuild_chunks_vdb(
     because ainsert_custom_kg writes chunks without a doc_status record.
     The ingestion pipeline upserts the full chunk record into chunks_vdb,
     so each KV record is passed through as the payload.
+
+    Every key in the text_chunks namespace is a chunk record, and chunks use
+    several id schemes that no single prefix matches — ``chunk-<hash>``
+    (custom KG), ``{doc_id}-chunk-{order}`` (text pipeline), and
+    ``{doc_id}-mm-<modality>-{order}`` (multimodal). Rather than pattern-match
+    keys (and silently drop a scheme), all keys are enumerated and the
+    per-record ``content`` check below is the only filter.
     """
-    chunk_ids = [
-        str(key)
-        for key in await enumerate_kv_keys(text_chunks_kv)
-        if str(key).startswith("chunk-")
-    ]
+    chunk_ids = [str(key) for key in await enumerate_kv_keys(text_chunks_kv)]
     stats = _new_stats("chunks", len(chunk_ids))
 
     await _drop_vdb(chunks_vdb, "chunks")
@@ -825,11 +828,7 @@ class RebuildTool:
             print(f"  Graph nodes: {len(nodes):,}")
             print(f"  Graph edges: {len(edges):,} (before deduplication)")
         if include_chunks:
-            chunk_ids = [
-                key
-                for key in await enumerate_kv_keys(self.text_chunks)
-                if str(key).startswith("chunk-")
-            ]
+            chunk_ids = await enumerate_kv_keys(self.text_chunks)
             print(f"  Text chunks: {len(chunk_ids):,}")
 
     def confirm_rebuild(self, targets: str) -> bool:

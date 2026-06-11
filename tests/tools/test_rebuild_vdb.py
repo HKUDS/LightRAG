@@ -329,7 +329,6 @@ async def test_rebuild_chunks_payload_from_kv_records():
                 "tokens": 3,
                 "chunk_order_index": 0,
             },
-            "doc-1": {"content": "not a chunk record"},  # non-chunk key ignored
         }
     )
     vdb = MockVDB()
@@ -363,6 +362,38 @@ async def test_rebuild_chunks_skips_records_without_content():
     assert stats["rebuilt"] == 1
     assert stats["skipped"] == 1
     assert "chunk-2" not in vdb.records
+
+
+@pytest.mark.asyncio
+async def test_rebuild_chunks_covers_all_id_schemes():
+    # Chunks live under several id schemes that no single prefix matches:
+    # custom KG ("chunk-<hash>"), the text pipeline ("{doc_id}-chunk-{order}",
+    # which does NOT start with "chunk-"), and multimodal
+    # ("{doc_id}-mm-<modality>-{order}"). A prefix-only filter dropped the
+    # pipeline/multimodal chunks and rebuilt to zero. All schemes must rebuild.
+    kv = JsonKVStorage(
+        {
+            "chunk-deadbeef": {"content": "custom kg", "full_doc_id": "doc-xyz"},
+            "doc-abc123-chunk-000": {"content": "first", "full_doc_id": "doc-abc123"},
+            "doc-abc123-chunk-001": {"content": "second", "full_doc_id": "doc-abc123"},
+            "doc-abc123-mm-drawing-000": {
+                "content": "image caption",
+                "full_doc_id": "doc-abc123",
+            },
+        }
+    )
+    vdb = MockVDB()
+
+    stats = await rebuild_chunks_vdb(kv, vdb)
+
+    assert stats["source_total"] == 4
+    assert stats["rebuilt"] == 4
+    assert set(vdb.records) == {
+        "chunk-deadbeef",
+        "doc-abc123-chunk-000",
+        "doc-abc123-chunk-001",
+        "doc-abc123-mm-drawing-000",
+    }
 
 
 # ---------------------------------------------------------------------------
