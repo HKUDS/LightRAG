@@ -367,11 +367,7 @@ class TestMilvusIndexCreation:
         client = _wire_collection_state(
             storage,
             {storage.final_namespace},
-            {
-                storage.final_namespace: _collection_info(
-                    ["entity_name", "file_path"]
-                )
-            },
+            {storage.final_namespace: _collection_info(["entity_name", "file_path"])},
         )
 
         with patch.object(storage, "_migrate_collection_schema") as migrate:
