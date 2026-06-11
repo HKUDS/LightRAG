@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from lightrag.base import DocProcessingStatus, DocStatus, DocStatusStorage
 from lightrag.constants import (
+    FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_LIGHTRAG,
     LIGHTRAG_DOC_CONTENT_PREFIX,
     PARSED_DIR_NAME,
@@ -405,7 +406,10 @@ def doc_status_parse_failure_fields(
     pre-deferral enqueue-time error documents carried: a human-readable
     ``content_summary`` (written only when the document has none —
     ``pending_parse`` docs enqueue with an empty summary, while raw
-    passthrough docs keep their real one) plus ``metadata.error_type`` /
+    passthrough docs keep their real one — or when the existing summary
+    is itself a ``[File Extraction]``-generated one from a previous
+    failed attempt, which the retry reset preserves and would otherwise
+    go stale next to the fresh ``error_msg``) plus ``metadata.error_type`` /
     ``metadata.error_stage`` for error classification.  ``error_type``
     keeps the legacy ``file_extraction_error`` value consumers may match
     on; ``error_stage`` distinguishes the parse-worker failure from an
@@ -421,10 +425,14 @@ def doc_status_parse_failure_fields(
     """
     error_text = str(error)
     extra_fields: dict[str, Any] = {"error_msg": error_text}
-    current_summary = doc_status_field(status_doc, "content_summary", "")
-    if not str(current_summary or "").strip():
-        extra_fields["content_summary"] = "[File Extraction]" + get_content_summary(
-            error_text
+    current_summary = str(
+        doc_status_field(status_doc, "content_summary", "") or ""
+    ).strip()
+    if not current_summary or current_summary.startswith(
+        FILE_EXTRACTION_SUMMARY_PREFIX
+    ):
+        extra_fields["content_summary"] = (
+            FILE_EXTRACTION_SUMMARY_PREFIX + get_content_summary(error_text)
         )
     metadata_extra: dict[str, Any] = {
         "error_type": "file_extraction_error",
