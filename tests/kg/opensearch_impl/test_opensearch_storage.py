@@ -3278,7 +3278,10 @@ class TestGraphStorage:
         assert node.id == "Alice"
         assert "entity_type" in node.properties
         assert "_id" not in node.properties
-        assert "entity_id" not in node.properties
+        # entity_id must be preserved in properties: the WebUI reads
+        # properties['entity_id'] to render the node's "Name" row and the
+        # neighbour/edge-endpoint labels. Stripping it left the panel nameless.
+        assert node.properties["entity_id"] == "Alice"
 
     @pytest.mark.asyncio
     async def test_construct_graph_edge(self, global_config, embed_func):
