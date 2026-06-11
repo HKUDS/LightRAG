@@ -47,12 +47,16 @@ space the server queries against.
 
 Menu options:
 
-1. **Consistency check (read-only)** — probes every graph entity/relation
+1. **Consistency check (diagnose only)** — probes every graph entity/relation
    for a vector counterpart and reports what is missing. Run this first to
    decide whether a rebuild is worth the embedding cost. The check covers
    the graph → VDB direction only; reverse orphans can only be cleared by a
    full rebuild. Legacy reverse-order relation ids (from old custom-KG
-   imports) are recognized and not misreported as missing.
+   imports) are recognized and not misreported as missing. The check issues
+   read queries only and never drops or rewrites vector data — but it is not
+   strictly side-effect-free: connecting initializes each storage, and some
+   backends (e.g. Qdrant) create an empty collection or payload index on
+   first connect. It never drops, rewrites, or deletes existing records.
 2. **Rebuild entities + relationships VDB** — sufficient for the #2917
    merge-failure scenario.
 3. **Rebuild chunks VDB**.
