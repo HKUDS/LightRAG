@@ -11,6 +11,7 @@ from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
+    validate_workspace,
 )
 
 from lightrag.base import BaseVectorStorage
@@ -167,6 +168,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         working_dir = self.global_config["working_dir"]
         if self.workspace:
+            # Reject path traversal before using workspace in a file path
+            validate_workspace(self.workspace)
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
             self.final_namespace = f"{self.workspace}_{self.namespace}"

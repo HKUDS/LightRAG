@@ -8,7 +8,7 @@ import numpy as np
 from dataclasses import dataclass
 
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
-from lightrag.utils import logger, compute_mdhash_id
+from lightrag.utils import logger, compute_mdhash_id, validate_workspace
 from lightrag.base import BaseVectorStorage
 from lightrag.constants import DEFAULT_QUERY_PRIORITY
 
@@ -213,6 +213,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Where to save index file if you want persistent storage
         working_dir = self.global_config["working_dir"]
         if self.workspace:
+            # Reject path traversal before using workspace in a file path
+            validate_workspace(self.workspace)
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
 
