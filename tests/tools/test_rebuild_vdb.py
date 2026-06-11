@@ -822,3 +822,124 @@ async def test_check_only_stub_model_name_none_when_unset(monkeypatch):
     await tool.setup_storages()
 
     assert tool.embedding_func.model_name is None
+
+
+# ---------------------------------------------------------------------------
+# CLI exit-code semantics: run() must report success/failure
+# ---------------------------------------------------------------------------
+
+
+def _runnable_tool(monkeypatch, inputs):
+    """A RebuildTool with shared-storage init/finalize and prompts stubbed."""
+    import lightrag.kg.shared_storage as shared
+
+    monkeypatch.setattr(shared, "initialize_share_data", lambda workers=1: None)
+    monkeypatch.setattr(shared, "finalize_share_data", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda *a: next(inputs))
+
+    tool = rebuild_vdb.RebuildTool()
+    monkeypatch.setattr(tool, "print_header", lambda: None)
+    monkeypatch.setattr(tool, "confirm_server_stopped", lambda: True)
+    return tool
+
+
+@pytest.mark.asyncio
+async def test_run_returns_true_on_user_cancel(monkeypatch):
+    tool = _runnable_tool(monkeypatch, iter([]))
+    monkeypatch.setattr(tool, "confirm_server_stopped", lambda: False)
+    tool.setup_storages = AsyncMock(return_value=True)
+
+    assert await tool.run() is True
+    tool.setup_storages.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_returns_false_on_setup_failure(monkeypatch):
+    tool = _runnable_tool(monkeypatch, iter([]))
+    tool.setup_storages = AsyncMock(return_value=False)
+
+    assert await tool.run() is False
+
+
+@pytest.mark.asyncio
+async def test_run_returns_false_on_unhandled_exception(monkeypatch):
+    tool = _runnable_tool(monkeypatch, iter([]))
+    tool.setup_storages = AsyncMock(side_effect=RuntimeError("db down"))
+
+    assert await tool.run() is False
+
+
+@pytest.mark.asyncio
+async def test_run_returns_false_when_rebuild_has_errors(monkeypatch):
+    tool = _runnable_tool(monkeypatch, iter(["2", "0"]))
+    tool.setup_storages = AsyncMock(return_value=True)
+    tool.embedding_available = True
+    tool.print_source_counts = AsyncMock()
+    monkeypatch.setattr(tool, "confirm_rebuild", lambda targets: True)
+
+    failed = rebuild_vdb._new_stats("entities", 3)
+    failed["failed_batches"] = 1
+    failed["errors"] = [
+        {
+            "batch": 1,
+            "records_lost": 3,
+            "error_type": "RuntimeError",
+            "error_msg": "embedder down",
+        }
+    ]
+    tool.run_rebuild_entities_relations = AsyncMock(return_value=[failed])
+
+    assert await tool.run() is False
+
+
+@pytest.mark.asyncio
+async def test_run_returns_true_on_clean_rebuild(monkeypatch):
+    tool = _runnable_tool(monkeypatch, iter(["2", "0"]))
+    tool.setup_storages = AsyncMock(return_value=True)
+    tool.embedding_available = True
+    tool.print_source_counts = AsyncMock()
+    monkeypatch.setattr(tool, "confirm_rebuild", lambda targets: True)
+
+    ok = rebuild_vdb._new_stats("entities", 3)
+    ok["rebuilt"] = 3
+    tool.run_rebuild_entities_relations = AsyncMock(return_value=[ok])
+
+    assert await tool.run() is True
+
+
+@pytest.mark.asyncio
+async def test_run_check_only_exits_true(monkeypatch):
+    tool = _runnable_tool(monkeypatch, iter(["1", "0"]))
+    tool.setup_storages = AsyncMock(return_value=True)
+    tool.embedding_available = False
+    tool.run_check = AsyncMock()
+
+    assert await tool.run() is True
+    tool.run_check.assert_awaited()
+
+
+def test_main_exits_nonzero_on_failure(monkeypatch):
+    monkeypatch.setattr(rebuild_vdb, "load_dotenv", lambda **k: None)
+    monkeypatch.setattr(rebuild_vdb, "setup_logger", lambda *a, **k: None)
+
+    async def _fail():
+        return False
+
+    monkeypatch.setattr(rebuild_vdb, "async_main", _fail)
+
+    with pytest.raises(SystemExit) as excinfo:
+        rebuild_vdb.main()
+    assert excinfo.value.code == 1
+
+
+def test_main_exits_zero_on_success(monkeypatch):
+    monkeypatch.setattr(rebuild_vdb, "load_dotenv", lambda **k: None)
+    monkeypatch.setattr(rebuild_vdb, "setup_logger", lambda *a, **k: None)
+
+    async def _ok():
+        return True
+
+    monkeypatch.setattr(rebuild_vdb, "async_main", _ok)
+
+    # No SystemExit on success.
+    rebuild_vdb.main()

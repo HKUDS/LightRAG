@@ -915,7 +915,8 @@ class RebuildTool:
             )
         ]
 
-    def report_rebuild(self, all_stats: List[Dict[str, Any]]):
+    def report_rebuild(self, all_stats: List[Dict[str, Any]]) -> bool:
+        """Print the rebuild report and return True if any batch/flush failed."""
         print("\n" + "=" * 60)
         print("📊 Rebuild Report")
         print("=" * 60)
@@ -929,8 +930,18 @@ class RebuildTool:
             print("   Sources were not modified - re-run this tool to retry.")
         else:
             print(f"{BOLD_GREEN}✓ Rebuild completed successfully.{RESET}")
+        return had_errors
 
-    async def run(self):
+    async def run(self) -> bool:
+        """Run the interactive tool. Returns True on success, False on failure.
+
+        Failure (-> non-zero exit) covers storage-init failure, any unhandled
+        exception, interruption, and a rebuild that finished with batch/flush
+        errors. A clean user cancellation (server not stopped) is a success.
+        This is a disaster-recovery entry point, so a partial rebuild after the
+        target VDB was already dropped must NOT look like a clean recovery.
+        """
+        success = True
         try:
             # Initialize shared storage (REQUIRED for storage classes to work)
             from lightrag.kg.shared_storage import initialize_share_data
@@ -939,10 +950,10 @@ class RebuildTool:
 
             self.print_header()
             if not self.confirm_server_stopped():
-                return
+                return True  # deliberate user cancellation, not a failure
 
             if not await self.setup_storages():
-                return
+                return False
 
             while True:
                 print("\n=== Rebuild Options ===")
@@ -958,7 +969,7 @@ class RebuildTool:
                 choice = input("\nSelect option: ").strip()
                 if choice == "" or choice == "0":
                     print("\n✓ Exiting")
-                    return
+                    return success
                 if choice == "1":
                     await self.run_check()
                     continue
@@ -992,16 +1003,22 @@ class RebuildTool:
                     all_stats.extend(await self.run_rebuild_entities_relations())
                 if include_chunks:
                     all_stats.extend(await self.run_rebuild_chunks())
-                self.report_rebuild(all_stats)
+                # Sticky: once any rebuild reports errors the session is a
+                # failure, even if a later retry succeeds (a partial rebuild
+                # after a drop must surface a non-zero exit to automation).
+                if self.report_rebuild(all_stats):
+                    success = False
                 print(f"(rebuild took {time.time() - start:.1f}s)")
 
         except KeyboardInterrupt:
             print("\n\n✗ Interrupted by user")
+            return False
         except Exception as e:
             print(f"\n✗ Rebuild tool failed: {e}")
             import traceback
 
             traceback.print_exc()
+            return False
         finally:
             for storage in self.all_storages():
                 if storage is not None:
@@ -1017,18 +1034,25 @@ class RebuildTool:
                 pass
 
 
-async def async_main():
-    """Async main entry point"""
+async def async_main() -> bool:
+    """Async main entry point. Returns True on success, False on failure."""
     tool = RebuildTool()
-    await tool.run()
+    return await tool.run()
 
 
 def main():
-    """Synchronous entry point for CLI command"""
+    """Synchronous entry point for CLI command.
+
+    Exits non-zero on failure (storage-init failure, unhandled error,
+    interruption, or a rebuild that finished with errors) so automation and
+    operators do not mistake a partial/failed recovery for a clean one.
+    """
     # Load environment and configure logging only when run as a tool, never on import.
     load_dotenv(dotenv_path=".env", override=False)
     setup_logger("lightrag", level="INFO")
-    asyncio.run(async_main())
+    success = asyncio.run(async_main())
+    if not success:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
