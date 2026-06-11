@@ -608,6 +608,61 @@ async def test_merge_entity_vdb_failure_raises_consistency_error(
 
 
 @pytest.mark.asyncio
+async def test_merge_source_entity_delete_failure_raises_consistency_error(
+    single_attempt_vdb_ops,
+):
+    # Step 10 deletes the source node from the graph first, then its vector
+    # record. A delete failure here happens AFTER the graph node is gone, so it
+    # must fail loud with a message that does not claim the source still exists.
+    from lightrag.utils_graph import _merge_entities_impl
+
+    graph = make_merge_graph()
+    entities_vdb = MockVDB()
+    relationships_vdb = MockVDB()
+    entities_vdb.delete = AsyncMock(side_effect=RuntimeError("vdb delete down"))
+
+    with pytest.raises(VectorStorageConsistencyError) as excinfo:
+        await _merge_entities_impl(
+            graph, entities_vdb, relationships_vdb, ["Bob"], "Alice"
+        )
+
+    message = str(excinfo.value)
+    assert "lightrag-rebuild-vdb" in message
+    # The source node was already removed; the message must not claim otherwise.
+    graph.delete_node.assert_awaited_with("Bob")
+    assert "were not deleted" not in message
+    entities_vdb.delete.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_merge_final_persist_failure_raises_consistency_error(
+    single_attempt_vdb_ops,
+):
+    # The step-11 _persist_graph_updates flush runs after source deletion; a
+    # failure there must also fail loud (not a raw exception swallowed upstream).
+    from lightrag.utils_graph import _merge_entities_impl
+
+    graph = make_merge_graph()
+    entities_vdb = MockVDB()
+    relationships_vdb = MockVDB()
+    # Succeed at the 8b flush, fail at the final persist flush (step 11).
+    entities_vdb.index_done_callback = AsyncMock(
+        side_effect=[None, RuntimeError("flush down")]
+    )
+
+    with pytest.raises(VectorStorageConsistencyError) as excinfo:
+        await _merge_entities_impl(
+            graph, entities_vdb, relationships_vdb, ["Bob"], "Alice"
+        )
+
+    message = str(excinfo.value)
+    assert "lightrag-rebuild-vdb" in message
+    # Source deletion already happened before the final persist.
+    graph.delete_node.assert_awaited_with("Bob")
+    assert "were not deleted" not in message
+
+
+@pytest.mark.asyncio
 async def test_merge_success_path_unaffected(single_attempt_vdb_ops):
     import lightrag.utils_graph as utils_graph
     from lightrag.utils_graph import _merge_entities_impl
