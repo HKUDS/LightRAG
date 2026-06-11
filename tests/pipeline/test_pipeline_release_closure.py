@@ -1895,55 +1895,37 @@ def test_content_hash_lookup_via_storage(tmp_path):
 
 
 @pytest.mark.offline
-def test_lightrag_format_uses_blocks_file_hash(tmp_path, monkeypatch):
-    async def _run():
-        input_dir = tmp_path / "input"
-        parsed_dir = input_dir / "__parsed__"
-        parsed_dir.mkdir(parents=True)
-        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+def test_enqueue_rejects_removed_or_unknown_docs_format(tmp_path):
+    """The 'lightrag' ingestion entrypoint was removed: enqueue accepts only
+    raw / pending_parse and raises explicitly for anything else (previously
+    an unknown value was silently treated as raw)."""
 
-        rag = _new_rag(tmp_path / "work")
-        rag.workspace = "test-pending-parse-duplicate"
+    async def _run():
+        rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
-            blocks_path = parsed_dir / "doc.blocks.jsonl"
-            blocks_path.write_text(
-                json.dumps({"type": "header"})
-                + "\n"
-                + json.dumps({"type": "content", "text": "hello"})
-                + "\n",
-                encoding="utf-8",
-            )
-
-            # Enqueue twice with different filenames pointing at the same
-            # blocks file: the second one must be rejected as content_hash dup.
-            # ``content`` arg is ignored on the LIGHTRAG path — the LightRAG
-            # Document file is read to derive both content_hash and the
-            # ``{{LRdoc}}`` summary — so any string here is fine.
-            await rag.apipeline_enqueue_documents(
-                "",
-                file_paths="first.lightrag",
-                docs_format="lightrag",
-                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
-                track_id="track-a",
-            )
-            await rag.apipeline_enqueue_documents(
-                "",
-                file_paths="second.lightrag",
-                docs_format="lightrag",
-                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
-                track_id="track-b",
-            )
-            second_id = compute_mdhash_id("second.lightrag", prefix="doc-")
-            assert await rag.full_docs.get_by_id(second_id) is None
-
+            with pytest.raises(ValueError, match="Unsupported docs_format"):
+                await rag.apipeline_enqueue_documents(
+                    "",
+                    file_paths="first.lightrag",
+                    docs_format="lightrag",
+                )
+            with pytest.raises(ValueError, match="Unsupported docs_format"):
+                await rag.apipeline_enqueue_documents(
+                    "some content",
+                    file_paths="doc.txt",
+                    docs_format="bogus",
+                )
+            # The companion parameter is gone entirely (no compat shim).
+            with pytest.raises(TypeError):
+                await rag.apipeline_enqueue_documents(  # type: ignore[call-arg]
+                    "",
+                    file_paths="first.lightrag",
+                    lightrag_document_paths="__parsed__/doc.blocks.jsonl",
+                )
+            # Nothing was enqueued by the rejected calls.
             failed = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
-            kinds = {
-                getattr(doc, "metadata", {}).get("duplicate_kind")
-                for doc in failed.values()
-                if getattr(doc, "metadata", {}).get("is_duplicate")
-            }
-            assert "content_hash" in kinds
+            assert failed == {}
         finally:
             await rag.finalize_storages()
 
