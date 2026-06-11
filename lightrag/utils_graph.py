@@ -695,6 +695,18 @@ async def aedit_entity(
                         )
                         return {**merge_result, "operation_summary": operation_summary}
 
+                    except VectorStorageConsistencyError:
+                        # Fail-loud: the graph was updated but the vector storage
+                        # could not be persisted. This must reach the caller (mapped
+                        # to a 500 with rebuild guidance by the route), NOT be folded
+                        # into a partial-success summary that returns HTTP 200.
+                        logger.error(
+                            f"Entity Edit: merge of '{entity_name}' into "
+                            f"'{new_entity_name}' left graph and vector storage "
+                            "inconsistent; re-raising VectorStorageConsistencyError"
+                        )
+                        raise
+
                     except Exception as merge_error:
                         # Merge failed, but update may have succeeded
                         logger.error(f"Entity Edit: merge failed: {merge_error}")
