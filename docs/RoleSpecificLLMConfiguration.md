@@ -26,7 +26,7 @@ LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
 # Default timeout for all LLM requests
-LLM_TIMEOUT=180
+LLM_TIMEOUT=240
 
 # Default maximum concurrency for all LLM calls (MAX_ASYNC is still accepted as a deprecated alias)
 MAX_ASYNC_LLM=4
@@ -244,7 +244,7 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-5-mini
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
-LLM_TIMEOUT=180
+LLM_TIMEOUT=240
 MAX_ASYNC_LLM=4
 
 ###########################################################################
@@ -293,7 +293,7 @@ KEYWORD_OPENAI_LLM_MAX_TOKENS=2048
 # Optional for Qwen-style models served by vLLM when you want to disable thinking.
 KEYWORD_OPENAI_LLM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'
 KEYWORD_MAX_ASYNC_LLM=4
-KEYWORD_LLM_TIMEOUT=180
+KEYWORD_LLM_TIMEOUT=60
 ```
 
 This pattern is not cross-provider because all three roles use the `openai` binding. LightRAG passes each role's `*_LLM_BINDING_HOST` and `*_LLM_BINDING_API_KEY` to the OpenAI-compatible client separately.
