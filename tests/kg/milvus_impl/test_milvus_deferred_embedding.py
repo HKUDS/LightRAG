@@ -150,7 +150,7 @@ async def test_index_done_callback_triggers_flush():
 
 
 @pytest.mark.asyncio
-async def test_upsert_truncates_oversized_content_for_embedding_and_payload():
+async def test_upsert_truncates_oversized_content_for_payload_only():
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed, meta_fields={"content"})
     content = "x" * (MILVUS_MAX_VARCHAR_BYTES + 10)
@@ -160,7 +160,7 @@ async def test_upsert_truncates_oversized_content_for_embedding_and_payload():
 
     upserted = s._client.upsert.call_args.kwargs["data"][0]
     assert len(upserted["content"].encode("utf-8")) == MILVUS_MAX_VARCHAR_BYTES
-    assert embed.texts == [upserted["content"]]
+    assert embed.texts == [content]
 
 
 @pytest.mark.asyncio
@@ -175,7 +175,7 @@ async def test_upsert_truncates_multibyte_content_on_character_boundary():
     upserted = s._client.upsert.call_args.kwargs["data"][0]
     assert len(upserted["content"].encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
     upserted["content"].encode("utf-8").decode("utf-8")
-    assert embed.texts == [upserted["content"]]
+    assert embed.texts == [content]
 
 
 @pytest.mark.asyncio

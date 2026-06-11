@@ -1762,7 +1762,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             pending_docs.append(
                 (
                     k,
-                    _PendingVectorDoc(source=source, content=content),
+                    _PendingVectorDoc(source=source, content=v["content"]),
                 )
             )
             await _cooperative_yield(i)
