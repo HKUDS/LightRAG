@@ -669,9 +669,15 @@ class RebuildTool:
                     'Install the api extra: pip install "lightrag-hku[api]"'
                 )
 
+            # model_name must match the server's embedding function: Qdrant /
+            # PostgreSQL derive the collection/table name from
+            # model_name + embedding_dim. Omitting it falls back to the legacy
+            # name, so check-only mode would probe the wrong collection (and
+            # could create an empty legacy one) and misreport records as missing.
             self.embedding_func = EmbeddingFunc(
                 embedding_dim=get_env_value("EMBEDDING_DIM", 1024, int),
                 func=_no_embedding,
+                model_name=get_env_value("EMBEDDING_MODEL", None, special_none=True),
             )
 
         self.global_config = self.build_global_config()

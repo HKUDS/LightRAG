@@ -752,3 +752,73 @@ async def test_merge_entity_deferred_flush_failure_raises_before_delete(
     entities_vdb.index_done_callback.assert_awaited()
     graph.delete_node.assert_not_awaited()
     entities_vdb.delete.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Setup: check-only (no api extra) stub embedding function
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_only_stub_carries_embedding_model_name(monkeypatch):
+    # When the api extra is unavailable the tool runs check-only with a stub
+    # embedding function. Qdrant/PostgreSQL locate the collection/table from
+    # model_name + embedding_dim, so the stub must carry the configured
+    # EMBEDDING_MODEL — otherwise check-only probes the legacy-named collection
+    # and misreports records as missing.
+    import lightrag.kg.factory as kg_factory
+    from lightrag.tools.rebuild_vdb import RebuildTool
+
+    monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-large")
+    monkeypatch.setenv("EMBEDDING_DIM", "3072")
+
+    captured_funcs = []
+
+    class _DummyStorage:
+        def __init__(self, *, embedding_func, **kwargs):
+            captured_funcs.append(embedding_func)
+
+        async def initialize(self):
+            return None
+
+    monkeypatch.setattr(kg_factory, "get_storage_class", lambda name: _DummyStorage)
+
+    tool = RebuildTool()
+    # Simulate the api extra being unavailable (check-only mode).
+    monkeypatch.setattr(tool, "build_embedding_func", lambda: None)
+
+    ok = await tool.setup_storages()
+
+    assert ok is True
+    assert tool.embedding_available is False
+    assert tool.embedding_func.model_name == "text-embedding-3-large"
+    assert tool.embedding_func.embedding_dim == 3072
+    # Every storage received the stub carrying the configured model name.
+    assert captured_funcs
+    assert all(f.model_name == "text-embedding-3-large" for f in captured_funcs)
+
+
+@pytest.mark.asyncio
+async def test_check_only_stub_model_name_none_when_unset(monkeypatch):
+    # EMBEDDING_MODEL unset -> model_name None (provider default), matching the
+    # server factory; "None" literal is also treated as unset.
+    import lightrag.kg.factory as kg_factory
+    from lightrag.tools.rebuild_vdb import RebuildTool
+
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+
+    class _DummyStorage:
+        def __init__(self, **kwargs):
+            pass
+
+        async def initialize(self):
+            return None
+
+    monkeypatch.setattr(kg_factory, "get_storage_class", lambda name: _DummyStorage)
+
+    tool = RebuildTool()
+    monkeypatch.setattr(tool, "build_embedding_func", lambda: None)
+
+    await tool.setup_storages()
+
+    assert tool.embedding_func.model_name is None
