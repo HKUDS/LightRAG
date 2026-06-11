@@ -54,3 +54,31 @@ class TestPathTraversalRejected:
     def test_raises_value_error(self, workspace):
         with pytest.raises(ValueError):
             validate_workspace(workspace)
+
+
+class TestStorageRejectsTraversal:
+    """The check is wired into storage construction, not just the helper."""
+
+    def test_json_kv_storage_rejects_traversal(self, tmp_path):
+        from lightrag.kg.json_kv_impl import JsonKVStorage
+
+        cfg = {"working_dir": str(tmp_path)}
+        with pytest.raises(ValueError):
+            JsonKVStorage(
+                namespace="ns",
+                workspace="../../../etc",
+                global_config=cfg,
+                embedding_func=None,
+            )
+
+    def test_json_kv_storage_accepts_dotted_name(self, tmp_path):
+        from lightrag.kg.json_kv_impl import JsonKVStorage
+
+        cfg = {"working_dir": str(tmp_path)}
+        storage = JsonKVStorage(
+            namespace="ns",
+            workspace="v1.0",
+            global_config=cfg,
+            embedding_func=None,
+        )
+        assert storage.workspace == "v1.0"

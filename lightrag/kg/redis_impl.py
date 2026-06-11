@@ -13,7 +13,12 @@ if not pm.is_installed("redis"):
 # aioredis is a depricated library, replaced with redis
 from redis.asyncio import Redis, ConnectionPool  # type: ignore
 from redis.exceptions import RedisError, ConnectionError, TimeoutError  # type: ignore
-from lightrag.utils import logger, get_pinyin_sort_key, _cooperative_yield
+from lightrag.utils import (
+    logger,
+    get_pinyin_sort_key,
+    _cooperative_yield,
+    validate_workspace,
+)
 
 from lightrag.base import (
     BaseKVStorage,
@@ -126,6 +131,7 @@ class RedisConnectionManager:
 @dataclass
 class RedisKVStorage(BaseKVStorage):
     def __post_init__(self):
+        validate_workspace(self.workspace)
         # Check for REDIS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Redis storage instances
         redis_workspace = os.environ.get("REDIS_WORKSPACE")
@@ -522,6 +528,7 @@ class RedisDocStatusStorage(DocStatusStorage):
     """Redis implementation of document status storage"""
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         # Check for REDIS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Redis storage instances
         redis_workspace = os.environ.get("REDIS_WORKSPACE")

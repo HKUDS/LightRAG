@@ -15,7 +15,7 @@ from tenacity import (
 )
 
 import logging
-from ..utils import logger
+from ..utils import logger, validate_workspace
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
@@ -93,6 +93,7 @@ class Neo4JStorage(BaseGraphStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
+        validate_workspace(self.workspace)
 
         # Log after super().__init__() to ensure self.workspace is initialized
         if neo4j_workspace and neo4j_workspace.strip():

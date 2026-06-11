@@ -139,10 +139,10 @@ class NetworkXStorage(BaseGraphStorage):
         )
 
     def __post_init__(self):
+        # Reject path traversal before using workspace in a file path
+        validate_workspace(self.workspace)
         working_dir = self.global_config["working_dir"]
         if self.workspace:
-            # Reject path traversal before using workspace in a file path
-            validate_workspace(self.workspace)
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
         else:
