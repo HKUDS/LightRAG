@@ -3844,9 +3844,7 @@ class _PipelineMixin:
                 prefix = f"{kind}/{item_id}"
                 result_obj = {
                     "name": _required_json_string(parsed, prefix, "name"),
-                    "description": _required_json_string(
-                        parsed, prefix, "description"
-                    ),
+                    "description": _required_json_string(parsed, prefix, "description"),
                 }
                 if kind == "equation":
                     result_obj["equation"] = _required_json_string(
@@ -4056,13 +4054,11 @@ class _PipelineMixin:
                             f"drawings/{item_id}: VLM call failed: {exc}"
                         ) from exc
 
-                analysis_fields, result_text, fresh = (
-                    await _run_json_conformance_retry(
-                        f"drawings/{item_id}",
-                        cached,
-                        _call_vlm_once,
-                        lambda parsed: _validate_drawing_analysis(item_id, parsed),
-                    )
+                analysis_fields, result_text, fresh = await _run_json_conformance_retry(
+                    f"drawings/{item_id}",
+                    cached,
+                    _call_vlm_once,
+                    lambda parsed: _validate_drawing_analysis(item_id, parsed),
                 )
                 cache_id_to_attach: str | None = None
                 if fresh and analysis_cache_enabled:
@@ -4260,15 +4256,11 @@ class _PipelineMixin:
                             f"{kind}/{item_id}: EXTRACT call failed: {exc}"
                         ) from exc
 
-                analysis_fields, result_text, fresh = (
-                    await _run_json_conformance_retry(
-                        f"{kind}/{item_id}",
-                        cached,
-                        _call_extract_once,
-                        lambda parsed: _validate_text_analysis(
-                            kind, item_id, parsed
-                        ),
-                    )
+                analysis_fields, result_text, fresh = await _run_json_conformance_retry(
+                    f"{kind}/{item_id}",
+                    cached,
+                    _call_extract_once,
+                    lambda parsed: _validate_text_analysis(kind, item_id, parsed),
                 )
                 result_obj: dict[str, Any] = {
                     "name": analysis_fields["name"],
