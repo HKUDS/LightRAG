@@ -277,7 +277,7 @@ async def _run_batched_bulk_write(
 
 
 class ClientManager:
-    _instances = {"db": None, "ref_count": 0}
+    _instances: dict = {"client": None, "db": None, "ref_count": 0}
     _lock = asyncio.Lock()
 
     @classmethod
@@ -301,6 +301,7 @@ class ClientManager:
                     driver=DriverInfo(name="LightRAG", version=__version__),
                 )
                 db = client.get_database(database_name)
+                cls._instances["client"] = client
                 cls._instances["db"] = db
                 cls._instances["ref_count"] = 0
             cls._instances["ref_count"] += 1
@@ -313,6 +314,10 @@ class ClientManager:
                 if db is cls._instances["db"]:
                     cls._instances["ref_count"] -= 1
                     if cls._instances["ref_count"] == 0:
+                        client = cls._instances.get("client")
+                        if client is not None:
+                            await client.close()
+                        cls._instances["client"] = None
                         cls._instances["db"] = None
 
 
