@@ -11,7 +11,11 @@ from lightrag.utils import (
     validate_workspace,
 )
 from ..base import BaseVectorStorage
-from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH, DEFAULT_QUERY_PRIORITY
+from ..constants import (
+    DEFAULT_MAX_FILE_PATH_LENGTH,
+    DEFAULT_QUERY_PRIORITY,
+    GRAPH_FIELD_SEP,
+)
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
 
@@ -48,6 +52,25 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 )  # 32MB, well below the 64MB gRPC ceiling
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
+MILVUS_MAX_VARCHAR_BYTES = 65535
+# The Milvus primary key. Truncating it would let two distinct ids collapse to
+# the same key (silent overwrite) and make the row unreachable by its real id
+# via get_by_id/delete, so it must never be truncated under any circumstance.
+MILVUS_PRIMARY_KEY_FIELDS = frozenset({"id"})
+# Non-primary identity fields. They are not the Milvus primary key, so the row
+# stays uniquely keyed by `id` even if these collide after truncation (no
+# storage-level overwrite). On the live upsert path we still reject oversize
+# values so callers fix their input; during migration of pre-existing data we
+# truncate-and-warn instead, so a single pathological legacy value cannot abort
+# the whole collection migration.
+MILVUS_IDENTITY_VARCHAR_FIELDS = frozenset(
+    {"id", "entity_name", "full_doc_id", "src_id", "tgt_id"}
+)
+# Fields whose value is a GRAPH_FIELD_SEP-joined list of ids (chunk ids / file
+# paths). When such a value overflows we truncate on the last separator that
+# fits rather than mid-id, so we drop whole ids instead of leaving a dangling
+# partial id that resolves to nothing.
+MILVUS_SEPARATOR_JOINED_FIELDS = frozenset({"source_id", "file_path"})
 
 # Supported index types
 SUPPORTED_INDEX_TYPES = {
@@ -438,6 +461,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         # Get vector dimension from embedding_func
         dimension = self.embedding_func.embedding_dim
+        varchar_limits = self._get_varchar_field_limits_for_namespace()
 
         # Base fields (common to all collections)
         base_fields = [
@@ -454,13 +478,25 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="entity_name",
                     dtype=DataType.VARCHAR,
-                    max_length=512,
+                    max_length=varchar_limits["entity_name"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="content",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["content"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="source_id",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["source_id"],
                     nullable=True,
                 ),
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
+                    max_length=varchar_limits["file_path"],
                     nullable=True,
                 ),
             ]
@@ -469,15 +505,33 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         elif self.namespace.endswith("relationships"):
             specific_fields = [
                 FieldSchema(
-                    name="src_id", dtype=DataType.VARCHAR, max_length=512, nullable=True
+                    name="src_id",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["src_id"],
+                    nullable=True,
                 ),
                 FieldSchema(
-                    name="tgt_id", dtype=DataType.VARCHAR, max_length=512, nullable=True
+                    name="tgt_id",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["tgt_id"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="content",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["content"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="source_id",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["source_id"],
+                    nullable=True,
                 ),
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
+                    max_length=varchar_limits["file_path"],
                     nullable=True,
                 ),
             ]
@@ -488,13 +542,19 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="full_doc_id",
                     dtype=DataType.VARCHAR,
-                    max_length=64,
+                    max_length=varchar_limits["full_doc_id"],
+                    nullable=True,
+                ),
+                FieldSchema(
+                    name="content",
+                    dtype=DataType.VARCHAR,
+                    max_length=varchar_limits["content"],
                     nullable=True,
                 ),
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
+                    max_length=varchar_limits["file_path"],
                     nullable=True,
                 ),
             ]
@@ -506,7 +566,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
+                    max_length=varchar_limits["file_path"],
                     nullable=True,
                 ),
             ]
@@ -520,6 +580,138 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             description=description,
             enable_dynamic_field=True,  # Support dynamic fields
         )
+
+    def _get_varchar_field_limits_for_namespace(self) -> dict[str, int]:
+        base_fields = {
+            "id": 64,
+            "content": MILVUS_MAX_VARCHAR_BYTES,
+            "file_path": DEFAULT_MAX_FILE_PATH_LENGTH,
+        }
+        if self.namespace.endswith("entities"):
+            return {
+                **base_fields,
+                "entity_name": 512,
+                "source_id": MILVUS_MAX_VARCHAR_BYTES,
+            }
+        if self.namespace.endswith("relationships"):
+            return {
+                **base_fields,
+                "src_id": 512,
+                "tgt_id": 512,
+                "source_id": MILVUS_MAX_VARCHAR_BYTES,
+            }
+        if self.namespace.endswith("chunks"):
+            return {**base_fields, "full_doc_id": 64}
+        return base_fields
+
+    def _get_migrated_metadata_field_limits(self) -> dict[str, int]:
+        if self.namespace.endswith("entities"):
+            return {
+                "content": MILVUS_MAX_VARCHAR_BYTES,
+                "source_id": MILVUS_MAX_VARCHAR_BYTES,
+            }
+        if self.namespace.endswith("relationships"):
+            return {
+                "content": MILVUS_MAX_VARCHAR_BYTES,
+                "source_id": MILVUS_MAX_VARCHAR_BYTES,
+            }
+        if self.namespace.endswith("chunks"):
+            return {"content": MILVUS_MAX_VARCHAR_BYTES}
+        return {}
+
+    @staticmethod
+    def _field_max_length(field: dict) -> int | None:
+        max_length = field.get("params", {}).get("max_length")
+        if max_length is None:
+            return None
+        try:
+            return int(max_length)
+        except (TypeError, ValueError):
+            return None
+
+    def _truncate_varchar_value(
+        self,
+        field_name: str,
+        value: Any,
+        record_id: str | None = None,
+        allow_identity_truncation: bool = False,
+    ) -> Any:
+        limit = self._varchar_field_limits.get(field_name)
+        if limit is None or not isinstance(value, str):
+            return value
+
+        encoded = value.encode("utf-8")
+        if len(encoded) <= limit:
+            return value
+
+        # The primary key is never truncated: collapsing two ids into one would
+        # silently overwrite a row and orphan it from get_by_id/delete.
+        if field_name in MILVUS_PRIMARY_KEY_FIELDS:
+            raise ValueError(
+                f"[{self.workspace}] Milvus primary key '{field_name}' for record "
+                f"'{record_id or '<unknown>'}' exceeds {limit} bytes "
+                f"({len(encoded)} bytes); primary keys cannot be truncated"
+            )
+
+        # Other identity fields: reject on the live upsert path, but allow
+        # truncate-and-warn during migration so legacy data can be carried over
+        # without aborting the whole collection.
+        if (
+            field_name in MILVUS_IDENTITY_VARCHAR_FIELDS
+            and not allow_identity_truncation
+        ):
+            raise ValueError(
+                f"[{self.workspace}] Milvus field '{field_name}' for record "
+                f"'{record_id or '<unknown>'}' exceeds {limit} bytes "
+                f"({len(encoded)} bytes); identity fields cannot be truncated"
+            )
+
+        # Cut to the byte budget on a valid UTF-8 boundary first.
+        truncated = encoded[:limit].decode("utf-8", errors="ignore")
+        # For separator-joined id lists, back off to the last separator that
+        # fits so we never persist a half id. Fall back to the raw byte cut when
+        # no separator fits (e.g. a single id longer than the limit).
+        if field_name in MILVUS_SEPARATOR_JOINED_FIELDS:
+            boundary = truncated.rfind(GRAPH_FIELD_SEP)
+            if boundary > 0:
+                truncated = truncated[:boundary]
+        logger.warning(
+            "[%s] Milvus field '%s' for record '%s' truncated from %d to %d bytes",
+            self.workspace,
+            field_name,
+            record_id or "<unknown>",
+            len(encoded),
+            len(truncated.encode("utf-8")),
+        )
+        return truncated
+
+    def _sanitize_varchar_fields(
+        self, row: dict[str, Any], allow_identity_truncation: bool = False
+    ) -> dict[str, Any]:
+        record_id = str(row.get("id", "")) or None
+        return {
+            field_name: self._truncate_varchar_value(
+                field_name,
+                value,
+                record_id,
+                allow_identity_truncation=allow_identity_truncation,
+            )
+            for field_name, value in row.items()
+        }
+
+    def _normalize_migration_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(row)
+        metadata = normalized.pop("$meta", None)
+        if isinstance(metadata, dict):
+            for field_name, value in metadata.items():
+                # Explicit nullable fields can hold None while the real value
+                # still lives in $meta (schema-drift rows), so backfill on None
+                # rather than mere key presence.
+                if normalized.get(field_name) is None:
+                    normalized[field_name] = value
+        # Migration carries pre-existing rows: non-primary identity fields are
+        # truncated-and-warned rather than rejected (see _truncate_varchar_value).
+        return self._sanitize_varchar_fields(normalized, allow_identity_truncation=True)
 
     def _get_index_params(self):
         """Get IndexParams in a version-compatible way"""
@@ -722,17 +914,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if self.namespace.endswith("entities"):
             specific_fields = {
                 "entity_name": {"type": "VarChar"},
+                "content": {"type": "VarChar"},
+                "source_id": {"type": "VarChar"},
                 "file_path": {"type": "VarChar"},
             }
         elif self.namespace.endswith("relationships"):
             specific_fields = {
                 "src_id": {"type": "VarChar"},
                 "tgt_id": {"type": "VarChar"},
+                "content": {"type": "VarChar"},
+                "source_id": {"type": "VarChar"},
                 "file_path": {"type": "VarChar"},
             }
         elif self.namespace.endswith("chunks"):
             specific_fields = {
                 "full_doc_id": {"type": "VarChar"},
+                "content": {"type": "VarChar"},
                 "file_path": {"type": "VarChar"},
             }
         else:
@@ -901,6 +1098,19 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         return
 
+    @staticmethod
+    def _has_vector_field(collection_info: dict) -> bool:
+        """Return True when the collection exposes a 'vector' field.
+
+        Old simple-schema collections may lack a vector field entirely. Their
+        rows therefore carry no vector data, and copying them into the new
+        schema (whose vector field is required) would fail at insert time, so
+        callers use this to skip migration for such collections.
+        """
+        return any(
+            field.get("name") == "vector" for field in collection_info.get("fields", [])
+        )
+
     def _check_file_path_length_restriction(self, collection_info: dict) -> bool:
         """Check if collection has file_path length restrictions that need migration
 
@@ -926,6 +1136,38 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         return False
 
+    def _check_metadata_schema_migration_needed(self, collection_info: dict) -> bool:
+        existing_fields = {
+            field["name"]: field for field in collection_info.get("fields", [])
+        }
+
+        for (
+            field_name,
+            expected_max_length,
+        ) in self._get_migrated_metadata_field_limits().items():
+            existing_field = existing_fields.get(field_name)
+            if existing_field is None:
+                logger.info(
+                    f"[{self.workspace}] Collection {self.namespace} missing explicit Milvus field '{field_name}', needs migration"
+                )
+                return True
+
+            if not self._is_field_compatible(existing_field, {"type": "VarChar"}):
+                logger.info(
+                    f"[{self.workspace}] Collection {self.namespace} has incompatible Milvus field '{field_name}', needs migration"
+                )
+                return True
+
+            max_length = self._field_max_length(existing_field)
+            if max_length is not None and max_length < expected_max_length:
+                logger.info(
+                    f"[{self.workspace}] Collection {self.namespace} has {field_name} max_length={max_length}, "
+                    f"needs migration to {expected_max_length}"
+                )
+                return True
+
+        return False
+
     def _check_schema_compatibility(self, collection_info: dict):
         """Check schema field compatibility and detect migration needs"""
         existing_fields = {
@@ -933,9 +1175,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         }
 
         # Check if this is an old collection created with simple schema
-        has_vector_field = any(
-            field.get("name") == "vector" for field in collection_info.get("fields", [])
-        )
+        has_vector_field = self._has_vector_field(collection_info)
 
         if not has_vector_field:
             logger.warning(
@@ -949,8 +1189,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             )
             return
 
-        # Check if migration is needed for file_path length restrictions
-        if self._check_file_path_length_restriction(collection_info):
+        if self._check_file_path_length_restriction(
+            collection_info
+        ) or self._check_metadata_schema_migration_needed(collection_info):
             logger.info(
                 f"[{self.workspace}] Starting automatic migration for collection {self.namespace}"
             )
@@ -995,49 +1236,64 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             f"[{self.workspace}] Schema compatibility check passed for {self.namespace}"
         )
 
-    def _migrate_collection_schema(self):
-        """Migrate collection schema using query_iterator - completely solves query window limitations"""
-        original_collection_name = self.final_namespace
-        temp_collection_name = f"{self.final_namespace}_temp"
-        iterator = None
-
+    def _create_collection_with_schema(
+        self, collection_name: str, ignore_index_errors: bool = False
+    ) -> None:
+        original_final_namespace = self.final_namespace
         try:
-            logger.info(
-                f"[{self.workspace}] Starting iterator-based schema migration for {self.namespace}"
-            )
-
-            # Step 1: Create temporary collection with new schema
-            logger.info(
-                f"[{self.workspace}] Step 1: Creating temporary collection: {temp_collection_name}"
-            )
-            # Temporarily update final_namespace for index creation
-            self.final_namespace = temp_collection_name
-            new_schema = self._create_schema_for_namespace()
+            self.final_namespace = collection_name
+            schema = self._create_schema_for_namespace()
             self._client.create_collection(
-                collection_name=temp_collection_name, schema=new_schema
+                collection_name=collection_name, schema=schema
             )
             try:
                 self._create_indexes_after_collection()
             except Exception as index_error:
+                if not ignore_index_errors:
+                    raise
                 logger.warning(
                     f"[{self.workspace}] Failed to create indexes for new collection: {index_error}"
                 )
-                # Continue with migration even if index creation fails
+        finally:
+            self.final_namespace = original_final_namespace
 
-            # Load the new collection
-            self._client.load_collection(temp_collection_name)
+    def _migrate_collection_schema(
+        self,
+        source_collection_name: str | None = None,
+        target_collection_name: str | None = None,
+    ):
+        source_collection_name = source_collection_name or self.final_namespace
+        target_collection_name = target_collection_name or self.final_namespace
+        temp_collection_name = f"{target_collection_name}_temp"
+        original_final_namespace = self.final_namespace
+        iterator = None
 
-            # Step 2: Copy data using query_iterator (solves query window limitation)
+        try:
             logger.info(
-                f"[{self.workspace}] Step 2: Copying data using query_iterator from: {original_collection_name}"
+                f"[{self.workspace}] Starting iterator-based schema migration for {self.namespace}: "
+                f"{source_collection_name} -> {target_collection_name}"
             )
 
-            # Create query iterator
+            logger.info(
+                f"[{self.workspace}] Step 1: Creating temporary collection: {temp_collection_name}"
+            )
+            if self._client.has_collection(temp_collection_name):
+                self._client.drop_collection(temp_collection_name)
+            self._create_collection_with_schema(
+                temp_collection_name, ignore_index_errors=True
+            )
+
+            self._client.load_collection(temp_collection_name)
+
+            logger.info(
+                f"[{self.workspace}] Step 2: Copying data using query_iterator from: {source_collection_name}"
+            )
+
             try:
                 iterator = self._client.query_iterator(
-                    collection_name=original_collection_name,
-                    batch_size=2000,  # Adjustable batch size for optimal performance
-                    output_fields=["*"],  # Get all fields
+                    collection_name=source_collection_name,
+                    batch_size=2000,
+                    output_fields=["*"],
                 )
                 logger.debug(f"[{self.workspace}] Query iterator created successfully")
             except Exception as iterator_error:
@@ -1046,7 +1302,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 )
                 raise
 
-            # Iterate through all data
             total_migrated = 0
             batch_number = 1
 
@@ -1057,11 +1312,28 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         # No more data available
                         break
 
-                    # Insert batch data to new collection
+                    sanitized_batch_data = [
+                        self._normalize_migration_row(row) for row in batch_data
+                    ]
+                    insert_batches = self._build_upsert_batches(
+                        sanitized_batch_data,
+                        max_payload_bytes=self._max_upsert_payload_bytes,
+                        max_records_per_batch=self._max_upsert_records_per_batch,
+                    )
                     try:
-                        self._client.insert(
-                            collection_name=temp_collection_name, data=batch_data
-                        )
+                        for insert_batch_number, (
+                            records_batch,
+                            estimated_bytes,
+                        ) in enumerate(insert_batches, 1):
+                            logger.debug(
+                                f"[{self.workspace}] Milvus migration insert batch "
+                                f"{batch_number}.{insert_batch_number}/{len(insert_batches)}: "
+                                f"records={len(records_batch)}, estimated_payload_bytes={estimated_bytes}"
+                            )
+                            self._client.insert(
+                                collection_name=temp_collection_name,
+                                data=records_batch,
+                            )
                         total_migrated += len(batch_data)
 
                         logger.info(
@@ -1091,52 +1363,59 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     f"[{self.workspace}] No data found in original collection, migration completed"
                 )
 
-            # Step 3: Rename origin collection (keep for safety)
-            logger.info(
-                f"[{self.workspace}] Step 3: Rename origin collection to {original_collection_name}_old"
-            )
-            try:
-                self._client.rename_collection(
-                    original_collection_name, f"{original_collection_name}_old"
+            if source_collection_name == target_collection_name:
+                logger.info(
+                    f"[{self.workspace}] Step 3: Rename origin collection to {source_collection_name}_old"
                 )
-            except Exception as rename_error:
                 try:
-                    logger.warning(
-                        f"[{self.workspace}] Try to drop origin collection instead"
+                    self._client.rename_collection(
+                        source_collection_name, f"{source_collection_name}_old"
                     )
-                    self._client.drop_collection(original_collection_name)
-                except Exception as e:
-                    logger.error(
-                        f"[{self.workspace}] Rename operation failed: {rename_error}"
-                    )
-                    raise e
+                except Exception as rename_error:
+                    try:
+                        logger.warning(
+                            f"[{self.workspace}] Try to drop origin collection instead"
+                        )
+                        self._client.drop_collection(source_collection_name)
+                    except Exception as e:
+                        logger.error(
+                            f"[{self.workspace}] Rename operation failed: {rename_error}"
+                        )
+                        raise e
+            elif self._client.has_collection(target_collection_name):
+                raise RuntimeError(
+                    f"Target collection already exists: {target_collection_name}"
+                )
 
-            # Step 4: Rename temporary collection to original name
             logger.info(
-                f"[{self.workspace}] Step 4: Renaming collection {temp_collection_name} -> {original_collection_name}"
+                f"[{self.workspace}] Step 4: Renaming collection {temp_collection_name} -> {target_collection_name}"
             )
             try:
                 self._client.rename_collection(
-                    temp_collection_name, original_collection_name
+                    temp_collection_name, target_collection_name
                 )
                 logger.info(f"[{self.workspace}] Rename operation completed")
             except Exception as rename_error:
-                logger.error(
-                    f"[{self.workspace}] Rename operation failed: {rename_error}"
-                )
+                if source_collection_name == target_collection_name:
+                    logger.error(
+                        f"[{self.workspace}] Rename operation failed: {rename_error}"
+                    )
+                else:
+                    logger.error(
+                        f"[{self.workspace}] Target rename operation failed: {rename_error}"
+                    )
                 raise RuntimeError(
                     f"Failed to rename collection: {rename_error}"
                 ) from rename_error
 
-            # Restore final_namespace
-            self.final_namespace = original_collection_name
+            self.final_namespace = target_collection_name
 
         except Exception as e:
+            self.final_namespace = original_final_namespace
             logger.error(
                 f"[{self.workspace}] Iterator-based migration failed for {self.namespace}: {e}"
             )
 
-            # Attempt cleanup of temporary collection if it exists
             try:
                 if self._client and self._client.has_collection(temp_collection_name):
                     logger.info(
@@ -1148,13 +1427,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     f"[{self.workspace}] Failed to cleanup temporary collection: {cleanup_error}"
                 )
 
-            # Re-raise the original error
             raise RuntimeError(
                 f"Iterator-based migration failed for collection {self.namespace}: {e}"
             ) from e
 
         finally:
-            # Ensure iterator is properly closed
             if iterator:
                 try:
                     iterator.close()
@@ -1186,6 +1463,56 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Collection compatibility validation failed for {self.namespace}: {e}"
             )
             raise
+
+    def _validate_collection_and_load(self) -> None:
+        try:
+            self._client.describe_collection(self.final_namespace)
+            self._validate_collection_compatibility()
+        except Exception as validation_error:
+            logger.error(
+                f"[{self.workspace}] CRITICAL ERROR: Collection '{self.namespace}' exists but validation failed!"
+            )
+            logger.error(
+                f"[{self.workspace}] This indicates potential data migration failure or schema incompatibility."
+            )
+            logger.error(f"[{self.workspace}] Validation error: {validation_error}")
+            logger.error(f"[{self.workspace}] MANUAL INTERVENTION REQUIRED:")
+            logger.error(
+                f"[{self.workspace}] 1. Check the existing collection schema and data integrity"
+            )
+            logger.error(f"[{self.workspace}] 2. Backup existing data if needed")
+            logger.error(
+                f"[{self.workspace}] 3. Manually resolve schema compatibility issues"
+            )
+            logger.error(
+                f"[{self.workspace}] 4. Consider recreating the collection using: lightrag-rebuild-vdb "
+            )
+            logger.error(
+                f"[{self.workspace}] Program execution stopped to prevent potential data loss."
+            )
+            raise RuntimeError(
+                f"Collection validation failed for '{self.final_namespace}'. "
+                f"Data migration failure detected. Manual intervention required to prevent data loss. "
+                f"Original error: {validation_error}"
+            )
+
+        try:
+            self._ensure_collection_loaded()
+        except Exception as load_error:
+            if not self._is_missing_vector_index_error(load_error):
+                raise
+
+            try:
+                self._repair_missing_vector_index()
+                self._ensure_collection_loaded()
+                logger.info(
+                    f"[{self.workspace}] Repaired missing vector index for existing collection '{self.namespace}'"
+                )
+            except Exception as repair_error:
+                raise RuntimeError(
+                    f"Index repair failed for collection '{self.final_namespace}'. "
+                    f"Original error: {repair_error}"
+                ) from repair_error
 
     @staticmethod
     def _is_missing_vector_index_error(error: Exception) -> bool:
@@ -1228,87 +1555,53 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         """Create collection if not exists and check existing collection compatibility"""
 
         try:
-            # Check if our specific collection exists
             collection_exists = self._client.has_collection(self.final_namespace)
             logger.info(
                 f"[{self.workspace}] VectorDB collection '{self.namespace}' exists check: {collection_exists}"
             )
 
             if collection_exists:
-                # Double-check by trying to describe the collection
-                try:
-                    self._client.describe_collection(self.final_namespace)
-                    self._validate_collection_compatibility()
+                self._validate_collection_and_load()
+                return
+
+            legacy_collection_exists = (
+                self.legacy_namespace != self.final_namespace
+                and self._client.has_collection(self.legacy_namespace)
+            )
+            if legacy_collection_exists:
+                legacy_collection_info = self._client.describe_collection(
+                    self.legacy_namespace
+                )
+                if not self._has_vector_field(legacy_collection_info):
+                    # Old simple-schema collection with no vector field: its rows
+                    # carry no vectors, so migrating them into the required-vector
+                    # schema would fail at insert and block startup. Skip the
+                    # migration and create a fresh suffixed collection instead.
+                    logger.warning(
+                        f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' "
+                        f"has no vector field (old simple schema); cannot migrate its rows "
+                        f"into '{self.final_namespace}'. Creating a new collection instead."
+                    )
+                else:
                     try:
-                        # Ensure the collection is loaded after validation
+                        self._check_vector_dimension(legacy_collection_info)
+                    except ValueError as legacy_error:
+                        logger.warning(
+                            f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' "
+                            f"is not compatible with '{self.final_namespace}': {legacy_error}. "
+                            f"Creating a new collection without migrating legacy vectors."
+                        )
+                    else:
+                        self._migrate_collection_schema(
+                            source_collection_name=self.legacy_namespace,
+                            target_collection_name=self.final_namespace,
+                        )
                         self._ensure_collection_loaded()
                         return
-                    except Exception as load_error:
-                        if not self._is_missing_vector_index_error(load_error):
-                            raise
-
-                        try:
-                            self._repair_missing_vector_index()
-                            self._ensure_collection_loaded()
-                            logger.info(
-                                f"[{self.workspace}] Repaired missing vector index for existing collection '{self.namespace}'"
-                            )
-                            return
-                        except Exception as repair_error:
-                            raise RuntimeError(
-                                f"Index repair failed for collection '{self.final_namespace}'. "
-                                f"Original error: {repair_error}"
-                            ) from repair_error
-                except Exception as validation_error:
-                    # CRITICAL: Collection exists but validation failed
-                    # This indicates potential data migration failure or incompatible schema
-                    # Stop execution to prevent data loss and require manual intervention
-                    logger.error(
-                        f"[{self.workspace}] CRITICAL ERROR: Collection '{self.namespace}' exists but validation failed!"
-                    )
-                    logger.error(
-                        f"[{self.workspace}] This indicates potential data migration failure or schema incompatibility."
-                    )
-                    logger.error(
-                        f"[{self.workspace}] Validation error: {validation_error}"
-                    )
-                    logger.error(f"[{self.workspace}] MANUAL INTERVENTION REQUIRED:")
-                    logger.error(
-                        f"[{self.workspace}] 1. Check the existing collection schema and data integrity"
-                    )
-                    logger.error(
-                        f"[{self.workspace}] 2. Backup existing data if needed"
-                    )
-                    logger.error(
-                        f"[{self.workspace}] 3. Manually resolve schema compatibility issues"
-                    )
-                    logger.error(
-                        f"[{self.workspace}] 4. Consider dropping and recreating the collection if data is not critical"
-                    )
-                    logger.error(
-                        f"[{self.workspace}] Program execution stopped to prevent potential data loss."
-                    )
-
-                    # Raise a specific exception to stop execution
-                    raise RuntimeError(
-                        f"Collection validation failed for '{self.final_namespace}'. "
-                        f"Data migration failure detected. Manual intervention required to prevent data loss. "
-                        f"Original error: {validation_error}"
-                    )
 
             # Collection doesn't exist, create new collection
             logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")
-            schema = self._create_schema_for_namespace()
-
-            # Create collection with schema only first
-            self._client.create_collection(
-                collection_name=self.final_namespace, schema=schema
-            )
-
-            # Then create indexes
-            self._create_indexes_after_collection()
-
-            # Load the newly created collection
+            self._create_collection_with_schema(self.final_namespace)
             self._ensure_collection_loaded()
 
             logger.info(
@@ -1343,11 +1636,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     )
 
                 # Create fresh collection
-                schema = self._create_schema_for_namespace()
-                self._client.create_collection(
-                    collection_name=self.final_namespace, schema=schema
-                )
-                self._create_indexes_after_collection()
+                self._create_collection_with_schema(self.final_namespace)
 
                 # Load the newly created collection
                 self._ensure_collection_loaded()
@@ -1419,18 +1708,24 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     f"Using passed workspace parameter: '{effective_workspace}'"
                 )
 
-        # Build final_namespace with workspace prefix for data isolation
-        # Keep original namespace unchanged for type detection logic
-        if effective_workspace:
-            self.final_namespace = f"{effective_workspace}_{self.namespace}"
+        self.workspace = effective_workspace or ""
+        self.model_suffix = self._generate_collection_suffix()
+        if self.workspace:
+            self.legacy_namespace = f"{self.workspace}_{self.namespace}"
             logger.debug(
-                f"Final namespace with workspace prefix: '{self.final_namespace}'"
+                f"Legacy namespace with workspace prefix: '{self.legacy_namespace}'"
             )
         else:
-            # When workspace is empty, final_namespace equals original namespace
-            self.final_namespace = self.namespace
-            self.workspace = ""
-            logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
+            self.legacy_namespace = self.namespace
+            logger.debug(f"Legacy namespace (no workspace): '{self.legacy_namespace}'")
+        if self.model_suffix:
+            self.final_namespace = f"{self.legacy_namespace}_{self.model_suffix}"
+            logger.info(f"Milvus collection: {self.final_namespace}")
+        else:
+            self.final_namespace = self.legacy_namespace
+            logger.warning(
+                f"Milvus collection: {self.final_namespace} missing suffix. Please add model_name to embedding_func for proper model-based data isolation."
+            )
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
             raise ValueError(
@@ -1441,6 +1736,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # Ensure created_at is in meta_fields
         if "created_at" not in self.meta_fields:
             self.meta_fields.add("created_at")
+        self._varchar_field_limits = self._get_varchar_field_limits_for_namespace()
 
         # Initialize client as None - will be created in initialize() method
         self._client = None
@@ -1546,11 +1842,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         pending_docs: list[tuple[str, _PendingVectorDoc]] = []
         for i, (k, v) in enumerate(data.items(), start=1):
-            source = {
-                "id": k,
-                "created_at": current_time,
-                **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
-            }
+            # _sanitize_varchar_fields already byte-truncates the stored
+            # `content` when it is a meta field; the pending doc keeps the full
+            # untruncated text so the embedding sees the complete chunk.
+            source = self._sanitize_varchar_fields(
+                {
+                    "id": k,
+                    "created_at": current_time,
+                    **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+                }
+            )
             pending_docs.append(
                 (
                     k,
@@ -1776,8 +2077,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # pending doc has a non-None vector (count-mismatch was checked),
             # so we can iterate without re-guarding.
             committed_ids: list[str] = list(pending_docs.keys())
+            # source was already byte-truncated in upsert(); no need to
+            # re-sanitize here (vector is not a VarChar field).
             list_data: list[dict[str, Any]] = [
-                {**pending_docs[doc_id].source, "vector": pending_docs[doc_id].vector}
+                {
+                    **pending_docs[doc_id].source,
+                    "vector": pending_docs[doc_id].vector,
+                }
                 for doc_id in committed_ids
             ]
 
@@ -2183,12 +2489,19 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 self._pending_vector_docs.clear()
                 self._pending_vector_deletes.clear()
 
-                # Drop the collection and recreate it
+                # Drop the collection and recreate it empty.
                 if self._client.has_collection(self.final_namespace):
                     self._client.drop_collection(self.final_namespace)
 
-                # Recreate the collection
-                self._create_collection_if_not_exist()
+                # Recreate an EMPTY collection. Do NOT route through
+                # _create_collection_if_not_exist here: with the suffixed
+                # collection now gone it would see the intentionally-kept legacy
+                # collection and re-run the legacy->suffixed migration, pulling
+                # the just-dropped rows back in. That makes drop() non-empty
+                # (clear_documents would leave stale legacy data behind) and
+                # forces a needless full migration on every rebuild/clear.
+                self._create_collection_with_schema(self.final_namespace)
+                self._ensure_collection_loaded()
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"
