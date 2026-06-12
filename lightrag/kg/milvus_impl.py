@@ -78,6 +78,20 @@ DEFAULT_MILVUS_MIGRATION_RETRY_MAX_BACKOFF_SECONDS = 60.0
 MILVUS_MIGRATION_RETRY_BACKOFF_MULTIPLIER = 3.0
 DEFAULT_MILVUS_MIGRATION_ITERATOR_BATCH_SIZE = 2000
 
+# Schema-migration memory back-pressure. The bulk copy inserts the whole source
+# collection into the temp collection with no client-side throttle, so the
+# Milvus data node accumulates growing insert-buffer segments until its own
+# auto-flush catches up; under a large migration this can exhaust server memory
+# (the temp collection is not loaded, so query-node memory is already bounded —
+# this is the data-node write buffer). Flushing every N migrated rows seals
+# those segments to object storage and blocks until the flush returns, giving
+# the server natural back-pressure. 0 disables periodic flush (rely on Milvus
+# auto-flush). The interval is kept coarse so it does not spawn many tiny
+# segments (which would burden later compaction). An optional per-batch sleep
+# lets a small server breathe between batches; 0 disables it.
+DEFAULT_MILVUS_MIGRATION_FLUSH_INTERVAL_ROWS = 50000
+DEFAULT_MILVUS_MIGRATION_BATCH_SLEEP_SECONDS = 0.0
+
 # Substrings that mark an exception as a transient connection failure (worth a
 # retry with a rebuilt client) rather than a schema/parameter error.
 MILVUS_RETRYABLE_CONNECTION_ERROR_MARKERS = (
@@ -1535,6 +1549,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             total_migrated = 0
             batch_number = 1
+            rows_since_flush = 0
 
             while True:
                 try:
@@ -1566,12 +1581,31 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                                 data=records_batch,
                             )
                         total_migrated += len(batch_data)
+                        rows_since_flush += len(batch_data)
 
                         logger.info(
                             f"[{self.workspace}] Iterator batch {batch_number}: "
                             f"processed {len(batch_data)} records, total migrated: {total_migrated}"
                         )
                         batch_number += 1
+
+                        # Seal the accumulated insert buffer to bound the
+                        # data-node memory and block until the flush returns,
+                        # giving the server back-pressure during a large copy.
+                        if (
+                            self._migration_flush_interval_rows > 0
+                            and rows_since_flush >= self._migration_flush_interval_rows
+                        ):
+                            logger.info(
+                                f"[{self.workspace}] Flushing temp collection after "
+                                f"{rows_since_flush} rows (total migrated: {total_migrated})"
+                            )
+                            self._client.flush(temp_collection_name)
+                            rows_since_flush = 0
+
+                        # Optional throttle to let a small server breathe.
+                        if self._migration_batch_sleep > 0:
+                            time.sleep(self._migration_batch_sleep)
 
                     except Exception as batch_error:
                         logger.error(
@@ -1584,6 +1618,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         f"[{self.workspace}] Iterator next() failed at batch {batch_number}: {next_error}"
                     )
                     raise
+
+            # Final flush so the last unsealed insert buffer is persisted and
+            # released before the collection is promoted and loaded.
+            if self._migration_flush_interval_rows > 0 and total_migrated > 0:
+                logger.info(
+                    f"[{self.workspace}] Final flush of temp collection ({total_migrated} rows migrated)"
+                )
+                self._client.flush(temp_collection_name)
 
             if total_migrated > 0:
                 logger.info(
@@ -2120,6 +2162,25 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         self._migration_iterator_batch_size = _get_env_int(
             "MILVUS_MIGRATION_ITERATOR_BATCH_SIZE",
             DEFAULT_MILVUS_MIGRATION_ITERATOR_BATCH_SIZE,
+        )
+
+        # Schema-migration memory back-pressure knobs (see the
+        # DEFAULT_MILVUS_MIGRATION_FLUSH_*/_BATCH_SLEEP_* constants).
+        self._migration_flush_interval_rows = max(
+            0,
+            _get_env_int(
+                "MILVUS_MIGRATION_FLUSH_INTERVAL_ROWS",
+                DEFAULT_MILVUS_MIGRATION_FLUSH_INTERVAL_ROWS,
+            ),
+        )
+        self._migration_batch_sleep = max(
+            0.0,
+            float(
+                os.getenv(
+                    "MILVUS_MIGRATION_BATCH_SLEEP",
+                    str(DEFAULT_MILVUS_MIGRATION_BATCH_SLEEP_SECONDS),
+                )
+            ),
         )
         self._initialized = False
 
