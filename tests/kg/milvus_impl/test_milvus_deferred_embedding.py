@@ -648,8 +648,11 @@ async def test_drop_clears_pending_buffers():
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)
     s._client.has_collection.return_value = False  # skip drop_collection call
-    # Stub out _create_collection_if_not_exist to avoid hitting MilvusIndexConfig logic.
-    with patch.object(s, "_create_collection_if_not_exist"):
+    # Stub out the recreate path to avoid hitting MilvusIndexConfig logic.
+    with (
+        patch.object(s, "_create_collection_with_schema"),
+        patch.object(s, "_ensure_collection_loaded"),
+    ):
         await s.upsert({"v1": {"content": "hello"}})
         await s.delete(["v2"])
         assert s._pending_vector_docs and s._pending_vector_deletes
@@ -658,6 +661,33 @@ async def test_drop_clears_pending_buffers():
         assert result["status"] == "success"
         assert s._pending_vector_docs == {}
         assert s._pending_vector_deletes == set()
+
+
+@pytest.mark.asyncio
+async def test_drop_recreates_empty_without_legacy_migration():
+    # drop() must leave the collection EMPTY. Recreating via
+    # _create_collection_if_not_exist would re-run the legacy->suffixed
+    # migration (the legacy collection is intentionally kept after migration),
+    # pulling the just-dropped rows back in and forcing a needless full
+    # migration on every rebuild/clear. Regression for that path.
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    s._client.has_collection.return_value = True
+
+    with (
+        patch.object(s, "_create_collection_if_not_exist") as recreate_via_migration,
+        patch.object(s, "_create_collection_with_schema") as create_empty,
+        patch.object(s, "_ensure_collection_loaded") as load,
+    ):
+        result = await s.drop()
+
+    assert result["status"] == "success"
+    s._client.drop_collection.assert_called_once_with(s.final_namespace)
+    create_empty.assert_called_once_with(s.final_namespace)
+    load.assert_called_once_with()
+    # Never the migration-capable path.
+    recreate_via_migration.assert_not_called()
+    s._client.query_iterator.assert_not_called()
 
 
 @pytest.mark.offline

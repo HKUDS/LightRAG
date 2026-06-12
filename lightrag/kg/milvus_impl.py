@@ -2489,12 +2489,19 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 self._pending_vector_docs.clear()
                 self._pending_vector_deletes.clear()
 
-                # Drop the collection and recreate it
+                # Drop the collection and recreate it empty.
                 if self._client.has_collection(self.final_namespace):
                     self._client.drop_collection(self.final_namespace)
 
-                # Recreate the collection
-                self._create_collection_if_not_exist()
+                # Recreate an EMPTY collection. Do NOT route through
+                # _create_collection_if_not_exist here: with the suffixed
+                # collection now gone it would see the intentionally-kept legacy
+                # collection and re-run the legacy->suffixed migration, pulling
+                # the just-dropped rows back in. That makes drop() non-empty
+                # (clear_documents would leave stale legacy data behind) and
+                # forces a needless full migration on every rebuild/clear.
+                self._create_collection_with_schema(self.final_namespace)
+                self._ensure_collection_loaded()
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"
