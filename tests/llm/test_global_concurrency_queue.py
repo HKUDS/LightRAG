@@ -11,7 +11,12 @@ import asyncio
 import pytest
 
 from lightrag.kg import shared_storage as ss
-from lightrag.utils import QueueFullError, priority_limit_async_func_call
+
+# Accessed via the module (not ``from``-imports) on purpose: another test in
+# the suite reloads lightrag.utils in place, which would leave from-imported
+# class references (e.g. QueueFullError) pointing at the pre-reload class and
+# break pytest.raises identity checks when run in the same xdist worker.
+from lightrag import utils as lr_utils
 
 pytestmark = pytest.mark.offline
 
@@ -56,7 +61,7 @@ async def test_global_limit_caps_inflight_executions():
         inflight -= 1
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         10, queue_name="cap test", concurrency_group=GROUP
     )(slow_func)
     try:
@@ -83,10 +88,10 @@ async def test_limit_shared_across_wrappers_of_same_group():
         inflight -= 1
         return value
 
-    wrapped_a = priority_limit_async_func_call(
+    wrapped_a = lr_utils.priority_limit_async_func_call(
         4, queue_name="share a", concurrency_group=GROUP
     )(slow_func)
-    wrapped_b = priority_limit_async_func_call(
+    wrapped_b = lr_utils.priority_limit_async_func_call(
         4, queue_name="share b", concurrency_group=GROUP
     )(slow_func)
     try:
@@ -126,7 +131,7 @@ async def test_no_global_limit_keeps_original_path(monkeypatch):
     async def fast_func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2, queue_name="plain test", concurrency_group=GROUP
     )(fast_func)
     try:
@@ -151,7 +156,9 @@ async def test_standalone_group_none_never_touches_shared_storage(monkeypatch):
     async def fast_func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(2, queue_name="standalone test")(fast_func)
+    wrapped = lr_utils.priority_limit_async_func_call(2, queue_name="standalone test")(
+        fast_func
+    )
     try:
         assert await wrapped("ok") == "ok"
         stats = await wrapped.get_aggregated_queue_stats()
@@ -174,7 +181,7 @@ async def test_user_timeout_while_waiting_for_slot_never_calls_func():
         calls.append(value)
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2,
         queue_name="slot wait test",
         concurrency_group=GROUP,
@@ -208,7 +215,7 @@ async def test_priority_overtakes_within_process():
         order.append(value)
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2, queue_name="priority test", concurrency_group=GROUP
     )(func)
     try:
@@ -240,7 +247,7 @@ async def test_admission_counts_only_live_queued_tasks():
         await release.wait()
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2,
         queue_name="admission test",
         concurrency_group=GROUP,
@@ -264,7 +271,7 @@ async def test_admission_counts_only_live_queued_tasks():
         assert stats["queued"] == 2  # both fit: running not counted
 
         # The third queued request exceeds capacity -> QueueFullError.
-        with pytest.raises(QueueFullError):
+        with pytest.raises(lr_utils.QueueFullError):
             await wrapped("overflow", _queue_timeout=0.2)
 
         release.set()
@@ -281,7 +288,7 @@ async def test_zombies_do_not_consume_admission_capacity():
     async def func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2,
         queue_name="zombie admission test",
         concurrency_group=GROUP,
@@ -321,7 +328,7 @@ async def test_max_queue_size_zero_means_unlimited_admission():
         await asyncio.sleep(0.01)
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2,
         queue_name="unlimited admission test",
         concurrency_group=GROUP,
@@ -341,7 +348,7 @@ async def test_shutdown_wakes_admission_waiters():
     async def func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2,
         queue_name="shutdown wake test",
         concurrency_group=GROUP,
@@ -388,7 +395,7 @@ async def test_fail_closed_acquire_keeps_task_queued_until_recovery(monkeypatch)
     async def func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2, queue_name="fail closed test", concurrency_group=GROUP
     )(func)
     try:
@@ -420,7 +427,7 @@ async def test_release_failure_preserves_result_and_retries_later(monkeypatch):
             raise ValueError("business error")
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2, queue_name="release fail test", concurrency_group=GROUP
     )(func)
     try:
@@ -458,7 +465,7 @@ async def test_stats_failures_never_break_calls(monkeypatch):
     async def func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2, queue_name="best effort test", concurrency_group=GROUP
     )(func)
     try:
@@ -486,7 +493,7 @@ async def test_worker_drains_zombie_backlog_then_runs_live_task():
         calls.append(value)
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2,
         queue_name="drain test",
         concurrency_group=GROUP,
@@ -523,7 +530,7 @@ async def test_compaction_bounds_physical_queue_and_keeps_join_working(monkeypat
     async def func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2,
         queue_name="compaction test",
         concurrency_group=GROUP,
@@ -557,7 +564,7 @@ async def test_compaction_keeps_live_tasks(monkeypatch):
     async def func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2,
         queue_name="compaction live test",
         concurrency_group=GROUP,
@@ -594,7 +601,7 @@ async def test_aggregated_stats_schema_and_global_fields():
             raise ValueError("x")
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         3, queue_name="agg schema test", concurrency_group=GROUP
     )(func)
     try:
@@ -649,7 +656,7 @@ async def test_shutdown_clears_waiter_record():
     async def func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2, queue_name="waiter cleanup test", concurrency_group=GROUP
     )(func)
     pending = asyncio.create_task(wrapped("stuck"))
@@ -674,7 +681,7 @@ async def test_aggregated_stats_report_slot_waiters():
     async def func(value):
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2, queue_name="waiter stats test", concurrency_group=GROUP
     )(func)
     task = asyncio.create_task(wrapped("waiting"))
@@ -706,7 +713,7 @@ async def test_maintenance_renews_held_leases(monkeypatch):
         await release.wait()
         return value
 
-    wrapped = priority_limit_async_func_call(
+    wrapped = lr_utils.priority_limit_async_func_call(
         2, queue_name="renew test", concurrency_group=GROUP
     )(long_func)
     try:
