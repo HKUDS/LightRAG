@@ -416,17 +416,19 @@ async def test_drop_clears_pending_buffers():
 
 
 @pytest.mark.asyncio
-async def test_drop_also_clears_workspace_points_from_legacy_collection():
-    """drop() must also delete this workspace's points from the kept legacy
-    collection, so a later startup does not re-migrate the cleared data back
-    into the suffixed collection (resurrection)."""
+async def test_drop_clears_workspace_points_from_workspace_tagged_legacy():
+    """drop() removes only this workspace's points from a workspace-tagged legacy
+    collection, so the next startup does not re-migrate the cleared data back."""
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)
     legacy_collection = f"lightrag_vdb_{s.namespace}"
-    # Legacy collection exists (kept after migration); new suffixed != legacy.
     s._client.collection_exists = MagicMock(
         side_effect=lambda name: name == legacy_collection
     )
+    # Legacy is workspace-tagged: workspace_id present in the payload schema.
+    legacy_info = MagicMock()
+    legacy_info.payload_schema = {"workspace_id": MagicMock()}
+    s._client.get_collection = MagicMock(return_value=legacy_info)
 
     result = await s.drop()
     assert result["status"] == "success"
@@ -434,9 +436,41 @@ async def test_drop_also_clears_workspace_points_from_legacy_collection():
     deleted_collections = [
         call.kwargs.get("collection_name") for call in s._client.delete.call_args_list
     ]
-    # Both the active suffixed collection and the legacy collection are cleared.
+    # Both the active suffixed collection and the legacy collection are cleared
+    # via a workspace-filtered delete; the legacy collection itself is kept.
     assert s.final_namespace in deleted_collections
     assert legacy_collection in deleted_collections
+    s._client.delete_collection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drop_drops_untagged_legacy_collection():
+    """For an untagged (pre-isolation) legacy collection, setup_collection would
+    migrate ALL of its points back with no workspace filter, so a filtered delete
+    misses them. drop() must drop the whole legacy collection instead."""
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    legacy_collection = f"lightrag_vdb_{s.namespace}"
+    s._client.collection_exists = MagicMock(
+        side_effect=lambda name: name == legacy_collection
+    )
+    # Legacy is untagged: no workspace_id in schema and none in sampled payloads.
+    legacy_info = MagicMock()
+    legacy_info.payload_schema = {}
+    s._client.get_collection = MagicMock(return_value=legacy_info)
+    s._client.scroll = MagicMock(return_value=([], None))
+
+    result = await s.drop()
+    assert result["status"] == "success"
+
+    # The whole untagged legacy collection is dropped (not a filtered delete).
+    s._client.delete_collection.assert_called_once_with(
+        collection_name=legacy_collection
+    )
+    filtered_deletes = [
+        call.kwargs.get("collection_name") for call in s._client.delete.call_args_list
+    ]
+    assert legacy_collection not in filtered_deletes
 
 
 @pytest.mark.offline

@@ -126,6 +126,36 @@ def _find_legacy_collection(
     return None
 
 
+def _legacy_collection_has_workspace_field(
+    client: QdrantClient, collection_name: str
+) -> bool:
+    """Return True when the legacy collection tags its points with workspace_id.
+
+    Mirrors the detection in ``setup_collection``: trust the payload schema for
+    indexed fields, otherwise sample a few points (payload_schema only reflects
+    INDEXED fields). When workspace_id is absent the legacy data is untagged
+    (pre-isolation), so ``setup_collection`` migrates ALL of it with no
+    workspace filter — a workspace-filtered delete would miss those points.
+    """
+    try:
+        legacy_info = client.get_collection(collection_name)
+    except Exception:
+        return False
+
+    if WORKSPACE_ID_FIELD in (legacy_info.payload_schema or {}):
+        return True
+
+    sample_points, _ = client.scroll(
+        collection_name=collection_name,
+        limit=10,
+        with_payload=True,
+        with_vectors=False,
+    )
+    return any(
+        point.payload and WORKSPACE_ID_FIELD in point.payload for point in sample_points
+    )
+
+
 @final
 @dataclass
 class QdrantVectorDBStorage(BaseVectorStorage):
@@ -1344,7 +1374,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     wait=True,
                 )
 
-                # Also clear this workspace's points from the kept legacy
+                # Also clear this workspace's data from the kept legacy
                 # collection so the next startup does not re-migrate the
                 # just-cleared data back into the suffixed collection.
                 legacy_collection = _find_legacy_collection(
@@ -1354,11 +1384,28 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     self.model_suffix,
                 )
                 if legacy_collection and legacy_collection != self.final_namespace:
-                    self._client.delete(
-                        collection_name=legacy_collection,
-                        points_selector=workspace_selector,
-                        wait=True,
-                    )
+                    if _legacy_collection_has_workspace_field(
+                        self._client, legacy_collection
+                    ):
+                        # Workspace-tagged legacy: remove only this workspace's points.
+                        self._client.delete(
+                            collection_name=legacy_collection,
+                            points_selector=workspace_selector,
+                            wait=True,
+                        )
+                    else:
+                        # Untagged (pre-isolation) legacy: setup_collection migrates
+                        # ALL of its points into this workspace with no workspace
+                        # filter, so a workspace-filtered delete would miss them.
+                        # Drop the whole legacy collection to remove the migration
+                        # source.
+                        self._client.delete_collection(
+                            collection_name=legacy_collection
+                        )
+                        logger.info(
+                            f"[{self.workspace}] Dropped untagged legacy Qdrant collection "
+                            f"'{legacy_collection}' on workspace clear"
+                        )
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} dropped workspace data from Qdrant collection {self.namespace}"
