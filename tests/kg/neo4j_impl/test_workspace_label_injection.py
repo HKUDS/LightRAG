@@ -132,9 +132,7 @@ class _FakeSession:
         self.calls.append((query, params or {}))
         # total_nodes within limit -> the full result is used directly and the
         # truncated/limited branch is never taken (a single run call).
-        return _FakeResult(
-            {"total_nodes": 0, "node_info": [], "relationships": []}
-        )
+        return _FakeResult({"total_nodes": 0, "node_info": [], "relationships": []})
 
     async def __aenter__(self):
         return self
@@ -168,9 +166,7 @@ async def test_label_filter_is_parameterized_not_interpolated():
     await storage.get_knowledge_graph(node_label="some-entity", max_depth=2)
 
     # The subgraphAll query is the one carrying labelFilter.
-    subgraph_calls = [
-        (q, p) for q, p in session.calls if "apoc.path.subgraphAll" in q
-    ]
+    subgraph_calls = [(q, p) for q, p in session.calls if "apoc.path.subgraphAll" in q]
     assert subgraph_calls, "expected an apoc.path.subgraphAll query"
 
     for query, params in subgraph_calls:
