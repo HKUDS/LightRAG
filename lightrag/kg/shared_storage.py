@@ -110,9 +110,9 @@ _debug_n_locks_acquired: int = 0
 # guard and never overwrite it.
 _global_concurrency_limits: Optional[Dict[str, int]] = None
 
-# Separator between the group/queue name and the per-lease / per-pid suffix
-# in shared namespace keys. \x1f (ASCII unit separator) cannot appear in
-# group names or queue names.
+# Separator between the queue name and the per-pid suffix in queue-stats
+# namespace keys. \x1f (ASCII unit separator) cannot appear in queue names.
+# (Concurrency gate state needs no separator: one key per group.)
 KEY_SEP = "\x1f"
 
 _CONCURRENCY_LEASE_NAMESPACE = "concurrency_leases"
@@ -123,11 +123,6 @@ _heartbeat_ttl: float = DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL
 _suspect_grace: float = DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE
 _queue_stats_stale_ttl: float = DEFAULT_QUEUE_STATS_STALE_TTL
 _waiter_stale_ttl: float = DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL
-
-# Marker segment distinguishing per-process waiter records from lease
-# entries inside the same group prefix of the lease namespace:
-# ``f"{group}{KEY_SEP}{_WAITER_MARK}{KEY_SEP}{pid}"``.
-_WAITER_MARK = "_waiter"
 
 # Per-process cached namespace references (avoid the internal lock on every
 # publish). Reset by initialize_share_data()/finalize_share_data().
@@ -195,11 +190,39 @@ class UnifiedLock(Generic[T]):
         self._enable_logging = enable_logging  # for debug only
         self._async_lock = async_lock  # auxiliary lock for coroutine synchronization
 
+    async def _acquire_mp_lock_in_executor(self) -> None:
+        """Acquire the multiprocess lock without blocking the event loop.
+
+        Cancellation safety: if this coroutine is cancelled while the
+        executor thread is still blocked inside ``acquire()``, the thread
+        cannot be interrupted and WILL take the lock eventually — with no
+        owner left to release it, every process would deadlock. The shield +
+        done-callback below returns such an orphaned acquisition immediately.
+        """
+        loop = asyncio.get_running_loop()
+        acquire_future = loop.run_in_executor(None, self._lock.acquire)
+        try:
+            await asyncio.shield(acquire_future)
+        except asyncio.CancelledError:
+
+            def _release_orphaned_acquire(f) -> None:
+                if f.cancelled() or f.exception() is not None:
+                    return
+                try:
+                    self._lock.release()
+                except Exception:
+                    pass
+
+            acquire_future.add_done_callback(_release_orphaned_acquire)
+            raise
+
     async def __aenter__(self) -> "UnifiedLock[T]":
+        async_gate_acquired = False
         try:
             # If in multiprocess mode and async lock exists, acquire it first
             if not self._is_async and self._async_lock is not None:
                 await self._async_lock.acquire()
+                async_gate_acquired = True
                 direct_log(
                     f"== Lock == Process {self._pid}: Acquired async lock '{self._name}",
                     level="DEBUG",
@@ -212,7 +235,13 @@ class UnifiedLock(Generic[T]):
             if self._is_async:
                 await self._lock.acquire()
             else:
-                self._lock.acquire()
+                # A Manager lock proxy blocks the calling thread until every
+                # other PROCESS ahead of us releases — unbounded. Offload to
+                # the default executor so this process's event loop keeps
+                # serving while we wait (the async gate above already
+                # serializes this process's coroutines, so at most one
+                # executor thread per lock key is ever parked here).
+                await self._acquire_mp_lock_in_executor()
 
             direct_log(
                 f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
@@ -220,13 +249,23 @@ class UnifiedLock(Generic[T]):
                 enable_output=self._enable_logging,
             )
             return self
+        except asyncio.CancelledError:
+            # Cancellation can arrive while awaiting the executor-offloaded
+            # mp acquire (any orphaned acquisition is returned inside
+            # _acquire_mp_lock_in_executor). Roll back the per-process gate
+            # we already hold so this process's other coroutines never
+            # deadlock on it.
+            if async_gate_acquired:
+                self._async_lock.release()
+            direct_log(
+                f"== Lock == Process {self._pid}: Lock acquisition cancelled '{self._name}'",
+                level="WARNING",
+                enable_output=self._enable_logging,
+            )
+            raise
         except Exception as e:
             # If main lock acquisition fails, release the async lock if it was acquired
-            if (
-                not self._is_async
-                and self._async_lock is not None
-                and self._async_lock.locked()
-            ):
+            if async_gate_acquired:
                 self._async_lock.release()
 
             direct_log(
@@ -1822,11 +1861,23 @@ def get_pipeline_status_lock(
 # Cross-worker global concurrency gate (lease + heartbeat semantics)
 # ---------------------------------------------------------------------------
 #
-# Leases live in the workspace-less "concurrency_leases" namespace as
-# ``f"{group}{KEY_SEP}{lease_id}" -> {"pid": int, "updated_at": float}``
-# plain dicts (whole-value replacement only — in multiprocess mode the
-# namespace is a Manager dict, so in-place mutation of a retrieved value
-# would NOT persist across processes).
+# Each group's whole gate state lives under a SINGLE key of the
+# workspace-less "concurrency_leases" namespace::
+#
+#     ns[group] = {
+#         "leases":  {lease_id: {"pid": int, "updated_at": float,
+#                                ("suspect_since": float)}},
+#         "waiters": {str(pid): {"pid": int, "wait_start": float,
+#                                "last_poll": float}},
+#     }
+#
+# Whole-value replacement only — in multiprocess mode the namespace is a
+# Manager dict, so in-place mutation of a retrieved value would NOT persist
+# across processes. The single-key layout is deliberate: every proxy access
+# is one IPC round trip to the manager process, so an acquire attempt under
+# the group's keyed lock costs exactly one read (plus at most one write)
+# instead of scanning per-lease keys. Reaping, capacity counting and waiter
+# ranking all run on the local copy.
 #
 # Self-healing: holders refresh ``updated_at`` from their 5s health-check
 # heartbeat. A lease is reclaimed when its owner PID is dead (immediately)
@@ -1893,23 +1944,41 @@ async def _get_queue_stats_namespace() -> Dict[str, Any]:
     return _queue_stats_ns_cache
 
 
-def _waiter_key(group: str, pid: int) -> str:
-    return f"{group}{KEY_SEP}{_WAITER_MARK}{KEY_SEP}{pid}"
+def _empty_gate_state() -> Dict[str, Any]:
+    return {"leases": {}, "waiters": {}}
 
 
-def _waiter_prefix(group: str) -> str:
-    return f"{group}{KEY_SEP}{_WAITER_MARK}{KEY_SEP}"
+def _load_gate_state(ns: Dict[str, Any], group: str) -> Dict[str, Any]:
+    """Return a local, independently mutable copy of a group's gate state.
+
+    Exactly one proxy read. The nested dicts are copied so that mutating the
+    result never aliases the stored value (a plain dict in single-process
+    mode) — callers mutate the copy and write it back whole.
+    """
+    raw = ns.get(group)
+    if raw is None:
+        return _empty_gate_state()
+    state = dict(raw)
+    state["leases"] = {
+        lease_id: dict(lease)
+        for lease_id, lease in dict(state.get("leases") or {}).items()
+    }
+    state["waiters"] = {
+        pid_key: dict(waiter)
+        for pid_key, waiter in dict(state.get("waiters") or {}).items()
+    }
+    return state
 
 
-def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int:
-    """Reclaim dead/expired leases of ``group``; return surviving lease count.
+def _reap_gate_state(state: Dict[str, Any], now: float) -> tuple[int, bool]:
+    """Reclaim dead/expired leases on a local state copy (no IPC).
 
-    MUST be called while holding the group's keyed lock. Suspect handling:
-    a lease whose heartbeat expired while its PID is still alive is first
-    marked with ``suspect_since`` and reclaimed only after ``_suspect_grace``
-    elapses without a renewal; a renewal (fresh ``updated_at``) clears the
-    suspect mark. Dead PIDs are reclaimed immediately. Suspect leases still
-    count toward capacity so the global limit is never exceeded.
+    Returns ``(live_lease_count, changed)``. Suspect handling: a lease whose
+    heartbeat expired while its PID is still alive is first marked with
+    ``suspect_since`` and reclaimed only after ``_suspect_grace`` elapses
+    without a renewal; a renewal (fresh ``updated_at``) clears the suspect
+    mark. Dead PIDs are reclaimed immediately. Suspect leases still count
+    toward capacity so the global limit is never exceeded.
 
     Waiter records are reaped in the same pass: a process whose lease was
     just reclaimed (timed out / died), whose PID is dead, or whose record
@@ -1917,21 +1986,18 @@ def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int
     occupying the longest-waiter seat — a ghost favored waiter would push
     every live waiter onto the deferred backoff and waste freed slots.
     """
-    prefix = f"{group}{KEY_SEP}"
-    waiter_prefix = _waiter_prefix(group)
+    leases: Dict[str, Any] = state["leases"]
+    waiters: Dict[str, Any] = state["waiters"]
     live = 0
+    changed = False
     reclaimed_pids = set()
-    for key in [
-        k for k in ns.keys() if k.startswith(prefix) and not k.startswith(waiter_prefix)
-    ]:
-        raw = ns.get(key)
-        if raw is None:
-            continue
-        lease = dict(raw)
+    for lease_id in list(leases.keys()):
+        lease = leases[lease_id]
         pid = lease.get("pid")
         updated_at = lease.get("updated_at", 0.0)
         if pid is None or not _pid_alive(pid):
-            ns.pop(key, None)
+            leases.pop(lease_id)
+            changed = True
             if pid is not None:
                 reclaimed_pids.add(pid)
             continue
@@ -1939,24 +2005,22 @@ def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int
             suspect_since = lease.get("suspect_since")
             if suspect_since is None:
                 lease["suspect_since"] = now
-                ns[key] = lease
+                changed = True
                 live += 1
             elif now - suspect_since > _suspect_grace:
-                ns.pop(key, None)
+                leases.pop(lease_id)
                 reclaimed_pids.add(pid)
+                changed = True
             else:
                 live += 1
         else:
             if "suspect_since" in lease:
                 lease.pop("suspect_since", None)
-                ns[key] = lease
+                changed = True
             live += 1
 
-    for key in [k for k in ns.keys() if k.startswith(waiter_prefix)]:
-        raw = ns.get(key)
-        if raw is None:
-            continue
-        waiter = dict(raw)
+    for pid_key in list(waiters.keys()):
+        waiter = waiters[pid_key]
         pid = waiter.get("pid")
         last_poll = waiter.get("last_poll", 0.0)
         if (
@@ -1965,8 +2029,9 @@ def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int
             or not _pid_alive(pid)
             or now - last_poll > _waiter_stale_ttl
         ):
-            ns.pop(key, None)
-    return live
+            waiters.pop(pid_key)
+            changed = True
+    return live, changed
 
 
 def _log_acquire_failure(group: str, error: Exception) -> None:
@@ -1981,22 +2046,16 @@ def _log_acquire_failure(group: str, error: Exception) -> None:
         )
 
 
-def _is_longest_live_waiter_locked(
-    ns: Dict[str, Any], group: str, pid: int, now: float
-) -> bool:
-    """Is ``pid`` the longest-waiting live poller of ``group``?
+def _is_longest_live_waiter(state: Dict[str, Any], pid: int, now: float) -> bool:
+    """Is ``pid`` the longest-waiting live poller in this gate state?
 
-    MUST be called while holding the group's keyed lock, after the reap
-    pass has dropped dead/stale waiter records — every remaining record
-    belongs to a live, actively polling process.
+    Operates on a local state copy after the reap pass has dropped
+    dead/stale waiter records — every remaining record belongs to a live,
+    actively polling process.
     """
     my_start = None
     others_min = None
-    for key in [k for k in ns.keys() if k.startswith(_waiter_prefix(group))]:
-        raw = ns.get(key)
-        if raw is None:
-            continue
-        waiter = dict(raw)
+    for waiter in state["waiters"].values():
         wait_start = waiter.get("wait_start", now)
         if waiter.get("pid") == pid:
             my_start = wait_start
@@ -2017,6 +2076,10 @@ async def _acquire_global_slot(
     (``wait_start`` set once per waiting episode, ``last_poll`` refreshed on
     every attempt) and reports whether this process is the longest-waiting
     live poller; a successful attempt always clears the record.
+
+    IPC budget under the keyed lock: one state read, plus one write only
+    when something changed (reap effects, waiter registration, or a new
+    lease) — a plain failed attempt on an unchanged gate writes nothing.
     """
     limit = get_global_concurrency_limit(group)
     if limit is None or limit <= 0:
@@ -2027,29 +2090,31 @@ async def _acquire_global_slot(
             group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
         ):
             now = time.time()
-            in_use = _reap_group_leases_locked(ns, group, now)
+            state = _load_gate_state(ns, group)
+            in_use, changed = _reap_gate_state(state, now)
             pid = os.getpid()
-            wkey = _waiter_key(group, pid)
+            pid_key = str(pid)
             if in_use >= limit:
                 if not track_wait:
+                    if changed:
+                        ns[group] = state
                     return None, False
-                raw = ns.get(wkey)
-                waiter = (
-                    dict(raw) if raw is not None else {"pid": pid, "wait_start": now}
-                )
+                waiter = state["waiters"].get(pid_key) or {
+                    "pid": pid,
+                    "wait_start": now,
+                }
                 waiter["last_poll"] = now
-                ns[wkey] = waiter
-                return None, _is_longest_live_waiter_locked(ns, group, pid, now)
+                state["waiters"][pid_key] = waiter
+                ns[group] = state
+                return None, _is_longest_live_waiter(state, pid, now)
             lease_id = uuid.uuid4().hex
-            ns[f"{group}{KEY_SEP}{lease_id}"] = {
-                "pid": pid,
-                "updated_at": now,
-            }
+            state["leases"][lease_id] = {"pid": pid, "updated_at": now}
             # Got a slot: this process is no longer waiting. Resetting here
             # (rather than keeping seniority) is what de-prioritizes a
             # backlog-heavy process after each win, yielding approximate
             # round-robin across processes under sustained contention.
-            ns.pop(wkey, None)
+            state["waiters"].pop(pid_key, None)
+            ns[group] = state
             return lease_id, True
     except Exception as e:
         _log_acquire_failure(group, e)
@@ -2100,7 +2165,9 @@ async def clear_slot_waiter(group: str) -> None:
     async with get_storage_keyed_lock(
         group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
     ):
-        ns.pop(_waiter_key(group, os.getpid()), None)
+        state = _load_gate_state(ns, group)
+        if state["waiters"].pop(str(os.getpid()), None) is not None:
+            ns[group] = state
 
 
 async def global_slot_waiters(group: str) -> List[Dict[str, Any]]:
@@ -2114,12 +2181,9 @@ async def global_slot_waiters(group: str) -> List[Dict[str, Any]]:
         return []
     ns = await _get_lease_namespace()
     now = time.time()
+    state = _load_gate_state(ns, group)
     waiters = []
-    for key in [k for k in ns.keys() if k.startswith(_waiter_prefix(group))]:
-        raw = ns.get(key)
-        if raw is None:
-            continue
-        waiter = dict(raw)
+    for waiter in state["waiters"].values():
         if now - waiter.get("last_poll", 0.0) > _waiter_stale_ttl:
             continue
         waiters.append(
@@ -2142,7 +2206,9 @@ async def release_global_slot(group: str, lease_id: str) -> None:
     async with get_storage_keyed_lock(
         group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
     ):
-        ns.pop(f"{group}{KEY_SEP}{lease_id}", None)
+        state = _load_gate_state(ns, group)
+        if state["leases"].pop(lease_id, None) is not None:
+            ns[group] = state
 
 
 async def renew_global_slots(group: str, lease_ids) -> None:
@@ -2161,10 +2227,14 @@ async def renew_global_slots(group: str, lease_ids) -> None:
         group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
     ):
         now = time.time()
+        state = _load_gate_state(ns, group)
+        changed = False
         for lease_id in lease_ids:
-            key = f"{group}{KEY_SEP}{lease_id}"
-            if ns.get(key) is not None:
-                ns[key] = {"pid": os.getpid(), "updated_at": now}
+            if lease_id in state["leases"]:
+                state["leases"][lease_id] = {"pid": os.getpid(), "updated_at": now}
+                changed = True
+        if changed:
+            ns[group] = state
 
 
 async def reconcile_global_slots(group: str) -> int:
@@ -2173,17 +2243,20 @@ async def reconcile_global_slots(group: str) -> int:
     async with get_storage_keyed_lock(
         group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
     ):
-        return _reap_group_leases_locked(ns, group, time.time())
+        state = _load_gate_state(ns, group)
+        live, changed = _reap_gate_state(state, time.time())
+        if changed:
+            ns[group] = state
+        return live
 
 
 async def global_concurrency_in_use(group: str) -> int:
-    """Approximate count of currently held global slots for ``group``."""
+    """Approximate count of currently held global slots for ``group``.
+
+    Lock-free single read — intended for observability.
+    """
     ns = await _get_lease_namespace()
-    prefix = f"{group}{KEY_SEP}"
-    waiter_prefix = _waiter_prefix(group)
-    return sum(
-        1 for k in ns.keys() if k.startswith(prefix) and not k.startswith(waiter_prefix)
-    )
+    return len(_load_gate_state(ns, group)["leases"])
 
 
 # ---------------------------------------------------------------------------

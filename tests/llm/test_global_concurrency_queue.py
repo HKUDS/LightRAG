@@ -232,6 +232,75 @@ async def test_priority_overtakes_within_process():
 
 
 # ---------------------------------------------------------------------------
+# Slot pump: one acquirer per process, no speculative slot grabs
+# ---------------------------------------------------------------------------
+
+
+async def test_pump_acquires_only_for_live_work(monkeypatch):
+    """Idle workers must not grab slots speculatively: with one task and
+    many local workers, exactly one slot acquisition succeeds (the herd
+    used to acquire-and-release, inflating global_in_use and resetting the
+    process's waiter seniority)."""
+    _init({GROUP: 4})
+    successes = 0
+    original = ss.try_acquire_global_slot_tracked
+
+    async def counting(group):
+        nonlocal successes
+        lease, is_priority = await original(group)
+        if lease is not None:
+            successes += 1
+        return lease, is_priority
+
+    monkeypatch.setattr(ss, "try_acquire_global_slot_tracked", counting)
+
+    async def func(value):
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        4, queue_name="pump only-live test", concurrency_group=GROUP
+    )(func)
+    try:
+        assert await wrapped("only") == "only"
+        await asyncio.sleep(0.3)  # idle period: nothing else may be acquired
+        assert successes == 1
+        assert await ss.global_concurrency_in_use(GROUP) == 0
+    finally:
+        await wrapped.shutdown()
+
+
+async def test_pump_never_holds_slots_without_free_worker():
+    """A slot is requested only when an idle local worker can run the task
+    immediately — scarce global capacity is never parked behind a busy
+    process."""
+    _init({GROUP: 4})
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def gated(value):
+        started.set()
+        await release.wait()
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        1, queue_name="pump no-hoard test", concurrency_group=GROUP
+    )(gated)
+    try:
+        first = asyncio.create_task(wrapped("a"))
+        await started.wait()
+        others = [asyncio.create_task(wrapped(f"b{i}")) for i in range(3)]
+        await asyncio.sleep(0.3)
+        # Only the running task holds a slot; the queued tasks wait for the
+        # single local worker, not for global slots.
+        assert await ss.global_concurrency_in_use(GROUP) == 1
+        release.set()
+        assert await first == "a"
+        assert sorted(await asyncio.gather(*others)) == ["b0", "b1", "b2"]
+    finally:
+        await wrapped.shutdown()
+
+
+# ---------------------------------------------------------------------------
 # Admission semantics (live_queued)
 # ---------------------------------------------------------------------------
 

@@ -560,7 +560,6 @@ def parse_args() -> argparse.Namespace:
         host_key = f"{prefix}_LLM_BINDING_HOST"
         apikey_key = f"{prefix}_LLM_BINDING_API_KEY"
         max_async_key = f"{prefix}_MAX_ASYNC_LLM"
-        global_max_async_key = f"{prefix}_GLOBAL_MAX_ASYNC_LLM"
         timeout_key = f"{prefix}_LLM_TIMEOUT"
 
         role_binding = normalize_binding_name(
@@ -570,12 +569,6 @@ def parse_args() -> argparse.Namespace:
         role_host = get_env_value(host_key, None, special_none=True)
         role_apikey = get_env_value(apikey_key, None, special_none=True)
         role_max_async = get_env_value(max_async_key, None, int, special_none=True)
-        # Cross-worker global concurrency cap for this role (gunicorn
-        # multi-worker). None means no global gate — only the per-worker
-        # max_async applies.
-        role_global_max_async = get_env_value(
-            global_max_async_key, None, int, special_none=True
-        )
         role_timeout = get_env_value(timeout_key, None, int, special_none=True)
         role_aws_region = get_env_value(f"{prefix}_AWS_REGION", None, special_none=True)
         role_aws_access_key_id = get_env_value(
@@ -593,7 +586,6 @@ def parse_args() -> argparse.Namespace:
         setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
         setattr(args, f"{attr_prefix}_llm_binding_api_key", role_apikey)
         setattr(args, f"{attr_prefix}_llm_max_async", role_max_async)
-        setattr(args, f"{attr_prefix}_llm_global_max_async", role_global_max_async)
         setattr(args, f"{attr_prefix}_llm_timeout", role_timeout)
         setattr(args, f"{attr_prefix}_aws_region", role_aws_region)
         setattr(args, f"{attr_prefix}_aws_access_key_id", role_aws_access_key_id)
@@ -679,10 +671,6 @@ def parse_args() -> argparse.Namespace:
     # Rerank async/timeout configuration (independent from base LLM)
     # rerank_max_async falls back to MAX_ASYNC_LLM; rerank_timeout has its own default.
     args.rerank_max_async = get_env_value("MAX_ASYNC_RERANK", args.max_async, int)
-    # Cross-worker global rerank concurrency cap (gunicorn multi-worker).
-    args.rerank_global_max_async = get_env_value(
-        "GLOBAL_MAX_ASYNC_RERANK", None, int, special_none=True
-    )
     args.rerank_timeout = get_env_value("RERANK_TIMEOUT", DEFAULT_RERANK_TIMEOUT, int)
 
     # Query configuration
@@ -710,10 +698,6 @@ def parse_args() -> argparse.Namespace:
     )
     args.embedding_func_max_async = get_env_value(
         "EMBEDDING_FUNC_MAX_ASYNC", DEFAULT_EMBEDDING_FUNC_MAX_ASYNC, int
-    )
-    # Cross-worker global embedding concurrency cap (gunicorn multi-worker).
-    args.embedding_func_global_max_async = get_env_value(
-        "EMBEDDING_FUNC_GLOBAL_MAX_ASYNC", None, int, special_none=True
     )
     args.embedding_batch_num = get_env_value(
         "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int

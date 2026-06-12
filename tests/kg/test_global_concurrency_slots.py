@@ -43,6 +43,15 @@ async def _lease_ns():
     return await ss._get_lease_namespace()
 
 
+def _gate(ns, group=GROUP):
+    """Local copy of a group's single-key gate state."""
+    return ss._load_gate_state(ns, group)
+
+
+def _put_gate(ns, state, group=GROUP):
+    ns[group] = state
+
+
 # ---------------------------------------------------------------------------
 # Configuration semantics
 # ---------------------------------------------------------------------------
@@ -135,12 +144,14 @@ async def test_groups_are_independent():
 async def test_dead_pid_lease_reclaimed_immediately():
     _init({GROUP: 1})
     ns = await _lease_ns()
-    ns[f"{GROUP}{ss.KEY_SEP}deadbeef"] = {"pid": _dead_pid(), "updated_at": time.time()}
+    state = _gate(ns)
+    state["leases"]["deadbeef"] = {"pid": _dead_pid(), "updated_at": time.time()}
+    _put_gate(ns, state)
 
     # The dead owner's slot is reclaimed during acquire — capacity is free.
     lease = await ss.try_acquire_global_slot(GROUP)
     assert lease is not None
-    assert f"{GROUP}{ss.KEY_SEP}deadbeef" not in list(ns.keys())
+    assert "deadbeef" not in _gate(ns)["leases"]
 
 
 async def test_expired_lease_with_live_pid_gets_suspect_grace(monkeypatch):
@@ -148,22 +159,23 @@ async def test_expired_lease_with_live_pid_gets_suspect_grace(monkeypatch):
     monkeypatch.setattr(ss, "_suspect_grace", 1.0)
     _init({GROUP: 1})
     ns = await _lease_ns()
-    key = f"{GROUP}{ss.KEY_SEP}stalled"
+    state = _gate(ns)
     # Live PID (our own) with an expired heartbeat.
-    ns[key] = {"pid": os.getpid(), "updated_at": time.time() - 5.0}
+    state["leases"]["stalled"] = {"pid": os.getpid(), "updated_at": time.time() - 5.0}
+    _put_gate(ns, state)
 
     # First pass: marked suspect, still counts toward capacity.
     assert await ss.reconcile_global_slots(GROUP) == 1
-    assert "suspect_since" in dict(ns[key])
+    assert "suspect_since" in _gate(ns)["leases"]["stalled"]
     assert await ss.try_acquire_global_slot(GROUP) is None
 
     # Within the grace: still not reclaimed.
     assert await ss.reconcile_global_slots(GROUP) == 1
 
     # After the grace elapses without a renewal: reclaimed.
-    lease = dict(ns[key])
-    lease["suspect_since"] = time.time() - 2.0
-    ns[key] = lease
+    state = _gate(ns)
+    state["leases"]["stalled"]["suspect_since"] = time.time() - 2.0
+    _put_gate(ns, state)
     assert await ss.reconcile_global_slots(GROUP) == 0
     assert await ss.try_acquire_global_slot(GROUP) is not None
 
@@ -174,19 +186,18 @@ async def test_renewal_clears_suspect_and_protects_long_tasks(monkeypatch):
     _init({GROUP: 1})
     lease = await ss.try_acquire_global_slot(GROUP)
     ns = await _lease_ns()
-    key = f"{GROUP}{ss.KEY_SEP}{lease}"
 
     # Simulate a momentary renewal outage: heartbeat expires, suspect set.
-    stale = dict(ns[key])
-    stale["updated_at"] = time.time() - 5.0
-    ns[key] = stale
+    state = _gate(ns)
+    state["leases"][lease]["updated_at"] = time.time() - 5.0
+    _put_gate(ns, state)
     await ss.reconcile_global_slots(GROUP)
-    assert "suspect_since" in dict(ns[key])
+    assert "suspect_since" in _gate(ns)["leases"][lease]
 
     # Owner recovers and renews: suspect cleared, lease survives — a legal
     # long-running task is never reclaimed while renewals continue.
     await ss.renew_global_slots(GROUP, [lease])
-    refreshed = dict(ns[key])
+    refreshed = _gate(ns)["leases"][lease]
     assert "suspect_since" not in refreshed
     assert time.time() - refreshed["updated_at"] < 1.0
     assert await ss.reconcile_global_slots(GROUP) == 1
@@ -219,22 +230,22 @@ async def test_tracked_acquire_registers_waiter_and_clears_on_success():
     _init({GROUP: 1})
     external = await ss.try_acquire_global_slot(GROUP)
     ns = await _lease_ns()
-    wkey = ss._waiter_key(GROUP, os.getpid())
+    pid_key = str(os.getpid())
 
     # Failure registers the waiter; sole waiter is the priority one.
     lease, is_priority = await ss.try_acquire_global_slot_tracked(GROUP)
     assert lease is None and is_priority is True
-    first_start = dict(ns[wkey])["wait_start"]
+    first_start = _gate(ns)["waiters"][pid_key]["wait_start"]
 
     # Repeated polls refresh last_poll but keep the waiting episode start.
     await ss.try_acquire_global_slot_tracked(GROUP)
-    assert dict(ns[wkey])["wait_start"] == first_start
+    assert _gate(ns)["waiters"][pid_key]["wait_start"] == first_start
 
     # Success clears the record (seniority resets after every win).
     await ss.release_global_slot(GROUP, external)
     lease, is_priority = await ss.try_acquire_global_slot_tracked(GROUP)
     assert lease is not None and is_priority is True
-    assert wkey not in list(ns.keys())
+    assert pid_key not in _gate(ns)["waiters"]
 
     # Waiter records never count as held slots.
     assert await ss.global_concurrency_in_use(GROUP) == 1
@@ -245,7 +256,29 @@ async def test_plain_acquire_never_registers_waiter():
     await ss.try_acquire_global_slot(GROUP)
     assert await ss.try_acquire_global_slot(GROUP) is None  # at capacity
     ns = await _lease_ns()
-    assert ss._waiter_key(GROUP, os.getpid()) not in list(ns.keys())
+    assert _gate(ns)["waiters"] == {}
+
+
+async def test_plain_failed_acquire_on_unchanged_gate_writes_nothing():
+    """IPC budget contract: a failed untracked attempt against a healthy,
+    saturated gate must not write the state back (one read, zero writes)."""
+    _init({GROUP: 1})
+    await ss.try_acquire_global_slot(GROUP)  # saturate
+    ns = await _lease_ns()
+
+    class SpyDict(dict):
+        def __init__(self, *args_, **kwargs_):
+            super().__init__(*args_, **kwargs_)
+            self.writes = 0
+
+        def __setitem__(self, key, value):
+            self.writes += 1
+            super().__setitem__(key, value)
+
+    spy = SpyDict(ns)
+    ss._lease_ns_cache = spy
+    assert await ss.try_acquire_global_slot(GROUP) is None
+    assert spy.writes == 0
 
 
 async def test_longest_live_waiter_gets_priority():
@@ -254,19 +287,21 @@ async def test_longest_live_waiter_gets_priority():
     ns = await _lease_ns()
     now = time.time()
     # PID 1 (alive) has been waiting longer and is actively polling.
-    ns[ss._waiter_key(GROUP, 1)] = {"pid": 1, "wait_start": now - 10, "last_poll": now}
+    state = _gate(ns)
+    state["waiters"]["1"] = {"pid": 1, "wait_start": now - 10, "last_poll": now}
+    _put_gate(ns, state)
 
     _, is_priority = await ss.try_acquire_global_slot_tracked(GROUP)
     assert is_priority is False  # pid 1 outranks us
 
     # When pid 1 stops polling (stale last_poll), it loses the favored seat:
     # the rank ignores it and the reap pass removes its record entirely.
-    stale = dict(ns[ss._waiter_key(GROUP, 1)])
-    stale["last_poll"] = now - ss._waiter_stale_ttl - 5
-    ns[ss._waiter_key(GROUP, 1)] = stale
+    state = _gate(ns)
+    state["waiters"]["1"]["last_poll"] = now - ss._waiter_stale_ttl - 5
+    _put_gate(ns, state)
     _, is_priority = await ss.try_acquire_global_slot_tracked(GROUP)
     assert is_priority is True
-    assert ss._waiter_key(GROUP, 1) not in list(ns.keys())
+    assert "1" not in _gate(ns)["waiters"]
 
 
 async def test_waiter_records_reaped_with_their_process(monkeypatch):
@@ -281,31 +316,37 @@ async def test_waiter_records_reaped_with_their_process(monkeypatch):
 
     # Case 1: dead PID — lease and waiter record reclaimed together.
     dead = _dead_pid()
-    ns[f"{GROUP}{ss.KEY_SEP}deadlease"] = {"pid": dead, "updated_at": now}
-    ns[ss._waiter_key(GROUP, dead)] = {
+    state = _gate(ns)
+    state["leases"]["deadlease"] = {"pid": dead, "updated_at": now}
+    state["waiters"][str(dead)] = {
         "pid": dead,
         "wait_start": now - 60,
         "last_poll": now,  # fresh, but the owner is gone
     }
+    _put_gate(ns, state)
     await ss.reconcile_global_slots(GROUP)
-    assert f"{GROUP}{ss.KEY_SEP}deadlease" not in list(ns.keys())
-    assert ss._waiter_key(GROUP, dead) not in list(ns.keys())
+    state = _gate(ns)
+    assert "deadlease" not in state["leases"]
+    assert str(dead) not in state["waiters"]
 
     # Case 2: live PID whose lease timed out past the suspect grace —
     # the process is deemed lost; its waiter record goes with the lease.
-    ns[f"{GROUP}{ss.KEY_SEP}stalledlease"] = {
+    state = _gate(ns)
+    state["leases"]["stalledlease"] = {
         "pid": 1,
         "updated_at": now - 60,
         "suspect_since": now - 30,
     }
-    ns[ss._waiter_key(GROUP, 1)] = {
+    state["waiters"]["1"] = {
         "pid": 1,
         "wait_start": now - 60,
         "last_poll": now,
     }
+    _put_gate(ns, state)
     await ss.reconcile_global_slots(GROUP)
-    assert f"{GROUP}{ss.KEY_SEP}stalledlease" not in list(ns.keys())
-    assert ss._waiter_key(GROUP, 1) not in list(ns.keys())
+    state = _gate(ns)
+    assert "stalledlease" not in state["leases"]
+    assert "1" not in state["waiters"]
 
 
 async def test_clear_slot_waiter_and_waiter_snapshot():
