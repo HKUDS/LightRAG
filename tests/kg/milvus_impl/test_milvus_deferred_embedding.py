@@ -185,7 +185,7 @@ async def test_upsert_rejects_oversized_primary_id():
     s = _make_storage(embed)
     long_id = "v" * 65
 
-    with pytest.raises(ValueError, match="identity fields cannot be truncated"):
+    with pytest.raises(ValueError, match="primary keys cannot be truncated"):
         await s.upsert({long_id: {"content": "hello"}})
 
     assert s._pending_vector_docs == {}

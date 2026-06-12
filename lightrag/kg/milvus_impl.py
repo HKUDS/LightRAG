@@ -44,6 +44,16 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
 MILVUS_MAX_VARCHAR_BYTES = 65535
+# The Milvus primary key. Truncating it would let two distinct ids collapse to
+# the same key (silent overwrite) and make the row unreachable by its real id
+# via get_by_id/delete, so it must never be truncated under any circumstance.
+MILVUS_PRIMARY_KEY_FIELDS = frozenset({"id"})
+# Non-primary identity fields. They are not the Milvus primary key, so the row
+# stays uniquely keyed by `id` even if these collide after truncation (no
+# storage-level overwrite). On the live upsert path we still reject oversize
+# values so callers fix their input; during migration of pre-existing data we
+# truncate-and-warn instead, so a single pathological legacy value cannot abort
+# the whole collection migration.
 MILVUS_IDENTITY_VARCHAR_FIELDS = frozenset(
     {"id", "entity_name", "full_doc_id", "src_id", "tgt_id"}
 )
@@ -404,9 +414,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         return normalized_name or None
 
     def _get_model_collection_suffix(self) -> str | None:
-        model_name = getattr(self.embedding_func, "model_name", None)
-        if not isinstance(model_name, str) or not model_name:
-            return None
+        # _generate_collection_suffix already guards non-string / blank
+        # model_name, so just delegate.
         return self._generate_collection_suffix()
 
     def _create_milvus_client(self) -> MilvusClient:
@@ -612,7 +621,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             return None
 
     def _truncate_varchar_value(
-        self, field_name: str, value: Any, record_id: str | None = None
+        self,
+        field_name: str,
+        value: Any,
+        record_id: str | None = None,
+        allow_identity_truncation: bool = False,
     ) -> Any:
         limit = self._varchar_field_limits.get(field_name)
         if limit is None or not isinstance(value, str):
@@ -622,7 +635,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if len(encoded) <= limit:
             return value
 
-        if field_name in MILVUS_IDENTITY_VARCHAR_FIELDS:
+        # The primary key is never truncated: collapsing two ids into one would
+        # silently overwrite a row and orphan it from get_by_id/delete.
+        if field_name in MILVUS_PRIMARY_KEY_FIELDS:
+            raise ValueError(
+                f"[{self.workspace}] Milvus primary key '{field_name}' for record "
+                f"'{record_id or '<unknown>'}' exceeds {limit} bytes "
+                f"({len(encoded)} bytes); primary keys cannot be truncated"
+            )
+
+        # Other identity fields: reject on the live upsert path, but allow
+        # truncate-and-warn during migration so legacy data can be carried over
+        # without aborting the whole collection.
+        if (
+            field_name in MILVUS_IDENTITY_VARCHAR_FIELDS
+            and not allow_identity_truncation
+        ):
             raise ValueError(
                 f"[{self.workspace}] Milvus field '{field_name}' for record "
                 f"'{record_id or '<unknown>'}' exceeds {limit} bytes "
@@ -640,10 +668,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         return truncated
 
-    def _sanitize_varchar_fields(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _sanitize_varchar_fields(
+        self, row: dict[str, Any], allow_identity_truncation: bool = False
+    ) -> dict[str, Any]:
         record_id = str(row.get("id", "")) or None
         return {
-            field_name: self._truncate_varchar_value(field_name, value, record_id)
+            field_name: self._truncate_varchar_value(
+                field_name,
+                value,
+                record_id,
+                allow_identity_truncation=allow_identity_truncation,
+            )
             for field_name, value in row.items()
         }
 
@@ -653,7 +688,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if isinstance(metadata, dict):
             for field_name, value in metadata.items():
                 normalized.setdefault(field_name, value)
-        return self._sanitize_varchar_fields(normalized)
+        # Migration carries pre-existing rows: non-primary identity fields are
+        # truncated-and-warned rather than rejected (see _truncate_varchar_value).
+        return self._sanitize_varchar_fields(normalized, allow_identity_truncation=True)
 
     def _get_index_params(self):
         """Get IndexParams in a version-compatible way"""
@@ -1041,8 +1078,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         return
 
     @staticmethod
-    def _is_vector_dimension_mismatch_error(error: ValueError) -> bool:
-        return "Vector dimension mismatch" in str(error)
+    def _has_vector_field(collection_info: dict) -> bool:
+        """Return True when the collection exposes a 'vector' field.
+
+        Old simple-schema collections may lack a vector field entirely. Their
+        rows therefore carry no vector data, and copying them into the new
+        schema (whose vector field is required) would fail at insert time, so
+        callers use this to skip migration for such collections.
+        """
+        return any(
+            field.get("name") == "vector" for field in collection_info.get("fields", [])
+        )
 
     def _check_file_path_length_restriction(self, collection_info: dict) -> bool:
         """Check if collection has file_path length restrictions that need migration
@@ -1108,9 +1154,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         }
 
         # Check if this is an old collection created with simple schema
-        has_vector_field = any(
-            field.get("name") == "vector" for field in collection_info.get("fields", [])
-        )
+        has_vector_field = self._has_vector_field(collection_info)
 
         if not has_vector_field:
             logger.warning(
@@ -1507,21 +1551,32 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 legacy_collection_info = self._client.describe_collection(
                     self.legacy_namespace
                 )
-                try:
-                    self._check_vector_dimension(legacy_collection_info)
-                except ValueError as legacy_error:
+                if not self._has_vector_field(legacy_collection_info):
+                    # Old simple-schema collection with no vector field: its rows
+                    # carry no vectors, so migrating them into the required-vector
+                    # schema would fail at insert and block startup. Skip the
+                    # migration and create a fresh suffixed collection instead.
                     logger.warning(
                         f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' "
-                        f"is not compatible with '{self.final_namespace}': {legacy_error}. "
-                        f"Creating a new collection without migrating legacy vectors."
+                        f"has no vector field (old simple schema); cannot migrate its rows "
+                        f"into '{self.final_namespace}'. Creating a new collection instead."
                     )
                 else:
-                    self._migrate_collection_schema(
-                        source_collection_name=self.legacy_namespace,
-                        target_collection_name=self.final_namespace,
-                    )
-                    self._ensure_collection_loaded()
-                    return
+                    try:
+                        self._check_vector_dimension(legacy_collection_info)
+                    except ValueError as legacy_error:
+                        logger.warning(
+                            f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' "
+                            f"is not compatible with '{self.final_namespace}': {legacy_error}. "
+                            f"Creating a new collection without migrating legacy vectors."
+                        )
+                    else:
+                        self._migrate_collection_schema(
+                            source_collection_name=self.legacy_namespace,
+                            target_collection_name=self.final_namespace,
+                        )
+                        self._ensure_collection_loaded()
+                        return
 
             # Collection doesn't exist, create new collection
             logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")
@@ -1647,7 +1702,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         else:
             self.final_namespace = self.legacy_namespace
             logger.warning(
-                f"Milvus collection: {self.final_namespace} missing suffix. Pls add model_name to embedding_func for proper workspace data isolation."
+                f"Milvus collection: {self.final_namespace} missing suffix. Please add model_name to embedding_func for proper model-based data isolation."
             )
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
@@ -1765,6 +1820,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         pending_docs: list[tuple[str, _PendingVectorDoc]] = []
         for i, (k, v) in enumerate(data.items(), start=1):
+            # _sanitize_varchar_fields already byte-truncates the stored
+            # `content` when it is a meta field; the pending doc keeps the full
+            # untruncated text so the embedding sees the complete chunk.
             source = self._sanitize_varchar_fields(
                 {
                     "id": k,
@@ -1772,9 +1830,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
                 }
             )
-            content = self._truncate_varchar_value("content", v["content"], k)
-            if "content" in self.meta_fields:
-                source["content"] = content
             pending_docs.append(
                 (
                     k,
@@ -2000,13 +2055,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # pending doc has a non-None vector (count-mismatch was checked),
             # so we can iterate without re-guarding.
             committed_ids: list[str] = list(pending_docs.keys())
+            # source was already byte-truncated in upsert(); no need to
+            # re-sanitize here (vector is not a VarChar field).
             list_data: list[dict[str, Any]] = [
-                self._sanitize_varchar_fields(
-                    {
-                        **pending_docs[doc_id].source,
-                        "vector": pending_docs[doc_id].vector,
-                    }
-                )
+                {
+                    **pending_docs[doc_id].source,
+                    "vector": pending_docs[doc_id].vector,
+                }
                 for doc_id in committed_ids
             ]
 

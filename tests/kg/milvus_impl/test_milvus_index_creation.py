@@ -173,6 +173,57 @@ class TestMilvusIndexCreation:
         assert len(inserted["source_id"].encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
         inserted["source_id"].encode("utf-8").decode("utf-8")
 
+    def test_migration_truncates_oversized_non_primary_identity_field(self):
+        # Legacy $meta did not enforce the 512-byte entity_name limit, so an
+        # oversized value must be truncated (not rejected) during migration so
+        # one pathological row cannot abort the whole collection migration.
+        storage = _make_storage(namespace="entities")
+        normalized = storage._normalize_migration_row(
+            {"id": "ent-1", "entity_name": "e" * 513, "content": "body"}
+        )
+        assert len(normalized["entity_name"].encode("utf-8")) == 512
+
+    def test_migration_rejects_oversized_primary_key(self):
+        # The primary key is never truncated, even during migration: collapsing
+        # two ids would silently overwrite a row.
+        storage = _make_storage(namespace="entities")
+        with pytest.raises(ValueError, match="primary keys cannot be truncated"):
+            storage._normalize_migration_row({"id": "i" * 65, "content": "body"})
+
+    def test_legacy_without_vector_field_creates_fresh_suffixed_collection(self):
+        # Old simple-schema collections have no vector field; their rows carry no
+        # vectors, so migrating them into the required-vector schema would fail at
+        # insert and block startup. They must be skipped and a fresh suffixed
+        # collection created instead.
+        storage = _make_model_storage()
+        legacy_info = {
+            "fields": [
+                {"name": "id", "type": "VarChar", "is_primary": True},
+                {
+                    "name": "entity_name",
+                    "type": "VarChar",
+                    "params": {"max_length": 512},
+                },
+            ]
+        }
+        client = _wire_collection_state(
+            storage,
+            {storage.legacy_namespace},
+            {storage.legacy_namespace: legacy_info},
+        )
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with patch.object(storage, "_migrate_collection_schema") as migrate:
+                storage._create_collection_if_not_exist()
+
+        migrate.assert_not_called()
+        client.query_iterator.assert_not_called()
+        client.create_collection.assert_called_once()
+        assert client.create_collection.call_args.kwargs["collection_name"] == (
+            storage.final_namespace
+        )
+        client.load_collection.assert_called_with(storage.final_namespace)
+
     def test_model_suffix_collection_naming_with_workspace(self):
         storage = MilvusVectorDBStorage(
             namespace="chunks",
