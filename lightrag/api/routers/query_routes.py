@@ -104,8 +104,8 @@ class QueryRequest(BaseModel):
     )
 
     stream: Optional[bool] = Field(
-        default=True,
-        description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
+        default=None,
+        description="If True, enables streaming output. Defaults to False for /query, True for /query/stream.",
     )
 
     @field_validator("query", mode="after")
