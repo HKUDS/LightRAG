@@ -420,3 +420,141 @@ class TestInPlaceMigrationSafety:
         assert storage.final_namespace in collections
         assert temp_name not in collections
         client.create_collection.assert_not_called()
+
+    def test_startup_restores_old_backup_when_no_temp_survives(self):
+        # Target gone, no temp, only the _old backup left: the source was
+        # vacated but the migrated copy did not survive. Restore _old rather
+        # than creating an empty collection over the last copy.
+        storage = _make_model_storage()
+        old_name = f"{storage.final_namespace}_old"
+        collections = {old_name}
+        client = _wire_collection_state(storage, collections)
+
+        with patch.object(storage, "_ensure_collection_loaded"):
+            storage._create_collection_if_not_exist()
+
+        assert storage.final_namespace in collections
+        assert old_name not in collections
+        client.create_collection.assert_not_called()
+
+
+def _fail_specific_rename_once(client, collections, fail_source, fail_target, error):
+    """Wrap the wired rename so one specific rename raises `error` on first call."""
+    state = {"n": 0}
+
+    def rename(source, target):
+        if source == fail_source and target == fail_target:
+            state["n"] += 1
+            if state["n"] == 1:
+                raise error
+        collections.discard(source)
+        collections.add(target)
+
+    client.rename_collection.side_effect = rename
+
+
+@pytest.mark.offline
+class TestInPlaceCommitWindowRecovery:
+    """The in-place commit window (source vacated, temp not yet promoted) must
+    treat temp/_old as recoverable state, never as scratch to be dropped."""
+
+    def test_step4_connection_failure_retry_promotes_temp(self):
+        storage = _make_model_storage()
+        final = storage.final_namespace
+        temp = f"{final}_temp"
+        old = f"{final}_old"
+        collections = {final}
+        client = _wire_collection_state(storage, collections)
+        _wire_fresh_iterator_per_attempt(client)
+        # Step 4 (temp -> final) fails once with a connection error; the retry
+        # must promote the surviving temp copy, not drop and re-copy.
+        _fail_specific_rename_once(
+            client,
+            collections,
+            temp,
+            final,
+            MilvusException(code=2, message="Fail connecting to server on host:19530"),
+        )
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with patch.object(storage, "_rebuild_milvus_client") as rebuild:
+                with patch("lightrag.kg.milvus_impl.time.sleep") as sleep:
+                    storage._migrate_collection_schema()
+
+        rebuild.assert_called_once()
+        sleep.assert_called_once()
+        assert final in collections
+        assert temp not in collections
+        assert old in collections  # backup preserved
+        assert storage.final_namespace == final
+        drops = [call.args[0] for call in client.drop_collection.call_args_list]
+        assert temp not in drops  # never treated as scratch in the commit window
+
+    def test_drop_source_fallback_then_step4_failure_recovers_temp(self):
+        # rename(source -> _old) fails for a non-connection reason, so the
+        # drop-source fallback runs (NO _old backup); Step 4 then fails with a
+        # connection error. Without recovery this is total data loss; the retry
+        # must promote the only surviving copy (temp).
+        storage = _make_model_storage()
+        final = storage.final_namespace
+        temp = f"{final}_temp"
+        old = f"{final}_old"
+        collections = {final}
+        client = _wire_collection_state(storage, collections)
+        _wire_fresh_iterator_per_attempt(client)
+        state = {"temp_to_final": 0}
+
+        def rename(source, target):
+            if source == final and target == old:
+                raise RuntimeError("rename to _old unsupported")  # forces drop-source
+            if source == temp and target == final:
+                state["temp_to_final"] += 1
+                if state["temp_to_final"] == 1:
+                    raise MilvusException(
+                        code=2, message="Fail connecting to server on host:19530"
+                    )
+            collections.discard(source)
+            collections.add(target)
+
+        client.rename_collection.side_effect = rename
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with patch.object(storage, "_rebuild_milvus_client") as rebuild:
+                with patch("lightrag.kg.milvus_impl.time.sleep"):
+                    storage._migrate_collection_schema()
+
+        rebuild.assert_called_once()
+        assert final in collections
+        assert temp not in collections
+        assert old not in collections
+        assert storage.final_namespace == final
+        drops = [call.args[0] for call in client.drop_collection.call_args_list]
+        assert temp not in drops
+
+    def test_non_retryable_commit_failure_keeps_temp_for_startup_recovery(self):
+        # A non-retryable Step 4 failure must still preserve temp (the source is
+        # already vacated) so startup recovery can finish the commit.
+        storage = _make_model_storage()
+        final = storage.final_namespace
+        temp = f"{final}_temp"
+        old = f"{final}_old"
+        collections = {final}
+        client = _wire_collection_state(storage, collections)
+        _wire_fresh_iterator_per_attempt(client)
+
+        def rename(source, target):
+            if source == temp and target == final:
+                raise RuntimeError("non-retryable rename failure")
+            collections.discard(source)
+            collections.add(target)
+
+        client.rename_collection.side_effect = rename
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with pytest.raises(RuntimeError, match="Iterator-based migration failed"):
+                storage._migrate_collection_schema()
+
+        assert temp in collections  # preserved as recovery state
+        assert old in collections
+        drops = [call.args[0] for call in client.drop_collection.call_args_list]
+        assert temp not in drops

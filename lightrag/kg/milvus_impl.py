@@ -1356,6 +1356,65 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         finally:
             self.final_namespace = original_final_namespace
 
+    def _recover_interrupted_inplace_migration(
+        self, target_collection_name: str
+    ) -> str:
+        """Recover from a crash/disconnect inside the in-place migration commit window.
+
+        An in-place migration vacates the source collection (rename to _old,
+        or the drop-source fallback) in Step 3 *before* promoting the temp
+        collection to the target name in Step 4. A failure between those steps
+        leaves the target name free but the migrated rows stranded in the temp
+        collection (and the pre-migration rows, if any, in _old). Both are
+        recoverable state, never scratch: dropping the temp collection here —
+        as the normal Step 1 reset and the failed-attempt cleanup would —
+        could destroy the only surviving copy.
+
+        Only call this for the in-place case (source == target); a suffix
+        migration never vacates its source. It is a no-op unless the target
+        name is actually missing.
+
+        Returns:
+            "promoted" - temp was renamed to the target; the migration is
+                         complete and the caller should stop.
+            "restored" - the _old backup was renamed back to the target; the
+                         source is restored and a fresh migration can re-run.
+            "none"     - no interrupted commit detected; proceed normally.
+        """
+        if self._client.has_collection(target_collection_name):
+            return "none"
+
+        temp_collection_name = f"{target_collection_name}_temp"
+        old_backup_name = f"{target_collection_name}_old"
+
+        if self._client.has_collection(temp_collection_name):
+            logger.warning(
+                f"[{self.workspace}] Resuming interrupted migration: promoting "
+                f"{temp_collection_name} -> {target_collection_name}"
+            )
+            self._client.rename_collection(temp_collection_name, target_collection_name)
+            # The migrated data is now safe under the target name; the _old
+            # backup (if any) is no longer the active copy, so release it.
+            if self._client.has_collection(old_backup_name):
+                try:
+                    self._client.release_collection(old_backup_name)
+                except Exception as release_error:
+                    logger.warning(
+                        f"[{self.workspace}] Failed to release backup collection "
+                        f"{old_backup_name}: {release_error}"
+                    )
+            return "promoted"
+
+        if self._client.has_collection(old_backup_name):
+            logger.warning(
+                f"[{self.workspace}] Resuming interrupted migration: restoring "
+                f"{old_backup_name} -> {target_collection_name} (no migrated copy survived)"
+            )
+            self._client.rename_collection(old_backup_name, target_collection_name)
+            return "restored"
+
+        return "none"
+
     def _migrate_collection_schema(
         self,
         source_collection_name: str | None = None,
@@ -1415,13 +1474,31 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         target_collection_name = target_collection_name or self.final_namespace
         temp_collection_name = f"{target_collection_name}_temp"
         original_final_namespace = self.final_namespace
+        is_inplace = source_collection_name == target_collection_name
         iterator = None
+        # Once an in-place migration has vacated its source (Step 3), the temp
+        # collection holds the only migrated copy and must not be dropped by
+        # the failure cleanup below — a later attempt or startup recovers it.
+        commit_phase = False
 
         try:
             logger.info(
                 f"[{self.workspace}] Starting iterator-based schema migration for {self.namespace}: "
                 f"{source_collection_name} -> {target_collection_name}"
             )
+
+            # A previous attempt may have failed inside the in-place commit
+            # window (after the source was vacated). Finish that commit instead
+            # of restarting the copy, which would drop the recovery copy.
+            if is_inplace:
+                recovery = self._recover_interrupted_inplace_migration(
+                    target_collection_name
+                )
+                if recovery == "promoted":
+                    self.final_namespace = target_collection_name
+                    return
+                # "restored": the source is back, fall through to a clean copy.
+                # "none": nothing to recover, proceed normally.
 
             logger.info(
                 f"[{self.workspace}] Step 1: Creating temporary collection: {temp_collection_name}"
@@ -1518,10 +1595,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 )
 
             backup_collection_name: str | None = None
-            if source_collection_name == target_collection_name:
+            if is_inplace:
                 logger.info(
                     f"[{self.workspace}] Step 3: Rename origin collection to {source_collection_name}_old"
                 )
+                # Entering the commit window: from here the source is vacated,
+                # so the temp collection becomes the recovery copy and must
+                # survive a failure rather than being cleaned up as scratch.
+                commit_phase = True
                 old_backup_name = f"{source_collection_name}_old"
                 try:
                     # Drop a stale backup from a previous migration first:
@@ -1602,17 +1683,29 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Iterator-based migration failed for {self.namespace}: {e}"
             )
 
-            try:
-                if self._client and self._client.has_collection(temp_collection_name):
-                    logger.info(
-                        f"[{self.workspace}] Cleaning up failed migration temporary collection"
-                    )
-                    self._client.drop_collection(temp_collection_name)
-            except Exception as cleanup_error:
+            if commit_phase:
+                # The source has already been vacated, so the temp collection
+                # is the only migrated copy: keep it as recovery state. The
+                # next attempt (or startup) finishes the interrupted commit via
+                # _recover_interrupted_inplace_migration.
                 logger.warning(
-                    f"[{self.workspace}] Failed to cleanup temporary collection: {cleanup_error}. "
-                    f"The leftover temp collection will be dropped on the next migration attempt or startup"
+                    f"[{self.workspace}] Migration failed after the source was vacated; "
+                    f"keeping {temp_collection_name} as recovery state for the next attempt or startup"
                 )
+            else:
+                try:
+                    if self._client and self._client.has_collection(
+                        temp_collection_name
+                    ):
+                        logger.info(
+                            f"[{self.workspace}] Cleaning up failed migration temporary collection"
+                        )
+                        self._client.drop_collection(temp_collection_name)
+                except Exception as cleanup_error:
+                    logger.warning(
+                        f"[{self.workspace}] Failed to cleanup temporary collection: {cleanup_error}. "
+                        f"The leftover temp collection will be dropped on the next migration attempt or startup"
+                    )
 
             raise RuntimeError(
                 f"Iterator-based migration failed for collection {self.namespace}: {e}"
@@ -1786,30 +1879,23 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         self._ensure_collection_loaded()
                         return
 
-            # Orphaned-temp crash recovery. An in-place migration drops the
-            # source collection (Step 3 fallback) before renaming the temp
-            # collection to the target name (Step 4). A crash between those
-            # two steps leaves the fully-copied data stranded in the _temp
-            # collection while neither the target nor the legacy collection
-            # exists; creating a fresh empty collection here would orphan that
+            # Interrupted in-place commit recovery. An in-place migration
+            # vacates the source collection (Step 3) before promoting the temp
+            # collection to the target name (Step 4). A crash between those two
+            # steps leaves the migrated rows stranded in the _temp collection
+            # (or the pre-migration rows in _old) while the target name is
+            # free; creating a fresh empty collection here would orphan that
             # only remaining copy (and a later migration would drop it). The
-            # temp can only exist without its source when the copy had already
-            # completed — a mid-copy failure always leaves the source in place
-            # and is handled by the normal re-migration path above.
-            temp_collection_name = f"{self.final_namespace}_temp"
-            if not legacy_collection_exists and self._client.has_collection(
-                temp_collection_name
-            ):
-                logger.warning(
-                    f"[{self.workspace}] Found orphaned migration temp collection "
-                    f"{temp_collection_name} with no source collection; recovering it "
-                    f"as {self.final_namespace}"
+            # _temp/_old can only exist without the target when the source had
+            # already been vacated — a mid-copy failure always leaves the
+            # source in place and is handled by the re-migration path above.
+            if not legacy_collection_exists:
+                recovery = self._recover_interrupted_inplace_migration(
+                    self.final_namespace
                 )
-                self._client.rename_collection(
-                    temp_collection_name, self.final_namespace
-                )
-                self._ensure_collection_loaded()
-                return
+                if recovery in ("promoted", "restored"):
+                    self._ensure_collection_loaded()
+                    return
 
             # Collection doesn't exist, create new collection
             logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")
