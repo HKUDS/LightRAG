@@ -1289,6 +1289,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         index are NOT recreated — they were provisioned at
         ``initialize()`` and remain in place.
 
+        The same workspace-scoped delete is also issued against the kept
+        legacy collection (the un-suffixed collection that the model-suffix
+        migration leaves behind as a backup), when one is found. The
+        legacy->suffixed migration only runs while the suffixed collection
+        has no points for the workspace; if a deliberate clear left this
+        workspace's data behind in legacy, the next startup would migrate
+        it back into the freshly-emptied suffixed collection (resurrection).
+        Only this workspace's legacy points are removed, so other
+        workspaces' legacy data and their pending one-time migration stay
+        intact.
+
         MUST only be called when ``pipeline_status`` is idle (see the
         Pipeline concurrency contract in ``AGENTS.md``); the only
         in-tree caller ``clear_documents`` enforces this.
@@ -1322,15 +1333,32 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 self._pending_vector_deletes.clear()
 
                 # Delete all points for the current workspace
+                workspace_selector = models.FilterSelector(
+                    filter=models.Filter(
+                        must=[workspace_filter_condition(self.effective_workspace)]
+                    )
+                )
                 self._client.delete(
                     collection_name=self.final_namespace,
-                    points_selector=models.FilterSelector(
-                        filter=models.Filter(
-                            must=[workspace_filter_condition(self.effective_workspace)]
-                        )
-                    ),
+                    points_selector=workspace_selector,
                     wait=True,
                 )
+
+                # Also clear this workspace's points from the kept legacy
+                # collection so the next startup does not re-migrate the
+                # just-cleared data back into the suffixed collection.
+                legacy_collection = _find_legacy_collection(
+                    self._client,
+                    self.namespace,
+                    self.effective_workspace,
+                    self.model_suffix,
+                )
+                if legacy_collection and legacy_collection != self.final_namespace:
+                    self._client.delete(
+                        collection_name=legacy_collection,
+                        points_selector=workspace_selector,
+                        wait=True,
+                    )
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} dropped workspace data from Qdrant collection {self.namespace}"

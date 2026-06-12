@@ -92,6 +92,7 @@ def _make_storage(
     storage.workspace = workspace
     storage.namespace = namespace
     storage.effective_workspace = workspace
+    storage.model_suffix = "mock"
     storage.final_namespace = f"lightrag_vdb_{namespace}_mock"
     storage.meta_fields = meta_fields
     storage.embedding_func = embed_func
@@ -105,6 +106,9 @@ def _make_storage(
     storage._client = MagicMock()
     storage._client.upsert = MagicMock()
     storage._client.delete = MagicMock()
+    # drop() looks up a legacy collection to clear its workspace points;
+    # default to "no legacy collection" so unrelated tests are unaffected.
+    storage._client.collection_exists = MagicMock(return_value=False)
     storage._client.retrieve = MagicMock(return_value=[])
     storage._client.scroll = MagicMock(return_value=([], None))
 
@@ -409,6 +413,30 @@ async def test_drop_clears_pending_buffers():
     assert result["status"] == "success"
     assert s._pending_vector_docs == {}
     assert s._pending_vector_deletes == set()
+
+
+@pytest.mark.asyncio
+async def test_drop_also_clears_workspace_points_from_legacy_collection():
+    """drop() must also delete this workspace's points from the kept legacy
+    collection, so a later startup does not re-migrate the cleared data back
+    into the suffixed collection (resurrection)."""
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    legacy_collection = f"lightrag_vdb_{s.namespace}"
+    # Legacy collection exists (kept after migration); new suffixed != legacy.
+    s._client.collection_exists = MagicMock(
+        side_effect=lambda name: name == legacy_collection
+    )
+
+    result = await s.drop()
+    assert result["status"] == "success"
+
+    deleted_collections = [
+        call.kwargs.get("collection_name") for call in s._client.delete.call_args_list
+    ]
+    # Both the active suffixed collection and the legacy collection are cleared.
+    assert s.final_namespace in deleted_collections
+    assert legacy_collection in deleted_collections
 
 
 @pytest.mark.offline
