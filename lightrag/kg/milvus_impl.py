@@ -1534,6 +1534,15 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Step 2: Copying data using query_iterator from: {source_collection_name}"
             )
 
+            # query_iterator issues a server-side query, which requires the
+            # source collection to be loaded. An in-place source is the active
+            # collection and is already loaded, but a legacy/suffix source is
+            # typically NOT loaded (it is an old backup), so the iterator setup
+            # fails with "collection not loaded" (code 101). Load it explicitly
+            # (idempotent); on a successful migration the source becomes the
+            # backup and is released again from memory at the end.
+            self._client.load_collection(source_collection_name)
+
             try:
                 iterator = self._client.query_iterator(
                     collection_name=source_collection_name,

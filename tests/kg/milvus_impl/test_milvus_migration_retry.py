@@ -339,8 +339,45 @@ class TestMigrationMemoryFootprint:
                 target_collection_name=storage.final_namespace,
             )
 
-        client.load_collection.assert_not_called()
+        # The source must be loaded (query_iterator requires it), but the temp
+        # collection must never be loaded during the bulk copy.
+        loaded = [call.args[0] for call in client.load_collection.call_args_list]
+        assert f"{storage.final_namespace}_temp" not in loaded
+        assert storage.legacy_namespace in loaded
         assert storage.final_namespace in collections
+
+    def test_source_is_loaded_before_query_iterator(self):
+        # query_iterator runs a server-side query that needs the source loaded;
+        # an unloaded legacy/suffix source otherwise fails with code 101
+        # "collection not loaded". The source must be loaded before the
+        # iterator is created.
+        storage = _make_model_storage()
+        collections = {storage.legacy_namespace}
+        client = _wire_collection_state(storage, collections)
+
+        order = []
+        client.load_collection.side_effect = lambda name, **kw: order.append(
+            ("load", name)
+        )
+
+        def make_iterator(**kwargs):
+            order.append(("query_iterator", kwargs["collection_name"]))
+            iterator = MagicMock()
+            iterator.next.side_effect = [_rows(), []]
+            return iterator
+
+        client.query_iterator.side_effect = make_iterator
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            storage._migrate_collection_schema(
+                source_collection_name=storage.legacy_namespace,
+                target_collection_name=storage.final_namespace,
+            )
+
+        assert ("load", storage.legacy_namespace) in order
+        assert order.index(("load", storage.legacy_namespace)) < order.index(
+            ("query_iterator", storage.legacy_namespace)
+        )
 
     def test_suffix_migration_releases_legacy_backup(self):
         storage = _make_model_storage()
