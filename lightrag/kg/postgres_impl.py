@@ -4684,6 +4684,17 @@ class PGVectorStorage(BaseVectorStorage):
         upserts/deletes against rows that are about to disappear are
         meaningless).
 
+        The same workspace-scoped delete is also issued against the kept
+        legacy table (the un-suffixed table that the model-suffix
+        migration leaves behind as a backup), when it still exists. The
+        legacy->suffixed migration only runs while the suffixed table has
+        no rows for the workspace; if a deliberate clear left this
+        workspace's data behind in legacy, the next startup would migrate
+        it back into the freshly-emptied suffixed table (resurrection).
+        Only this workspace's legacy rows are removed, so other
+        workspaces' legacy data and their pending one-time migration stay
+        intact.
+
         Concurrency contract:
             ``_flush_lock`` guards same-process flush / upsert / delete
             races only. Cross-worker buffered writes are NOT covered —
@@ -4714,6 +4725,22 @@ class PGVectorStorage(BaseVectorStorage):
                     table_name=self.table_name
                 )
                 await self.db.execute(drop_sql, {"workspace": self.workspace})
+
+                # Also clear this workspace's rows from the kept legacy table so
+                # the next startup does not re-migrate the just-cleared data
+                # back into the suffixed table. Skip when there is no separate
+                # legacy table (no model suffix) or it no longer exists.
+                if (
+                    self.legacy_table_name
+                    and self.legacy_table_name.lower() != self.table_name.lower()
+                    and await self.db.check_table_exists(self.legacy_table_name)
+                ):
+                    legacy_drop_sql = SQL_TEMPLATES[
+                        "drop_specifiy_table_workspace"
+                    ].format(table_name=self.legacy_table_name)
+                    await self.db.execute(
+                        legacy_drop_sql, {"workspace": self.workspace}
+                    )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             logger.error(
