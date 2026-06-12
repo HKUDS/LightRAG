@@ -3107,6 +3107,18 @@ def create_document_routes(
                     errors.append(error_msg)
                     logger.error(error_msg)
                     storage_error_count += 1
+                elif isinstance(result, dict) and result.get("status") != "success":
+                    # drop() reports a non-raising failure as {"status": "error"}
+                    # (e.g. a backend that could not safely clear a kept legacy
+                    # store). Honor it so the clear is not counted as successful
+                    # while stale data remains and could be re-migrated/resurface.
+                    error_msg = (
+                        f"Error dropping {storage_name}: "
+                        f"{result.get('message', 'unknown error')}"
+                    )
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+                    storage_error_count += 1
                 else:
                     namespace = storages[i].namespace
                     workspace = storages[i].workspace

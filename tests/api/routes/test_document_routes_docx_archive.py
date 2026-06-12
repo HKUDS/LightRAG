@@ -2092,3 +2092,84 @@ def test_third_party_engine_suffixes_join_allowlist_and_scan(tmp_path, monkeypat
     finally:
         registry._REGISTRY.pop("fooengine", None)
     assert not dm.is_supported_file("sample.foo")
+
+
+class _DropStorage:
+    """Minimal storage stub whose drop() returns a preset result dict."""
+
+    def __init__(self, drop_result, namespace="ns", workspace="clear-test"):
+        self._drop_result = drop_result
+        self.namespace = namespace
+        self.workspace = workspace
+
+    async def drop(self):
+        return self._drop_result
+
+
+class _ClearRag:
+    """Mock LightRAG exposing the storages that clear_documents drops."""
+
+    def __init__(self, chunks_drop_result):
+        self.workspace = "clear-test"
+        ok = {"status": "success", "message": "data dropped"}
+        self.text_chunks = _DropStorage(ok, "text_chunks")
+        self.full_docs = _DropStorage(ok, "full_docs")
+        self.full_entities = _DropStorage(ok, "full_entities")
+        self.full_relations = _DropStorage(ok, "full_relations")
+        self.entity_chunks = _DropStorage(ok, "entity_chunks")
+        self.relation_chunks = _DropStorage(ok, "relation_chunks")
+        self.entities_vdb = _DropStorage(ok, "entities")
+        self.relationships_vdb = _DropStorage(ok, "relationships")
+        # The storage under test: drop() result is configurable.
+        self.chunks_vdb = _DropStorage(chunks_drop_result, "chunks")
+        self.chunk_entity_relation_graph = _DropStorage(ok, "graph")
+        self.doc_status = _DropStorage(ok, "doc_status")
+
+
+def _clear_endpoint(router):
+    return [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "clear_documents"
+    ][-1]
+
+
+async def test_clear_documents_honors_drop_error_status(tmp_path):
+    """A storage whose drop() returns {"status": "error"} (without raising) must
+    NOT be counted as a success: the clear is reported as partial_success so the
+    caller knows it is incomplete and can retry, instead of a misleading success.
+    """
+    import importlib
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ClearRag(
+        chunks_drop_result={
+            "status": "error",
+            "message": "legacy tagging undetermined",
+        }
+    )
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    router = create_document_routes(rag, doc_manager)
+    response = await _clear_endpoint(router)()
+
+    assert response.status == "partial_success"
+
+
+async def test_clear_documents_succeeds_when_all_drops_succeed(tmp_path):
+    """Baseline: when every storage drop() returns success the clear reports
+    success."""
+    import importlib
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ClearRag(chunks_drop_result={"status": "success", "message": "data dropped"})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    router = create_document_routes(rag, doc_manager)
+    response = await _clear_endpoint(router)()
+
+    assert response.status == "success"
