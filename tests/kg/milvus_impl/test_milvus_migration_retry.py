@@ -379,6 +379,40 @@ class TestMigrationMemoryFootprint:
             ("query_iterator", storage.legacy_namespace)
         )
 
+    def test_failed_suffix_migration_releases_loaded_source(self):
+        # The source we loaded for a suffix migration must be released again on
+        # failure, so a failed startup/retry does not leave a full backup
+        # resident in query-node memory.
+        storage = _make_model_storage()
+        collections = {storage.legacy_namespace}
+        client = _wire_collection_state(storage, collections)
+        _wire_fresh_iterator_per_attempt(client)
+        client.insert.side_effect = RuntimeError("insert failed")  # non-retryable
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with pytest.raises(RuntimeError, match="Iterator-based migration failed"):
+                storage._migrate_collection_schema(
+                    source_collection_name=storage.legacy_namespace,
+                    target_collection_name=storage.final_namespace,
+                )
+
+        client.release_collection.assert_any_call(storage.legacy_namespace)
+
+    def test_failed_inplace_migration_does_not_release_active_source(self):
+        # An in-place source is the live active collection; it must not be
+        # released on a pre-commit failure.
+        storage = _make_model_storage()
+        collections = {storage.final_namespace}
+        client = _wire_collection_state(storage, collections)
+        _wire_fresh_iterator_per_attempt(client)
+        client.insert.side_effect = RuntimeError("insert failed")  # non-retryable
+
+        with patch.object(storage, "_create_indexes_after_collection"):
+            with pytest.raises(RuntimeError, match="Iterator-based migration failed"):
+                storage._migrate_collection_schema()  # in-place
+
+        client.release_collection.assert_not_called()
+
     def test_suffix_migration_releases_legacy_backup(self):
         storage = _make_model_storage()
         collections = {storage.legacy_namespace}

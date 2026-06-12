@@ -1494,6 +1494,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # collection holds the only migrated copy and must not be dropped by
         # the failure cleanup below — a later attempt or startup recovers it.
         commit_phase = False
+        # True once we explicitly loaded a suffix migration's legacy source, so
+        # the failure cleanup can release it again (in-place sources are the
+        # active collection and are left as-is).
+        source_loaded = False
 
         try:
             logger.info(
@@ -1542,6 +1546,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # (idempotent); on a successful migration the source becomes the
             # backup and is released again from memory at the end.
             self._client.load_collection(source_collection_name)
+            # Only track suffix loads: an in-place source is the active
+            # collection and must not be released on failure.
+            source_loaded = not is_inplace
 
             try:
                 iterator = self._client.query_iterator(
@@ -1756,6 +1763,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     logger.warning(
                         f"[{self.workspace}] Failed to cleanup temporary collection: {cleanup_error}. "
                         f"The leftover temp collection will be dropped on the next migration attempt or startup"
+                    )
+
+            # Release the suffix source we loaded above so a failed startup or
+            # retry does not leave a full backup resident in query-node memory.
+            # In-place sources are the active collection and are left as-is.
+            if source_loaded:
+                try:
+                    self._client.release_collection(source_collection_name)
+                    logger.info(
+                        f"[{self.workspace}] Released source collection "
+                        f"{source_collection_name} from memory after failed migration"
+                    )
+                except Exception as release_error:
+                    logger.warning(
+                        f"[{self.workspace}] Failed to release source collection "
+                        f"{source_collection_name}: {release_error}"
                     )
 
             raise RuntimeError(
