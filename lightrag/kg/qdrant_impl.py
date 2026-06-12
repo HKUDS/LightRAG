@@ -128,29 +128,39 @@ def _find_legacy_collection(
 
 def _legacy_collection_has_workspace_field(
     client: QdrantClient, collection_name: str
-) -> bool:
-    """Return True when the legacy collection tags its points with workspace_id.
+) -> bool | None:
+    """Return whether the legacy collection tags its points with workspace_id.
 
     Mirrors the detection in ``setup_collection``: trust the payload schema for
     indexed fields, otherwise sample a few points (payload_schema only reflects
-    INDEXED fields). When workspace_id is absent the legacy data is untagged
-    (pre-isolation), so ``setup_collection`` migrates ALL of it with no
-    workspace filter — a workspace-filtered delete would miss those points.
+    INDEXED fields).
+
+    Returns:
+        ``True``  - workspace_id present (workspace-tagged legacy).
+        ``False`` - confidently absent (untagged, pre-isolation legacy):
+                    ``setup_collection`` migrates ALL of it with no workspace
+                    filter, so the whole collection is the migration source.
+        ``None``  - tagging could not be determined (metadata / scroll error).
+                    Callers MUST NOT treat this as untagged: dropping an
+                    actually-tagged, shared legacy collection would delete other
+                    workspaces' migration source.
     """
     try:
         legacy_info = client.get_collection(collection_name)
-    except Exception:
-        return False
-
-    if WORKSPACE_ID_FIELD in (legacy_info.payload_schema or {}):
-        return True
-
-    sample_points, _ = client.scroll(
-        collection_name=collection_name,
-        limit=10,
-        with_payload=True,
-        with_vectors=False,
-    )
+        if WORKSPACE_ID_FIELD in (legacy_info.payload_schema or {}):
+            return True
+        sample_points, _ = client.scroll(
+            collection_name=collection_name,
+            limit=10,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.warning(
+            f"Qdrant: could not determine workspace tagging of legacy collection "
+            f"'{collection_name}': {e}"
+        )
+        return None
     return any(
         point.payload and WORKSPACE_ID_FIELD in point.payload for point in sample_points
     )
@@ -1384,9 +1394,20 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     self.model_suffix,
                 )
                 if legacy_collection and legacy_collection != self.final_namespace:
-                    if _legacy_collection_has_workspace_field(
+                    legacy_has_workspace = _legacy_collection_has_workspace_field(
                         self._client, legacy_collection
-                    ):
+                    )
+                    if legacy_has_workspace is None:
+                        # Tagging undetermined (transient metadata / scroll error):
+                        # skip legacy cleanup rather than risk dropping an
+                        # actually-tagged, shared legacy collection and deleting
+                        # other workspaces' migration source.
+                        logger.warning(
+                            f"[{self.workspace}] Skipped legacy collection "
+                            f"'{legacy_collection}' cleanup on workspace clear: "
+                            f"workspace tagging could not be determined"
+                        )
+                    elif legacy_has_workspace:
                         # Workspace-tagged legacy: remove only this workspace's points.
                         self._client.delete(
                             collection_name=legacy_collection,
