@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Mapping, Optional, Union, TypeVar, Generic
 from lightrag.constants import (
     DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL,
     DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE,
+    DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL,
     DEFAULT_QUEUE_STATS_STALE_TTL,
 )
 from lightrag.exceptions import PipelineNotInitializedError
@@ -121,6 +122,12 @@ _QUEUE_STATS_NAMESPACE = "queue_stats"
 _heartbeat_ttl: float = DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL
 _suspect_grace: float = DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE
 _queue_stats_stale_ttl: float = DEFAULT_QUEUE_STATS_STALE_TTL
+_waiter_stale_ttl: float = DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL
+
+# Marker segment distinguishing per-process waiter records from lease
+# entries inside the same group prefix of the lease namespace:
+# ``f"{group}{KEY_SEP}{_WAITER_MARK}{KEY_SEP}{pid}"``.
+_WAITER_MARK = "_waiter"
 
 # Per-process cached namespace references (avoid the internal lock on every
 # publish). Reset by initialize_share_data()/finalize_share_data().
@@ -1886,6 +1893,14 @@ async def _get_queue_stats_namespace() -> Dict[str, Any]:
     return _queue_stats_ns_cache
 
 
+def _waiter_key(group: str, pid: int) -> str:
+    return f"{group}{KEY_SEP}{_WAITER_MARK}{KEY_SEP}{pid}"
+
+
+def _waiter_prefix(group: str) -> str:
+    return f"{group}{KEY_SEP}{_WAITER_MARK}{KEY_SEP}"
+
+
 def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int:
     """Reclaim dead/expired leases of ``group``; return surviving lease count.
 
@@ -1895,10 +1910,20 @@ def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int
     elapses without a renewal; a renewal (fresh ``updated_at``) clears the
     suspect mark. Dead PIDs are reclaimed immediately. Suspect leases still
     count toward capacity so the global limit is never exceeded.
+
+    Waiter records are reaped in the same pass: a process whose lease was
+    just reclaimed (timed out / died), whose PID is dead, or whose record
+    has not been refreshed within ``_waiter_stale_ttl`` must not keep
+    occupying the longest-waiter seat — a ghost favored waiter would push
+    every live waiter onto the deferred backoff and waste freed slots.
     """
     prefix = f"{group}{KEY_SEP}"
+    waiter_prefix = _waiter_prefix(group)
     live = 0
-    for key in [k for k in ns.keys() if k.startswith(prefix)]:
+    reclaimed_pids = set()
+    for key in [
+        k for k in ns.keys() if k.startswith(prefix) and not k.startswith(waiter_prefix)
+    ]:
         raw = ns.get(key)
         if raw is None:
             continue
@@ -1907,6 +1932,8 @@ def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int
         updated_at = lease.get("updated_at", 0.0)
         if pid is None or not _pid_alive(pid):
             ns.pop(key, None)
+            if pid is not None:
+                reclaimed_pids.add(pid)
             continue
         if now - updated_at > _heartbeat_ttl:
             suspect_since = lease.get("suspect_since")
@@ -1916,6 +1943,7 @@ def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int
                 live += 1
             elif now - suspect_since > _suspect_grace:
                 ns.pop(key, None)
+                reclaimed_pids.add(pid)
             else:
                 live += 1
         else:
@@ -1923,6 +1951,21 @@ def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int
                 lease.pop("suspect_since", None)
                 ns[key] = lease
             live += 1
+
+    for key in [k for k in ns.keys() if k.startswith(waiter_prefix)]:
+        raw = ns.get(key)
+        if raw is None:
+            continue
+        waiter = dict(raw)
+        pid = waiter.get("pid")
+        last_poll = waiter.get("last_poll", 0.0)
+        if (
+            pid is None
+            or pid in reclaimed_pids
+            or not _pid_alive(pid)
+            or now - last_poll > _waiter_stale_ttl
+        ):
+            ns.pop(key, None)
     return live
 
 
@@ -1938,17 +1981,46 @@ def _log_acquire_failure(group: str, error: Exception) -> None:
         )
 
 
-async def try_acquire_global_slot(group: str) -> Optional[str]:
-    """Try to claim one global concurrency slot for ``group`` (non-blocking).
+def _is_longest_live_waiter_locked(
+    ns: Dict[str, Any], group: str, pid: int, now: float
+) -> bool:
+    """Is ``pid`` the longest-waiting live poller of ``group``?
 
-    Returns a lease id on success, or None when the group is at capacity.
-    Any shared-storage error is fail-closed: returns None (with a
-    rate-limited warning) so the caller keeps the task queued and retries —
-    capacity is never exceeded due to infrastructure errors.
+    MUST be called while holding the group's keyed lock, after the reap
+    pass has dropped dead/stale waiter records — every remaining record
+    belongs to a live, actively polling process.
+    """
+    my_start = None
+    others_min = None
+    for key in [k for k in ns.keys() if k.startswith(_waiter_prefix(group))]:
+        raw = ns.get(key)
+        if raw is None:
+            continue
+        waiter = dict(raw)
+        wait_start = waiter.get("wait_start", now)
+        if waiter.get("pid") == pid:
+            my_start = wait_start
+        elif others_min is None or wait_start < others_min:
+            others_min = wait_start
+    if my_start is None:
+        return False
+    return others_min is None or my_start <= others_min
+
+
+async def _acquire_global_slot(
+    group: str, track_wait: bool
+) -> tuple[Optional[str], bool]:
+    """Shared implementation for the two acquire entry points.
+
+    Returns ``(lease_id, is_priority_waiter)``. When ``track_wait`` is set,
+    a failed attempt registers/refreshes this process's waiter record
+    (``wait_start`` set once per waiting episode, ``last_poll`` refreshed on
+    every attempt) and reports whether this process is the longest-waiting
+    live poller; a successful attempt always clears the record.
     """
     limit = get_global_concurrency_limit(group)
     if limit is None or limit <= 0:
-        return None
+        return None, False
     try:
         ns = await _get_lease_namespace()
         async with get_storage_keyed_lock(
@@ -1956,17 +2028,107 @@ async def try_acquire_global_slot(group: str) -> Optional[str]:
         ):
             now = time.time()
             in_use = _reap_group_leases_locked(ns, group, now)
+            pid = os.getpid()
+            wkey = _waiter_key(group, pid)
             if in_use >= limit:
-                return None
+                if not track_wait:
+                    return None, False
+                raw = ns.get(wkey)
+                waiter = (
+                    dict(raw) if raw is not None else {"pid": pid, "wait_start": now}
+                )
+                waiter["last_poll"] = now
+                ns[wkey] = waiter
+                return None, _is_longest_live_waiter_locked(ns, group, pid, now)
             lease_id = uuid.uuid4().hex
             ns[f"{group}{KEY_SEP}{lease_id}"] = {
-                "pid": os.getpid(),
+                "pid": pid,
                 "updated_at": now,
             }
-            return lease_id
+            # Got a slot: this process is no longer waiting. Resetting here
+            # (rather than keeping seniority) is what de-prioritizes a
+            # backlog-heavy process after each win, yielding approximate
+            # round-robin across processes under sustained contention.
+            ns.pop(wkey, None)
+            return lease_id, True
     except Exception as e:
         _log_acquire_failure(group, e)
-        return None
+        return None, False
+
+
+async def try_acquire_global_slot(group: str) -> Optional[str]:
+    """Try to claim one global concurrency slot for ``group`` (non-blocking).
+
+    Returns a lease id on success, or None when the group is at capacity.
+    Any shared-storage error is fail-closed: returns None (with a
+    rate-limited warning) so the caller keeps the task queued and retries —
+    capacity is never exceeded due to infrastructure errors.
+
+    This plain variant never registers waiter records — use
+    :func:`try_acquire_global_slot_tracked` from polling loops that want
+    longest-waiter fairness.
+    """
+    lease_id, _ = await _acquire_global_slot(group, track_wait=False)
+    return lease_id
+
+
+async def try_acquire_global_slot_tracked(group: str) -> tuple[Optional[str], bool]:
+    """Acquire variant for polling loops: ``(lease_id, is_priority_waiter)``.
+
+    On failure the caller's waiter record is registered/refreshed and the
+    second element reports whether this process is currently the
+    longest-waiting live poller of the group. Pollers should keep the
+    fastest poll interval when favored and back off (bounded) otherwise —
+    a soft FIFO across worker processes with no hard gate: any poller that
+    finds a free slot still takes it, so a sleeping favored waiter can
+    never leave capacity idle indefinitely. Fail-closed errors report
+    ``(None, False)``.
+    """
+    return await _acquire_global_slot(group, track_wait=True)
+
+
+async def clear_slot_waiter(group: str) -> None:
+    """Drop this process's waiter record for ``group`` (idempotent).
+
+    Called when a wrapper shuts down so a no-longer-polling process never
+    lingers in the longest-waiter seat; the stale TTL and the reap pass
+    cover crashes where this cleanup never runs.
+    """
+    if not _initialized:
+        return
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        ns.pop(_waiter_key(group, os.getpid()), None)
+
+
+async def global_slot_waiters(group: str) -> List[Dict[str, Any]]:
+    """Snapshot of processes actively polling for a slot of ``group``.
+
+    Returns ``[{"pid": ..., "waited": seconds}, ...]`` sorted by descending
+    wait time; stale records (not refreshed within the waiter TTL) are
+    skipped. Read-only and lock-free — intended for observability.
+    """
+    if not _initialized:
+        return []
+    ns = await _get_lease_namespace()
+    now = time.time()
+    waiters = []
+    for key in [k for k in ns.keys() if k.startswith(_waiter_prefix(group))]:
+        raw = ns.get(key)
+        if raw is None:
+            continue
+        waiter = dict(raw)
+        if now - waiter.get("last_poll", 0.0) > _waiter_stale_ttl:
+            continue
+        waiters.append(
+            {
+                "pid": waiter.get("pid"),
+                "waited": max(0.0, now - waiter.get("wait_start", now)),
+            }
+        )
+    return sorted(waiters, key=lambda w: -w["waited"])
 
 
 async def release_global_slot(group: str, lease_id: str) -> None:
@@ -2018,7 +2180,10 @@ async def global_concurrency_in_use(group: str) -> int:
     """Approximate count of currently held global slots for ``group``."""
     ns = await _get_lease_namespace()
     prefix = f"{group}{KEY_SEP}"
-    return sum(1 for k in ns.keys() if k.startswith(prefix))
+    waiter_prefix = _waiter_prefix(group)
+    return sum(
+        1 for k in ns.keys() if k.startswith(prefix) and not k.startswith(waiter_prefix)
+    )
 
 
 # ---------------------------------------------------------------------------

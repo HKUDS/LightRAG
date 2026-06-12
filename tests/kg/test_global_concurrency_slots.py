@@ -211,6 +211,118 @@ async def test_acquire_fail_closed_on_shared_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Waiter tracking (soft FIFO: longest live waiter gets the fast poll rate)
+# ---------------------------------------------------------------------------
+
+
+async def test_tracked_acquire_registers_waiter_and_clears_on_success():
+    _init({GROUP: 1})
+    external = await ss.try_acquire_global_slot(GROUP)
+    ns = await _lease_ns()
+    wkey = ss._waiter_key(GROUP, os.getpid())
+
+    # Failure registers the waiter; sole waiter is the priority one.
+    lease, is_priority = await ss.try_acquire_global_slot_tracked(GROUP)
+    assert lease is None and is_priority is True
+    first_start = dict(ns[wkey])["wait_start"]
+
+    # Repeated polls refresh last_poll but keep the waiting episode start.
+    await ss.try_acquire_global_slot_tracked(GROUP)
+    assert dict(ns[wkey])["wait_start"] == first_start
+
+    # Success clears the record (seniority resets after every win).
+    await ss.release_global_slot(GROUP, external)
+    lease, is_priority = await ss.try_acquire_global_slot_tracked(GROUP)
+    assert lease is not None and is_priority is True
+    assert wkey not in list(ns.keys())
+
+    # Waiter records never count as held slots.
+    assert await ss.global_concurrency_in_use(GROUP) == 1
+
+
+async def test_plain_acquire_never_registers_waiter():
+    _init({GROUP: 1})
+    await ss.try_acquire_global_slot(GROUP)
+    assert await ss.try_acquire_global_slot(GROUP) is None  # at capacity
+    ns = await _lease_ns()
+    assert ss._waiter_key(GROUP, os.getpid()) not in list(ns.keys())
+
+
+async def test_longest_live_waiter_gets_priority():
+    _init({GROUP: 1})
+    await ss.try_acquire_global_slot(GROUP)  # saturate
+    ns = await _lease_ns()
+    now = time.time()
+    # PID 1 (alive) has been waiting longer and is actively polling.
+    ns[ss._waiter_key(GROUP, 1)] = {"pid": 1, "wait_start": now - 10, "last_poll": now}
+
+    _, is_priority = await ss.try_acquire_global_slot_tracked(GROUP)
+    assert is_priority is False  # pid 1 outranks us
+
+    # When pid 1 stops polling (stale last_poll), it loses the favored seat:
+    # the rank ignores it and the reap pass removes its record entirely.
+    stale = dict(ns[ss._waiter_key(GROUP, 1)])
+    stale["last_poll"] = now - ss._waiter_stale_ttl - 5
+    ns[ss._waiter_key(GROUP, 1)] = stale
+    _, is_priority = await ss.try_acquire_global_slot_tracked(GROUP)
+    assert is_priority is True
+    assert ss._waiter_key(GROUP, 1) not in list(ns.keys())
+
+
+async def test_waiter_records_reaped_with_their_process(monkeypatch):
+    """A process reclaimed by the reaper (dead PID or lease heartbeat
+    timeout) must not keep occupying the longest-waiter seat: its waiter
+    records are cleaned in the same reap pass."""
+    monkeypatch.setattr(ss, "_heartbeat_ttl", 1.0)
+    monkeypatch.setattr(ss, "_suspect_grace", 1.0)
+    _init({GROUP: 2})
+    ns = await _lease_ns()
+    now = time.time()
+
+    # Case 1: dead PID — lease and waiter record reclaimed together.
+    dead = _dead_pid()
+    ns[f"{GROUP}{ss.KEY_SEP}deadlease"] = {"pid": dead, "updated_at": now}
+    ns[ss._waiter_key(GROUP, dead)] = {
+        "pid": dead,
+        "wait_start": now - 60,
+        "last_poll": now,  # fresh, but the owner is gone
+    }
+    await ss.reconcile_global_slots(GROUP)
+    assert f"{GROUP}{ss.KEY_SEP}deadlease" not in list(ns.keys())
+    assert ss._waiter_key(GROUP, dead) not in list(ns.keys())
+
+    # Case 2: live PID whose lease timed out past the suspect grace —
+    # the process is deemed lost; its waiter record goes with the lease.
+    ns[f"{GROUP}{ss.KEY_SEP}stalledlease"] = {
+        "pid": 1,
+        "updated_at": now - 60,
+        "suspect_since": now - 30,
+    }
+    ns[ss._waiter_key(GROUP, 1)] = {
+        "pid": 1,
+        "wait_start": now - 60,
+        "last_poll": now,
+    }
+    await ss.reconcile_global_slots(GROUP)
+    assert f"{GROUP}{ss.KEY_SEP}stalledlease" not in list(ns.keys())
+    assert ss._waiter_key(GROUP, 1) not in list(ns.keys())
+
+
+async def test_clear_slot_waiter_and_waiter_snapshot():
+    _init({GROUP: 1})
+    await ss.try_acquire_global_slot(GROUP)  # saturate
+    await ss.try_acquire_global_slot_tracked(GROUP)  # register ourselves
+
+    waiters = await ss.global_slot_waiters(GROUP)
+    assert [w["pid"] for w in waiters] == [os.getpid()]
+    assert waiters[0]["waited"] >= 0.0
+
+    await ss.clear_slot_waiter(GROUP)
+    assert await ss.global_slot_waiters(GROUP) == []
+    await ss.clear_slot_waiter(GROUP)  # idempotent
+
+
+# ---------------------------------------------------------------------------
 # Queue stats publish / aggregate
 # ---------------------------------------------------------------------------
 

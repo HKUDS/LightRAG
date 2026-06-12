@@ -109,13 +109,19 @@ async def test_no_global_limit_keeps_original_path(monkeypatch):
     _init()  # initialized, but no limits configured
 
     calls = []
-    original = ss.try_acquire_global_slot
+    original_plain = ss.try_acquire_global_slot
+    original_tracked = ss.try_acquire_global_slot_tracked
 
-    async def spy(group):
+    async def spy_plain(group):
         calls.append(group)
-        return await original(group)
+        return await original_plain(group)
 
-    monkeypatch.setattr(ss, "try_acquire_global_slot", spy)
+    async def spy_tracked(group):
+        calls.append(group)
+        return await original_tracked(group)
+
+    monkeypatch.setattr(ss, "try_acquire_global_slot", spy_plain)
+    monkeypatch.setattr(ss, "try_acquire_global_slot_tracked", spy_tracked)
 
     async def fast_func(value):
         return value
@@ -138,6 +144,7 @@ async def test_standalone_group_none_never_touches_shared_storage(monkeypatch):
         raise AssertionError("shared_storage API must not be called")
 
     monkeypatch.setattr(ss, "try_acquire_global_slot", boom)
+    monkeypatch.setattr(ss, "try_acquire_global_slot_tracked", boom)
     monkeypatch.setattr(ss, "publish_queue_stats", boom)
     monkeypatch.setattr(ss, "aggregate_queue_stats", boom)
 
@@ -369,14 +376,14 @@ async def test_fail_closed_acquire_keeps_task_queued_until_recovery(monkeypatch)
     _init({GROUP: 2})
 
     fail = True
-    original = ss.try_acquire_global_slot
+    original = ss.try_acquire_global_slot_tracked
 
     async def flaky(group):
         if fail:
             raise RuntimeError("manager down")
         return await original(group)
 
-    monkeypatch.setattr(ss, "try_acquire_global_slot", flaky)
+    monkeypatch.setattr(ss, "try_acquire_global_slot_tracked", flaky)
 
     async def func(value):
         return value
@@ -511,7 +518,7 @@ async def test_compaction_bounds_physical_queue_and_keeps_join_working(monkeypat
     async def acquire_always_fails(_group):
         raise RuntimeError("manager down")  # permanent fail-closed
 
-    monkeypatch.setattr(ss, "try_acquire_global_slot", acquire_always_fails)
+    monkeypatch.setattr(ss, "try_acquire_global_slot_tracked", acquire_always_fails)
 
     async def func(value):
         return value
@@ -631,6 +638,58 @@ async def test_aggregated_stats_schema_and_global_fields():
         assert list(stats["per_worker"])
         assert stats["global_limit"] == 2
         assert stats["global_in_use"] == 0
+    finally:
+        await wrapped.shutdown()
+
+
+async def test_shutdown_clears_waiter_record():
+    _init({GROUP: 1})
+    await ss.try_acquire_global_slot(GROUP)  # saturate so workers poll
+
+    async def func(value):
+        return value
+
+    wrapped = priority_limit_async_func_call(
+        2, queue_name="waiter cleanup test", concurrency_group=GROUP
+    )(func)
+    pending = asyncio.create_task(wrapped("stuck"))
+    try:
+        # Wait until a polling worker registers this process as a waiter.
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while not await ss.global_slot_waiters(GROUP):
+            assert asyncio.get_event_loop().time() < deadline
+            await asyncio.sleep(0.01)
+    finally:
+        await wrapped.shutdown(graceful=False, timeout=0.1)
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    # No-longer-polling process must not linger in the longest-waiter seat.
+    assert await ss.global_slot_waiters(GROUP) == []
+
+
+async def test_aggregated_stats_report_slot_waiters():
+    _init({GROUP: 1})
+    external = await ss.try_acquire_global_slot(GROUP)
+
+    async def func(value):
+        return value
+
+    wrapped = priority_limit_async_func_call(
+        2, queue_name="waiter stats test", concurrency_group=GROUP
+    )(func)
+    task = asyncio.create_task(wrapped("waiting"))
+    try:
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while not await ss.global_slot_waiters(GROUP):
+            assert asyncio.get_event_loop().time() < deadline
+            await asyncio.sleep(0.01)
+
+        stats = await wrapped.get_aggregated_queue_stats()
+        assert stats["global_waiting_workers"] == 1
+        assert stats["global_longest_wait"] >= 0.0
+
+        await ss.release_global_slot(GROUP, external)
+        assert await asyncio.wait_for(task, timeout=5.0) == "waiting"
     finally:
         await wrapped.shutdown()
 

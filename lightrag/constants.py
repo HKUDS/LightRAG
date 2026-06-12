@@ -283,8 +283,19 @@ DEFAULT_RERANK_TIMEOUT = 30
 DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL = 20.0  # ~4x the 5s health-check heartbeat
 DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE = 20.0  # ~1x heartbeat TTL
 # Polling backoff bounds while a worker waits for a free global slot.
+# The first acquisition attempt is always immediate (backoff applies only
+# after a failure). The longest-waiting live process keeps polling at the
+# MIN interval so it usually claims the next freed slot (soft FIFO across
+# workers); other waiters back off exponentially up to the DEFERRED cap.
+# The cap stays small on purpose: when the favored waiter leaves, the
+# promoted one is asleep at most one deferred period, bounding slot idling.
 DEFAULT_GLOBAL_SLOT_POLL_MIN = 0.05
-DEFAULT_GLOBAL_SLOT_POLL_MAX = 0.2
+DEFAULT_GLOBAL_SLOT_POLL_DEFERRED_MAX = 0.4
+# Waiter records not refreshed within this TTL are ignored for the
+# longest-waiter ranking and reaped: a crashed or stalled poller must not
+# keep occupying the favored seat (which would push every live waiter onto
+# the deferred backoff and waste slots). Keep > 2x the deferred poll cap.
+DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL = 1.0
 # Max consecutive zombie (cancelled) queue entries a worker drains while
 # holding a global slot before returning the slot to other processes.
 DEFAULT_GLOBAL_SLOT_DRAIN_LIMIT = 16

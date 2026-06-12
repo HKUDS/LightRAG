@@ -47,7 +47,7 @@ from lightrag.constants import (
     SOURCE_IDS_LIMIT_METHOD_FIFO,
     PARSED_DIR_NAME,
     DEFAULT_GLOBAL_SLOT_POLL_MIN,
-    DEFAULT_GLOBAL_SLOT_POLL_MAX,
+    DEFAULT_GLOBAL_SLOT_POLL_DEFERRED_MAX,
     DEFAULT_GLOBAL_SLOT_DRAIN_LIMIT,
     DEFAULT_ZOMBIE_COMPACT_THRESHOLD,
     DEFAULT_COMPACT_BATCH_LIMIT,
@@ -1066,18 +1066,26 @@ def priority_limit_async_func_call(
             async with admission_cond:
                 admission_cond.notify_all()
 
-        async def _try_acquire_slot() -> str | None:
-            """Non-blocking global slot acquisition (fail-closed on errors)."""
+        async def _try_acquire_slot() -> tuple[str | None, bool]:
+            """Non-blocking global slot acquisition (fail-closed on errors).
+
+            Returns ``(lease_id, is_priority_waiter)``: on failure the
+            second element reports whether this process is the
+            longest-waiting live poller of the group, which drives the
+            adaptive poll backoff below.
+            """
             try:
-                lease_id = await shared.try_acquire_global_slot(concurrency_group)
+                lease_id, is_priority = await shared.try_acquire_global_slot_tracked(
+                    concurrency_group
+                )
             except Exception as e:
-                # try_acquire_global_slot is fail-closed internally; this
-                # guard keeps the worker alive even if it ever raises.
+                # try_acquire_global_slot_tracked is fail-closed internally;
+                # this guard keeps the worker alive even if it ever raises.
                 logger.debug(f"{queue_name}: global slot acquisition error: {e}")
-                return None
+                return None, False
             if lease_id is not None:
                 held_leases.add(lease_id)
-            return lease_id
+            return lease_id, is_priority
 
         async def _release_lease_safely(lease_id: str) -> None:
             """Release a global slot without raising (safe in finally blocks).
@@ -1333,14 +1341,24 @@ def priority_limit_async_func_call(
                         # tasks must remain queued (and cancellable) while
                         # all slots are busy. Fail-closed errors land here
                         # too, as a None lease.
-                        lease_id = await _try_acquire_slot()
+                        lease_id, is_priority_waiter = await _try_acquire_slot()
                         if lease_id is None:
                             global_slot_waits += 1
                             _mark_stats_dirty()
+                            # Soft FIFO across processes: the longest-waiting
+                            # live process keeps the fastest poll rate so it
+                            # usually claims the next freed slot; everyone
+                            # else backs off, bounded by the deferred cap so
+                            # a freed slot is never left idle for long when
+                            # the favored waiter is gone (promotion lag).
+                            if is_priority_waiter:
+                                poll_delay = DEFAULT_GLOBAL_SLOT_POLL_MIN
+                            else:
+                                poll_delay = min(
+                                    poll_delay * 2,
+                                    DEFAULT_GLOBAL_SLOT_POLL_DEFERRED_MAX,
+                                )
                             await asyncio.sleep(poll_delay)
-                            poll_delay = min(
-                                poll_delay * 2, DEFAULT_GLOBAL_SLOT_POLL_MAX
-                            )
                             continue
                         poll_delay = DEFAULT_GLOBAL_SLOT_POLL_MIN
 
@@ -1670,6 +1688,11 @@ def priority_limit_async_func_call(
                     result["global_in_use"] = await shared.global_concurrency_in_use(
                         concurrency_group
                     )
+                    waiters = await shared.global_slot_waiters(concurrency_group)
+                    result["global_waiting_workers"] = len(waiters)
+                    result["global_longest_wait"] = (
+                        round(waiters[0]["waited"], 3) if waiters else 0.0
+                    )
                 return result
             except Exception as e:
                 logger.debug(
@@ -1768,6 +1791,13 @@ def priority_limit_async_func_call(
                         await shared.release_global_slot(concurrency_group, lease_id)
                     except Exception:
                         pass
+                # Our workers stop polling now: drop the waiter record so
+                # this process never lingers in the longest-waiter seat
+                # (the stale TTL covers crashes where this never runs).
+                try:
+                    await shared.clear_slot_waiter(concurrency_group)
+                except Exception:
+                    pass
             if publish_stats:
                 try:
                     await shared.unpublish_queue_stats(queue_name)
