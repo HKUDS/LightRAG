@@ -1848,6 +1848,35 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 self.legacy_namespace != self.final_namespace
                 and self._client.has_collection(self.legacy_namespace)
             )
+
+            # Interrupted in-place commit recovery — MUST run before the legacy
+            # migration below. An in-place migration vacates its source (Step 3)
+            # before promoting the temp collection to the target name (Step 4);
+            # a crash in that window leaves the target name free with the
+            # completed copy stranded in {final}_temp and the pre-migration data
+            # in {final}_old. If a legacy migration ran first it would migrate
+            # the stale legacy collection over the target and drop {final}_temp
+            # as scratch (Step 1), silently losing every write made to the
+            # suffixed collection since the legacy split.
+            #
+            # {final}_old is the reliable marker that an in-place copy COMPLETED
+            # (it only ever exists once Step 3 renamed the source): when it is
+            # present, recover unconditionally. A lone {final}_temp next to a
+            # live legacy source is instead an aborted *partial* suffix copy and
+            # must be treated as scratch by the legacy migration — so only
+            # recover a lone temp when there is no legacy source to fall back to.
+            temp_collection_name = f"{self.final_namespace}_temp"
+            old_backup_name = f"{self.final_namespace}_old"
+            has_old_backup = self._client.has_collection(old_backup_name)
+            has_temp = self._client.has_collection(temp_collection_name)
+            if has_old_backup or (has_temp and not legacy_collection_exists):
+                recovery = self._recover_interrupted_inplace_migration(
+                    self.final_namespace
+                )
+                if recovery in ("promoted", "restored"):
+                    self._ensure_collection_loaded()
+                    return
+
             if legacy_collection_exists:
                 legacy_collection_info = self._client.describe_collection(
                     self.legacy_namespace
@@ -1878,24 +1907,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                         )
                         self._ensure_collection_loaded()
                         return
-
-            # Interrupted in-place commit recovery. An in-place migration
-            # vacates the source collection (Step 3) before promoting the temp
-            # collection to the target name (Step 4). A crash between those two
-            # steps leaves the migrated rows stranded in the _temp collection
-            # (or the pre-migration rows in _old) while the target name is
-            # free; creating a fresh empty collection here would orphan that
-            # only remaining copy (and a later migration would drop it). The
-            # _temp/_old can only exist without the target when the source had
-            # already been vacated — a mid-copy failure always leaves the
-            # source in place and is handled by the re-migration path above.
-            if not legacy_collection_exists:
-                recovery = self._recover_interrupted_inplace_migration(
-                    self.final_namespace
-                )
-                if recovery in ("promoted", "restored"):
-                    self._ensure_collection_loaded()
-                    return
 
             # Collection doesn't exist, create new collection
             logger.info(f"[{self.workspace}] Creating new collection: {self.namespace}")

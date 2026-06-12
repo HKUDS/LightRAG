@@ -437,6 +437,56 @@ class TestInPlaceMigrationSafety:
         assert old_name not in collections
         client.create_collection.assert_not_called()
 
+    def test_inplace_recovery_precedes_legacy_migration(self):
+        # A suffixed target was migrated in-place and interrupted after Step 3:
+        # final renamed to _old, the completed copy sits in _temp, and the old
+        # unsuffixed legacy backup still exists. Recovery MUST win over the
+        # legacy migration, which would otherwise drop _temp and overwrite the
+        # target with stale legacy data (losing every write since the split).
+        storage = _make_model_storage()
+        final = storage.final_namespace
+        legacy = storage.legacy_namespace
+        temp = f"{final}_temp"
+        old = f"{final}_old"
+        collections = {legacy, old, temp}
+        client = _wire_collection_state(storage, collections)
+
+        with patch.object(storage, "_ensure_collection_loaded"):
+            with patch.object(storage, "_migrate_collection_schema") as migrate:
+                storage._create_collection_if_not_exist()
+
+        migrate.assert_not_called()
+        assert final in collections  # _temp promoted to the target
+        assert temp not in collections
+        assert legacy in collections  # untouched
+        client.create_collection.assert_not_called()
+        drops = [call.args[0] for call in client.drop_collection.call_args_list]
+        assert temp not in drops
+
+    def test_partial_suffix_temp_with_legacy_is_remigrated_not_promoted(self):
+        # An aborted suffix copy (legacy -> final) left a PARTIAL _temp while
+        # legacy is intact and there is no _old. The partial temp must be
+        # treated as scratch and re-migrated from legacy, never promoted.
+        storage = _make_model_storage()
+        final = storage.final_namespace
+        legacy = storage.legacy_namespace
+        temp = f"{final}_temp"
+        collections = {legacy, temp}
+        client = _wire_collection_state(storage, collections)
+
+        with patch.object(storage, "_has_vector_field", return_value=True):
+            with patch.object(storage, "_check_vector_dimension"):
+                with patch.object(storage, "_migrate_collection_schema") as migrate:
+                    with patch.object(storage, "_ensure_collection_loaded"):
+                        storage._create_collection_if_not_exist()
+
+        migrate.assert_called_once_with(
+            source_collection_name=legacy,
+            target_collection_name=final,
+        )
+        # Recovery (which promotes/restores via rename) must not have run.
+        client.rename_collection.assert_not_called()
+
 
 def _fail_specific_rename_once(client, collections, fail_source, fail_target, error):
     """Wrap the wired rename so one specific rename raises `error` on first call."""
