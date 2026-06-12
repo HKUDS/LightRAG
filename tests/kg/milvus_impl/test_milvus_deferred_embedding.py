@@ -257,6 +257,43 @@ async def test_upsert_truncates_oversized_source_id():
 
 
 @pytest.mark.asyncio
+async def test_upsert_truncates_source_id_on_separator_boundary():
+    # source_id is a <SEP>-joined list of chunk ids; truncation must drop whole
+    # ids at a separator boundary rather than leave a dangling partial id.
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content", "source_id"})
+    # Each chunk id is comfortably sized; enough of them to overflow the limit.
+    chunk_id = "chunk-" + "a" * 50
+    chunk_ids = [chunk_id] * ((MILVUS_MAX_VARCHAR_BYTES // len(chunk_id)) + 5)
+    source_id = "<SEP>".join(chunk_ids)
+    assert len(source_id.encode("utf-8")) > MILVUS_MAX_VARCHAR_BYTES
+
+    await s.upsert({"v1": {"content": "hello", "source_id": source_id}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    stored = upserted["source_id"]
+    assert len(stored.encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
+    # No trailing partial id: every retained id is intact.
+    assert all(part == chunk_id for part in stored.split("<SEP>"))
+
+
+@pytest.mark.asyncio
+async def test_upsert_truncates_oversized_single_source_id_without_separator():
+    # A single id longer than the limit has no separator to back off to, so it
+    # falls back to the raw byte cut instead of dropping the value entirely.
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content", "source_id"})
+    source_id = "s" * (MILVUS_MAX_VARCHAR_BYTES + 10)
+
+    await s.upsert({"v1": {"content": "hello", "source_id": source_id}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    assert len(upserted["source_id"].encode("utf-8")) == MILVUS_MAX_VARCHAR_BYTES
+
+
+@pytest.mark.asyncio
 async def test_repeated_upsert_same_id_embeds_once():
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)

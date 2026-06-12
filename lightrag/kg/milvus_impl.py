@@ -6,7 +6,11 @@ from dataclasses import dataclass, fields
 import numpy as np
 from lightrag.utils import logger, compute_mdhash_id, _cooperative_yield
 from ..base import BaseVectorStorage
-from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH, DEFAULT_QUERY_PRIORITY
+from ..constants import (
+    DEFAULT_MAX_FILE_PATH_LENGTH,
+    DEFAULT_QUERY_PRIORITY,
+    GRAPH_FIELD_SEP,
+)
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
 
@@ -57,6 +61,11 @@ MILVUS_PRIMARY_KEY_FIELDS = frozenset({"id"})
 MILVUS_IDENTITY_VARCHAR_FIELDS = frozenset(
     {"id", "entity_name", "full_doc_id", "src_id", "tgt_id"}
 )
+# Fields whose value is a GRAPH_FIELD_SEP-joined list of ids (chunk ids / file
+# paths). When such a value overflows we truncate on the last separator that
+# fits rather than mid-id, so we drop whole ids instead of leaving a dangling
+# partial id that resolves to nothing.
+MILVUS_SEPARATOR_JOINED_FIELDS = frozenset({"source_id", "file_path"})
 
 # Supported index types
 SUPPORTED_INDEX_TYPES = {
@@ -657,7 +666,15 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"({len(encoded)} bytes); identity fields cannot be truncated"
             )
 
+        # Cut to the byte budget on a valid UTF-8 boundary first.
         truncated = encoded[:limit].decode("utf-8", errors="ignore")
+        # For separator-joined id lists, back off to the last separator that
+        # fits so we never persist a half id. Fall back to the raw byte cut when
+        # no separator fits (e.g. a single id longer than the limit).
+        if field_name in MILVUS_SEPARATOR_JOINED_FIELDS:
+            boundary = truncated.rfind(GRAPH_FIELD_SEP)
+            if boundary > 0:
+                truncated = truncated[:boundary]
         logger.warning(
             "[%s] Milvus field '%s' for record '%s' truncated from %d to %d bytes",
             self.workspace,
