@@ -89,7 +89,8 @@ async def test_client_closed_on_api_connection_error():
     from anthropic import APIConnectionError
 
     err = APIConnectionError(
-        message="connection failed", request=httpx.Request("POST", "https://api.anthropic.com")
+        message="connection failed",
+        request=httpx.Request("POST", "https://api.anthropic.com"),
     )
     fake_client = _make_error_client(err)
 
