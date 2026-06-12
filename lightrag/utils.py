@@ -834,6 +834,19 @@ class QueueFullError(Exception):
     pass
 
 
+class VectorStorageConsistencyError(Exception):
+    """Raised when a vector storage write fails after the graph has already been updated.
+
+    The knowledge graph (plus the text_chunks KV store) is the authoritative data
+    source, so no data is lost — but the vector storage no longer mirrors the graph
+    and query results may be incomplete until it is rebuilt. Stop the LightRAG
+    server and run the offline rebuild tool (``lightrag-rebuild-vdb``) to restore
+    consistency.
+    """
+
+    pass
+
+
 class WorkerTimeoutError(Exception):
     """Worker-level timeout exception with specific timeout information"""
 
@@ -2994,6 +3007,96 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     return text.strip()
 
 
+# LLMs emitting LaTeX inside JSON strings routinely under-escape backslashes:
+# "\frac" is *valid* JSON meaning form feed + "rac", so JSON parsers
+# (including json_repair) silently decode it and the LaTeX command is
+# destroyed. Form feed (\x0c) and backspace (\x08) followed by a letter have
+# no legitimate use in LLM-generated prose, so restoring the backslash is
+# unconditionally safe. The other three decodable escapes (\t, \n, \r) map to
+# legitimate whitespace and cannot be restored without guessing; they are only
+# *detected* (see _WS_LATEX_SUSPECT_PATTERN) so real-world frequency can be
+# observed before deciding on heuristic restoration.
+_FORMFEED_LATEX_PATTERN = re.compile(r"\x0c(?=[A-Za-z])")
+_BACKSPACE_LATEX_PATTERN = re.compile(r"\x08(?=[A-Za-z])")
+# Whitespace + residue spelling that completes a common LaTeX command whose
+# remainder collides with no English word ("eq"/"o"/"exists" are deliberately
+# absent: "eq." abbreviations, the word "o"/"exists" would false-positive).
+_WS_LATEX_SUSPECT_PATTERN = re.compile(
+    r"\t(?=(?:au|heta|imes|ext|ilde|herefore|riangle)\b)"
+    r"|\r(?=(?:ho|ight|angle|ceil)\b)"
+    r"|\n(?=(?:abla|otin)\b)"
+)
+
+
+def repair_vlm_json_escape_damage(text: str, *, context: str = "") -> str:
+    """Restore LaTeX backslashes destroyed by JSON escape decoding.
+
+    Applied to string values parsed out of VLM/LLM JSON responses, where an
+    un-doubled LaTeX command like ``"\\frac"`` arrives as ``\\x0c`` + ``rac``.
+    Only the two zero-risk cases are repaired:
+
+    - form feed + letter  -> ``\\f`` + letter (``\\frac``, ``\\forall``, ...)
+    - backspace + letter  -> ``\\b`` + letter (``\\beta``, ``\\bar``, ...)
+
+    Isolated control characters (not followed by a letter) are left alone for
+    downstream sanitization to drop. Whitespace-class damage (``\\tau`` ->
+    tab + ``au`` etc.) is ambiguous with legitimate whitespace and is only
+    logged at WARNING level, never rewritten.
+
+    Args:
+        text: Parsed string value to repair.
+        context: Optional label (e.g. ``"table/t1.description"``) included in
+            the detection log line.
+    """
+    if not text:
+        return text
+
+    repaired = _FORMFEED_LATEX_PATTERN.sub(r"\\f", text)
+    repaired = _BACKSPACE_LATEX_PATTERN.sub(r"\\b", repaired)
+    if repaired != text:
+        logger.warning(
+            "Repaired LaTeX escape damage (\\f/\\b decoded by JSON parser)%s",
+            f" in {context}" if context else "",
+        )
+
+    suspect = _WS_LATEX_SUSPECT_PATTERN.search(repaired)
+    if suspect:
+        snippet = repaired[max(0, suspect.start() - 30) : suspect.start() + 30]
+        logger.warning(
+            "Suspected whitespace-class LaTeX escape damage%s "
+            "(not auto-repaired): %r",
+            f" in {context}" if context else "",
+            snippet,
+        )
+
+    return repaired
+
+
+def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
+    """Apply :func:`repair_vlm_json_escape_damage` to every string inside a
+    parsed JSON structure (dicts / lists nested arbitrarily).
+
+    Used on the output of ``json_repair.loads`` for LLM responses that may
+    quote LaTeX — multimodal analysis objects and entity-extraction results
+    (``{"entities": [{...}], "relationships": [{...}]}``). Non-string leaves
+    are returned untouched.
+    """
+    if isinstance(obj, str):
+        return repair_vlm_json_escape_damage(obj, context=context)
+    if isinstance(obj, dict):
+        return {
+            key: repair_vlm_json_escape_damage_nested(
+                value, context=f"{context}.{key}" if context else str(key)
+            )
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [
+            repair_vlm_json_escape_damage_nested(item, context=context) for item in obj
+        ]
+    return obj
+
+
 def check_storage_env_vars(storage_name: str) -> None:
     """Check if all required environment variables for storage implementation exist
 
@@ -4017,3 +4120,44 @@ def generate_reference_list_from_chunks(
         reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
 
     return reference_list, updated_chunks
+
+
+def validate_workspace(workspace: str) -> str:
+    """Validate a workspace name used to build per-workspace directories.
+
+    File-based storages place their data in a subdirectory named after the
+    workspace under ``working_dir`` (``os.path.join(working_dir, workspace)``).
+    To prevent path traversal, the workspace must be a single path component:
+    it may not contain a path separator nor be a relative path reference.
+
+    Unlike a sanitizing approach, this validator does not rewrite the name.
+    Legitimate names containing dots (e.g. ``"v1.0"``) are accepted unchanged,
+    while unsafe names are rejected so the caller fails fast instead of
+    silently reading or writing outside the intended directory.
+
+    Args:
+        workspace: Workspace name from configuration or environment variables.
+
+    Returns:
+        The workspace name unchanged when it is valid.
+
+    Raises:
+        ValueError: If the workspace contains ``/`` or ``\\``, or is ``"."`` or
+            ``".."``.
+
+    Examples:
+        >>> validate_workspace("my_workspace")
+        'my_workspace'
+        >>> validate_workspace("v1.0")
+        'v1.0'
+        >>> validate_workspace("../../../etc")
+        Traceback (most recent call last):
+            ...
+        ValueError: Invalid workspace name '../../../etc': must not contain path separators ('/', '\\') or be a relative path reference ('.', '..')
+    """
+    if "/" in workspace or "\\" in workspace or workspace in (".", ".."):
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: must not contain path "
+            "separators ('/', '\\') or be a relative path reference ('.', '..')"
+        )
+    return workspace

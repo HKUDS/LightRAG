@@ -233,6 +233,9 @@
       "disease": "病気",
       "drug": "薬",
       "food": "食品",
+      "table": "表",
+      "drawing": "図",
+      "equation": "数式",
       "other": "その他"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "下にクエリを入力して検索を開始",
       "clear": "クリア",
       "send": "送信",
+      "stop": "停止",
+      "userTerminated": "ユーザーが中断しました。応答が不完全な可能性があります",
       "placeholder": "クエリを入力（プレフィックス対応: /<クエリモード>）",
       "error": "エラー: 応答の取得に失敗しました",
       "queryModeError": "次のクエリモードのみサポートされています: {{modes}}",

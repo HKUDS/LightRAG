@@ -42,6 +42,7 @@ from ..utils import (
     compute_mdhash_id,
     _cooperative_yield,
     performance_timing_log,
+    validate_workspace,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
@@ -2508,6 +2509,7 @@ class PGKVStorage(BaseKVStorage):
     db: PostgreSQLDB = field(default=None)
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._max_batch_size = 200  # DB batch size, independent of embedding batch size
         (
             self._max_upsert_payload_bytes,
@@ -3239,6 +3241,7 @@ class PGVectorStorage(BaseVectorStorage):
     db: PostgreSQLDB | None = field(default=None)
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
         self._max_batch_size = self.global_config["embedding_batch_num"]
         # DB-write batching limits (distinct from the embedding batch size above).
@@ -4438,18 +4441,18 @@ class PGVectorStorage(BaseVectorStorage):
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID with read-your-writes against the buffer.
 
-        ``__vector__`` and ``__id__`` are stripped from buffered results to
-        match the other vector backends; callers needing embeddings must use
-        ``get_vectors_by_ids``.
+        The embedding column is stripped from BOTH the buffered and the
+        SQL-fallback result (``__vector__``/``__id__`` from the buffer,
+        ``content_vector`` from the row) so the shapes match each other and
+        the other vector backends. The raw ``content_vector`` is a pgvector
+        value that the asyncpg codec returns as a numpy array, which is not
+        JSON-serializable and would break callers that return this dict in an
+        API response (e.g. ``/graph/entity/edit``). Callers needing embeddings
+        must use ``get_vectors_by_ids``.
 
         Response shape:
-            Buffered hits return ``{"id", "content", <payload fields>,
-            "created_at"}`` only — no embedding column. SQL-fallback hits
-            return the full row including ``content_vector`` (and any
-            namespace-specific columns such as ``entity_name`` or
-            ``source_id``). Callers that only read documented payload
-            fields (``content``, ``id``, ``created_at``) are unaffected;
-            consumers iterating over all keys must tolerate both shapes.
+            ``{"id", "content", <payload fields>, "created_at"}`` — no
+            embedding column, from either path.
         """
         async with self._flush_lock:
             if id in self._pending_vector_deletes:
@@ -4472,7 +4475,11 @@ class PGVectorStorage(BaseVectorStorage):
         try:
             result = await self.db.query(query, [self.workspace, id])
             if result:
-                return dict(result)
+                row = dict(result)
+                # Drop the embedding column: it is a numpy array (pgvector
+                # codec) and not JSON-serializable; matches the buffered shape.
+                row.pop("content_vector", None)
+                return row
             return None
         except Exception as e:
             logger.error(
@@ -4528,6 +4535,9 @@ class PGVectorStorage(BaseVectorStorage):
                     if record is None:
                         continue
                     record_dict = dict(record)
+                    # Drop the (numpy / non-JSON-serializable) embedding column
+                    # so the SQL shape matches the buffered shape.
+                    record_dict.pop("content_vector", None)
                     row_id = record_dict.get("id")
                     if row_id is not None:
                         id_map[str(row_id)] = record_dict
@@ -4754,6 +4764,7 @@ class PGDocStatusStorage(DocStatusStorage):
     db: PostgreSQLDB = field(default=None)
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         (
             self._max_upsert_payload_bytes,
             self._max_upsert_records_per_batch,
@@ -5855,6 +5866,7 @@ _GRAPH_ADVISORY_LOCK_SHARED_SQL = (
 @dataclass
 class PGGraphStorage(BaseGraphStorage):
     def __post_init__(self):
+        validate_workspace(self.workspace)
         # Graph name will be dynamically generated in initialize() based on workspace
         self.db: PostgreSQLDB | None = None
         # Chunk-level batching limits for the batch upsert / remove paths. The

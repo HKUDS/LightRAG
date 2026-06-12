@@ -233,6 +233,9 @@
       "disease": "Krankheit",
       "drug": "Medikament",
       "food": "Lebensmittel",
+      "table": "Tabelle",
+      "drawing": "Zeichnung",
+      "equation": "Gleichung",
       "other": "Sonstiges"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "Starten Sie eine Abfrage, indem Sie Ihre Frage unten eingeben",
       "clear": "Löschen",
       "send": "Senden",
+      "stop": "Stopp",
+      "userTerminated": "Vom Benutzer abgebrochen — die Antwort ist möglicherweise unvollständig",
       "placeholder": "Geben Sie Ihre Abfrage ein (Präfix unterstützt: /<Abfragemodus>)",
       "error": "Fehler: Antwort konnte nicht abgerufen werden",
       "queryModeError": "Nur die folgenden Abfragemodi werden unterstützt: {{modes}}",

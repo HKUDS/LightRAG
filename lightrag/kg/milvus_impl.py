@@ -4,7 +4,12 @@ import os
 from typing import Any, final, Optional, Dict
 from dataclasses import dataclass, fields
 import numpy as np
-from lightrag.utils import logger, compute_mdhash_id, _cooperative_yield
+from lightrag.utils import (
+    logger,
+    compute_mdhash_id,
+    _cooperative_yield,
+    validate_workspace,
+)
 from ..base import BaseVectorStorage
 from ..constants import (
     DEFAULT_MAX_FILE_PATH_LENGTH,
@@ -1648,6 +1653,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
 
         # Extract MilvusIndexConfig parameters from vector_db_storage_cls_kwargs

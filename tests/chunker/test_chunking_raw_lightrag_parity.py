@@ -6,12 +6,17 @@ result into the same ``chunking_func`` used by raw documents.  These tests
 guard the contract end-to-end:
 
 * T1: identical input text produces identical chunking inputs whether it
-  arrives as raw or as a lightrag ``.blocks.jsonl``.
-* T2: ``full_docs.content`` for lightrag carries the *full* merged text
-  with the ``{{LRdoc}}`` marker, while ``doc_status`` reports the bare
-  body length / summary (no marker leakage).
+  arrives as raw or as an already-parsed lightrag full_docs row pulled
+  back through the parse queue on resume (ReuseParser) — the only
+  production path for lightrag rows now that the ``docs_format="lightrag"``
+  enqueue entrypoint is removed (the in-run parse → chunk path is T6).
+* T2: after a pending_parse document is parsed by the native engine,
+  ``full_docs.content`` carries the *full* merged text with the
+  ``{{LRdoc}}`` marker (written by ``_persist_parsed_full_docs``), while
+  ``doc_status`` reports the bare body length / summary (no marker
+  leakage).
 * T3: ``extraction_meta["parse_format"]`` (surfaced via
-  ``doc_status.metadata``) is now ``"lightrag"`` for lightrag docs —
+  ``doc_status.metadata``) is ``"lightrag"`` for natively-parsed docs —
   previously a structured-parse fallback always tagged ``raw`` and
   silently mislabelled the persisted record.
 * T4: a raw document whose body coincidentally *looks* like structured
@@ -50,6 +55,7 @@ from lightrag.utils import (
     compute_mdhash_id,
     get_content_summary,
 )
+from lightrag.utils_pipeline import make_lightrag_doc_content
 
 
 # ---------------------------------------------------------------------------
@@ -129,43 +135,49 @@ def _attach_chunking_spy(rag: LightRAG) -> dict:
     return captured
 
 
-def _write_lightrag_blocks(blocks_path: Path, body_paragraphs: list[str]) -> None:
-    """Write a minimal valid LightRAG ``.blocks.jsonl`` with body paragraphs."""
-    lines = [
-        json.dumps(
-            {
-                "type": "meta",
-                "format": "lightrag",
-                "version": "1.0",
-                "format_version": "1.0",
-            },
-            ensure_ascii=False,
-        )
-    ]
-    for i, para in enumerate(body_paragraphs):
-        lines.append(
-            json.dumps(
-                {
-                    "type": "content",
-                    "blockid": f"b{i}",
-                    "format": "plain_text",
-                    "content": para,
-                },
-                ensure_ascii=False,
-            )
-        )
-    blocks_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 # ---------------------------------------------------------------------------
 # T1 — parity: raw vs lightrag produce identical chunking input
 # ---------------------------------------------------------------------------
 
 
+async def _seed_lightrag_row(rag: LightRAG, doc_id: str, *, body: str, file_path: str):
+    """Seed an already-parsed lightrag full_docs row + a PENDING doc_status.
+
+    Mirrors how lightrag-format rows exist in production: written by the
+    parsers (``_persist_parsed_full_docs``) and pulled back through the
+    parse queue (→ ReuseParser) only on resume/retry.
+    """
+    from datetime import datetime, timezone
+
+    await rag.full_docs.upsert(
+        {
+            doc_id: {
+                "content": make_lightrag_doc_content(body),
+                "file_path": file_path,
+                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
+            }
+        }
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    await rag.doc_status.upsert(
+        {
+            doc_id: {
+                "status": "pending",
+                "content_summary": get_content_summary(body),
+                "content_length": len(body),
+                "file_path": file_path,
+                "created_at": now,
+                "updated_at": now,
+                "track_id": "track-lr",
+            }
+        }
+    )
+
+
 @pytest.mark.offline
-def test_chunking_input_parity_raw_vs_lightrag(tmp_path, monkeypatch):
-    """Same body text in raw and lightrag formats must reach
-    ``chunking_func`` with byte-identical input."""
+def test_chunking_input_parity_raw_vs_lightrag(tmp_path):
+    """Same body text must reach ``chunking_func`` with byte-identical input
+    whether it arrives as raw or as a resumed lightrag full_docs row."""
 
     paragraphs = [
         "Alpha paragraph with enough words to make it look real.",
@@ -189,25 +201,16 @@ def test_chunking_input_parity_raw_vs_lightrag(tmp_path, monkeypatch):
         finally:
             await rag_raw.finalize_storages()
 
-        # ---- LIGHTRAG path ----
-        input_dir = tmp_path / "lr-input"
-        parsed_dir = input_dir / "__parsed__"
-        parsed_dir.mkdir(parents=True)
-        monkeypatch.setenv("INPUT_DIR", str(input_dir))
-
-        blocks_path = parsed_dir / "parity.blocks.jsonl"
-        _write_lightrag_blocks(blocks_path, paragraphs)
-
+        # ---- LIGHTRAG path (resume: seeded parsed row → ReuseParser) ----
         rag_lr = _new_rag(tmp_path / "lr")
         await rag_lr.initialize_storages()
         spy_lr = _attach_chunking_spy(rag_lr)
         try:
-            await rag_lr.apipeline_enqueue_documents(
-                "",
-                file_paths="parity.lightrag",
-                docs_format=FULL_DOCS_FORMAT_LIGHTRAG,
-                lightrag_document_paths="__parsed__/parity.blocks.jsonl",
-                track_id="track-lr",
+            await _seed_lightrag_row(
+                rag_lr,
+                "doc-parity-lr",
+                body=expected_merged,
+                file_path="parity.lightrag",
             )
             await rag_lr.apipeline_process_enqueue_documents()
         finally:
@@ -231,37 +234,69 @@ def test_chunking_input_parity_raw_vs_lightrag(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _stub_docx_blocks(monkeypatch, body_paragraphs: list[str]) -> None:
+    """Stub the docx extractor so native parse yields deterministic blocks;
+    the adapter still writes the canonical .blocks.jsonl + sidecars and
+    persists the lightrag-format full_docs row."""
+
+    def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        return [
+            {
+                "uuid": f"para-{i}",
+                "uuid_end": f"para-{i}",
+                "heading": "",
+                "content": para,
+                "type": "text",
+                "parent_headings": [],
+                "level": 0,
+                "table_chunk_role": "none",
+            }
+            for i, para in enumerate(body_paragraphs)
+        ]
+
+    monkeypatch.setattr(
+        "lightrag.parser.docx.parse_document.extract_docx_blocks",
+        _stub_extract,
+    )
+
+
 @pytest.mark.offline
 def test_full_docs_content_carries_full_merged_text(tmp_path, monkeypatch):
+    """After the native engine parses a pending_parse upload,
+    ``_persist_parsed_full_docs`` stores the *full* merged text with the
+    ``{{LRdoc}}`` marker while doc_status reports bare-body semantics."""
+
     body = "x" * 5000  # single paragraph, 5000 chars
-    paragraphs = [body]
 
     async def _run():
         input_dir = tmp_path / "input"
-        parsed_dir = input_dir / "__parsed__"
-        parsed_dir.mkdir(parents=True)
+        input_dir.mkdir()
         monkeypatch.setenv("INPUT_DIR", str(input_dir))
-
-        blocks_path = parsed_dir / "big.blocks.jsonl"
-        _write_lightrag_blocks(blocks_path, paragraphs)
+        (input_dir / "big.docx").write_bytes(b"fake docx bytes")
+        _stub_docx_blocks(monkeypatch, [body])
 
         rag = _new_rag(tmp_path / "work")
         await rag.initialize_storages()
         try:
             await rag.apipeline_enqueue_documents(
                 "",
-                file_paths="big.lightrag",
-                docs_format=FULL_DOCS_FORMAT_LIGHTRAG,
-                lightrag_document_paths="__parsed__/big.blocks.jsonl",
+                file_paths="big.docx",
+                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                parse_engine="native",
                 track_id="track-big",
             )
+            await rag.apipeline_process_enqueue_documents()
 
-            doc_id = compute_mdhash_id("big.lightrag", prefix="doc-")
+            doc_id = compute_mdhash_id("big.docx", prefix="doc-")
             full_doc = await rag.full_docs.get_by_id(doc_id)
             assert full_doc is not None
             # full_docs preserves the marker AND the full merged text.
             assert full_doc["content"] == LIGHTRAG_DOC_CONTENT_PREFIX + body
             assert full_doc.get("parse_format") == FULL_DOCS_FORMAT_LIGHTRAG
+            assert full_doc.get("sidecar_location"), (
+                "native parse must record the sidecar_location on the "
+                "lightrag full_docs row"
+            )
 
             # doc_status reports body-length semantics (no marker leakage).
             status_doc = await rag.doc_status.get_by_id(doc_id)
@@ -294,18 +329,17 @@ def test_extraction_meta_records_lightrag_parse_format(tmp_path, monkeypatch):
     """Before the unification, a structured-parse fallback tagged
     ``extraction_meta.parse_format = raw`` for lightrag docs, silently
     mislabelling them in ``doc_status.metadata``.  Assert the tag now
-    reflects the persisted format end-to-end."""
+    reflects the persisted format end-to-end (pending_parse upload →
+    native parse → lightrag full_docs row)."""
 
     paragraphs = ["Body paragraph for parse_format tagging test."]
 
     async def _run():
         input_dir = tmp_path / "input"
-        parsed_dir = input_dir / "__parsed__"
-        parsed_dir.mkdir(parents=True)
+        input_dir.mkdir()
         monkeypatch.setenv("INPUT_DIR", str(input_dir))
-
-        blocks_path = parsed_dir / "tag.blocks.jsonl"
-        _write_lightrag_blocks(blocks_path, paragraphs)
+        (input_dir / "tag.docx").write_bytes(b"fake docx bytes")
+        _stub_docx_blocks(monkeypatch, paragraphs)
 
         rag = _new_rag(tmp_path / "work")
         await rag.initialize_storages()
@@ -313,14 +347,14 @@ def test_extraction_meta_records_lightrag_parse_format(tmp_path, monkeypatch):
         try:
             await rag.apipeline_enqueue_documents(
                 "",
-                file_paths="tag.lightrag",
-                docs_format=FULL_DOCS_FORMAT_LIGHTRAG,
-                lightrag_document_paths="__parsed__/tag.blocks.jsonl",
+                file_paths="tag.docx",
+                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                parse_engine="native",
                 track_id="track-tag",
             )
             await rag.apipeline_process_enqueue_documents()
 
-            doc_id = compute_mdhash_id("tag.lightrag", prefix="doc-")
+            doc_id = compute_mdhash_id("tag.docx", prefix="doc-")
             status_doc = await rag.doc_status.get_by_id(doc_id)
             assert status_doc is not None
             metadata = (
@@ -565,28 +599,7 @@ def test_pending_parse_lightrag_summary_populated_after_processed(
 
         source_path = input_dir / "summary.docx"
         source_path.write_bytes(b"fake docx bytes")
-
-        # Stub the docx extractor so the parsed blocks are deterministic;
-        # the adapter still writes the canonical .blocks.jsonl + sidecars.
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
-            return [
-                {
-                    "uuid": f"para-{i}",
-                    "uuid_end": f"para-{i}",
-                    "heading": "",
-                    "content": para,
-                    "type": "text",
-                    "parent_headings": [],
-                    "level": 0,
-                    "table_chunk_role": "none",
-                }
-                for i, para in enumerate(body_paragraphs)
-            ]
-
-        monkeypatch.setattr(
-            "lightrag.parser.docx.parse_document.extract_docx_blocks",
-            _stub_extract,
-        )
+        _stub_docx_blocks(monkeypatch, body_paragraphs)
 
         rag = _new_rag(tmp_path / "work")
         await rag.initialize_storages()
@@ -595,6 +608,7 @@ def test_pending_parse_lightrag_summary_populated_after_processed(
                 "",
                 file_paths="summary.docx",
                 docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                parse_engine="native",
                 track_id="track-summary",
             )
 

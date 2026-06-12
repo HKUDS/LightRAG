@@ -36,6 +36,15 @@ DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
 DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
 # Maximum token size allowed for entity extraction input context
 DEFAULT_MAX_EXTRACT_INPUT_TOKENS = 20480
+# Maximum token size for the per-chunk `---Section Context---` heading
+# breadcrumb injected into the extraction prompt. Keeps section metadata from
+# pushing an otherwise-valid chunk past the provider context window; over budget
+# the breadcrumb collapses to ``first → … → leaf`` (top-level + nearest section).
+DEFAULT_MAX_SECTION_CONTEXT_TOKENS = 256
+# Per-level character cap for each heading in that breadcrumb. Must stay below
+# 1/3 of DEFAULT_MAX_SECTION_CONTEXT_TOKENS so the collapsed two-level form
+# (first + leaf, plus separator/ellipsis) always fits within the token budget.
+DEFAULT_HEADING_LEVEL_MAX_CHARS = 80
 # Separator for: description, source_id and relation-key fields(Can not be changed after data inserted)
 GRAPH_FIELD_SEP = "<SEP>"
 
@@ -120,6 +129,9 @@ DEFAULT_CHUNK_P_SIZE = 2000
 
 # LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]
+# Post-parse persistence marker: full_docs rows written by the parsers carry
+# this parse_format; on resume/retry they route to ReuseParser. Not a valid
+# enqueue docs_format (the 'lightrag' ingestion entrypoint was removed).
 FULL_DOCS_FORMAT_LIGHTRAG = "lightrag"  # content in LightRAG Document files
 FULL_DOCS_FORMAT_PENDING_PARSE = (
     "pending_parse"  # file saved but not yet parsed; parse_native will read from disk
@@ -129,101 +141,20 @@ FULL_DOCS_FORMAT_PENDING_PARSE = (
 # leading summary of the parsed document so paginated APIs can show a real
 # preview without loading the full LightRAG Document file.
 LIGHTRAG_DOC_CONTENT_PREFIX = "{{LRdoc}}"
+# Engine identifier strings (registry keys). The set of user-selectable
+# engines and their suffix capabilities now live in
+# lightrag.parser.registry (ParserSpec table) — the single source of truth.
 PARSER_ENGINE_LEGACY = "legacy"
 PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"
 PARSER_ENGINE_DOCLING = "docling"
-SUPPORTED_PARSER_ENGINES = frozenset(
-    {
-        PARSER_ENGINE_LEGACY,
-        PARSER_ENGINE_NATIVE,
-        PARSER_ENGINE_MINERU,
-        PARSER_ENGINE_DOCLING,
-    }
-)
-PARSER_ENGINE_SUFFIX_CAPABILITIES = {
-    PARSER_ENGINE_LEGACY: frozenset(
-        {
-            "txt",
-            "md",
-            "mdx",
-            "pdf",
-            "docx",
-            "pptx",
-            "xlsx",
-            "rtf",
-            "odt",
-            "tex",
-            "epub",
-            "html",
-            "htm",
-            "csv",
-            "json",
-            "xml",
-            "yaml",
-            "yml",
-            "log",
-            "conf",
-            "ini",
-            "properties",
-            "sql",
-            "bat",
-            "sh",
-            "c",
-            "h",
-            "cpp",
-            "hpp",
-            "py",
-            "java",
-            "js",
-            "ts",
-            "swift",
-            "go",
-            "rb",
-            "php",
-            "css",
-            "scss",
-            "less",
-        }
-    ),
-    PARSER_ENGINE_NATIVE: frozenset({"docx"}),
-    PARSER_ENGINE_MINERU: frozenset(
-        {
-            "pdf",
-            "doc",
-            "docx",
-            "ppt",
-            "pptx",
-            "xls",
-            "xlsx",
-            "png",
-            "jpg",
-            "jpeg",
-            "jp2",
-            "webp",
-            "gif",
-            "bmp",
-        }
-    ),
-    PARSER_ENGINE_DOCLING: frozenset(
-        {
-            "pdf",
-            "docx",
-            "pptx",
-            "xlsx",
-            "md",
-            "html",
-            "xhtml",
-            "png",
-            "jpg",
-            "jpeg",
-            "tiff",
-            "webp",
-            "bmp",
-        }
-    ),
-}
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
+# Prefix marking a doc_status content_summary as GENERATED from a file
+# extraction error (enqueue-time error documents and parse-stage FAILED
+# upserts). Doubles as the match sentinel that lets a later failure replace
+# a stale generated summary while real raw-document summaries are preserved —
+# keep every producer on this constant so the match never drifts.
+FILE_EXTRACTION_SUMMARY_PREFIX = "[File Extraction]"
 
 # Suffixes for parser artifact subdirectories under ``<input>/__parsed__/``.
 # Centralising them here keeps the sidecar writer, engine cache modules and
@@ -326,7 +257,7 @@ DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS = 100
 # Minimum image side (width or height) in pixels accepted for VLM analysis.
 # Anything smaller is treated as decorative (icons, separators, etc.) and
 # written as status="skipped".
-DEFAULT_MM_IMAGE_MIN_PIXEL = 32
+DEFAULT_MM_IMAGE_MIN_PIXEL = 64
 
 # Embedding configuration defaults
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
@@ -336,7 +267,7 @@ DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computation
 DEFAULT_TIMEOUT = 300
 
 # Default llm and embedding timeout
-DEFAULT_LLM_TIMEOUT = 180
+DEFAULT_LLM_TIMEOUT = 240
 DEFAULT_EMBEDDING_TIMEOUT = 30
 
 # Rerank async / timeout defaults

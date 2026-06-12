@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -25,12 +26,22 @@ from lightrag.parser.routing import (
     resolve_stored_document_parser_engine,
     validate_parser_routing_config,
 )
+from lightrag.parser.base import ParseContext
+from lightrag.parser.registry import get_parser
 from lightrag.utils import (
     EmbeddingFunc,
     Tokenizer,
     compute_mdhash_id,
     safe_vdb_operation_with_exception,
 )
+
+
+async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
+    """Drive a parser the way the pipeline worker does (registry dispatch)."""
+    result = await get_parser(engine).parse(
+        ParseContext(rag, doc_id, file_path, content_data)
+    )
+    return result.to_dict()
 
 
 class _SimpleTokenizerImpl:
@@ -98,9 +109,11 @@ def test_parse_engine_routing_by_filename_and_env(monkeypatch):
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru-iet,*:native")
     assert resolve_stored_document_parser_engine("paper.pdf", {}) == "mineru"
+    # A row that is not pending_parse is already-extracted content -> the
+    # passthrough handler (legacy now means worker-stage extraction).
     assert (
         resolve_stored_document_parser_engine("paper.pdf", {"parse_engine": "native"})
-        == "legacy"
+        == "passthrough"
     )
 
 
@@ -1882,55 +1895,37 @@ def test_content_hash_lookup_via_storage(tmp_path):
 
 
 @pytest.mark.offline
-def test_lightrag_format_uses_blocks_file_hash(tmp_path, monkeypatch):
-    async def _run():
-        input_dir = tmp_path / "input"
-        parsed_dir = input_dir / "__parsed__"
-        parsed_dir.mkdir(parents=True)
-        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+def test_enqueue_rejects_removed_or_unknown_docs_format(tmp_path):
+    """The 'lightrag' ingestion entrypoint was removed: enqueue accepts only
+    raw / pending_parse and raises explicitly for anything else (previously
+    an unknown value was silently treated as raw)."""
 
-        rag = _new_rag(tmp_path / "work")
-        rag.workspace = "test-pending-parse-duplicate"
+    async def _run():
+        rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
-            blocks_path = parsed_dir / "doc.blocks.jsonl"
-            blocks_path.write_text(
-                json.dumps({"type": "header"})
-                + "\n"
-                + json.dumps({"type": "content", "text": "hello"})
-                + "\n",
-                encoding="utf-8",
-            )
-
-            # Enqueue twice with different filenames pointing at the same
-            # blocks file: the second one must be rejected as content_hash dup.
-            # ``content`` arg is ignored on the LIGHTRAG path — the LightRAG
-            # Document file is read to derive both content_hash and the
-            # ``{{LRdoc}}`` summary — so any string here is fine.
-            await rag.apipeline_enqueue_documents(
-                "",
-                file_paths="first.lightrag",
-                docs_format="lightrag",
-                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
-                track_id="track-a",
-            )
-            await rag.apipeline_enqueue_documents(
-                "",
-                file_paths="second.lightrag",
-                docs_format="lightrag",
-                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
-                track_id="track-b",
-            )
-            second_id = compute_mdhash_id("second.lightrag", prefix="doc-")
-            assert await rag.full_docs.get_by_id(second_id) is None
-
+            with pytest.raises(ValueError, match="Unsupported docs_format"):
+                await rag.apipeline_enqueue_documents(
+                    "",
+                    file_paths="first.lightrag",
+                    docs_format="lightrag",
+                )
+            with pytest.raises(ValueError, match="Unsupported docs_format"):
+                await rag.apipeline_enqueue_documents(
+                    "some content",
+                    file_paths="doc.txt",
+                    docs_format="bogus",
+                )
+            # The companion parameter is gone entirely (no compat shim).
+            with pytest.raises(TypeError):
+                await rag.apipeline_enqueue_documents(  # type: ignore[call-arg]
+                    "",
+                    file_paths="first.lightrag",
+                    lightrag_document_paths="__parsed__/doc.blocks.jsonl",
+                )
+            # Nothing was enqueued by the rejected calls.
             failed = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
-            kinds = {
-                getattr(doc, "metadata", {}).get("duplicate_kind")
-                for doc in failed.values()
-                if getattr(doc, "metadata", {}).get("is_duplicate")
-            }
-            assert "content_hash" in kinds
+            assert failed == {}
         finally:
             await rag.finalize_storages()
 
@@ -2266,22 +2261,15 @@ def test_three_phase_status_flow(tmp_path, monkeypatch):
         async def _fake_merge(*args, **kwargs):
             return None
 
-        async def _fake_parse_native(doc_id, file_path, content_data):
-            return {
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "parse_format": "raw",
-                "content": "hello world",
-                "blocks_path": "",
-            }
-
         async def _fake_analyze(doc_id, file_path, parsed_data, **kwargs):
             parsed_data["multimodal_processed"] = True
             return parsed_data
 
         monkeypatch.setattr(rag, "_process_extract_entities", _fake_extract)
         monkeypatch.setattr("lightrag.pipeline.merge_nodes_and_edges", _fake_merge)
-        monkeypatch.setattr(rag, "parse_native", _fake_parse_native)
+        # "sample text" enqueues as RAW; the worker dispatches it to the
+        # PassthroughParser (no parse_* wrapper involved), so no parse stub is
+        # needed — the status-flow assertions below exercise the real path.
         monkeypatch.setattr(rag, "analyze_multimodal", _fake_analyze)
 
         status_seq: list[str] = []
@@ -2392,8 +2380,8 @@ def test_analyze_multimodal_invalid_json_hard_fails(tmp_path):
 
         drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
-        # No retry: VLM mock called exactly once.
-        assert calls["n"] == 1
+        # One JSON conformance retry, then the hard failure surfaces.
+        assert calls["n"] == 2
         # Sidecar carries a failure marker so a re-run sees the prior failure
         # and does not silently consume it.
         assert result["status"] == "failure"
@@ -2941,7 +2929,9 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
         monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
-        parsed = await rag.parse_mineru(
+        parsed = await _parse_via_registry(
+            rag,
+            "mineru",
             doc_id="doc-1",
             file_path=str(src_file),
             content_data={"content": ""},
@@ -3059,7 +3049,9 @@ def test_parse_mineru_uses_hint_source_and_canonical_upload_name(tmp_path, monke
         assert content_data is not None
         content_data["source_file"] = status["metadata"]["source_file"]
 
-        parsed = await rag.parse_mineru(
+        parsed = await _parse_via_registry(
+            rag,
+            "mineru",
             doc_id=doc_id,
             file_path=status["file_path"],
             content_data=content_data,
@@ -3173,6 +3165,82 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
         # covers chunk assembly. The companion regression below
         # (test_parse_mm_display_name_matches_chunk_format) pins the
         # builder/consumer format contract.
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_mm_chunks_sanitize_vlm_control_characters(tmp_path):
+    """Regression: VLM analysis fields parsed from LLM JSON can carry
+    control characters (unescaped LaTeX ``\\frac`` decodes as ``\\x0c`` +
+    ``rac``). The builder must strip them — they propagate into chunk
+    content, vector stores and graph node attributes, where XML-illegal
+    characters crash the GraphML flush with "All strings must be XML
+    compatible".
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            json.dumps(
+                {
+                    "type": "meta",
+                    "format": "lightrag",
+                    "version": "1.0",
+                    "doc_id": "doc-1",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        tables = tmp_path / "demo.tables.json"
+        tables.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "tables": {
+                        "t1": {
+                            "id": "t1",
+                            "heading": "章节\x0bB",
+                            "footnotes": ["脚注\x00一"],
+                            "llm_analyze_result": {
+                                "name": "成本对比表\x00",
+                                "description": "GraphRAG消耗$\x0crac{610}{C}$次调用",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        mm_chunks = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+        )
+        assert len(mm_chunks) == 1
+        chunk = mm_chunks[0]
+
+        illegal = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+        assert not illegal.search(chunk["content"])
+        assert not illegal.search(chunk["heading"]["heading"])
+        # Control chars are removed, surrounding text retained.
+        assert "[Table Name]成本对比表" in chunk["content"]
+        assert "$rac{610}{C}$" in chunk["content"]
+        assert "[Table Footnotes]脚注一" in chunk["content"]
+        assert chunk["heading"]["heading"] == "章节B"
 
         await rag.finalize_storages()
 
@@ -3355,7 +3423,9 @@ def test_parse_mineru_empty_service_result_raises_without_fallback(
         monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake")
 
         with pytest.raises(FileNotFoundError, match="content_list.json"):
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id="doc-local-1",
                 file_path=str(src_file),
                 content_data={"content": "native fallback content"},

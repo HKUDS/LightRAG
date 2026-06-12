@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
@@ -36,6 +36,7 @@ from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.pipeline import _BatchRunContext
+from lightrag.parser.registry import parser_specs_snapshot
 from lightrag.utils import EmbeddingFunc, Tokenizer
 
 
@@ -128,9 +129,12 @@ async def _make_ctx(rag: LightRAG) -> tuple[_BatchRunContext, dict, Any]:
         pipeline_status_lock=pipeline_status_lock,
         semaphore=asyncio.Semaphore(2),
         total_files=0,
-        q_native=asyncio.Queue(),
-        q_mineru=asyncio.Queue(),
-        q_docling=asyncio.Queue(),
+        parse_queues={
+            "native": asyncio.Queue(),
+            "mineru": asyncio.Queue(),
+            "docling": asyncio.Queue(),
+        },
+        parser_specs=parser_specs_snapshot(),
         q_analyze=asyncio.Queue(),
         q_process=asyncio.Queue(),
     )
@@ -168,7 +172,9 @@ async def _run_worker_until_drained(
 
 
 @pytest.mark.asyncio
-async def test_parse_worker_drains_queue_when_cancelled_before_start(tmp_path):
+async def test_parse_worker_drains_queue_when_cancelled_before_start(
+    tmp_path, monkeypatch
+):
     """Cancellation set BEFORE the worker pulls any item: parser must not
     run, every queued doc is FAILED with a friendly message, q.join()
     returns quickly."""
@@ -177,9 +183,10 @@ async def test_parse_worker_drains_queue_when_cancelled_before_start(tmp_path):
     try:
         ctx, pipeline_status, _ = await _make_ctx(rag)
 
-        rag.parse_native = AsyncMock(
-            side_effect=AssertionError("parse_native must not be called")
-        )
+        # The worker resolves its parser via the registry; if the boundary
+        # cancellation check works, get_parser is never reached.
+        get_parser_spy = Mock(side_effect=AssertionError("parser must not be resolved"))
+        monkeypatch.setattr("lightrag.pipeline.get_parser", get_parser_spy)
 
         for i in range(3):
             doc_id = f"doc-{i}"
@@ -199,19 +206,19 @@ async def test_parse_worker_drains_queue_when_cancelled_before_start(tmp_path):
                     }
                 }
             )
-            await ctx.q_native.put((doc_id, _make_status_doc(doc_id)))
+            await ctx.parse_queues["native"].put((doc_id, _make_status_doc(doc_id)))
 
         pipeline_status["cancellation_requested"] = True
 
         start = time.monotonic()
         await _run_worker_until_drained(
-            lambda: rag._parse_worker("native", ctx.q_native, ctx),
-            ctx.q_native,
+            lambda: rag._parse_worker("native", ctx.parse_queues["native"], ctx),
+            ctx.parse_queues["native"],
         )
         elapsed = time.monotonic() - start
 
         assert elapsed < 1.0, f"queue drain should be fast, took {elapsed:.2f}s"
-        assert rag.parse_native.await_count == 0
+        assert get_parser_spy.call_count == 0
 
         cancel_messages = [
             m

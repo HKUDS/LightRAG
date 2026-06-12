@@ -26,7 +26,7 @@ LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
 # 所有 LLM 请求的默认超时时间
-LLM_TIMEOUT=180
+LLM_TIMEOUT=240
 
 # 所有 LLM 调用的默认最大并发数(MAX_ASYNC 作为兼容旧名仍可用)
 MAX_ASYNC_LLM=4
@@ -244,7 +244,7 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-5-mini
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
-LLM_TIMEOUT=180
+LLM_TIMEOUT=240
 MAX_ASYNC_LLM=4
 
 ###########################################################################
@@ -293,7 +293,7 @@ KEYWORD_OPENAI_LLM_MAX_TOKENS=2048
 # Optional for Qwen-style models served by vLLM when you want to disable thinking.
 KEYWORD_OPENAI_LLM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'
 KEYWORD_MAX_ASYNC_LLM=4
-KEYWORD_LLM_TIMEOUT=180
+KEYWORD_LLM_TIMEOUT=60
 ```
 
 这个模式不是跨 provider，因为三个角色的 binding 都是 `openai`。LightRAG 会分别把每个角色的 `*_LLM_BINDING_HOST` 和 `*_LLM_BINDING_API_KEY` 传给 OpenAI-compatible client。

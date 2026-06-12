@@ -34,6 +34,7 @@ from lightrag.constants import (
 )
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.pipeline import _BatchRunContext
+from lightrag.parser.registry import parser_specs_snapshot
 from lightrag.utils import EmbeddingFunc, Tokenizer, get_content_summary
 from lightrag.utils_pipeline import make_lightrag_doc_content
 
@@ -94,9 +95,12 @@ async def _make_ctx(rag: LightRAG) -> _BatchRunContext:
         pipeline_status_lock=pipeline_status_lock,
         semaphore=asyncio.Semaphore(2),
         total_files=1,
-        q_native=asyncio.Queue(),
-        q_mineru=asyncio.Queue(),
-        q_docling=asyncio.Queue(),
+        parse_queues={
+            "native": asyncio.Queue(),
+            "mineru": asyncio.Queue(),
+            "docling": asyncio.Queue(),
+        },
+        parser_specs=parser_specs_snapshot(),
         q_analyze=asyncio.Queue(),
         q_process=asyncio.Queue(),
     )
@@ -158,13 +162,15 @@ async def test_parse_worker_drops_body_and_sets_summary_length(tmp_path):
             }
         )
         await _seed_doc_status(rag, doc_id)
-        await ctx.q_native.put(
+        await ctx.parse_queues["native"].put(
             (doc_id, _make_status_doc(doc_id, content_hash="hash-raw"))
         )
 
-        worker = asyncio.create_task(rag._parse_worker("native", ctx.q_native, ctx))
+        worker = asyncio.create_task(
+            rag._parse_worker("native", ctx.parse_queues["native"], ctx)
+        )
         try:
-            await asyncio.wait_for(ctx.q_native.join(), timeout=2.0)
+            await asyncio.wait_for(ctx.parse_queues["native"].join(), timeout=2.0)
         finally:
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)

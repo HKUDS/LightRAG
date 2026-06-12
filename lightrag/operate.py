@@ -18,6 +18,8 @@ from lightrag.utils import (
     Tokenizer,
     is_float_regex,
     sanitize_and_normalize_extracted_text,
+    sanitize_text_for_encoding,
+    repair_vlm_json_escape_damage_nested,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -55,6 +57,8 @@ from lightrag.base import (
     QueryContextResult,
 )
 from lightrag.chunk_schema import (
+    HEADING_BREADCRUMB_SEP,
+    format_heading_context,
     format_parent_headings,
     strip_internal_multimodal_markup_for_extraction,
 )
@@ -63,6 +67,7 @@ from lightrag.constants import (
     GRAPH_FIELD_SEP,
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
+    DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_QUERY_PRIORITY,
@@ -150,6 +155,54 @@ def _truncate_entity_identifier(
         preview,
     )
     return display_value
+
+
+def _truncate_section_context(
+    heading_path: str,
+    tokenizer: "Tokenizer | None",
+    max_tokens: int,
+) -> str:
+    """Token-budget the `---Section Context---` breadcrumb before injection.
+
+    The breadcrumb is metadata layered on top of the (already chunk-sized)
+    input text, so an unbounded heading chain could push an otherwise-valid
+    chunk past the provider context window. When the path exceeds ``max_tokens``
+    we first collapse it to the **first** level (top-level document location)
+    and the **last/leaf** level (the chunk's own, most-specific section),
+    eliding the middle with ``first → … → leaf``. A token-dense path (emoji /
+    byte-level tokenizers) can still exceed the budget even with one or two
+    levels, so a hard token cap is always applied as a backstop — the returned
+    string is guaranteed to fit ``max_tokens``. ``max_tokens <= 0`` or a missing
+    tokenizer disables the cap.
+    """
+    if not heading_path or tokenizer is None or max_tokens <= 0:
+        return heading_path
+    if len(tokenizer.encode(heading_path)) <= max_tokens:
+        return heading_path
+    levels = heading_path.split(HEADING_BREADCRUMB_SEP)
+    if len(levels) >= 3:
+        heading_path = (
+            f"{levels[0]}{HEADING_BREADCRUMB_SEP}…{HEADING_BREADCRUMB_SEP}{levels[-1]}"
+        )
+    # Backstop: enforce the cap for token-dense short paths (and any collapsed
+    # form that is still over budget). Prefer a trailing ellipsis when it fits,
+    # but re-encode each candidate because custom/BPE tokenizers may tokenize
+    # the suffix differently when it is appended to decoded prefix text.
+    tokens = tokenizer.encode(heading_path)
+    if len(tokens) > max_tokens:
+        ellipsis = "…"
+        ellipsis_token_count = len(tokenizer.encode(ellipsis))
+        if ellipsis_token_count <= max_tokens:
+            for keep in range(max_tokens - ellipsis_token_count, -1, -1):
+                candidate = tokenizer.decode(tokens[:keep]).rstrip() + ellipsis
+                if len(tokenizer.encode(candidate)) <= max_tokens:
+                    return candidate
+        for keep in range(max_tokens, -1, -1):
+            candidate = tokenizer.decode(tokens[:keep]).rstrip()
+            if len(tokenizer.encode(candidate)) <= max_tokens:
+                return candidate
+        return ""
+    return heading_path
 
 
 def _truncate_vdb_content(content: str, global_config: dict, content_label: str) -> str:
@@ -240,8 +293,11 @@ async def _handle_entity_relation_summary(
         return "", False
 
     # If only one description, return it directly (no need for LLM call)
+    # Still sanitize: descriptions read back from existing graph nodes (or
+    # injected by non-extraction producers) may carry XML-illegal control
+    # characters that would crash the GraphML flush downstream.
     if len(description_list) == 1:
-        return description_list[0], False
+        return sanitize_text_for_encoding(description_list[0]), False
 
     # Get configuration
     tokenizer: Tokenizer = global_config["tokenizer"]
@@ -268,7 +324,12 @@ async def _handle_entity_relation_summary(
                 and total_tokens < summary_max_tokens
             ):
                 # no LLM needed, just join the descriptions
-                final_description = separator.join(current_list)
+                # Sanitize for the same reason as the single-description
+                # early return above: inputs merged from pre-existing graph
+                # data are not guaranteed XML-safe.
+                final_description = sanitize_text_for_encoding(
+                    separator.join(current_list)
+                )
                 return final_description if final_description else "", llm_was_used
             else:
                 if total_tokens > summary_context_size and len(current_list) <= 2:
@@ -415,6 +476,12 @@ async def _summarize_descriptions(
         cache_type="summary",
         llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
     )
+
+    # The LLM response is the only description path that bypasses
+    # extraction-time sanitization; control chars / surrogates left here
+    # would later break GraphML (XML) serialization on write. Strip them
+    # at the source, symmetric with how extracted descriptions are cleaned.
+    summary = sanitize_text_for_encoding(summary)
 
     # Check summary token length against embedding limit
     embedding_token_limit = global_config.get("embedding_token_limit")
@@ -679,6 +746,13 @@ async def _process_json_extraction_result(
             f"{chunk_key}: JSON extraction result is not a dict, got {type(parsed).__name__}"
         )
         return dict(maybe_nodes), dict(maybe_edges)
+
+    # Models quoting LaTeX in descriptions routinely under-escape backslashes
+    # ("\frac" is valid JSON meaning form feed + "rac"); restore the zero-risk
+    # cases before sanitization would otherwise delete the control characters
+    # and leave a maimed formula. Covers initial extraction, gleaning, and
+    # cache-rebuild — all three flow through this parser.
+    parsed = repair_vlm_json_escape_damage_nested(parsed, context=chunk_key)
 
     # Process entities
     entities_list = parsed.get("entities", [])
@@ -3349,6 +3423,27 @@ async def extract_entities(
         # Get file path from chunk data or use default
         file_path = chunk_dp.get("file_path", "unknown_source")
 
+        # Build the optional `---Section Context---` block from the chunk's
+        # heading breadcrumb. The marker/wrapping lives entirely in the prompt
+        # template; here we only produce the data and decide whether to inject
+        # it. Each level is char-capped inside format_heading_context, and the
+        # joined path is token-budgeted here so heading metadata can never push
+        # an otherwise-valid chunk past the provider context window. When the
+        # chunk carries no heading, the block is an empty string so the user
+        # prompt stays byte-identical to the no-context form.
+        heading_path = _truncate_section_context(
+            format_heading_context(chunk_dp),
+            extract_tokenizer,
+            DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
+        )
+        heading_context_block = (
+            PROMPTS["entity_extraction_section_context"].format(
+                heading_path=heading_path
+            )
+            if heading_path
+            else ""
+        )
+
         # Create cache keys collector for batch processing
         cache_keys_collector = []
 
@@ -3359,7 +3454,13 @@ async def extract_entities(
             ].format(**context_base)
             entity_extraction_user_prompt = PROMPTS[
                 "entity_extraction_json_user_prompt"
-            ].format(**{**context_base, "input_text": content})
+            ].format(
+                **{
+                    **context_base,
+                    "input_text": content,
+                    "heading_context_block": heading_context_block,
+                }
+            )
             entity_continue_extraction_user_prompt = PROMPTS[
                 "entity_continue_extraction_json_user_prompt"
             ].format(**context_base)
@@ -3370,7 +3471,13 @@ async def extract_entities(
             ].format(**context_base)
             entity_extraction_user_prompt = PROMPTS[
                 "entity_extraction_user_prompt"
-            ].format(**{**context_base, "input_text": content})
+            ].format(
+                **{
+                    **context_base,
+                    "input_text": content,
+                    "heading_context_block": heading_context_block,
+                }
+            )
             entity_continue_extraction_user_prompt = PROMPTS[
                 "entity_continue_extraction_user_prompt"
             ].format(**{**context_base, "input_text": content})
@@ -4596,15 +4703,27 @@ async def _attach_content_headings(
     the chunks up by ``chunk_id`` in text_chunks storage and attach the parent
     heading path. Only chunks that actually have parent headings get the field,
     so empty paths are omitted from the JSON sent to the LLM.
+
+    Each level is char-capped inside ``format_parent_headings`` and the joined
+    path is token-budgeted against ``DEFAULT_MAX_SECTION_CONTEXT_TOKENS`` here —
+    mirroring the extraction breadcrumb (see ``_truncate_section_context``). The
+    query-context token truncation only keeps/drops whole chunks; it never trims
+    this metadata inside a retained chunk, so a deep heading chain (the per-level
+    cap bounds each level's length, not the number of levels) is bounded here.
     """
     if not text_chunks_db or not chunks:
         return
+    tokenizer = text_chunks_db.global_config.get("tokenizer")
     chunk_ids = [c.get("chunk_id") for c in chunks]
     chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
     for chunk, data in zip(chunks, chunk_data_list):
         if not isinstance(data, dict):
             continue
-        headings = format_parent_headings(data)
+        headings = _truncate_section_context(
+            format_parent_headings(data),
+            tokenizer,
+            DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
+        )
         if headings:
             chunk["content_headings"] = headings
 

@@ -14,11 +14,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
-    PARSER_ENGINE_DOCLING,
     PARSER_ENGINE_LEGACY,
-    PARSER_ENGINE_MINERU,
-    PARSER_ENGINE_NATIVE,
-    PARSER_ENGINE_SUFFIX_CAPABILITIES,
     PROCESS_OPTION_CHUNK_CHARS,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_VECTOR,
@@ -29,8 +25,15 @@ from lightrag.constants import (
     PROCESS_OPTION_SKIP_KG,
     PROCESS_OPTION_TABLES,
     ProcessChunkingOption,
-    SUPPORTED_PARSER_ENGINES,
     SUPPORTED_PROCESS_OPTIONS,
+)
+from lightrag.parser.registry import (
+    PARSER_ENGINE_PASSTHROUGH,
+    PARSER_ENGINE_REUSE,
+    engine_endpoint_configured,
+    engine_endpoint_requirement,
+    supported_parser_engines,
+    suffix_capabilities,
 )
 from lightrag.utils import logger, parse_optional_float
 
@@ -39,10 +42,6 @@ from collections.abc import Mapping
 from copy import deepcopy
 
 _PARSER_RULE_SPLIT_RE = re.compile(r"[;,]")
-_PARSER_ENGINE_ENDPOINT_ENV = {
-    PARSER_ENGINE_DOCLING: "DOCLING_ENDPOINT",
-}
-_VALID_MINERU_API_MODES = {"official", "local"}
 
 # Trailing parser-hint pattern: matches ``.[engine].ext`` at end of basename.
 # Group 1 captures the raw engine token (still needs normalize_parser_engine
@@ -459,12 +458,12 @@ def split_engine_and_options(bracket_inner: str) -> tuple[str | None, str]:
     if "-" in inner:
         head, _, tail = inner.partition("-")
         engine_candidate = normalize_parser_engine(head)
-        if engine_candidate in SUPPORTED_PARSER_ENGINES:
+        if engine_candidate in supported_parser_engines():
             return engine_candidate, tail.strip()
         return None, ""
 
     engine_candidate = normalize_parser_engine(inner)
-    if engine_candidate in SUPPORTED_PARSER_ENGINES:
+    if engine_candidate in supported_parser_engines():
         return engine_candidate, ""
     return None, ""
 
@@ -474,35 +473,16 @@ def parser_suffix(file_path: str | Path) -> str:
 
 
 def parser_engine_supports_suffix(engine: str, suffix: str) -> bool:
-    return suffix.lower().lstrip(".") in PARSER_ENGINE_SUFFIX_CAPABILITIES.get(
-        engine, frozenset()
-    )
+    return suffix.lower().lstrip(".") in suffix_capabilities(engine)
 
 
 def parser_engine_endpoint_configured(engine: str) -> bool:
-    if engine == PARSER_ENGINE_MINERU:
-        mode = os.getenv("MINERU_API_MODE", "local").strip().lower()
-        if mode == "official":
-            return bool(os.getenv("MINERU_API_TOKEN", "").strip())
-        if mode == "local":
-            return bool(os.getenv("MINERU_LOCAL_ENDPOINT", "").strip())
-        return False
-    endpoint_env = _PARSER_ENGINE_ENDPOINT_ENV.get(engine)
-    if endpoint_env:
-        return bool(os.getenv(endpoint_env, "").strip())
-    return True
+    # Endpoint capability lives on the registry ParserSpec (single source).
+    return engine_endpoint_configured(engine)
 
 
 def parser_engine_endpoint_requirement(engine: str) -> str | None:
-    if engine == PARSER_ENGINE_MINERU:
-        mode = os.getenv("MINERU_API_MODE", "local").strip().lower()
-        if mode == "official":
-            return "MINERU_API_TOKEN"
-        if mode == "local":
-            return "MINERU_LOCAL_ENDPOINT"
-        allowed = ", ".join(sorted(_VALID_MINERU_API_MODES))
-        return f"valid MINERU_API_MODE ({allowed})"
-    return _PARSER_ENGINE_ENDPOINT_ENV.get(engine)
+    return engine_endpoint_requirement(engine)
 
 
 def _engine_is_usable(
@@ -511,7 +491,7 @@ def _engine_is_usable(
     *,
     require_external_endpoint: bool,
 ) -> bool:
-    if engine not in SUPPORTED_PARSER_ENGINES:
+    if engine not in supported_parser_engines():
         return False
     if not parser_engine_supports_suffix(engine, suffix):
         return False
@@ -554,7 +534,7 @@ def _filename_hint_match(
                 f"{basename!r}: {'; '.join(option_errors)}"
             )
             return None
-    if engine in SUPPORTED_PARSER_ENGINES:
+    if engine in supported_parser_engines():
         return m, engine, options
     if engine is None and options:
         return m, "", options
@@ -598,8 +578,8 @@ def _validate_filename_hint_for_resolution(
     elif "-" in inner:
         engine_name, _, options = inner.partition("-")
         engine = normalize_parser_engine(engine_name)
-        if engine not in SUPPORTED_PARSER_ENGINES:
-            supported = ", ".join(sorted(SUPPORTED_PARSER_ENGINES))
+        if engine not in supported_parser_engines():
+            supported = ", ".join(sorted(supported_parser_engines()))
             errors.append(
                 f"filename hint {m.group(0)!r} uses unsupported parser engine "
                 f"{engine_name.strip()!r}; supported engines: {supported}"
@@ -615,8 +595,8 @@ def _validate_filename_hint_for_resolution(
             )
     else:
         engine = normalize_parser_engine(inner)
-        if engine not in SUPPORTED_PARSER_ENGINES:
-            supported = ", ".join(sorted(SUPPORTED_PARSER_ENGINES))
+        if engine not in supported_parser_engines():
+            supported = ", ".join(sorted(supported_parser_engines()))
             message = (
                 f"filename hint {m.group(0)!r} uses unsupported parser engine "
                 f"{inner.strip()!r}; supported engines: {supported}"
@@ -628,12 +608,10 @@ def _validate_filename_hint_for_resolution(
                 )
             errors.append(message)
 
-    if engine in SUPPORTED_PARSER_ENGINES:
+    if engine in supported_parser_engines():
         suffix = parser_suffix(file_path)
         if not parser_engine_supports_suffix(engine, suffix):
-            supported_suffixes = ", ".join(
-                sorted(PARSER_ENGINE_SUFFIX_CAPABILITIES.get(engine, frozenset()))
-            )
+            supported_suffixes = ", ".join(sorted(suffix_capabilities(engine)))
             errors.append(
                 f"filename hint {m.group(0)!r} uses parser engine {engine!r} "
                 f"for unsupported suffix {suffix!r}; supported suffixes: "
@@ -712,7 +690,7 @@ def _iter_parser_rule_items(rules: str) -> list[tuple[int, str]]:
 
 
 def _rule_pattern_matches_engine_capability(pattern: str, engine: str) -> bool:
-    supported_suffixes = PARSER_ENGINE_SUFFIX_CAPABILITIES.get(engine, frozenset())
+    supported_suffixes = suffix_capabilities(engine)
     return any(fnmatch.fnmatch(suffix, pattern) for suffix in supported_suffixes)
 
 
@@ -756,17 +734,15 @@ def validate_parser_routing_config(parser_rules: str | None = None) -> None:
         if not engine_hint:
             errors.append(f"{label} has an empty parser engine")
             continue
-        if engine not in SUPPORTED_PARSER_ENGINES:
-            supported = ", ".join(sorted(SUPPORTED_PARSER_ENGINES))
+        if engine not in supported_parser_engines():
+            supported = ", ".join(sorted(supported_parser_engines()))
             errors.append(
                 f"{label} uses unsupported parser engine {engine_hint!r}; "
                 f"supported engines: {supported}"
             )
             continue
         if not _rule_pattern_matches_engine_capability(pattern, engine):
-            supported_suffixes = ", ".join(
-                sorted(PARSER_ENGINE_SUFFIX_CAPABILITIES.get(engine, frozenset()))
-            )
+            supported_suffixes = ", ".join(sorted(suffix_capabilities(engine)))
             errors.append(
                 f"{label} does not match any suffix supported by {engine}; "
                 f"supported suffixes: {supported_suffixes}"
@@ -881,21 +857,27 @@ def resolve_stored_document_parser_engine(
     file_path: str | Path,
     content_data: dict[str, Any] | None,
 ) -> str:
-    """Resolve parser engine for a full_docs row during pipeline processing."""
+    """Resolve the parser engine key for a full_docs row during processing.
+
+    Returns a registry key: the internal ``reuse``/``passthrough`` handlers for
+    the no-op formats, or a real engine name for ``pending_parse``.  Never
+    raises and never filters an unknown stored engine — the parse worker
+    decides fallback/validation (so its warning path actually fires).
+    """
     if content_data:
         doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
-        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG and content_data.get(
-            "sidecar_location"
-        ):
-            return PARSER_ENGINE_NATIVE
+        # All lightrag rows reuse the already-parsed sidecar (sidecar optional;
+        # ReuseParser tolerates a missing one). Reached on resume/retry.
+        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
+            return PARSER_ENGINE_REUSE
+        # Anything not pending is already-extracted content (raw direct-insert
+        # or legacy-extracted RAW) -> pass through verbatim.
         if doc_format != FULL_DOCS_FORMAT_PENDING_PARSE:
-            return PARSER_ENGINE_LEGACY
-
-        suffix = parser_suffix(file_path)
+            return PARSER_ENGINE_PASSTHROUGH
+        # PENDING_PARSE: honour the stored engine verbatim; fall back to
+        # filename rules only when it is absent.
         pending_engine = normalize_parser_engine(content_data.get("parse_engine"))
-        if pending_engine in SUPPORTED_PARSER_ENGINES and parser_engine_supports_suffix(
-            pending_engine, suffix
-        ):
+        if pending_engine:
             return pending_engine
 
     return resolve_file_parser_engine(file_path)

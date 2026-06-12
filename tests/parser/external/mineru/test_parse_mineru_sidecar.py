@@ -32,7 +32,17 @@ from lightrag.parser.external.mineru.manifest import (
     ManifestFile,
     write_manifest,
 )
+from lightrag.parser.base import ParseContext
+from lightrag.parser.registry import get_parser
 from lightrag.utils import EmbeddingFunc, Tokenizer
+
+
+async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
+    """Drive a parser the way the pipeline worker does (registry dispatch)."""
+    result = await get_parser(engine).parse(
+        ParseContext(rag, doc_id, file_path, content_data)
+    )
+    return result.to_dict()
 
 
 class _SimpleTokenizerImpl:
@@ -204,7 +214,9 @@ def test_parse_mineru_emits_compliant_sidecar(
                 lambda _p: str(src),
             )
 
-            parsed = await rag.parse_mineru(
+            parsed = await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -357,7 +369,9 @@ def test_parse_mineru_cache_hit_skips_download(
             )
 
             # First call: cache miss → download once.
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -365,7 +379,9 @@ def test_parse_mineru_cache_hit_skips_download(
             assert counters["calls"] == 1
 
             # Second call: should hit cache.
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -374,7 +390,9 @@ def test_parse_mineru_cache_hit_skips_download(
 
             # Third call with force-reparse: cache invalidated.
             monkeypatch.setenv("LIGHTRAG_FORCE_REPARSE_MINERU", "true")
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -430,7 +448,9 @@ def test_parse_mineru_upload_name_strips_parser_hint(
                 lambda _p: str(src),
             )
 
-            parsed = await rag.parse_mineru(
+            parsed = await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path=src.name,
                 content_data={},
@@ -506,7 +526,9 @@ def test_parse_mineru_cache_invalidates_on_source_change(
                 lambda _p: str(src),
             )
 
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -517,7 +539,9 @@ def test_parse_mineru_cache_invalidates_on_source_change(
             data = src.read_bytes()
             src.write_bytes(b"\x00" + data[1:])
 
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},

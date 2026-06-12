@@ -233,6 +233,9 @@
       "disease": "Bệnh",
       "drug": "Thuốc",
       "food": "Thực Phẩm",
+      "table": "Bảng",
+      "drawing": "Hình Vẽ",
+      "equation": "Phương Trình",
       "other": "Khác"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "Bắt đầu truy xuất bằng cách nhập truy vấn của bạn bên dưới",
       "clear": "Xóa",
       "send": "Gửi",
+      "stop": "Dừng",
+      "userTerminated": "Người dùng đã dừng — phản hồi có thể chưa hoàn chỉnh",
       "placeholder": "Nhập truy vấn của bạn (Hỗ trợ tiền tố: /<Chế Độ Truy Vấn>)",
       "error": "Lỗi: Không thể nhận phản hồi",
       "queryModeError": "Chỉ hỗ trợ các chế độ truy vấn sau: {{modes}}",

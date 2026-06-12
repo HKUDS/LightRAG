@@ -3974,7 +3974,24 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def get_entity_info(
         self, entity_name: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
-        """Get detailed information of an entity"""
+        """Get detailed information of an entity.
+
+        Args:
+            entity_name: Name of the entity to look up.
+            include_vector_data: DEPRECATED. Attaches a ``vector_data`` field
+                read from the entity vector store. The vector store no longer
+                returns the embedding, so this payload is derived from the
+                graph node (the authoritative source) and duplicates
+                ``graph_data``; the only signal it adds is whether a VDB record
+                exists at all. No LightRAG code path sets this — it is kept for
+                backward compatibility only and may be removed in a future
+                release. For graph/VDB consistency, use the offline
+                ``lightrag-rebuild-vdb`` check instead.
+
+        Returns:
+            ``{"entity_name", "source_id", "graph_data"}`` (plus a redundant
+            ``"vector_data"`` when ``include_vector_data`` is True).
+        """
         from lightrag.utils_graph import get_entity_info
 
         return await get_entity_info(
@@ -3987,7 +4004,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def get_relation_info(
         self, src_entity: str, tgt_entity: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
-        """Get detailed information of a relationship"""
+        """Get detailed information of a relationship.
+
+        Args:
+            src_entity: Source entity name.
+            tgt_entity: Target entity name.
+            include_vector_data: DEPRECATED. Attaches a ``vector_data`` field
+                read from the relationship vector store. The vector store no
+                longer returns the embedding, so this payload is derived from
+                the graph edge (the authoritative source) and duplicates
+                ``graph_data``; the only signal it adds is whether a VDB record
+                exists at all. No LightRAG code path sets this — it is kept for
+                backward compatibility only and may be removed in a future
+                release. For graph/VDB consistency, use the offline
+                ``lightrag-rebuild-vdb`` check instead.
+
+        Returns:
+            ``{"src_entity", "tgt_entity", "source_id", "graph_data"}`` (plus a
+            redundant ``"vector_data"`` when ``include_vector_data`` is True).
+        """
         from lightrag.utils_graph import get_relation_info
 
         return await get_relation_info(

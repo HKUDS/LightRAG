@@ -1,6 +1,7 @@
 import os
 import re
 from dataclasses import dataclass
+from typing import ClassVar
 
 # from typing import final
 import configparser
@@ -14,7 +15,7 @@ from tenacity import (
 )
 
 import logging
-from ..utils import logger
+from ..utils import logger, validate_workspace
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
@@ -65,6 +66,16 @@ READ_RETRY = retry(
 # @final (removed per request in Issue #3130)
 @dataclass
 class Neo4JStorage(BaseGraphStorage):
+    # Lucene query-syntax reserved characters. The full-text query parser
+    # interprets these (e.g. '-' as NOT) before the analyzer runs, so a raw
+    # 'tb-' becomes a NOT clause and silently matches nothing. Replace them
+    # with spaces so the parser sees plain terms — the index already tokenizes
+    # on these boundaries anyway. Annotated as ClassVar so @dataclass does not
+    # treat it as an instance field.
+    _LUCENE_RESERVED: ClassVar[re.Pattern[str]] = re.compile(
+        r'[+\-&|!(){}\[\]^"~*?:\\/]'
+    )
+
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         # Read env and override the arg if present
         neo4j_workspace = os.environ.get("NEO4J_WORKSPACE")
@@ -82,6 +93,7 @@ class Neo4JStorage(BaseGraphStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
+        validate_workspace(self.workspace)
 
         # Log after super().__init__() to ensure self.workspace is initialized
         if neo4j_workspace and neo4j_workspace.strip():
@@ -132,6 +144,17 @@ class Neo4JStorage(BaseGraphStorage):
             r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[\U00020000-\U0002fa1f]"
         )
         return bool(cjk_pattern.search(text))
+
+    @classmethod
+    def _sanitize_fulltext_query(cls, text: str) -> str:
+        """Replace Lucene reserved characters with spaces and collapse whitespace.
+
+        Lets the full-text query parser see plain terms instead of misreading
+        reserved characters as operators (e.g. '-' as NOT). Returns an empty
+        string when the input is composed entirely of reserved characters.
+        """
+        cleaned = cls._LUCENE_RESERVED.sub(" ", text)
+        return " ".join(cleaned.split())
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -1869,6 +1892,15 @@ class Neo4JStorage(BaseGraphStorage):
         is_chinese = self._is_chinese_text(query_strip)
         index_name = self._get_fulltext_index_name(workspace_label)
 
+        # Strip Lucene reserved characters before handing the text to the
+        # full-text query parser (see _sanitize_fulltext_query). The CASE-based
+        # scoring below still uses the raw query_strip / query_lower.
+        sanitized_query = self._sanitize_fulltext_query(query_strip)
+        if not sanitized_query:
+            # Query was composed entirely of reserved characters (e.g. "---").
+            # Return empty rather than falling back to a full-graph CONTAINS scan.
+            return []
+
         # Attempt to use the full-text index first
         try:
             async with self._driver.session(
@@ -1892,7 +1924,7 @@ class Neo4JStorage(BaseGraphStorage):
                     LIMIT $limit
                     """
                     # For Chinese, don't add wildcard as it may not work properly with CJK analyzer
-                    search_query = query_strip
+                    search_query = sanitized_query
                 else:
                     # For non-Chinese text, use the original logic with wildcard
                     cypher_query = f"""
@@ -1911,7 +1943,7 @@ class Neo4JStorage(BaseGraphStorage):
                     ORDER BY final_score DESC, label ASC
                     LIMIT $limit
                     """
-                    search_query = f"{query_strip}*"
+                    search_query = f"{sanitized_query}*"
 
                 result = await session.run(
                     cypher_query,

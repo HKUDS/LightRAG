@@ -233,6 +233,9 @@
       "disease": "Maladie",
       "drug": "Médicament",
       "food": "Nourriture",
+      "table": "Tableau",
+      "drawing": "Dessin",
+      "equation": "Équation",
       "other": "Autre"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
       "clear": "Effacer",
       "send": "Envoyer",
+      "stop": "Arrêter",
+      "userTerminated": "Interrompu par l'utilisateur — la réponse peut être incomplète",
       "placeholder": "Tapez votre requête (Préfixe de requête : /<Query Mode>)",
       "error": "Erreur : Échec de l'obtention de la réponse",
       "queryModeError": "Seuls les modes de requête suivants sont pris en charge : {{modes}}",

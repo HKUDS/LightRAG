@@ -27,7 +27,13 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..utils import logger, compute_mdhash_id, _cooperative_yield, merge_source_ids
+from ..utils import (
+    logger,
+    compute_mdhash_id,
+    _cooperative_yield,
+    merge_source_ids,
+    validate_workspace,
+)
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
@@ -610,6 +616,7 @@ class OpenSearchKVStorage(BaseKVStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self.workspace, self.final_namespace, self._index_name = _build_index_name(
             self.workspace, self.namespace
         )
@@ -1205,6 +1212,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self.workspace, self.final_namespace, self._index_name = _build_index_name(
             self.workspace, self.namespace
         )
@@ -1843,6 +1851,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self.workspace, self.final_namespace, base_name = _build_index_name(
             self.workspace, self.namespace
         )
@@ -3147,7 +3156,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 if k
                 not in (
                     "_id",
-                    "entity_id",
                     "source_ids",
                     "connected_edges",
                     "edge_count",
@@ -3736,6 +3744,7 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
         self.workspace, self.final_namespace, self._index_name = _build_index_name(
             self.workspace, self.namespace

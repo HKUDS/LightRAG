@@ -159,7 +159,8 @@ class MinerURawClient:
             )
             self.endpoint = self.local_endpoint
         self.poll_interval = float(os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2"))
-        self.max_polls = int(os.getenv("MINERU_MAX_POLLS", "180"))
+        # 600 * 2s client-side sleep ≈ 20 min worst case; raise for very large PDFs.
+        self.max_polls = int(os.getenv("MINERU_MAX_POLLS", "600"))
         self.engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
 
         options = MinerUParserOptions.from_env(api_mode=self.api_mode)

@@ -167,6 +167,49 @@ async def test_search_labels_with_workspace_index(neo4j_storage):
 
 @pytest.mark.integration
 @pytest.mark.requires_db
+async def test_search_labels_with_hyphen(neo4j_storage):
+    """
+    Regression test: searching a label fragment containing a hyphen (or other
+    Lucene reserved character) must still return matches via the full-text index
+    instead of being misparsed into an empty result.
+    """
+    storage = neo4j_storage
+
+    test_nodes = [
+        {"entity_id": "tb-alpha", "entity_type": "Test"},
+        {"entity_id": "tb-beta", "entity_type": "Test"},
+        {"entity_id": "tbcd", "entity_type": "Test"},
+    ]
+
+    for node_data in test_nodes:
+        await storage.upsert_node(node_data["entity_id"], node_data)
+
+    # Give the eventually-consistent index time to catch up.
+    await asyncio.sleep(2)
+
+    # Plain prefix returns all three (baseline that already worked).
+    results = await storage.search_labels("tb", limit=10)
+    for expected in ("tb-alpha", "tb-beta", "tbcd"):
+        assert expected in results, f"'{expected}' should match 'tb', got {results}"
+
+    # The reported bug: a trailing hyphen previously cleared the dropdown.
+    results_hyphen = await storage.search_labels("tb-", limit=10)
+    assert (
+        "tb-alpha" in results_hyphen
+    ), f"'tb-' should match 'tb-alpha', got {results_hyphen}"
+    assert (
+        "tb-beta" in results_hyphen
+    ), f"'tb-' should match 'tb-beta', got {results_hyphen}"
+
+    # An exact hyphenated label resolves to itself.
+    results_exact = await storage.search_labels("tb-alpha", limit=10)
+    assert (
+        "tb-alpha" in results_exact
+    ), f"'tb-alpha' should match itself, got {results_exact}"
+
+
+@pytest.mark.integration
+@pytest.mark.requires_db
 async def test_search_labels_chinese_text(neo4j_storage):
     """
     Test that search_labels works with Chinese text using the CJK analyzer.

@@ -1,6 +1,6 @@
 # Parser CLI Debugger Guide
 
-This tool is used to locally debug LightRAG's three content parsing engines (`native` / `mineru` / `docling`). It triggers the `LightRAG.parse_<engine>` production code path for a **single file** and outputs the parsing artifacts (sidecar and raw cache) into a **flat directory layout**. Compared with the production ingestion directory, the only differences are:
+This tool is used to locally debug any parsing engine in LightRAG's registry (the built-in `native` / `legacy` / `mineru` / `docling`, plus third-party engines registered via the `lightrag.parsers` entry point — see `docs/ThirdPartyParser-zh.md`). It drives the same registry dispatch path as the pipeline worker (`get_parser(engine).parse(...)`) for a **single file** and outputs the parsing artifacts (sidecar and raw cache) into a **flat directory layout**. Compared with the production ingestion directory, the only differences are:
 
 - **No `__parsed__/` intermediate layer**: artifacts land directly under the specified parent directory for easy inspection;
 - **The source file is not archived**: the source file stays at its original location (the production path moves the source file to `<INPUT_DIR>/__parsed__/`);
@@ -12,7 +12,7 @@ The rest of the flow (IR construction, sidecar writing, `full_docs` synchronizat
 
 ```bash
 python -m lightrag.parser.cli <input_file> \
-    --engine {native|mineru|docling} \
+    --engine <engine> \
     [-o <sidecar_parent_dir>] \
     [--doc-id <doc-id>] \
     [--force-reparse] \
@@ -22,11 +22,11 @@ python -m lightrag.parser.cli <input_file> \
 | Argument | Description |
 |---|---|
 | `input_file` | Path to the source file to parse (positional argument, required). The file must actually exist. |
-| `--engine` | Required: `native` (only `.docx`, local parsing) / `mineru` (PDF/Office documents, calls MinerU service) / `docling` (PDF/Office documents, calls docling-serve). |
+| `--engine` | Required; choices come from the registry: built-in `native` (only `.docx`, local parsing) / `legacy` (plain-text extraction, no sidecar) / `mineru` (PDF/Office documents, calls MinerU service) / `docling` (PDF/Office documents, calls docling-serve), plus any registered third-party engine. |
 | `-o / --sidecar-parent-dir` | Parent directory of the sidecar and raw directories. Defaults to the directory containing the source file. |
 | `--doc-id` | Custom document ID. Defaults to `doc-<md5(absolute path of source file)>` (stable across multiple runs on the same file). |
-| `--force-reparse` | Effective only for `mineru` / `docling`: clears the raw directory and forces re-download and re-parse. By default, a non-empty raw directory is reused. |
-| `--preview N` | After parsing completes, prints a preview of the first N blocks (headings + content snippets). Default 5; `0` disables it. |
+| `--force-reparse` | Effective only for external-service engines (`mineru` / `docling` and third-party engines subclassing `ExternalParserBase`): clears the raw directory and forces re-download and re-parse. By default, a non-empty raw directory is reused. |
+| `--preview N` | After parsing completes, prints a preview of the first N blocks (headings + content snippets). Default 5; `0` disables it. For engines without a sidecar (e.g. `legacy`), prints the first 400 characters of the extracted text instead. |
 
 ## Output Directory Layout
 
@@ -64,7 +64,7 @@ python -m lightrag.parser.cli ./inputs/workspace/sample.docx --engine native
 python -m lightrag.parser.cli ./inputs/workspace/sample.pdf --engine mineru
 # Second run (no changes): raw directory non-empty → reused directly → only regenerate sidecar, fast
 python -m lightrag.parser.cli ./inputs/workspace/sample.pdf --engine mineru
-# The log will show: [parse_mineru] raw cache hit doc_id=... raw_dir=.../sample.pdf.mineru_raw
+# The log will show: [mineru] raw cache hit doc_id=...
 ```
 
 ### C. Parse a PDF with Docling + reuse an existing raw directory
@@ -113,17 +113,17 @@ When the **cache is hit** (the raw directory already exists and is non-empty, an
 | Raw directory exists but sidecar content is still stale | The default behavior is to **reuse** raw and regenerate sidecar. If the raw itself is outdated or has been replaced, add `--force-reparse` to clear and re-download. |
 | MinerU reports `MINERU_API_TOKEN` missing / Docling fails to connect to `DOCLING_ENDPOINT` | A cache miss triggered an external service call — verify the corresponding environment variables; or confirm whether the raw directory is non-empty (no service needed when the cache hits). |
 | Source file is unexpectedly moved | Should not happen: the CLI has mocked the archive function. If reproducible, please file an issue (a new archive call site may have been added in the pipeline). |
-| `parse_docling` reports `produced zero blocks` | The main JSON content in docling raw is unparseable or empty. Check whether the `*.json` files in the raw directory are valid. |
+| docling reports `produced zero blocks` | The main JSON content in docling raw is unparseable or empty. Check whether the `*.json` files in the raw directory are valid. |
 
-## Equivalence with the `LightRAG.parse_*` Production Path
+## Equivalence with the Production Parsing Path
 
-This CLI directly calls the production code paths `LightRAG.parse_native` / `parse_mineru` / `parse_docling` (via the lightweight RAG stand-in in `lightrag/parser/debug.py`), so:
+This CLI drives the same registry dispatch path as the pipeline parse worker — `get_parser(engine).parse(ParseContext(rag, ...))` (with `rag` being the lightweight stand-in in `lightrag/parser/debug.py`), so:
 
 - The sidecar fields, naming, and content format are identical to production ingestion;
 - The IR builders, `write_sidecar` calls, and `_persist_parsed_full_docs` behavior are identical;
 - All three differences are implemented via `monkey-patch` inside the CLI — **no production code is modified**:
-  1. `parsed_artifact_dir_for_source` → returns the flat path (no `__parsed__/`);
-  2. `is_bundle_valid` → "raw is valid if non-empty";
+  1. `parsed_artifact_dir_for` → returns the flat path (no `__parsed__/`);
+  2. the resolved parser instance's `is_bundle_valid` → "raw is valid if non-empty" (external-service engines only);
   3. `archive_docx_source_after_full_docs_sync` → no-op, source file preserved.
 
 Results can be cross-validated against golden fixtures under `tests/parser/docx/golden/native_docx/` (the CLI does not freeze timestamps; just exclude time fields such as `created_at` when comparing).
