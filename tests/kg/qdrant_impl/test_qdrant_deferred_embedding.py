@@ -474,11 +474,12 @@ async def test_drop_drops_untagged_legacy_collection():
 
 
 @pytest.mark.asyncio
-async def test_drop_skips_legacy_cleanup_when_tagging_undetermined():
+async def test_drop_reports_error_when_legacy_tagging_undetermined():
     """If the legacy collection's workspace tagging cannot be determined (a
-    transient metadata error), drop() must skip legacy cleanup rather than drop
-    the whole collection — that could delete other workspaces' migration source
-    from an actually-tagged, shared legacy collection."""
+    transient metadata error), drop() must NOT drop the whole collection (that
+    could delete other workspaces' migration source) AND must report an error:
+    leaving legacy untouched means the clear would not survive a restart, so the
+    caller must be able to retry instead of seeing a misleading success."""
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)
     legacy_collection = f"lightrag_vdb_{s.namespace}"
@@ -489,15 +490,14 @@ async def test_drop_skips_legacy_cleanup_when_tagging_undetermined():
     s._client.get_collection = MagicMock(side_effect=RuntimeError("qdrant unavailable"))
 
     result = await s.drop()
-    assert result["status"] == "success"
+    # The clear is reported as incomplete so it can be retried.
+    assert result["status"] == "error"
 
-    # The suffixed collection is still cleared, but legacy is left untouched:
-    # neither a filtered delete nor a whole-collection drop.
-    deleted_collections = [
+    # Legacy is left untouched: neither a filtered delete nor a collection drop.
+    legacy_deletes = [
         call.kwargs.get("collection_name") for call in s._client.delete.call_args_list
     ]
-    assert s.final_namespace in deleted_collections
-    assert legacy_collection not in deleted_collections
+    assert legacy_collection not in legacy_deletes
     s._client.delete_collection.assert_not_called()
 
 

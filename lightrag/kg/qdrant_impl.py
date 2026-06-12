@@ -1399,13 +1399,19 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     )
                     if legacy_has_workspace is None:
                         # Tagging undetermined (transient metadata / scroll error):
-                        # skip legacy cleanup rather than risk dropping an
-                        # actually-tagged, shared legacy collection and deleting
-                        # other workspaces' migration source.
-                        logger.warning(
-                            f"[{self.workspace}] Skipped legacy collection "
-                            f"'{legacy_collection}' cleanup on workspace clear: "
-                            f"workspace tagging could not be determined"
+                        # do NOT drop the collection (it may be an actually-tagged,
+                        # shared legacy and we'd delete other workspaces' migration
+                        # source). But the legacy data is left untouched, so the
+                        # next startup would re-migrate this workspace's cleared
+                        # points back — the clear is NOT durable. Abort with an
+                        # error so the caller can retry instead of reporting a
+                        # success that does not survive a restart.
+                        raise RuntimeError(
+                            f"Could not determine workspace tagging of legacy "
+                            f"collection '{legacy_collection}'; aborting clear of "
+                            f"'{self.namespace}' to avoid leaving stale legacy data "
+                            f"that would resurrect on restart. Retry once Qdrant "
+                            f"metadata is reachable."
                         )
                     elif legacy_has_workspace:
                         # Workspace-tagged legacy: remove only this workspace's points.
