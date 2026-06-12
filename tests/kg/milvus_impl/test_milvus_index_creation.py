@@ -183,6 +183,32 @@ class TestMilvusIndexCreation:
         )
         assert len(normalized["entity_name"].encode("utf-8")) == 512
 
+    def test_migration_backfills_explicit_none_field_from_meta(self):
+        # Schema-drift rows can carry an explicit nullable field as None while
+        # the real value still lives in $meta; migration must backfill from
+        # $meta on None, not just on missing keys.
+        storage = _make_storage(namespace="entities")
+        normalized = storage._normalize_migration_row(
+            {
+                "id": "ent-1",
+                "content": None,
+                "$meta": {"content": "body", "extra": "kept"},
+            }
+        )
+        assert normalized["content"] == "body"
+        assert normalized["extra"] == "kept"
+
+    def test_migration_meta_does_not_override_explicit_value(self):
+        storage = _make_storage(namespace="entities")
+        normalized = storage._normalize_migration_row(
+            {
+                "id": "ent-1",
+                "content": "explicit",
+                "$meta": {"content": "stale"},
+            }
+        )
+        assert normalized["content"] == "explicit"
+
     def test_migration_rejects_oversized_primary_key(self):
         # The primary key is never truncated, even during migration: collapsing
         # two ids would silently overwrite a row.

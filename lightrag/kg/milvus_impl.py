@@ -427,11 +427,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         normalized_name = str(db_name).strip()
         return normalized_name or None
 
-    def _get_model_collection_suffix(self) -> str | None:
-        # _generate_collection_suffix already guards non-string / blank
-        # model_name, so just delegate.
-        return self._generate_collection_suffix()
-
     def _create_milvus_client(self) -> MilvusClient:
         """Create a Milvus client and ensure the configured database exists."""
         client = MilvusClient(
@@ -709,7 +704,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         metadata = normalized.pop("$meta", None)
         if isinstance(metadata, dict):
             for field_name, value in metadata.items():
-                normalized.setdefault(field_name, value)
+                # Explicit nullable fields can hold None while the real value
+                # still lives in $meta (schema-drift rows), so backfill on None
+                # rather than mere key presence.
+                if normalized.get(field_name) is None:
+                    normalized[field_name] = value
         # Migration carries pre-existing rows: non-primary identity fields are
         # truncated-and-warned rather than rejected (see _truncate_varchar_value).
         return self._sanitize_varchar_fields(normalized, allow_identity_truncation=True)
@@ -1710,7 +1709,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 )
 
         self.workspace = effective_workspace or ""
-        self.model_suffix = self._get_model_collection_suffix()
+        self.model_suffix = self._generate_collection_suffix()
         if self.workspace:
             self.legacy_namespace = f"{self.workspace}_{self.namespace}"
             logger.debug(
