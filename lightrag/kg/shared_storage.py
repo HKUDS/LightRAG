@@ -2,13 +2,19 @@ import os
 import sys
 import asyncio
 import multiprocessing as mp
+import uuid
 from multiprocessing.synchronize import Lock as ProcessLock
 from multiprocessing import Manager
 import time
 import logging
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
+from typing import Any, Dict, List, Mapping, Optional, Union, TypeVar, Generic
 
+from lightrag.constants import (
+    DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL,
+    DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE,
+    DEFAULT_QUEUE_STATS_STALE_TTL,
+)
 from lightrag.exceptions import PipelineNotInitializedError
 
 DEBUG_LOCKS = False
@@ -94,6 +100,36 @@ _storage_keyed_lock: Optional["KeyedUnifiedLock"] = None
 _async_locks: Optional[Dict[str, asyncio.Lock]] = None
 
 _debug_n_locks_acquired: int = 0
+
+# --- Cross-worker global concurrency gate + queue stats aggregation ---
+#
+# Read-only configuration set once by the FIRST initialize_share_data() call
+# (the gunicorn master, before fork — workers inherit it as a module global).
+# Later no-arg calls (e.g. LightRAG.__post_init__) hit the `_initialized`
+# guard and never overwrite it.
+_global_concurrency_limits: Optional[Dict[str, int]] = None
+
+# Separator between the group/queue name and the per-lease / per-pid suffix
+# in shared namespace keys. \x1f (ASCII unit separator) cannot appear in
+# group names or queue names.
+KEY_SEP = "\x1f"
+
+_CONCURRENCY_LEASE_NAMESPACE = "concurrency_leases"
+_QUEUE_STATS_NAMESPACE = "queue_stats"
+
+# Heartbeat / staleness parameters (module-level so tests can monkeypatch).
+_heartbeat_ttl: float = DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL
+_suspect_grace: float = DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE
+_queue_stats_stale_ttl: float = DEFAULT_QUEUE_STATS_STALE_TTL
+
+# Per-process cached namespace references (avoid the internal lock on every
+# publish). Reset by initialize_share_data()/finalize_share_data().
+_lease_ns_cache: Optional[Dict[str, Any]] = None
+_queue_stats_ns_cache: Optional[Dict[str, Any]] = None
+
+# Rate limiting for acquire-failure warnings (fail-closed path).
+_ACQUIRE_FAILURE_LOG_INTERVAL = 30.0
+_last_acquire_failure_log: float = 0.0
 
 
 def get_final_namespace(namespace: str, workspace: str | None = None):
@@ -1173,7 +1209,10 @@ def get_keyed_lock_status() -> Dict[str, Any]:
     return status
 
 
-def initialize_share_data(workers: int = 1):
+def initialize_share_data(
+    workers: int = 1,
+    global_concurrency_limits: Optional[Mapping[str, int]] = None,
+):
     """
     Initialize shared storage data for single or multi-process mode.
 
@@ -1190,6 +1229,11 @@ def initialize_share_data(workers: int = 1):
     Args:
         workers (int): Number of worker processes. If 1, single-process mode is used.
                       If > 1, multi-process mode with shared memory is used.
+        global_concurrency_limits: Optional mapping of concurrency group name
+                      (e.g. "llm:extract", "embedding", "rerank") to the
+                      cross-worker global max concurrency for that group.
+                      Read-only after initialization; later calls (which hit
+                      the already-initialized guard) never overwrite it.
     """
     global \
         _manager, \
@@ -1208,7 +1252,10 @@ def initialize_share_data(workers: int = 1):
         _async_locks, \
         _storage_keyed_lock, \
         _earliest_mp_cleanup_time, \
-        _last_mp_cleanup_time
+        _last_mp_cleanup_time, \
+        _global_concurrency_limits, \
+        _lease_ns_cache, \
+        _queue_stats_ns_cache
 
     # Check if already initialized
     if _initialized:
@@ -1218,6 +1265,22 @@ def initialize_share_data(workers: int = 1):
         return
 
     _workers = workers
+    _global_concurrency_limits = (
+        {
+            str(group): int(limit)
+            for group, limit in global_concurrency_limits.items()
+            if limit is not None and int(limit) > 0
+        }
+        if global_concurrency_limits
+        else {}
+    )
+    _lease_ns_cache = None
+    _queue_stats_ns_cache = None
+    if _global_concurrency_limits:
+        direct_log(
+            f"Process {os.getpid()} Global concurrency limits: {_global_concurrency_limits}",
+            level="INFO",
+        )
 
     if workers > 1:
         _is_multiprocess = True
@@ -1628,7 +1691,10 @@ def finalize_share_data():
         _initialized, \
         _update_flags, \
         _async_locks, \
-        _default_workspace
+        _default_workspace, \
+        _global_concurrency_limits, \
+        _lease_ns_cache, \
+        _queue_stats_ns_cache
 
     # Check if already initialized
     if not _initialized:
@@ -1692,6 +1758,9 @@ def finalize_share_data():
     _update_flags = None
     _async_locks = None
     _default_workspace = None
+    _global_concurrency_limits = None
+    _lease_ns_cache = None
+    _queue_stats_ns_cache = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
 
@@ -1740,3 +1809,309 @@ def get_pipeline_status_lock(
     return get_namespace_lock(
         "pipeline_status", workspace=actual_workspace, enable_logging=enable_logging
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-worker global concurrency gate (lease + heartbeat semantics)
+# ---------------------------------------------------------------------------
+#
+# Leases live in the workspace-less "concurrency_leases" namespace as
+# ``f"{group}{KEY_SEP}{lease_id}" -> {"pid": int, "updated_at": float}``
+# plain dicts (whole-value replacement only — in multiprocess mode the
+# namespace is a Manager dict, so in-place mutation of a retrieved value
+# would NOT persist across processes).
+#
+# Self-healing: holders refresh ``updated_at`` from their 5s health-check
+# heartbeat. A lease is reclaimed when its owner PID is dead (immediately)
+# or when its heartbeat expired AND the suspect grace elapsed (protects
+# live-but-momentarily-stalled owners from false reclamation). Long-running
+# tasks are never reclaimed as long as their owner keeps renewing.
+
+
+def is_share_data_initialized() -> bool:
+    """Return True once initialize_share_data() has run in this process."""
+    return bool(_initialized)
+
+
+def is_global_concurrency_limited(group: Optional[str]) -> bool:
+    """Synchronous, cacheable check: does ``group`` have a global limit?
+
+    Reads only the module-level read-only configuration — no IPC. Returns
+    False when shared data is not initialized, no limits were configured,
+    or the group has no positive limit.
+    """
+    if not group or not _global_concurrency_limits:
+        return False
+    limit = _global_concurrency_limits.get(group)
+    return limit is not None and limit > 0
+
+
+def get_global_concurrency_limit(group: Optional[str]) -> Optional[int]:
+    """Return the configured global limit for ``group`` (None if unlimited)."""
+    if not group or not _global_concurrency_limits:
+        return None
+    return _global_concurrency_limits.get(group)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness probe; errs on the side of 'alive'."""
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # PermissionError and friends: the process exists (or we cannot
+        # tell) — treat as alive so we never reclaim a live owner's lease.
+        return True
+    return True
+
+
+async def _get_lease_namespace() -> Dict[str, Any]:
+    global _lease_ns_cache
+    if _lease_ns_cache is None:
+        _lease_ns_cache = await get_namespace_data(
+            _CONCURRENCY_LEASE_NAMESPACE, workspace=""
+        )
+    return _lease_ns_cache
+
+
+async def _get_queue_stats_namespace() -> Dict[str, Any]:
+    global _queue_stats_ns_cache
+    if _queue_stats_ns_cache is None:
+        _queue_stats_ns_cache = await get_namespace_data(
+            _QUEUE_STATS_NAMESPACE, workspace=""
+        )
+    return _queue_stats_ns_cache
+
+
+def _reap_group_leases_locked(ns: Dict[str, Any], group: str, now: float) -> int:
+    """Reclaim dead/expired leases of ``group``; return surviving lease count.
+
+    MUST be called while holding the group's keyed lock. Suspect handling:
+    a lease whose heartbeat expired while its PID is still alive is first
+    marked with ``suspect_since`` and reclaimed only after ``_suspect_grace``
+    elapses without a renewal; a renewal (fresh ``updated_at``) clears the
+    suspect mark. Dead PIDs are reclaimed immediately. Suspect leases still
+    count toward capacity so the global limit is never exceeded.
+    """
+    prefix = f"{group}{KEY_SEP}"
+    live = 0
+    for key in [k for k in ns.keys() if k.startswith(prefix)]:
+        raw = ns.get(key)
+        if raw is None:
+            continue
+        lease = dict(raw)
+        pid = lease.get("pid")
+        updated_at = lease.get("updated_at", 0.0)
+        if pid is None or not _pid_alive(pid):
+            ns.pop(key, None)
+            continue
+        if now - updated_at > _heartbeat_ttl:
+            suspect_since = lease.get("suspect_since")
+            if suspect_since is None:
+                lease["suspect_since"] = now
+                ns[key] = lease
+                live += 1
+            elif now - suspect_since > _suspect_grace:
+                ns.pop(key, None)
+            else:
+                live += 1
+        else:
+            if "suspect_since" in lease:
+                lease.pop("suspect_since", None)
+                ns[key] = lease
+            live += 1
+    return live
+
+
+def _log_acquire_failure(group: str, error: Exception) -> None:
+    global _last_acquire_failure_log
+    now = time.time()
+    if now - _last_acquire_failure_log >= _ACQUIRE_FAILURE_LOG_INTERVAL:
+        _last_acquire_failure_log = now
+        direct_log(
+            f"Process {os.getpid()} failed to acquire global slot for group "
+            f"'{group}' (fail-closed, task stays queued): {error}",
+            level="WARNING",
+        )
+
+
+async def try_acquire_global_slot(group: str) -> Optional[str]:
+    """Try to claim one global concurrency slot for ``group`` (non-blocking).
+
+    Returns a lease id on success, or None when the group is at capacity.
+    Any shared-storage error is fail-closed: returns None (with a
+    rate-limited warning) so the caller keeps the task queued and retries —
+    capacity is never exceeded due to infrastructure errors.
+    """
+    limit = get_global_concurrency_limit(group)
+    if limit is None or limit <= 0:
+        return None
+    try:
+        ns = await _get_lease_namespace()
+        async with get_storage_keyed_lock(
+            group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+        ):
+            now = time.time()
+            in_use = _reap_group_leases_locked(ns, group, now)
+            if in_use >= limit:
+                return None
+            lease_id = uuid.uuid4().hex
+            ns[f"{group}{KEY_SEP}{lease_id}"] = {
+                "pid": os.getpid(),
+                "updated_at": now,
+            }
+            return lease_id
+    except Exception as e:
+        _log_acquire_failure(group, e)
+        return None
+
+
+async def release_global_slot(group: str, lease_id: str) -> None:
+    """Release a previously acquired global slot (idempotent).
+
+    Raises on shared-storage errors — callers that must never propagate
+    (e.g. worker ``finally`` blocks) wrap this and queue the lease for a
+    later retry; the heartbeat TTL guarantees eventual reclamation anyway.
+    """
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        ns.pop(f"{group}{KEY_SEP}{lease_id}", None)
+
+
+async def renew_global_slots(group: str, lease_ids) -> None:
+    """Refresh the heartbeat of this process's held leases for ``group``.
+
+    A renewal rewrites the lease whole (clearing any ``suspect_since``
+    mark). Leases that have already been reclaimed are NOT resurrected —
+    re-inserting could exceed the configured limit; the suspect grace
+    exists precisely to make false reclamation unlikely.
+    """
+    lease_ids = list(lease_ids)
+    if not lease_ids:
+        return
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        now = time.time()
+        for lease_id in lease_ids:
+            key = f"{group}{KEY_SEP}{lease_id}"
+            if ns.get(key) is not None:
+                ns[key] = {"pid": os.getpid(), "updated_at": now}
+
+
+async def reconcile_global_slots(group: str) -> int:
+    """Run the lease reaper for ``group``; return surviving lease count."""
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        return _reap_group_leases_locked(ns, group, time.time())
+
+
+async def global_concurrency_in_use(group: str) -> int:
+    """Approximate count of currently held global slots for ``group``."""
+    ns = await _get_lease_namespace()
+    prefix = f"{group}{KEY_SEP}"
+    return sum(1 for k in ns.keys() if k.startswith(prefix))
+
+
+# ---------------------------------------------------------------------------
+# Cross-worker queue stats (best-effort, debounced snapshots)
+# ---------------------------------------------------------------------------
+#
+# Each worker process publishes per-queue snapshots under
+# ``f"{queue_name}{KEY_SEP}{pid}"`` in the workspace-less "queue_stats"
+# namespace (whole-value replacement). The local closure counters remain
+# the source of truth; the shared area only needs to be "fresh enough"
+# (event-triggered publishes debounced by the caller + 5s heartbeat flush).
+
+# Flat counter fields summed across workers during aggregation. These are
+# the existing get_queue_stats() fields (schema compatibility for /health
+# and the webui) plus the new global_slot_waits / physical_queued counters.
+QUEUE_STATS_SUM_FIELDS = (
+    "queued",
+    "running",
+    "in_flight",
+    "worker_count",
+    "submitted_total",
+    "completed_total",
+    "failed_total",
+    "cancelled_total",
+    "rejected_total",
+    "global_slot_waits",
+    "physical_queued",
+)
+
+
+async def publish_queue_stats(queue_name: str, snapshot: Dict[str, Any]) -> None:
+    """Publish this process's snapshot for ``queue_name`` (whole replacement).
+
+    The snapshot must carry ``pid`` and ``updated_at`` (wall-clock time) so
+    aggregation can reap stale entries. Best-effort by contract: callers
+    must tolerate exceptions.
+    """
+    if not _initialized:
+        return
+    ns = await _get_queue_stats_namespace()
+    ns[f"{queue_name}{KEY_SEP}{os.getpid()}"] = dict(snapshot)
+
+
+async def unpublish_queue_stats(queue_name: str) -> None:
+    """Remove this process's snapshot for ``queue_name`` (idempotent)."""
+    if not _initialized:
+        return
+    ns = await _get_queue_stats_namespace()
+    ns.pop(f"{queue_name}{KEY_SEP}{os.getpid()}", None)
+
+
+async def aggregate_queue_stats(queue_name: str) -> Dict[str, Any]:
+    """Aggregate all workers' published snapshots for ``queue_name``.
+
+    Sums the flat counter fields across live snapshots and returns them
+    together with ``reporting_workers`` and the raw ``per_worker`` map.
+    Entries owned by dead PIDs or older than the stale TTL are reaped —
+    re-checked under the internal lock against the previously observed
+    ``updated_at`` so a snapshot republished concurrently is never deleted.
+    """
+    ns = await _get_queue_stats_namespace()
+    now = time.time()
+    prefix = f"{queue_name}{KEY_SEP}"
+    per_worker: Dict[str, Dict[str, Any]] = {}
+    stale: List[tuple] = []
+    for key in [k for k in ns.keys() if k.startswith(prefix)]:
+        raw = ns.get(key)
+        if raw is None:
+            continue
+        snap = dict(raw)
+        pid = snap.get("pid")
+        updated_at = snap.get("updated_at", 0.0)
+        if (pid is not None and not _pid_alive(pid)) or (
+            now - updated_at > _queue_stats_stale_ttl
+        ):
+            stale.append((key, updated_at))
+            continue
+        per_worker[str(pid)] = snap
+
+    if stale:
+        async with get_internal_lock():
+            for key, seen_updated_at in stale:
+                current = ns.get(key)
+                if current is None:
+                    continue
+                if dict(current).get("updated_at", 0.0) != seen_updated_at:
+                    continue  # republished since we looked — keep it
+                ns.pop(key, None)
+
+    aggregated: Dict[str, Any] = {
+        field: sum(int(snap.get(field, 0) or 0) for snap in per_worker.values())
+        for field in QUEUE_STATS_SUM_FIELDS
+    }
+    aggregated["reporting_workers"] = len(per_worker)
+    aggregated["per_worker"] = per_worker
+    return aggregated

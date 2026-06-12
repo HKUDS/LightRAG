@@ -276,6 +276,29 @@ DEFAULT_EMBEDDING_TIMEOUT = 30
 DEFAULT_RERANK_MAX_ASYNC = DEFAULT_MAX_ASYNC
 DEFAULT_RERANK_TIMEOUT = 30
 
+# Cross-worker global concurrency gate (gunicorn multi-worker) defaults.
+# A lease whose heartbeat is older than the TTL marks its owner as suspect;
+# a suspect lease is reclaimed only after the additional grace elapses while
+# the owner PID is still alive (dead PIDs are reclaimed immediately).
+DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL = 20.0  # ~4x the 5s health-check heartbeat
+DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE = 20.0  # ~1x heartbeat TTL
+# Polling backoff bounds while a worker waits for a free global slot.
+DEFAULT_GLOBAL_SLOT_POLL_MIN = 0.05
+DEFAULT_GLOBAL_SLOT_POLL_MAX = 0.2
+# Max consecutive zombie (cancelled) queue entries a worker drains while
+# holding a global slot before returning the slot to other processes.
+DEFAULT_GLOBAL_SLOT_DRAIN_LIMIT = 16
+# Physical queue compaction (global-limit mode only): triggered when the
+# estimated zombie count exceeds the threshold; each maintenance pass
+# processes at most the batch limit to keep the event loop responsive.
+DEFAULT_ZOMBIE_COMPACT_THRESHOLD = 64
+DEFAULT_COMPACT_BATCH_LIMIT = 512
+# Cross-worker queue stats: snapshots older than the stale TTL (and entries
+# owned by dead PIDs) are reaped during aggregation; publishes triggered by
+# counter updates are debounced to the min interval.
+DEFAULT_QUEUE_STATS_STALE_TTL = 15.0
+DEFAULT_QUEUE_STATS_MIN_PUBLISH_INTERVAL = 0.1
+
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB
 DEFAULT_LOG_BACKUP_COUNT = 5  # Default 5 backups

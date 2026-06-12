@@ -46,6 +46,12 @@ from lightrag.constants import (
     VALID_SOURCE_IDS_LIMIT_METHODS,
     SOURCE_IDS_LIMIT_METHOD_FIFO,
     PARSED_DIR_NAME,
+    DEFAULT_GLOBAL_SLOT_POLL_MIN,
+    DEFAULT_GLOBAL_SLOT_POLL_MAX,
+    DEFAULT_GLOBAL_SLOT_DRAIN_LIMIT,
+    DEFAULT_ZOMBIE_COMPACT_THRESHOLD,
+    DEFAULT_COMPACT_BATCH_LIMIT,
+    DEFAULT_QUEUE_STATS_MIN_PUBLISH_INTERVAL,
 )
 
 # Precompile regex pattern for JSON sanitization (module-level, compiled once)
@@ -875,6 +881,7 @@ def priority_limit_async_func_call(
     max_queue_size: int = 1000,
     cleanup_timeout: float = 2.0,
     queue_name: str = "limit_async",
+    concurrency_group: str | None = None,
 ):
     """
     Enhanced priority-limited asynchronous function call decorator with robust timeout handling
@@ -884,6 +891,7 @@ def priority_limit_async_func_call(
     - Task state tracking to prevent race conditions
     - Enhanced health check system with stuck task detection
     - Proper resource cleanup and error recovery
+    - Optional cross-process global concurrency gating (gunicorn multi-worker)
 
     Args:
         max_size: Maximum number of concurrent calls
@@ -893,6 +901,15 @@ def priority_limit_async_func_call(
         max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout + 60s)
         cleanup_timeout: Maximum time to wait for cleanup operations (defaults to 2.0s)
         queue_name: Optional queue name for logging identification (defaults to "limit_async")
+        concurrency_group: Optional cross-process concurrency group name (e.g.
+            "llm:extract", "embedding", "rerank"). When shared storage was
+            initialized with a global limit for this group, workers acquire a
+            cross-worker slot (lease with heartbeat self-healing) before
+            executing, capping total in-flight calls across all gunicorn
+            workers; the group's queue stats are also published for /health
+            aggregation. When None, or when no global limit is configured,
+            behavior is identical to the original per-process decorator and
+            shared storage is never touched for slot acquisition.
 
     Returns:
         Decorator function
@@ -915,7 +932,11 @@ def priority_limit_async_func_call(
                     llm_timeout * 2 + 15
                 )  # Reserved timeout buffer for health check phase
 
-        queue = asyncio.PriorityQueue(maxsize=max_queue_size)
+        # The queue is created lazily in ensure_workers(): the default path
+        # keeps the bounded queue, while global-limit mode needs an unbounded
+        # physical queue (admission is enforced logically via live_queued so
+        # cancelled-but-not-yet-drained tuples can never wedge the queue).
+        queue: asyncio.PriorityQueue | None = None
         tasks = set()
         initialization_lock = asyncio.Lock()
         counter = 0
@@ -934,6 +955,256 @@ def priority_limit_async_func_call(
         failed_total = 0
         cancelled_total = 0
         rejected_total = 0
+
+        # --- Cross-worker global concurrency gate state (global-limit mode) ---
+        # Tri-state: None until resolved on first ensure_workers() (which runs
+        # after initialize_share_data() in every supported flow).
+        use_global_limit: bool | None = None
+        publish_stats = False
+        shared = None  # lazily imported lightrag.kg.shared_storage module
+        work_available = asyncio.Event()
+        admission_cond = asyncio.Condition()
+        # Logical queued count: live tasks waiting in the queue (excludes
+        # running tasks and cancelled zombies) — same capacity semantics as
+        # the bounded queue's maxsize in the default path.
+        live_queued = 0
+        held_leases: set[str] = set()
+        pending_release: set[str] = set()
+        global_slot_waits = 0
+        zombie_compact_threshold = max(
+            DEFAULT_ZOMBIE_COMPACT_THRESHOLD,
+            max_queue_size if max_queue_size > 0 else 0,
+        )
+        stats_dirty = False
+        last_publish_time = 0.0
+        last_release_warn_time = 0.0
+        last_renew_warn_time = 0.0
+
+        def _resolve_mode() -> bool:
+            """Resolve global-limit / stats-publishing mode from shared storage.
+
+            Returns True when the resolution is final. Never imports or
+            touches shared storage when concurrency_group is None
+            (standalone decorator usage stays fully self-contained).
+            """
+            nonlocal use_global_limit, publish_stats, shared
+            if use_global_limit is not None:
+                return True
+            if concurrency_group is None:
+                use_global_limit = False
+                publish_stats = False
+                return True
+            if shared is None:
+                from lightrag.kg import shared_storage as shared_module
+
+                shared = shared_module
+            if not shared.is_share_data_initialized():
+                return False  # not final yet — caller decides how to commit
+            use_global_limit = shared.is_global_concurrency_limited(concurrency_group)
+            publish_stats = True
+            return True
+
+        def _snapshot() -> dict:
+            """Synchronous snapshot of local state for cross-worker publishing.
+
+            Reads counters without locks: all mutations happen on the event
+            loop between awaits, so a synchronous read is always consistent.
+            """
+            running = sum(
+                1
+                for task_state in task_states.values()
+                if task_state.worker_started and not task_state.future.done()
+            )
+            physical_queued = queue.qsize() if queue is not None else 0
+            return {
+                "queue_name": queue_name,
+                "max_async": max_size,
+                "max_queue_size": max_queue_size,
+                "queued": live_queued if use_global_limit else physical_queued,
+                "physical_queued": physical_queued,
+                "running": running,
+                "in_flight": len(task_states),
+                "worker_count": len([task for task in tasks if not task.done()]),
+                "initialized": initialized,
+                "submitted_total": submitted_total,
+                "completed_total": completed_total,
+                "failed_total": failed_total,
+                "cancelled_total": cancelled_total,
+                "rejected_total": rejected_total,
+                "global_slot_waits": global_slot_waits,
+                "pid": os.getpid(),
+                "updated_at": time.time(),
+            }
+
+        def _mark_stats_dirty() -> None:
+            nonlocal stats_dirty
+            stats_dirty = True
+
+        async def _publish_stats(force: bool = False) -> None:
+            """Best-effort, debounced publish of the local stats snapshot."""
+            nonlocal stats_dirty, last_publish_time
+            if not publish_stats:
+                return
+            now = time.time()
+            if (
+                not force
+                and now - last_publish_time < DEFAULT_QUEUE_STATS_MIN_PUBLISH_INTERVAL
+            ):
+                return
+            try:
+                await shared.publish_queue_stats(queue_name, _snapshot())
+                stats_dirty = False
+                last_publish_time = now
+            except Exception as e:
+                logger.debug(f"{queue_name}: queue stats publish failed: {e}")
+
+        async def _mark_dirty_and_maybe_publish() -> None:
+            _mark_stats_dirty()
+            await _publish_stats()
+
+        async def _notify_admission() -> None:
+            async with admission_cond:
+                admission_cond.notify_all()
+
+        async def _try_acquire_slot() -> str | None:
+            """Non-blocking global slot acquisition (fail-closed on errors)."""
+            try:
+                lease_id = await shared.try_acquire_global_slot(concurrency_group)
+            except Exception as e:
+                # try_acquire_global_slot is fail-closed internally; this
+                # guard keeps the worker alive even if it ever raises.
+                logger.debug(f"{queue_name}: global slot acquisition error: {e}")
+                return None
+            if lease_id is not None:
+                held_leases.add(lease_id)
+            return lease_id
+
+        async def _release_lease_safely(lease_id: str) -> None:
+            """Release a global slot without raising (safe in finally blocks).
+
+            A failed release is parked in pending_release: it is no longer
+            renewed, the health check retries it, and even if every retry
+            fails the heartbeat TTL guarantees any process eventually
+            reclaims the slot — capacity never leaks permanently.
+            """
+            nonlocal last_release_warn_time
+            held_leases.discard(lease_id)
+            try:
+                await shared.release_global_slot(concurrency_group, lease_id)
+                pending_release.discard(lease_id)
+            except asyncio.CancelledError:
+                pending_release.add(lease_id)
+                raise
+            except Exception as e:
+                pending_release.add(lease_id)
+                now = time.time()
+                if now - last_release_warn_time >= 30.0:
+                    last_release_warn_time = now
+                    logger.warning(
+                        f"{queue_name}: failed to release global slot lease "
+                        f"(queued for retry; heartbeat expiry guarantees "
+                        f"reclamation): {e}"
+                    )
+
+        async def _compact_physical_queue() -> None:
+            """Drain zombie tuples that accumulate while no slot is available.
+
+            Without this, a long fail-closed period (shared storage errors)
+            or externally saturated slots would let cancelled tasks pile up
+            in the unbounded physical queue with no consumer. Bounded batches
+            keep the event loop responsive; every popped tuple gets exactly
+            one task_done() (live tuples are re-queued first, adding a fresh
+            unfinished count) so queue.join() in shutdown never wedges.
+            """
+            nonlocal live_queued
+            if queue is None or not use_global_limit:
+                return
+            if queue.qsize() - live_queued <= zombie_compact_threshold:
+                return
+            survivors = []
+            scanned = 0
+            notify_needed = False
+            while scanned < DEFAULT_COMPACT_BATCH_LIMIT:
+                try:
+                    item = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                scanned += 1
+                task_id = item[2]
+                is_zombie = False
+                # Classify under task_states_lock so we serialize with the
+                # wait_func timeout cleanup path (never judge by a stale
+                # snapshot taken outside the lock).
+                async with task_states_lock:
+                    task_state = task_states.get(task_id)
+                    if (
+                        task_state is None
+                        or task_state.cancellation_requested
+                        or task_state.future.cancelled()
+                        or task_state.future.done()
+                    ):
+                        is_zombie = True
+                        if task_state is not None:
+                            task_states.pop(task_id, None)
+                            if not task_state.worker_started:
+                                live_queued -= 1
+                                notify_needed = True
+                if is_zombie:
+                    queue.task_done()
+                else:
+                    survivors.append(item)
+            for item in survivors:
+                queue.put_nowait(item)
+                queue.task_done()
+            if survivors:
+                work_available.set()
+            if notify_needed:
+                await _notify_admission()
+            _mark_stats_dirty()
+
+        async def _run_maintenance() -> None:
+            """One heartbeat pass of cross-worker upkeep (never raises).
+
+            Runs every health-check tick: lease renewal (correctness path —
+            failures get a rate-limited WARNING, the suspect grace absorbs
+            short outages), pending-release retries, lease reaping, zombie
+            compaction, and a forced stats flush (which also keeps this
+            worker's snapshot from going stale in the aggregation view).
+            """
+            nonlocal last_renew_warn_time
+            if use_global_limit:
+                try:
+                    await shared.renew_global_slots(
+                        concurrency_group, tuple(held_leases)
+                    )
+                except Exception as e:
+                    now = time.time()
+                    if now - last_renew_warn_time >= 30.0:
+                        last_renew_warn_time = now
+                        logger.warning(
+                            f"{queue_name}: global slot lease renewal failed "
+                            f"(leases may be reclaimed after the suspect "
+                            f"grace if this persists): {e}"
+                        )
+                for lease_id in tuple(pending_release):
+                    try:
+                        await shared.release_global_slot(concurrency_group, lease_id)
+                        pending_release.discard(lease_id)
+                    except Exception as e:
+                        logger.debug(
+                            f"{queue_name}: pending lease release retry failed: {e}"
+                        )
+                        break  # shared area still unhealthy; retry next pass
+                try:
+                    await shared.reconcile_global_slots(concurrency_group)
+                except Exception as e:
+                    logger.debug(f"{queue_name}: global slot reconcile failed: {e}")
+                try:
+                    await _compact_physical_queue()
+                except Exception as e:
+                    logger.warning(f"{queue_name}: queue compaction failed: {e}")
+            if publish_stats:
+                await _publish_stats(force=True)
 
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
@@ -1027,6 +1298,168 @@ def priority_limit_async_func_call(
             finally:
                 logger.debug(f"{queue_name}: Worker exiting")
 
+        async def limited_worker():
+            """Worker for global-limit mode: slot-first, drain-second.
+
+            The worker acquires a cross-process slot BEFORE consuming the
+            local queue, so while slots are saturated tasks stay queued:
+            user-level timeouts/cancellations during the wait never reach
+            the provider, local priority order is preserved (the queue head
+            is taken only once a slot is held), and execution timing starts
+            only when a live task is actually picked up (slot waits are
+            never misjudged as stuck tasks).
+            """
+            nonlocal live_queued, global_slot_waits
+            poll_delay = DEFAULT_GLOBAL_SLOT_POLL_MIN
+            try:
+                while not shutdown_event.is_set():
+                    try:
+                        # Idle wait on an event instead of qsize polling. The
+                        # clear-then-recheck ordering has no await in between,
+                        # so a concurrent put+set can never be lost; the 1.0s
+                        # timeout only preserves the shutdown check.
+                        if queue.qsize() == 0:
+                            work_available.clear()
+                            if queue.qsize() == 0:
+                                try:
+                                    await asyncio.wait_for(
+                                        work_available.wait(), timeout=1.0
+                                    )
+                                except asyncio.TimeoutError:
+                                    pass
+                                continue
+
+                        # Acquire a global slot before touching the queue —
+                        # tasks must remain queued (and cancellable) while
+                        # all slots are busy. Fail-closed errors land here
+                        # too, as a None lease.
+                        lease_id = await _try_acquire_slot()
+                        if lease_id is None:
+                            global_slot_waits += 1
+                            _mark_stats_dirty()
+                            await asyncio.sleep(poll_delay)
+                            poll_delay = min(
+                                poll_delay * 2, DEFAULT_GLOBAL_SLOT_POLL_MAX
+                            )
+                            continue
+                        poll_delay = DEFAULT_GLOBAL_SLOT_POLL_MIN
+
+                        live_task = None
+                        try:
+                            # Take the queue head, draining zombies (bounded
+                            # by the drain limit so a zombie-heavy process
+                            # doesn't hog a scarce slot for local cleanup).
+                            zombies_drained = 0
+                            notify_needed = False
+                            while live_task is None:
+                                try:
+                                    item = queue.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    # Benign race (another worker got it):
+                                    # return the slot immediately.
+                                    break
+                                task_id, args, kwargs = item[2], item[3], item[4]
+                                is_zombie = False
+                                async with task_states_lock:
+                                    task_state = task_states.get(task_id)
+                                    if (
+                                        task_state is None
+                                        or task_state.cancellation_requested
+                                        or task_state.future.cancelled()
+                                        or task_state.future.done()
+                                    ):
+                                        is_zombie = True
+                                        if task_state is not None:
+                                            task_states.pop(task_id, None)
+                                            if not task_state.worker_started:
+                                                live_queued -= 1
+                                                notify_needed = True
+                                    else:
+                                        task_state.worker_started = True
+                                        task_state.execution_start_time = (
+                                            asyncio.get_event_loop().time()
+                                        )
+                                        live_queued -= 1
+                                        notify_needed = True
+                                        live_task = (
+                                            task_id,
+                                            task_state,
+                                            args,
+                                            kwargs,
+                                        )
+                                if is_zombie:
+                                    # Never call the provider for a zombie.
+                                    queue.task_done()
+                                    zombies_drained += 1
+                                    if (
+                                        zombies_drained
+                                        >= DEFAULT_GLOBAL_SLOT_DRAIN_LIMIT
+                                    ):
+                                        break
+                            if notify_needed:
+                                await _notify_admission()
+                            if live_task is None:
+                                continue  # finally returns the slot
+
+                            task_id, task_state, args, kwargs = live_task
+                            await _mark_dirty_and_maybe_publish()
+                            try:
+                                # Same execution / timeout / exception
+                                # semantics as the default worker.
+                                if max_execution_timeout is not None:
+                                    result = await asyncio.wait_for(
+                                        func(*args, **kwargs),
+                                        timeout=max_execution_timeout,
+                                    )
+                                else:
+                                    result = await func(*args, **kwargs)
+
+                                if not task_state.future.done():
+                                    task_state.future.set_result(result)
+
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    f"{queue_name}: Worker timeout for task {task_id} after {max_execution_timeout}s"
+                                )
+                                if not task_state.future.done():
+                                    task_state.future.set_exception(
+                                        WorkerTimeoutError(
+                                            max_execution_timeout, "execution"
+                                        )
+                                    )
+                            except asyncio.CancelledError:
+                                if not task_state.future.done():
+                                    task_state.future.cancel()
+                                logger.debug(
+                                    f"{queue_name}: Task {task_id} cancelled during execution"
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    f"{queue_name}: Error in decorated function for task {task_id}: {str(e)}"
+                                )
+                                if not task_state.future.done():
+                                    task_state.future.set_exception(e)
+                            finally:
+                                async with task_states_lock:
+                                    task_states.pop(task_id, None)
+                                queue.task_done()
+                                await _mark_dirty_and_maybe_publish()
+                        finally:
+                            await _release_lease_safely(lease_id)
+
+                    except Exception as e:
+                        logger.error(
+                            f"{queue_name}: Critical error in worker: {str(e)}"
+                        )
+                        await asyncio.sleep(0.1)
+            finally:
+                logger.debug(f"{queue_name}: Worker exiting")
+
+        def _create_worker_task() -> asyncio.Task:
+            return asyncio.create_task(
+                limited_worker() if use_global_limit else worker()
+            )
+
         async def enhanced_health_check():
             """Enhanced health check with stuck task detection and recovery"""
             nonlocal initialized
@@ -1086,10 +1519,16 @@ def priority_limit_async_func_call(
                         )
                         new_tasks = set()
                         for _ in range(workers_needed):
-                            task = asyncio.create_task(worker())
+                            task = _create_worker_task()
                             new_tasks.add(task)
                             task.add_done_callback(tasks.discard)
                         tasks.update(new_tasks)
+
+                    # Cross-worker upkeep: lease heartbeat / reaping, zombie
+                    # compaction, stats flush. Internally best-effort — each
+                    # step isolates its own failures so the health check
+                    # loop never exits because of shared-storage errors.
+                    await _run_maintenance()
 
             except Exception as e:
                 logger.error(f"{queue_name}: Error in enhanced health check: {str(e)}")
@@ -1100,6 +1539,7 @@ def priority_limit_async_func_call(
         async def ensure_workers():
             """Ensure worker system is initialized with enhanced error handling"""
             nonlocal initialized, worker_health_check_task, tasks, reinit_count
+            nonlocal queue, use_global_limit
 
             if initialized:
                 return
@@ -1107,6 +1547,18 @@ def priority_limit_async_func_call(
             async with initialization_lock:
                 if initialized:
                     return
+
+                # Resolve the concurrency mode once (cached for the lifetime
+                # of the wrapper) and lazily create the matching queue. When
+                # shared storage is not initialized at this point (standalone
+                # usage), commit to the default unlimited path.
+                if use_global_limit is None and not _resolve_mode():
+                    use_global_limit = False
+                if queue is None:
+                    if use_global_limit:
+                        queue = asyncio.PriorityQueue()
+                    else:
+                        queue = asyncio.PriorityQueue(maxsize=max_queue_size)
 
                 if reinit_count > 0:
                     reinit_count += 1
@@ -1130,7 +1582,7 @@ def priority_limit_async_func_call(
                 # Create worker tasks
                 workers_needed = max_size - active_tasks_count
                 for _ in range(workers_needed):
-                    task = asyncio.create_task(worker())
+                    task = _create_worker_task()
                     tasks.add(task)
                     task.add_done_callback(tasks.discard)
 
@@ -1165,11 +1617,15 @@ def priority_limit_async_func_call(
                 in_flight = len(task_states)
 
             active_workers = len([task for task in tasks if not task.done()])
-            return {
+            physical_queued = queue.qsize() if queue is not None else 0
+            stats = {
                 "queue_name": queue_name,
                 "max_async": max_size,
                 "max_queue_size": max_queue_size,
-                "queued": queue.qsize(),
+                # Global-limit mode reports the logical queued count (live
+                # tasks only — cancelled zombies still physically present in
+                # the unbounded queue are excluded).
+                "queued": live_queued if use_global_limit else physical_queued,
                 "running": running,
                 "in_flight": in_flight,
                 "worker_count": active_workers,
@@ -1180,6 +1636,47 @@ def priority_limit_async_func_call(
                 "cancelled_total": cancelled_total,
                 "rejected_total": rejected_total,
             }
+            if use_global_limit:
+                stats["physical_queued"] = physical_queued
+                stats["global_slot_waits"] = global_slot_waits
+            return stats
+
+        async def get_aggregated_queue_stats():
+            """Local stats merged with every worker process's published snapshot.
+
+            Publishes this process's fresh snapshot first, then sums the flat
+            counter fields across all live snapshots (schema-compatible with
+            get_queue_stats so /health consumers and the webui need no
+            changes), adding ``reporting_workers`` / ``per_worker`` and — in
+            global-limit mode — ``global_limit`` / ``global_in_use``. Any
+            shared-storage failure falls back to the local snapshot.
+            """
+            local = await get_queue_stats()
+            if not _resolve_mode() or not publish_stats:
+                return local
+            try:
+                await shared.publish_queue_stats(queue_name, _snapshot())
+                aggregated = await shared.aggregate_queue_stats(queue_name)
+                result = dict(local)
+                for field_name in shared.QUEUE_STATS_SUM_FIELDS:
+                    if field_name in aggregated:
+                        result[field_name] = aggregated[field_name]
+                result["reporting_workers"] = aggregated["reporting_workers"]
+                result["per_worker"] = aggregated["per_worker"]
+                if use_global_limit:
+                    result["global_limit"] = shared.get_global_concurrency_limit(
+                        concurrency_group
+                    )
+                    result["global_in_use"] = await shared.global_concurrency_in_use(
+                        concurrency_group
+                    )
+                return result
+            except Exception as e:
+                logger.debug(
+                    f"{queue_name}: queue stats aggregation failed, "
+                    f"falling back to local snapshot: {e}"
+                )
+                return local
 
         async def shutdown(graceful: bool = True, timeout: float | None = None):
             """Shut down workers and cleanup resources.
@@ -1192,10 +1689,19 @@ def priority_limit_async_func_call(
             nonlocal accepting_new_tasks, initialized, worker_health_check_task
             logger.info(f"{queue_name}: Shutting down priority queue workers")
 
-            accepting_new_tasks = False
+            if use_global_limit:
+                # Stop accepting and wake admission waiters inside the same
+                # Condition critical section: a request sleeping on admission
+                # (no _queue_timeout) must observe the flag flip and raise
+                # the shutdown rejection instead of sleeping forever.
+                async with admission_cond:
+                    accepting_new_tasks = False
+                    admission_cond.notify_all()
+            else:
+                accepting_new_tasks = False
 
             drain_timed_out = False
-            if graceful:
+            if graceful and queue is not None:
                 effective_timeout = timeout
                 if effective_timeout is None:
                     effective_timeout = (
@@ -1223,7 +1729,7 @@ def priority_limit_async_func_call(
                             task_state.future.cancel()
                     task_states.clear()
 
-                while True:
+                while queue is not None:
                     try:
                         queue.get_nowait()
                         queue.task_done()
@@ -1251,7 +1757,170 @@ def priority_limit_async_func_call(
             worker_health_check_task = None
             initialized = False
 
+            # Return any global slots still held (worker cancellation may
+            # have interrupted a release) and retract our published stats.
+            # Best-effort: heartbeat expiry reclaims anything left behind.
+            if use_global_limit:
+                for lease_id in list(held_leases | pending_release):
+                    held_leases.discard(lease_id)
+                    pending_release.discard(lease_id)
+                    try:
+                        await shared.release_global_slot(concurrency_group, lease_id)
+                    except Exception:
+                        pass
+            if publish_stats:
+                try:
+                    await shared.unpublish_queue_stats(queue_name)
+                except Exception:
+                    pass
+
             logger.info(f"{queue_name}: Priority queue workers shutdown complete")
+
+        async def _limited_wait(args, kwargs, _priority, _timeout, _queue_timeout):
+            """wait_func body for global-limit mode (logical admission).
+
+            Admission reserves logical capacity (live_queued) BEFORE the
+            task state is registered, with the same semantics as the bounded
+            queue in the default path: only live queued tasks count toward
+            max_queue_size (running tasks and cancelled zombies do not),
+            _queue_timeout bounds the wait with QueueFullError, and
+            max_queue_size <= 0 means unlimited admission. The reservation
+            is released exactly once — by the worker when the task turns
+            running (worker_started flip), or by the cleanup below when the
+            task dies while still queued.
+            """
+            nonlocal counter, submitted_total, completed_total, cancelled_total
+            nonlocal failed_total, rejected_total, live_queued
+
+            task_id = f"{id(asyncio.current_task())}_{asyncio.get_event_loop().time()}"
+            future = asyncio.Future()
+            task_state = TaskState(
+                future=future, start_time=asyncio.get_event_loop().time()
+            )
+
+            def _admission_open() -> bool:
+                return live_queued < max_queue_size or not accepting_new_tasks
+
+            # --- Admission: reserve capacity before registering ---
+            async with admission_cond:
+                if not accepting_new_tasks:
+                    rejected_total += 1
+                    _mark_stats_dirty()
+                    raise RuntimeError(f"{queue_name}: Queue is shutting down")
+                if max_queue_size > 0 and live_queued >= max_queue_size:
+                    try:
+                        if _queue_timeout is not None:
+                            await asyncio.wait_for(
+                                admission_cond.wait_for(_admission_open),
+                                timeout=_queue_timeout,
+                            )
+                        else:
+                            await admission_cond.wait_for(_admission_open)
+                    except asyncio.TimeoutError:
+                        _mark_stats_dirty()
+                        raise QueueFullError(
+                            f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
+                        )
+                    if not accepting_new_tasks:
+                        # Woken by shutdown's notify_all.
+                        rejected_total += 1
+                        _mark_stats_dirty()
+                        raise RuntimeError(f"{queue_name}: Queue is shutting down")
+                live_queued += 1
+
+            # Reservation window: until the task state is registered, any
+            # exception/cancellation must hand the reservation back or this
+            # slot of logical capacity would be occupied forever.
+            try:
+                async with task_states_lock:
+                    task_states[task_id] = task_state
+            except BaseException:
+                async with admission_cond:
+                    live_queued -= 1
+                    admission_cond.notify_all()
+                raise
+            # From here the reservation belongs to the exactly-once rule
+            # (worker_started transfer, or the finally cleanup below).
+
+            try:
+                active_futures.add(future)
+
+                # Get counter for FIFO ordering
+                async with initialization_lock:
+                    current_count = counter
+                    counter += 1
+
+                # Unbounded physical queue: put_nowait never blocks, and the
+                # (priority, count, ...) tuple keeps heap ordering intact.
+                queue.put_nowait((_priority, current_count, task_id, args, kwargs))
+                submitted_total += 1
+                work_available.set()
+                await _mark_dirty_and_maybe_publish()
+
+                # Wait for result with the same semantics as the default path
+                try:
+                    if _timeout is not None:
+                        result = await asyncio.wait_for(future, _timeout)
+                    else:
+                        result = await future
+                    completed_total += 1
+                    await _mark_dirty_and_maybe_publish()
+                    return result
+                except asyncio.TimeoutError:
+                    # User-level timeout: the task may still be queued (e.g.
+                    # waiting for a global slot) — mark it cancelled so no
+                    # worker ever calls the provider for it.
+                    async with task_states_lock:
+                        if task_id in task_states:
+                            task_states[task_id].cancellation_requested = True
+
+                    if not future.done():
+                        future.cancel()
+
+                    cleanup_start = asyncio.get_event_loop().time()
+                    while (
+                        task_id in task_states
+                        and asyncio.get_event_loop().time() - cleanup_start
+                        < cleanup_timeout
+                    ):
+                        await asyncio.sleep(0.1)
+
+                    cancelled_total += 1
+                    _mark_stats_dirty()
+                    raise TimeoutError(
+                        f"{queue_name}: User timeout after {_timeout} seconds"
+                    )
+                except WorkerTimeoutError as e:
+                    failed_total += 1
+                    _mark_stats_dirty()
+                    raise TimeoutError(f"{queue_name}: {str(e)}")
+                except HealthCheckTimeoutError as e:
+                    failed_total += 1
+                    _mark_stats_dirty()
+                    raise TimeoutError(f"{queue_name}: {str(e)}")
+                except asyncio.CancelledError:
+                    cancelled_total += 1
+                    _mark_stats_dirty()
+                    raise
+                except Exception:
+                    failed_total += 1
+                    _mark_stats_dirty()
+                    raise
+
+            finally:
+                active_futures.discard(future)
+                notify_needed = False
+                async with task_states_lock:
+                    popped = task_states.pop(task_id, None)
+                    if popped is not None and not popped.worker_started:
+                        # Died while still queued: release the reservation
+                        # here — the worker never will (exactly-once).
+                        live_queued -= 1
+                        notify_needed = True
+                if notify_needed:
+                    async with admission_cond:
+                        admission_cond.notify_all()
+                _mark_stats_dirty()
 
         @wraps(func)
         async def wait_func(
@@ -1283,9 +1952,15 @@ def priority_limit_async_func_call(
             nonlocal rejected_total
             if not accepting_new_tasks:
                 rejected_total += 1
+                _mark_stats_dirty()
                 raise RuntimeError(f"{queue_name}: Queue is shutting down")
 
             await ensure_workers()
+
+            if use_global_limit:
+                return await _limited_wait(
+                    args, kwargs, _priority, _timeout, _queue_timeout
+                )
 
             # Generate unique task ID
             task_id = f"{id(asyncio.current_task())}_{asyncio.get_event_loop().time()}"
@@ -1326,6 +2001,7 @@ def priority_limit_async_func_call(
                             (_priority, current_count, task_id, args, kwargs)
                         )
                     submitted_total += 1
+                    await _mark_dirty_and_maybe_publish()
                 except asyncio.TimeoutError:
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
@@ -1343,6 +2019,7 @@ def priority_limit_async_func_call(
                     else:
                         result = await future
                     completed_total += 1
+                    await _mark_dirty_and_maybe_publish()
                     return result
                 except asyncio.TimeoutError:
                     # This is user-level timeout (asyncio.wait_for caused)
@@ -1365,22 +2042,27 @@ def priority_limit_async_func_call(
                         await asyncio.sleep(0.1)
 
                     cancelled_total += 1
+                    _mark_stats_dirty()
                     raise TimeoutError(
                         f"{queue_name}: User timeout after {_timeout} seconds"
                     )
                 except WorkerTimeoutError as e:
                     # This is Worker-level timeout, directly propagate exception information
                     failed_total += 1
+                    _mark_stats_dirty()
                     raise TimeoutError(f"{queue_name}: {str(e)}")
                 except HealthCheckTimeoutError as e:
                     # This is Health Check-level timeout, directly propagate exception information
                     failed_total += 1
+                    _mark_stats_dirty()
                     raise TimeoutError(f"{queue_name}: {str(e)}")
                 except asyncio.CancelledError:
                     cancelled_total += 1
+                    _mark_stats_dirty()
                     raise
                 except Exception:
                     failed_total += 1
+                    _mark_stats_dirty()
                     raise
 
             finally:
@@ -1392,6 +2074,11 @@ def priority_limit_async_func_call(
         # Add shutdown method to decorated function
         wait_func.shutdown = shutdown
         wait_func.get_queue_stats = get_queue_stats
+        wait_func.get_aggregated_queue_stats = get_aggregated_queue_stats
+        # One upkeep pass (lease renewal / pending releases / reaping /
+        # compaction / stats flush). The health check runs it every 5s;
+        # exposed for tests and operational tooling.
+        wait_func.run_maintenance = _run_maintenance
 
         return wait_func
 

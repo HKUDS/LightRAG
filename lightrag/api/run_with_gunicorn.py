@@ -29,6 +29,30 @@ def check_and_install_dependencies():
             print(f"{package} installed successfully")
 
 
+def _build_global_concurrency_limits(args) -> dict:
+    """Assemble cross-worker concurrency limits from parsed configuration.
+
+    Group names must match the ``concurrency_group`` values passed to
+    ``priority_limit_async_func_call``: ``llm:{role}`` for the four LLM
+    roles, plus ``embedding`` and ``rerank``. Unset env vars yield no entry
+    (that group stays unlimited and keeps the original per-process path).
+    """
+    from lightrag.llm_roles import ROLES
+
+    limits = {}
+    for spec in ROLES:
+        role_limit = getattr(args, f"{spec.name}_llm_global_max_async", None)
+        if role_limit is not None and role_limit > 0:
+            limits[f"llm:{spec.name}"] = role_limit
+    embedding_limit = getattr(args, "embedding_func_global_max_async", None)
+    if embedding_limit is not None and embedding_limit > 0:
+        limits["embedding"] = embedding_limit
+    rerank_limit = getattr(args, "rerank_global_max_async", None)
+    if rerank_limit is not None and rerank_limit > 0:
+        limits["rerank"] = rerank_limit
+    return limits
+
+
 def main():
     from lightrag.api.utils_api import display_splash_screen, check_env_file
     from lightrag.api.config import global_args, initialize_config
@@ -248,14 +272,20 @@ def main():
     # Create the application
     app = GunicornApp("")
 
+    # Cross-worker global concurrency limits (read-only after this point;
+    # forked workers inherit them as module globals).
+    global_concurrency_limits = _build_global_concurrency_limits(global_args)
+
     # Force workers to be an integer and greater than 1 for multi-process mode
     workers_count = global_args.workers
     if workers_count > 1:
         # Set a flag to indicate we're in the main process
         os.environ["LIGHTRAG_MAIN_PROCESS"] = "1"
-        initialize_share_data(workers_count)
+        initialize_share_data(
+            workers_count, global_concurrency_limits=global_concurrency_limits
+        )
     else:
-        initialize_share_data(1)
+        initialize_share_data(1, global_concurrency_limits=global_concurrency_limits)
 
     # Run the application
     print("\nStarting Gunicorn with direct Python API...")
