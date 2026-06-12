@@ -166,12 +166,24 @@ async def anthropic_complete_if_cache(
         response = await anthropic_async_client.messages.create(**create_params)
     except APIConnectionError as e:
         logger.error(f"Anthropic API Connection Error: {e}")
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
         raise
     except RateLimitError as e:
         logger.error(f"Anthropic API Rate Limit Error: {e}")
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
         raise
     except APITimeoutError as e:
         logger.error(f"Anthropic API Timeout Error: {e}")
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
         raise
     except Exception as e:
         body = getattr(e, "body", None)
@@ -188,10 +200,20 @@ async def anthropic_complete_if_cache(
         logger.error(
             f"Anthropic API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
         )
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
         raise
 
     if not stream:
-        return response.content[0].text
+        try:
+            return response.content[0].text
+        finally:
+            try:
+                await anthropic_async_client.close()
+            except Exception as close_error:
+                logger.warning(f"Failed to close Anthropic client: {close_error}")
 
     async def stream_response():
         try:
