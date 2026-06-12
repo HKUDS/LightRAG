@@ -1485,7 +1485,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] 3. Manually resolve schema compatibility issues"
             )
             logger.error(
-                f"[{self.workspace}] 4. Consider dropping and recreating the collection if data is not critical"
+                f"[{self.workspace}] 4. Consider recreating the collection using: lightrag-rebuild-vdb "
             )
             logger.error(
                 f"[{self.workspace}] Program execution stopped to prevent potential data loss."
