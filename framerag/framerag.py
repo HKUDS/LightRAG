@@ -32,6 +32,22 @@ from lightrag.operate import chunking_by_token_size
 from .storage import make_kv, wrap_embed
 from .rerank import RerankFunc, rerank_chunk_hits
 from .doc_store import DocStore, DocStatus, DocRecord
+from .constants import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_MAX_GLEANING,
+    DEFAULT_DIFFUSION_STEPS,
+    DEFAULT_DIFFUSION_ALPHA,
+    DEFAULT_TOP_CHUNKS,
+    DEFAULT_TOP_FRAMES,
+    DEFAULT_TOP_NODES,
+    DEFAULT_RERANK_TOP_K,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_EMBEDDING_TIMEOUT,
+    DEFAULT_MAX_ASYNC,
+    DEFAULT_EMBEDDING_DIM,
+    DEFAULT_DESC_MERGE_THRESHOLD,
+)
 from .types import (
     ChunkSchema,
     EntityMentionSchema,
@@ -78,30 +94,28 @@ class FrameRAG:
             print(token, end="", flush=True)
     """
 
-    _DESC_MERGE_THRESHOLD = 3_500   # chars; summarise when descriptions exceed this
-
     def __init__(
         self,
         working_dir: str,
         llm_func: Callable[..., Awaitable[str]],
         embed_func: Callable[[list[str]], Awaitable[np.ndarray]],
-        embedding_dim: int = 1536,
-        chunk_size: int = 1200,
-        chunk_overlap: int = 100,
+        embedding_dim: int = DEFAULT_EMBEDDING_DIM,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         enable_causal: bool = True,
         enable_gleaning: bool = True,
-        max_gleaning_rounds: int = 1,
+        max_gleaning_rounds: int = DEFAULT_MAX_GLEANING,
         enable_event_coref: bool = True,
-        diffusion_steps: int = 3,
-        diffusion_alpha: float = 0.15,
-        top_chunks: int = 20,
-        top_frames: int = 10,
-        top_nodes: int = 15,
+        diffusion_steps: int = DEFAULT_DIFFUSION_STEPS,
+        diffusion_alpha: float = DEFAULT_DIFFUSION_ALPHA,
+        top_chunks: int = DEFAULT_TOP_CHUNKS,
+        top_frames: int = DEFAULT_TOP_FRAMES,
+        top_nodes: int = DEFAULT_TOP_NODES,
         rerank_func: Optional[Callable] = None,
-        rerank_top_k: int = 50,
-        llm_timeout: float = 120.0,
-        embed_timeout: float = 30.0,
-        max_concurrent_llm: int = 4,
+        rerank_top_k: int = DEFAULT_RERANK_TOP_K,
+        llm_timeout: float = DEFAULT_LLM_TIMEOUT,
+        embed_timeout: float = DEFAULT_EMBEDDING_TIMEOUT,
+        max_concurrent_llm: int = DEFAULT_MAX_ASYNC,
     ):
         self._raw_llm = llm_func
         self._raw_embed = embed_func
@@ -122,6 +136,7 @@ class FrameRAG:
         self._llm_timeout = llm_timeout
         self._embed_timeout = embed_timeout
         self._llm_sem = asyncio.Semaphore(max_concurrent_llm)
+        self._desc_merge_threshold = DEFAULT_DESC_MERGE_THRESHOLD
 
         self._working_dir = working_dir
         os.makedirs(working_dir, exist_ok=True)
@@ -380,7 +395,7 @@ class FrameRAG:
                             existing.get("descriptions", []) + canon.descriptions
                         )
                     )
-                    if sum(len(d) for d in all_descs) > self._DESC_MERGE_THRESHOLD:
+                    if sum(len(d) for d in all_descs) > self._desc_merge_threshold:
                         merged = await self._summarise_descriptions(
                             canon.canonical_name, all_descs
                         )
@@ -391,7 +406,7 @@ class FrameRAG:
                     continue
 
             # New canonical: check if descriptions alone are already too long
-            if sum(len(d) for d in canon.descriptions) > self._DESC_MERGE_THRESHOLD:
+            if sum(len(d) for d in canon.descriptions) > self._desc_merge_threshold:
                 merged = await self._summarise_descriptions(
                     canon.canonical_name, canon.descriptions
                 )

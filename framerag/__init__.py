@@ -1,6 +1,7 @@
 """FrameRAG: Frame-Semantic Event Hypergraph RAG system."""
 from .framerag import FrameRAG
 from .rerank import make_reranker, RerankFunc
+from . import constants
 from .types import (
     ChunkSchema,
     EntityMentionSchema,
@@ -34,4 +35,5 @@ __all__ = [
     "CausalEdgeSchema",
     "QuerySignals",
     "RetrievalResult",
+    "constants",
 ]
