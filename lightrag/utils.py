@@ -907,9 +907,14 @@ def priority_limit_async_func_call(
             cross-worker slot (lease with heartbeat self-healing) before
             executing, capping total in-flight calls across all gunicorn
             workers; the group's queue stats are also published for /health
-            aggregation. When None, or when no global limit is configured,
-            behavior is identical to the original per-process decorator and
-            shared storage is never touched for slot acquisition.
+            aggregation. With no global limit configured for the group
+            (single-process / embedded usage) the slot gate is bypassed —
+            execution behavior matches the original per-process decorator —
+            but queue stats are still published to shared storage so the
+            aggregated /health view works; in single-process mode that is a
+            cheap local-dict write (no IPC, no slot acquisition). Only
+            concurrency_group=None is fully self-contained: shared storage is
+            never touched at all (no slot gate AND no stats publishing).
 
     Returns:
         Decorator function
@@ -979,6 +984,13 @@ def priority_limit_async_func_call(
         # acquires global slots and hands (lease, task) pairs to executor
         # workers through dispatch_queue. executing counts tasks picked up
         # by workers; worker_free wakes the pump when one finishes.
+        # NOTE: dispatch_queue deliberately never gets task_done()/join() —
+        # the join()-based graceful drain tracks the PHYSICAL queue only (a
+        # dispatched item's physical-queue task_done() is deferred to the
+        # worker), and shutdown empties any undelivered dispatch entries with
+        # a get_nowait() loop. So dispatch_queue.unfinished_tasks grows
+        # unbounded by design; it is never read. Don't add a join() here
+        # without also adding matching task_done() calls.
         dispatch_queue: asyncio.Queue | None = None
         pump_task: asyncio.Task | None = None
         executing = 0
