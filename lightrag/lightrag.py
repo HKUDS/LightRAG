@@ -182,14 +182,23 @@ def _run_sync(
       ``async def`` / FastAPI handler): ``run_until_complete()`` would raise
       ``RuntimeError: This event loop is already running``.  Detected up front
       via :func:`asyncio.get_running_loop`.
-    * **A different loop than the storages bound to** (e.g.
-      ``loop.run_in_executor(None, rag.insert, …)`` runs the wrapper on a pool
-      thread with no loop, or an asyncio loop runs on another thread): the
-      shared ``asyncio.Lock`` objects in ``lightrag.kg.shared_storage`` are
-      bound to ``owning_loop``, so acquiring them from a second loop raises
+    * **A different — but still alive — loop than the storages bound to**
+      (e.g. ``loop.run_in_executor(None, rag.insert, …)`` runs the wrapper on a
+      pool thread that spins up a fresh loop while the app's loop keeps
+      running, or an asyncio loop runs on another thread): the shared
+      ``asyncio.Lock`` objects in ``lightrag.kg.shared_storage`` are bound to
+      ``owning_loop``, so acquiring them from a second loop raises
       ``RuntimeError: <Lock> is bound to a different event loop`` or stalls on
       a callback scheduled on an idle loop.  Detected by comparing the loop we
       are about to drive against ``owning_loop``.
+
+    The cross-loop check only fires while ``owning_loop`` is still **open**.  A
+    *closed* ``owning_loop`` means the loop the storages were initialized on is
+    gone — e.g. the common ``rag = asyncio.run(initialize_rag())`` pattern,
+    where ``asyncio.run`` closes the loop after ``initialize_storages()`` — so
+    there is no live loop to clash with.  We let those calls through to run on a
+    fresh loop, preserving the long-standing behavior (any lock still bound to
+    the closed loop is handled by ``asyncio.Lock`` itself, exactly as before).
 
     The coroutine is created lazily via ``coro_factory`` so neither guard ever
     leaves an un-awaited coroutine behind when it raises.
@@ -200,14 +209,16 @@ def _run_sync(
         async_name: Name of the async method to recommend instead.
         owning_loop: The loop the instance's storages were initialized on
             (``LightRAG._owning_loop``). ``None`` when storages have not been
-            initialized yet, in which case the cross-loop check is skipped.
+            initialized yet, or closed, in which case the cross-loop check is
+            skipped.
 
     Returns:
         The result of awaiting the coroutine.
 
     Raises:
         RuntimeError: if called from within a running asyncio event loop, or
-            from a different loop than the one the storages were bound to.
+            from a different loop while the loop the storages were bound to is
+            still open.
     """
     try:
         asyncio.get_running_loop()
@@ -222,7 +233,11 @@ def _run_sync(
             f"Use `await {async_name}(...)` from async code instead."
         )
     loop = always_get_an_event_loop()
-    if owning_loop is not None and (loop is not owning_loop or owning_loop.is_closed()):
+    if (
+        owning_loop is not None
+        and not owning_loop.is_closed()
+        and loop is not owning_loop
+    ):
         raise RuntimeError(
             f"{sync_name}() must run on the same event loop this LightRAG "
             f"instance was initialized on, but it is being driven from a "
@@ -719,16 +734,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
-    _owning_loop: Optional[asyncio.AbstractEventLoop] = field(default=None)
-    """The event loop this instance's storages were initialized on.
-
-    Captured in :meth:`initialize_storages`. The shared ``asyncio.Lock`` objects
-    in ``lightrag.kg.shared_storage`` bind to this loop, so every synchronous
-    wrapper must drive its coroutine on the *same* loop. ``_run_sync`` fails fast
-    when asked to run on a different one (e.g. ``loop.run_in_executor(None,
-    rag.insert, …)`` or an asyncio loop running on another thread).
-    """
-
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
@@ -1187,6 +1192,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         self._llm_role_builder = None
         self._retired_llm_queue_cleanup_tasks: set[asyncio.Task] = set()
+
+        # The event loop this instance's storages bind to (set in
+        # initialize_storages). Kept off the dataclass fields so asdict() in
+        # _build_global_config() never tries to (deep)copy a live loop — that
+        # raises TypeError on Python 3.14. _run_sync uses it only as a reference
+        # for the cross-loop guard.
+        self._owning_loop: Optional[asyncio.AbstractEventLoop] = None
 
         user_role_configs = self.role_llm_configs or {}
         if not isinstance(user_role_configs, Mapping):

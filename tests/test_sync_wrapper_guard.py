@@ -11,16 +11,23 @@ break this:
 
 * Called from within a running loop it raises ``RuntimeError: This event loop
   is already running`` — a fail-fast error, *not* a deadlock.
-* Driven from a different loop — e.g. ``loop.run_in_executor(None, rag.insert,
-  …)`` runs the wrapper on a pool thread that spins up a fresh loop — binds the
-  shared ``asyncio.Lock`` objects in ``lightrag.kg.shared_storage`` to the
+* Driven from a different — but still alive — loop, e.g.
+  ``loop.run_in_executor(None, rag.insert, …)`` runs the wrapper on a pool
+  thread that spins up a fresh loop while the app's loop keeps running — binds
+  the shared ``asyncio.Lock`` objects in ``lightrag.kg.shared_storage`` to the
   wrong loop (``<Lock> is bound to a different event loop`` / a stall).
 
-Both have the same fix: use the ``a*`` coroutine directly.  ``_run_sync``
-detects the running loop up front and compares the loop it is about to drive
-against ``owning_loop``, raising one clear, actionable error for each.  These
-tests pin that behaviour (and guard against regressing back to the misleading
-"deadlock" wording / un-awaited-coroutine leak). See HKUDS/LightRAG #1968.
+The cross-loop check only fires while ``owning_loop`` is still open.  A *closed*
+owning loop (the ``rag = asyncio.run(initialize_rag())`` pattern, where
+``asyncio.run`` closes the loop after ``initialize_storages()``) is let through
+to run on a fresh loop, preserving long-standing behavior.
+
+Both misuse modes have the same fix: use the ``a*`` coroutine directly.
+``_run_sync`` detects the running loop up front and compares the loop it is
+about to drive against ``owning_loop``, raising one clear, actionable error for
+each.  These tests pin that behaviour (and guard against regressing back to the
+misleading "deadlock" wording / un-awaited-coroutine leak). See
+HKUDS/LightRAG #1968.
 """
 
 import asyncio
@@ -153,3 +160,37 @@ def test_run_sync_raises_when_driven_from_a_different_loop():
     assert "await ainsert(" in message
     assert "deadlock" not in message.lower()
     assert calls == [], "coro_factory should not run on a mismatched loop"
+
+
+@pytest.mark.offline
+def test_run_sync_runs_when_owning_loop_is_closed():
+    """A *closed* owning loop means the loop the storages were initialized on is
+    gone — the common ``rag = asyncio.run(initialize_rag())`` pattern, where
+    ``asyncio.run`` closes the loop after ``initialize_storages()``. There is no
+    live loop to clash with, so the guard must let the call through and run the
+    coroutine on a fresh loop (preserving long-standing behavior), not reject
+    it."""
+
+    closed_owning_loop = asyncio.new_event_loop()
+    closed_owning_loop.close()
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    def factory():
+        async def _coro():
+            return 42
+
+        return _coro()
+
+    try:
+        result = _run_sync(
+            factory,
+            sync_name="insert",
+            async_name="ainsert",
+            owning_loop=closed_owning_loop,
+        )
+        assert result == 42
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
