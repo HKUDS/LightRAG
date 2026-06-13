@@ -159,16 +159,24 @@ class FrameRAG:
         return response
 
     async def _llm_stream(self, prompt: str) -> AsyncIterator[str]:
-        """Streaming LLM call (falls back to non-streaming if not supported)."""
+        """Streaming LLM call — tries async-generator path, falls back to cached non-streaming."""
+        import inspect
         try:
             result = self._raw_llm(prompt, stream=True)
-            if hasattr(result, "__aiter__"):
+            if inspect.isasyncgen(result):
+                # LLM returned an async generator directly
                 async for chunk in result:
                     yield chunk
                 return
-            text = await result
-            yield text
+            if asyncio.isfuture(result) or inspect.isawaitable(result):
+                # LLM returned a coroutine (non-streaming with stream kwarg ignored)
+                yield await result
+                return
+            # Sync iterable (shouldn't happen but guard)
+            for chunk in result:
+                yield chunk
         except TypeError:
+            # LLM func doesn't accept stream=True — fall back to cached non-streaming
             yield await self._llm(prompt)
 
     # ──────────────────────────────────────────────────────────────────────────
