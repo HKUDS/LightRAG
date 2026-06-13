@@ -43,6 +43,30 @@ async def _wait_until(predicate, timeout=5.0, interval=0.01):
         await asyncio.sleep(interval)
 
 
+async def _wait_drained(wrapped, timeout=5.0, interval=0.01):
+    """Poll until the wrapper's accounting fully quiesces to zero.
+
+    Asserts the live_queued exactly-once invariant at its strongest point:
+    once every task has drained, the logical reservation counter
+    (``queued`` == live_queued), the physical queue, and task_states
+    (``in_flight``) must all be back to zero. A leaked reservation
+    (up-drift) leaves ``queued`` stuck above zero forever; a leaked
+    task_states entry leaves ``in_flight`` stuck. Returns the final stats.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        stats = await wrapped.get_queue_stats()
+        if (
+            stats["queued"] == 0
+            and stats["in_flight"] == 0
+            and stats.get("physical_queued", 0) == 0
+        ):
+            return stats
+        if asyncio.get_event_loop().time() > deadline:
+            raise AssertionError(f"queue did not drain to zero: {stats}")
+        await asyncio.sleep(interval)
+
+
 # ---------------------------------------------------------------------------
 # Core: global cap on in-flight executions
 # ---------------------------------------------------------------------------
@@ -584,6 +608,11 @@ async def test_worker_drains_zombie_backlog_then_runs_live_task():
         # reached the provider.
         assert await asyncio.wait_for(live, timeout=5.0) == "live"
         assert calls == ["live"]
+
+        # live_queued invariant: after the 40 zombies drained and the live
+        # task completed, the reservation counter and task_states must be
+        # fully back to zero (no leaked reservation, no orphaned tuple).
+        await _wait_drained(wrapped)
     finally:
         await wrapped.shutdown(graceful=False)
 
@@ -614,10 +643,18 @@ async def test_compaction_bounds_physical_queue_and_keeps_join_working(monkeypat
         stats = await wrapped.get_queue_stats()
         assert stats["physical_queued"] == 80
         assert stats["queued"] == 0
+        # All 80 timed-out tasks already returned their reservations and
+        # popped task_states in their finally blocks; only the physical
+        # tuples linger.
+        assert stats["in_flight"] == 0
 
         await wrapped.run_maintenance()  # triggers compaction
         stats = await wrapped.get_queue_stats()
         assert stats["physical_queued"] == 0
+        # Compaction must not perturb the logical accounting: live_queued
+        # and task_states stay at zero (it only drains dead physical tuples).
+        assert stats["queued"] == 0
+        assert stats["in_flight"] == 0
 
         # task_done bookkeeping must be exact: graceful shutdown relies on
         # queue.join() and must complete promptly (not hit the drain timeout).
@@ -650,9 +687,20 @@ async def test_compaction_keeps_live_tasks(monkeypatch):
         stats = await wrapped.get_queue_stats()
         assert stats["queued"] == 1  # live survived compaction
         assert stats["physical_queued"] == 1
+        # live_queued invariant at a held steady state: the external slot
+        # blocks pickup, so the one live task is queued-not-started
+        # (running == 0) and is the only task_states entry (in_flight == 1).
+        # live_queued must therefore equal in_flight - running, i.e. exactly
+        # the count of not-yet-started tasks, with no phantom reservation.
+        assert stats["running"] == 0
+        assert stats["in_flight"] == 1
+        assert stats["queued"] == stats["in_flight"] - stats["running"]
 
         await ss.release_global_slot(GROUP, external)
         assert await asyncio.wait_for(live, timeout=5.0) == "live"
+
+        # And once it runs and drains, accounting returns fully to zero.
+        await _wait_drained(wrapped)
     finally:
         await wrapped.shutdown(graceful=False)
 
