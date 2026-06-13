@@ -3011,25 +3011,38 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     """
     Ensure that there is always an event loop available.
 
-    This function tries to get the current event loop. If the current event loop is closed or does not exist,
-    it creates a new event loop and sets it as the current event loop.
+    Reuses the loop running on (or installed on) the current thread so that
+    repeated synchronous calls share a single loop; if none exists or it is
+    closed, creates a new one and installs it as the current loop.
 
     Returns:
         asyncio.AbstractEventLoop: The current or newly created event loop.
     """
+    # Reuse a loop actively running on this thread.
     try:
-        # Try to get the current event loop
-        current_loop = asyncio.get_event_loop()
-        if current_loop.is_closed():
-            raise RuntimeError("Event loop is closed.")
-        return current_loop
-
+        return asyncio.get_running_loop()
     except RuntimeError:
-        # If no event loop exists or it is closed, create a new one
-        logger.info("Creating a new event loop in main thread.")
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
-        return new_loop
+        pass
+
+    # Reuse a loop already installed on this thread, but never let
+    # asyncio.get_event_loop() lazily auto-create one — on Python 3.12+ that
+    # emits a DeprecationWarning. Promote that warning to an error so the
+    # "no current loop" case falls through to explicit creation below, while a
+    # genuinely installed (open) loop is still returned and reused.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        try:
+            current_loop = asyncio.get_event_loop()
+            if not current_loop.is_closed():
+                return current_loop
+        except (RuntimeError, DeprecationWarning):
+            pass
+
+    # No usable loop on this thread — create one and install it.
+    logger.info("Creating a new event loop in main thread.")
+    new_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(new_loop)
+    return new_loop
 
 
 async def aexport_data(
