@@ -91,3 +91,17 @@ CLAUDE.md
 
 # native_parser/docx CLI output (audit JSONL + image dir)
 /parse_output/
+
+# Frame Semantic RAG - data & storage directories
+/rag_storage*/
+/cs_storage*/
+/eval_tmp*/
+/graphs/
+
+# Frame Semantic RAG - eval result JSONs & temp data
+/eval_results_*.json
+/_frames_samples_tmp.json
+/docs_backup.json
+/lightrag/evaluation/bench_results/
+/lightrag/evaluation/benchmark_dataset.json
+/lightrag/evaluation/benchmark_documents/

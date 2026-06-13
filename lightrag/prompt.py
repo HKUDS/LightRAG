@@ -430,3 +430,182 @@ Output:
 
 """,
 ]
+
+
+
+# ── FSRAG / LLM-frame prompts ──────────────────────────────────────────────────
+
+PROMPTS["llm_frame_identify"] = """You are a semantic frame analyst. Analyze the following text and identify the 1-3 most important semantic frames — event types, action categories, or conceptual scenarios — that best capture the key events, actions, and relationships described.
+
+Rules:
+- Choose frames that are specific enough to be meaningful but general enough to recur across similar texts.
+- Frame names MUST be CamelCase (e.g., VectorIndexing, DocumentRetrieval, SystemConfiguration).
+- For technical texts, create domain-specific frames as needed (e.g., EmbeddingGeneration, GraphConstruction).
+- Focus on PRIMARY events/actions, not minor details.
+- Return ONLY valid JSON, no markdown, no explanation.
+
+{{"frames": ["FrameName1", "FrameName2"]}}
+
+Text:
+{text}"""
+
+
+PROMPTS["llm_frame_define"] = """You are a lexicographer defining a new semantic frame for a knowledge graph database about AI/ML and software systems.
+
+Define the semantic frame "{frame_name}" based on its appearance in this context:
+---
+{context}
+---
+
+Existing frames already in the database (avoid duplicates):
+{existing_frames}
+
+Provide:
+1. A concise definition (1-2 sentences) of what event/action/relationship this frame represents.
+2. Core Frame Elements (FEs) — essential participants that must be present (2-4 roles, CamelCase names).
+3. Peripheral Frame Elements — optional participants (0-3 roles).
+4. Lexical Units — words/phrases that evoke this frame in "word.partOfSpeech" format (e.g., "store.v", "index.v", "storage.n").
+5. Related frame names (0-3).
+
+Return ONLY valid JSON:
+{{
+  "name": "{frame_name}",
+  "definition": "...",
+  "frame_elements": {{
+    "RoleName": {{"definition": "...", "type": "core"}},
+    "RoleName2": {{"definition": "...", "type": "peripheral"}}
+  }},
+  "lexical_units": ["word.pos"],
+  "relations": ["RelatedFrame"]
+}}"""
+
+
+PROMPTS["llm_frame_check_duplicate"] = """Determine whether a new semantic frame is sufficiently distinct from existing frames.
+
+New frame: "{new_name}"
+Definition: {new_definition}
+
+Existing frames:
+{existing_frames}
+
+Is the new frame essentially a duplicate or near-synonym of an existing frame?
+Return ONLY valid JSON — no markdown, no explanation:
+
+{{"is_duplicate": false, "merge_with": null}}
+
+OR if it is a duplicate:
+
+{{"is_duplicate": true, "merge_with": "ExistingFrameName"}}"""
+
+
+PROMPTS["llm_frame_extract_instances"] = """You are extracting named entities from text according to semantic frame roles.
+
+Detected semantic frames and their Frame Elements:
+{frames_info}
+
+For each frame, identify the specific text spans from the input that fill each Frame Element role.
+Only include roles where a clear entity exists in the text.
+Entity text must be copied verbatim (or near-verbatim) from the input.
+
+Return ONLY valid JSON:
+{{
+  "instances": [
+    {{
+      "frame": "FrameName",
+      "elements": {{
+        "RoleName": "exact text from input",
+        "RoleName2": "exact text from input"
+      }}
+    }}
+  ]
+}}
+
+Text:
+{text}"""
+
+
+PROMPTS["llm_frame_keywords"] = """You are a semantic search specialist. Analyze this query and identify:
+1. High-level semantic frames — overarching concepts or event types (CamelCase frame names).
+2. Low-level specific entities — named systems, methods, people, or data objects mentioned or implied.
+
+Return ONLY valid JSON:
+{{
+  "high_level_keywords": ["FrameName1", "FrameName2"],
+  "low_level_keywords": ["specific entity1", "specific entity2"]
+}}
+
+Query: {text}"""
+
+
+PROMPTS["llm_frame_related_for_query"] = """You are a semantic search specialist working with a knowledge graph that uses semantic frames.
+
+The user query evokes these frames:
+{query_frames}
+
+The knowledge graph currently contains these frames:
+{frame_db_summary}
+
+Your task: identify which frames from the knowledge graph likely contain facts needed to fully answer this query, even if those frames are not directly mentioned in the query.
+
+Focus on:
+- Frames that describe prerequisites or causes of the query frames
+- Frames that describe components or sub-processes involved
+- Frames whose entities typically co-occur with the query frame entities
+
+Return ONLY valid JSON with 0-3 frame names drawn STRICTLY from the existing frame list above:
+{{"related_frames": ["ExistingFrameName1", "ExistingFrameName2"]}}
+
+If no existing frames are relevant, return: {{"related_frames": []}}"""
+
+
+PROMPTS["llm_frame_representativeness"] = """You are evaluating how well a semantic frame captures the main event or action described in a text passage.
+
+Frame: "{frame_name}"
+Frame definition: {frame_definition}
+
+Text passage:
+---
+{text}
+---
+
+Score how representative this frame is for the primary event in the text.
+- 1.0 = The frame perfectly captures the central event/action of the text
+- 0.7 = The frame is clearly relevant and present, but not the only focus
+- 0.4 = The frame is tangentially related or only a minor aspect
+- 0.1 = The frame barely applies or is a stretch
+
+Consider:
+1. Does the text's main action/event match the frame's definition?
+2. How many of the frame's core elements are clearly present in the text?
+3. Would a reader naturally think of this frame when reading the text?
+
+Return ONLY valid JSON, no explanation:
+{{"score": 0.8, "reasoning": "one short sentence"}}"""
+
+
+PROMPTS["llm_event_relation"] = """You are analyzing the directed relationship between two events in a knowledge graph.
+
+Event A  (id: {event_a_id})
+  Text    : {event_a_desc}
+  Frames  : {frames_a}
+  Entities: {entities_a}
+
+Event B  (id: {event_b_id})
+  Text    : {event_b_desc}
+  Frames  : {frames_b}
+  Entities: {entities_b}
+
+Determine the PRIMARY directed relationship FROM Event A TO Event B:
+  "precedes"    — A typically happens before B in a workflow or timeline
+  "causes"      — A directly causes or triggers B
+  "enables"     — A makes B possible but does not directly cause it
+  "contradicts" — A conflicts with, negates, or opposes B
+  "none"        — No clear directional relationship
+
+Rules:
+- Only return a non-none relation if you are confident (>=0.5).
+- Base your answer on the semantic content of the texts, not just shared entities.
+- If the relation is symmetric or unclear, return "none".
+
+Return ONLY valid JSON, no markdown, no explanation:
+{{"relation": "precedes", "confidence": 0.8, "reasoning": "one short sentence"}}"""

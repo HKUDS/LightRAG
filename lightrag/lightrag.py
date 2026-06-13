@@ -2133,12 +2133,14 @@ class LightRAG:
                                         )
 
                                 # Use chunk_results from entity_relation_task
+                                _merge_config = asdict(self)
+                                _merge_config["embedding_func"] = self.embedding_func  # restore live EmbeddingFunc (asdict converts it to dict)
                                 await merge_nodes_and_edges(
                                     chunk_results=chunk_results,  # result collected from entity_relation_task
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
                                     entity_vdb=self.entities_vdb,
                                     relationships_vdb=self.relationships_vdb,
-                                    global_config=asdict(self),
+                                    global_config=_merge_config,
                                     full_entities_storage=self.full_entities,
                                     full_relations_storage=self.full_relations,
                                     doc_id=doc_id,
@@ -2786,6 +2788,7 @@ class LightRAG:
             fields at the top level.
         """
         global_config = asdict(self)
+        global_config["embedding_func"] = self.embedding_func  # restore live EmbeddingFunc (asdict converts it to dict)
 
         # Create a copy of param to avoid modifying the original
         data_param = QueryParam(
@@ -2904,6 +2907,7 @@ class LightRAG:
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = asdict(self)
+        global_config["embedding_func"] = self.embedding_func  # restore live EmbeddingFunc (asdict converts it to dict)
 
         try:
             query_result = None

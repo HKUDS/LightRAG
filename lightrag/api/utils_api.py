@@ -280,6 +280,15 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     Args:
         args: Parsed command line arguments
     """
+    try:
+        _display_splash_screen_impl(args)
+    except UnicodeEncodeError:
+        print(f"LightRAG Server starting on {getattr(args, 'host', '0.0.0.0')}:{getattr(args, 'port', 9621)}", flush=True)
+    return
+
+
+def _display_splash_screen_impl(args: argparse.Namespace) -> None:
+    """Inner implementation — separated so UnicodeEncodeError can be caught at the top level."""
     # Banner
     # Banner
     top_border = "╔══════════════════════════════════════════════════════════════╗"

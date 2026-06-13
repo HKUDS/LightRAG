@@ -152,6 +152,27 @@ observability = [
     "langfuse>=3.8.1",
 ]
 
+# Frame-semantic extraction (thay thế LLM-based keyword/entity extraction).
+# QUAN TRỌNG: Nhóm này yêu cầu protobuf<4.0.0, xung đột với google-genai.
+# Sử dụng môi trường conda/venv riêng — xem FRAME_SEMANTIC_README.md để biết chi tiết.
+frame-semantic = [
+    "frame-semantic-transformer>=0.1.0,<1.0.0",
+    # protobuf bị giới hạn bởi frame-semantic-transformer (<4.0.0)
+    "protobuf>=3.20.1,<4.0.0",
+    # PyTorch cần cài riêng theo phần cứng (CPU/CUDA/MPS):
+    #   pip install torch --index-url https://download.pytorch.org/whl/cpu
+    # hoặc:
+    #   pip install torch  (CUDA tự động)
+    "torch>=2.0.0",
+    # Các phụ thuộc bắt buộc của frame-semantic-transformer
+    "nlpaug>=1.1.11,<2.0.0",
+    "nltk>=3.7,<4.0",
+    "pytorch-lightning>=1.6.2,<2.0.0",
+    "sentencepiece>=0.1.97,<0.2.0",
+    "transformers>=4.18.0,<5.0.0",
+    "tqdm>=4.64.0,<5.0.0",
+]
+
 [project.scripts]
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
