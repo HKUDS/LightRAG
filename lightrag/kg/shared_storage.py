@@ -1885,16 +1885,18 @@ def get_pipeline_status_lock(
 # live-but-momentarily-stalled owners from false reclamation). Long-running
 # tasks are never reclaimed as long as their owner keeps renewing.
 #
-# Best-effort cap, NOT a hard guarantee: the limit is enforced exactly as
-# long as every holder renews on time. If an owner's event loop stalls past
-# the heartbeat TTL + suspect grace (~40s with the defaults, i.e. ~8 missed
-# 5s heartbeats) while still running its provider call, another process may
-# reclaim that still-in-use slot and hand it out, briefly pushing the true
-# total to limit+1. A reclaimed lease is never resurrected (renew_global_slots
-# refuses to re-insert a popped lease, which would otherwise permanently
-# exceed the limit). This soft-cap window is the accepted trade-off of
-# lease-based coordination on a single host; callers must not rely on the
-# global cap as a strict invariant.
+# Best-effort cap, not a strict provider-side invariant: the lease table is
+# the admission source of truth, so the cap is exact while holders keep
+# renewing. A slot is reclaimed only when its owner PID is gone or its
+# heartbeat has expired beyond the suspect grace. That prevents permanent
+# capacity leaks after kill -9 / OOM and similar external termination, but
+# the provider may still be finishing the abandoned HTTP request until its
+# own timeout/connection close. During that window, a newly admitted caller
+# can overlap with the abandoned provider-side call. Long event-loop stalls
+# have the same shape after heartbeat TTL + suspect grace, though normal long
+# calls are protected by regular renewal. A reclaimed lease is never
+# resurrected (renew_global_slots refuses to re-insert a popped lease), which
+# keeps the internal gate self-healing.
 
 
 def is_share_data_initialized() -> bool:
