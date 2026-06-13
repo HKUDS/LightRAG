@@ -19,7 +19,9 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Coroutine,
     Iterator,
+    TypeVar,
     cast,
     final,
     Literal,
@@ -155,6 +157,68 @@ from lightrag.storage_migrations import _StorageMigrationMixin
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
+
+_SyncResultT = TypeVar("_SyncResultT")
+
+
+def _run_sync(
+    coro_factory: Callable[[], Coroutine[Any, Any, _SyncResultT]],
+    *,
+    sync_name: str,
+    async_name: str,
+) -> _SyncResultT:
+    """Drive an async coroutine to completion from a synchronous wrapper.
+
+    The synchronous wrappers (``insert``, ``query``, ``delete_by_entity``,
+    …) all share the same shape: acquire an event loop and call
+    ``loop.run_until_complete()``.  That call is only valid when **no** event
+    loop is already running on the current thread:
+
+    * Called from within a running loop on the same thread (e.g. directly
+      inside an ``async def`` / FastAPI handler), ``run_until_complete()``
+      raises ``RuntimeError: This event loop is already running``.  This is a
+      fail-fast error, not a deadlock — but the message gives no hint about
+      the fix.
+    * Pushed onto another thread's loop (e.g. ``loop.run_in_executor(None,
+      rag.insert, …)``), it runs on a *different* loop than the one the
+      storage backends were initialized on.  The shared ``asyncio.Lock``
+      objects in ``lightrag.kg.shared_storage`` bind to the first loop that
+      acquires them, so a second loop raises ``RuntimeError: <Lock> is bound
+      to a different event loop`` or stalls waiting on a callback scheduled
+      on an idle loop.
+
+    Both failure modes have the same correct fix: use the ``a*`` coroutine
+    directly from async code.  This helper detects a running loop up front and
+    raises one clear, actionable error pointing at the async alternative.  The
+    coroutine is created lazily via ``coro_factory`` so the guard never leaves
+    an un-awaited coroutine behind when it raises.
+
+    Args:
+        coro_factory: Zero-arg callable returning the coroutine to run.
+        sync_name: Name of the sync wrapper, used in the error message.
+        async_name: Name of the async method to recommend instead.
+
+    Returns:
+        The result of awaiting the coroutine.
+
+    Raises:
+        RuntimeError: if called from within a running asyncio event loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # No running loop on this thread — safe to drive our own.
+    else:
+        raise RuntimeError(
+            f"{sync_name}() cannot be called from within a running asyncio "
+            f"event loop. Synchronous wrappers internally call "
+            f"loop.run_until_complete(), which Python forbids while a loop is "
+            f"already running on this thread (and which binds storage locks "
+            f"to the wrong loop when pushed onto another thread). "
+            f"Use `await {async_name}(...)` from async code instead."
+        )
+    loop = always_get_an_event_loop()
+    return loop.run_until_complete(coro_factory())
 
 
 @final
@@ -1298,16 +1362,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             str: tracking ID for monitoring processing status
         """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(
-            self.ainsert(
+        return _run_sync(
+            lambda: self.ainsert(
                 input,
                 split_by_character,
                 split_by_character_only,
                 ids,
                 file_paths,
                 track_id,
-            )
+            ),
+            sync_name="insert",
+            async_name="ainsert",
         )
 
     async def ainsert(
@@ -1386,9 +1451,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         text_chunks: list[str],
         doc_id: str | list[str] | None = None,
     ) -> None:
-        loop = always_get_an_event_loop()
-        loop.run_until_complete(
-            self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
+        _run_sync(
+            lambda: self.ainsert_custom_chunks(full_text, text_chunks, doc_id),
+            sync_name="insert_custom_chunks",
+            async_name="ainsert_custom_chunks",
         )
 
     # TODO: deprecated, use ainsert instead
@@ -1659,8 +1725,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def insert_custom_kg(
         self, custom_kg: dict[str, Any], full_doc_id: str = None
     ) -> None:
-        loop = always_get_an_event_loop()
-        loop.run_until_complete(self.ainsert_custom_kg(custom_kg, full_doc_id))
+        _run_sync(
+            lambda: self.ainsert_custom_kg(custom_kg, full_doc_id),
+            sync_name="insert_custom_kg",
+            async_name="ainsert_custom_kg",
+        )
 
     async def ainsert_custom_kg(
         self,
@@ -1946,9 +2015,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             str: The result of the query execution.
         """
-        loop = always_get_an_event_loop()
-
-        return loop.run_until_complete(self.aquery(query, param, system_prompt))  # type: ignore
+        return _run_sync(  # type: ignore
+            lambda: self.aquery(query, param, system_prompt),
+            sync_name="query",
+            async_name="aquery",
+        )
 
     async def aquery(
         self,
@@ -2001,8 +2072,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Same structured data result as aquery_data.
         """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.aquery_data(query, param))
+        return _run_sync(
+            lambda: self.aquery_data(query, param),
+            sync_name="query_data",
+            async_name="aquery_data",
+        )
 
     async def aquery_data(
         self,
@@ -2371,8 +2445,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Same complete response format as aquery_llm.
         """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.aquery_llm(query, param, system_prompt))
+        return _run_sync(
+            lambda: self.aquery_llm(query, param, system_prompt),
+            sync_name="query_llm",
+            async_name="aquery_llm",
+        )
 
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
@@ -2476,7 +2553,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     def clear_cache(self) -> None:
         """Synchronous version of aclear_cache."""
-        return always_get_an_event_loop().run_until_complete(self.aclear_cache())
+        return _run_sync(
+            lambda: self.aclear_cache(),
+            sync_name="clear_cache",
+            async_name="aclear_cache",
+        )
 
     async def get_docs_by_status(
         self, status: DocStatus
@@ -3911,8 +3992,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.adelete_by_entity(entity_name))
+        return _run_sync(
+            lambda: self.adelete_by_entity(entity_name),
+            sync_name="delete_by_entity",
+            async_name="adelete_by_entity",
+        )
 
     async def adelete_by_relation(
         self, source_entity: str, target_entity: str
@@ -3947,9 +4031,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(
-            self.adelete_by_relation(source_entity, target_entity)
+        return _run_sync(
+            lambda: self.adelete_by_relation(source_entity, target_entity),
+            sync_name="delete_by_relation",
+            async_name="adelete_by_relation",
         )
 
     async def get_processing_status(self) -> dict[str, int]:
@@ -4077,9 +4162,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         allow_rename: bool = True,
         allow_merge: bool = False,
     ) -> dict[str, Any]:
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(
-            self.aedit_entity(entity_name, updated_data, allow_rename, allow_merge)
+        return _run_sync(
+            lambda: self.aedit_entity(
+                entity_name, updated_data, allow_rename, allow_merge
+            ),
+            sync_name="edit_entity",
+            async_name="aedit_entity",
         )
 
     async def aedit_relation(
@@ -4113,9 +4201,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def edit_relation(
         self, source_entity: str, target_entity: str, updated_data: dict[str, Any]
     ) -> dict[str, Any]:
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(
-            self.aedit_relation(source_entity, target_entity, updated_data)
+        return _run_sync(
+            lambda: self.aedit_relation(source_entity, target_entity, updated_data),
+            sync_name="edit_relation",
+            async_name="aedit_relation",
         )
 
     async def acreate_entity(
@@ -4145,8 +4234,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def create_entity(
         self, entity_name: str, entity_data: dict[str, Any]
     ) -> dict[str, Any]:
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.acreate_entity(entity_name, entity_data))
+        return _run_sync(
+            lambda: self.acreate_entity(entity_name, entity_data),
+            sync_name="create_entity",
+            async_name="acreate_entity",
+        )
 
     async def acreate_relation(
         self, source_entity: str, target_entity: str, relation_data: dict[str, Any]
@@ -4177,9 +4269,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def create_relation(
         self, source_entity: str, target_entity: str, relation_data: dict[str, Any]
     ) -> dict[str, Any]:
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(
-            self.acreate_relation(source_entity, target_entity, relation_data)
+        return _run_sync(
+            lambda: self.acreate_relation(source_entity, target_entity, relation_data),
+            sync_name="create_relation",
+            async_name="acreate_relation",
         )
 
     async def amerge_entities(
@@ -4230,11 +4323,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         merge_strategy: dict[str, str] = None,
         target_entity_data: dict[str, Any] = None,
     ) -> dict[str, Any]:
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(
-            self.amerge_entities(
+        return _run_sync(
+            lambda: self.amerge_entities(
                 source_entities, target_entity, merge_strategy, target_entity_data
-            )
+            ),
+            sync_name="merge_entities",
+            async_name="amerge_entities",
         )
 
     async def aexport_data(
@@ -4284,14 +4378,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 - table: Print formatted tables to console
             include_vector_data: Whether to include data from the vector database.
         """
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        loop.run_until_complete(
-            self.aexport_data(output_path, file_format, include_vector_data)
+        _run_sync(
+            lambda: self.aexport_data(
+                output_path, file_format, include_vector_data
+            ),
+            sync_name="export_data",
+            async_name="aexport_data",
         )
 
 
