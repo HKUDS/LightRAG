@@ -328,13 +328,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     )
     async def query_text(request: QueryRequest):
         """
-        Comprehensive RAG query endpoint with optional streaming response.
-
-        When ``stream`` is ``False`` (default) a plain JSON response is
-        returned.  When ``stream`` is ``True`` the response is delivered
-        as NDJSON (application/x-ndjson) — the same format as the
-        dedicated ``/query/stream`` endpoint — so a single endpoint can
-        serve both interactive UIs and batch clients.
+        Comprehensive RAG query endpoint with non-streaming response. Parameter "stream" is ignored.
 
         **Query Modes:**
         - **local**: Focuses on specific entities and their direct relationships
@@ -409,37 +403,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
         try:
-            # Respect the stream parameter: when True, return a streaming
-            # NDJSON response (same format as /query/stream).  When False
-            # (default), return plain JSON for backward compatibility.
-            stream_mode = (
-                request.stream if request.stream is not None else False
-            )
-            param = request.to_query_params(stream_mode)
-            param.stream = stream_mode
-
-            if stream_mode:
-                # Delegate to the shared streaming pipeline
-                from fastapi.responses import StreamingResponse
-
-                result = await rag.aquery_llm(request.query, param=param)
-                stream_gen = _build_stream_generator(
-                    result=result,
-                    include_references=request.include_references,
-                    include_chunk_content=request.include_chunk_content,
-                )
-                return StreamingResponse(
-                    stream_gen(),
-                    media_type="application/x-ndjson",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "Content-Type": "application/x-ndjson",
-                        "X-Accel-Buffering": "no",
-                    },
-                )
-
-            # Non-streaming path (original behaviour)
+            param = request.to_query_params(
+                False
+            )  # Ensure stream=False for non-streaming endpoint
+            # Force stream=False for /query endpoint regardless of include_references setting
+            param.stream = False
             # Unified approach: always use aquery_llm for both cases
             result = await rag.aquery_llm(request.query, param=param)
 
@@ -493,9 +461,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     ):
         """Shared async generator that yields NDJSON lines for streaming responses.
 
-        Used by both ``/query`` (when ``stream=True``) and ``/query/stream``
-        so the two endpoints share identical NDJSON formatting and error-
-        handling behaviour.
+        Used by ``/query/stream`` to format NDJSON output with consistent
+        error-handling behaviour.
         """
 
         async def _generate():
