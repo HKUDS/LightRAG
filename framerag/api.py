@@ -38,7 +38,7 @@ from typing import AsyncIterator, Callable, Awaitable, Optional
 import numpy as np
 
 try:
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import Depends, FastAPI, HTTPException, Query
     from fastapi.responses import JSONResponse, StreamingResponse
     from pydantic import BaseModel
 except ImportError:
@@ -49,6 +49,8 @@ except ImportError:
 from lightrag.utils import logger
 
 from .framerag import FrameRAG
+from .auth import AUTH_ENABLED, create_token, verify_credentials, require_auth
+from .doc_store import DocStatus
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,6 +92,11 @@ class ContextResponse(BaseModel):
 class EntityResponse(BaseModel):
     name: str
     data: Optional[dict]
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
 class StatsResponse(BaseModel):
@@ -159,10 +166,25 @@ def create_app(
 
     @app.get("/health")
     async def health():
-        return {"status": "ok"}
+        doc_counts: dict = {}
+        if _rag is not None:
+            try:
+                doc_counts = await _rag._doc_store.get_counts()
+            except Exception:
+                pass
+        return {"status": "ok", "auth_enabled": AUTH_ENABLED, "doc_counts": doc_counts}
+
+    @app.post("/login", summary="Obtain a JWT bearer token")
+    async def login(req: LoginRequest):
+        if not AUTH_ENABLED:
+            raise HTTPException(400, "Auth is disabled (set FRAMERAG_AUTH_ACCOUNTS to enable)")
+        if not verify_credentials(req.username, req.password):
+            raise HTTPException(401, "Invalid credentials")
+        token = create_token(req.username)
+        return {"access_token": token, "token_type": "bearer"}
 
     @app.post("/insert", summary="Index a single document")
-    async def insert(req: InsertRequest):
+    async def insert(req: InsertRequest, _user=Depends(require_auth)):
         if _rag is None:
             raise HTTPException(503, "FrameRAG not initialized")
         try:
@@ -172,7 +194,7 @@ def create_app(
         return {"status": "ok", "source_doc": req.source_doc}
 
     @app.post("/insert_batch", summary="Index multiple documents")
-    async def insert_batch(req: InsertBatchRequest):
+    async def insert_batch(req: InsertBatchRequest, _user=Depends(require_auth)):
         if _rag is None:
             raise HTTPException(503, "FrameRAG not initialized")
         try:
@@ -303,8 +325,42 @@ def create_app(
         chain = await _rag.get_causal_chain(trigger, depth=depth)
         return {"trigger": trigger, "chain": chain, "length": len(chain)}
 
+    @app.get("/documents", summary="List all tracked documents")
+    async def list_documents(
+        status: Optional[str] = Query(None, description="Filter by status: pending/processing/processed/failed"),
+        _user=Depends(require_auth),
+    ):
+        if _rag is None:
+            raise HTTPException(503, "FrameRAG not initialized")
+        try:
+            docs = await _rag.list_documents(status=status)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"count": len(docs), "documents": docs}
+
+    @app.get("/documents/{doc_id}", summary="Get a single document record")
+    async def get_document(doc_id: str, _user=Depends(require_auth)):
+        if _rag is None:
+            raise HTTPException(503, "FrameRAG not initialized")
+        rec = await _rag._doc_store.get(doc_id)
+        if rec is None:
+            raise HTTPException(404, f"Document {doc_id!r} not found")
+        return rec.to_dict()
+
+    @app.delete("/documents/{doc_id}", summary="Delete a document and its indexed data")
+    async def delete_document(doc_id: str, _user=Depends(require_auth)):
+        if _rag is None:
+            raise HTTPException(503, "FrameRAG not initialized")
+        deleted = await _rag.adelete(doc_id)
+        if not deleted:
+            raise HTTPException(404, f"Document {doc_id!r} not found")
+        return {"status": "deleted", "doc_id": doc_id}
+
     @app.delete("/clear", summary="Clear all indexed data")
-    async def clear_data(confirm: str = Query(..., description="Type 'yes' to confirm")):
+    async def clear_data(
+        confirm: str = Query(..., description="Type 'yes' to confirm"),
+        _user=Depends(require_auth),
+    ):
         if confirm.lower() != "yes":
             raise HTTPException(400, "Must pass confirm=yes to clear data")
         if _rag is None:

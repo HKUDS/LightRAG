@@ -31,6 +31,7 @@ from lightrag.operate import chunking_by_token_size
 
 from .storage import make_kv, wrap_embed
 from .rerank import RerankFunc, rerank_chunk_hits
+from .doc_store import DocStore, DocStatus, DocRecord
 from .types import (
     ChunkSchema,
     EntityMentionSchema,
@@ -97,6 +98,9 @@ class FrameRAG:
         top_nodes: int = 15,
         rerank_func: Optional[Callable] = None,
         rerank_top_k: int = 50,
+        llm_timeout: float = 120.0,
+        embed_timeout: float = 30.0,
+        max_concurrent_llm: int = 4,
     ):
         self._raw_llm = llm_func
         self._raw_embed = embed_func
@@ -113,6 +117,9 @@ class FrameRAG:
         self._top_nodes = top_nodes
         self._rerank_func = rerank_func
         self._rerank_top_k = rerank_top_k
+        self._llm_timeout = llm_timeout
+        self._embed_timeout = embed_timeout
+        self._llm_sem = asyncio.Semaphore(max_concurrent_llm)
 
         self._working_dir = working_dir
         os.makedirs(working_dir, exist_ok=True)
@@ -123,6 +130,7 @@ class FrameRAG:
         self._frame_db   = FrameDatabase(working_dir, ef)
         self._entity_coref = EntityCoreferenceResolver(embed_func, llm_func)
         self._event_coref  = EventCoreferenceResolver(embed_func, llm_func)
+        self._doc_store  = DocStore(working_dir)
 
         # LLM response cache (JsonKVStorage)
         self._llm_cache = make_kv("llm_cache", working_dir)
@@ -141,12 +149,14 @@ class FrameRAG:
         await self._hg.initialize()
         await self._frame_db.initialize()
         await self._llm_cache.initialize()
+        await self._doc_store.initialize()
         logger.info("[FrameRAG] Initialized")
 
     async def finalize(self) -> None:
         await self._hg.index_done_callback()
         await self._frame_db.index_done_callback()
         await self._llm_cache.index_done_callback()
+        await self._doc_store.index_done_callback()
         logger.info("[FrameRAG] Storage flushed")
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -154,12 +164,16 @@ class FrameRAG:
     # ──────────────────────────────────────────────────────────────────────────
 
     async def _llm(self, prompt: str) -> str:
-        """Call LLM with JSON KV cache (MD5 key)."""
+        """Call LLM with KV cache, semaphore throttle, and timeout."""
         cache_key = compute_mdhash_id(prompt, prefix="llm-")
         cached = await self._llm_cache.get_by_id(cache_key)
         if cached and cached.get("response"):
             return cached["response"]
-        response = await _llm_with_retry(self._raw_llm, prompt)
+        async with self._llm_sem:
+            response = await asyncio.wait_for(
+                _llm_with_retry(self._raw_llm, prompt),
+                timeout=self._llm_timeout,
+            )
         await self._llm_cache.upsert({cache_key: {"response": response}})
         return response
 
@@ -237,91 +251,110 @@ class FrameRAG:
 
     async def ainsert(self, text: str, source_doc: str = "unknown") -> None:
         """Index a document into the frame-semantic hypergraph."""
-        chunks = self._chunk_text(text, source_doc)
-        logger.info(f"[FrameRAG] Inserting '{source_doc}': {len(chunks)} chunks")
+        doc_id = DocStore.make_doc_id(source_doc)
+        record = DocRecord(doc_id=doc_id, source_doc=source_doc, status=DocStatus.PENDING)
+        await self._doc_store.upsert(record)
 
-        all_mentions: list[EntityMentionSchema] = []
-        all_events:   list[EventSchema]          = []
-        all_fi:       list[FrameInstanceSchema]  = []
-        all_info:     list[InfoNodeSchema]       = []
-        all_causal:   list[CausalEdgeSchema]     = []
+        try:
+            record.status = DocStatus.PROCESSING
+            await self._doc_store.upsert(record)
 
-        # ── Per-chunk extraction ─────────────────────────────────────────────
-        for chunk in chunks:
-            # Store chunk (NanoVDB auto-embeds the text content)
-            await self._hg.add_chunk(chunk)
+            chunks = self._chunk_text(text, source_doc)
+            logger.info(f"[FrameRAG] Inserting '{source_doc}': {len(chunks)} chunks")
 
-            # Call 1: entity extraction (cached)
-            mentions = await extract_entities(chunk, self._llm)
-            if self._enable_gleaning and mentions:
-                gleaned = await glean_entities(chunk, mentions, self._llm)
-                mentions = mentions + gleaned
+            all_mentions: list[EntityMentionSchema] = []
+            all_events:   list[EventSchema]          = []
+            all_fi:       list[FrameInstanceSchema]  = []
+            all_info:     list[InfoNodeSchema]       = []
+            all_causal:   list[CausalEdgeSchema]     = []
+            chunk_ids: list[str] = []
 
-            # Call 2: event + frame + role (cached)
-            events, fis, infos, new_frames = await extract_events_frames_roles(
-                chunk, mentions, self._llm, self._frame_db
-            )
+            # ── Per-chunk extraction ─────────────────────────────────────────
+            for chunk in chunks:
+                chunk_ids.append(chunk.chunk_id)
+                # Store chunk (NanoVDB auto-embeds the text content)
+                await self._hg.add_chunk(chunk)
 
-            # Update Frame DB
-            for fd in new_frames:
-                await self._frame_db.upsert_frame(fd)
-            reused = {ev.frame_name for ev in events} - {f.frame_name for f in new_frames}
-            for fname in reused:
-                await self._frame_db.increment_usage(fname)
+                # Call 1: entity extraction (cached)
+                mentions = await extract_entities(chunk, self._llm)
+                if self._enable_gleaning and mentions:
+                    gleaned = await glean_entities(chunk, mentions, self._llm)
+                    mentions = mentions + gleaned
 
-            # Call 3: causal edges (cached)
-            causal_edges: list[CausalEdgeSchema] = []
-            if self._enable_causal and len(events) >= 2:
-                causal_edges = await extract_causal_edges(chunk, events, self._llm)
+                # Call 2: event + frame + role (cached)
+                events, fis, infos, new_frames = await extract_events_frames_roles(
+                    chunk, mentions, self._llm, self._frame_db
+                )
 
-            all_mentions.extend(mentions)
-            all_events.extend(events)
-            all_fi.extend(fis)
-            all_info.extend(infos)
-            all_causal.extend(causal_edges)
+                # Update Frame DB
+                for fd in new_frames:
+                    await self._frame_db.upsert_frame(fd)
+                reused = {ev.frame_name for ev in events} - {f.frame_name for f in new_frames}
+                for fname in reused:
+                    await self._frame_db.increment_usage(fname)
 
-        # ── Entity coreference ───────────────────────────────────────────────
-        logger.info(f"[FrameRAG] Entity coref: {len(all_mentions)} mentions")
-        canonicals = await self._entity_coref.resolve_with_llm_verify(all_mentions)
+                # Call 3: causal edges (cached)
+                causal_edges: list[CausalEdgeSchema] = []
+                if self._enable_causal and len(events) >= 2:
+                    causal_edges = await extract_causal_edges(chunk, events, self._llm)
 
-        # ── Cross-document entity description merging ────────────────────────
-        canonicals = await self._merge_entity_descriptions(canonicals)
+                all_mentions.extend(mentions)
+                all_events.extend(events)
+                all_fi.extend(fis)
+                all_info.extend(infos)
+                all_causal.extend(causal_edges)
 
-        # ── Event coreference ────────────────────────────────────────────────
-        if self._enable_event_coref and all_events:
-            logger.info(f"[FrameRAG] Event coref: {len(all_events)} events")
-            ev_to_canon = await self._event_coref.resolve(all_events, canonicals)
+            # ── Entity coreference ───────────────────────────────────────────
+            logger.info(f"[FrameRAG] Entity coref: {len(all_mentions)} mentions")
+            canonicals = await self._entity_coref.resolve_with_llm_verify(all_mentions)
+
+            # ── Cross-document entity description merging ────────────────────
+            canonicals = await self._merge_entity_descriptions(canonicals)
+
+            # ── Event coreference ────────────────────────────────────────────
+            if self._enable_event_coref and all_events:
+                logger.info(f"[FrameRAG] Event coref: {len(all_events)} events")
+                ev_to_canon = await self._event_coref.resolve(all_events, canonicals)
+                for ev in all_events:
+                    ev.canonical_event_id = ev_to_canon.get(ev.event_id, ev.event_id)
+
+            # ── Persist to hypergraph ────────────────────────────────────────
+            for m in all_mentions:
+                await self._hg.add_entity_mention(m)
+            for canon in canonicals:
+                await self._hg.add_canonical_entity(canon)
             for ev in all_events:
-                ev.canonical_event_id = ev_to_canon.get(ev.event_id, ev.event_id)
+                await self._hg.add_event(ev)
 
-        # ── Persist to hypergraph ────────────────────────────────────────────
-        for m in all_mentions:
-            await self._hg.add_entity_mention(m)
-        for canon in canonicals:
-            await self._hg.add_canonical_entity(canon)
-        for ev in all_events:
-            await self._hg.add_event(ev)
+            frame_core_fes: dict[str, set[str]] = {}
+            for ev in all_events:
+                if ev.frame_name not in frame_core_fes:
+                    fd = await self._frame_db.get(ev.frame_name)
+                    frame_core_fes[ev.frame_name] = fd.core_fe_names() if fd else set()
 
-        frame_core_fes: dict[str, set[str]] = {}
-        for ev in all_events:
-            if ev.frame_name not in frame_core_fes:
-                fd = await self._frame_db.get(ev.frame_name)
-                frame_core_fes[ev.frame_name] = fd.core_fe_names() if fd else set()
+            for fi in all_fi:
+                core_names = frame_core_fes.get(fi.frame_name, set())
+                await self._hg.add_frame_instance(fi, core_names)
+            for info in all_info:
+                await self._hg.add_info_node(info)
+            for edge in all_causal:
+                await self._hg.add_causal_edge(edge)
 
-        for fi in all_fi:
-            core_names = frame_core_fes.get(fi.frame_name, set())
-            await self._hg.add_frame_instance(fi, core_names)
-        for info in all_info:
-            await self._hg.add_info_node(info)
-        for edge in all_causal:
-            await self._hg.add_causal_edge(edge)
-
-        await self.finalize()
-        logger.info(
-            f"[FrameRAG] Indexed '{source_doc}': {len(all_mentions)} mentions, "
-            f"{len(canonicals)} canonicals, {len(all_events)} events, "
-            f"{len(all_fi)} frame instances"
-        )
+            record.status      = DocStatus.PROCESSED
+            record.chunk_ids   = chunk_ids
+            record.chunks_count = len(chunk_ids)
+            await self._doc_store.upsert(record)
+            await self.finalize()
+            logger.info(
+                f"[FrameRAG] Indexed '{source_doc}': {len(all_mentions)} mentions, "
+                f"{len(canonicals)} canonicals, {len(all_events)} events, "
+                f"{len(all_fi)} frame instances"
+            )
+        except Exception as e:
+            record.status    = DocStatus.FAILED
+            record.error_msg = str(e)
+            await self._doc_store.upsert(record)
+            raise
 
     # ──────────────────────────────────────────────────────────────────────────
     # Entity description merging (cross-document)
@@ -613,6 +646,43 @@ class FrameRAG:
                     logger.error(f"[FrameRAG] Batch insert failed for '{doc}': {e}")
 
         await asyncio.gather(*[_safe_insert(t, d) for t, d in zip(texts, source_docs)])
+
+    async def adelete(self, doc_id: str) -> bool:
+        """Delete a document and all its indexed data.
+
+        Args:
+            doc_id: The document ID as returned by ``DocStore.make_doc_id(source_doc)``.
+
+        Returns:
+            True if the document was found and deleted; False if not tracked.
+        """
+        record = await self._doc_store.get(doc_id)
+        if record is None:
+            return False
+        if record.chunk_ids:
+            await self._hg.delete_chunks(record.chunk_ids)
+        await self._doc_store.delete(doc_id)
+        await self.finalize()
+        logger.info(
+            f"[FrameRAG] Deleted doc '{record.source_doc}' ({len(record.chunk_ids)} chunks)"
+        )
+        return True
+
+    async def list_documents(self, status: Optional[str] = None) -> list[dict]:
+        """List all tracked documents, optionally filtered by status string.
+
+        Valid status values: ``pending``, ``processing``, ``processed``, ``failed``.
+        """
+        if status:
+            try:
+                st = DocStatus(status)
+            except ValueError:
+                valid = [s.value for s in DocStatus]
+                raise ValueError(f"Unknown status {status!r}. Valid: {valid}")
+            records = await self._doc_store.list_by_status(st)
+        else:
+            records = await self._doc_store.list_all()
+        return [r.to_dict() for r in records]
 
     # ──────────────────────────────────────────────────────────────────────────
     # Retrieval context (without answer generation — useful for evaluation)

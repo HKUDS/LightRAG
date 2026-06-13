@@ -105,7 +105,11 @@ async def rerank_chunk_hits(
     if not docs:
         return chunk_hits[:top_n]
 
-    results = await rerank_func(query, docs, top_n)
+    try:
+        results = await rerank_func(query, docs, top_n)
+    except Exception as e:
+        logger.warning(f"[FrameRAG] rerank_chunk_hits error, using diffusion order: {e}")
+        results = []
 
     if not results:
         # Reranker failed or empty — fall back to diffusion order
@@ -120,4 +124,4 @@ async def rerank_chunk_hits(
             hit["rerank_score"] = score
             reranked.append(hit)
 
-    return reranked
+    return reranked[:top_n]

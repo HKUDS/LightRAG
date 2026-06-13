@@ -618,3 +618,83 @@ class HypergraphStore:
             if fi:
                 results.append(fi)
         return results
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Deletion: cascade-remove all data for a set of chunk_ids
+    # ──────────────────────────────────────────────────────────────────────────
+
+    async def delete_chunks(self, chunk_ids: list[str]) -> None:
+        """Remove chunks and all downstream data (events, frames, mentions)."""
+        if not chunk_ids:
+            return
+        chunk_set = set(chunk_ids)
+
+        # Collect IDs to delete
+        event_ids: set[str] = set()
+        for cid in chunk_set:
+            for eid in self._adj_chunk_event.get(cid, []):
+                event_ids.add(eid)
+
+        fi_ids: set[str] = set()
+        for eid in event_ids:
+            for fid in self._adj_event_frame.get(eid, []):
+                fi_ids.add(fid)
+
+        # Collect mention_ids from chunk data
+        mention_ids: set[str] = set()
+        info_ids: set[str] = set()
+        for cid in chunk_set:
+            cdata = await self.chunks.get_by_id(cid)
+            if cdata:
+                for mid in cdata.get("mention_ids", []):
+                    mention_ids.add(mid)
+
+        # Collect info_ids from frame instances
+        for fid in fi_ids:
+            fi_data = await self.frame_instances.get_by_id(fid)
+            if fi_data:
+                for slot in ("core_assignments", "noncore_assignments"):
+                    for assign in fi_data.get(slot, []):
+                        if assign.get("filler_type") == "VALUE":
+                            iid = assign.get("filler_id")
+                            if iid:
+                                info_ids.add(iid)
+
+        # Delete from KV stores
+        if chunk_ids:
+            await self.chunks.delete(list(chunk_set))
+            await self.vdb_chunks.delete(list(chunk_set))
+        if event_ids:
+            await self.events.delete(list(event_ids))
+            await self.vdb_events.delete(list(event_ids))
+        if fi_ids:
+            await self.frame_instances.delete(list(fi_ids))
+            await self.vdb_frame_instances.delete(list(fi_ids))
+        if mention_ids:
+            await self.entity_mentions.delete(list(mention_ids))
+            await self.vdb_entity_mentions.delete(list(mention_ids))
+        if info_ids:
+            await self.info_nodes.delete(list(info_ids))
+            await self.vdb_info_nodes.delete(list(info_ids))
+
+        # Prune causal edges involving deleted events
+        self._adj_causal = [
+            e for e in self._adj_causal
+            if e.get("source") not in event_ids and e.get("target") not in event_ids
+        ]
+
+        # Prune adjacency lists
+        for cid in chunk_set:
+            self._adj_chunk_event.pop(cid, None)
+            self._chunk_ids.discard(cid)
+        for eid in event_ids:
+            self._adj_event_frame.pop(eid, None)
+            self._event_ids.discard(eid)
+        for fid in fi_ids:
+            self._adj_frame_node.pop(fid, None)
+            self._fi_ids.discard(fid)
+        for mid in mention_ids:
+            self._adj_mention_canon.pop(mid, None)
+            self._mention_ids.discard(mid)
+        for iid in info_ids:
+            self._info_ids.discard(iid)
