@@ -507,9 +507,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 # Non-streaming: complete response in one message
                 response_content = llm_response.get("content", "")
                 if not response_content:
-                    response_content = (
-                        "No relevant context found for the query."
-                    )
+                    response_content = "No relevant context found for the query."
 
                 complete_response = {"response": response_content}
                 if include_references:
