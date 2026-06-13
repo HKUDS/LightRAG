@@ -2337,6 +2337,10 @@ def create_app(args):
                     "docling": _build_docling_status(),
                 },
                 "auth_mode": auth_mode,
+                "server_mode": "gunicorn"
+                if os.environ.get("LIGHTRAG_GUNICORN_MODE")
+                else "uvicorn",
+                "workers": getattr(args, "workers", 1),
                 "pipeline_busy": pipeline_busy,
                 "pipeline_active": pipeline_active,
                 "pipeline_scanning": pipeline_scanning,
