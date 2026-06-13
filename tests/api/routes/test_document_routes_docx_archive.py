@@ -295,11 +295,6 @@ class _ParseTokenizer(_utils.TokenizerInterface):
 
 class _ParseRag:
     _persist_parsed_full_docs = LightRAG._persist_parsed_full_docs
-    # parse_native now delegates to the LightRAG Document writer, which the
-    # tests need to exercise to validate archive + full_docs side effects.
-    _write_lightrag_document_from_content_list = (
-        LightRAG._write_lightrag_document_from_content_list
-    )
 
     def __init__(self, working_dir, source_path):
         self.working_dir = str(working_dir)
