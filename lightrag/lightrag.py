@@ -200,6 +200,13 @@ def _run_sync(
     fresh loop, preserving the long-standing behavior (any lock still bound to
     the closed loop is handled by ``asyncio.Lock`` itself, exactly as before).
 
+    These synchronous wrappers are compatibility conveniences for simple,
+    single-threaded scripts. SDK integrations, async applications, and
+    concurrent workloads should prefer the ``a*`` coroutine APIs. The wrappers
+    are not cross-thread-safe entry points for concurrent calls against the same
+    ``LightRAG`` instance; callers that must invoke them from multiple threads
+    need to serialize access externally or route work through one event loop.
+
     The coroutine is created lazily via ``coro_factory`` so neither guard ever
     leaves an un-awaited coroutine behind when it raises.
 
