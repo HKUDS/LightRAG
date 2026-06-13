@@ -953,6 +953,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.rerank_model_max_async,
                 llm_timeout=self.default_rerank_timeout,
                 queue_name="Rerank func",
+                concurrency_group="rerank",
             )(self.rerank_model_func)
 
         # Init Embedding
@@ -983,6 +984,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.embedding_func_max_async,
                 llm_timeout=self.default_embedding_timeout,
                 queue_name="Embedding func",
+                concurrency_group="embedding",
             )(self.embedding_func.func)
             # Use dataclasses.replace() to create a new instance, leaving the original unchanged
             self.embedding_func = replace(self.embedding_func, func=wrapped_func)

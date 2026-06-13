@@ -9,6 +9,7 @@ from enum import Enum
 from fastapi.responses import StreamingResponse
 import asyncio
 from lightrag import LightRAG, QueryParam
+from lightrag.constants import DEFAULT_QUERY_PRIORITY
 from lightrag.utils import TiktokenTokenizer
 from lightrag.api.utils_api import get_combined_auth_dependency
 from fastapi import Depends
@@ -309,7 +310,10 @@ class OllamaAPI:
 
                 if request.stream:
                     response = await (self.rag.role_llm_funcs["query"])(
-                        query, stream=True, **role_kwargs
+                        query,
+                        stream=True,
+                        _priority=DEFAULT_QUERY_PRIORITY,
+                        **role_kwargs,
                     )
 
                     async def stream_generator():
@@ -434,7 +438,10 @@ class OllamaAPI:
                 else:
                     first_chunk_time = time.time_ns()
                     response_text = await (self.rag.role_llm_funcs["query"])(
-                        query, stream=False, **role_kwargs
+                        query,
+                        stream=False,
+                        _priority=DEFAULT_QUERY_PRIORITY,
+                        **role_kwargs,
                     )
                     last_chunk_time = time.time_ns()
 
@@ -531,6 +538,7 @@ class OllamaAPI:
                             cleaned_query,
                             stream=True,
                             history_messages=conversation_history,
+                            _priority=DEFAULT_QUERY_PRIORITY,
                             **role_kwargs,
                         )
                     else:
@@ -699,6 +707,7 @@ class OllamaAPI:
                             cleaned_query,
                             stream=False,
                             history_messages=conversation_history,
+                            _priority=DEFAULT_QUERY_PRIORITY,
                             **role_kwargs,
                         )
                     else:
