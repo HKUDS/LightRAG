@@ -1256,7 +1256,7 @@ def priority_limit_async_func_call(
                             task_state.worker_started = True
                             # Record execution start time when worker actually begins processing
                             task_state.execution_start_time = (
-                                asyncio.get_event_loop().time()
+                                asyncio.get_running_loop().time()
                             )
 
                         # Check if task was cancelled before worker started
@@ -1433,7 +1433,7 @@ def priority_limit_async_func_call(
                                     else:
                                         task_state.worker_started = True
                                         task_state.execution_start_time = (
-                                            asyncio.get_event_loop().time()
+                                            asyncio.get_running_loop().time()
                                         )
                                         live_queued -= 1
                                         notify_needed = True
@@ -1573,7 +1573,7 @@ def priority_limit_async_func_call(
                 while not shutdown_event.is_set():
                     await asyncio.sleep(5)  # Check every 5 seconds
 
-                    current_time = asyncio.get_event_loop().time()
+                    current_time = asyncio.get_running_loop().time()
 
                     # Detect and handle stuck tasks based on execution start time
                     if max_task_duration is not None:
@@ -1953,10 +1953,12 @@ def priority_limit_async_func_call(
             nonlocal counter, submitted_total, completed_total, cancelled_total
             nonlocal failed_total, rejected_total, live_queued
 
-            task_id = f"{id(asyncio.current_task())}_{asyncio.get_event_loop().time()}"
+            task_id = (
+                f"{id(asyncio.current_task())}_{asyncio.get_running_loop().time()}"
+            )
             future = asyncio.Future()
             task_state = TaskState(
-                future=future, start_time=asyncio.get_event_loop().time()
+                future=future, start_time=asyncio.get_running_loop().time()
             )
 
             def _admission_open() -> bool:
@@ -2035,10 +2037,10 @@ def priority_limit_async_func_call(
                     if not future.done():
                         future.cancel()
 
-                    cleanup_start = asyncio.get_event_loop().time()
+                    cleanup_start = asyncio.get_running_loop().time()
                     while (
                         task_id in task_states
-                        and asyncio.get_event_loop().time() - cleanup_start
+                        and asyncio.get_running_loop().time() - cleanup_start
                         < cleanup_timeout
                     ):
                         await asyncio.sleep(0.1)
@@ -2114,12 +2116,14 @@ def priority_limit_async_func_call(
                 )
 
             # Generate unique task ID
-            task_id = f"{id(asyncio.current_task())}_{asyncio.get_event_loop().time()}"
+            task_id = (
+                f"{id(asyncio.current_task())}_{asyncio.get_running_loop().time()}"
+            )
             future = asyncio.Future()
 
             # Create task state
             task_state = TaskState(
-                future=future, start_time=asyncio.get_event_loop().time()
+                future=future, start_time=asyncio.get_running_loop().time()
             )
 
             try:
@@ -2184,10 +2188,10 @@ def priority_limit_async_func_call(
                         future.cancel()
 
                     # Wait for worker cleanup with timeout
-                    cleanup_start = asyncio.get_event_loop().time()
+                    cleanup_start = asyncio.get_running_loop().time()
                     while (
                         task_id in task_states
-                        and asyncio.get_event_loop().time() - cleanup_start
+                        and asyncio.get_running_loop().time() - cleanup_start
                         < cleanup_timeout
                     ):
                         await asyncio.sleep(0.1)

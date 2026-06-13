@@ -36,9 +36,9 @@ def _init(limits=None):
 
 
 async def _wait_until(predicate, timeout=5.0, interval=0.01):
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
-        if asyncio.get_event_loop().time() > deadline:
+        if asyncio.get_running_loop().time() > deadline:
             raise AssertionError("condition not met within timeout")
         await asyncio.sleep(interval)
 
@@ -53,7 +53,7 @@ async def _wait_drained(wrapped, timeout=5.0, interval=0.01):
     (up-drift) leaves ``queued`` stuck above zero forever; a leaked
     task_states entry leaves ``in_flight`` stuck. Returns the final stats.
     """
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     while True:
         stats = await wrapped.get_queue_stats()
         if (
@@ -62,7 +62,7 @@ async def _wait_drained(wrapped, timeout=5.0, interval=0.01):
             and stats.get("physical_queued", 0) == 0
         ):
             return stats
-        if asyncio.get_event_loop().time() > deadline:
+        if asyncio.get_running_loop().time() > deadline:
             raise AssertionError(f"queue did not drain to zero: {stats}")
         await asyncio.sleep(interval)
 
@@ -355,9 +355,9 @@ async def test_admission_counts_only_live_queued_tasks():
         async def _queued_count():
             return (await wrapped.get_queue_stats())["queued"]
 
-        deadline = asyncio.get_event_loop().time() + 5.0
+        deadline = asyncio.get_running_loop().time() + 5.0
         while await _queued_count() != 2:
-            assert asyncio.get_event_loop().time() < deadline
+            assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(0.01)
 
         stats = await wrapped.get_queue_stats()
@@ -732,9 +732,9 @@ async def test_aggregated_stats_schema_and_global_fields():
         async def _in_use_zero():
             return await ss.global_concurrency_in_use(GROUP) == 0
 
-        deadline = asyncio.get_event_loop().time() + 2.0
+        deadline = asyncio.get_running_loop().time() + 2.0
         while not await _in_use_zero():
-            assert asyncio.get_event_loop().time() < deadline
+            assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(0.01)
 
         stats = await wrapped.get_aggregated_queue_stats()
@@ -779,9 +779,9 @@ async def test_shutdown_clears_waiter_record():
     pending = asyncio.create_task(wrapped("stuck"))
     try:
         # Wait until a polling worker registers this process as a waiter.
-        deadline = asyncio.get_event_loop().time() + 5.0
+        deadline = asyncio.get_running_loop().time() + 5.0
         while not await ss.global_slot_waiters(GROUP):
-            assert asyncio.get_event_loop().time() < deadline
+            assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(0.01)
     finally:
         await wrapped.shutdown(graceful=False, timeout=0.1)
@@ -803,9 +803,9 @@ async def test_aggregated_stats_report_slot_waiters():
     )(func)
     task = asyncio.create_task(wrapped("waiting"))
     try:
-        deadline = asyncio.get_event_loop().time() + 5.0
+        deadline = asyncio.get_running_loop().time() + 5.0
         while not await ss.global_slot_waiters(GROUP):
-            assert asyncio.get_event_loop().time() < deadline
+            assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(0.01)
 
         stats = await wrapped.get_aggregated_queue_stats()
