@@ -166,43 +166,48 @@ def _run_sync(
     *,
     sync_name: str,
     async_name: str,
+    owning_loop: Optional[asyncio.AbstractEventLoop] = None,
 ) -> _SyncResultT:
     """Drive an async coroutine to completion from a synchronous wrapper.
 
     The synchronous wrappers (``insert``, ``query``, ``delete_by_entity``,
     …) all share the same shape: acquire an event loop and call
-    ``loop.run_until_complete()``.  That call is only valid when **no** event
-    loop is already running on the current thread:
+    ``loop.run_until_complete()``.  That call is only valid when the current
+    thread has **no** running loop *and* the loop it ends up driving is the
+    same one the instance's storages were initialized on.  Two misuse modes
+    break this, and both have the same fix — use the ``a*`` coroutine from
+    async code:
 
-    * Called from within a running loop on the same thread (e.g. directly
-      inside an ``async def`` / FastAPI handler), ``run_until_complete()``
-      raises ``RuntimeError: This event loop is already running``.  This is a
-      fail-fast error, not a deadlock — but the message gives no hint about
-      the fix.
-    * Pushed onto another thread's loop (e.g. ``loop.run_in_executor(None,
-      rag.insert, …)``), it runs on a *different* loop than the one the
-      storage backends were initialized on.  The shared ``asyncio.Lock``
-      objects in ``lightrag.kg.shared_storage`` bind to the first loop that
-      acquires them, so a second loop raises ``RuntimeError: <Lock> is bound
-      to a different event loop`` or stalls waiting on a callback scheduled
-      on an idle loop.
+    * **Same thread, inside a running loop** (e.g. directly inside an
+      ``async def`` / FastAPI handler): ``run_until_complete()`` would raise
+      ``RuntimeError: This event loop is already running``.  Detected up front
+      via :func:`asyncio.get_running_loop`.
+    * **A different loop than the storages bound to** (e.g.
+      ``loop.run_in_executor(None, rag.insert, …)`` runs the wrapper on a pool
+      thread with no loop, or an asyncio loop runs on another thread): the
+      shared ``asyncio.Lock`` objects in ``lightrag.kg.shared_storage`` are
+      bound to ``owning_loop``, so acquiring them from a second loop raises
+      ``RuntimeError: <Lock> is bound to a different event loop`` or stalls on
+      a callback scheduled on an idle loop.  Detected by comparing the loop we
+      are about to drive against ``owning_loop``.
 
-    Both failure modes have the same correct fix: use the ``a*`` coroutine
-    directly from async code.  This helper detects a running loop up front and
-    raises one clear, actionable error pointing at the async alternative.  The
-    coroutine is created lazily via ``coro_factory`` so the guard never leaves
-    an un-awaited coroutine behind when it raises.
+    The coroutine is created lazily via ``coro_factory`` so neither guard ever
+    leaves an un-awaited coroutine behind when it raises.
 
     Args:
         coro_factory: Zero-arg callable returning the coroutine to run.
         sync_name: Name of the sync wrapper, used in the error message.
         async_name: Name of the async method to recommend instead.
+        owning_loop: The loop the instance's storages were initialized on
+            (``LightRAG._owning_loop``). ``None`` when storages have not been
+            initialized yet, in which case the cross-loop check is skipped.
 
     Returns:
         The result of awaiting the coroutine.
 
     Raises:
-        RuntimeError: if called from within a running asyncio event loop.
+        RuntimeError: if called from within a running asyncio event loop, or
+            from a different loop than the one the storages were bound to.
     """
     try:
         asyncio.get_running_loop()
@@ -213,11 +218,21 @@ def _run_sync(
             f"{sync_name}() cannot be called from within a running asyncio "
             f"event loop. Synchronous wrappers internally call "
             f"loop.run_until_complete(), which Python forbids while a loop is "
-            f"already running on this thread (and which binds storage locks "
-            f"to the wrong loop when pushed onto another thread). "
+            f"already running on this thread. "
             f"Use `await {async_name}(...)` from async code instead."
         )
     loop = always_get_an_event_loop()
+    if owning_loop is not None and (loop is not owning_loop or owning_loop.is_closed()):
+        raise RuntimeError(
+            f"{sync_name}() must run on the same event loop this LightRAG "
+            f"instance was initialized on, but it is being driven from a "
+            f"different loop — typically `loop.run_in_executor(None, "
+            f"rag.{sync_name}, ...)`, or an asyncio loop running on another "
+            f"thread. LightRAG's shared storage locks are bound to the original "
+            f"loop, so running here would raise '<Lock> is bound to a different "
+            f"event loop' or stall. "
+            f"Use `await {async_name}(...)` on the original loop instead."
+        )
     return loop.run_until_complete(coro_factory())
 
 
@@ -703,6 +718,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """Configuration for Ollama server information."""
 
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
+
+    _owning_loop: Optional[asyncio.AbstractEventLoop] = field(default=None)
+    """The event loop this instance's storages were initialized on.
+
+    Captured in :meth:`initialize_storages`. The shared ``asyncio.Lock`` objects
+    in ``lightrag.kg.shared_storage`` bind to this loop, so every synchronous
+    wrapper must drive its coroutine on the *same* loop. ``_run_sync`` fails fast
+    when asked to run on a different one (e.g. ``loop.run_in_executor(None,
+    rag.insert, …)`` or an asyncio loop running on another thread).
+    """
 
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
@@ -1222,6 +1247,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def initialize_storages(self):
         """Storage initialization must be called one by one to prevent deadlock"""
         if self._storages_status == StoragesStatus.CREATED:
+            # Record the loop the storages (and their shared_storage locks) bind
+            # to, so the synchronous wrappers can fail fast if later driven from a
+            # different loop (run_in_executor / a loop on another thread).
+            self._owning_loop = asyncio.get_running_loop()
+
             # Set the first initialized workspace will set the default workspace
             # Allows namespace operation without specifying workspace for backward compatibility
             default_workspace = get_default_workspace()
@@ -1373,6 +1403,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ),
             sync_name="insert",
             async_name="ainsert",
+            owning_loop=self._owning_loop,
         )
 
     async def ainsert(
@@ -1455,6 +1486,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.ainsert_custom_chunks(full_text, text_chunks, doc_id),
             sync_name="insert_custom_chunks",
             async_name="ainsert_custom_chunks",
+            owning_loop=self._owning_loop,
         )
 
     # TODO: deprecated, use ainsert instead
@@ -1729,6 +1761,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.ainsert_custom_kg(custom_kg, full_doc_id),
             sync_name="insert_custom_kg",
             async_name="ainsert_custom_kg",
+            owning_loop=self._owning_loop,
         )
 
     async def ainsert_custom_kg(
@@ -2019,6 +2052,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.aquery(query, param, system_prompt),
             sync_name="query",
             async_name="aquery",
+            owning_loop=self._owning_loop,
         )
 
     async def aquery(
@@ -2076,6 +2110,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.aquery_data(query, param),
             sync_name="query_data",
             async_name="aquery_data",
+            owning_loop=self._owning_loop,
         )
 
     async def aquery_data(
@@ -2449,6 +2484,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.aquery_llm(query, param, system_prompt),
             sync_name="query_llm",
             async_name="aquery_llm",
+            owning_loop=self._owning_loop,
         )
 
     async def _query_done(self):
@@ -2557,6 +2593,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.aclear_cache(),
             sync_name="clear_cache",
             async_name="aclear_cache",
+            owning_loop=self._owning_loop,
         )
 
     async def get_docs_by_status(
@@ -3996,6 +4033,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.adelete_by_entity(entity_name),
             sync_name="delete_by_entity",
             async_name="adelete_by_entity",
+            owning_loop=self._owning_loop,
         )
 
     async def adelete_by_relation(
@@ -4035,6 +4073,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.adelete_by_relation(source_entity, target_entity),
             sync_name="delete_by_relation",
             async_name="adelete_by_relation",
+            owning_loop=self._owning_loop,
         )
 
     async def get_processing_status(self) -> dict[str, int]:
@@ -4168,6 +4207,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ),
             sync_name="edit_entity",
             async_name="aedit_entity",
+            owning_loop=self._owning_loop,
         )
 
     async def aedit_relation(
@@ -4205,6 +4245,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.aedit_relation(source_entity, target_entity, updated_data),
             sync_name="edit_relation",
             async_name="aedit_relation",
+            owning_loop=self._owning_loop,
         )
 
     async def acreate_entity(
@@ -4238,6 +4279,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.acreate_entity(entity_name, entity_data),
             sync_name="create_entity",
             async_name="acreate_entity",
+            owning_loop=self._owning_loop,
         )
 
     async def acreate_relation(
@@ -4273,6 +4315,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.acreate_relation(source_entity, target_entity, relation_data),
             sync_name="create_relation",
             async_name="acreate_relation",
+            owning_loop=self._owning_loop,
         )
 
     async def amerge_entities(
@@ -4329,6 +4372,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ),
             sync_name="merge_entities",
             async_name="amerge_entities",
+            owning_loop=self._owning_loop,
         )
 
     async def aexport_data(
@@ -4382,6 +4426,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.aexport_data(output_path, file_format, include_vector_data),
             sync_name="export_data",
             async_name="aexport_data",
+            owning_loop=self._owning_loop,
         )
 
 
