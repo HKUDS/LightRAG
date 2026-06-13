@@ -4379,9 +4379,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             include_vector_data: Whether to include data from the vector database.
         """
         _run_sync(
-            lambda: self.aexport_data(
-                output_path, file_format, include_vector_data
-            ),
+            lambda: self.aexport_data(output_path, file_format, include_vector_data),
             sync_name="export_data",
             async_name="aexport_data",
         )
