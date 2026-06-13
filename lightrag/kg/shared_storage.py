@@ -1991,11 +1991,24 @@ def _reap_gate_state(state: Dict[str, Any], now: float) -> tuple[int, bool]:
     live = 0
     changed = False
     reclaimed_pids = set()
+    # Liveness is constant within this synchronous pass (no await, fixed
+    # ``now``), so memoize the probe: a PID holding many leases of this group
+    # is checked once instead of once per lease. NEVER cache across calls —
+    # PID reuse and staleness could reclaim a live owner's lease.
+    alive_cache: Dict[int, bool] = {}
+
+    def _alive(pid: int) -> bool:
+        cached = alive_cache.get(pid)
+        if cached is None:
+            cached = _pid_alive(pid)
+            alive_cache[pid] = cached
+        return cached
+
     for lease_id in list(leases.keys()):
         lease = leases[lease_id]
         pid = lease.get("pid")
         updated_at = lease.get("updated_at", 0.0)
-        if pid is None or not _pid_alive(pid):
+        if pid is None or not _alive(pid):
             leases.pop(lease_id)
             changed = True
             if pid is not None:
@@ -2026,7 +2039,7 @@ def _reap_gate_state(state: Dict[str, Any], now: float) -> tuple[int, bool]:
         if (
             pid is None
             or pid in reclaimed_pids
-            or not _pid_alive(pid)
+            or not _alive(pid)
             or now - last_poll > _waiter_stale_ttl
         ):
             waiters.pop(pid_key)
