@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
-import { defaultQueryLabel } from '@/lib/constants'
+import { defaultQueryLabel, suggestedUserPrompts } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
@@ -119,7 +119,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       documentsPageSize: 10,
 
       retrievalHistory: [],
-      userPromptHistory: [],
+      userPromptHistory: [...suggestedUserPrompts],
 
       querySettings: {
         mode: 'global',
@@ -238,7 +238,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 19,
+      version: 20,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -340,6 +340,15 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (state.querySettings) {
             delete state.querySettings.response_type
           }
+        }
+        if (version < 20) {
+          // One-time injection of system-suggested prompts; append after any existing
+          // history so user's own prompts keep priority. version monotonicity makes
+          // this run at most once.
+          state.userPromptHistory = [
+            ...(state.userPromptHistory ?? []),
+            ...suggestedUserPrompts
+          ]
         }
         return state
       }
