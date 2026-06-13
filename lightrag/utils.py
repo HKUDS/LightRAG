@@ -3844,6 +3844,27 @@ def sanitize_text_for_encoding(text: str, replacement_char: str = "") -> str:
     return text.strip()
 
 
+def strip_control_characters(text: str, replacement_char: str = "") -> str:
+    """Remove control/separator chars and surrogates while preserving text.
+
+    Strips the same character classes as :func:`sanitize_text_for_encoding`
+    (surrogates via ``_SURROGATE_PATTERN`` and control chars via
+    ``_CONTROL_CHAR_PATTERN_ALL`` — including the C0 separators ``\\x1c``-``\\x1f``
+    FS/GS/RS/US, while keeping ``\\t``/``\\n``/``\\r``) but deliberately does
+    *not* ``html.unescape`` or ``.strip()`` the result.
+
+    This makes it safe for text that carries intentional markup (e.g. sidecar
+    block content with ``<table>``/``<drawing>``/``<equation>`` tags, where
+    unescaping ``&lt;`` would corrupt the markup) or significant leading/
+    trailing whitespace. For control-char-free input it returns the string
+    unchanged, so it does not perturb existing content hashes or snapshots.
+    """
+    if not text:
+        return text
+    text = _SURROGATE_PATTERN.sub(replacement_char, text)
+    return _CONTROL_CHAR_PATTERN_ALL.sub(replacement_char, text)
+
+
 # LLMs emitting LaTeX inside JSON strings routinely under-escape backslashes:
 # "\frac" is *valid* JSON meaning form feed + "rac", so JSON parsers
 # (including json_repair) silently decode it and the LaTeX command is

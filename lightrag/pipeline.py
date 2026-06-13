@@ -72,6 +72,7 @@ from lightrag.utils import (
     sanitize_text_for_encoding,
     save_to_cache,
     serialize_llm_cache_identity,
+    strip_control_characters,
 )
 from lightrag.utils_pipeline import (
     archive_docx_source_after_full_docs_sync,
@@ -1648,6 +1649,20 @@ class _PipelineMixin:
                     )
                 ).to_dict()
 
+                # Align the in-memory body with the sanitized copy that
+                # _persist_parsed_full_docs wrote to full_docs: a parser may
+                # return ParseResult(content=...) carrying the pre-clean text
+                # (e.g. legacy returns the raw extraction verbatim). Downstream
+                # this body feeds content_summary / content_length on doc_status
+                # and the duplicate-check length, so leaving C0 control chars
+                # (incl. NUL, which breaks PostgreSQL text writes) here would let
+                # them reach doc_status. No-op for sidecar engines (already
+                # cleaned at write_sidecar) and for already-clean content.
+                if isinstance(parsed_data_w.get("content"), str):
+                    parsed_data_w["content"] = strip_control_characters(
+                        parsed_data_w["content"]
+                    )
+
                 # Mirror non-fatal parser warnings (e.g. legacy docx tables
                 # missing w14:paraId) onto the in-memory status_doc so the
                 # ANALYZING / PROCESSING / PROCESSED / FAILED upserts carry
@@ -2915,6 +2930,17 @@ class _PipelineMixin:
         ``update_time``) take precedence, while pre-existing fields are
         preserved.
         """
+        # Strip C0 control/separator chars (incl. \x1c-\x1f FS/GS/RS/US) from the
+        # parsed body before it lands in full_docs — this is the single
+        # convergence point for every parser engine's persist. For RAW (legacy)
+        # the full_docs content IS the chunk source, so this guarantees clean
+        # chunks; for sidecar engines it is an idempotent backstop (the sidecar
+        # writer already cleaned the same text). Done before content_hash so the
+        # dedup hash is computed on the sanitized body. No-op for clean input.
+        record_content = record.get("content")
+        if isinstance(record_content, str):
+            record = {**record, "content": strip_control_characters(record_content)}
+
         fmt = record.get("parse_format")
         content_hash: str | None = None
         # Hash the bare merged text (after stripping the ``{{LRdoc}}`` marker
