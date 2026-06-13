@@ -277,6 +277,27 @@ Example: "SAME - both describe Apple's acquisition of Beats Electronics in 2014"
 # Answer Generation (Call 5)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Entity Description Merge (cross-document accumulation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROMPTS["entity_description_merge"] = """---Task---
+Merge the following descriptions of the same entity into a single concise description.
+Preserve all unique facts. Remove redundancies. Write in third person.
+Keep the result to 3-5 sentences maximum.
+
+---Entity Name---
+{entity_name}
+
+---Descriptions to Merge---
+{descriptions}
+
+---Merged Description---"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Answer Generation (Call 5)
+# ─────────────────────────────────────────────────────────────────────────────
+
 PROMPTS["answer_generation"] = """---Role---
 You are a helpful assistant answering questions based on retrieved knowledge.
 

@@ -52,59 +52,19 @@ class EntityCoreferenceResolver:
     async def resolve(
         self, mentions: list[EntityMentionSchema]
     ) -> list[CanonicalEntitySchema]:
-        """Run full coreference resolution on a list of entity mentions.
-
-        Returns a list of CanonicalEntitySchema.
-        Each mention's canonical_id is updated in-place.
-        """
-        if not mentions:
-            return []
-
-        logger.info(f"[EntityCoref] Resolving {len(mentions)} entity mentions")
-
-        # Step 1: Blocking
-        blocks = self._build_blocks(mentions)
-        logger.info(f"[EntityCoref] {len(blocks)} blocks created")
-
-        # Step 2: Embed all mentions once (name + description)
-        all_texts = [
-            f"{m.name} [SEP] {m.description}" for m in mentions
-        ]
-        all_embeddings = await self._embed(all_texts)  # [n_mentions, dim]
-
-        mention_by_id = {m.mention_id: m for m in mentions}
-        emb_by_id = {m.mention_id: all_embeddings[i] for i, m in enumerate(mentions)}
-
-        # Step 3: Cluster within each block
-        union_find = _UnionFind([m.mention_id for m in mentions])
-
-        for block_ids in blocks.values():
-            if len(block_ids) < 2:
-                continue
-            embs = np.stack([emb_by_id[mid] for mid in block_ids])
-            await self._cluster_block(block_ids, embs, union_find)
-
-        # Step 4: Build canonical entities from clusters
-        clusters = union_find.get_clusters()
-        canonicals = []
-        for root, member_ids in clusters.items():
-            canonical = await self._build_canonical(
-                member_ids, mention_by_id, emb_by_id
-            )
-            # Update canonical_id on each mention object
-            for mid in member_ids:
-                mention_by_id[mid].canonical_id = canonical.canonical_id
-            canonicals.append(canonical)
-
-        logger.info(f"[EntityCoref] {len(canonicals)} canonical entities created")
-        return canonicals
+        """Alias for resolve_with_llm_verify — always uses LLM verification."""
+        return await self.resolve_with_llm_verify(mentions)
 
     # ──────────────────────────────────────────────────────────────────────────
 
     def _build_blocks(
         self, mentions: list[EntityMentionSchema]
     ) -> dict[str, list[str]]:
-        """Group mentions into blocks by normalized name and first token."""
+        """Group mentions into blocks by normalized name and first token.
+
+        A block is a set of mention IDs that share a surface-form key and
+        are therefore candidates for coreference.
+        """
         blocks: dict[str, list[str]] = defaultdict(list)
         for m in mentions:
             norm = _normalize_name(m.name)
@@ -114,46 +74,9 @@ class EntityCoreferenceResolver:
                 blocks[first].append(m.mention_id)
             for alias in (m.aliases or []):
                 a_norm = _normalize_name(alias)
-                blocks[a_norm].append(m.mention_id)
-        # Deduplicate within each block
-        return {k: list(set(v)) for k, v in blocks.items() if v}
-
-    async def _cluster_block(
-        self,
-        block_ids: list[str],
-        embeddings: np.ndarray,
-        union_find: "_UnionFind",
-    ) -> None:
-        """Agglomerative single-pass clustering within a block."""
-        n = len(block_ids)
-        # Normalize embeddings for cosine similarity
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-10
-        normed = embeddings / norms
-        sim_matrix = normed @ normed.T  # [n, n]
-
-        for i in range(n):
-            for j in range(i + 1, n):
-                sim = float(sim_matrix[i, j])
-                mid_i, mid_j = block_ids[i], block_ids[j]
-
-                if sim >= AUTO_SAME_THRESHOLD:
-                    union_find.union(mid_i, mid_j)
-                elif sim >= AUTO_DIFF_THRESHOLD:
-                    # LLM verify borderline case
-                    same = await self._llm_verify(mid_i, mid_j, union_find)
-                    if same:
-                        union_find.union(mid_i, mid_j)
-
-    async def _llm_verify(
-        self,
-        mid_a: str,
-        mid_b: str,
-        uf: "_UnionFind",
-    ) -> bool:
-        """Placeholder — full implementation needs mention data passed in."""
-        # In practice, we'd look up mention data here.
-        # This is wired up in resolve() via closure or by restructuring.
-        return False
+                if a_norm:
+                    blocks[a_norm].append(m.mention_id)
+        return {k: list(dict.fromkeys(v)) for k, v in blocks.items() if v}
 
     async def resolve_with_llm_verify(
         self,
