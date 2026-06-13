@@ -30,6 +30,7 @@ from lightrag.utils import logger, EmbeddingFunc, compute_mdhash_id, TiktokenTok
 from lightrag.operate import chunking_by_token_size
 
 from .storage import make_kv, wrap_embed
+from .rerank import RerankFunc, rerank_chunk_hits
 from .types import (
     ChunkSchema,
     EntityMentionSchema,
@@ -94,6 +95,8 @@ class FrameRAG:
         top_chunks: int = 20,
         top_frames: int = 10,
         top_nodes: int = 15,
+        rerank_func: Optional[Callable] = None,
+        rerank_top_k: int = 50,
     ):
         self._raw_llm = llm_func
         self._raw_embed = embed_func
@@ -108,6 +111,8 @@ class FrameRAG:
         self._top_chunks = top_chunks
         self._top_frames = top_frames
         self._top_nodes = top_nodes
+        self._rerank_func = rerank_func
+        self._rerank_top_k = rerank_top_k
 
         self._working_dir = working_dir
         os.makedirs(working_dir, exist_ok=True)
@@ -470,14 +475,30 @@ class FrameRAG:
             T=diffusion_steps,
         )
 
-        # Step 5: Top results
+        # Step 5: Top results — retrieve extra chunks when reranker is active
+        fetch_chunks = self._rerank_top_k if self._rerank_func else top_chunks
         results = diffusion.top_results(
             f_node, f_fi, f_chunk,
-            top_chunks=top_chunks,
+            top_chunks=fetch_chunks,
             top_frames=top_frames,
             top_nodes=top_nodes,
         )
-        return results["frame_hits"], results["chunk_hits"]
+        frame_hits = results["frame_hits"]
+        chunk_hits = results["chunk_hits"]
+
+        # Step 6: Rerank chunks (optional)
+        if self._rerank_func and chunk_hits:
+            chunk_texts: dict[str, str] = {}
+            for hit in chunk_hits:
+                cdata = await self._hg.chunks.get_by_id(hit["id"])
+                if cdata:
+                    chunk_texts[hit["id"]] = cdata.get("content", "")
+            chunk_hits = await rerank_chunk_hits(
+                query, chunk_hits, chunk_texts, self._rerank_func, top_n=top_chunks
+            )
+            logger.info(f"[FrameRAG] Reranked to {len(chunk_hits)} chunks")
+
+        return frame_hits, chunk_hits
 
     async def aquery(
         self,

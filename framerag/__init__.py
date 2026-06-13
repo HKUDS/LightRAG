@@ -1,5 +1,6 @@
 """FrameRAG: Frame-Semantic Event Hypergraph RAG system."""
 from .framerag import FrameRAG
+from .rerank import make_reranker, RerankFunc
 from .types import (
     ChunkSchema,
     EntityMentionSchema,
@@ -18,6 +19,8 @@ from .types import (
 
 __all__ = [
     "FrameRAG",
+    "make_reranker",
+    "RerankFunc",
     "ChunkSchema",
     "EntityMentionSchema",
     "CanonicalEntitySchema",
