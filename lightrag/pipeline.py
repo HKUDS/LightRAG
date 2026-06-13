@@ -1649,6 +1649,20 @@ class _PipelineMixin:
                     )
                 ).to_dict()
 
+                # Align the in-memory body with the sanitized copy that
+                # _persist_parsed_full_docs wrote to full_docs: a parser may
+                # return ParseResult(content=...) carrying the pre-clean text
+                # (e.g. legacy returns the raw extraction verbatim). Downstream
+                # this body feeds content_summary / content_length on doc_status
+                # and the duplicate-check length, so leaving C0 control chars
+                # (incl. NUL, which breaks PostgreSQL text writes) here would let
+                # them reach doc_status. No-op for sidecar engines (already
+                # cleaned at write_sidecar) and for already-clean content.
+                if isinstance(parsed_data_w.get("content"), str):
+                    parsed_data_w["content"] = strip_control_characters(
+                        parsed_data_w["content"]
+                    )
+
                 # Mirror non-fatal parser warnings (e.g. legacy docx tables
                 # missing w14:paraId) onto the in-memory status_doc so the
                 # ANALYZING / PROCESSING / PROCESSED / FAILED upserts carry
