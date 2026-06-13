@@ -200,6 +200,50 @@ Example: "SAME - both refer to Apple Inc., the technology company"
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Entity Extraction Gleaning (Call 1b — catch missed entities)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROMPTS["entity_extraction_glean"] = """---Task---
+Review the text again for any entities you may have MISSED in your initial extraction.
+
+---Already Extracted---
+{existing_entities}
+
+---Original Text---
+{chunk_text}
+
+---Instructions---
+Output ONLY entities NOT already in the list above (new ones only).
+Same JSON format as before. If none found, output [].
+
+---Output (JSON array)---"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Frame Relation Expansion (query-time — broaden retrieval scope)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROMPTS["frame_relation_expand"] = """---Task---
+Given a query and its primary FrameNet-style frame, identify 3-5 RELATED frames that would
+contain complementary information needed to fully answer the query.
+
+Consider frames that:
+  - Share participants with the primary frame
+  - Precede or follow the primary frame temporally
+  - Are causally linked (cause, enable, or result from the primary frame)
+
+---Query---
+{query}
+
+---Primary Frame---
+{primary_frame}
+
+---Output---
+JSON array of frame name strings only. Example:
+["Commerce_buy", "Transfer", "Ownership"]
+
+Output [] if no clearly related frames exist."""
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Event Coreference Verification (LLM borderline cases)
 # ─────────────────────────────────────────────────────────────────────────────
 

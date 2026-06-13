@@ -7,6 +7,7 @@ Three extraction calls per chunk:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Callable, Awaitable
@@ -62,6 +63,103 @@ def _gen_id(prefix: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Retry helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _llm_with_retry(
+    llm_func: Callable[..., Awaitable[str]],
+    prompt: str,
+    max_retries: int = 3,
+) -> str:
+    """LLM call with exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            return await llm_func(prompt)
+        except Exception as e:
+            if attempt == max_retries - 1:
+                logger.error(f"[operate] LLM failed after {max_retries} attempts: {e}")
+                raise
+            wait = 2 ** attempt
+            logger.warning(f"[operate] LLM attempt {attempt + 1} failed, retry in {wait}s: {e}")
+            await asyncio.sleep(wait)
+    raise RuntimeError("unreachable")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Call 1b: Entity Extraction Gleaning
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def glean_entities(
+    chunk: ChunkSchema,
+    existing_mentions: list[EntityMentionSchema],
+    llm_func: Callable[..., Awaitable[str]],
+) -> list[EntityMentionSchema]:
+    """One gleaning round — catch entities missed in Call 1."""
+    if not existing_mentions:
+        return []
+    existing_list = "\n".join(f"  - {m.name} [{m.entity_type}]" for m in existing_mentions)
+    prompt = PROMPTS["entity_extraction_glean"].format(
+        existing_entities=existing_list,
+        chunk_text=chunk.text,
+    )
+    try:
+        response = await _llm_with_retry(llm_func, prompt)
+    except Exception as e:
+        logger.warning(f"[operate] Gleaning failed for chunk {chunk.chunk_id}: {e}")
+        return []
+
+    raw = _safe_json(response)
+    if not isinstance(raw, list):
+        return []
+
+    existing_names = {m.name.lower() for m in existing_mentions}
+    new_mentions: list[EntityMentionSchema] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("entity_name", "").strip()
+        if not name or name.lower() in existing_names:
+            continue
+        new_mentions.append(EntityMentionSchema(
+            mention_id=_gen_id("em"),
+            chunk_id=chunk.chunk_id,
+            name=name,
+            entity_type=item.get("entity_type", "OTHER"),
+            description=item.get("entity_description", ""),
+            aliases=item.get("entity_aliases", []),
+            salience=item.get("entity_salience", "MEDIUM"),
+        ))
+    logger.debug(f"[operate] Chunk {chunk.chunk_id}: gleaning +{len(new_mentions)} entities")
+    return new_mentions
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Query-time Frame Relation Expansion
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def expand_query_frames(
+    query: str,
+    primary_frame: str,
+    llm_func: Callable[..., Awaitable[str]],
+) -> list[str]:
+    """Expand primary frame to related frames for broader retrieval coverage."""
+    if not primary_frame:
+        return []
+    prompt = PROMPTS["frame_relation_expand"].format(
+        query=query,
+        primary_frame=primary_frame,
+    )
+    try:
+        response = await _llm_with_retry(llm_func, prompt)
+        parsed = _safe_json(response)
+        if isinstance(parsed, list):
+            return [str(f) for f in parsed if f]
+    except Exception as e:
+        logger.warning(f"[operate] Frame relation expansion failed: {e}")
+    return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Call 1: Entity Extraction
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -72,7 +170,7 @@ async def extract_entities(
     """Extract entity mentions from a single chunk via LLM (Call 1)."""
     prompt = PROMPTS["entity_extraction"].format(chunk_text=chunk.text)
     try:
-        response = await llm_func(prompt)
+        response = await _llm_with_retry(llm_func, prompt)
     except Exception as e:
         logger.error(f"[operate] Entity extraction failed for chunk {chunk.chunk_id}: {e}")
         return []
@@ -142,7 +240,7 @@ async def extract_events_frames_roles(
     )
 
     try:
-        response = await llm_func(prompt)
+        response = await _llm_with_retry(llm_func, prompt)
     except Exception as e:
         logger.error(f"[operate] Event/frame/role failed for chunk {chunk.chunk_id}: {e}")
         return [], [], [], []
@@ -347,7 +445,7 @@ async def extract_causal_edges(
     prompt = PROMPTS["causal_temporal"].format(event_list="\n".join(event_lines))
 
     try:
-        response = await llm_func(prompt)
+        response = await _llm_with_retry(llm_func, prompt)
     except Exception as e:
         logger.warning(f"[operate] Causal extraction failed for chunk {chunk.chunk_id}: {e}")
         return []
@@ -392,7 +490,7 @@ async def process_query(
     """Extract retrieval signals from a natural language query."""
     prompt = PROMPTS["query_processing"].format(query=query)
     try:
-        response = await llm_func(prompt)
+        response = await _llm_with_retry(llm_func, prompt)
         parsed = _safe_json(response)
         if isinstance(parsed, dict):
             return parsed
@@ -424,7 +522,7 @@ async def generate_answer(
         query=query,
     )
     try:
-        return await llm_func(prompt)
+        return await _llm_with_retry(llm_func, prompt)
     except Exception as e:
         logger.error(f"[operate] Answer generation failed: {e}")
         return "Unable to generate answer due to an internal error."

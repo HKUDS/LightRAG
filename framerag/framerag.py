@@ -42,8 +42,10 @@ from .coreference.entity_coref import EntityCoreferenceResolver
 from .coreference.event_coref import EventCoreferenceResolver
 from .operate import (
     extract_entities,
+    glean_entities,
     extract_events_frames_roles,
     extract_causal_edges,
+    expand_query_frames,
     process_query,
     generate_answer,
 )
@@ -99,6 +101,7 @@ class FrameRAG:
         chunk_size: int = 1200,
         chunk_overlap: int = 100,
         enable_causal: bool = True,
+        enable_gleaning: bool = True,
         enable_event_coref: bool = True,
         diffusion_steps: int = 3,
         diffusion_alpha: float = 0.15,
@@ -111,7 +114,9 @@ class FrameRAG:
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
         self._enable_causal = enable_causal
+        self._enable_gleaning = enable_gleaning
         self._enable_event_coref = enable_event_coref
+        self._embedding_dim = embedding_dim
         self._diffusion_steps = diffusion_steps
         self._diffusion_alpha = diffusion_alpha
         self._top_chunks = top_chunks
@@ -154,69 +159,82 @@ class FrameRAG:
         all_info: list[InfoNodeSchema] = []
         all_causal: list[CausalEdgeSchema] = []
 
-        # Per-chunk extraction
+        # ── Per-chunk extraction ─────────────────────────────────────────
         for chunk in chunks:
-            # Embed and store chunk
-            chunk_emb = await self._embed([chunk.text])
-            await self._hg.add_chunk(chunk, chunk_emb[0])
-
-            # Call 1: Entity extraction
+            # Call 1: entity extraction + gleaning
             mentions = await extract_entities(chunk, self._llm)
+            if self._enable_gleaning:
+                gleaned = await glean_entities(chunk, mentions, self._llm)
+                mentions = mentions + gleaned
 
-            # Embed entity mentions
-            if mentions:
-                emb_texts = [f"{m.name} [SEP] {m.description}" for m in mentions]
-                embs = await self._embed(emb_texts)
-                for m, emb in zip(mentions, embs):
-                    m.embedding = emb.tolist()
-
-            # Call 2: Event + Frame + Role extraction
+            # Call 2: Event + Frame + Role (with Frame DB hints)
             events, fis, infos, new_frames = await extract_events_frames_roles(
                 chunk, mentions, self._llm, self._frame_db
             )
 
-            # Upsert new frames into Frame DB
+            # Upsert new frames; increment usage for reused ones
             for frame_def in new_frames:
                 await self._frame_db.upsert_frame(frame_def)
-
-            # Increment usage for reused frames
             reused_frames = {ev.frame_name for ev in events} - {f.frame_name for f in new_frames}
             for fname in reused_frames:
                 await self._frame_db.increment_usage(fname)
-
-            # Embed events and frame instances
-            if events:
-                ev_texts = [
-                    f"{ev.trigger_lemma} [{ev.frame_name}]: {ev.event_description}"
-                    for ev in events
-                ]
-                ev_embs = await self._embed(ev_texts)
-                for ev, emb in zip(events, ev_embs):
-                    ev.embedding = emb.tolist()
-
-            if fis:
-                fi_texts = []
-                for fi in fis:
-                    parts = [f"Frame: {fi.frame_name}"]
-                    for a in fi.core_assignments + fi.noncore_assignments:
-                        if a.filler_id and a.filler_text:
-                            parts.append(f"{a.fe_name}: {a.filler_text}")
-                    fi_texts.append(" | ".join(parts))
-                fi_embs = await self._embed(fi_texts)
-                for fi, emb in zip(fis, fi_embs):
-                    fi.embedding = emb.tolist()
-
-            # Embed info nodes
-            if infos:
-                info_texts = [info.value for info in infos]
-                info_embs = await self._embed(info_texts)
-                for info, emb in zip(infos, info_embs):
-                    info.embedding = emb.tolist()
 
             # Call 3: Causal edges (optional)
             causal_edges: list[CausalEdgeSchema] = []
             if self._enable_causal and len(events) >= 2:
                 causal_edges = await extract_causal_edges(chunk, events, self._llm)
+
+            # ── Batch embed everything for this chunk in one call ─────────
+            embed_texts: list[str] = []
+
+            # [0] chunk text
+            embed_texts.append(chunk.text)
+            entity_start = len(embed_texts)
+
+            # [entity_start .. ] entity mentions
+            entity_texts = [f"{m.name} [SEP] {m.description}" for m in mentions]
+            embed_texts.extend(entity_texts)
+            event_start = len(embed_texts)
+
+            # [event_start .. ] events
+            event_texts = [
+                f"{ev.trigger_lemma} [{ev.frame_name}]: {ev.event_description}"
+                for ev in events
+            ]
+            embed_texts.extend(event_texts)
+            fi_start = len(embed_texts)
+
+            # [fi_start .. ] frame instances
+            fi_texts: list[str] = []
+            for fi in fis:
+                parts = [f"Frame: {fi.frame_name}"]
+                for a in fi.core_assignments + fi.noncore_assignments:
+                    if a.filler_id and a.filler_text:
+                        parts.append(f"{a.fe_name}: {a.filler_text}")
+                fi_texts.append(" | ".join(parts))
+            embed_texts.extend(fi_texts)
+            info_start = len(embed_texts)
+
+            # [info_start .. ] info nodes
+            info_texts = [info.value for info in infos]
+            embed_texts.extend(info_texts)
+
+            # Single embed call for entire chunk
+            if embed_texts:
+                all_embs = await self._embed(embed_texts)
+                chunk_emb = all_embs[0]
+                for i, m in enumerate(mentions):
+                    m.embedding = all_embs[entity_start + i].tolist()
+                for i, ev in enumerate(events):
+                    ev.embedding = all_embs[event_start + i].tolist()
+                for i, fi in enumerate(fis):
+                    fi.embedding = all_embs[fi_start + i].tolist()
+                for i, info in enumerate(infos):
+                    info.embedding = all_embs[info_start + i].tolist()
+            else:
+                chunk_emb = np.zeros(self._embedding_dim)
+
+            await self._hg.add_chunk(chunk, chunk_emb)
 
             all_mentions.extend(mentions)
             all_events.extend(events)
@@ -298,6 +316,12 @@ class FrameRAG:
             temporal_hints=signals_raw.get("temporal_hints", []),
         )
 
+        # Expand query frames for broader retrieval
+        expanded_frames: list[str] = []
+        if signals.frame_hints:
+            expanded_frames = await expand_query_frames(query, signals.frame_hints, self._llm)
+            logger.info(f"[FrameRAG] Expanded frames: {expanded_frames}")
+
         # Step 2: Build sparse matrices
         matrices = await self._hg.build_matrices(fe_focus=signals.fe_focus or None)
         if not matrices:
@@ -336,6 +360,19 @@ class FrameRAG:
             fid = hit.get("id", hit.get("fi_id", ""))
             if fid in fi_idx:
                 y_fi[fi_idx[fid]] += hit.get("score", 0.0)
+
+        # Boost frame instances matching expanded related frames
+        if expanded_frames:
+            for frame_name in expanded_frames:
+                frame_emb = await self._frame_db._vdb.get_embedding(frame_name)
+                if frame_emb is not None:
+                    rel_fi_hits = await self._hg.vdb_frame_instances.search(
+                        frame_emb, top_k=10
+                    )
+                    for hit in rel_fi_hits:
+                        fid = hit.get("id", "")
+                        if fid in fi_idx:
+                            y_fi[fi_idx[fid]] += hit.get("score", 0.0) * 0.5
 
         # Seed from chunk similarity
         chunk_hits = await self._hg.vdb_chunks.search(q_vec, top_k=10)
