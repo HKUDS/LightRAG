@@ -93,44 +93,81 @@ async def glean_entities(
     chunk: ChunkSchema,
     existing_mentions: list[EntityMentionSchema],
     llm_func: Callable[..., Awaitable[str]],
+    max_rounds: int = 1,
 ) -> list[EntityMentionSchema]:
-    """One gleaning round — catch entities missed in Call 1."""
-    if not existing_mentions:
-        return []
-    existing_list = "\n".join(f"  - {m.name} [{m.entity_type}]" for m in existing_mentions)
-    prompt = PROMPTS["entity_extraction_glean"].format(
-        existing_entities=existing_list,
-        chunk_text=chunk.text,
-    )
-    try:
-        response = await _llm_with_retry(llm_func, prompt)
-    except Exception as e:
-        logger.warning(f"[operate] Gleaning failed for chunk {chunk.chunk_id}: {e}")
+    """Multi-round gleaning — repeatedly ask LLM for missed entities.
+
+    Each round passes the *accumulated* entity list so the LLM knows what
+    has already been found. Stops early when a round adds nothing new.
+
+    Args:
+        chunk:             The source chunk being processed.
+        existing_mentions: Entities found in the initial extraction pass.
+        llm_func:          Cached LLM callable.
+        max_rounds:        Maximum gleaning iterations (0 = disabled, default 1).
+    """
+    if max_rounds <= 0 or not existing_mentions:
         return []
 
-    raw = _safe_json(response)
-    if not isinstance(raw, list):
-        return []
+    all_new: list[EntityMentionSchema] = []
+    accumulated = list(existing_mentions)
 
-    existing_names = {m.name.lower() for m in existing_mentions}
-    new_mentions: list[EntityMentionSchema] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        name = item.get("entity_name", "").strip()
-        if not name or name.lower() in existing_names:
-            continue
-        new_mentions.append(EntityMentionSchema(
-            mention_id=_gen_id("em"),
-            chunk_id=chunk.chunk_id,
-            name=name,
-            entity_type=item.get("entity_type", "OTHER"),
-            description=item.get("entity_description", ""),
-            aliases=item.get("entity_aliases", []),
-            salience=item.get("entity_salience", "MEDIUM"),
-        ))
-    logger.debug(f"[operate] Chunk {chunk.chunk_id}: gleaning +{len(new_mentions)} entities")
-    return new_mentions
+    for round_idx in range(max_rounds):
+        existing_list = "\n".join(
+            f"  - {m.name} [{m.entity_type}]" for m in accumulated
+        )
+        prompt = PROMPTS["entity_extraction_glean"].format(
+            existing_entities=existing_list,
+            chunk_text=chunk.text,
+        )
+        try:
+            response = await _llm_with_retry(llm_func, prompt)
+        except Exception as e:
+            logger.warning(
+                f"[operate] Gleaning round {round_idx + 1} failed for "
+                f"chunk {chunk.chunk_id}: {e}"
+            )
+            break
+
+        raw = _safe_json(response)
+        if not isinstance(raw, list):
+            break
+
+        known_names = {m.name.lower() for m in accumulated}
+        round_new: list[EntityMentionSchema] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("entity_name", "").strip()
+            if not name or name.lower() in known_names:
+                continue
+            mention = EntityMentionSchema(
+                mention_id=_gen_id("em"),
+                chunk_id=chunk.chunk_id,
+                name=name,
+                entity_type=item.get("entity_type", "OTHER"),
+                description=item.get("entity_description", ""),
+                aliases=item.get("entity_aliases", []),
+                salience=item.get("entity_salience", "MEDIUM"),
+            )
+            round_new.append(mention)
+            accumulated.append(mention)
+
+        logger.debug(
+            f"[operate] Chunk {chunk.chunk_id}: gleaning round {round_idx + 1} "
+            f"+{len(round_new)} entities"
+        )
+        all_new.extend(round_new)
+
+        # Early stop: nothing new this round, further rounds won't help
+        if not round_new:
+            logger.debug(
+                f"[operate] Chunk {chunk.chunk_id}: gleaning stopped early "
+                f"after {round_idx + 1} round(s)"
+            )
+            break
+
+    return all_new
 
 
 # ─────────────────────────────────────────────────────────────────────────────

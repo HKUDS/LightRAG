@@ -90,6 +90,7 @@ class FrameRAG:
         chunk_overlap: int = 100,
         enable_causal: bool = True,
         enable_gleaning: bool = True,
+        max_gleaning_rounds: int = 1,
         enable_event_coref: bool = True,
         diffusion_steps: int = 3,
         diffusion_alpha: float = 0.15,
@@ -109,6 +110,7 @@ class FrameRAG:
         self._chunk_overlap = chunk_overlap
         self._enable_causal = enable_causal
         self._enable_gleaning = enable_gleaning
+        self._max_gleaning_rounds = max_gleaning_rounds
         self._enable_event_coref = enable_event_coref
         self._diffusion_steps = diffusion_steps
         self._diffusion_alpha = diffusion_alpha
@@ -278,7 +280,10 @@ class FrameRAG:
                 # Call 1: entity extraction (cached)
                 mentions = await extract_entities(chunk, self._llm)
                 if self._enable_gleaning and mentions:
-                    gleaned = await glean_entities(chunk, mentions, self._llm)
+                    gleaned = await glean_entities(
+                        chunk, mentions, self._llm,
+                        max_rounds=self._max_gleaning_rounds,
+                    )
                     mentions = mentions + gleaned
 
                 # Call 2: event + frame + role (cached)

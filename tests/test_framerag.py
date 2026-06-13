@@ -226,6 +226,162 @@ class TestAuth:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Gleaning tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGleaning:
+    """Unit tests for multi-round gleaning in framerag/operate.py."""
+
+    def _make_chunk(self):
+        from framerag.types import ChunkSchema
+        return ChunkSchema(
+            chunk_id="chunk-test",
+            text="Apple was founded by Steve Jobs in Cupertino.",
+            source_doc="test.txt",
+            chunk_index=0,
+            tokens=10,
+        )
+
+    def _make_mention(self, name: str):
+        from framerag.types import EntityMentionSchema
+        return EntityMentionSchema(
+            mention_id=f"em-{name}",
+            chunk_id="chunk-test",
+            name=name,
+            entity_type="PERSON",
+            description="",
+            aliases=[],
+            salience="MEDIUM",
+        )
+
+    @pytest.mark.asyncio
+    async def test_gleaning_disabled_with_zero_rounds(self):
+        from framerag.operate import glean_entities
+        chunk = self._make_chunk()
+        existing = [self._make_mention("Steve Jobs")]
+        call_count = 0
+
+        async def llm(prompt, **kw):
+            nonlocal call_count
+            call_count += 1
+            return '[{"entity_name": "Apple", "entity_type": "ORG"}]'
+
+        result = await glean_entities(chunk, existing, llm, max_rounds=0)
+        assert result == []
+        assert call_count == 0, "LLM should not be called when max_rounds=0"
+
+    @pytest.mark.asyncio
+    async def test_gleaning_single_round(self):
+        from framerag.operate import glean_entities
+        chunk = self._make_chunk()
+        existing = [self._make_mention("Steve Jobs")]
+        call_count = 0
+
+        async def llm(prompt, **kw):
+            nonlocal call_count
+            call_count += 1
+            return '[{"entity_name": "Apple", "entity_type": "ORG", "entity_description": "tech company"}]'
+
+        result = await glean_entities(chunk, existing, llm, max_rounds=1)
+        assert len(result) == 1
+        assert result[0].name == "Apple"
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_gleaning_multi_round_stops_early_on_empty(self):
+        """If a round finds nothing new, stop before reaching max_rounds."""
+        from framerag.operate import glean_entities
+        chunk = self._make_chunk()
+        existing = [self._make_mention("Steve Jobs")]
+        responses = [
+            '[{"entity_name": "Apple", "entity_type": "ORG"}]',  # round 1: finds Apple
+            '[]',                                                   # round 2: nothing new → stop
+        ]
+        call_count = 0
+
+        async def llm(prompt, **kw):
+            nonlocal call_count
+            resp = responses[min(call_count, len(responses) - 1)]
+            call_count += 1
+            return resp
+
+        result = await glean_entities(chunk, existing, llm, max_rounds=5)
+        assert len(result) == 1
+        assert result[0].name == "Apple"
+        assert call_count == 2, "Should stop after round 2 (empty result)"
+
+    @pytest.mark.asyncio
+    async def test_gleaning_multi_round_finds_multiple(self):
+        """Each round finds new entities until max_rounds reached."""
+        from framerag.operate import glean_entities
+        chunk = self._make_chunk()
+        existing = [self._make_mention("Steve Jobs")]
+        responses = [
+            '[{"entity_name": "Apple", "entity_type": "ORG"}]',
+            '[{"entity_name": "Cupertino", "entity_type": "LOCATION"}]',
+            '[{"entity_name": "iPhone", "entity_type": "PRODUCT"}]',
+        ]
+        call_count = 0
+
+        async def llm(prompt, **kw):
+            nonlocal call_count
+            resp = responses[min(call_count, len(responses) - 1)]
+            call_count += 1
+            return resp
+
+        result = await glean_entities(chunk, existing, llm, max_rounds=3)
+        names = {m.name for m in result}
+        assert names == {"Apple", "Cupertino", "iPhone"}
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_gleaning_skips_duplicate_names(self):
+        """Entities already in existing_mentions must not be returned again."""
+        from framerag.operate import glean_entities
+        chunk = self._make_chunk()
+        existing = [self._make_mention("Steve Jobs"), self._make_mention("Apple")]
+
+        async def llm(prompt, **kw):
+            # LLM tries to re-add Steve Jobs (case-insensitive) + adds new Cupertino
+            return '[{"entity_name": "steve jobs", "entity_type": "PERSON"}, {"entity_name": "Cupertino", "entity_type": "LOCATION"}]'
+
+        result = await glean_entities(chunk, existing, llm, max_rounds=1)
+        assert len(result) == 1
+        assert result[0].name == "Cupertino"
+
+    @pytest.mark.asyncio
+    async def test_gleaning_llm_error_returns_empty(self):
+        """If LLM raises on first round, return empty list gracefully."""
+        from framerag.operate import glean_entities
+        chunk = self._make_chunk()
+        existing = [self._make_mention("Steve Jobs")]
+
+        async def llm(prompt, **kw):
+            raise RuntimeError("network error")
+
+        result = await glean_entities(chunk, existing, llm, max_rounds=3)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_framerag_max_gleaning_rounds_param(self, tmp_path):
+        """FrameRAG constructor exposes max_gleaning_rounds and passes it down."""
+        from framerag import FrameRAG
+        _reset_shared_storage()
+        r = FrameRAG(
+            working_dir=str(tmp_path / "glean"),
+            llm_func=_dummy_llm("[]"),
+            embed_func=_dummy_embed(dim=4),
+            embedding_dim=4,
+            enable_gleaning=True,
+            max_gleaning_rounds=3,
+        )
+        assert r._max_gleaning_rounds == 3
+        await r.initialize()
+        await r.finalize()
+        _reset_shared_storage()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Reranker tests
 # ─────────────────────────────────────────────────────────────────────────────
 
