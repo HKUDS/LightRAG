@@ -343,11 +343,13 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 20) {
           // One-time injection of system-suggested prompts; append after any existing
-          // history so user's own prompts keep priority. version monotonicity makes
-          // this run at most once.
+          // history so user's own prompts keep priority. Skip any prompt already
+          // present to avoid duplicate dropdown entries (matches the de-duping in
+          // addUserPromptToHistory). version monotonicity makes this run at most once.
+          const existing = state.userPromptHistory ?? []
           state.userPromptHistory = [
-            ...(state.userPromptHistory ?? []),
-            ...suggestedUserPrompts
+            ...existing,
+            ...suggestedUserPrompts.filter((p: string) => !existing.includes(p))
           ]
         }
         return state
