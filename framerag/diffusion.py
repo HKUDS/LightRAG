@@ -54,16 +54,11 @@ class HypergraphDiffusion:
         H_fe: sparse.csr_matrix = matrices["H_fe"]
         A_cau: sparse.csr_matrix = matrices["A_cau"]
 
-        # Row-normalized versions for propagation
-        # Direction: "source → target" means row is source, col is target
-        # H_ce row=chunk, col=event  → chunk to event: H_ce
-        # event to chunk: H_ce.T
-        self.H_ce_T_n = _row_normalize(H_ce.T.tocsr())   # [n_events × n_chunks]
-        self.H_ef_T_n = _row_normalize(H_ef.T.tocsr())   # [n_frames × n_events]
-        self.H_fe_n   = _row_normalize(H_fe)              # [n_frames × n_nodes]
-        self.H_fe_T_n = _row_normalize(H_fe.T.tocsr())   # [n_nodes  × n_frames]
-        self.H_ef_n   = _row_normalize(H_ef)              # [n_events × n_frames]
-        self.H_ce_n   = _row_normalize(H_ce)              # [n_chunks × n_events]
+        # Row-normalized propagation matrices (source-row convention)
+        self.H_fe_n   = _row_normalize(H_fe)              # [n_frames × n_nodes]  frame→node
+        self.H_fe_T_n = _row_normalize(H_fe.T.tocsr())   # [n_nodes  × n_frames] node→frame
+        self.H_ef_n   = _row_normalize(H_ef)              # [n_events × n_frames] event←frame
+        self.H_ce_n   = _row_normalize(H_ce)              # [n_chunks × n_events] chunk←event
         self.A_cau_n  = _row_normalize(A_cau) if A_cau.nnz > 0 else A_cau
 
         self.n_chunks = H_ce.shape[0]
@@ -104,16 +99,16 @@ class HypergraphDiffusion:
             f_node_from_fi = self.H_fe_T_n @ f_fi          # [n_nodes]
 
             # ── Step C: FrameInstance → Event → Chunk ──
-            # Frame → Event
-            f_event = self.H_ef_T_n @ f_fi                 # [n_events]
+            # Frame → Event: H_ef [n_events × n_frames] @ f_fi [n_frames] = [n_events]
+            f_event = self.H_ef_n @ f_fi                   # [n_events]
 
             # Causal propagation: if ev_A scores high, ev_B (consequence) benefits
             if self.A_cau_n.nnz > 0:
                 f_event_causal = self.A_cau_n @ f_event    # [n_events]
                 f_event = f_event + causal_weight * f_event_causal
 
-            # Event → Chunk
-            f_chunk_from_ev = self.H_ce_T_n @ f_event      # [n_chunks]
+            # Event → Chunk: H_ce [n_chunks × n_events] @ f_event [n_events] = [n_chunks]
+            f_chunk_from_ev = self.H_ce_n @ f_event        # [n_chunks]
 
             # ── Step D: Combine ──
             f_fi_new    = f_fi_from_node + f_fi             # merge signals
