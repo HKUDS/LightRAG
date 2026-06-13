@@ -72,6 +72,7 @@ from lightrag.utils import (
     sanitize_text_for_encoding,
     save_to_cache,
     serialize_llm_cache_identity,
+    strip_control_characters,
 )
 from lightrag.utils_pipeline import (
     archive_docx_source_after_full_docs_sync,
@@ -2915,6 +2916,17 @@ class _PipelineMixin:
         ``update_time``) take precedence, while pre-existing fields are
         preserved.
         """
+        # Strip C0 control/separator chars (incl. \x1c-\x1f FS/GS/RS/US) from the
+        # parsed body before it lands in full_docs — this is the single
+        # convergence point for every parser engine's persist. For RAW (legacy)
+        # the full_docs content IS the chunk source, so this guarantees clean
+        # chunks; for sidecar engines it is an idempotent backstop (the sidecar
+        # writer already cleaned the same text). Done before content_hash so the
+        # dedup hash is computed on the sanitized body. No-op for clean input.
+        record_content = record.get("content")
+        if isinstance(record_content, str):
+            record = {**record, "content": strip_control_characters(record_content)}
+
         fmt = record.get("parse_format")
         content_hash: str | None = None
         # Hash the bare merged text (after stripping the ``{{LRdoc}}`` marker
