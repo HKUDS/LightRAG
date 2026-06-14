@@ -29,5 +29,28 @@ helm repo update
 [ "$ENABLE_MONGODB" = true ] && print "Installing MongoDB addon..." && helm upgrade --install kb-addon-mongodb kubeblocks/mongodb --namespace kb-system --version $ADDON_CLUSTER_CHART_VERSION
 [ "$ENABLE_NEO4J" = true ] && print "Installing Neo4j addon..." && helm upgrade --install kb-addon-neo4j kubeblocks/neo4j --namespace kb-system --version $ADDON_CLUSTER_CHART_VERSION
 
+# DocumentDB ships its own Kubernetes operator (not a KubeBlocks addon).
+# Install cert-manager (a hard dependency of the DocumentDB operator) and the
+# DocumentDB operator itself. cert-manager is installed only if not already
+# present so we don't clobber an existing installation.
+if [ "$ENABLE_DOCUMENTDB" = true ]; then
+  if ! helm status cert-manager -n cert-manager &> /dev/null && ! kubectl get deployment cert-manager -n cert-manager &> /dev/null; then
+    print "Installing cert-manager (DocumentDB operator dependency)..."
+    helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+    helm repo update jetstack
+    helm upgrade --install cert-manager jetstack/cert-manager \
+      --namespace cert-manager --create-namespace \
+      --set installCRDs=true --wait
+  else
+    print "cert-manager already present, skipping."
+  fi
+
+  print "Installing DocumentDB operator..."
+  helm repo add documentdb https://documentdb.github.io/documentdb-kubernetes-operator 2>/dev/null || true
+  helm repo update documentdb
+  helm upgrade --install documentdb-operator documentdb/documentdb-operator \
+    --namespace documentdb-operator --create-namespace --wait
+fi
+
 print_success "KubeBlocks database addons installation completed!"
 print "Now you can run 02-install-database.sh to install database clusters"

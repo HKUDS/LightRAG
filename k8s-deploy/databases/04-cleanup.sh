@@ -16,6 +16,14 @@ print "Uninstalling KubeBlocks database addons..."
 [ "$ENABLE_MONGODB" = true ] && print "Uninstalling MongoDB addon..." && helm uninstall kb-addon-mongodb --namespace kb-system 2>/dev/null || true
 [ "$ENABLE_NEO4J" = true ] && print "Uninstalling Neo4j addon..." && helm uninstall kb-addon-neo4j --namespace kb-system 2>/dev/null || true
 
+# DocumentDB operator (installed by 01-prepare.sh when ENABLE_DOCUMENTDB=true).
+# We leave cert-manager in place because it may be used by other workloads.
+if [ "$ENABLE_DOCUMENTDB" = true ]; then
+  print "Uninstalling DocumentDB operator..."
+  helm uninstall documentdb-operator --namespace documentdb-operator 2>/dev/null || true
+  kubectl delete namespace documentdb-operator 2>/dev/null || true
+fi
+
 print_success "Database addons uninstallation completed!"
 
 source "$DATABASE_SCRIPT_DIR/uninstall-kubeblocks.sh"
