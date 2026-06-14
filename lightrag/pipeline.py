@@ -1800,8 +1800,15 @@ class _PipelineMixin:
                         extra_fields=extra_fields_w,
                         metadata_extra=metadata_extra_w,
                     )
-                except Exception:
-                    pass
+                except Exception as upsert_err:
+                    # The storage backend may be unavailable too (e.g. the same
+                    # outage that failed the parse). Don't re-raise — that would
+                    # take down the worker — but log so the doc stuck in PARSING
+                    # is diagnosable instead of failing silently.
+                    logger.error(
+                        f"Failed to record FAILED status for {doc_id_w}: "
+                        f"{upsert_err}"
+                    )
             finally:
                 in_q.task_done()
 
@@ -1924,8 +1931,14 @@ class _PipelineMixin:
                         file_path=getattr(status_doc_w, "file_path", "unknown_source"),
                         extra_fields={"error_msg": str(e)},
                     )
-                except Exception:
-                    pass
+                except Exception as upsert_err:
+                    # Mirror _parse_worker: log instead of swallowing so a
+                    # storage write failure leaves the doc stuck in ANALYZING
+                    # with a diagnosable trail rather than silently.
+                    logger.error(
+                        f"Failed to record FAILED status for {doc_id_w}: "
+                        f"{upsert_err}"
+                    )
             finally:
                 ctx.q_analyze.task_done()
 
