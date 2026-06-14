@@ -197,7 +197,7 @@ async def judge_response(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Per-sample RAG evaluation
+# Per-sample RAG evaluation (generic — for HotpotQA / 2WikiMHQA / MuSiQue)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _run_framerag(sample: dict, llm_func, embed_func,
@@ -244,6 +244,121 @@ async def _run_lightrag(sample: dict, llm_func, embed_func,
     await rag.finalize_storages()
     shutil.rmtree(sample_dir, ignore_errors=True)
     return answer
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ChronoQA — index once per story, query all questions for that story
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _group_by_story(samples: list[dict]) -> dict[str, list[dict]]:
+    """Group ChronoQA samples by story_id."""
+    from collections import defaultdict
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for s in samples:
+        groups[s.get("story_id", s["id"])].append(s)
+    return dict(groups)
+
+
+def _collect_story_docs(story_samples: list[dict]) -> list[str]:
+    """Collect all unique evidence excerpts from a story's samples as the corpus."""
+    seen: set[str] = set()
+    docs: list[str] = []
+    for s in story_samples:
+        for doc in s.get("supporting_docs", []):
+            if doc and doc not in seen:
+                seen.add(doc)
+                docs.append(doc)
+    return docs
+
+
+async def _run_chronoqa_framerag(
+    story_id: str,
+    story_samples: list[dict],
+    llm_func, embed_func,
+    working_dir: str,
+    embedding_dim: int,
+) -> list[dict]:
+    """Index a story ONCE, then answer all its questions. Returns per-sample results."""
+    from framerag import FrameRAG
+
+    story_dir = os.path.join(working_dir, "framerag", f"story_{story_id}")
+    story_title = story_samples[0].get("story_title", story_id)
+    corpus = _collect_story_docs(story_samples)
+
+    rag = FrameRAG(
+        working_dir=story_dir,
+        llm_func=llm_func,
+        embed_func=embed_func,
+        embedding_dim=embedding_dim,
+        enable_event_coref=False,
+    )
+    await rag.initialize()
+
+    logger.info(f"[ChronoQA/FrameRAG] Indexing story {story_id} '{story_title}': "
+                f"{len(corpus)} excerpts, {len(story_samples)} questions")
+    for i, doc in enumerate(corpus):
+        if doc.strip():
+            await rag.ainsert(doc, source_doc=f"story_{story_id}_p{i}")
+
+    results = []
+    for sample in story_samples:
+        try:
+            answer = await rag.aquery(sample["question"])
+        except Exception as e:
+            logger.error(f"[ChronoQA/FrameRAG] Query failed for {sample['id']}: {e}")
+            answer = ""
+        results.append({**sample, "response": answer, "system": "FrameRAG"})
+
+    await rag.finalize()
+    shutil.rmtree(story_dir, ignore_errors=True)
+    return results
+
+
+async def _run_chronoqa_lightrag(
+    story_id: str,
+    story_samples: list[dict],
+    llm_func, embed_func,
+    working_dir: str,
+    embedding_dim: int,
+) -> list[dict]:
+    """LightRAG: index story once, query all questions."""
+    try:
+        from lightrag import LightRAG, QueryParam
+        from lightrag.utils import EmbeddingFunc
+    except ImportError:
+        logger.warning("LightRAG not importable; skipping")
+        return [{**s, "response": "", "system": "LightRAG"} for s in story_samples]
+
+    story_dir = os.path.join(working_dir, "lightrag", f"story_{story_id}")
+    os.makedirs(story_dir, exist_ok=True)
+    story_title = story_samples[0].get("story_title", story_id)
+    corpus = _collect_story_docs(story_samples)
+
+    raw_embed = embed_func.func if hasattr(embed_func, "func") else embed_func
+    ef = EmbeddingFunc(embedding_dim=embedding_dim, max_token_size=8192, func=raw_embed)
+    rag = LightRAG(working_dir=story_dir, llm_model_func=llm_func, embedding_func=ef)
+    await rag.initialize_storages()
+
+    logger.info(f"[ChronoQA/LightRAG] Indexing story {story_id} '{story_title}': "
+                f"{len(corpus)} excerpts, {len(story_samples)} questions")
+    for doc in corpus:
+        if doc.strip():
+            await rag.ainsert(doc)
+
+    results = []
+    for sample in story_samples:
+        try:
+            answer = await rag.aquery(
+                sample["question"], param=QueryParam(mode="hybrid", top_k=20)
+            )
+        except Exception as e:
+            logger.error(f"[ChronoQA/LightRAG] Query failed for {sample['id']}: {e}")
+            answer = ""
+        results.append({**sample, "response": answer, "system": "LightRAG"})
+
+    await rag.finalize_storages()
+    shutil.rmtree(story_dir, ignore_errors=True)
+    return results
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -319,93 +434,124 @@ async def run_paper_evaluation(
     rag_sem   = asyncio.Semaphore(concurrency)
     judge_sem = asyncio.Semaphore(judge_concurrency)
 
-    async def _safe_run(coro, label: str):
-        async with rag_sem:
-            try:
-                return await coro
-            except Exception as e:
-                logger.error(f"[{label}] failed: {e}")
-                return None
-
     # ── Generate answers ──────────────────────────────────────────────────────
-    logger.info("=== Generating FrameRAG answers ===")
-    framerag_answers: list[Optional[str]] = []
-    tasks = [
-        _safe_run(_run_framerag(s, llm_func, embed_func, working_dir, embedding_dim),
-                  f"FrameRAG/{s['id']}")
-        for s in samples
-    ]
-    for i, coro in enumerate(asyncio.as_completed(tasks)):
-        ans = await coro
-        framerag_answers.append(ans)
-        if (i + 1) % 10 == 0:
-            logger.info(f"[FrameRAG] {i+1}/{len(samples)} answered")
+    # ChronoQA: index each of the 18 stories ONCE, then query all questions
+    # Other datasets: index per sample (each has its own supporting docs)
+    framerag_sample_results: list[dict] = []
+    lightrag_sample_results: list[dict] = []
 
-    lightrag_answers: list[Optional[str]] = []
-    if run_lightrag:
-        logger.info("=== Generating LightRAG answers ===")
+    if dataset_name == "chronoqa":
+        story_groups = _group_by_story(samples)
+        logger.info(f"=== ChronoQA: {len(story_groups)} stories, "
+                    f"{len(samples)} total questions ===")
+
+        async def _safe_story_fr(sid, grp):
+            async with rag_sem:
+                try:
+                    return await _run_chronoqa_framerag(
+                        sid, grp, llm_func, embed_func, working_dir, embedding_dim)
+                except Exception as e:
+                    logger.error(f"[FrameRAG/story {sid}] failed: {e}")
+                    return [{**s, "response": "", "system": "FrameRAG"} for s in grp]
+
+        fr_story_tasks = [_safe_story_fr(sid, grp)
+                          for sid, grp in story_groups.items()]
+        for coro in asyncio.as_completed(fr_story_tasks):
+            framerag_sample_results.extend(await coro)
+
+        if run_lightrag:
+            async def _safe_story_lr(sid, grp):
+                async with rag_sem:
+                    try:
+                        return await _run_chronoqa_lightrag(
+                            sid, grp, llm_func, embed_func, working_dir, embedding_dim)
+                    except Exception as e:
+                        logger.error(f"[LightRAG/story {sid}] failed: {e}")
+                        return [{**s, "response": "", "system": "LightRAG"} for s in grp]
+
+            lr_story_tasks = [_safe_story_lr(sid, grp)
+                              for sid, grp in story_groups.items()]
+            for coro in asyncio.as_completed(lr_story_tasks):
+                lightrag_sample_results.extend(await coro)
+
+    else:
+        # Generic per-sample path for HotpotQA / 2WikiMHQA / MuSiQue
+        async def _safe_run(coro, label: str):
+            async with rag_sem:
+                try:
+                    return await coro
+                except Exception as e:
+                    logger.error(f"[{label}] failed: {e}")
+                    return None
+
+        logger.info("=== Generating FrameRAG answers ===")
         tasks = [
-            _safe_run(_run_lightrag(s, llm_func, embed_func, working_dir, embedding_dim),
-                      f"LightRAG/{s['id']}")
+            _safe_run(_run_framerag(s, llm_func, embed_func, working_dir, embedding_dim),
+                      f"FrameRAG/{s['id']}")
             for s in samples
         ]
         for i, coro in enumerate(asyncio.as_completed(tasks)):
             ans = await coro
-            lightrag_answers.append(ans)
+            framerag_sample_results.append(
+                {**samples[i], "response": ans or "", "system": "FrameRAG"}
+            )
             if (i + 1) % 10 == 0:
-                logger.info(f"[LightRAG] {i+1}/{len(samples)} answered")
+                logger.info(f"[FrameRAG] {i+1}/{len(samples)} answered")
+
+        if run_lightrag:
+            logger.info("=== Generating LightRAG answers ===")
+            tasks = [
+                _safe_run(_run_lightrag(s, llm_func, embed_func, working_dir, embedding_dim),
+                          f"LightRAG/{s['id']}")
+                for s in samples
+            ]
+            for i, coro in enumerate(asyncio.as_completed(tasks)):
+                ans = await coro
+                lightrag_sample_results.append(
+                    {**samples[i], "response": ans or "", "system": "LightRAG"}
+                )
+                if (i + 1) % 10 == 0:
+                    logger.info(f"[LightRAG] {i+1}/{len(samples)} answered")
 
     # ── Judge all answers ─────────────────────────────────────────────────────
     logger.info("=== LLM judging ===")
 
-    async def _judge_sample(sample: dict, response: Optional[str], system: str) -> dict:
+    async def _judge_sample(sr: dict) -> dict:
+        response = sr.get("response", "")
         if not response:
-            return {
-                "id": sample["id"], "question": sample["question"],
-                "gold_answers": sample.get("gold_answers", []),
-                "response": "", "avg_score": 0.0, "judges": [], "system": system,
-                "type": sample.get("type", ""),
-            }
-        ground_truth = "; ".join(sample.get("gold_answers", []))
+            return {**sr, "avg_score": 0.0, "judges": []}
+        ground_truth = "; ".join(sr.get("gold_answers", []))
         verdict = await judge_response(
-            sample["question"], ground_truth, response, judge_llms, judge_sem
+            sr["question"], ground_truth, response, judge_llms, judge_sem
         )
-        return {
-            "id":           sample["id"],
-            "question":     sample["question"],
-            "gold_answers": sample.get("gold_answers", []),
-            "response":     response,
-            "avg_score":    verdict["avg_score"],
-            "judges":       verdict["judges"],
-            "system":       system,
-            "type":         sample.get("type", ""),
-        }
+        return {**sr, "avg_score": verdict["avg_score"], "judges": verdict["judges"]}
 
-    judge_tasks = []
-    for sample, ans in zip(samples, framerag_answers):
-        judge_tasks.append(_judge_sample(sample, ans, "FrameRAG"))
-    if lightrag_answers:
-        for sample, ans in zip(samples, lightrag_answers):
-            judge_tasks.append(_judge_sample(sample, ans, "LightRAG"))
+    all_judgements = await asyncio.gather(
+        *[_judge_sample(r) for r in framerag_sample_results + lightrag_sample_results]
+    )
 
-    all_judgements = await asyncio.gather(*judge_tasks)
-
-    framerag_results = [r for r in all_judgements if r["system"] == "FrameRAG"]
-    lightrag_results = [r for r in all_judgements if r["system"] == "LightRAG"]
+    framerag_results = [r for r in all_judgements if r.get("system") == "FrameRAG"]
+    lightrag_results = [r for r in all_judgements if r.get("system") == "LightRAG"]
 
     def _summary(results: list[dict]) -> dict:
         if not results:
-            return {"avg_score": 0.0, "n": 0, "by_type": {}}
+            return {"avg_score": 0.0, "n": 0, "by_type": {}, "by_story": {}}
         from collections import defaultdict
         avg = sum(r["avg_score"] for r in results) / len(results)
         by_type: dict[str, list[float]] = defaultdict(list)
+        by_story: dict[str, list[float]] = defaultdict(list)
         for r in results:
-            t = r.get("type") or "general"
+            t = r.get("category") or r.get("type") or "general"
             by_type[t].append(r["avg_score"])
+            sid = r.get("story_id", "")
+            if sid:
+                title = r.get("story_title", sid)
+                by_story[f"{sid}:{title}"].append(r["avg_score"])
         return {
             "avg_score": avg,
             "n": len(results),
-            "by_type": {t: sum(s) / len(s) for t, s in by_type.items()},
+            "by_type":  {t: sum(s) / len(s) for t, s in by_type.items()},
+            "by_story": {k: sum(s) / len(s) for k, s in by_story.items()},
         }
 
     fr_summary = _summary(framerag_results)
@@ -431,13 +577,13 @@ async def run_paper_evaluation(
 
 
 def _print_results(dataset_name: str, fr_summary: dict, lr_summary: dict) -> None:
-    sep = "─" * 60
+    sep = "─" * 65
     print(f"\n{sep}")
     print(f"Dataset: {dataset_name}  |  Metric: LLM-judge 1–10 (E²RAG paper)")
     print(f"{'System':<28}{'Avg Score':>12}{'N':>8}")
     print(sep)
 
-    # Paper reference
+    # Paper reference scores (ChronoQA / overall)
     for sys_name, score in E2RAG_REFERENCE["overall_avg"].items():
         print(f"  {sys_name:<26}{score:>12.4f}  (paper)")
 
@@ -454,10 +600,19 @@ def _print_results(dataset_name: str, fr_summary: dict, lr_summary: dict) -> Non
         f"{fr_summary['n']:>8}"
     )
 
+    # Per-category (reasoning facet) breakdown
     if fr_summary.get("by_type"):
-        print(f"\n  FrameRAG by question type:")
+        print(f"\n  FrameRAG by reasoning facet:")
         for qtype, score in sorted(fr_summary["by_type"].items()):
-            print(f"    {qtype:<22} {score:.4f}")
+            n_facet = sum(1 for _ in [score])  # placeholder
+            print(f"    {qtype:<36} {score:.4f}")
+
+    # Per-story breakdown (ChronoQA only)
+    if fr_summary.get("by_story"):
+        print(f"\n  FrameRAG by story:")
+        for story_key, score in sorted(fr_summary["by_story"].items(),
+                                       key=lambda x: x[1], reverse=True):
+            print(f"    {story_key:<40} {score:.4f}")
 
     print(sep)
 
@@ -472,7 +627,8 @@ def main():
     )
     parser.add_argument("--dataset", required=True,
                         choices=["chronoqa", "hotpotqa", "2wikimultihopqa", "musique"])
-    parser.add_argument("--split",            default="test")
+    parser.add_argument("--split",            default="all",
+                        help="Split name. ChronoQA only has 'all' (default).")
     parser.add_argument("--max_samples",      type=int, default=None)
     parser.add_argument("--working_dir",      default="./eval_storage")
     parser.add_argument("--llm_model",        default="gpt-4o-mini",
