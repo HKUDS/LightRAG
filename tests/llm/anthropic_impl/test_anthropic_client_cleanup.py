@@ -317,3 +317,30 @@ async def test_stream_close_error_does_not_block_client_close():
     assert chunks == ["x"]
     stream.close.assert_awaited()
     fake_client.close.assert_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_client_closed_when_stream_close_cancelled():
+    """CancelledError from stream.close() still closes the client, then propagates.
+
+    CancelledError is a BaseException, not caught by ``except Exception``; the
+    client close must live in an outer finally so cancellation during stream
+    teardown does not leak the client.
+    """
+    import asyncio
+
+    stream = _FakeAnthropicStream([_make_text_event("x")])
+    stream.close = AsyncMock(side_effect=asyncio.CancelledError())
+    fake_client = _make_stream_client(stream)
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
+        gen = await anthropic_complete_if_cache.__wrapped__(
+            model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
+        )
+        with pytest.raises(asyncio.CancelledError):
+            async for _ in gen:
+                pass
+
+    stream.close.assert_awaited()
+    fake_client.close.assert_awaited()
