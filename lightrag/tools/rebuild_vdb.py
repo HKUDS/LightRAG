@@ -609,9 +609,7 @@ class RebuildTool:
             )
         except ImportError as e:
             print(f"\n⚠️  Could not import the LightRAG API package: {e}")
-            print(
-                "   Rebuild requires the api extra: " 'pip install "lightrag-hku[api]"'
-            )
+            print('   Rebuild requires the api extra: pip install "lightrag-hku[api]"')
             print("   Continuing in CHECK-ONLY mode (no embedding available).")
             return None
 

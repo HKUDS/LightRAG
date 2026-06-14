@@ -1806,8 +1806,7 @@ class _PipelineMixin:
                     # take down the worker — but log so the doc stuck in PARSING
                     # is diagnosable instead of failing silently.
                     logger.error(
-                        f"Failed to record FAILED status for {doc_id_w}: "
-                        f"{upsert_err}"
+                        f"Failed to record FAILED status for {doc_id_w}: {upsert_err}"
                     )
             finally:
                 in_q.task_done()
@@ -1936,8 +1935,7 @@ class _PipelineMixin:
                     # storage write failure leaves the doc stuck in ANALYZING
                     # with a diagnosable trail rather than silently.
                     logger.error(
-                        f"Failed to record FAILED status for {doc_id_w}: "
-                        f"{upsert_err}"
+                        f"Failed to record FAILED status for {doc_id_w}: {upsert_err}"
                     )
             finally:
                 ctx.q_analyze.task_done()
@@ -2855,7 +2853,7 @@ class _PipelineMixin:
             # during <stage>" rather than "User cancelled during <stage>".
             raw = str(error)
             if raw.startswith("User cancelled"):
-                doc_error_msg = f"{cancel_label}{raw[len('User cancelled'):]}"
+                doc_error_msg = f"{cancel_label}{raw[len('User cancelled') :]}"
             elif raw:
                 doc_error_msg = f"{cancel_label}: {raw}"
             else:
@@ -3579,8 +3577,7 @@ class _PipelineMixin:
                 ):
                     return (
                         _skipped_result(
-                            f"image width or height is smaller than "
-                            f"{min_image_pixel}px"
+                            f"image width or height is smaller than {min_image_pixel}px"
                         ),
                         None,
                     )

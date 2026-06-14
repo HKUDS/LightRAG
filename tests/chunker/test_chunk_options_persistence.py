@@ -216,9 +216,9 @@ def test_caller_supplied_chunk_options_reach_chunker(tmp_path, monkeypatch):
 
     asyncio.run(_run())
 
-    assert (
-        captured.get("chunk_token_size") == 100
-    ), f"R chunker must receive caller-supplied chunk_token_size; got {captured!r}"
+    assert captured.get("chunk_token_size") == 100, (
+        f"R chunker must receive caller-supplied chunk_token_size; got {captured!r}"
+    )
     assert captured["kwargs"]["separators"] == ["|", ""]
     assert captured["kwargs"]["chunk_overlap_token_size"] == 0
 
@@ -1073,9 +1073,9 @@ def test_addon_params_strategy_wins_over_strategy_env(tmp_path, monkeypatch):
 
     row = asyncio.run(_run())
     chunk_opts = row["chunk_options"]
-    assert (
-        chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 999
-    ), "addon_params explicit value must beat strategy-specific env."
+    assert chunk_opts["recursive_character"]["chunk_overlap_token_size"] == 999, (
+        "addon_params explicit value must beat strategy-specific env."
+    )
 
 
 @pytest.mark.offline

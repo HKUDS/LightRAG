@@ -1,0 +1,6 @@
+# Revisions listed here are skipped by 'git blame' (mechanical, repo-wide
+# reformats with no logic changes). Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# style: apply ruff 0.15 formatting across repo
+21f4e698e555ace903ffc725e2914fe57b660bb1

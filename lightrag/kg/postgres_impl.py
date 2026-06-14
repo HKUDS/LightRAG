@@ -6917,9 +6917,9 @@ class PGGraphStorage(BaseGraphStorage):
         ]
         batches = _chunk_by_budget(
             normalized,
-            lambda pair: len(pair[0].encode("utf-8"))
-            + len(pair[1].encode("utf-8"))
-            + 8,
+            lambda pair: (
+                len(pair[0].encode("utf-8")) + len(pair[1].encode("utf-8")) + 8
+            ),
             self._max_upsert_payload_bytes,
             self._max_delete_records_per_batch,
         )

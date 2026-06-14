@@ -67,29 +67,29 @@ class NumberingResolver:
 
                 # Parse abstractNum definitions
                 for abstract in root.findall(".//w:abstractNum", NSMAP):
-                    abstract_id = abstract.get(f'{{{NSMAP["w"]}}}abstractNumId')
+                    abstract_id = abstract.get(f"{{{NSMAP['w']}}}abstractNumId")
                     levels = {}
 
                     for lvl in abstract.findall("w:lvl", NSMAP):
-                        ilvl = int(lvl.get(f'{{{NSMAP["w"]}}}ilvl'))
+                        ilvl = int(lvl.get(f"{{{NSMAP['w']}}}ilvl"))
 
                         start_elem = lvl.find("w:start", NSMAP)
                         start = (
-                            int(start_elem.get(f'{{{NSMAP["w"]}}}val'))
+                            int(start_elem.get(f"{{{NSMAP['w']}}}val"))
                             if start_elem is not None
                             else 1
                         )
 
                         num_fmt_elem = lvl.find("w:numFmt", NSMAP)
                         num_fmt = (
-                            num_fmt_elem.get(f'{{{NSMAP["w"]}}}val')
+                            num_fmt_elem.get(f"{{{NSMAP['w']}}}val")
                             if num_fmt_elem is not None
                             else "decimal"
                         )
 
                         lvl_text_elem = lvl.find("w:lvlText", NSMAP)
                         lvl_text = (
-                            lvl_text_elem.get(f'{{{NSMAP["w"]}}}val')
+                            lvl_text_elem.get(f"{{{NSMAP['w']}}}val")
                             if lvl_text_elem is not None
                             else "%1."
                         )
@@ -97,7 +97,7 @@ class NumberingResolver:
                         is_lgl_elem = lvl.find("w:isLgl", NSMAP)
                         is_lgl = False
                         if is_lgl_elem is not None:
-                            val = is_lgl_elem.get(f'{{{NSMAP["w"]}}}val')
+                            val = is_lgl_elem.get(f"{{{NSMAP['w']}}}val")
                             is_lgl = val is None or val not in ("0", "false")
 
                         levels[ilvl] = {
@@ -111,19 +111,19 @@ class NumberingResolver:
 
                 # Parse num -> abstractNum mapping and startOverride
                 for num in root.findall(".//w:num", NSMAP):
-                    num_id = num.get(f'{{{NSMAP["w"]}}}numId')
+                    num_id = num.get(f"{{{NSMAP['w']}}}numId")
                     abstract_ref = num.find("w:abstractNumId", NSMAP)
                     if abstract_ref is not None:
                         self.num_to_abstract[num_id] = abstract_ref.get(
-                            f'{{{NSMAP["w"]}}}val'
+                            f"{{{NSMAP['w']}}}val"
                         )
 
                     # Parse lvlOverride/startOverride for this num
                     for lvl_override in num.findall("w:lvlOverride", NSMAP):
-                        ilvl = int(lvl_override.get(f'{{{NSMAP["w"]}}}ilvl'))
+                        ilvl = int(lvl_override.get(f"{{{NSMAP['w']}}}ilvl"))
                         start_override = lvl_override.find("w:startOverride", NSMAP)
                         if start_override is not None:
-                            start_val = int(start_override.get(f'{{{NSMAP["w"]}}}val'))
+                            start_val = int(start_override.get(f"{{{NSMAP['w']}}}val"))
                             if num_id not in self.start_overrides:
                                 self.start_overrides[num_id] = {}
                             self.start_overrides[num_id][ilvl] = start_val
@@ -143,14 +143,14 @@ class NumberingResolver:
 
                 # Parse style definitions
                 for style in root.findall(".//w:style", NSMAP):
-                    style_id = style.get(f'{{{NSMAP["w"]}}}styleId')
+                    style_id = style.get(f"{{{NSMAP['w']}}}styleId")
                     if not style_id:
                         continue
 
                     # Check for basedOn (style inheritance)
                     based_on = style.find("w:basedOn", NSMAP)
                     if based_on is not None:
-                        parent_id = based_on.get(f'{{{NSMAP["w"]}}}val')
+                        parent_id = based_on.get(f"{{{NSMAP['w']}}}val")
                         if parent_id:
                             self.style_based_on[style_id] = parent_id
 
@@ -163,9 +163,9 @@ class NumberingResolver:
                             ilvl_elem = numPr.find("w:ilvl", NSMAP)
 
                             if num_id_elem is not None:
-                                num_id = num_id_elem.get(f'{{{NSMAP["w"]}}}val')
+                                num_id = num_id_elem.get(f"{{{NSMAP['w']}}}val")
                                 ilvl = (
-                                    int(ilvl_elem.get(f'{{{NSMAP["w"]}}}val'))
+                                    int(ilvl_elem.get(f"{{{NSMAP['w']}}}val"))
                                     if ilvl_elem is not None
                                     else 0
                                 )
@@ -239,7 +239,7 @@ class NumberingResolver:
             Rendered label string (e.g., "1.1", "a)", "第一章") or empty string
         """
         try:
-            pPr = para_element.find(f'{{{NSMAP["w"]}}}pPr')
+            pPr = para_element.find(f"{{{NSMAP['w']}}}pPr")
             if pPr is None:
                 return ""
 
@@ -248,20 +248,20 @@ class NumberingResolver:
             style_id = None
 
             # Get pStyle (if present)
-            pStyle = pPr.find(f'{{{NSMAP["w"]}}}pStyle')
+            pStyle = pPr.find(f"{{{NSMAP['w']}}}pStyle")
             if pStyle is not None:
-                style_id = pStyle.get(f'{{{NSMAP["w"]}}}val')
+                style_id = pStyle.get(f"{{{NSMAP['w']}}}val")
 
             # Check for direct numPr in paragraph
-            numPr = pPr.find(f'{{{NSMAP["w"]}}}numPr')
+            numPr = pPr.find(f"{{{NSMAP['w']}}}numPr")
             if numPr is not None:
-                num_id_elem = numPr.find(f'{{{NSMAP["w"]}}}numId')
-                ilvl_elem = numPr.find(f'{{{NSMAP["w"]}}}ilvl')
+                num_id_elem = numPr.find(f"{{{NSMAP['w']}}}numId")
+                ilvl_elem = numPr.find(f"{{{NSMAP['w']}}}ilvl")
 
                 if num_id_elem is not None:
-                    num_id = num_id_elem.get(f'{{{NSMAP["w"]}}}val')
+                    num_id = num_id_elem.get(f"{{{NSMAP['w']}}}val")
                     ilvl = (
-                        int(ilvl_elem.get(f'{{{NSMAP["w"]}}}val'))
+                        int(ilvl_elem.get(f"{{{NSMAP['w']}}}val"))
                         if ilvl_elem is not None
                         else 0
                     )
@@ -373,7 +373,7 @@ class NumberingResolver:
                     count = self.counters[num_id][i]
                     converter = self.FORMAT_CONVERTERS.get(num_fmt, lambda n: str(n))
                     formatted = converter(count)
-                    result = result.replace(f"%{i+1}", formatted)
+                    result = result.replace(f"%{i + 1}", formatted)
 
             return result
         except Exception:

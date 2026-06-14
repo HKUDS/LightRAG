@@ -94,9 +94,9 @@ async def test_upsert_edge_uses_delete_create_not_set():
 
     # The new query must not contain any SET-based edge update — those silently
     # fail against AGE. All edge props live inline in the CREATE clause.
-    assert (
-        "SET r" not in cypher_sql
-    ), f"Edge SET clauses are silently dropped by AGE: {cypher_sql}"
+    assert "SET r" not in cypher_sql, (
+        f"Edge SET clauses are silently dropped by AGE: {cypher_sql}"
+    )
     assert "ON CREATE SET" not in cypher_sql
     assert "ON MATCH SET" not in cypher_sql
 

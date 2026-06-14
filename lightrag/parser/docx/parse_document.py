@@ -523,7 +523,7 @@ def split_table_with_heading(
             else:
                 chunk_heading = f"{current_heading} [{TABLE_CHUNK_SUFFIX_LABEL}{chunk['suffix_number']}]"
             print(
-                f"  Chunk {i+1}: heading=\"{chunk_heading}\", {len(chunk['rows'])} rows, {len(chunk_json)} chars",
+                f'  Chunk {i + 1}: heading="{chunk_heading}", {len(chunk["rows"])} rows, {len(chunk_json)} chars',
                 file=sys.stderr,
             )
 
@@ -963,7 +963,7 @@ def merge_small_blocks(blocks: list, debug: bool = False) -> tuple:
             )
             for info in oversized_blocks:
                 print(
-                    f"  Block #{info['index']}: level={info['level']}, tokens={info['tokens']}, heading=\"{info['heading']}\"",
+                    f'  Block #{info["index"]}: level={info["level"]}, tokens={info["tokens"]}, heading="{info["heading"]}"',
                     file=sys.stderr,
                 )
 
@@ -1212,7 +1212,7 @@ def split_long_block(
                     format_error(
                         "Cannot re-split oversized block (internal error)",
                         f"A block exceeded MAX_BLOCK_CONTENT_TOKENS but paragraph metadata was lost.\n\n"
-                        f"Location: Under heading \"{preview}\"\n"
+                        f'Location: Under heading "{preview}"\n'
                         f"Block size: ~{block_tokens} tokens ({len(block['content'])} characters)",
                         "This is an internal error. Please report this issue.",
                     )

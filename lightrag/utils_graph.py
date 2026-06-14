@@ -1494,8 +1494,8 @@ async def _merge_entities_impl(
         }
         try:
             await safe_vdb_operation_with_exception(
-                operation=lambda payload=relation_data_for_vdb: relationships_vdb.upsert(
-                    payload
+                operation=lambda payload=relation_data_for_vdb: (
+                    relationships_vdb.upsert(payload)
                 ),
                 operation_name="merge_relation_upsert",
                 entity_name=f"{normalized_src}-{normalized_tgt}",

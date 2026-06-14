@@ -623,9 +623,9 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
             analysis_keys = [
                 k for k in cache_blob.keys() if k.startswith("default:analysis:")
             ]
-            assert (
-                analysis_keys == []
-            ), f"invalid VLM response was cached: {analysis_keys}"
+            assert analysis_keys == [], (
+                f"invalid VLM response was cached: {analysis_keys}"
+            )
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         item = payload["drawings"]["im-001"]
         assert item["llm_analyze_result"]["status"] == "failure"
@@ -808,7 +808,7 @@ async def test_invalid_json_with_trailing_comma_is_repaired(tmp_path):
     async def vlm_func(prompt, **kwargs):
         call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
         # Trailing comma after "description" — strict json.loads would reject.
-        return '{"name": "fig-1", "type": "Chart", ' '"description": "ok",}'
+        return '{"name": "fig-1", "type": "Chart", "description": "ok",}'
 
     rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
     await rag.initialize_storages()
@@ -1126,9 +1126,9 @@ async def test_max_extract_input_tokens_env_var_lowers_cap_and_logs_warning(
             and "tb-mid" in r.getMessage()
             and "content trimmed" in r.getMessage()
         ]
-        assert (
-            warning_records
-        ), "expected a WARNING-level log line announcing content truncation"
+        assert warning_records, (
+            "expected a WARNING-level log line announcing content truncation"
+        )
     finally:
         await rag.finalize_storages()
 
@@ -1173,8 +1173,7 @@ async def test_extract_cap_below_prompt_frame_fails_item_without_llm_call(
                         "tb-tight": {
                             "format": "json",
                             "content": (
-                                '<table id="tb-tight" format="json">'
-                                '[["A","B"]]</table>'
+                                '<table id="tb-tight" format="json">[["A","B"]]</table>'
                             ),
                         }
                     }

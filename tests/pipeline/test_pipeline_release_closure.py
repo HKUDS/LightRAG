@@ -660,9 +660,9 @@ def test_stage_end_outcomes_persist_within_their_own_stage(tmp_path):
             (i for i, (s, _) in enumerate(calls) if s == "processing"), None
         )
         assert first_analyzing is not None, f"no ANALYZING upsert; sequence: {calls!r}"
-        assert (
-            first_processing is not None
-        ), f"no PROCESSING upsert; sequence: {calls!r}"
+        assert first_processing is not None, (
+            f"no PROCESSING upsert; sequence: {calls!r}"
+        )
 
         assert any(
             s == "parsing" and "parse_stage_skipped" in keys
@@ -984,9 +984,9 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
                 # was NOT called for an empty chunks_list.
                 pass
 
-            assert (
-                calls == []
-            ), "purge helper should not be called when chunks_list is empty"
+            assert calls == [], (
+                "purge helper should not be called when chunks_list is empty"
+            )
         finally:
             await rag.finalize_storages()
 

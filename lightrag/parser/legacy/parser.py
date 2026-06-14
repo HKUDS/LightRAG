@@ -54,8 +54,7 @@ class LegacyParser(BaseParser):
         # instead of persisting an empty document into chunking.
         if not text.strip():
             raise LegacyExtractionError(
-                f"extracted no usable text from {ctx.file_path} "
-                f"(doc_id={ctx.doc_id})"
+                f"extracted no usable text from {ctx.file_path} (doc_id={ctx.doc_id})"
             )
 
         await ctx.rag._persist_parsed_full_docs(
