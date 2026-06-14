@@ -177,23 +177,29 @@ async def glean_entities(
 async def expand_query_frames(
     query: str,
     primary_frame: str,
-    llm_func: Callable[..., Awaitable[str]],
+    frame_db: FrameDatabase,
+    top_k: int = 8,
+    threshold: float = 0.50,
 ) -> list[str]:
-    """Expand primary frame to related frames for broader retrieval coverage."""
+    """Expand primary frame to related frames via embedding-based DB search.
+
+    Searches the frame VDB using a combined query+frame signal so frames that
+    share semantic territory with both the query intent and the primary frame
+    are surfaced without any LLM call.
+    """
     if not primary_frame:
         return []
-    prompt = PROMPTS["frame_relation_expand"].format(
-        query=query,
-        primary_frame=primary_frame,
-    )
+    search_text = f"{primary_frame}: {query}"
     try:
-        response = await _llm_with_retry(llm_func, prompt)
-        parsed = _safe_json(response)
-        if isinstance(parsed, list):
-            return [str(f) for f in parsed if f]
+        return await frame_db.search_related_frames(
+            search_text,
+            top_k=top_k,
+            threshold=threshold,
+            exclude={primary_frame},
+        )
     except Exception as e:
-        logger.warning(f"[operate] Frame relation expansion failed: {e}")
-    return []
+        logger.warning(f"[operate] Embedding-based frame expansion failed: {e}")
+        return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────

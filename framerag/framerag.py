@@ -450,11 +450,11 @@ class FrameRAG:
             temporal_hints=signals_raw.get("temporal_hints", []),
         )
 
-        # Frame expansion for broader coverage
+        # Frame expansion for broader coverage (embedding-based, no LLM call)
         expanded_frames: list[str] = []
         if signals.frame_hints:
             expanded_frames = await expand_query_frames(
-                query, signals.frame_hints, self._llm
+                query, signals.frame_hints, self._frame_db
             )
             logger.info(f"[FrameRAG] Expanded frames: {expanded_frames}")
 

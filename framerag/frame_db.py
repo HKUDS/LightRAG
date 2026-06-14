@@ -28,20 +28,28 @@ class FrameDatabase:
         self._dir = db_dir
 
         self._kv  = make_kv("frame_defs", db_dir)
+        # Frame-level VDB: embeds "frame_name [SEP] frame_definition"
         self._vdb = make_vdb(
             "frame_vec", db_dir, embedding_func,
             {"frame_name", "frame_definition"},
+        )
+        # FE-level VDB: embeds "fe_name: fe_definition [FRAME: frame_name]"
+        self._fe_vdb = make_vdb(
+            "fe_vec", db_dir, embedding_func,
+            {"fe_name", "frame_name", "fe_definition"},
         )
         self._frame_names: set[str] = set()
 
     async def initialize(self) -> None:
         await self._kv.initialize()
         await self._vdb.initialize()
+        await self._fe_vdb.initialize()
         self._load_names()
 
     async def index_done_callback(self) -> None:
         await self._kv.index_done_callback()
         await self._vdb.index_done_callback()
+        await self._fe_vdb.index_done_callback()
         self._save_names()
 
     def _names_path(self) -> str:
@@ -88,6 +96,20 @@ class FrameDatabase:
                 "frame_definition": frame.frame_definition,
             }
         })
+        # Index each FE definition separately for semantic role search
+        fe_batch: dict[str, dict] = {}
+        for fe in frame.core_fes + frame.noncore_fes:
+            if not fe.fe_definition:
+                continue
+            fe_key = f"{frame.frame_name}::{fe.fe_name}"
+            fe_batch[fe_key] = {
+                "content":      f"{fe.fe_name}: {fe.fe_definition} [FRAME: {frame.frame_name}]",
+                "fe_name":      fe.fe_name,
+                "frame_name":   frame.frame_name,
+                "fe_definition": fe.fe_definition,
+            }
+        if fe_batch:
+            await self._fe_vdb.upsert(fe_batch)
         self._frame_names.add(frame.frame_name)
 
     async def increment_usage(self, frame_name: str) -> None:
@@ -108,7 +130,11 @@ class FrameDatabase:
         return frame_name in self._frame_names
 
     async def get_hints_for_chunk(self, chunk_text: str) -> list[dict]:
-        """Return top-K similar frames as hint dicts (embedding from content)."""
+        """Return top-K similar frames as hint dicts (embedding from content).
+
+        core_fes is a list of dicts with fe_name and fe_definition so
+        format_hints_for_prompt() can surface full FE semantics to the LLM.
+        """
         results = await self._vdb.query(chunk_text, top_k=self.HINT_TOP_K)
         hints = []
         for r in results:
@@ -122,10 +148,63 @@ class FrameDatabase:
                 "frame_name":       data["frame_name"],
                 "lexical_units":    data.get("lexical_units", []),
                 "frame_definition": data.get("frame_definition", ""),
-                "core_fes":         [fe["fe_name"] for fe in data.get("core_fes", [])],
+                "core_fes": [
+                    {
+                        "fe_name":       fe["fe_name"],
+                        "fe_definition": fe.get("fe_definition", ""),
+                    }
+                    for fe in data.get("core_fes", [])
+                ],
                 "score":            round(r.get("distance", 0.0), 3),
             })
         return hints
+
+    async def search_related_frames(
+        self,
+        query: str,
+        top_k: int = 8,
+        threshold: float = 0.5,
+        exclude: Optional[set[str]] = None,
+    ) -> list[str]:
+        """Return frame names semantically related to query via embedding search.
+
+        Used for embedding-based frame expansion at query time (no LLM needed).
+        """
+        results = await self._vdb.query(query, top_k=top_k)
+        frames: list[str] = []
+        seen: set[str] = set(exclude or [])
+        for r in results:
+            fname = r.get("frame_name", "")
+            score = r.get("distance", 0.0)
+            if fname and fname not in seen and score >= threshold:
+                frames.append(fname)
+                seen.add(fname)
+        return frames
+
+    async def search_by_fe(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> list[dict]:
+        """Return FE-level hits most semantically similar to query.
+
+        Useful for finding which semantic roles are relevant to a question
+        (e.g., "who caused it" → Agent FE, "how much" → Value FE).
+        Returns list of {fe_name, frame_name, fe_definition, score}.
+        """
+        results = await self._fe_vdb.query(query, top_k=top_k)
+        hits = []
+        for r in results:
+            fe_name = r.get("fe_name", "")
+            if not fe_name:
+                continue
+            hits.append({
+                "fe_name":       fe_name,
+                "frame_name":    r.get("frame_name", ""),
+                "fe_definition": r.get("fe_definition", ""),
+                "score":         round(r.get("distance", 0.0), 3),
+            })
+        return hits
 
     async def find_similar(
         self,
@@ -186,9 +265,22 @@ class FrameDatabase:
         lines = []
         for h in hints:
             lus = ", ".join(h["lexical_units"])
-            fes = ", ".join(h["core_fes"])
+            core_fes = h.get("core_fes", [])
+            if core_fes and isinstance(core_fes[0], dict):
+                # Full dicts with definitions: show name + brief definition
+                fe_parts = []
+                for fe in core_fes:
+                    defn = fe.get("fe_definition", "")
+                    fe_parts.append(
+                        f'{fe["fe_name"]} ({defn})' if defn else fe["fe_name"]
+                    )
+                fes_text = "; ".join(fe_parts)
+            else:
+                # Legacy: plain name strings
+                fes_text = ", ".join(str(f) for f in core_fes)
             lines.append(
-                f'  - {h["frame_name"]} (LUs: {lus}) | Core FEs: {fes}\n'
-                f'    Definition: {h["frame_definition"]}'
+                f'  - {h["frame_name"]} (LUs: {lus})\n'
+                f'    Definition: {h["frame_definition"]}\n'
+                f'    Core FEs: {fes_text}'
             )
         return "\n".join(lines)
