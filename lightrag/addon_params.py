@@ -72,8 +72,7 @@ def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, 
         }
     else:
         raise TypeError(
-            "addon_params must be a Mapping or None, got "
-            f"{type(addon_params).__name__}"
+            f"addon_params must be a Mapping or None, got {type(addon_params).__name__}"
         )
 
     # When the caller supplies addon_params explicitly, the dataclass

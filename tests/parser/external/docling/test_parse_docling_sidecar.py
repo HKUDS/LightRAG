@@ -502,9 +502,9 @@ def test_parse_docling_options_signature_invalidates_cache(
                 file_path="demo.pdf",
                 content_data={},
             )
-            assert (
-                counters["calls"] == 2
-            ), "DOCLING_OCR_LANG change must invalidate the bundle cache"
+            assert counters["calls"] == 2, (
+                "DOCLING_OCR_LANG change must invalidate the bundle cache"
+            )
         finally:
             await rag.finalize_storages()
 
@@ -550,9 +550,9 @@ def test_parse_docling_endpoint_signature_invalidates_cache(
                 file_path="demo.pdf",
                 content_data={},
             )
-            assert (
-                counters["calls"] == 2
-            ), "DOCLING_ENDPOINT change must invalidate the bundle cache"
+            assert counters["calls"] == 2, (
+                "DOCLING_ENDPOINT change must invalidate the bundle cache"
+            )
         finally:
             await rag.finalize_storages()
 
@@ -659,9 +659,9 @@ def test_parse_docling_zero_blocks_raises(
             # only after the zero-blocks check, so no ``*.blocks.jsonl`` may
             # exist anywhere under the workspace.
             blocks_files = list(tmp_path.rglob("*.blocks.jsonl"))
-            assert (
-                not blocks_files
-            ), f"sidecar emitted despite zero-blocks failure: {blocks_files}"
+            assert not blocks_files, (
+                f"sidecar emitted despite zero-blocks failure: {blocks_files}"
+            )
         finally:
             await rag.finalize_storages()
 

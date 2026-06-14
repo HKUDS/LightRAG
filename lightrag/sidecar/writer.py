@@ -409,7 +409,7 @@ def _materialize_assets(
             src_path = Path(spec.source)
             if not src_path.exists():
                 logger.warning(
-                    "[sidecar] asset source missing for ref=%s (%s); " "skipping copy",
+                    "[sidecar] asset source missing for ref=%s (%s); skipping copy",
                     spec.ref,
                     src_path,
                 )
@@ -424,7 +424,7 @@ def _materialize_assets(
             # missing.
             if not target_path.exists():
                 logger.warning(
-                    "[sidecar] asset ref=%s declared in place but %s " "is absent",
+                    "[sidecar] asset ref=%s declared in place but %s is absent",
                     spec.ref,
                     target_path,
                 )

@@ -161,6 +161,6 @@ def test_native_docx_migration_is_byte_equivalent(
         produced_path = produced_files[rel]
         if _read_bytes(produced_path) != _read_bytes(expected_path):
             mismatches.append(str(rel))
-    assert (
-        not mismatches
-    ), f"byte mismatch in scenario {scenario.name!r} for files: {mismatches}"
+    assert not mismatches, (
+        f"byte mismatch in scenario {scenario.name!r} for files: {mismatches}"
+    )

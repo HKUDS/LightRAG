@@ -72,12 +72,12 @@ class TestQueryRouteJsonOnly:
         content = ok_resp.get("content", {})
 
         # The /query endpoint must declare application/json — NOT ndjson
-        assert (
-            "application/json" in content
-        ), "/query must declare application/json in OpenAPI spec"
-        assert (
-            "application/x-ndjson" not in content
-        ), "/query must NOT declare application/x-ndjson — streaming belongs to /query/stream"
+        assert "application/json" in content, (
+            "/query must declare application/json in OpenAPI spec"
+        )
+        assert "application/x-ndjson" not in content, (
+            "/query must NOT declare application/x-ndjson — streaming belongs to /query/stream"
+        )
 
     def test_query_route_exists_and_accepts_post(self):
         client = _build_client()
@@ -109,9 +109,9 @@ class TestQueryStreamRoute:
         content = ok_resp.get("content", {})
 
         # The /query/stream endpoint must declare application/x-ndjson
-        assert (
-            "application/x-ndjson" in content
-        ), "/query/stream must declare application/x-ndjson in OpenAPI spec"
+        assert "application/x-ndjson" in content, (
+            "/query/stream must declare application/x-ndjson in OpenAPI spec"
+        )
 
     def test_stream_route_exists_and_accepts_post(self):
         client = _build_client()
@@ -167,8 +167,8 @@ class TestQueryStreamResponseContentType:
                 },
             )
             content_type = response.headers.get("content-type", "")
-            assert (
-                "application/x-ndjson" in content_type
-            ), f"/query/stream must return application/x-ndjson, got: {content_type}"
+            assert "application/x-ndjson" in content_type, (
+                f"/query/stream must return application/x-ndjson, got: {content_type}"
+            )
         finally:
             sys.argv = original_argv

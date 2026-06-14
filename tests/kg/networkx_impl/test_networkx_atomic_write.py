@@ -132,9 +132,9 @@ def test_reap_orphan_tmp_files_respects_age_threshold(tmp_path):
 
     assert not os.path.exists(old_tmp), "Aged orphan should have been reaped"
     assert os.path.exists(young_tmp), "Fresh tmp may be in-flight — must not be reaped"
-    assert os.path.exists(
-        unrelated
-    ), "Unrelated path must not be touched by this reaper"
+    assert os.path.exists(unrelated), (
+        "Unrelated path must not be touched by this reaper"
+    )
 
 
 @pytest.mark.offline
@@ -155,9 +155,9 @@ def test_write_nx_graph_preserves_existing_file_mode(tmp_path):
     # Second write — mode must survive.
     g.add_node("b")
     NetworkXStorage.write_nx_graph(g, dst, workspace="mode")
-    assert (
-        stat.S_IMODE(os.stat(dst).st_mode) == 0o600
-    ), "atomic write must preserve dst permissions across the rename"
+    assert stat.S_IMODE(os.stat(dst).st_mode) == 0o600, (
+        "atomic write must preserve dst permissions across the rename"
+    )
 
     # And content was actually updated.
     assert nx.read_graphml(dst).number_of_nodes() == 2
@@ -186,9 +186,9 @@ def test_reap_orphan_tmp_files_handles_glob_metacharacters(tmp_path):
 
     reap_orphan_tmp_files(dst, workspace="meta")
 
-    assert not os.path.exists(
-        real_orphan
-    ), "Reaper must match the real orphan even when path contains '['"
-    assert os.path.exists(
-        decoy
-    ), "Reaper must not match tmp files belonging to unrelated paths"
+    assert not os.path.exists(real_orphan), (
+        "Reaper must match the real orphan even when path contains '['"
+    )
+    assert os.path.exists(decoy), (
+        "Reaper must not match tmp files belonging to unrelated paths"
+    )
