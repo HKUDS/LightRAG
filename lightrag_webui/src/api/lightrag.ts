@@ -677,6 +677,9 @@ async function _readNdjsonStream(
       }
     } catch {
       console.warn('Failed to parse final NDJSON buffer:', buffer.substring(0, 120));
+      onError?.(
+        'Response stream ended with incomplete data — the response may be truncated.'
+      );
     }
   }
 }
