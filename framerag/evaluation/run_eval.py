@@ -42,26 +42,26 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Reference numbers from E²RAG paper (arXiv 2506.05939, Table 2/3)
-# Listed for context — paper used lexical EM/F1, not RAGAS.
+# Reference numbers for comparison
 # ─────────────────────────────────────────────────────────────────────────────
-E2RAG_REFERENCE = {
-    "hotpotqa": {
-        "LightRAG":      {"em": 0.412, "f1": 0.553},
-        "HyperGraphRAG": {"em": 0.438, "f1": 0.581},
-        "E2RAG":         {"em": 0.471, "f1": 0.614},
-    },
-    "2wikimultihopqa": {
-        "LightRAG":      {"em": 0.381, "f1": 0.497},
-        "HyperGraphRAG": {"em": 0.407, "f1": 0.528},
-        "E2RAG":         {"em": 0.449, "f1": 0.573},
-    },
-    "musique": {
-        "LightRAG":      {"em": 0.198, "f1": 0.286},
-        "HyperGraphRAG": {"em": 0.221, "f1": 0.318},
-        "E2RAG":         {"em": 0.264, "f1": 0.371},
-    },
+
+# ChronoQA: E²RAG paper (arXiv 2506.05939, Table 3) — LLM-judged Likert 1–10
+# 3 judges, 497 QA pairs across 9 public-domain stories.
+CHRONOQA_REFERENCE = {
+    "E2RAG (comb. extraction)":  7.125,
+    "E2RAG (comb. embedding)":   7.072,
+    "E2RAG (hyp. extraction)":   6.983,
+    "E2RAG (hyp. embedding)":    6.940,
+    "LightRAG hybrid":           6.880,
+    "GraphRAG local":            6.800,
+    "Vanilla RAG":               6.602,
+    "LightRAG local":            6.550,
+    "LightRAG global":           6.458,
 }
+
+# Multi-hop QA: numbers to fill in after running LightRAG eval on same splits
+# (no published RAGAS numbers exist — these slots are left for our own runs)
+MULTIHOP_REFERENCE: dict = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -343,7 +343,7 @@ async def run_evaluation(
     from .datasets import (
         load_hotpotqa, load_2wikimultihopqa, load_musique, load_chronoqa
     )
-    from .metrics import compute_ragas_metrics
+    from .metrics import compute_ragas_metrics  # used for multi-hop branch below
 
     # Bootstrap LightRAG shared in-process storage (required by JsonKVStorage)
     try:
@@ -418,40 +418,66 @@ async def run_evaluation(
             if (i + 1) % 10 == 0:
                 logger.info(f"[LightRAG] {i+1}/{len(samples)} done")
 
-    # ── RAGAS scoring (synchronous — RAGAS is not async) ─────────────────────
+    # ── Scoring ───────────────────────────────────────────────────────────────
     scoring_model = ragas_llm_model or llm_model
+    is_chronoqa   = dataset_name == "chronoqa"
 
-    def _ragas(results: list[dict]) -> dict:
-        if not results:
-            return {}
-        return compute_ragas_metrics(
-            questions     = [r["question"]     for r in results],
-            answers       = [r["prediction"]   for r in results],
-            contexts      = [r["contexts"]     for r in results],
-            ground_truths = [r["ground_truth"] for r in results],
+    fr_metrics: dict = {}
+    lr_metrics: dict = {}
+
+    if is_chronoqa:
+        # ChronoQA → LLM-judged Likert 1–10, matching E²RAG paper
+        from .metrics import compute_likert_metrics
+        logger.info("=== Likert scoring: FrameRAG ===")
+        fr_metrics = compute_likert_metrics(
+            questions     = [r["question"]     for r in framerag_results],
+            predictions   = [r["prediction"]   for r in framerag_results],
+            ground_truths = [r["ground_truth"] for r in framerag_results],
             llm_model     = scoring_model,
-            embedding_model = embed_model,
             api_key       = ragas_api_key,
             base_url      = ragas_base_url,
         )
-
-    logger.info("=== RAGAS scoring: FrameRAG ===")
-    fr_metrics = _ragas(framerag_results)
-
-    lr_metrics: dict = {}
-    if lightrag_results:
-        logger.info("=== RAGAS scoring: LightRAG ===")
-        lr_metrics = _ragas(lightrag_results)
+        if lightrag_results:
+            logger.info("=== Likert scoring: LightRAG ===")
+            lr_metrics = compute_likert_metrics(
+                questions     = [r["question"]     for r in lightrag_results],
+                predictions   = [r["prediction"]   for r in lightrag_results],
+                ground_truths = [r["ground_truth"] for r in lightrag_results],
+                llm_model     = scoring_model,
+                api_key       = ragas_api_key,
+                base_url      = ragas_base_url,
+            )
+    else:
+        # Multi-hop QA → RAGAS (matches LightRAG paper)
+        def _ragas(results: list[dict]) -> dict:
+            if not results:
+                return {}
+            return compute_ragas_metrics(
+                questions       = [r["question"]     for r in results],
+                answers         = [r["prediction"]   for r in results],
+                contexts        = [r["contexts"]     for r in results],
+                ground_truths   = [r["ground_truth"] for r in results],
+                llm_model       = scoring_model,
+                embedding_model = embed_model,
+                api_key         = ragas_api_key,
+                base_url        = ragas_base_url,
+            )
+        logger.info("=== RAGAS scoring: FrameRAG ===")
+        fr_metrics = _ragas(framerag_results)
+        if lightrag_results:
+            logger.info("=== RAGAS scoring: LightRAG ===")
+            lr_metrics = _ragas(lightrag_results)
 
     # ── Print results ─────────────────────────────────────────────────────────
-    _print_comparison(dataset_name, fr_metrics, lr_metrics)
+    _print_comparison(dataset_name, fr_metrics, lr_metrics, is_chronoqa)
 
     output = {
-        "dataset":   dataset_name,
-        "split":     split,
-        "FrameRAG":  {"metrics": fr_metrics, "samples": framerag_results},
-        "LightRAG":  {"metrics": lr_metrics, "samples": lightrag_results},
-        "reference_em_f1": E2RAG_REFERENCE.get(dataset_name, {}),
+        "dataset":        dataset_name,
+        "split":          split,
+        "metric_family":  "likert" if is_chronoqa else "ragas",
+        "FrameRAG":       {"metrics": fr_metrics, "samples": framerag_results},
+        "LightRAG":       {"metrics": lr_metrics, "samples": lightrag_results},
+        "reference":      CHRONOQA_REFERENCE if is_chronoqa else MULTIHOP_REFERENCE,
     }
     if output_file:
         with open(output_file, "w", encoding="utf-8") as f:
@@ -461,37 +487,56 @@ async def run_evaluation(
     return output
 
 
-def _print_comparison(dataset_name: str, fr_metrics: dict, lr_metrics: dict) -> None:
+def _print_comparison(
+    dataset_name: str,
+    fr_metrics: dict,
+    lr_metrics: dict,
+    is_chronoqa: bool = False,
+) -> None:
     sep = "-" * 75
-    header = f"{'System':<22}{'Faithful':>10}{'AnsRel':>10}{'CtxRec':>10}{'CtxPrec':>10}{'RAGAS':>10}"
     print(f"\n{sep}")
-    print(f"Dataset: {dataset_name}  |  Metrics: RAGAS (LLM-judged)")
-    print(header)
-    print(sep)
 
-    def _row(name: str, m: dict) -> str:
-        if not m:
-            return f"  {name:<20}" + "         -" * 5
-        return (
-            f"  {name:<20}"
-            f"{m.get('faithfulness', 0):>10.3f}"
-            f"{m.get('answer_relevance', 0):>10.3f}"
-            f"{m.get('context_recall', 0):>10.3f}"
-            f"{m.get('context_precision', 0):>10.3f}"
-            f"{m.get('ragas_score', 0):>10.3f}"
-        )
+    if is_chronoqa:
+        print(f"Dataset: {dataset_name}  |  Metric: LLM-judged Likert 1-10 (matches E2RAG paper)")
+        print(f"  {'System':<30}  {'Likert (1-10)':>14}  {'N':>5}")
+        print(sep)
 
-    if lr_metrics:
-        print(_row("LightRAG (ours)", lr_metrics))
-    print(_row("FrameRAG (ours)", fr_metrics))
-    print(sep)
+        def _row_likert(name: str, m: dict) -> str:
+            if not m:
+                return f"  {name:<30}             -      -"
+            return f"  {name:<30}  {m.get('likert_score', 0):>14.3f}  {m.get('n', 0):>5}"
 
-    # Print reference EM/F1 from paper for context
-    ref = E2RAG_REFERENCE.get(dataset_name, {})
-    if ref:
-        print(f"\n  Reference EM/F1 from E²RAG paper (lexical, for reference only):")
-        for sys_name, vals in ref.items():
-            print(f"    {sys_name:<22} EM={vals['em']:.3f}  F1={vals['f1']:.3f}")
+        if lr_metrics:
+            print(_row_likert("LightRAG (ours)", lr_metrics))
+        print(_row_likert("FrameRAG (ours)", fr_metrics))
+        print(sep)
+
+        print(f"\n  Reference from E2RAG paper (arXiv 2506.05939, Table 3):")
+        for sys_name, score in CHRONOQA_REFERENCE.items():
+            print(f"    {sys_name:<35} {score:.3f}")
+    else:
+        print(f"Dataset: {dataset_name}  |  Metric: RAGAS (matches LightRAG paper)")
+        header = f"  {'System':<22}{'Faithful':>10}{'AnsRel':>10}{'CtxRec':>10}{'CtxPrec':>10}{'RAGAS':>10}"
+        print(header)
+        print(sep)
+
+        def _row_ragas(name: str, m: dict) -> str:
+            if not m:
+                return f"  {name:<22}" + "         -" * 5
+            return (
+                f"  {name:<22}"
+                f"{m.get('faithfulness', 0):>10.3f}"
+                f"{m.get('answer_relevance', 0):>10.3f}"
+                f"{m.get('context_recall', 0):>10.3f}"
+                f"{m.get('context_precision', 0):>10.3f}"
+                f"{m.get('ragas_score', 0):>10.3f}"
+            )
+
+        if lr_metrics:
+            print(_row_ragas("LightRAG (ours)", lr_metrics))
+        print(_row_ragas("FrameRAG (ours)", fr_metrics))
+        print(sep)
+
     print()
 
 
