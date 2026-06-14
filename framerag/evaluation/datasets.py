@@ -29,29 +29,30 @@ def load_hotpotqa(
     except ImportError:
         raise ImportError("pip install datasets")
 
-    ds = load_dataset("hotpot_qa", config, split=split, trust_remote_code=True)
+    # hotpotqa/hotpot_qa replaced the old hotpot_qa dataset name on HuggingFace
+    ds = load_dataset("hotpotqa/hotpot_qa", config, split=split)
     samples = []
     for i, ex in enumerate(ds):
         if max_samples and i >= max_samples:
             break
-        # supporting_docs: list of (title, sentences) pairs
-        titles = ex["context"]["title"]
+        # context: {'title': [str, ...], 'sentences': [[str, ...], ...]}
+        titles         = ex["context"]["title"]
         sentences_list = ex["context"]["sentences"]
-        supporting_docs = []
-        for title, sents in zip(titles, sentences_list):
-            doc = f"{title}\n" + " ".join(sents)
-            supporting_docs.append(doc)
+        supporting_docs = [
+            f"{title}\n" + " ".join(sents)
+            for title, sents in zip(titles, sentences_list)
+        ]
 
         answer = ex["answer"]
         gold_answers = [answer] if answer else []
 
         samples.append({
-            "id": ex["id"],
-            "question": ex["question"],
-            "gold_answers": gold_answers,
+            "id":             ex["id"],
+            "question":       ex["question"],
+            "gold_answers":   gold_answers,
             "supporting_docs": supporting_docs,
-            "type": ex.get("type", ""),
-            "level": ex.get("level", ""),
+            "type":           ex.get("type", ""),
+            "level":          ex.get("level", ""),
         })
     logger.info(f"[HotpotQA] Loaded {len(samples)} samples from {split}/{config}")
     return samples
@@ -63,53 +64,63 @@ def load_2wikimultihopqa(
 ) -> list[dict]:
     """Load 2WikiMultiHopQA (Ho et al. 2020).
 
-    HuggingFace dataset: 'voidful/2WikiMultihopQA' or 'KILT/hotpotqa' subset.
-    Falls back to 'hfl/2WikiMultiHopQA' if primary fails.
+    HuggingFace dataset: xanhho/2WikiMultiHopQA (confirmed working)
+    Fields: _id, type, question, context (JSON str), supporting_facts (JSON str),
+            evidences (JSON str), answer
+    context JSON format: [["title", ["sent1", "sent2", ...]], ...]
     """
+    import json as _json
+
     try:
         from datasets import load_dataset
     except ImportError:
         raise ImportError("pip install datasets")
 
-    for hf_name in ["voidful/2WikiMultihopQA", "hfl/2WikiMultiHopQA"]:
+    for hf_name in ["xanhho/2WikiMultiHopQA", "voidful/2WikiMultihopQA"]:
         try:
-            ds = load_dataset(hf_name, split=split, trust_remote_code=True)
+            ds = load_dataset(hf_name, split=split)
             break
         except Exception:
             continue
     else:
-        raise RuntimeError("Could not load 2WikiMultiHopQA from HuggingFace. Try downloading manually.")
+        raise RuntimeError(
+            "Could not load 2WikiMultiHopQA from HuggingFace. "
+            "Try: pip install datasets  and check your internet connection."
+        )
 
     samples = []
     for i, ex in enumerate(ds):
         if max_samples and i >= max_samples:
             break
 
-        # Extract supporting documents from context field (varies by HF version)
+        # context is a JSON string: [["title", ["sent1", "sent2"]], ...]
         supporting_docs: list[str] = []
-        context = ex.get("context", ex.get("passages", []))
-        if isinstance(context, list):
-            for ctx in context:
-                if isinstance(ctx, dict):
-                    title = ctx.get("title", "")
-                    text = ctx.get("text", ctx.get("paragraph_text", ""))
+        raw_ctx = ex.get("context", "[]")
+        try:
+            ctx_list = _json.loads(raw_ctx) if isinstance(raw_ctx, str) else raw_ctx
+            for item in ctx_list:
+                if isinstance(item, list) and len(item) == 2:
+                    title, sents = item
+                    text = " ".join(sents) if isinstance(sents, list) else str(sents)
                     supporting_docs.append(f"{title}\n{text}" if title else text)
-                elif isinstance(ctx, str):
-                    supporting_docs.append(ctx)
-        elif isinstance(context, dict):
-            for title, paras in context.items():
-                if isinstance(paras, list):
-                    supporting_docs.append(f"{title}\n" + " ".join(str(p) for p in paras))
+                elif isinstance(item, dict):
+                    title = item.get("title", "")
+                    sents = item.get("sentences", item.get("text", ""))
+                    text = " ".join(sents) if isinstance(sents, list) else str(sents)
+                    supporting_docs.append(f"{title}\n{text}" if title else text)
+        except Exception:
+            if isinstance(raw_ctx, str) and raw_ctx:
+                supporting_docs = [raw_ctx]
 
-        answer = ex.get("answer", ex.get("answers", [""]))[0] if isinstance(ex.get("answers", ex.get("answer", "")), list) else ex.get("answer", "")
+        answer = ex.get("answer", "")
         gold_answers = [answer] if answer else []
 
         samples.append({
-            "id": str(ex.get("id", ex.get("_id", i))),
-            "question": ex.get("question", ""),
-            "gold_answers": gold_answers,
+            "id":              str(ex.get("_id", ex.get("id", i))),
+            "question":        ex.get("question", ""),
+            "gold_answers":    gold_answers,
             "supporting_docs": supporting_docs,
-            "type": ex.get("type", ""),
+            "type":            ex.get("type", ""),
         })
     logger.info(f"[2WikiMultiHopQA] Loaded {len(samples)} samples from {split}")
     return samples
@@ -118,51 +129,105 @@ def load_2wikimultihopqa(
 def load_musique(
     split: str = "validation",
     max_samples: Optional[int] = None,
+    data_path: Optional[str] = None,
 ) -> list[dict]:
     """Load MuSiQue (Trivedi et al. 2022).
 
-    HuggingFace dataset: 'drt/musique' or 'musique/musique'.
+    MuSiQue is NOT available on HuggingFace Hub. Download from:
+      https://github.com/StonyBrookNLP/musique/releases/download/v1.0/musique_v1.0.zip
+
+    Args:
+        split: 'train' | 'validation' | 'test' (maps to file suffix)
+        max_samples: limit samples
+        data_path: path to local JSONL file (e.g. musique_ans_v1.0_dev.jsonl)
+                   If None, tries common file locations automatically.
+
+    JSONL fields (musique_ans_v1.0_*.jsonl):
+      id, question, answer, answer_aliases, answerable,
+      paragraphs: [{idx, title, paragraph_text, is_supporting}]
     """
+    import json as _json
+
+    # ── Local JSONL file ──────────────────────────────────────────────────────
+    split_suffix = {"validation": "dev", "train": "train", "test": "test"}.get(split, split)
+    candidates = [
+        data_path,
+        f"musique_ans_v1.0_{split_suffix}.jsonl",
+        f"data/musique_ans_v1.0_{split_suffix}.jsonl",
+        f"musique/musique_ans_v1.0_{split_suffix}.jsonl",
+        f"musique_full_v1.0_{split_suffix}.jsonl",
+    ]
+    local_file = next((p for p in candidates if p and os.path.exists(p)), None)
+
+    if local_file:
+        logger.info(f"[MuSiQue] Loading from local file: {local_file}")
+        return _load_musique_jsonl(local_file, max_samples)
+
+    # ── HuggingFace fallback (try known mirrors) ───────────────────────────────
     try:
         from datasets import load_dataset
     except ImportError:
         raise ImportError("pip install datasets")
 
-    for hf_name in ["drt/musique", "Zenoverse/musique"]:
+    for hf_name in ["drt/musique", "Zenoverse/musique", "StonyBrookNLP/musique"]:
         try:
-            ds = load_dataset(hf_name, split=split, trust_remote_code=True)
-            break
+            ds = load_dataset(hf_name, split=split)
+            logger.info(f"[MuSiQue] Loaded from HuggingFace: {hf_name}")
+            return _parse_musique_hf(ds, max_samples)
         except Exception:
             continue
-    else:
-        raise RuntimeError("Could not load MuSiQue from HuggingFace.")
 
+    raise RuntimeError(
+        "MuSiQue not found on HuggingFace and no local file detected.\n"
+        "Download from: https://github.com/StonyBrookNLP/musique/releases/download/v1.0/musique_v1.0.zip\n"
+        "Then pass data_path='musique_ans_v1.0_dev.jsonl' or place the file in the current directory."
+    )
+
+def _parse_musique_example(ex: dict, idx: int) -> dict:
+    """Parse one MuSiQue example (works for both HF and local JSONL)."""
+    paragraphs = ex.get("paragraphs", [])
+    supporting_docs = []
+    for para in paragraphs:
+        if isinstance(para, dict):
+            title = para.get("title", "")
+            text  = para.get("paragraph_text", para.get("text", ""))
+            supporting_docs.append(f"{title}\n{text}" if title else text)
+
+    answer         = ex.get("answer", "")
+    answer_aliases = ex.get("answer_aliases") or []
+    gold_answers   = ([answer] + answer_aliases) if answer else answer_aliases
+
+    return {
+        "id":              str(ex.get("id", idx)),
+        "question":        ex.get("question", ""),
+        "gold_answers":    gold_answers,
+        "supporting_docs": supporting_docs,
+        "answerable":      ex.get("answerable", True),
+    }
+
+
+def _parse_musique_hf(ds, max_samples: Optional[int]) -> list[dict]:
     samples = []
     for i, ex in enumerate(ds):
         if max_samples and i >= max_samples:
             break
+        samples.append(_parse_musique_example(ex, i))
+    logger.info(f"[MuSiQue] Loaded {len(samples)} samples from HuggingFace")
+    return samples
 
-        # MuSiQue has 'paragraphs': [{idx, title, paragraph_text, is_supporting}]
-        paragraphs = ex.get("paragraphs", [])
-        supporting_docs = []
-        for para in paragraphs:
-            if isinstance(para, dict):
-                title = para.get("title", "")
-                text = para.get("paragraph_text", para.get("text", ""))
-                supporting_docs.append(f"{title}\n{text}" if title else text)
 
-        answer = ex.get("answer", "")
-        answer_aliases = ex.get("answer_aliases", [])
-        gold_answers = [answer] + answer_aliases if answer else answer_aliases
-
-        samples.append({
-            "id": str(ex.get("id", i)),
-            "question": ex.get("question", ""),
-            "gold_answers": gold_answers,
-            "supporting_docs": supporting_docs,
-            "answerable": ex.get("answerable", True),
-        })
-    logger.info(f"[MuSiQue] Loaded {len(samples)} samples from {split}")
+def _load_musique_jsonl(path: str, max_samples: Optional[int]) -> list[dict]:
+    import json as _json
+    samples = []
+    with open(path, encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if max_samples and i >= max_samples:
+                break
+            if not line.strip():
+                continue
+            ex = _json.loads(line)
+            samples.append(_parse_musique_example(ex, i))
+    logger.info(f"[MuSiQue] Loaded {len(samples)} samples from {path}")
     return samples
 
 
