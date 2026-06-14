@@ -2,6 +2,9 @@
 from .framerag import FrameRAG
 from .rerank import make_reranker, RerankFunc
 from . import constants
+from . import evaluation  # noqa: F401 — expose evaluation sub-package
+# Legacy alias: framerag.eval still works after rename to framerag.evaluation
+from . import evaluation as eval  # noqa: F401,A001
 from .types import (
     ChunkSchema,
     EntityMentionSchema,
@@ -36,4 +39,6 @@ __all__ = [
     "QuerySignals",
     "RetrievalResult",
     "constants",
+    "evaluation",
+    "eval",
 ]

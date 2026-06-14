@@ -48,9 +48,9 @@ except ImportError:
 
 from lightrag.utils import logger
 
-from .framerag import FrameRAG
-from .auth import AUTH_ENABLED, create_token, verify_credentials, require_auth
-from .doc_store import DocStatus
+from ..framerag import FrameRAG
+from ..auth import AUTH_ENABLED, create_token, verify_credentials, require_auth
+from ..doc_store import DocStatus
 
 
 # ─────────────────────────────────────────────────────────────────────────────

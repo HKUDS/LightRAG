@@ -15,7 +15,7 @@ for context. RAGAS scores are LLM-judged, so results will differ from paper
 numbers which used lexical metrics.
 
 Usage:
-    python -m framerag.eval.run_eval \\
+    python -m framerag.evaluation.run_eval \\
         --dataset hotpotqa \\
         --split validation \\
         --max_samples 50 \\

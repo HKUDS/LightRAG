@@ -20,7 +20,7 @@ Datasets:
   - MuSiQue   : drt/musique
 
 Usage:
-    python -m framerag.eval.paper_eval \\
+    python -m framerag.evaluation.paper_eval \\
         --dataset chronoqa \\
         --max_samples 50 \\
         --working_dir ./eval_storage \\
