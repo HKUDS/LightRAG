@@ -29,6 +29,36 @@ def check_and_install_dependencies():
             print(f"{package} installed successfully")
 
 
+def _build_global_concurrency_limits(args) -> dict:
+    """Derive cross-worker concurrency limits from the MAX_ASYNC settings.
+
+    Under gunicorn multi-worker, every MAX_ASYNC value keeps its documented
+    meaning — the maximum number of concurrent provider calls — by acting
+    BOTH as each worker's local limit and as the cross-worker global cap
+    (without the gate the real total would be ~ MAX_ASYNC x workers).
+    Group names must match the ``concurrency_group`` values passed to
+    ``priority_limit_async_func_call``: ``llm:{role}`` for the LLM roles,
+    plus ``embedding`` and ``rerank``. Role fallbacks mirror the runtime
+    resolution in ``_get_effective_role_llm_max_async``.
+    """
+    from lightrag.llm_roles import ROLES
+
+    limits = {}
+    for spec in ROLES:
+        role_limit = getattr(args, f"{spec.name}_llm_max_async", None)
+        if role_limit is None:
+            role_limit = args.max_async
+        if role_limit is not None and role_limit > 0:
+            limits[f"llm:{spec.name}"] = role_limit
+    embedding_limit = getattr(args, "embedding_func_max_async", None)
+    if embedding_limit is not None and embedding_limit > 0:
+        limits["embedding"] = embedding_limit
+    rerank_limit = getattr(args, "rerank_max_async", None)
+    if rerank_limit is not None and rerank_limit > 0:
+        limits["rerank"] = rerank_limit
+    return limits
+
+
 def main():
     from lightrag.api.utils_api import display_splash_screen, check_env_file
     from lightrag.api.config import global_args, initialize_config
@@ -73,8 +103,7 @@ def main():
             f"{_PROCESS_START_OBJC_FORK_SAFETY or 'NOT SET'}"
         )
         print(
-            "  - Environment After .env Load: "
-            f"{current_objc_fork_safety or 'NOT SET'}"
+            f"  - Environment After .env Load: {current_objc_fork_safety or 'NOT SET'}"
         )
         if current_objc_fork_safety == "YES":
             print("\nNote:")
@@ -253,7 +282,14 @@ def main():
     if workers_count > 1:
         # Set a flag to indicate we're in the main process
         os.environ["LIGHTRAG_MAIN_PROCESS"] = "1"
-        initialize_share_data(workers_count)
+        # Cross-worker global concurrency limits derived from MAX_ASYNC
+        # (read-only after this point; forked workers inherit them as
+        # module globals). Single-worker mode needs no cross-process gate —
+        # the per-process max_async already IS the total limit there.
+        initialize_share_data(
+            workers_count,
+            global_concurrency_limits=_build_global_concurrency_limits(global_args),
+        )
     else:
         initialize_share_data(1)
 

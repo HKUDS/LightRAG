@@ -203,15 +203,30 @@ class MinerURawClient:
         resolved_upload_name = _resolve_upload_name(upload_name, source_file_path)
 
         timeout = httpx.Timeout(120.0, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            if self.api_mode == "official":
-                task_id = await self._download_official(
-                    client, source_file_path, raw_dir, resolved_upload_name
-                )
-            else:
-                task_id = await self._download_local(
-                    client, source_file_path, raw_dir, resolved_upload_name
-                )
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                if self.api_mode == "official":
+                    task_id = await self._download_official(
+                        client, source_file_path, raw_dir, resolved_upload_name
+                    )
+                else:
+                    task_id = await self._download_local(
+                        client, source_file_path, raw_dir, resolved_upload_name
+                    )
+        except httpx.RequestError as exc:
+            # Transport-level failures (connection refused/reset, server
+            # disconnect, read/connect timeout) bubble up from httpx with an
+            # opaque, sometimes empty message like "All connection attempts
+            # failed" that gives no hint the parse engine was MinerU. HTTP
+            # status errors and protocol errors already raise context-rich
+            # RuntimeErrors via raise_for_status_with_detail, so they stay
+            # untouched. Re-raise with the engine + endpoint and the exception
+            # class name so the doc_status error_msg is always non-empty and
+            # clearly attributable to the MinerU backend.
+            raise RuntimeError(
+                f"MinerU {self.api_mode} backend request failed "
+                f"(endpoint={self.endpoint}): {type(exc).__name__}: {exc}"
+            ) from exc
 
         self._normalize_raw_bundle(raw_dir, source_file_path, resolved_upload_name)
         return self._build_and_write_manifest(

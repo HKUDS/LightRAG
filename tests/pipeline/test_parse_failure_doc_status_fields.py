@@ -23,6 +23,7 @@ external / native / third-party):
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import types
 from uuid import uuid4
@@ -53,6 +54,17 @@ def test_empty_summary_gets_error_description():
     assert extra["content_summary"] == "[File Extraction]boom"
     assert meta["error_type"] == "file_extraction_error"
     assert meta["error_stage"] == "parse"
+
+
+def test_empty_error_message_falls_back_to_class_name():
+    """Some exceptions (e.g. httpx transport errors) stringify to an empty
+    message; error_msg must stay non-empty so the WebUI keeps the Error
+    Message row instead of dropping it for a falsy empty string."""
+    extra, _meta = doc_status_parse_failure_fields(
+        ConnectionError(""), status_doc={"content_summary": "", "metadata": {}}
+    )
+    assert extra["error_msg"] == "ConnectionError"
+    assert extra["content_summary"] == "[File Extraction]ConnectionError"
 
 
 def test_existing_summary_is_not_overwritten():
@@ -378,4 +390,72 @@ async def test_raw_document_failure_keeps_real_summary(tmp_path, monkeypatch):
         assert status["metadata"]["error_type"] == "file_extraction_error"
         assert status["metadata"]["error_stage"] == "parse"
     finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_parse_worker_logs_when_failed_upsert_itself_fails(
+    tmp_path, monkeypatch, caplog
+):
+    """When the FAILED-status upsert raises (e.g. the storage backend is down
+    during the same outage that failed the parse), the worker must log instead
+    of swallowing silently, so the doc stuck in PARSING is diagnosable."""
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+    class _BoomParser:
+        engine_name = "boomengine"
+
+        async def parse(self, ctx):
+            raise RuntimeError("boom engine exploded")
+
+    fake_mod = types.ModuleType("_test_boom_upsert_mod")
+    fake_mod.BoomParser = _BoomParser
+    monkeypatch.setitem(sys.modules, "_test_boom_upsert_mod", fake_mod)
+    registry.register_parser(
+        registry.ParserSpec(
+            engine_name="boomengine",
+            impl="_test_boom_upsert_mod:BoomParser",
+            suffixes=frozenset({"txt"}),
+            queue_group="native",
+        )
+    )
+    rag = await _build_rag(tmp_path)
+    try:
+        source_path = input_dir / "doc.txt"
+        source_path.write_text("some body")
+        await rag.apipeline_enqueue_documents(
+            "",
+            file_paths=str(source_path),
+            docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+            parse_engine="boomengine",
+        )
+
+        # Fail the FAILED-status transition specifically (PARSING etc. still
+        # succeed), reproducing a storage write failure on the error path.
+        orig_upsert = rag._upsert_doc_status_transition
+
+        async def _flaky_upsert(*args, status=None, **kwargs):
+            if status == DocStatus.FAILED:
+                raise RuntimeError("doc_status backend unavailable")
+            return await orig_upsert(*args, status=status, **kwargs)
+
+        monkeypatch.setattr(rag, "_upsert_doc_status_transition", _flaky_upsert)
+
+        # lightrag logger has propagate=False; enable it so caplog captures.
+        lightrag_logger = logging.getLogger("lightrag")
+        monkeypatch.setattr(lightrag_logger, "propagate", True)
+        with caplog.at_level(logging.ERROR, logger="lightrag"):
+            await rag.apipeline_process_enqueue_documents()
+
+        assert any(
+            "Failed to record FAILED status" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        registry._REGISTRY.pop("boomengine", None)
+        registry._INSTANCE_CACHE.pop(
+            ("boomengine", "_test_boom_upsert_mod:BoomParser"), None
+        )
         await rag.finalize_storages()

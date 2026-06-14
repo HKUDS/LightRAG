@@ -46,7 +46,7 @@ from lightrag.sidecar.placeholders import (
     table_body_for_rows,
 )
 from lightrag.table_markup import header_grid_to_thead_html
-from lightrag.utils import logger
+from lightrag.utils import logger, strip_control_characters
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +188,13 @@ def write_sidecar(
             block_drawing_path_style=block_drawing_path_style,
         )
 
-        rendered = rendered.strip()
+        # Strip C0 control/separator chars (incl. \x1c-\x1f FS/GS/RS/US) before
+        # whitespace-trimming so they cannot survive into blockid, blocks.jsonl
+        # content (the chunk source), merged_text/full_docs content, or
+        # document_hash. A block that is only control chars + whitespace then
+        # collapses to empty and is dropped below. No-op for clean input, so
+        # existing blockids/hashes are preserved.
+        rendered = strip_control_characters(rendered).strip()
         if not rendered:
             # Drop empty blocks entirely — neither blocks.jsonl entry nor
             # sidecar items (the items were tied to the placeholder; if it
