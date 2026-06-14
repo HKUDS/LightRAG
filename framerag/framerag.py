@@ -562,6 +562,28 @@ class FrameRAG:
         diffusion_steps: Optional[int] = None,
     ) -> str:
         """Answer a query using hypergraph diffusion retrieval."""
+        answer, _ = await self.aquery_with_context(
+            query,
+            top_chunks=top_chunks,
+            top_frames=top_frames,
+            top_nodes=top_nodes,
+            diffusion_steps=diffusion_steps,
+        )
+        return answer
+
+    async def aquery_with_context(
+        self,
+        query: str,
+        top_chunks: Optional[int] = None,
+        top_frames: Optional[int] = None,
+        top_nodes: Optional[int] = None,
+        diffusion_steps: Optional[int] = None,
+    ) -> tuple[str, list[str]]:
+        """Answer a query and return (answer, retrieved_passages).
+
+        The retrieved_passages list is suitable for RAGAS context metrics.
+        Each element is one text chunk retrieved from the hypergraph.
+        """
         frame_hits, chunk_hits = await self._retrieve(
             query,
             top_chunks=top_chunks or self._top_chunks,
@@ -570,11 +592,19 @@ class FrameRAG:
             diffusion_steps=diffusion_steps or self._diffusion_steps,
         )
         if not frame_hits and not chunk_hits:
-            return "No indexed documents found. Please insert documents first."
+            return "No indexed documents found. Please insert documents first.", []
 
         structured_facts = await self._build_structured_facts(frame_hits)
         text_passages    = await self._build_text_passages(chunk_hits)
-        return await generate_answer(query, structured_facts, text_passages, self._llm)
+        answer = await generate_answer(query, structured_facts, text_passages, self._llm)
+
+        # Split joined passages back into individual strings for RAGAS
+        passages = [
+            p.strip()
+            for p in text_passages.split("\n\n---\n\n")
+            if p.strip() and p.strip() != "(no passages retrieved)"
+        ]
+        return answer, passages
 
     async def aquery_stream(
         self,

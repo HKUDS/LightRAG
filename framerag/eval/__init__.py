@@ -1,8 +1,13 @@
-"""Evaluation pipeline for FrameRAG on multi-hop QA benchmarks."""
-from .metrics import compute_em, compute_f1, evaluate_answers
+"""Evaluation pipeline for FrameRAG — RAGAS metrics (same as LightRAG)."""
+from .metrics import compute_ragas_metrics, make_ragas_evaluator, RAGAS_AVAILABLE
 from .datasets import load_hotpotqa, load_2wikimultihopqa, load_musique, load_chronoqa
 
 __all__ = [
-    "compute_em", "compute_f1", "evaluate_answers",
-    "load_hotpotqa", "load_2wikimultihopqa", "load_musique", "load_chronoqa",
+    "compute_ragas_metrics",
+    "make_ragas_evaluator",
+    "RAGAS_AVAILABLE",
+    "load_hotpotqa",
+    "load_2wikimultihopqa",
+    "load_musique",
+    "load_chronoqa",
 ]

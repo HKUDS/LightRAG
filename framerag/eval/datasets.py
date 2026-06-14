@@ -6,6 +6,7 @@ Each loader returns list[dict] with keys: id, question, gold_answers, supporting
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -170,68 +171,91 @@ def load_chronoqa(
     split: str = "test",
     max_samples: Optional[int] = None,
 ) -> list[dict]:
-    """Load ChronoQA (from arxiv 2506.05939 — Entity-Event KG for RAG).
+    """Load ChronoQA — narrative QA from the E²RAG paper (arXiv 2506.05939).
 
     ChronoQA tests temporal, causal, and character consistency in narrative QA.
+    Dataset: https://huggingface.co/datasets/zy113/ChronoQA
 
     Args:
-        data_path: local path to ChronoQA JSON file (required until HF release)
+        data_path: optional local path to JSON file (overrides HuggingFace loader)
         split: 'train' | 'validation' | 'test'
-        max_samples: limit samples
-
-    Returns same format as other loaders.
-
-    Dataset format expected (JSON array):
-    [
-      {
-        "id": "...",
-        "question": "...",
-        "answer": "..." or ["..."],
-        "documents": ["passage1", "passage2", ...],
-        "type": "temporal|causal|character",
-        "split": "train|validation|test"
-      },
-      ...
-    ]
+        max_samples: limit samples (None = all)
     """
-    if data_path is None:
-        logger.warning(
-            "[ChronoQA] No data_path provided. ChronoQA is not yet on HuggingFace. "
-            "Download from the paper's repository when released and pass data_path=..."
-        )
+    # ── Local file override ────────────────────────────────────────────────────
+    if data_path is not None:
+        import json as _json
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"ChronoQA file not found: {data_path}")
+        with open(data_path, "r", encoding="utf-8") as f:
+            raw = _json.load(f)
+        return _parse_chronoqa_records(raw, split=split, max_samples=max_samples,
+                                       source=data_path)
+
+    # ── HuggingFace loader ────────────────────────────────────────────────────
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        raise ImportError("pip install datasets")
+
+    try:
+        ds = load_dataset("zy113/ChronoQA", split=split, trust_remote_code=True)
+    except Exception as e:
+        logger.error(f"[ChronoQA] Failed to load from HuggingFace: {e}")
+        logger.error("Install datasets: pip install datasets")
         return []
 
-    import json, os
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"ChronoQA file not found: {data_path}")
+    samples = []
+    for i, ex in enumerate(ds):
+        if max_samples and i >= max_samples:
+            break
+        samples.append(_parse_chronoqa_example(ex, i))
 
-    with open(data_path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+    logger.info(f"[ChronoQA] Loaded {len(samples)} samples (split={split}) from HuggingFace")
+    return samples
 
+
+def _parse_chronoqa_example(ex: dict, fallback_id: int) -> dict:
+    """Normalise a single ChronoQA example to the standard loader format."""
+    answer = ex.get("answer", ex.get("answers", ""))
+    if isinstance(answer, list):
+        gold_answers = [a for a in answer if a]
+    else:
+        gold_answers = [answer] if answer else []
+
+    # ChronoQA stores the source document(s) under various keys
+    supporting_docs = (
+        ex.get("documents")
+        or ex.get("passages")
+        or ex.get("context")
+        or ex.get("story")
+        or []
+    )
+    if isinstance(supporting_docs, str):
+        supporting_docs = [supporting_docs]
+
+    return {
+        "id":             str(ex.get("id", fallback_id)),
+        "question":       ex.get("question", ""),
+        "gold_answers":   gold_answers,
+        "supporting_docs": supporting_docs,
+        "type":           ex.get("type", ex.get("category", "")),
+        "source":         ex.get("source", ex.get("book", "")),
+    }
+
+
+def _parse_chronoqa_records(
+    raw: list,
+    split: str,
+    max_samples: Optional[int],
+    source: str,
+) -> list[dict]:
+    """Parse a local JSON file (list of dicts) into the standard format."""
     samples = []
     for i, ex in enumerate(raw):
         if ex.get("split", split) != split:
             continue
         if max_samples and len(samples) >= max_samples:
             break
-
-        answer = ex.get("answer", ex.get("answers", ""))
-        if isinstance(answer, list):
-            gold_answers = answer
-        else:
-            gold_answers = [answer] if answer else []
-
-        supporting_docs = ex.get("documents", ex.get("passages", ex.get("context", [])))
-        if isinstance(supporting_docs, str):
-            supporting_docs = [supporting_docs]
-
-        samples.append({
-            "id": str(ex.get("id", i)),
-            "question": ex.get("question", ""),
-            "gold_answers": gold_answers,
-            "supporting_docs": supporting_docs,
-            "type": ex.get("type", ""),
-        })
-
-    logger.info(f"[ChronoQA] Loaded {len(samples)} samples from {data_path} (split={split})")
+        samples.append(_parse_chronoqa_example(ex, i))
+    logger.info(f"[ChronoQA] Loaded {len(samples)} samples from {source} (split={split})")
     return samples

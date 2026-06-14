@@ -23,15 +23,19 @@ try:
     from fastapi import HTTPException, Security, status
     from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
     _FASTAPI_AVAILABLE = True
+    _bearer = HTTPBearer(auto_error=False)
 except ImportError:
     _FASTAPI_AVAILABLE = False
+    Security = None  # type: ignore[assignment]
+    _bearer = None
+    HTTPException = None  # type: ignore[assignment,misc]
+    status = None  # type: ignore[assignment]
+    HTTPAuthorizationCredentials = None  # type: ignore[assignment,misc]
 
 
 _SECRET     = os.environ.get("FRAMERAG_TOKEN_SECRET", "framerag-dev-secret-change-me")
 _ALGORITHM  = "HS256"
 _EXPIRE_HRS = int(os.environ.get("FRAMERAG_TOKEN_EXPIRE_HOURS", "24"))
-
-_bearer = HTTPBearer(auto_error=False) if _FASTAPI_AVAILABLE else None
 
 
 def _parse_accounts() -> dict[str, str]:
@@ -79,12 +83,16 @@ def verify_credentials(username: str, password: str) -> bool:
     return _ACCOUNTS.get(username) == password
 
 
-async def require_auth(
-    credentials: Optional[HTTPAuthorizationCredentials] = Security(_bearer),
-) -> Optional[str]:
-    """FastAPI dependency — returns username if auth enabled, None if open."""
-    if not AUTH_ENABLED:
+if _FASTAPI_AVAILABLE:
+    async def require_auth(
+        credentials: Optional[HTTPAuthorizationCredentials] = Security(_bearer),
+    ) -> Optional[str]:
+        """FastAPI dependency — returns username if auth enabled, None if open."""
+        if not AUTH_ENABLED:
+            return None
+        if credentials is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing Bearer token")
+        return verify_token(credentials.credentials)
+else:
+    async def require_auth(credentials=None) -> Optional[str]:  # type: ignore[misc]
         return None
-    if credentials is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing Bearer token")
-    return verify_token(credentials.credentials)
