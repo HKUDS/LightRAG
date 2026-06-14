@@ -200,11 +200,18 @@ async def evaluate_framerag_chronoqa(
         )
         await rag.initialize()
 
-        # Index all excerpts of this story once (not just gold)
-        all_excerpts = story_samples[0].get("all_excerpts") or []
+        # Union all_excerpts from every question in this story.
+        # Each QA pair may reference different passage subsets, so we must
+        # collect from all — not just story_samples[0].
+        seen: set[str] = set()
+        all_excerpts: list[str] = []
+        for s in story_samples:
+            for exc in s.get("all_excerpts") or []:
+                if exc not in seen:
+                    all_excerpts.append(exc)
+                    seen.add(exc)
         if not all_excerpts:
-            # Fallback: union of supporting_docs from all questions
-            seen: set[str] = set()
+            # Fallback: union of gold supporting_docs from all questions
             for s in story_samples:
                 for doc in s.get("supporting_docs", []):
                     if doc not in seen:
