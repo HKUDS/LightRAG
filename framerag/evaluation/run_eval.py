@@ -169,18 +169,28 @@ async def evaluate_framerag_chronoqa(
     embed_func,
     working_dir: str,
     embedding_dim: int = 1536,
+    story_ids: Optional[list[str]] = None,
 ) -> list[dict]:
     """[E] Story-level shared index for ChronoQA.
 
     Groups samples by story_id and indexes all excerpts of each story ONCE,
     then queries all questions for that story. Saves ~57x API cost vs per-sample.
+
+    Stories with no excerpt text (e.g. Harry Potter — copyright) are skipped
+    automatically so they don't pull down the average score.
+
+    Args:
+        story_ids: if given, only evaluate these story IDs (e.g. ["1","2","5"]).
     """
     from framerag import FrameRAG
     from collections import defaultdict
 
     by_story: dict[str, list[dict]] = defaultdict(list)
     for s in samples:
-        by_story[str(s.get("story_id", s["id"]))].append(s)
+        sid = str(s.get("story_id", s["id"]))
+        if story_ids and sid not in story_ids:
+            continue
+        by_story[sid].append(s)
 
     all_results: list[dict] = []
 
@@ -217,6 +227,13 @@ async def evaluate_framerag_chronoqa(
                     if doc not in seen:
                         all_excerpts.append(doc)
                         seen.add(doc)
+
+        if not all_excerpts:
+            logger.warning(f"[ChronoQA] Story {story_id} has no excerpt text — skipping "
+                           f"(copyright text like Harry Potter cannot be redistributed).")
+            await rag.finalize()
+            shutil.rmtree(story_dir, ignore_errors=True)
+            continue
 
         for i, doc in enumerate(all_excerpts):
             if doc.strip():
@@ -330,15 +347,18 @@ async def run_evaluation(
     output_file: Optional[str] = None,
     concurrency: int = 4,
     chronoqa_path: Optional[str] = None,
+    chronoqa_story_ids: Optional[list[str]] = None,
     run_lightrag: bool = True,
     ragas_llm_model: Optional[str] = None,
     ragas_api_key: Optional[str] = None,
     ragas_base_url: Optional[str] = None,
 ) -> dict:
-    """Evaluate FrameRAG (and optionally LightRAG) on a multi-hop QA dataset.
+    """Evaluate FrameRAG (and optionally LightRAG) on a multi-hop QA benchmark.
 
-    Metrics computed (same as lightrag/evaluation/eval_rag_quality.py):
-      faithfulness, answer_relevance, context_recall, context_precision, ragas_score
+    Metric routing:
+      chronoqa   → LLM-judged Likert 1-10 (3 judges, matches E²RAG paper)
+      others     → RAGAS (faithfulness / answer_relevance / context_recall /
+                   context_precision, matches LightRAG paper)
     """
     from .datasets import (
         load_hotpotqa, load_2wikimultihopqa, load_musique, load_chronoqa
@@ -386,9 +406,10 @@ async def run_evaluation(
     # ── FrameRAG ──────────────────────────────────────────────────────────────
     logger.info("=== FrameRAG generation ===")
     if dataset_name == "chronoqa":
-        # [E] Story-level shared index: index each of 18 stories once
+        # [E] Story-level shared index; skip stories with no text (Harry Potter)
         framerag_results = await evaluate_framerag_chronoqa(
-            samples, llm_func, embed_func, working_dir, embedding_dim
+            samples, llm_func, embed_func, working_dir, embedding_dim,
+            story_ids=chronoqa_story_ids,
         )
     else:
         tasks = [
@@ -561,6 +582,11 @@ def main():
     parser.add_argument("--output_file",   default=None)
     parser.add_argument("--concurrency",   type=int, default=4)
     parser.add_argument("--chronoqa_path", default=None)
+    parser.add_argument(
+        "--chronoqa_story_ids", default=None,
+        help="Comma-separated story IDs to evaluate (e.g. '1,2,5,6,7,8,9'). "
+             "Default: all stories with non-empty excerpts (skips HP stories 3,4).",
+    )
     parser.add_argument("--ragas_llm_model", default=None,
                         help="LLM for RAGAS scoring (defaults to --llm_model)")
     parser.add_argument("--ragas_api_key", default=None,
@@ -573,21 +599,27 @@ def main():
     )
     args = parser.parse_args()
 
+    story_ids = (
+        [s.strip() for s in args.chronoqa_story_ids.split(",")]
+        if args.chronoqa_story_ids else None
+    )
+
     asyncio.run(run_evaluation(
-        dataset_name    = args.dataset,
-        split           = args.split,
-        max_samples     = args.max_samples,
-        working_dir     = args.working_dir,
-        llm_model       = args.llm_model,
-        embed_model     = args.embed_model,
-        embedding_dim   = args.embedding_dim,
-        output_file     = args.output_file,
-        concurrency     = args.concurrency,
-        chronoqa_path   = args.chronoqa_path,
-        run_lightrag    = not args.no_lightrag,
-        ragas_llm_model = args.ragas_llm_model,
-        ragas_api_key   = args.ragas_api_key,
-        ragas_base_url  = args.ragas_base_url,
+        dataset_name        = args.dataset,
+        split               = args.split,
+        max_samples         = args.max_samples,
+        working_dir         = args.working_dir,
+        llm_model           = args.llm_model,
+        embed_model         = args.embed_model,
+        embedding_dim       = args.embedding_dim,
+        output_file         = args.output_file,
+        concurrency         = args.concurrency,
+        chronoqa_path       = args.chronoqa_path,
+        chronoqa_story_ids  = story_ids,
+        run_lightrag        = not args.no_lightrag,
+        ragas_llm_model     = args.ragas_llm_model,
+        ragas_api_key       = args.ragas_api_key,
+        ragas_base_url      = args.ragas_base_url,
     ))
 
 

@@ -191,7 +191,7 @@ System answer: {prediction}
 
 Score (1–10):"""
 
-_NUM_JUDGES = 3
+_DEFAULT_NUM_JUDGES = 3
 
 
 async def _judge_one(
@@ -226,11 +226,12 @@ async def _score_sample_async(
     ground_truth: str,
     prediction: str,
     llm_func,
+    num_judges: int = _DEFAULT_NUM_JUDGES,
 ) -> dict:
-    """Run _NUM_JUDGES judges concurrently for one sample. Returns per-judge scores."""
+    """Run num_judges judges concurrently for one sample. Returns per-judge scores."""
     tasks = [
         _judge_one(question, ground_truth, prediction, llm_func, j)
-        for j in range(_NUM_JUDGES)
+        for j in range(num_judges)
     ]
     scores = await asyncio.gather(*tasks)
     return {
@@ -247,7 +248,7 @@ def compute_likert_metrics(
     llm_model: str = "gpt-4o-mini",
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
-    num_judges: int = _NUM_JUDGES,
+    num_judges: int = _DEFAULT_NUM_JUDGES,
 ) -> dict:
     """LLM-judged Likert evaluation matching E²RAG paper (arXiv 2506.05939).
 
@@ -269,9 +270,6 @@ def compute_likert_metrics(
     Returns:
         dict with keys: likert_score (float 1–10), per_sample (list[dict]), n (int)
     """
-    global _NUM_JUDGES
-    _NUM_JUDGES = num_judges
-
     if not questions:
         return {"likert_score": 0.0, "per_sample": [], "n": 0}
 
@@ -298,7 +296,7 @@ def compute_likert_metrics(
 
     async def _run_all():
         tasks = [
-            _score_sample_async(q, gt, pred, llm_func)
+            _score_sample_async(q, gt, pred, llm_func, num_judges)
             for q, gt, pred in zip(questions, ground_truths, predictions)
         ]
         return await asyncio.gather(*tasks)
