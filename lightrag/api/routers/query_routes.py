@@ -104,8 +104,8 @@ class QueryRequest(BaseModel):
     )
 
     stream: Optional[bool] = Field(
-        default=True,
-        description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
+        default=None,
+        description="If True, enables streaming output. Defaults to False for /query, True for /query/stream.",
     )
 
     @field_validator("query", mode="after")
@@ -330,9 +330,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         Comprehensive RAG query endpoint with non-streaming response. Parameter "stream" is ignored.
 
-        This endpoint performs Retrieval-Augmented Generation (RAG) queries using various modes
-        to provide intelligent responses based on your knowledge base.
-
         **Query Modes:**
         - **local**: Focuses on specific entities and their direct relationships
         - **global**: Analyzes broader patterns and relationships across the knowledge graph
@@ -411,7 +408,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             )  # Ensure stream=False for non-streaming endpoint
             # Force stream=False for /query endpoint regardless of include_references setting
             param.stream = False
-
             # Unified approach: always use aquery_llm for both cases
             result = await rag.aquery_llm(request.query, param=param)
 
@@ -456,6 +452,70 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
+
+    def _build_stream_generator(
+        *,
+        result: dict[str, Any],
+        include_references: bool,
+        include_chunk_content: bool,
+    ):
+        """Shared async generator that yields NDJSON lines for streaming responses.
+
+        Used by ``/query/stream`` to format NDJSON output with consistent
+        error-handling behaviour.
+        """
+
+        async def _generate():
+            references = result.get("data", {}).get("references", [])
+            llm_response = result.get("llm_response", {})
+
+            # Enrich references with chunk content if requested
+            if include_references and include_chunk_content:
+                data = result.get("data", {})
+                chunks = data.get("chunks", [])
+                ref_id_to_content: dict[str, list[str]] = {}
+                for chunk in chunks:
+                    ref_id = chunk.get("reference_id", "")
+                    content = chunk.get("content", "")
+                    if ref_id and content:
+                        ref_id_to_content.setdefault(ref_id, []).append(content)
+
+                enriched_references = []
+                for ref in references:
+                    ref_copy = ref.copy()
+                    ref_id = ref.get("reference_id", "")
+                    if ref_id in ref_id_to_content:
+                        ref_copy["content"] = ref_id_to_content[ref_id]
+                    enriched_references.append(ref_copy)
+                references = enriched_references
+
+            if llm_response.get("is_streaming"):
+                # Streaming: references first, then response chunks
+                if include_references:
+                    yield f"{json.dumps({'references': references})}\n"
+
+                response_stream = llm_response.get("response_iterator")
+                if response_stream:
+                    try:
+                        async for chunk in response_stream:
+                            if chunk:
+                                yield f"{json.dumps({'response': chunk})}\n"
+                    except Exception as e:
+                        logger.error(f"Streaming error: {str(e)}")
+                        yield f"{json.dumps({'error': str(e)})}\n"
+            else:
+                # Non-streaming: complete response in one message
+                response_content = llm_response.get("content", "")
+                if not response_content:
+                    response_content = "No relevant context found for the query."
+
+                complete_response = {"response": response_content}
+                if include_references:
+                    complete_response["references"] = references
+
+                yield f"{json.dumps(complete_response)}\n"
+
+        return _generate
 
     @router.post(
         "/query/stream",
@@ -672,65 +732,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # Unified approach: always use aquery_llm for all cases
             result = await rag.aquery_llm(request.query, param=param)
-
-            async def stream_generator():
-                # Extract references and LLM response from unified result
-                references = result.get("data", {}).get("references", [])
-                llm_response = result.get("llm_response", {})
-
-                # Enrich references with chunk content if requested
-                if request.include_references and request.include_chunk_content:
-                    data = result.get("data", {})
-                    chunks = data.get("chunks", [])
-                    # Create a mapping from reference_id to chunk content
-                    ref_id_to_content = {}
-                    for chunk in chunks:
-                        ref_id = chunk.get("reference_id", "")
-                        content = chunk.get("content", "")
-                        if ref_id and content:
-                            # Collect chunk content
-                            ref_id_to_content.setdefault(ref_id, []).append(content)
-
-                    # Add content to references
-                    enriched_references = []
-                    for ref in references:
-                        ref_copy = ref.copy()
-                        ref_id = ref.get("reference_id", "")
-                        if ref_id in ref_id_to_content:
-                            # Keep content as a list of chunks (one file may have multiple chunks)
-                            ref_copy["content"] = ref_id_to_content[ref_id]
-                        enriched_references.append(ref_copy)
-                    references = enriched_references
-
-                if llm_response.get("is_streaming"):
-                    # Streaming mode: send references first, then stream response chunks
-                    if request.include_references:
-                        yield f"{json.dumps({'references': references})}\n"
-
-                    response_stream = llm_response.get("response_iterator")
-                    if response_stream:
-                        try:
-                            async for chunk in response_stream:
-                                if chunk:  # Only send non-empty content
-                                    yield f"{json.dumps({'response': chunk})}\n"
-                        except Exception as e:
-                            logger.error(f"Streaming error: {str(e)}")
-                            yield f"{json.dumps({'error': str(e)})}\n"
-                else:
-                    # Non-streaming mode: send complete response in one message
-                    response_content = llm_response.get("content", "")
-                    if not response_content:
-                        response_content = "No relevant context found for the query."
-
-                    # Create complete response object
-                    complete_response = {"response": response_content}
-                    if request.include_references:
-                        complete_response["references"] = references
-
-                    yield f"{json.dumps(complete_response)}\n"
+            stream_gen = _build_stream_generator(
+                result=result,
+                include_references=request.include_references,
+                include_chunk_content=request.include_chunk_content,
+            )
 
             return StreamingResponse(
-                stream_generator(),
+                stream_gen(),
                 media_type="application/x-ndjson",
                 headers={
                     "Cache-Control": "no-cache",
