@@ -106,6 +106,7 @@ class FrameRAG:
         enable_gleaning: bool = True,
         max_gleaning_rounds: int = DEFAULT_MAX_GLEANING,
         enable_event_coref: bool = True,
+        enable_llm_coref_verify: bool = True,
         diffusion_steps: int = DEFAULT_DIFFUSION_STEPS,
         diffusion_alpha: float = DEFAULT_DIFFUSION_ALPHA,
         top_chunks: int = DEFAULT_TOP_CHUNKS,
@@ -126,6 +127,7 @@ class FrameRAG:
         self._enable_gleaning = enable_gleaning
         self._max_gleaning_rounds = max_gleaning_rounds
         self._enable_event_coref = enable_event_coref
+        self._enable_llm_coref_verify = enable_llm_coref_verify
         self._diffusion_steps = diffusion_steps
         self._diffusion_alpha = diffusion_alpha
         self._top_chunks = top_chunks
@@ -145,7 +147,10 @@ class FrameRAG:
 
         self._hg         = HypergraphStore(working_dir, ef)
         self._frame_db   = FrameDatabase(working_dir, ef)
-        self._entity_coref = EntityCoreferenceResolver(embed_func, llm_func)
+        self._entity_coref = EntityCoreferenceResolver(
+            embed_func, llm_func,
+            enable_llm_verify=enable_llm_coref_verify,
+        )
         self._event_coref  = EventCoreferenceResolver(embed_func, llm_func)
         self._doc_store  = DocStore(working_dir)
 

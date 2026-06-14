@@ -119,7 +119,12 @@ async def evaluate_framerag_sample(
     working_dir: str,
     embedding_dim: int = 1536,
 ) -> dict:
-    """Index supporting docs, query FrameRAG, return answer + retrieved contexts."""
+    """Index supporting docs, query FrameRAG, return answer + retrieved contexts.
+
+    [A] Indexes all_excerpts (full story passages) when available, falling back to
+    supporting_docs. This gives the hypergraph enough structure for diffusion.
+    [B] LLM coref verify is disabled for eval speed (-80% latency).
+    """
     from framerag import FrameRAG
 
     sample_dir = os.path.join(working_dir, "framerag", f"sample_{sample['id']}")
@@ -128,14 +133,17 @@ async def evaluate_framerag_sample(
         llm_func=llm_func,
         embed_func=embed_func,
         embedding_dim=embedding_dim,
-        enable_event_coref=False,   # skip for eval speed
+        enable_event_coref=False,        # skip coref for eval speed
+        enable_llm_coref_verify=False,   # [B] skip borderline LLM calls
     )
     await rag.initialize()
-    for i, doc in enumerate(sample.get("supporting_docs", [])):
+
+    # [A] Prefer all_excerpts over gold-only supporting_docs
+    docs_to_index = sample.get("all_excerpts") or sample.get("supporting_docs", [])
+    for i, doc in enumerate(docs_to_index):
         if doc.strip():
             await rag.ainsert(doc, source_doc=f"doc_{i}")
 
-    # aquery_with_context returns (answer, passages_list) in a single retrieve pass
     prediction, contexts = await rag.aquery_with_context(sample["question"])
     await rag.finalize()
     shutil.rmtree(sample_dir, ignore_errors=True)
@@ -153,6 +161,85 @@ async def evaluate_framerag_sample(
         "type":         sample.get("type", ""),
         "system":       "FrameRAG",
     }
+
+
+async def evaluate_framerag_chronoqa(
+    samples: list[dict],
+    llm_func,
+    embed_func,
+    working_dir: str,
+    embedding_dim: int = 1536,
+) -> list[dict]:
+    """[E] Story-level shared index for ChronoQA.
+
+    Groups samples by story_id and indexes all excerpts of each story ONCE,
+    then queries all questions for that story. Saves ~57x API cost vs per-sample.
+    """
+    from framerag import FrameRAG
+    from collections import defaultdict
+
+    by_story: dict[str, list[dict]] = defaultdict(list)
+    for s in samples:
+        by_story[str(s.get("story_id", s["id"]))].append(s)
+
+    all_results: list[dict] = []
+
+    for story_id, story_samples in by_story.items():
+        story_title = story_samples[0].get("story_title", story_id)
+        logger.info(f"[ChronoQA] Indexing story {story_id} ({story_title}): "
+                    f"{len(story_samples)} questions")
+
+        story_dir = os.path.join(working_dir, "framerag", f"story_{story_id}")
+        rag = FrameRAG(
+            working_dir=story_dir,
+            llm_func=llm_func,
+            embed_func=embed_func,
+            embedding_dim=embedding_dim,
+            enable_event_coref=False,
+            enable_llm_coref_verify=False,
+        )
+        await rag.initialize()
+
+        # Index all excerpts of this story once (not just gold)
+        all_excerpts = story_samples[0].get("all_excerpts") or []
+        if not all_excerpts:
+            # Fallback: union of supporting_docs from all questions
+            seen: set[str] = set()
+            for s in story_samples:
+                for doc in s.get("supporting_docs", []):
+                    if doc not in seen:
+                        all_excerpts.append(doc)
+                        seen.add(doc)
+
+        for i, doc in enumerate(all_excerpts):
+            if doc.strip():
+                await rag.ainsert(doc, source_doc=f"excerpt_{i}")
+
+        # Query all questions for this story
+        for s in story_samples:
+            try:
+                prediction, contexts = await rag.aquery_with_context(s["question"])
+            except Exception as e:
+                logger.error(f"[ChronoQA] Query failed for {s['id']}: {e}")
+                prediction, contexts = "", []
+            gold_list = s["gold_answers"]
+            all_results.append({
+                "id":           s["id"],
+                "question":     s["question"],
+                "gold_answers": gold_list,
+                "ground_truth": gold_list[0] if gold_list else "",
+                "prediction":   prediction,
+                "contexts":     contexts,
+                "type":         s.get("type", ""),
+                "story_id":     story_id,
+                "system":       "FrameRAG",
+            })
+
+        await rag.finalize()
+        shutil.rmtree(story_dir, ignore_errors=True)
+        logger.info(f"[ChronoQA] Story {story_id} done: {len(story_samples)} results")
+
+    return all_results
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -291,17 +378,23 @@ async def run_evaluation(
 
     # ── FrameRAG ──────────────────────────────────────────────────────────────
     logger.info("=== FrameRAG generation ===")
-    tasks = [
-        _safe(evaluate_framerag_sample(s, llm_func, embed_func, working_dir, embedding_dim),
-              f"FrameRAG/{s['id']}")
-        for s in samples
-    ]
-    for i, coro in enumerate(asyncio.as_completed(tasks)):
-        r = await coro
-        if r:
-            framerag_results.append(r)
-        if (i + 1) % 10 == 0:
-            logger.info(f"[FrameRAG] {i+1}/{len(samples)} done")
+    if dataset_name == "chronoqa":
+        # [E] Story-level shared index: index each of 18 stories once
+        framerag_results = await evaluate_framerag_chronoqa(
+            samples, llm_func, embed_func, working_dir, embedding_dim
+        )
+    else:
+        tasks = [
+            _safe(evaluate_framerag_sample(s, llm_func, embed_func, working_dir, embedding_dim),
+                  f"FrameRAG/{s['id']}")
+            for s in samples
+        ]
+        for i, coro in enumerate(asyncio.as_completed(tasks)):
+            r = await coro
+            if r:
+                framerag_results.append(r)
+            if (i + 1) % 10 == 0:
+                logger.info(f"[FrameRAG] {i+1}/{len(samples)} done")
 
     # ── LightRAG ──────────────────────────────────────────────────────────────
     if run_lightrag:

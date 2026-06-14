@@ -61,6 +61,16 @@ Given the chunk text below:
 
 3. Assign Frame Element roles to entities AND extract non-core FE values (time, price, location, etc.)
 
+3b. IMPORTANT — also capture NEGATION and EXEMPTION events: if the text explicitly states that
+    an entity did NOT participate in an event, was UNAFFECTED, was EXEMPT, or a situation did
+    NOT occur (e.g. "X was unaffected by Y", "unlike X who did not...", "X was spared from..."),
+    include this as a separate event entry with:
+    - "trigger": the negating/exempting expression (e.g. "unaffected", "spared", "did not melt")
+    - "is_negation": true   ← add this extra field
+    - frame_name prefixed with "NOT_" (e.g. "NOT_Affect", "NOT_Transform")
+    - core FE "Excluded_Entity" → the entity that is NOT affected
+    - noncore FE "Reference_Event" → brief description of what they are excluded from
+
 ---Output Format---
 Output ONLY a JSON array. Each element:
 {{
@@ -299,7 +309,7 @@ Keep the result to 3-5 sentences maximum.
 # ─────────────────────────────────────────────────────────────────────────────
 
 PROMPTS["answer_generation"] = """---Role---
-You are a helpful assistant answering questions based on retrieved knowledge.
+You are a precise question-answering assistant. Answer using ONLY the retrieved context below.
 
 ---Structured Facts (Frame Instances)---
 {structured_facts}
@@ -311,9 +321,15 @@ You are a helpful assistant answering questions based on retrieved knowledge.
 {query}
 
 ---Instructions---
-- Answer the question using ONLY information from the facts and passages above.
-- Cite specific frame instances or passages when relevant.
-- If information is insufficient, say so clearly. Do not hallucinate.
-- Be concise and precise.
+1. First, identify which frame instances and passages are most directly relevant to the question.
+2. If the question asks about multiple entities, groups, or time periods, address each one explicitly.
+3. Pay special attention to NOT_* frames — these encode what did NOT happen or who was NOT affected.
+4. If a key fact is absent from the retrieved context, state "Not found in retrieved context" rather
+   than guessing.
+5. Structure your answer:
+   [Direct answer to the question]
+   [Key supporting evidence from facts/passages — be specific]
+   [Any important exceptions or caveats, especially from NOT_* frames]
+6. Keep the answer focused and no longer than needed. Avoid re-stating the question.
 
 ---Answer---"""

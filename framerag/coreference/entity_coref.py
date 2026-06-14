@@ -44,10 +44,12 @@ class EntityCoreferenceResolver:
         embed_func: Callable[[list[str]], Awaitable[np.ndarray]],
         llm_func: Callable[..., Awaitable[str]],
         cluster_threshold: float = AUTO_SAME_THRESHOLD,
+        enable_llm_verify: bool = True,
     ):
         self._embed = embed_func
         self._llm = llm_func
         self._threshold = cluster_threshold
+        self._enable_llm_verify = enable_llm_verify
 
     async def resolve(
         self, mentions: list[EntityMentionSchema]
@@ -109,7 +111,7 @@ class EntityCoreferenceResolver:
 
                     if sim >= AUTO_SAME_THRESHOLD:
                         union_find.union(mid_i, mid_j)
-                    elif sim >= AUTO_DIFF_THRESHOLD:
+                    elif sim >= AUTO_DIFF_THRESHOLD and self._enable_llm_verify:
                         m_i = mention_by_id[mid_i]
                         m_j = mention_by_id[mid_j]
                         same = await self._llm_verify_pair(m_i, m_j)
