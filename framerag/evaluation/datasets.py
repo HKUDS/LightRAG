@@ -168,19 +168,30 @@ def load_musique(
 
 def load_chronoqa(
     data_path: Optional[str] = None,
-    split: str = "all",
+    split: str = "train",
     max_samples: Optional[int] = None,
 ) -> list[dict]:
     """Load ChronoQA — passage-grounded narrative QA (arXiv 2506.05939).
 
     Dataset: https://huggingface.co/datasets/zy113/ChronoQA
     - 1,028 QA pairs across 18 public-domain narratives
-    - Single split: "all"  (no train/val/test; split yourself if needed)
+    - Single split: "train" (all 1028 rows; no train/val/test split)
+    - Each row has ONE field "queries" (nested dict) containing all data
     - Each sample has gold evidence excerpts with byte offsets
+
+    Actual schema (nested under "queries"):
+      query           str   — the question
+      ground_truth    str   — gold answer
+      story_id        str   — narrative ID ("1"–"18")
+      question_id     int   — index within that story
+      category        str   — reasoning facet (8 types)
+      passages        list  — [{excerpt, start_byte, end_byte, ...}]
+      supporting_passages list[int] — indices into passages (gold evidence)
+      primary_assessment  dict | None
 
     Args:
         data_path: optional local JSONL/JSON file path (overrides HuggingFace)
-        split: HuggingFace split name — ChronoQA only has "all"
+        split: HuggingFace split name — ChronoQA only has "train"
         max_samples: limit total samples loaded
     """
     # ── Local file override ────────────────────────────────────────────────────
@@ -208,59 +219,93 @@ def load_chronoqa(
         return []
 
     samples = []
-    for i, ex in enumerate(ds):
+    for i, row in enumerate(ds):
         if max_samples and i >= max_samples:
             break
+        # All data is nested under the "queries" field
+        ex = row.get("queries", row)
         samples.append(_parse_chronoqa_example(ex, i))
 
     logger.info(f"[ChronoQA] Loaded {len(samples)} samples from HuggingFace (split={split})")
     return samples
 
 
-def _parse_chronoqa_example(ex: dict, fallback_id: int) -> dict:
-    """Normalise a single ChronoQA example.
+# Story ID → title mapping (from dataset description)
+_CHRONOQA_STORY_TITLES = {
+    "1":  "A Study in Scarlet",
+    "2":  "The Hound of the Baskervilles",
+    "3":  "Harry Potter and the Chamber of Secrets",
+    "4":  "Harry Potter and the Sorcerer's Stone",
+    "5":  "Les Misérables",
+    "6":  "The Phantom of the Opera",
+    "7":  "The Sign of the Four",
+    "8":  "The Wonderful Wizard of Oz",
+    "9":  "The Adventures of Sherlock Holmes",
+    "10": "Lady Susan",
+    "11": "Dangerous Connections",
+    "12": "The Picture of Dorian Gray",
+    "13": "The Diary of a Nobody",
+    "14": "The Sorrows of Young Werther",
+    "15": "The Mysterious Affair at Styles",
+    "16": "Pride and Prejudice",
+    "17": "The Secret Garden",
+    "18": "Anne of Green Gables",
+}
 
-    Actual ChronoQA fields (zy113/ChronoQA):
-      story_id      string  — ID of the narrative (1–18)
-      question_id   int32   — index within that story
-      category      string  — one of 8 reasoning facets
-      query         string  — the question
-      ground_truth  string  — gold answer
-      passages      list    — each item: {start_sentence, end_sentence,
-                                          start_byte, end_byte, excerpt}
-      story_title   string  — human-readable title (optional)
+
+def _parse_chronoqa_example(ex: dict, fallback_id: int) -> dict:
+    """Normalise a single ChronoQA queries dict.
+
+    Fields inside "queries" (from actual HuggingFace inspection):
+      query                str
+      ground_truth         str
+      story_id             str   ("1"–"18")
+      question_id          int
+      category             str   (reasoning facet)
+      passages             list  [{excerpt, start_byte, end_byte,
+                                   start_sentence, end_sentence,
+                                   first_words, last_words,
+                                   verification_status, verification_notes}]
+      supporting_passages  list[int] | None  — indices of gold passages
+      primary_assessment   dict | None
+      verification_notes   list | None
     """
     story_id    = str(ex.get("story_id", fallback_id))
     question_id = ex.get("question_id", fallback_id)
     uid         = f"{story_id}_{question_id}"
 
-    gold_answer = ex.get("ground_truth", ex.get("answer", ""))
+    gold_answer  = ex.get("ground_truth", "")
     gold_answers = [gold_answer] if gold_answer else []
 
-    category = ex.get("category", ex.get("facet", ex.get("type", "")))
+    category = ex.get("category", "")
 
-    # passages: list of dicts with excerpt + byte offsets
-    raw_passages = ex.get("passages", [])
-    evidence_excerpts: list[str] = []
-    if isinstance(raw_passages, list):
-        for p in raw_passages:
-            if isinstance(p, dict):
-                exc = p.get("excerpt", "")
-            else:
-                exc = str(p)
-            if exc:
-                evidence_excerpts.append(exc)
+    # All passage dicts; excerpt field has the actual text
+    raw_passages: list = ex.get("passages") or []
+    all_excerpts: list[str] = [
+        p["excerpt"] for p in raw_passages
+        if isinstance(p, dict) and p.get("excerpt")
+    ]
+
+    # supporting_passages: indices pointing to the gold evidence passages
+    support_idxs: list[int] = ex.get("supporting_passages") or []
+    gold_excerpts: list[str] = [
+        all_excerpts[i] for i in support_idxs
+        if isinstance(i, int) and i < len(all_excerpts)
+    ] if support_idxs else all_excerpts  # fall back to all if not annotated
+
+    story_title = _CHRONOQA_STORY_TITLES.get(story_id, story_id)
 
     return {
         "id":              uid,
         "story_id":        story_id,
-        "story_title":     ex.get("story_title", story_id),
-        "question":        ex.get("query", ex.get("question", "")),
+        "story_title":     story_title,
+        "question":        ex.get("query", ""),
         "gold_answers":    gold_answers,
-        "supporting_docs": evidence_excerpts,  # gold evidence passages
+        "supporting_docs": gold_excerpts,   # gold evidence excerpts for RAG corpus
+        "all_excerpts":    all_excerpts,    # all passage excerpts in this QA pair
         "category":        category,
         "type":            category,
-        "passages_raw":    raw_passages,       # full passage dicts with byte offsets
+        "passages_raw":    raw_passages,    # full dicts with byte offsets
     }
 
 
@@ -271,9 +316,10 @@ def _parse_chronoqa_records(
 ) -> list[dict]:
     """Parse a local JSONL/JSON list into the standard ChronoQA format."""
     samples = []
-    for i, ex in enumerate(raw):
+    for i, row in enumerate(raw):
         if max_samples and len(samples) >= max_samples:
             break
+        ex = row.get("queries", row)
         samples.append(_parse_chronoqa_example(ex, i))
     logger.info(f"[ChronoQA] Loaded {len(samples)} samples from {source}")
     return samples

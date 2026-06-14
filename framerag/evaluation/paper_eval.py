@@ -627,8 +627,8 @@ def main():
     )
     parser.add_argument("--dataset", required=True,
                         choices=["chronoqa", "hotpotqa", "2wikimultihopqa", "musique"])
-    parser.add_argument("--split",            default="all",
-                        help="Split name. ChronoQA only has 'all' (default).")
+    parser.add_argument("--split",            default="train",
+                        help="Split name. ChronoQA only has 'train' (all 1028 rows).")
     parser.add_argument("--max_samples",      type=int, default=None)
     parser.add_argument("--working_dir",      default="./eval_storage")
     parser.add_argument("--llm_model",        default="gpt-4o-mini",
