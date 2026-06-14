@@ -154,6 +154,90 @@ docker compose -f compose.yaml --profile api up -d
 
 镜像构建细节、GPU 驱动准备、模型权重位置等请参考官方 README：<https://github.com/opendatalab/MinerU>。
 
+**进阶：开启 vLLM 预加载与标题层级修正（可选）**
+
+在基础部署之上，建议为本地 MinerU 额外开启两项 MinerU **服务端**功能。这两项都改的是 MinerU 容器侧配置（容器内 `mineru.json` 与官方 `compose.yaml`），不涉及 LightRAG 的 env 变量；其中标题层级修正还需要一个可用的 LLM API。
+
+- **vLLM 启动预加载**：让容器启动时就把 VLM 模型加载进显存，避免首个解析请求承担模型加载延迟。
+- **标题层级修正（`title_aided`）**：MinerU 借助一个外部 LLM 修正解析输出的标题层级，提升结构化产物质量。这对依赖标题结构的 [`P`（段落语义）分块策略](#25-文件处理选项)尤其有帮助——`P` 优先按标题分割，标题层级越准确，分块语义越好。
+
+**步骤一：导出并修改 `mineru-lightrag.json`**
+
+从官方镜像中把 `/root/mineru.json` 拷到宿主机当前目录的 `mineru-lightrag.json`（用固定容器名 `temp_mineru`，无需运行容器）：
+
+```bash
+docker create --name temp_mineru mineru:latest
+docker cp temp_mineru:/root/mineru.json ./mineru-lightrag.json
+docker rm temp_mineru
+```
+
+然后修改 `mineru-lightrag.json` 中的 `llm-aided-config.title_aided`：填入 `api_key`，并把 `enable` 改为 `true`：
+
+```json
+"llm-aided-config": {
+    "title_aided": {
+        "api_key": "your_api_key",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen3.5-plus",
+        "enable_thinking": false,
+        "enable": true
+    }
+}
+```
+
+> `api_key` / `base_url` / `model` 需替换为用户自己可用的 LLM 服务（示例使用阿里云 DashScope 的 OpenAI 兼容接口）。
+
+**步骤二：修改官方 `compose.yaml` 的 `api` profile 服务（`mineru-api`）**
+
+在 `mineru-api` 服务上做三处改动：`environment` 增加 `MINERU_TOOLS_CONFIG_JSON`（让 MinerU 读改过的配置而非镜像内置 `mineru.json`），`volumes` 把宿主机 `mineru-lightrag.json` 挂进容器，`command` 追加 `--enable-vlm-preload true` 开启 vLLM 预加载。改好后的完整 `mineru-api` profile 如下（以 `# <-- 新增` 标注三处增量）：
+
+```yaml
+  mineru-api:
+    image: mineru:latest
+    container_name: mineru-api
+    restart: always
+    profiles: ["api"]
+    ports:
+      - 8000:8000
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_TOOLS_CONFIG_JSON: /root/mineru-lightrag.json   # <-- 新增
+    volumes:
+      - ./mineru-lightrag.json:/root/mineru-lightrag.json    # <-- 新增
+    entrypoint: mineru-api
+    command:
+      --host 0.0.0.0
+      --port 8000
+      --allow-public-http-client
+      --gpu-memory-utilization 0.45
+      --enable-vlm-preload true                              # <-- 新增
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]  # 多卡改为 ["0", "1"]
+              capabilities: [gpu]
+```
+
+> 示范中 `--gpu-memory-utilization`、`device_ids` 等为官方默认/示例值，请按实际显卡情况调整；`environment` / `volumes` / `command` 三处为本次新增项，其余保持官方原样。
+
+**步骤三：重启生效**
+
+改完后重新启动 API 服务让改动生效：
+
+```bash
+docker compose -f compose.yaml --profile api up -d
+```
+
+LightRAG 侧 env 无需任何改动，仍按下文 Local 模式配置（`MINERU_API_MODE=local` + `MINERU_LOCAL_ENDPOINT`）即可。
+
 **LightRAG 侧 env 配置**
 
 Local 模式（自建 mineru-api）：

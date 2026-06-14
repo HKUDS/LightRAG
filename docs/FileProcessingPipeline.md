@@ -154,6 +154,90 @@ docker compose -f compose.yaml --profile api up -d
 
 For image build details, GPU driver setup, model weight locations, etc., refer to the official README: <https://github.com/opendatalab/MinerU>.
 
+**Advanced: enabling vLLM preload and title-level correction (optional)**
+
+On top of the basic deployment, it is recommended to additionally enable two MinerU **server-side** features for your local MinerU. Both modify MinerU container-side configuration (the in-container `mineru.json` and the official `compose.yaml`), and do not involve any LightRAG env variable; title-level correction additionally requires an available LLM API.
+
+- **vLLM startup preload**: loads the VLM model into GPU memory at container startup, avoiding the model-loading latency on the first parse request.
+- **Title-level correction (`title_aided`)**: MinerU uses an external LLM to correct the title hierarchy of the parsed output, improving the quality of the structured artifacts. This is especially helpful for the [`P` (paragraph semantic) chunking strategy](#25-file-processing-options), which depends on the title structure — `P` splits by titles first, so the more accurate the title hierarchy, the better the chunking semantics.
+
+**Step 1: Export and modify `mineru-lightrag.json`**
+
+Copy `/root/mineru.json` from the official image to `mineru-lightrag.json` in the host's current directory (using the fixed container name `temp_mineru`, without running the container):
+
+```bash
+docker create --name temp_mineru mineru:latest
+docker cp temp_mineru:/root/mineru.json ./mineru-lightrag.json
+docker rm temp_mineru
+```
+
+Then modify `llm-aided-config.title_aided` in `mineru-lightrag.json`: fill in `api_key` and change `enable` to `true`:
+
+```json
+"llm-aided-config": {
+    "title_aided": {
+        "api_key": "your_api_key",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen3.5-plus",
+        "enable_thinking": false,
+        "enable": true
+    }
+}
+```
+
+> `api_key` / `base_url` / `model` should be replaced with an LLM service available to you (the example uses Alibaba Cloud DashScope's OpenAI-compatible endpoint).
+
+**Step 2: Modify the `api` profile service (`mineru-api`) in the official `compose.yaml`**
+
+Make three changes to the `mineru-api` service: add `MINERU_TOOLS_CONFIG_JSON` to `environment` (so MinerU reads the modified config instead of the image's built-in `mineru.json`), mount the host's `mineru-lightrag.json` into the container via `volumes`, and append `--enable-vlm-preload true` to `command` to enable vLLM preload. The complete `mineru-api` profile after modification is as follows (the three increments are marked with `# <-- added`):
+
+```yaml
+  mineru-api:
+    image: mineru:latest
+    container_name: mineru-api
+    restart: always
+    profiles: ["api"]
+    ports:
+      - 8000:8000
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_TOOLS_CONFIG_JSON: /root/mineru-lightrag.json   # <-- added
+    volumes:
+      - ./mineru-lightrag.json:/root/mineru-lightrag.json    # <-- added
+    entrypoint: mineru-api
+    command:
+      --host 0.0.0.0
+      --port 8000
+      --allow-public-http-client
+      --gpu-memory-utilization 0.45
+      --enable-vlm-preload true                              # <-- added
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]  # For multiple GPUs: ["0", "1"]
+              capabilities: [gpu]
+```
+
+> In the example, `--gpu-memory-utilization`, `device_ids`, etc. are official defaults/sample values; adjust them according to your actual GPU setup. The three items `environment` / `volumes` / `command` are the additions for this change; keep everything else as in the official file.
+
+**Step 3: Restart to take effect**
+
+After making the changes, restart the API service for them to take effect:
+
+```bash
+docker compose -f compose.yaml --profile api up -d
+```
+
+No change is needed on the LightRAG side; just configure Local mode as described below (`MINERU_API_MODE=local` + `MINERU_LOCAL_ENDPOINT`).
+
 **LightRAG-side env configuration**
 
 Local mode (self-hosted mineru-api):
