@@ -92,13 +92,18 @@ def make_openai_embed(model: str = "text-embedding-3-small"):
     import numpy as np
     try:
         from lightrag.llm.openai import openai_embed
-        return openai_embed
-    except ImportError:
+        # Use the raw underlying function so we can strip LightRAG-internal kwargs
+        # (e.g. _priority) that would cause a TypeError in the OpenAI SDK.
+        _func = openai_embed.func
+        async def _embed(texts: list[str], **_kwargs) -> np.ndarray:
+            return await _func(texts, model=model)
+        return _embed
+    except (ImportError, AttributeError):
         pass
     from openai import AsyncOpenAI
-    client = AsyncOpenAI()
-    async def _embed(texts: list[str]) -> np.ndarray:
-        resp = await client.embeddings.create(model=model, input=texts)
+    _client = AsyncOpenAI()
+    async def _embed(texts: list[str], **_kwargs) -> np.ndarray:
+        resp = await _client.embeddings.create(model=model, input=texts)
         return np.array([d.embedding for d in resp.data], dtype=np.float32)
     return _embed
 
@@ -246,6 +251,13 @@ async def run_evaluation(
     )
     from .metrics import compute_ragas_metrics
 
+    # Bootstrap LightRAG shared in-process storage (required by JsonKVStorage)
+    try:
+        from lightrag.kg.shared_storage import initialize_share_data
+        initialize_share_data(workers=1)
+    except (ImportError, AssertionError):
+        pass  # already initialized or not available
+
     loaders = {
         "hotpotqa":        lambda: load_hotpotqa(split, max_samples),
         "2wikimultihopqa": lambda: load_2wikimultihopqa(split, max_samples),
@@ -350,7 +362,7 @@ async def run_evaluation(
 
 
 def _print_comparison(dataset_name: str, fr_metrics: dict, lr_metrics: dict) -> None:
-    sep = "─" * 75
+    sep = "-" * 75
     header = f"{'System':<22}{'Faithful':>10}{'AnsRel':>10}{'CtxRec':>10}{'CtxPrec':>10}{'RAGAS':>10}"
     print(f"\n{sep}")
     print(f"Dataset: {dataset_name}  |  Metrics: RAGAS (LLM-judged)")
