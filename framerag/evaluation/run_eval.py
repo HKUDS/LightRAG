@@ -1,32 +1,28 @@
-"""Evaluate FrameRAG vs LightRAG on multi-hop QA benchmarks using RAGAS metrics.
+"""Evaluate FrameRAG on multi-hop QA benchmarks using RAGAS metrics.
 
-Benchmarks:
+Benchmarks (multi-hop only):
   - HotpotQA         (multi-hop, distractor setting)
   - 2WikiMultiHopQA  (multi-hop, compositional)
   - MuSiQue          (multi-hop, decomposable)
-  - ChronoQA         (temporal/causal/character consistency; arXiv 2506.05939)
 
-Both FrameRAG and LightRAG are evaluated on the same samples with the same
-4 RAGAS metrics used in lightrag/evaluation/eval_rag_quality.py:
+Metrics (4 RAGAS metrics, same as lightrag/evaluation/eval_rag_quality.py):
   - Faithfulness, AnswerRelevancy, ContextRecall, ContextPrecision, ragas_score
 
-Reference EM/F1 numbers from the E²RAG paper (arXiv 2506.05939) are included
-for context. RAGAS scores are LLM-judged, so results will differ from paper
-numbers which used lexical metrics.
+For ChronoQA evaluation use paper_eval.py (LLM-judge Likert, E2RAG protocol).
 
 Usage:
     python -m framerag.evaluation.run_eval \\
         --dataset hotpotqa \\
         --split validation \\
         --max_samples 50 \\
-        --working_dir ./eval_storage \\
+        --no_lightrag \\
         --llm_model gpt-4o-mini \\
-        --output_file results.json
+        --output_file results_ragas.json
 
 Environment variables:
-    OPENAI_API_KEY                 (required for LLM + RAGAS scoring)
-    EVAL_LLM_BINDING_API_KEY       (overrides OPENAI_API_KEY for RAGAS)
-    EVAL_LLM_BINDING_HOST          (custom endpoint for local models)
+    OPENAI_API_KEY              (required for LLM + RAGAS scoring)
+    EVAL_LLM_BINDING_API_KEY    (overrides OPENAI_API_KEY for RAGAS scoring)
+    EVAL_LLM_BINDING_HOST       (custom endpoint for local models)
 """
 from __future__ import annotations
 
@@ -40,28 +36,6 @@ from typing import Optional
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Reference numbers for comparison
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ChronoQA: E²RAG paper (arXiv 2506.05939, Table 3) — LLM-judged Likert 1–10
-# 3 judges, 497 QA pairs across 9 public-domain stories.
-CHRONOQA_REFERENCE = {
-    "E2RAG (comb. extraction)":  7.125,
-    "E2RAG (comb. embedding)":   7.072,
-    "E2RAG (hyp. extraction)":   6.983,
-    "E2RAG (hyp. embedding)":    6.940,
-    "LightRAG hybrid":           6.880,
-    "GraphRAG local":            6.800,
-    "Vanilla RAG":               6.602,
-    "LightRAG local":            6.550,
-    "LightRAG global":           6.458,
-}
-
-# Multi-hop QA: numbers to fill in after running LightRAG eval on same splits
-# (no published RAGAS numbers exist — these slots are left for our own runs)
-MULTIHOP_REFERENCE: dict = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -92,8 +66,6 @@ def make_openai_embed(model: str = "text-embedding-3-small"):
     import numpy as np
     try:
         from lightrag.llm.openai import openai_embed
-        # Use the raw underlying function so we can strip LightRAG-internal kwargs
-        # (e.g. _priority) that would cause a TypeError in the OpenAI SDK.
         _func = openai_embed.func
         async def _embed(texts: list[str], **_kwargs) -> np.ndarray:
             return await _func(texts, model=model)
@@ -119,12 +91,7 @@ async def evaluate_framerag_sample(
     working_dir: str,
     embedding_dim: int = 1536,
 ) -> dict:
-    """Index supporting docs, query FrameRAG, return answer + retrieved contexts.
-
-    [A] Indexes all_excerpts (full story passages) when available, falling back to
-    supporting_docs. This gives the hypergraph enough structure for diffusion.
-    [B] LLM coref verify is disabled for eval speed (-80% latency).
-    """
+    """Index supporting docs, query FrameRAG, return answer + retrieved contexts."""
     from framerag import FrameRAG
 
     sample_dir = os.path.join(working_dir, "framerag", f"sample_{sample['id']}")
@@ -133,14 +100,12 @@ async def evaluate_framerag_sample(
         llm_func=llm_func,
         embed_func=embed_func,
         embedding_dim=embedding_dim,
-        enable_event_coref=False,        # skip coref for eval speed
-        enable_llm_coref_verify=False,   # [B] skip borderline LLM calls
+        enable_event_coref=False,
+        enable_llm_coref_verify=False,
     )
     await rag.initialize()
 
-    # [A] Prefer all_excerpts over gold-only supporting_docs
-    docs_to_index = sample.get("all_excerpts") or sample.get("supporting_docs", [])
-    for i, doc in enumerate(docs_to_index):
+    for i, doc in enumerate(sample.get("supporting_docs", [])):
         if doc.strip():
             await rag.ainsert(doc, source_doc=f"doc_{i}")
 
@@ -149,121 +114,16 @@ async def evaluate_framerag_sample(
     shutil.rmtree(sample_dir, ignore_errors=True)
 
     gold_list = sample["gold_answers"]
-    gold_str  = gold_list[0] if gold_list else ""
-
     return {
         "id":           sample["id"],
         "question":     sample["question"],
         "gold_answers": gold_list,
-        "ground_truth": gold_str,
+        "ground_truth": gold_list[0] if gold_list else "",
         "prediction":   prediction,
         "contexts":     contexts,
         "type":         sample.get("type", ""),
         "system":       "FrameRAG",
     }
-
-
-async def evaluate_framerag_chronoqa(
-    samples: list[dict],
-    llm_func,
-    embed_func,
-    working_dir: str,
-    embedding_dim: int = 1536,
-    story_ids: Optional[list[str]] = None,
-) -> list[dict]:
-    """[E] Story-level shared index for ChronoQA.
-
-    Groups samples by story_id and indexes all excerpts of each story ONCE,
-    then queries all questions for that story. Saves ~57x API cost vs per-sample.
-
-    Stories with no excerpt text (e.g. Harry Potter — copyright) are skipped
-    automatically so they don't pull down the average score.
-
-    Args:
-        story_ids: if given, only evaluate these story IDs (e.g. ["1","2","5"]).
-    """
-    from framerag import FrameRAG
-    from collections import defaultdict
-
-    by_story: dict[str, list[dict]] = defaultdict(list)
-    for s in samples:
-        sid = str(s.get("story_id", s["id"]))
-        if story_ids and sid not in story_ids:
-            continue
-        by_story[sid].append(s)
-
-    all_results: list[dict] = []
-
-    for story_id, story_samples in by_story.items():
-        story_title = story_samples[0].get("story_title", story_id)
-        logger.info(f"[ChronoQA] Indexing story {story_id} ({story_title}): "
-                    f"{len(story_samples)} questions")
-
-        story_dir = os.path.join(working_dir, "framerag", f"story_{story_id}")
-        rag = FrameRAG(
-            working_dir=story_dir,
-            llm_func=llm_func,
-            embed_func=embed_func,
-            embedding_dim=embedding_dim,
-            enable_event_coref=False,
-            enable_llm_coref_verify=False,
-        )
-        await rag.initialize()
-
-        # Union all_excerpts from every question in this story.
-        # Each QA pair may reference different passage subsets, so we must
-        # collect from all — not just story_samples[0].
-        seen: set[str] = set()
-        all_excerpts: list[str] = []
-        for s in story_samples:
-            for exc in s.get("all_excerpts") or []:
-                if exc not in seen:
-                    all_excerpts.append(exc)
-                    seen.add(exc)
-        if not all_excerpts:
-            # Fallback: union of gold supporting_docs from all questions
-            for s in story_samples:
-                for doc in s.get("supporting_docs", []):
-                    if doc not in seen:
-                        all_excerpts.append(doc)
-                        seen.add(doc)
-
-        if not all_excerpts:
-            logger.warning(f"[ChronoQA] Story {story_id} has no excerpt text — skipping "
-                           f"(copyright text like Harry Potter cannot be redistributed).")
-            await rag.finalize()
-            shutil.rmtree(story_dir, ignore_errors=True)
-            continue
-
-        for i, doc in enumerate(all_excerpts):
-            if doc.strip():
-                await rag.ainsert(doc, source_doc=f"excerpt_{i}")
-
-        # Query all questions for this story
-        for s in story_samples:
-            try:
-                prediction, contexts = await rag.aquery_with_context(s["question"])
-            except Exception as e:
-                logger.error(f"[ChronoQA] Query failed for {s['id']}: {e}")
-                prediction, contexts = "", []
-            gold_list = s["gold_answers"]
-            all_results.append({
-                "id":           s["id"],
-                "question":     s["question"],
-                "gold_answers": gold_list,
-                "ground_truth": gold_list[0] if gold_list else "",
-                "prediction":   prediction,
-                "contexts":     contexts,
-                "type":         s.get("type", ""),
-                "story_id":     story_id,
-                "system":       "FrameRAG",
-            })
-
-        await rag.finalize()
-        shutil.rmtree(story_dir, ignore_errors=True)
-        logger.info(f"[ChronoQA] Story {story_id} done: {len(story_samples)} results")
-
-    return all_results
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +159,7 @@ async def evaluate_lightrag_sample(
     )
     rag = LightRAG(working_dir=sample_dir, llm_model_func=llm_func, embedding_func=ef)
     await rag.initialize_storages()
+
     for doc in sample.get("supporting_docs", []):
         if doc.strip():
             await rag.ainsert(doc)
@@ -307,13 +168,10 @@ async def evaluate_lightrag_sample(
         sample["question"],
         param=QueryParam(mode="hybrid", top_k=20),
     )
-
-    # Retrieve contexts separately for RAGAS (no built-in context return in LightRAG API)
     ctx_result = await rag.aquery(
         sample["question"],
-        param=QueryParam(mode="naive", top_k=10),  # naive = pure chunk retrieval
+        param=QueryParam(mode="naive", top_k=10),
     )
-    # LightRAG doesn't expose raw passages easily — use the naive answer as proxy context
     contexts = [ctx_result] if ctx_result else []
 
     await rag.finalize_storages()
@@ -333,7 +191,7 @@ async def evaluate_lightrag_sample(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Full evaluation loop
+# Full evaluation loop — RAGAS only, multi-hop datasets only
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def run_evaluation(
@@ -346,44 +204,44 @@ async def run_evaluation(
     embedding_dim: int = 1536,
     output_file: Optional[str] = None,
     concurrency: int = 4,
-    chronoqa_path: Optional[str] = None,
-    chronoqa_story_ids: Optional[list[str]] = None,
     run_lightrag: bool = True,
     ragas_llm_model: Optional[str] = None,
     ragas_api_key: Optional[str] = None,
     ragas_base_url: Optional[str] = None,
 ) -> dict:
-    """Evaluate FrameRAG (and optionally LightRAG) on a multi-hop QA benchmark.
+    """Evaluate FrameRAG (and optionally LightRAG) on a multi-hop QA dataset.
 
-    Metric routing:
-      chronoqa   → LLM-judged Likert 1-10 (3 judges, matches E²RAG paper)
-      others     → RAGAS (faithfulness / answer_relevance / context_recall /
-                   context_precision, matches LightRAG paper)
+    Metric: RAGAS (faithfulness, answer_relevance, context_recall,
+            context_precision) — same as lightrag/evaluation/eval_rag_quality.py.
+
+    For ChronoQA use paper_eval.py instead (LLM-judge Likert, E2RAG protocol).
     """
-    from .datasets import (
-        load_hotpotqa, load_2wikimultihopqa, load_musique, load_chronoqa
-    )
-    from .metrics import compute_ragas_metrics  # used for multi-hop branch below
+    from .datasets import load_hotpotqa, load_2wikimultihopqa, load_musique
+    from .metrics import compute_ragas_metrics
+
+    SUPPORTED = ["hotpotqa", "2wikimultihopqa", "musique"]
+    if dataset_name not in SUPPORTED:
+        raise ValueError(
+            f"run_eval.py only supports multi-hop datasets: {SUPPORTED}\n"
+            f"For ChronoQA use: python -m framerag.evaluation.paper_eval"
+        )
 
     # Bootstrap LightRAG shared in-process storage (required by JsonKVStorage)
     try:
         from lightrag.kg.shared_storage import initialize_share_data
         initialize_share_data(workers=1)
     except (ImportError, AssertionError):
-        pass  # already initialized or not available
+        pass
 
     loaders = {
         "hotpotqa":        lambda: load_hotpotqa(split, max_samples),
         "2wikimultihopqa": lambda: load_2wikimultihopqa(split, max_samples),
         "musique":         lambda: load_musique(split, max_samples),
-        "chronoqa":        lambda: load_chronoqa(chronoqa_path, split, max_samples),
     }
-    if dataset_name not in loaders:
-        raise ValueError(f"Unknown dataset: {dataset_name}. Choose: {list(loaders)}")
 
     samples = loaders[dataset_name]()
     if not samples:
-        logger.error(f"No samples loaded for {dataset_name}")
+        logger.error(f"No samples loaded for {dataset_name}/{split}")
         return {}
     logger.info(f"Evaluating {len(samples)} samples from {dataset_name}/{split}")
 
@@ -405,24 +263,17 @@ async def run_evaluation(
 
     # ── FrameRAG ──────────────────────────────────────────────────────────────
     logger.info("=== FrameRAG generation ===")
-    if dataset_name == "chronoqa":
-        # [E] Story-level shared index; skip stories with no text (Harry Potter)
-        framerag_results = await evaluate_framerag_chronoqa(
-            samples, llm_func, embed_func, working_dir, embedding_dim,
-            story_ids=chronoqa_story_ids,
-        )
-    else:
-        tasks = [
-            _safe(evaluate_framerag_sample(s, llm_func, embed_func, working_dir, embedding_dim),
-                  f"FrameRAG/{s['id']}")
-            for s in samples
-        ]
-        for i, coro in enumerate(asyncio.as_completed(tasks)):
-            r = await coro
-            if r:
-                framerag_results.append(r)
-            if (i + 1) % 10 == 0:
-                logger.info(f"[FrameRAG] {i+1}/{len(samples)} done")
+    tasks = [
+        _safe(evaluate_framerag_sample(s, llm_func, embed_func, working_dir, embedding_dim),
+              f"FrameRAG/{s['id']}")
+        for s in samples
+    ]
+    for i, coro in enumerate(asyncio.as_completed(tasks)):
+        r = await coro
+        if r:
+            framerag_results.append(r)
+        if (i + 1) % 10 == 0:
+            logger.info(f"[FrameRAG] {i+1}/{len(samples)} done")
 
     # ── LightRAG ──────────────────────────────────────────────────────────────
     if run_lightrag:
@@ -439,66 +290,39 @@ async def run_evaluation(
             if (i + 1) % 10 == 0:
                 logger.info(f"[LightRAG] {i+1}/{len(samples)} done")
 
-    # ── Scoring ───────────────────────────────────────────────────────────────
+    # ── RAGAS scoring ─────────────────────────────────────────────────────────
     scoring_model = ragas_llm_model or llm_model
-    is_chronoqa   = dataset_name == "chronoqa"
 
-    fr_metrics: dict = {}
-    lr_metrics: dict = {}
-
-    if is_chronoqa:
-        # ChronoQA → LLM-judged Likert 1–10, matching E²RAG paper
-        from .metrics import compute_likert_metrics
-        logger.info("=== Likert scoring: FrameRAG ===")
-        fr_metrics = compute_likert_metrics(
-            questions     = [r["question"]     for r in framerag_results],
-            predictions   = [r["prediction"]   for r in framerag_results],
-            ground_truths = [r["ground_truth"] for r in framerag_results],
-            llm_model     = scoring_model,
-            api_key       = ragas_api_key,
-            base_url      = ragas_base_url,
+    def _ragas(results: list[dict]) -> dict:
+        if not results:
+            return {}
+        return compute_ragas_metrics(
+            questions       = [r["question"]     for r in results],
+            answers         = [r["prediction"]   for r in results],
+            contexts        = [r["contexts"]     for r in results],
+            ground_truths   = [r["ground_truth"] for r in results],
+            llm_model       = scoring_model,
+            embedding_model = embed_model,
+            api_key         = ragas_api_key,
+            base_url        = ragas_base_url,
         )
-        if lightrag_results:
-            logger.info("=== Likert scoring: LightRAG ===")
-            lr_metrics = compute_likert_metrics(
-                questions     = [r["question"]     for r in lightrag_results],
-                predictions   = [r["prediction"]   for r in lightrag_results],
-                ground_truths = [r["ground_truth"] for r in lightrag_results],
-                llm_model     = scoring_model,
-                api_key       = ragas_api_key,
-                base_url      = ragas_base_url,
-            )
-    else:
-        # Multi-hop QA → RAGAS (matches LightRAG paper)
-        def _ragas(results: list[dict]) -> dict:
-            if not results:
-                return {}
-            return compute_ragas_metrics(
-                questions       = [r["question"]     for r in results],
-                answers         = [r["prediction"]   for r in results],
-                contexts        = [r["contexts"]     for r in results],
-                ground_truths   = [r["ground_truth"] for r in results],
-                llm_model       = scoring_model,
-                embedding_model = embed_model,
-                api_key         = ragas_api_key,
-                base_url        = ragas_base_url,
-            )
-        logger.info("=== RAGAS scoring: FrameRAG ===")
-        fr_metrics = _ragas(framerag_results)
-        if lightrag_results:
-            logger.info("=== RAGAS scoring: LightRAG ===")
-            lr_metrics = _ragas(lightrag_results)
 
-    # ── Print results ─────────────────────────────────────────────────────────
-    _print_comparison(dataset_name, fr_metrics, lr_metrics, is_chronoqa)
+    logger.info("=== RAGAS scoring: FrameRAG ===")
+    fr_metrics = _ragas(framerag_results)
+
+    lr_metrics: dict = {}
+    if lightrag_results:
+        logger.info("=== RAGAS scoring: LightRAG ===")
+        lr_metrics = _ragas(lightrag_results)
+
+    _print_results(dataset_name, fr_metrics, lr_metrics)
 
     output = {
         "dataset":        dataset_name,
         "split":          split,
-        "metric_family":  "likert" if is_chronoqa else "ragas",
+        "metric_family":  "ragas",
         "FrameRAG":       {"metrics": fr_metrics, "samples": framerag_results},
         "LightRAG":       {"metrics": lr_metrics, "samples": lightrag_results},
-        "reference":      CHRONOQA_REFERENCE if is_chronoqa else MULTIHOP_REFERENCE,
     }
     if output_file:
         with open(output_file, "w", encoding="utf-8") as f:
@@ -508,56 +332,29 @@ async def run_evaluation(
     return output
 
 
-def _print_comparison(
-    dataset_name: str,
-    fr_metrics: dict,
-    lr_metrics: dict,
-    is_chronoqa: bool = False,
-) -> None:
+def _print_results(dataset_name: str, fr_metrics: dict, lr_metrics: dict) -> None:
     sep = "-" * 75
     print(f"\n{sep}")
+    print(f"Dataset: {dataset_name}  |  Metric: RAGAS (matches LightRAG paper)")
+    print(f"  {'System':<22}{'Faithful':>10}{'AnsRel':>10}{'CtxRec':>10}{'CtxPrec':>10}{'RAGAS':>10}")
+    print(sep)
 
-    if is_chronoqa:
-        print(f"Dataset: {dataset_name}  |  Metric: LLM-judged Likert 1-10 (matches E2RAG paper)")
-        print(f"  {'System':<30}  {'Likert (1-10)':>14}  {'N':>5}")
-        print(sep)
+    def _row(name: str, m: dict) -> str:
+        if not m:
+            return f"  {name:<22}" + "         -" * 5
+        return (
+            f"  {name:<22}"
+            f"{m.get('faithfulness', 0):>10.3f}"
+            f"{m.get('answer_relevance', 0):>10.3f}"
+            f"{m.get('context_recall', 0):>10.3f}"
+            f"{m.get('context_precision', 0):>10.3f}"
+            f"{m.get('ragas_score', 0):>10.3f}"
+        )
 
-        def _row_likert(name: str, m: dict) -> str:
-            if not m:
-                return f"  {name:<30}             -      -"
-            return f"  {name:<30}  {m.get('likert_score', 0):>14.3f}  {m.get('n', 0):>5}"
-
-        if lr_metrics:
-            print(_row_likert("LightRAG (ours)", lr_metrics))
-        print(_row_likert("FrameRAG (ours)", fr_metrics))
-        print(sep)
-
-        print(f"\n  Reference from E2RAG paper (arXiv 2506.05939, Table 3):")
-        for sys_name, score in CHRONOQA_REFERENCE.items():
-            print(f"    {sys_name:<35} {score:.3f}")
-    else:
-        print(f"Dataset: {dataset_name}  |  Metric: RAGAS (matches LightRAG paper)")
-        header = f"  {'System':<22}{'Faithful':>10}{'AnsRel':>10}{'CtxRec':>10}{'CtxPrec':>10}{'RAGAS':>10}"
-        print(header)
-        print(sep)
-
-        def _row_ragas(name: str, m: dict) -> str:
-            if not m:
-                return f"  {name:<22}" + "         -" * 5
-            return (
-                f"  {name:<22}"
-                f"{m.get('faithfulness', 0):>10.3f}"
-                f"{m.get('answer_relevance', 0):>10.3f}"
-                f"{m.get('context_recall', 0):>10.3f}"
-                f"{m.get('context_precision', 0):>10.3f}"
-                f"{m.get('ragas_score', 0):>10.3f}"
-            )
-
-        if lr_metrics:
-            print(_row_ragas("LightRAG (ours)", lr_metrics))
-        print(_row_ragas("FrameRAG (ours)", fr_metrics))
-        print(sep)
-
+    if lr_metrics:
+        print(_row("LightRAG (ours)", lr_metrics))
+    print(_row("FrameRAG (ours)", fr_metrics))
+    print(sep)
     print()
 
 
@@ -567,59 +364,44 @@ def _print_comparison(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evaluate FrameRAG vs LightRAG using RAGAS metrics"
+        description="Evaluate FrameRAG on multi-hop QA with RAGAS metrics. "
+                    "For ChronoQA use paper_eval.py instead."
     )
     parser.add_argument(
         "--dataset", required=True,
-        choices=["hotpotqa", "2wikimultihopqa", "musique", "chronoqa"],
+        choices=["hotpotqa", "2wikimultihopqa", "musique"],
+        help="Multi-hop QA dataset. For ChronoQA use paper_eval.py.",
     )
-    parser.add_argument("--split",         default="validation")
-    parser.add_argument("--max_samples",   type=int, default=None)
-    parser.add_argument("--working_dir",   default="./eval_storage")
-    parser.add_argument("--llm_model",     default="gpt-4o-mini")
-    parser.add_argument("--embed_model",   default="text-embedding-3-small")
-    parser.add_argument("--embedding_dim", type=int, default=1536)
-    parser.add_argument("--output_file",   default=None)
-    parser.add_argument("--concurrency",   type=int, default=4)
-    parser.add_argument("--chronoqa_path", default=None)
-    parser.add_argument(
-        "--chronoqa_story_ids", default=None,
-        help="Comma-separated story IDs to evaluate (e.g. '1,2,5,6,7,8,9'). "
-             "Default: all stories with non-empty excerpts (skips HP stories 3,4).",
-    )
+    parser.add_argument("--split",          default="validation")
+    parser.add_argument("--max_samples",    type=int, default=None)
+    parser.add_argument("--working_dir",    default="./eval_storage")
+    parser.add_argument("--llm_model",      default="gpt-4o-mini")
+    parser.add_argument("--embed_model",    default="text-embedding-3-small")
+    parser.add_argument("--embedding_dim",  type=int, default=1536)
+    parser.add_argument("--output_file",    default=None)
+    parser.add_argument("--concurrency",    type=int, default=4)
     parser.add_argument("--ragas_llm_model", default=None,
                         help="LLM for RAGAS scoring (defaults to --llm_model)")
-    parser.add_argument("--ragas_api_key", default=None,
-                        help="API key for RAGAS scoring (defaults to OPENAI_API_KEY)")
-    parser.add_argument("--ragas_base_url", default=None,
-                        help="Custom endpoint for RAGAS scoring LLM")
-    parser.add_argument(
-        "--no_lightrag", action="store_true",
-        help="Skip LightRAG evaluation (only run FrameRAG)",
-    )
+    parser.add_argument("--ragas_api_key",  default=None)
+    parser.add_argument("--ragas_base_url", default=None)
+    parser.add_argument("--no_lightrag",    action="store_true",
+                        help="Skip LightRAG baseline, evaluate FrameRAG only")
     args = parser.parse_args()
 
-    story_ids = (
-        [s.strip() for s in args.chronoqa_story_ids.split(",")]
-        if args.chronoqa_story_ids else None
-    )
-
     asyncio.run(run_evaluation(
-        dataset_name        = args.dataset,
-        split               = args.split,
-        max_samples         = args.max_samples,
-        working_dir         = args.working_dir,
-        llm_model           = args.llm_model,
-        embed_model         = args.embed_model,
-        embedding_dim       = args.embedding_dim,
-        output_file         = args.output_file,
-        concurrency         = args.concurrency,
-        chronoqa_path       = args.chronoqa_path,
-        chronoqa_story_ids  = story_ids,
-        run_lightrag        = not args.no_lightrag,
-        ragas_llm_model     = args.ragas_llm_model,
-        ragas_api_key       = args.ragas_api_key,
-        ragas_base_url      = args.ragas_base_url,
+        dataset_name    = args.dataset,
+        split           = args.split,
+        max_samples     = args.max_samples,
+        working_dir     = args.working_dir,
+        llm_model       = args.llm_model,
+        embed_model     = args.embed_model,
+        embedding_dim   = args.embedding_dim,
+        output_file     = args.output_file,
+        concurrency     = args.concurrency,
+        run_lightrag    = not args.no_lightrag,
+        ragas_llm_model = args.ragas_llm_model,
+        ragas_api_key   = args.ragas_api_key,
+        ragas_base_url  = args.ragas_base_url,
     ))
 
 
