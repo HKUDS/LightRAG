@@ -567,13 +567,13 @@ async def bedrock_embed(
                     )
 
                     response = await bedrock_async_client.invoke_model(
-                        model=model,
+                        modelId=model,
                         body=body,
                         accept="application/json",
                         contentType="application/json",
                     )
 
-                    response_body = json.loads(response.get("body").read())
+                    response_body = await response.get("body").json()
 
                     # Validate response structure
                     if not response_body or "embeddings" not in response_body:

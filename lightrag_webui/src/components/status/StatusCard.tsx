@@ -230,6 +230,13 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
             <>
               <span>{t('graphPanel.statusCard.lockStatus')}:</span>
               <span>
+                {status.server_mode && (
+                  <>
+                    {status.server_mode}
+                    {status.server_mode === 'gunicorn' && status.workers ? ` ${status.workers}` : ''}
+                    {' | '}
+                  </>
+                )}
                 mp {status.keyed_locks.current_status.pending_mp_cleanup}/{status.keyed_locks.current_status.total_mp_locks} |
                 async {status.keyed_locks.current_status.pending_async_cleanup}/{status.keyed_locks.current_status.total_async_locks}
                 (pid: {status.keyed_locks.process_id})

@@ -103,6 +103,18 @@ class Neo4JStorage(BaseGraphStorage):
 
         self._driver = None
 
+    def _get_raw_workspace_label(self) -> str:
+        """Return the actual Neo4j label name for this workspace (no escaping).
+
+        This is the un-escaped label as it is stored on nodes. It is safe to
+        bind as a query parameter (for example, APOC ``labelFilter``), where
+        Neo4j handles the value without string interpolation and therefore
+        without any risk of Cypher injection. It must NOT be interpolated
+        directly into a query string.
+        """
+        workspace = self.workspace.strip()
+        return workspace if workspace else "base"
+
     def _get_workspace_label(self) -> str:
         """Return sanitized workspace label safe for use as a backtick-quoted identifier in Cypher queries.
 
@@ -111,11 +123,12 @@ class Neo4JStorage(BaseGraphStorage):
         for all other characters. The returned value is intended to be used
         inside backticks (for example, MATCH (n:`{label}`)) and is not
         validated as a standalone unquoted identifier.
+
+        For string-literal contexts (such as the APOC ``labelFilter`` config),
+        do NOT interpolate this value; bind ``_get_raw_workspace_label()`` as a
+        query parameter instead.
         """
-        workspace = self.workspace.strip()
-        if not workspace:
-            return "base"
-        return workspace.replace("`", "``")
+        return self._get_raw_workspace_label().replace("`", "``")
 
     def _normalize_index_suffix(self, workspace_label: str) -> str:
         """Normalize workspace label for safe use in index names."""
@@ -1294,6 +1307,9 @@ class Neo4JStorage(BaseGraphStorage):
             max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
 
         workspace_label = self._get_workspace_label()
+        # Raw (un-escaped) label bound as a query parameter for APOC labelFilter,
+        # which lives inside a Cypher string literal and must not be interpolated.
+        workspace_label_raw = self._get_raw_workspace_label()
         result = KnowledgeGraph()
         seen_nodes = set()
         seen_edges = set()
@@ -1356,7 +1372,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH start
                     CALL apoc.path.subgraphAll(start, {{
                         relationshipFilter: '',
-                        labelFilter: '{workspace_label}',
+                        labelFilter: $label_filter,
                         minLevel: 0,
                         maxLevel: $max_depth,
                         bfs: true
@@ -1376,6 +1392,7 @@ class Neo4JStorage(BaseGraphStorage):
                             {
                                 "entity_id": node_label,
                                 "max_depth": max_depth,
+                                "label_filter": workspace_label_raw,
                             },
                         )
                         full_record = await full_result.single()
@@ -1410,7 +1427,7 @@ class Neo4JStorage(BaseGraphStorage):
                             WITH start
                             CALL apoc.path.subgraphAll(start, {{
                                 relationshipFilter: '',
-                                labelFilter: '{workspace_label}',
+                                labelFilter: $label_filter,
                                 minLevel: 0,
                                 maxLevel: $max_depth,
                                 limit: $max_nodes,
@@ -1429,6 +1446,7 @@ class Neo4JStorage(BaseGraphStorage):
                                         "entity_id": node_label,
                                         "max_depth": max_depth,
                                         "max_nodes": max_nodes,
+                                        "label_filter": workspace_label_raw,
                                     },
                                 )
                                 record = await result_set.single()

@@ -185,6 +185,7 @@ class _RoleLLMMixin:
             max_async,
             llm_timeout=timeout,
             queue_name=spec.queue_name,
+            concurrency_group=f"llm:{role_name}",
         )(
             partial(
                 raw_func,
@@ -535,7 +536,13 @@ class _RoleLLMMixin:
     ) -> dict[str, Any]:
         if func is None:
             return {"available": False}
-        get_stats = getattr(func, "get_queue_stats", None)
+        # Prefer the cross-worker aggregated view (sums every gunicorn
+        # worker's published snapshot; falls back to the local snapshot
+        # internally on any shared-storage failure, so "available" keeps
+        # meaning "this wrapper exists", never "aggregation succeeded").
+        get_stats = getattr(func, "get_aggregated_queue_stats", None)
+        if not callable(get_stats):
+            get_stats = getattr(func, "get_queue_stats", None)
         if not callable(get_stats):
             return {"available": False}
         stats = get_stats()

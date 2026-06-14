@@ -424,6 +424,11 @@ def doc_status_parse_failure_fields(
     ``status_doc.metadata``; an existing value always wins via carry-over.
     """
     error_text = str(error)
+    if not error_text.strip():
+        # Some exceptions (e.g. certain httpx transport errors) stringify to
+        # an empty message; fall back to the class name so the WebUI never
+        # drops the Error Message row for a FAILED document.
+        error_text = type(error).__name__
     extra_fields: dict[str, Any] = {"error_msg": error_text}
     current_summary = str(
         doc_status_field(status_doc, "content_summary", "") or ""

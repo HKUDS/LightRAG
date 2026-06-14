@@ -723,3 +723,88 @@ def test_writer_blockid_formula_stable(tmp_path: Path) -> None:
     rows_a = _load_jsonl(parsed_a / "x.blocks.jsonl")[1]
     rows_b = _load_jsonl(parsed_b / "x.blocks.jsonl")[1]
     assert rows_a[0]["blockid"] == rows_b[0]["blockid"]
+
+
+@pytest.mark.offline
+def test_writer_strips_control_separators_from_block_content(
+    tmp_path: Path,
+) -> None:
+    """C0 control/separator chars (\\x1c-\\x1f FS/GS/RS/US, plus NUL/DEL) in a
+    block must not survive into blocks.jsonl content (the chunk source) or the
+    document_hash/merged_text. \\t/\\n inside the block are preserved."""
+    parsed = tmp_path / "ctrl.parsed"
+    ir = IRDoc(
+        document_name="ctrl.pdf",
+        document_format="pdf",
+        doc_title="ctrl",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="a\x1cb\x1dc\x1ed\x1fe\x00\x7f\tkeep\nline",
+                heading="H",
+                level=1,
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-ctrl", engine="mineru")
+
+    meta, rows = _load_jsonl(parsed / "ctrl.blocks.jsonl")
+    body = rows[0]["content"]
+    assert not any(c in body for c in "\x1c\x1d\x1e\x1f\x00\x7f")
+    # separators removed (no spurious split), whitespace controls kept.
+    assert body == "abcde\tkeep\nline"
+    # document_hash is derived from the cleaned merged_text.
+    assert meta["document_hash"].startswith("sha256:")
+
+
+@pytest.mark.offline
+def test_writer_blockid_unchanged_when_no_control_chars(tmp_path: Path) -> None:
+    """The control-char strip is a no-op for clean input: blockid/document_hash
+    for a control-char-free block stay identical to the pre-change baseline
+    (guards golden/byte-equivalence snapshots)."""
+    parsed_clean = tmp_path / "clean.parsed"
+    parsed_dirty = tmp_path / "dirty.parsed"
+    clean = IRDoc(
+        document_name="d.pdf",
+        document_format="pdf",
+        doc_title="d",
+        split_option={},
+        blocks=[IRBlock(content_template="hello world", heading="H", level=1)],
+    )
+    # Same logical content but with separators interspersed; after cleaning the
+    # rendered text collapses to the clean form, so blockid must match.
+    dirty = IRDoc(
+        document_name="d.pdf",
+        document_format="pdf",
+        doc_title="d",
+        split_option={},
+        blocks=[IRBlock(content_template="hello\x1f world\x1c", heading="H", level=1)],
+    )
+    write_sidecar(clean, parsed_dir=parsed_clean, doc_id="doc-x", engine="mineru")
+    write_sidecar(dirty, parsed_dir=parsed_dirty, doc_id="doc-x", engine="mineru")
+    meta_c, rows_c = _load_jsonl(parsed_clean / "d.blocks.jsonl")
+    meta_d, rows_d = _load_jsonl(parsed_dirty / "d.blocks.jsonl")
+    assert rows_c[0]["content"] == rows_d[0]["content"] == "hello world"
+    assert rows_c[0]["blockid"] == rows_d[0]["blockid"]
+    assert meta_c["document_hash"] == meta_d["document_hash"]
+
+
+@pytest.mark.offline
+def test_writer_drops_block_that_is_only_control_chars(tmp_path: Path) -> None:
+    """A block whose entire body is control chars + whitespace collapses to
+    empty after cleaning and is dropped (not emitted as a blank row)."""
+    parsed = tmp_path / "empty.parsed"
+    ir = IRDoc(
+        document_name="e.pdf",
+        document_format="pdf",
+        doc_title="e",
+        split_option={},
+        blocks=[
+            IRBlock(content_template="\x1c\x1d  \x1f\x1e", heading="H", level=1),
+            IRBlock(content_template="real body", heading="H2", level=1),
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-drop", engine="mineru")
+    _, rows = _load_jsonl(parsed / "e.blocks.jsonl")
+    assert len(rows) == 1
+    assert rows[0]["content"] == "real body"
