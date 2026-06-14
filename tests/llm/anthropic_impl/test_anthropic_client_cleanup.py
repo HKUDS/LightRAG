@@ -144,7 +144,12 @@ async def test_client_closed_on_api_connection_error():
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_client_closed_on_api_timeout_error():
-    """APITimeoutError triggers client.close() before re-raise."""
+    """APITimeoutError triggers client.close() before re-raise.
+
+    APITimeoutError subclasses APIConnectionError, so its except branch must be
+    ordered first. We assert the timeout-specific log fires (not the connection
+    one) to guard against the branch being swallowed by reordering.
+    """
     import httpx
     from anthropic import APITimeoutError
 
@@ -153,6 +158,7 @@ async def test_client_closed_on_api_timeout_error():
 
     with (
         patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client),
+        patch("lightrag.llm.anthropic.logger") as mock_logger,
         pytest.raises(APITimeoutError),
     ):
         await anthropic_complete_if_cache.__wrapped__(
@@ -160,6 +166,9 @@ async def test_client_closed_on_api_timeout_error():
         )
 
     fake_client.close.assert_awaited()
+    logged = " ".join(str(call) for call in mock_logger.error.call_args_list)
+    assert "Timeout" in logged
+    assert "Connection" not in logged
 
 
 @pytest.mark.offline

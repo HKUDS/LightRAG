@@ -164,6 +164,15 @@ async def anthropic_complete_if_cache(
         if system_prompt:
             create_params["system"] = system_prompt
         response = await anthropic_async_client.messages.create(**create_params)
+    except APITimeoutError as e:
+        # APITimeoutError subclasses APIConnectionError, so it must come first
+        # or it would be swallowed by the broader handler below.
+        logger.error(f"Anthropic API Timeout Error: {e}")
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
+        raise
     except APIConnectionError as e:
         logger.error(f"Anthropic API Connection Error: {e}")
         try:
@@ -173,13 +182,6 @@ async def anthropic_complete_if_cache(
         raise
     except RateLimitError as e:
         logger.error(f"Anthropic API Rate Limit Error: {e}")
-        try:
-            await anthropic_async_client.close()
-        except Exception as close_error:
-            logger.warning(f"Failed to close Anthropic client: {close_error}")
-        raise
-    except APITimeoutError as e:
-        logger.error(f"Anthropic API Timeout Error: {e}")
         try:
             await anthropic_async_client.close()
         except Exception as close_error:
