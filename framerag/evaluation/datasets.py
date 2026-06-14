@@ -133,18 +133,17 @@ def load_musique(
 ) -> list[dict]:
     """Load MuSiQue (Trivedi et al. 2022).
 
-    MuSiQue is NOT available on HuggingFace Hub. Download from:
-      https://github.com/StonyBrookNLP/musique/releases/download/v1.0/musique_v1.0.zip
+    HuggingFace: bdsaglam/musique (4,834 validation rows, confirmed working)
+    Fallback: download from StonyBrookNLP GitHub release
 
     Args:
-        split: 'train' | 'validation' | 'test' (maps to file suffix)
+        split: 'train' | 'validation' | 'test'
         max_samples: limit samples
         data_path: path to local JSONL file (e.g. musique_ans_v1.0_dev.jsonl)
-                   If None, tries common file locations automatically.
+                   If None, tries HuggingFace first, then common local paths.
 
-    JSONL fields (musique_ans_v1.0_*.jsonl):
-      id, question, answer, answer_aliases, answerable,
-      paragraphs: [{idx, title, paragraph_text, is_supporting}]
+    Fields: id, question, answer, answer_aliases, answerable,
+            paragraphs: [{idx, title, paragraph_text, is_supporting}]
     """
     import json as _json
 
@@ -169,7 +168,7 @@ def load_musique(
     except ImportError:
         raise ImportError("pip install datasets")
 
-    for hf_name in ["drt/musique", "Zenoverse/musique", "StonyBrookNLP/musique"]:
+    for hf_name in ["bdsaglam/musique", "drt/musique", "Zenoverse/musique", "StonyBrookNLP/musique"]:
         try:
             ds = load_dataset(hf_name, split=split)
             logger.info(f"[MuSiQue] Loaded from HuggingFace: {hf_name}")
