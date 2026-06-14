@@ -31,7 +31,7 @@ def _make_fake_response(content_text: str = "hello world") -> SimpleNamespace:
     return SimpleNamespace(content=[_Content()])
 
 
-def _make_error_client(error: Exception) -> SimpleNamespace:
+def _make_error_client(error: BaseException) -> SimpleNamespace:
     """Fake AsyncAnthropic whose ``messages.create`` raises *error*."""
     return SimpleNamespace(
         messages=SimpleNamespace(create=AsyncMock(side_effect=error)),
@@ -181,6 +181,30 @@ async def test_client_closed_on_generic_exception():
     with (
         patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client),
         pytest.raises(RuntimeError),
+    ):
+        await anthropic_complete_if_cache.__wrapped__(
+            model="claude-3-opus", prompt="hello", api_key="test-key"
+        )
+
+    fake_client.close.assert_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_client_closed_on_create_cancelled():
+    """Cancellation while awaiting create() closes the client, then propagates.
+
+    CancelledError is a BaseException and is not caught by the typed/Exception
+    branches; a dedicated BaseException handler must close the client before
+    re-raising so a cancellation before we hold the response doesn't leak it.
+    """
+    import asyncio
+
+    fake_client = _make_error_client(asyncio.CancelledError())
+
+    with (
+        patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client),
+        pytest.raises(asyncio.CancelledError),
     ):
         await anthropic_complete_if_cache.__wrapped__(
             model="claude-3-opus", prompt="hello", api_key="test-key"

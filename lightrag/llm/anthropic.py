@@ -207,6 +207,16 @@ async def anthropic_complete_if_cache(
         except Exception as close_error:
             logger.warning(f"Failed to close Anthropic client: {close_error}")
         raise
+    except BaseException:
+        # CancelledError (and other BaseExceptions) aren't caught above, yet a
+        # cancellation while awaiting create() — before we hold the response or
+        # stream — would otherwise leak the client. Close it, then re-raise the
+        # cancellation untouched (cooperative cancellation).
+        try:
+            await anthropic_async_client.close()
+        except Exception as close_error:
+            logger.warning(f"Failed to close Anthropic client: {close_error}")
+        raise
 
     if not stream:
         try:
