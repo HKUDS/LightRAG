@@ -615,8 +615,7 @@ export const isUserAbortError = (
 async function _readNdjsonStream(
   response: Response,
   onChunk: (chunk: string) => void,
-  onError: ((error: string) => void) | undefined,
-  _signal?: AbortSignal
+  onError: ((error: string) => void) | undefined
 ): Promise<void> {
   if (!response.body) {
     throw new Error('Response body is null');
@@ -773,6 +772,10 @@ export const queryTextStream = async (
       signal,
     });
 
+    // The response whose body we ultimately read — replaced by the retry
+    // response when a guest token is silently refreshed below.
+    let activeResponse = response;
+
     if (!response.ok) {
       // --- 401 guest-token retry -------------------------------------------
       if (response.status === 401) {
@@ -781,9 +784,13 @@ export const queryTextStream = async (
           currentToken && useAuthStore.getState().isGuestMode;
 
         if (isGuest) {
+          // Only the token refresh + retry fetch belong in this guarded
+          // block. The stream read itself happens after the if/else so that
+          // a mid-stream read failure is classified uniformly by the outer
+          // catch instead of being mislabelled as an auth-refresh failure.
           try {
             const newToken = await silentRefreshGuestToken();
-            const retryHeaders = { ...headers };
+            const retryHeaders: Record<string, string> = { ...(headers as Record<string, string>) };
             retryHeaders['Authorization'] = `Bearer ${newToken}`;
 
             const retryResponse = await fetch(
@@ -802,13 +809,7 @@ export const queryTextStream = async (
               );
             }
 
-            await _readNdjsonStream(
-              retryResponse,
-              onChunk,
-              onError,
-              signal
-            );
-            return;
+            activeResponse = retryResponse;
           } catch (refreshError) {
             if (isUserAbortError(signal, refreshError)) {
               return;
@@ -822,28 +823,28 @@ export const queryTextStream = async (
               cause: refreshError,
             });
           }
+        } else {
+          // Non-guest 401 → login
+          navigationService.navigateToLogin();
+          throw new Error('Authentication required');
+        }
+      } else {
+        // --- Other HTTP errors ---------------------------------------------
+        let errorBody = 'Unknown error';
+        try {
+          errorBody = await response.text();
+        } catch {
+          /* ignore */
         }
 
-        // Non-guest 401 → login
-        navigationService.navigateToLogin();
-        throw new Error('Authentication required');
+        throw new Error(
+          `${response.status} ${response.statusText}\n${JSON.stringify({ error: errorBody })}\n${backendBaseUrl}/query/stream`
+        );
       }
-
-      // --- Other HTTP errors -----------------------------------------------
-      let errorBody = 'Unknown error';
-      try {
-        errorBody = await response.text();
-      } catch {
-        /* ignore */
-      }
-
-      throw new Error(
-        `${response.status} ${response.statusText}\n${JSON.stringify({ error: errorBody })}\n${backendBaseUrl}/query/stream`
-      );
     }
 
-    // --- Happy path: read the NDJSON stream --------------------------------
-    await _readNdjsonStream(response, onChunk, onError, signal);
+    // --- Read the NDJSON stream (happy path or refreshed retry) ------------
+    await _readNdjsonStream(activeResponse, onChunk, onError);
   } catch (error) {
     const classified = _classifyStreamError(error, signal);
     if (classified === null) {

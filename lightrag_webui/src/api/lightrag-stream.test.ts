@@ -113,6 +113,17 @@ function makeTextResponse(body: string, status: number): Response {
   return new Response(body, { status })
 }
 
+/**
+ * Install a mocked implementation onto globalThis.fetch. Bun's `mock()` returns
+ * a `Mock` that lacks the DOM `fetch.preconnect` static, so the assignment is
+ * cast through `unknown` to satisfy the `typeof fetch` type.
+ */
+function installFetchMock(
+  impl: (url: string, init?: RequestInit) => Response | Promise<Response>
+): void {
+  globalThis.fetch = mock(impl) as unknown as typeof fetch
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -134,7 +145,7 @@ describe('queryTextStream — normal path', () => {
     const chunks: string[] = []
     const errors: string[] = []
 
-    globalThis.fetch = mock(() =>
+    installFetchMock(() =>
       makeNdjsonResponse([
         '{"response": "Hello"}',
         '{"response": " World"}',
@@ -156,7 +167,7 @@ describe('queryTextStream — normal path', () => {
     const chunks: string[] = []
     const errors: string[] = []
 
-    globalThis.fetch = mock(() =>
+    installFetchMock(() =>
       makeNdjsonResponse([
         '{"response": "ok"}',
         '{"error": "Something went wrong"}',
@@ -177,7 +188,7 @@ describe('queryTextStream — normal path', () => {
   test('skips malformed JSON lines', async () => {
     const chunks: string[] = []
 
-    globalThis.fetch = mock(() =>
+    installFetchMock(() =>
       makeNdjsonResponse([
         'not valid json',
         '{"response": "valid"}',
@@ -213,7 +224,7 @@ describe('queryTextStream — normal path', () => {
       },
     })
 
-    globalThis.fetch = mock(() => new Response(stream, { status: 200 }))
+    installFetchMock(() => new Response(stream, { status: 200 }))
 
     await apiModule.queryTextStream(
       makeQueryRequest(),
@@ -243,7 +254,7 @@ describe('queryTextStream — normal path', () => {
       },
     })
 
-    globalThis.fetch = mock(() => new Response(stream, { status: 200 }))
+    installFetchMock(() => new Response(stream, { status: 200 }))
 
     const chunks: string[] = []
     const errors: string[] = []
@@ -266,7 +277,7 @@ describe('queryTextStream — abort / stop button', () => {
     const controller = new AbortController()
     controller.abort()
 
-    globalThis.fetch = mock((_url: string, init?: RequestInit) => {
+    installFetchMock(() => {
       // fetch should reject since the signal is already aborted
       return Promise.reject(new DOMException('Aborted', 'AbortError'))
     })
@@ -283,7 +294,7 @@ describe('queryTextStream — abort / stop button', () => {
   })
 
   test('exits silently when AbortError is thrown without a signal', async () => {
-    globalThis.fetch = mock(() =>
+    installFetchMock(() =>
       Promise.reject(new DOMException('Aborted', 'AbortError'))
     )
 
@@ -333,7 +344,7 @@ describe('queryTextStream — HTTP errors', () => {
 
   for (const { status, expectedMessage } of errorCases) {
     test(`shows friendly message for HTTP ${status}`, async () => {
-      globalThis.fetch = mock(() =>
+      installFetchMock(() =>
         makeTextResponse('{"error":"details"}', status)
       )
 
@@ -351,7 +362,7 @@ describe('queryTextStream — HTTP errors', () => {
 
 describe('queryTextStream — network errors', () => {
   test('shows network error for Failed to fetch', async () => {
-    globalThis.fetch = mock(() =>
+    installFetchMock(() =>
       Promise.reject(new TypeError('Failed to fetch'))
     )
 
@@ -368,7 +379,7 @@ describe('queryTextStream — network errors', () => {
   })
 
   test('shows network error for NetworkError', async () => {
-    globalThis.fetch = mock(() =>
+    installFetchMock(() =>
       Promise.reject(new Error('NetworkError: connection refused'))
     )
 
@@ -390,7 +401,7 @@ describe('queryTextStream — auth headers', () => {
     storageData.set('LIGHTRAG-API-TOKEN', 'test-jwt-token')
 
     let capturedHeaders: HeadersInit | undefined
-    globalThis.fetch = mock((_url: string, init?: RequestInit) => {
+    installFetchMock((_url: string, init?: RequestInit) => {
       capturedHeaders = init?.headers
       return makeNdjsonResponse(['{"response": "ok"}'])
     })
@@ -401,15 +412,35 @@ describe('queryTextStream — auth headers', () => {
       () => {}
     )
 
-    // Bun's mock doesn't give us easy access to call args, but the fetch
-    // call goes through with the right URL. Verify the route is called.
-    // We can verify indirectly by checking the test passes (no throws).
-    expect(true).toBe(true)
+    // The module builds headers as a plain object literal, so the captured
+    // RequestInit.headers is a Record we can assert against directly.
+    const sentHeaders = capturedHeaders as Record<string, string>
+    expect(sentHeaders).toBeDefined()
+    expect(sentHeaders['Authorization']).toBe('Bearer test-jwt-token')
+    expect(sentHeaders['Accept']).toBe('application/x-ndjson')
+    expect(sentHeaders['Content-Type']).toBe('application/json')
+  })
+
+  test('omits Bearer token when none is stored', async () => {
+    let capturedHeaders: HeadersInit | undefined
+    installFetchMock((_url: string, init?: RequestInit) => {
+      capturedHeaders = init?.headers
+      return makeNdjsonResponse(['{"response": "ok"}'])
+    })
+
+    await apiModule.queryTextStream(
+      makeQueryRequest(),
+      () => {},
+      () => {}
+    )
+
+    const sentHeaders = capturedHeaders as Record<string, string>
+    expect(sentHeaders['Authorization']).toBeUndefined()
   })
 
   test('calls /query/stream endpoint', async () => {
     let capturedUrl = ''
-    globalThis.fetch = mock((url: string) => {
+    installFetchMock((url: string) => {
       capturedUrl = url
       return makeNdjsonResponse(['{"response": "ok"}'])
     })
@@ -431,7 +462,7 @@ describe('queryTextStream — guest-token 401 retry', () => {
 
     let callCount = 0
 
-    globalThis.fetch = mock((_url: string, _init?: RequestInit) => {
+    installFetchMock(() => {
       callCount++
       if (callCount === 1) {
         return makeTextResponse('{"error":"unauthorized"}', 401)
