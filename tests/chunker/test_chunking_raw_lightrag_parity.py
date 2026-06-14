@@ -222,9 +222,9 @@ def test_chunking_input_parity_raw_vs_lightrag(tmp_path):
             "chunking_func received different inputs for raw vs lightrag; "
             f"raw={spy_raw['input']!r}\nlr={spy_lr['input']!r}"
         )
-        assert not spy_lr["input"].startswith(
-            LIGHTRAG_DOC_CONTENT_PREFIX
-        ), "{{LRdoc}} marker leaked into chunking_func input"
+        assert not spy_lr["input"].startswith(LIGHTRAG_DOC_CONTENT_PREFIX), (
+            "{{LRdoc}} marker leaked into chunking_func input"
+        )
 
     asyncio.run(_run())
 
@@ -362,9 +362,9 @@ def test_extraction_meta_records_lightrag_parse_format(tmp_path, monkeypatch):
                 if isinstance(status_doc, dict)
                 else getattr(status_doc, "metadata", None)
             )
-            assert isinstance(
-                metadata, dict
-            ), f"doc_status.metadata should be a dict, got {type(metadata)!r}"
+            assert isinstance(metadata, dict), (
+                f"doc_status.metadata should be a dict, got {type(metadata)!r}"
+            )
             assert metadata.get("parse_format") == FULL_DOCS_FORMAT_LIGHTRAG, (
                 f"doc_status.metadata.parse_format="
                 f"{metadata.get('parse_format')!r}; "
@@ -561,11 +561,11 @@ def test_explicit_V_dispatches_to_semantic_vector(tmp_path, monkeypatch):
             await rag.finalize_storages()
 
         assert captured["calls"] >= 1, "V must route to chunking_by_semantic_vector"
-        assert (
-            captured.get("embedding_func") is rag.embedding_func
-        ), "dispatcher must hand the LightRAG embedding_func to the V chunker"
+        assert captured.get("embedding_func") is rag.embedding_func, (
+            "dispatcher must hand the LightRAG embedding_func to the V chunker"
+        )
         assert legacy_spy["calls"] == 0, (
-            "explicit process_options selector must bypass legacy " "chunking_func"
+            "explicit process_options selector must bypass legacy chunking_func"
         )
 
     asyncio.run(_run())
@@ -647,8 +647,7 @@ def test_pending_parse_lightrag_summary_populated_after_processed(
                 "refresh did not propagate"
             )
             assert not final_summary.startswith(LIGHTRAG_DOC_CONTENT_PREFIX), (
-                f"{{LRdoc}} marker leaked into doc_status summary: "
-                f"{final_summary!r}"
+                f"{{LRdoc}} marker leaked into doc_status summary: {final_summary!r}"
             )
             # The parser stub produces these paragraphs verbatim; the
             # blocks.jsonl writer joins them with a blank line, so the
@@ -709,8 +708,8 @@ def test_raw_text_starting_with_marker_chunked_verbatim(tmp_path):
             "chunking_func received corrupted input: "
             f"got {spy['input']!r}, expected {body_with_marker!r}"
         )
-        assert spy["input"].startswith(
-            LIGHTRAG_DOC_CONTENT_PREFIX
-        ), "literal marker prefix lost at chunking boundary"
+        assert spy["input"].startswith(LIGHTRAG_DOC_CONTENT_PREFIX), (
+            "literal marker prefix lost at chunking boundary"
+        )
 
     asyncio.run(_run())

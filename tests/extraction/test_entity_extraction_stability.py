@@ -239,9 +239,9 @@ def test_default_entity_types_guidance_covers_all_types():
         "NaturalObject",
     ]
     for t in expected_types:
-        assert (
-            t in guidance
-        ), f"Expected entity type '{t}' missing from default_entity_types_guidance"
+        assert t in guidance, (
+            f"Expected entity type '{t}' missing from default_entity_types_guidance"
+        )
 
 
 @pytest.mark.offline
@@ -362,9 +362,9 @@ def test_default_entity_types_removed_from_constants():
     """DEFAULT_ENTITY_TYPES must no longer exist in lightrag.constants."""
     import lightrag.constants as constants
 
-    assert not hasattr(
-        constants, "DEFAULT_ENTITY_TYPES"
-    ), "DEFAULT_ENTITY_TYPES should have been removed from constants.py"
+    assert not hasattr(constants, "DEFAULT_ENTITY_TYPES"), (
+        "DEFAULT_ENTITY_TYPES should have been removed from constants.py"
+    )
 
 
 # ---------------------------------------------------------------------------

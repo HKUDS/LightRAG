@@ -624,8 +624,7 @@ def _validate_filename_hint_for_resolution(
             and not parser_engine_endpoint_configured(engine)
         ):
             errors.append(
-                f"filename hint {m.group(0)!r} requires {endpoint_req} "
-                "to be configured"
+                f"filename hint {m.group(0)!r} requires {endpoint_req} to be configured"
             )
 
     if errors:

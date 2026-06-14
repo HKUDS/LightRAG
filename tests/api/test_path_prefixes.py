@@ -193,12 +193,12 @@ class TestOpenAPISpecIntegration:
 
             # Servers URL should include the prefix
             servers = spec.get("servers", [])
-            assert (
-                len(servers) > 0
-            ), "OpenAPI spec should have servers entry when root_path is set"
-            assert (
-                servers[0].get("url") == "/test-api"
-            ), f"Expected servers URL to be exactly /test-api, got: {servers[0].get('url')}"
+            assert len(servers) > 0, (
+                "OpenAPI spec should have servers entry when root_path is set"
+            )
+            assert servers[0].get("url") == "/test-api", (
+                f"Expected servers URL to be exactly /test-api, got: {servers[0].get('url')}"
+            )
 
     def test_openapi_spec_no_servers_without_prefix(self, mock_args_no_prefix):
         """Test OpenAPI spec has no servers entry when no root_path."""
@@ -234,9 +234,9 @@ class TestOpenAPISpecIntegration:
             for path in paths:
                 if path == "/":
                     continue
-                assert not path.startswith(
-                    "/test-api/"
-                ), f"Path {path} should not be prefixed with /test-api/ in root_path mode"
+                assert not path.startswith("/test-api/"), (
+                    f"Path {path} should not be prefixed with /test-api/ in root_path mode"
+                )
 
 
 class TestWebUIPrefixIntegration:

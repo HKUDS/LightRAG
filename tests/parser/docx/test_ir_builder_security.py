@@ -27,7 +27,7 @@ def _build_ir(content: str):
 @pytest.mark.offline
 def test_native_docx_ir_accepts_safe_local_drawing_asset() -> None:
     ir = _build_ir(
-        '<drawing id="1" name="fig" format="png" ' 'path="doc.blocks.assets/fig.png" />'
+        '<drawing id="1" name="fig" format="png" path="doc.blocks.assets/fig.png" />'
     )
 
     drawing = ir.blocks[0].drawings[0]
@@ -60,7 +60,7 @@ def test_native_docx_ir_rejects_unsafe_local_drawing_asset(path: str) -> None:
 @pytest.mark.offline
 def test_native_docx_ir_preserves_non_asset_external_drawing_path() -> None:
     ir = _build_ir(
-        '<drawing id="1" name="fig" format="gif" ' 'path="../images/legacy.gif" />'
+        '<drawing id="1" name="fig" format="gif" path="../images/legacy.gif" />'
     )
 
     drawing = ir.blocks[0].drawings[0]

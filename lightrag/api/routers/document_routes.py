@@ -2053,7 +2053,7 @@ async def run_scanning_process(
                 ):
                     # File is already PROCESSED, skip it with warning and archive it.
                     processed_files.append(filename)
-                    warning = f"Skipping already processed file: " f"{filename}"
+                    warning = f"Skipping already processed file: {filename}"
                     await record_scan_warning(rag, warning)
                     try:
                         await move_file_to_parsed_dir(file_path)

@@ -118,9 +118,9 @@ def test_prompts_require_double_escaped_backslashes():
 
     for key in ("image_analysis", "table_analysis", "equation_analysis"):
         template = MULTIMODAL_PROMPTS[key]
-        assert (
-            "escape backslashes" in template or "double-escaped" in template
-        ), f"{key}: missing backslash escaping rule in OUTPUT RULES"
+        assert "escape backslashes" in template or "double-escaped" in template, (
+            f"{key}: missing backslash escaping rule in OUTPUT RULES"
+        )
 
 
 @pytest.mark.offline

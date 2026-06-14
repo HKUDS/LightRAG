@@ -340,9 +340,7 @@ def _row_trim_table_trailing(
         attrs_str, rows = parsed
         for k in range(len(rows) - 1, 0, -1):
             candidate = (
-                f"<table {attrs_str}>"
-                f"{json.dumps(rows[:k], ensure_ascii=False)}"
-                f"</table>"
+                f"<table {attrs_str}>{json.dumps(rows[:k], ensure_ascii=False)}</table>"
             )
             if _count_tokens(tokenizer, candidate) <= max_tokens:
                 return candidate
