@@ -233,6 +233,19 @@ async def anthropic_complete_if_cache(
         except Exception as e:
             logger.error(f"Error in stream response: {str(e)}")
             raise
+        finally:
+            # Release the streaming response and the client. The generator owns
+            # the client lifetime, so the caller never closes it; finally also
+            # runs on GeneratorExit (early break) which the except clause above
+            # cannot catch. AsyncStream exposes close() (not aclose()).
+            try:
+                await response.close()
+            except Exception as close_error:
+                logger.warning(f"Failed to close Anthropic stream: {close_error}")
+            try:
+                await anthropic_async_client.close()
+            except Exception as close_error:
+                logger.warning(f"Failed to close Anthropic client: {close_error}")
 
     return stream_response()
 

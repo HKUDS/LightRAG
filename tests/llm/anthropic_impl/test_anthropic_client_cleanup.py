@@ -3,8 +3,7 @@
 Verifies that the ``AsyncAnthropic`` HTTP client is properly closed in:
   * API error paths (all four except branches)
   * Non-streaming success path
-
-Streaming cleanup is out of scope for now.
+  * Streaming path (stream + client closed in the generator's finally)
 """
 
 from types import SimpleNamespace
@@ -48,6 +47,43 @@ def _make_success_client(
         messages=SimpleNamespace(
             create=AsyncMock(return_value=_make_fake_response(content_text))
         ),
+        close=AsyncMock(),
+    )
+
+
+class _FakeAnthropicStream:
+    """Async-iterable fake of ``anthropic.AsyncStream``.
+
+    ``__aiter__`` must live on the *type* (not an instance attribute) — ``async
+    for`` looks it up on the class, so a ``SimpleNamespace`` would raise
+    ``TypeError: 'async for' requires an object with __aiter__ method``.
+    """
+
+    def __init__(self, events, error: Exception | None = None):
+        self._events = list(events)
+        self._error = error
+        self.close = AsyncMock()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._error is not None:
+            raise self._error
+        if not self._events:
+            raise StopAsyncIteration
+        return self._events.pop(0)
+
+
+def _make_text_event(text: str) -> SimpleNamespace:
+    """An event shaped like a streaming ``content_block_delta`` with ``.text``."""
+    return SimpleNamespace(delta=SimpleNamespace(text=text))
+
+
+def _make_stream_client(stream: _FakeAnthropicStream) -> SimpleNamespace:
+    """Fake AsyncAnthropic whose ``messages.create`` returns *stream*."""
+    return SimpleNamespace(
+        messages=SimpleNamespace(create=AsyncMock(return_value=stream)),
         close=AsyncMock(),
     )
 
@@ -190,3 +226,85 @@ async def test_close_error_does_not_swallow_original_exception():
         await anthropic_complete_if_cache.__wrapped__(
             model="claude-3-opus", prompt="hello", api_key="test-key"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: streaming path — stream + client closed in the generator's finally
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_stream_closed_after_full_consumption():
+    """Draining the stream closes both the stream and the client."""
+    stream = _FakeAnthropicStream(
+        [_make_text_event("hello "), _make_text_event("world")]
+    )
+    fake_client = _make_stream_client(stream)
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
+        gen = await anthropic_complete_if_cache.__wrapped__(
+            model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
+        )
+        chunks = [chunk async for chunk in gen]
+
+    assert chunks == ["hello ", "world"]
+    stream.close.assert_awaited()
+    fake_client.close.assert_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_stream_closed_on_early_consumer_break():
+    """Closing the generator early (GeneratorExit) still runs the finally cleanup."""
+    stream = _FakeAnthropicStream([_make_text_event("a"), _make_text_event("b")])
+    fake_client = _make_stream_client(stream)
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
+        gen = await anthropic_complete_if_cache.__wrapped__(
+            model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
+        )
+        first = await gen.__anext__()  # start iteration, then bail out early
+        await gen.aclose()
+
+    assert first == "a"
+    stream.close.assert_awaited()
+    fake_client.close.assert_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_stream_closed_on_iteration_error():
+    """An error mid-stream propagates but stream + client are still closed."""
+    stream = _FakeAnthropicStream([], error=RuntimeError("stream boom"))
+    fake_client = _make_stream_client(stream)
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
+        gen = await anthropic_complete_if_cache.__wrapped__(
+            model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
+        )
+        with pytest.raises(RuntimeError):
+            async for _ in gen:
+                pass
+
+    stream.close.assert_awaited()
+    fake_client.close.assert_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_stream_close_error_does_not_block_client_close():
+    """If stream.close() raises, the client is still closed and data is intact."""
+    stream = _FakeAnthropicStream([_make_text_event("x")])
+    stream.close = AsyncMock(side_effect=RuntimeError("stream close failed"))
+    fake_client = _make_stream_client(stream)
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=fake_client):
+        gen = await anthropic_complete_if_cache.__wrapped__(
+            model="claude-3-opus", prompt="hello", api_key="test-key", stream=True
+        )
+        chunks = [chunk async for chunk in gen]
+
+    assert chunks == ["x"]
+    stream.close.assert_awaited()
+    fake_client.close.assert_awaited()
