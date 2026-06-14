@@ -14,6 +14,7 @@ STORAGE_IMPLEMENTATIONS = {
             "NetworkXStorage",
             "Neo4JStorage",
             "PGGraphStorage",
+            "PgRcteGraphStorage",
             "MongoGraphStorage",
             "MemgraphStorage",
             "OpenSearchGraphStorage",
@@ -69,6 +70,11 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "AGE_POSTGRES_PASSWORD",
     ],
     "PGGraphStorage": [
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+    ],
+    "PgRcteGraphStorage": [
         "POSTGRES_USER",
         "POSTGRES_PASSWORD",
         "POSTGRES_DATABASE",
@@ -129,6 +135,7 @@ STORAGES = {
     "PGVectorStorage": ".kg.postgres_impl",
     "AGEStorage": ".kg.age_impl",
     "PGGraphStorage": ".kg.postgres_impl",
+    "PgRcteGraphStorage": ".kg.pg_rcte_impl",
     "PGDocStatusStorage": ".kg.postgres_impl",
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
