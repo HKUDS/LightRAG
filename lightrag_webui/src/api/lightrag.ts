@@ -758,6 +758,26 @@ function _classifyStreamError(
   return message;
 }
 
+/**
+ * Format a non-ok streaming ``Response`` into the canonical error string that
+ * ``_classifyStreamError`` understands (``"<status> <statusText>\n{...}\n<url>"``)
+ * and throw it. Always throws — the return type is ``never``.
+ *
+ * Shared by the first response and the refreshed-retry response so that an
+ * HTTP error (403/429/5xx, …) is classified identically on both paths.
+ */
+async function _throwStreamHttpError(response: Response): Promise<never> {
+  let errorBody = 'Unknown error';
+  try {
+    errorBody = await response.text();
+  } catch {
+    /* ignore */
+  }
+  throw new Error(
+    `${response.status} ${response.statusText}\n${JSON.stringify({ error: errorBody })}\n${backendBaseUrl}/query/stream`
+  );
+}
+
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
@@ -786,32 +806,24 @@ export const queryTextStream = async (
           currentToken && useAuthStore.getState().isGuestMode;
 
         if (isGuest) {
-          // Only the token refresh + retry fetch belong in this guarded
-          // block. The stream read itself happens after the if/else so that
-          // a mid-stream read failure is classified uniformly by the outer
-          // catch instead of being mislabelled as an auth-refresh failure.
+          // Only the token refresh + retry fetch are guarded here: a failure
+          // of the refresh itself (or a user abort) is an auth problem and
+          // routes to login. The retried HTTP *response*, however, is handled
+          // with the same logic as the first response below, so a 403/429/5xx
+          // on retry is classified by the outer catch rather than mislabelled
+          // as an auth-refresh failure.
+          let retryResponse: Response;
           try {
             const newToken = await silentRefreshGuestToken();
             const retryHeaders: Record<string, string> = { ...(headers as Record<string, string>) };
             retryHeaders['Authorization'] = `Bearer ${newToken}`;
 
-            const retryResponse = await fetch(
-              `${backendBaseUrl}/query/stream`,
-              {
-                method: 'POST',
-                headers: retryHeaders,
-                body: JSON.stringify(request),
-                signal,
-              }
-            );
-
-            if (!retryResponse.ok) {
-              throw new Error(
-                `HTTP error! status: ${retryResponse.status}`
-              );
-            }
-
-            activeResponse = retryResponse;
+            retryResponse = await fetch(`${backendBaseUrl}/query/stream`, {
+              method: 'POST',
+              headers: retryHeaders,
+              body: JSON.stringify(request),
+              signal,
+            });
           } catch (refreshError) {
             if (isUserAbortError(signal, refreshError)) {
               return;
@@ -825,6 +837,18 @@ export const queryTextStream = async (
               cause: refreshError,
             });
           }
+
+          if (!retryResponse.ok) {
+            if (retryResponse.status === 401) {
+              // Refreshed token still rejected → genuine auth failure
+              navigationService.navigateToLogin();
+              throw new Error('Authentication required');
+            }
+            // Non-auth HTTP error on retry → classify like the first response
+            await _throwStreamHttpError(retryResponse);
+          }
+
+          activeResponse = retryResponse;
         } else {
           // Non-guest 401 → login
           navigationService.navigateToLogin();
@@ -832,16 +856,7 @@ export const queryTextStream = async (
         }
       } else {
         // --- Other HTTP errors ---------------------------------------------
-        let errorBody = 'Unknown error';
-        try {
-          errorBody = await response.text();
-        } catch {
-          /* ignore */
-        }
-
-        throw new Error(
-          `${response.status} ${response.statusText}\n${JSON.stringify({ error: errorBody })}\n${backendBaseUrl}/query/stream`
-        );
+        await _throwStreamHttpError(response);
       }
     }
 

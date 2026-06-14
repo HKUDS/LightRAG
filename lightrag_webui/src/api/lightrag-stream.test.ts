@@ -480,4 +480,36 @@ describe('queryTextStream — guest-token 401 retry', () => {
     expect(callCount).toBe(2)
     expect(chunks).toEqual(['retry ok'])
   })
+
+  test('classifies a non-auth HTTP error on the retried stream (e.g. 429)', async () => {
+    storageData.set('LIGHTRAG-API-TOKEN', 'expired-guest-token')
+    storeIsGuestMode = true
+
+    let callCount = 0
+
+    installFetchMock(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeTextResponse('{"error":"unauthorized"}', 401)
+      }
+      // Refresh succeeded, but the retried request is rate-limited.
+      return makeTextResponse('{"error":"rate limited"}', 429)
+    })
+
+    let capturedError = ''
+    await apiModule.queryTextStream(
+      makeQueryRequest(),
+      () => {},
+      (e) => {
+        capturedError = e
+      }
+    )
+
+    // The retry's 429 must be classified like any other HTTP error, NOT
+    // reported as an auth-refresh failure.
+    expect(callCount).toBe(2)
+    expect(capturedError).toBe(
+      'Too many requests, please try again later (429 Too Many Requests)'
+    )
+  })
 })
