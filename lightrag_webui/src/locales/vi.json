@@ -99,7 +99,7 @@
         "error": "Một số tệp tải lên thất bại"
       },
       "generalError": "Tải Lên Thất Bại\n{{error}}",
-      "fileTypes": "Các loại được hỗ trợ: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Các loại được hỗ trợ: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Không thể tải lên nhiều hơn 1 tệp một lần",
         "maxFilesLimit": "Không thể tải lên nhiều hơn {{count}} tệp",

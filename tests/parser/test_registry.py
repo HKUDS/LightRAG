@@ -17,7 +17,9 @@ def test_supported_engines_are_user_selectable_only():
 
 def test_suffix_capabilities_lookup():
     assert "pdf" in registry.suffix_capabilities("mineru")
-    assert registry.suffix_capabilities("native") == frozenset({"docx"})
+    assert registry.suffix_capabilities("native") == frozenset(
+        {"docx", "md", "textpack"}
+    )
     assert registry.suffix_capabilities("unknown-engine") == frozenset()
 
 

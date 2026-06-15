@@ -15,6 +15,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
     PARSER_ENGINE_LEGACY,
+    PARSER_ENGINE_NATIVE,
     PROCESS_OPTION_CHUNK_CHARS,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_VECTOR,
@@ -48,6 +49,13 @@ _PARSER_RULE_SPLIT_RE = re.compile(r"[;,]")
 # and SUPPORTED_PARSER_ENGINES validation); group 2 captures ``.ext`` so it
 # can be reattached when stripping the hint.
 _PARSER_HINT_RE = re.compile(r"\.\[([^\]]*)\](\.[^.]+)$")
+
+# Per-suffix default engine override, consulted before the global ``legacy``
+# fallback. ``.textpack`` is handled only by the native engine, so it routes
+# there automatically (no filename hint / LIGHTRAG_PARSER rule needed). ``.md``
+# is deliberately absent — it keeps the legacy default and opts into native the
+# same way ``.docx`` does (hint or rule).
+_DEFAULT_ENGINE_BY_SUFFIX: dict[str, str] = {"textpack": PARSER_ENGINE_NATIVE}
 
 
 class ParserRoutingConfigError(ValueError):
@@ -847,7 +855,13 @@ def resolve_file_parser_directives(
         require_external_endpoint=require_external_endpoint,
     )
 
-    engine = hinted_engine or rule_engine or PARSER_ENGINE_LEGACY
+    default_engine = _DEFAULT_ENGINE_BY_SUFFIX.get(suffix)
+    if default_engine and not _engine_is_usable(
+        default_engine, suffix, require_external_endpoint=require_external_endpoint
+    ):
+        default_engine = None
+
+    engine = hinted_engine or rule_engine or default_engine or PARSER_ENGINE_LEGACY
     options_str = hinted_options or rule_options
     return engine, sanitize_process_options(options_str)
 
