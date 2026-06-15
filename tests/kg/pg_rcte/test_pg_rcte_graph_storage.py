@@ -121,6 +121,22 @@ async def test_get_knowledge_graph_uses_global_config_when_max_nodes_none():
 
 
 @pytest.mark.asyncio
+async def test_get_knowledge_graph_wildcard_uses_flat_limited_query():
+    """Wildcard should bound DB work instead of running recursive traversal."""
+    storage = make_storage(global_config={"max_graph_nodes": 100})
+    fetch = AsyncMock(return_value=[])
+
+    with patch.object(storage, "_fetch", new=fetch):
+        await storage.get_knowledge_graph("*", max_nodes=7)
+
+    sql, workspace, fetch_limit = fetch.call_args.args
+    assert workspace == "test"
+    assert fetch_limit == 8
+    assert "WITH RECURSIVE" not in sql
+    assert "LIMIT $2" in sql
+
+
+@pytest.mark.asyncio
 async def test_get_knowledge_graph_clamps_max_nodes():
     """Caller-supplied max_nodes > config value must be clamped to config."""
     storage = make_storage(global_config={"max_graph_nodes": 10})

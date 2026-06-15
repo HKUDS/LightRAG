@@ -48,19 +48,15 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Cache pip packages
-        uses: actions/cache@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-pg-smoke-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-pg-smoke-
+          enable-cache: true
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[api]"
-          pip install pytest pytest-asyncio asyncpg
+          uv pip install --system -e ".[api]"
+          uv pip install --system pytest pytest-asyncio asyncpg
 
       - name: Run pg_smoke tests
         run: |

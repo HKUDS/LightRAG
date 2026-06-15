@@ -399,13 +399,37 @@ class PgRcteGraphStorage(BaseGraphStorage):
             max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
 
         if node_label == "*":
-            # Wildcard: fetch all nodes, sort by degree DESC, truncate
+            # Wildcard has no traversal semantics. Bound DB work by fetching
+            # only the top max_nodes + 1 nodes; the extra row detects truncation.
             node_rows = await self._fetch(
-                "SELECT id, properties FROM lightrag_graph_nodes WHERE workspace = $1",
+                """
+                WITH degrees AS (
+                    SELECT id, COUNT(*) AS degree
+                    FROM (
+                        SELECT src_id AS id
+                        FROM lightrag_graph_edges
+                        WHERE workspace = $1
+                      UNION ALL
+                        SELECT tgt_id AS id
+                        FROM lightrag_graph_edges
+                        WHERE workspace = $1 AND src_id <> tgt_id
+                    ) edge_ids
+                    GROUP BY id
+                )
+                SELECT n.id, n.properties
+                FROM lightrag_graph_nodes n
+                LEFT JOIN degrees d ON d.id = n.id
+                WHERE n.workspace = $1
+                ORDER BY COALESCE(d.degree, 0) DESC, n.id ASC
+                LIMIT $2
+                """,
                 self.workspace,
+                max_nodes + 1,
             )
         else:
-            # Exact-match seed BFS with visited-array guard (UNION ALL, no LIMIT in CTE)
+            # Exact-match seed BFS with visited-array guard (UNION ALL, no LIMIT in CTE).
+            # max_nodes bounds the returned graph only; traversal cost scales with
+            # nodes reachable from the seed within max_depth.
             # $1=workspace  $2=exact node_label  $3=max_depth
             rcte_sql = """
             WITH RECURSIVE bfs(id, properties, depth, visited) AS (

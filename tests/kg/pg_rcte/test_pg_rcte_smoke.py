@@ -38,6 +38,13 @@ if not PG_PASSWORD:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="session", autouse=True)
+def init_shared_storage():
+    from lightrag.kg.shared_storage import initialize_share_data
+
+    initialize_share_data(workers=1)
+
+
 @pytest.fixture
 async def store():
     """Yield an initialized PgRcteGraphStorage and clean up after the test."""
@@ -48,6 +55,7 @@ async def store():
         namespace="graph",
         workspace=workspace,
         global_config={"max_graph_nodes": 1000},
+        embedding_func=None,
     )
     await storage.initialize()
     try:
