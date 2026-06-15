@@ -9,7 +9,7 @@ Schema (created automatically on initialize):
     lightrag_graph_nodes(workspace TEXT, id TEXT, properties JSONB)
                                                   PK(workspace, id)
     lightrag_graph_edges(workspace TEXT, src_id TEXT, tgt_id TEXT, properties JSONB)
-        Edges are stored in canonical order: src_id = LEAST(a, b), tgt_id = GREATEST(a, b)
+        Edges are stored in canonical order: src_id = min(a, b), tgt_id = max(a, b) — normalized via Python min/max (NOT SQL LEAST/GREATEST; mixing the two would diverge on non-ASCII under non-C collations and cause duplicate edges)
                                                   PK(workspace, src_id, tgt_id)
 
 Configuration: inherits all POSTGRES_* / POSTGRES_SSL_* / POSTGRES_WORKSPACE
@@ -19,6 +19,7 @@ to PGKVStorage and PGVectorStorage.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -68,9 +69,11 @@ class PgRcteGraphStorage(BaseGraphStorage):
     extension.  Uses two plain tables (lightrag_graph_nodes,
     lightrag_graph_edges) with JSONB properties and B-tree indexes.
 
-    Edges are stored in canonical order: src_id = LEAST(a, b),
-    tgt_id = GREATEST(a, b).  All write paths normalise before INSERT so
-    upsert_edge(A, B) and upsert_edge(B, A) map to the same row.
+    Edges are stored in canonical order: src_id = min(a, b), tgt_id = max(a, b)
+    — normalized via Python min/max (NOT SQL LEAST/GREATEST; mixing the two would
+    diverge on non-ASCII under non-C collations and cause duplicate edges).  All
+    write paths normalise before INSERT so upsert_edge(A, B) and upsert_edge(B, A)
+    map to the same row.
     """
 
     db: PostgreSQLDB | None = field(default=None, init=False, repr=False)
@@ -148,6 +151,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
             )
             return {"status": "success", "message": "data dropped"}
         except Exception as exc:
+            logger.error(f"drop() failed: {exc}")
             return {"status": "error", "message": str(exc)}
 
     # ------------------------------------------------------------------
@@ -168,9 +172,14 @@ class PgRcteGraphStorage(BaseGraphStorage):
             self.workspace,
             node_id,
         )
+        # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
         return json.loads(row["properties"]) if row else None
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
+        if "entity_id" not in node_data:
+            raise ValueError(
+                "PostgreSQL: node properties must contain an 'entity_id' field"
+            )
         await self._execute(
             """
             INSERT INTO lightrag_graph_nodes (workspace, id, properties, updated_at)
@@ -236,6 +245,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
             src,
             tgt,
         )
+        # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
         return json.loads(row["properties"]) if row else None
 
     async def upsert_edge(
@@ -259,6 +269,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
         if not edges:
             return
+        if not all(isinstance(e[0], str) and isinstance(e[1], str) for e in edges):
+            raise ValueError("Edge node IDs must be non-None strings")
         srcs = [min(e[0], e[1]) for e in edges]
         tgts = [max(e[0], e[1]) for e in edges]
         await self._execute(
@@ -283,7 +295,10 @@ class PgRcteGraphStorage(BaseGraphStorage):
             self.workspace,
             source_node_id,
         )
-        return [(r["src_id"], r["tgt_id"]) for r in rows]
+        return [
+            (source_node_id, r["tgt_id"] if r["src_id"] == source_node_id else r["src_id"])
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # Degree queries
@@ -298,8 +313,6 @@ class PgRcteGraphStorage(BaseGraphStorage):
         return int(val or 0)
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        import asyncio
-
         s, t = await asyncio.gather(self.node_degree(src_id), self.node_degree(tgt_id))
         return s + t
 
@@ -346,7 +359,13 @@ class PgRcteGraphStorage(BaseGraphStorage):
             "SELECT id, properties FROM lightrag_graph_nodes WHERE workspace = $1",
             self.workspace,
         )
-        return [{"id": r["id"], **json.loads(r["properties"])} for r in rows]
+        result = []
+        for r in rows:
+            # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
+            props = json.loads(r["properties"])
+            props["id"] = props.get("entity_id", r["id"])
+            result.append(props)
+        return result
 
     async def get_all_edges(self) -> list[dict]:
         rows = await self._fetch(
@@ -357,6 +376,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
             {
                 "src_id": r["src_id"],
                 "tgt_id": r["tgt_id"],
+                # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
                 **json.loads(r["properties"]),
             }
             for r in rows
@@ -370,39 +390,30 @@ class PgRcteGraphStorage(BaseGraphStorage):
         self,
         node_label: str,
         max_depth: int = 3,
-        max_nodes: int = 1000,
+        max_nodes: int | None = None,
     ) -> KnowledgeGraph:
-        # Fetch one extra row to detect true truncation without a separate COUNT.
-        fetch_limit = max_nodes + 1
-        if node_label == "*":
-            # $1=workspace  $2=max_depth  $3=fetch_limit
-            rcte_sql = """
-            WITH RECURSIVE bfs(id, properties, depth) AS (
-                SELECT id, properties, 0
-                FROM lightrag_graph_nodes
-                WHERE workspace = $1
-                UNION
-                SELECT next_n.id, next_n.properties, b.depth + 1
-                FROM bfs b
-                JOIN lightrag_graph_edges e
-                  ON e.workspace = $1 AND (e.src_id = b.id OR e.tgt_id = b.id)
-                JOIN lightrag_graph_nodes next_n
-                  ON next_n.workspace = $1
-                 AND next_n.id = CASE WHEN e.src_id = b.id THEN e.tgt_id ELSE e.src_id END
-                WHERE b.depth < $2
-            )
-            SELECT DISTINCT id, properties FROM bfs LIMIT $3
-            """
-            params: list[Any] = [self.workspace, max_depth, fetch_limit]
+        # Mirror AGE: respect global_config["max_graph_nodes"] cap
+        if max_nodes is None:
+            max_nodes = self.global_config.get("max_graph_nodes", 1000)
         else:
-            # $1=workspace  $2=label pattern  $3=max_depth  $4=fetch_limit
+            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
+
+        if node_label == "*":
+            # Wildcard: fetch all nodes, sort by degree DESC, truncate
+            node_rows = await self._fetch(
+                "SELECT id, properties FROM lightrag_graph_nodes WHERE workspace = $1",
+                self.workspace,
+            )
+        else:
+            # Exact-match seed BFS with visited-array guard (UNION ALL, no LIMIT in CTE)
+            # $1=workspace  $2=exact node_label  $3=max_depth
             rcte_sql = """
-            WITH RECURSIVE bfs(id, properties, depth) AS (
-                SELECT id, properties, 0
+            WITH RECURSIVE bfs(id, properties, depth, visited) AS (
+                SELECT id, properties, 0, ARRAY[id]
                 FROM lightrag_graph_nodes
-                WHERE workspace = $1 AND id ILIKE $2
-                UNION
-                SELECT next_n.id, next_n.properties, b.depth + 1
+                WHERE workspace = $1 AND id = $2
+              UNION ALL
+                SELECT next_n.id, next_n.properties, b.depth + 1, b.visited || next_n.id
                 FROM bfs b
                 JOIN lightrag_graph_edges e
                   ON e.workspace = $1 AND (e.src_id = b.id OR e.tgt_id = b.id)
@@ -410,24 +421,27 @@ class PgRcteGraphStorage(BaseGraphStorage):
                   ON next_n.workspace = $1
                  AND next_n.id = CASE WHEN e.src_id = b.id THEN e.tgt_id ELSE e.src_id END
                 WHERE b.depth < $3
+                  AND NOT (next_n.id = ANY(b.visited))
             )
-            SELECT DISTINCT id, properties FROM bfs LIMIT $4
+            SELECT DISTINCT id, properties FROM bfs
             """
-            params = [self.workspace, f"%{node_label}%", max_depth, fetch_limit]
+            node_rows = await self._fetch(rcte_sql, self.workspace, node_label, max_depth)
 
-        node_rows = await self._fetch(rcte_sql, *params)
+        if not node_rows:
+            return KnowledgeGraph(nodes=[], edges=[], is_truncated=False)
+
+        # Sort by degree DESC BEFORE truncation (matches AGE degree-prioritized behaviour)
+        node_ids_all = [r["id"] for r in node_rows]
+        degrees = await self.node_degrees_batch(node_ids_all)
+        node_rows.sort(key=lambda r: degrees.get(r["id"], 0), reverse=True)
+
         is_truncated = len(node_rows) > max_nodes
         node_rows = node_rows[:max_nodes]
         node_ids = {r["id"] for r in node_rows}
 
-        # Sort by degree descending to match AGE backend behaviour under truncation.
-        if node_ids:
-            degrees = await self.node_degrees_batch(list(node_ids))
-            node_rows.sort(key=lambda r: degrees.get(r["id"], 0), reverse=True)
-
         nodes = [
             KnowledgeGraphNode(
-                id=r["id"], labels=[r["id"]], properties=json.loads(r["properties"])
+                id=r["id"], labels=[r["id"]], properties=json.loads(r["properties"])  # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
             )
             for r in node_rows
         ]
@@ -448,7 +462,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
                     type=None,
                     source=r["src_id"],
                     target=r["tgt_id"],
-                    properties=json.loads(r["properties"]),
+                    properties=json.loads(r["properties"]),  # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
                 )
                 for r in edge_rows
             ]
@@ -467,6 +481,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
             self.workspace,
             node_ids,
         )
+        # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
         return {r["id"]: json.loads(r["properties"]) for r in rows}
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
@@ -478,7 +493,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
             FROM (
                 SELECT src_id AS id FROM lightrag_graph_edges WHERE workspace=$1 AND src_id=ANY($2)
                 UNION ALL
-                SELECT tgt_id AS id FROM lightrag_graph_edges WHERE workspace=$1 AND tgt_id=ANY($2)
+                SELECT tgt_id AS id FROM lightrag_graph_edges WHERE workspace=$1 AND tgt_id=ANY($2) AND src_id <> tgt_id
             ) sub
             GROUP BY id
             """,
@@ -518,6 +533,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
             tgts,
         )
         canonical_props = {
+            # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
             (r["src_id"], r["tgt_id"]): json.loads(r["properties"]) for r in rows
         }
         return {
@@ -545,7 +561,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
             if src in result:
                 result[src].append((src, tgt))
             if tgt in result:
-                result[tgt].append((src, tgt))
+                result[tgt].append((tgt, src))
         return result
 
     # ------------------------------------------------------------------
@@ -563,6 +579,10 @@ class PgRcteGraphStorage(BaseGraphStorage):
         # Deduplicate: last write for each node_id wins.
         deduped: dict[str, dict[str, str]] = {}
         for node_id, node_data in nodes:
+            if "entity_id" not in node_data:
+                raise ValueError(
+                    "PostgreSQL: node properties must contain an 'entity_id' field"
+                )
             deduped[node_id] = node_data
         ids = list(deduped.keys())
         props = [json.dumps(v) for v in deduped.values()]
