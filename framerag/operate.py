@@ -91,9 +91,11 @@ def _normalize_frame_name(name: str) -> str:
 async def _llm_with_retry(
     llm_func: Callable[..., Awaitable[str]],
     prompt: str,
-    max_retries: int = 3,
+    max_retries: int = 7,
 ) -> str:
-    """LLM call with exponential backoff."""
+    """LLM call with exponential backoff. Handles 429 rate limits with longer waits."""
+    # Backoff schedule (seconds): 2, 5, 15, 30, 60, 120, 180
+    _BACKOFF = [2, 5, 15, 30, 60, 120, 180]
     for attempt in range(max_retries):
         try:
             return await llm_func(prompt)
@@ -101,10 +103,14 @@ async def _llm_with_retry(
             if attempt == max_retries - 1:
                 logger.error(f"[operate] LLM failed after {max_retries} attempts: {e}")
                 raise
-            wait = 2 ** attempt
+            err_str = str(e)
+            # 429 rate-limit: use longer wait since TPM bucket takes ~60s to drain
+            if "429" in err_str or "rate_limit" in err_str.lower():
+                wait = _BACKOFF[min(attempt, len(_BACKOFF) - 1)]
+            else:
+                wait = 2 ** attempt
             logger.warning(f"[operate] LLM attempt {attempt + 1} failed, retry in {wait}s: {e}")
             await asyncio.sleep(wait)
-    raise RuntimeError("unreachable")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -453,6 +459,20 @@ async def extract_events(
 # Call 2 — Step B: Frame Annotation for ONE event (parallelizable)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _context_window(chunk_text: str, event_span: str, window: int = 300) -> str:
+    """Return up to `window` chars around event_span in chunk_text."""
+    if not event_span:
+        return chunk_text[:window * 2]
+    idx = chunk_text.lower().find(event_span.lower()[:40])
+    if idx == -1:
+        return chunk_text[:window * 2]
+    start = max(0, idx - window)
+    end = min(len(chunk_text), idx + len(event_span) + window)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(chunk_text) else ""
+    return prefix + chunk_text[start:end] + suffix
+
+
 async def annotate_frames_for_event(
     event: dict,
     chunk_text: str,
@@ -466,20 +486,22 @@ async def annotate_frames_for_event(
     Keys: frame_name, frame_definition, is_new_frame, lexical_unit,
           core_elements, noncore_elements.
     """
-    # Use the event description as a focused context probe for relevant frames.
-    hint_text = f"{event.get('event_span', '')} {event.get('description', '')}".strip()
+    event_span = event.get("event_span", "")
+    hint_text = f"{event_span} {event.get('description', '')}".strip()
     hints = await frame_db.get_hints_for_chunk(hint_text or chunk_text)
     hints_text = frame_db.format_hints_for_prompt(hints)
     entity_list_text = _format_entity_list(entity_mentions)
+    # Pass only a small context window around the event span, not the full chunk
+    context_snippet = _context_window(chunk_text, event_span, window=300)
 
     prompt = PROMPTS["frame_annotation"].format(
         frame_db_hints=hints_text,
         entity_list=entity_list_text,
-        event_span=event.get("event_span", ""),
+        event_span=event_span,
         event_description=event.get("description", ""),
         participant_names=", ".join(event.get("participant_names", [])) or "(none)",
         is_negation=event.get("is_negation", False),
-        chunk_text=chunk_text,
+        chunk_text=context_snippet,
     )
     try:
         response = await _llm_with_retry(llm_func, prompt)

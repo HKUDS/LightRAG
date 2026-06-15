@@ -89,7 +89,8 @@ DEFAULT_MIN_RERANK_SCORE = 0.0
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Maximum parallel LLM coroutines (semaphore)
-DEFAULT_MAX_ASYNC = 4
+# Keep at 2 to stay within 200K TPM: 2 calls × ~2K tokens × 60/min ≈ 240K TPM peak
+DEFAULT_MAX_ASYNC = 2
 
 # Maximum parallel document insertions in ainsert_batch()
 DEFAULT_MAX_PARALLEL_INSERT = 2

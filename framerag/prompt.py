@@ -178,7 +178,7 @@ Description    : {event_description}
 Participants   : {participant_names}
 Negation       : {is_negation}
 
----Source Chunk (for context)---
+---Source Context (excerpt around event)---
 {chunk_text}
 
 ---Task---

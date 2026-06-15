@@ -65,7 +65,7 @@ E2RAG_REFERENCE = {
 # Stories with available text (HP stories 3 & 4 omitted — copyright)
 AVAILABLE_STORY_IDS = ["1", "2", "5", "6", "7", "8", "9"]
 
-DEFAULT_JUDGE_MODELS = ["gpt-4o-mini"]
+DEFAULT_JUDGE_MODELS = ["gpt-4.1-mini"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM judge rubric (matches E2RAG paper Appendix D.2 spirit)
@@ -392,7 +392,7 @@ async def run_paper_evaluation(
     max_samples: Optional[int] = None,
     story_ids: Optional[list[str]] = None,
     working_dir: str = "./eval_storage",
-    llm_model: str = "gpt-4o-mini",
+    llm_model: str = "gpt-4.1-mini",
     embed_model: str = "text-embedding-3-small",
     embedding_dim: int = 1536,
     judge_models: Optional[list[str]] = None,
@@ -604,11 +604,11 @@ def main():
                         help="Dataset split (ChronoQA only has 'train')")
     parser.add_argument("--max_samples",       type=int, default=None)
     parser.add_argument("--working_dir",       default="./eval_storage")
-    parser.add_argument("--llm_model",         default="gpt-4o-mini",
+    parser.add_argument("--llm_model",         default="gpt-4.1-mini",
                         help="LLM for RAG answering")
     parser.add_argument("--embed_model",       default="text-embedding-3-small")
     parser.add_argument("--embedding_dim",     type=int, default=1536)
-    parser.add_argument("--judge_models",      default="gpt-4o-mini",
+    parser.add_argument("--judge_models",      default="gpt-4.1-mini",
                         help="Comma-separated judge model IDs. "
                              "Paper uses 3 judges: e.g. gpt-4o-mini,gpt-4o,gpt-4o-mini")
     parser.add_argument("--api_key",           default=None)

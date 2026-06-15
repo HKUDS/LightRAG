@@ -50,7 +50,7 @@ async def main(story_id, output_json, working_dir):
     if MAX_EXCERPTS > 0:
         corpus = corpus[:MAX_EXCERPTS]
 
-    llm = _make_llm("gpt-4o-mini")
+    llm = _make_llm("gpt-4.1-mini")
     emb = _make_embed("text-embedding-3-small")
     story_dir = os.path.join(working_dir, "framerag", f"story_{story_id}")
 
