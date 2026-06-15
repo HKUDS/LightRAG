@@ -123,11 +123,16 @@ notes.[-R].md
 | 引擎 | 说明 | 支持的文件格式（后缀） |
 | --- | --- | --- |
 | `legacy` | 旧版提取方式，在加入流水线前集中提取内容 | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
-| `native` | 内置智能结构化内容抽取器 | `docx` |
+| `native` | 内置智能结构化内容抽取器 | `docx` `md` `textpack` |
 | `mineru` | 外部 MinerU 内容提取引擎 | `pdf` `doc` `docx` `ppt` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
 | `docling` | 外部 Docling 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
 
 `mineru` 和 `docling` 是外部内容提取引擎，启用相关规则前必须先把服务跑起来，再在 LightRAG 配置对应 endpoint/token。
+
+`native` 引擎除 `docx` 外还支持 Markdown：
+- `md`：按标题（ATX `#`）分块，识别 md 原生竖线表格（含表头）、HTML `<table>`（含 `<thead>`，保留 colspan/rowspan）、段落级公式（以 `$$` 开头并以 `$$` 结束的段落；行内 `$...$` 不识别）、内嵌图片（base64 data URL）。代码围栏（```` ``` ````）内的内容原样保留，不参与识别。与 `docx` 一样，`md` 默认仍走 `legacy`，需用 `LIGHTRAG_PARSER=md:native` 或文件名 `[native]` hint 选择 native。
+- `textpack`：TextBundle 规范的 zip 包（md 文本 + `assets/` 资源目录，Bear / Ulysses 等导出格式）。只有 `native` 支持该后缀，因此无需 hint/规则即自动路由到 native。包内以相对路径（文件引用）内嵌的图片会从 `assets/` 安全解析并落盘；独立 `.md` 中的相对路径图片不解析（记 warning 跳过）。
+- 外部 URL 图片（`![](http://...)`）默认不下载，保留为外链引用；可通过下方 `NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` 开启在线下载（带 SSRF 与大小防护）。
 
 LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改 `mineru` 和 `docling` 引擎的端点地址和有效提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
 
