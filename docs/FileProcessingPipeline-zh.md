@@ -129,7 +129,49 @@ notes.[-R].md
 
 `mineru` 和 `docling` 是外部内容提取引擎，启用相关规则前必须先把服务跑起来，再在 LightRAG 配置对应 endpoint/token。
 
+LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改 `mineru` 和 `docling` 引擎的端点地址和有效提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
+
+#### 使用 Native 文件解析引擎
+
+`native` 是 LightRAG 内置的结构化内容抽取引擎，**纯本地运行**：不依赖 MinerU / Docling 等外部服务，抽取阶段也不调用 VLM，开箱即用无需任何部署。运行依赖仅 `python-docx` + `defusedxml`（必备）；其中 markdown 路径的 SVG 栅格化额外依赖**可选**的 `cairosvg`（缺失时跳过该 SVG 并记 warning，不影响其余内容）。
+
+支持后缀：`docx` / `md` / `textpack`。启用方式：
+
+- `docx`、`md` 默认仍走 `legacy`，需显式选择 native，例如默认规则 `LIGHTRAG_PARSER=docx:native`、`LIGHTRAG_PARSER=md:native`，或文件名 hint `report.[native-iet].docx`、`notes.[native].md`（语法见 [§2.2](#22-默认规则lightrag_parser) / [§2.3](#23-单文件覆盖文件名-hint)）。
+- `textpack` 为 native 独占后缀，无需 hint/规则即自动路由到 native。
+
+##### docx 抽取能力
+
+native 直接解析 OOXML，能识别以下结构并写入对应 sidecar（sidecar 是否生成由文档实际内容决定，见 [§4.2](#42-__parsed__-目录结构)）：
+
+| 元素 | 抽取行为 | 落盘 |
+| --- | --- | --- |
+| 标题层级 | Heading 1–9（`pPr/outlineLvl` 或样式继承链推断），供 `P` 分块策略按标题切分 | `blocks.jsonl` |
+| 段落 | 含超链接文本、列表自动编号；修订追踪只保留最终文本（去掉删除部分） | `blocks.jsonl` |
+| 表格 | 2D 结构，自动展开合并单元格（colspan/rowspan）、提取跨页重复表头 | `tables.json` |
+| 图片 / drawing | 嵌入图片导出到资源目录，正文留占位符 | `drawings.json` + `<base>.blocks.assets/` |
+| 公式 | OMML → LaTeX，区分块级与行内 | `equations.json` |
+
+图片落盘细节：
+
+- 嵌入图片导出到 `blocks.jsonl` 同级的 `<base>.blocks.assets/` 目录，支持 `png` `jpeg` `gif` `bmp` `tiff` `webp` `emf` `wmf`。
+- **SVG 图片**：Word 在保存 SVG 时会同时存矢量 `.svg` 与一张 PNG 位图回退，native docx 落盘的是这张 **PNG 回退**（读取 `<a:blip>` 的 `r:embed`，指向 PNG），不导出 SVG 矢量原图。对下游 VLM 消费而言 PNG 通常已足够，无需再做栅格化。（注意这与下文 md 路径「SVG 经 cairosvg 栅格化」是不同实现：docx 直接取 Word 已生成的 PNG。）
+- **VML / OLE 对象**（旧版 Word 图片、Visio 图、公式编辑器预览等）：通过 `v:imagedata` 导出其渲染预览，常见为 EMF/WMF，落入同一 assets 目录；若关系标记为外部链接（`TargetMode="External"`），只记录 URL 不导出字节。**注意：EMF/WMF（及 Visio 等 OLE 对象的预览）目前只能"提取落盘"，无法进入多模态分析**——下游 VLM 图像分析只接受栅格格式 `png` / `jpg` / `jpeg` / `gif` / `webp`，其余格式（EMF/WMF/SVG 等）会被静默跳过（标记 `skipped`，不报错、不影响整篇文档）。例外是**公式**：它以 LaTeX 文本而非图片存储，走文本（EXTRACT）角色分析而非 VLM，因此能被正常处理。
+
+##### docx 段落溯源（paraId）提示
+
+native docx 会采集 Word 2013+ 写入的 `w14:paraId` 作为段落级溯源锚点。若文档由 LibreOffice / WPS / 旧版 Word 生成，或被手工改过 docx 内部 XML，部分段落会缺少 paraId，此时会在日志输出一次提示：
+
+```text
+[parse_native] <文件名>: N paragraphs lack paraId; Re-saving file in Word 2013+ to regenerate ids.
+```
+
+受影响块的 `positions` 退化为 `[{"type": "paraid", "range": null}]`。这只是提示，**不影响解析成功**；如需精确段落溯源，按提示在 Word 2013+ 中「另存为 .docx」即可重建 id。
+
+##### md / textpack 抽取能力
+
 `native` 引擎除 `docx` 外还支持 Markdown：
+
 - `md`：按标题（ATX `#`）分块，识别 md 原生竖线表格（含表头）、HTML `<table>`（含 `<thead>`，保留 colspan/rowspan）、段落级公式（以 `$$` 开头并以 `$$` 结束的段落；行内 `$...$` 不识别）、内嵌图片（base64 data URL）。代码围栏（```` ``` ````）内的内容原样保留，不参与识别。与 `docx` 一样，`md` 默认仍走 `legacy`，需用 `LIGHTRAG_PARSER=md:native` 或文件名 `[native]` hint 选择 native。
 - `textpack`：TextBundle 规范的 zip 包（md 正文 + 资源目录，约定为 `assets/`，Bear / Ulysses 等导出格式）。只有 `native` 支持该后缀，因此无需 hint/规则即自动路由到 native。
   - **包内结构要求**（正文按扩展名定位，不要求固定叫 `text.markdown`，方便用任意 zip 工具自行打包）：
@@ -141,9 +183,17 @@ notes.[-R].md
   - 包内以相对路径（文件引用）内嵌的图片按相对包根目录解析，**允许放在包内任意子目录**（不限于 `assets/`），但禁止目录穿越（`..`、绝对路径、越出包根的引用会被记 warning 跳过）；解析出的字节须通过图片 magic bytes 校验，否则跳过。独立 `.md`（非 textpack）中的相对路径图片不解析（记 warning 跳过）。
 - SVG 图片（base64 / textpack 包内文件 / 在线下载）会先经 cairosvg 栅格化为 PNG 再写入 sidecar；cairosvg 不可用或渲染失败时跳过该图（记 warning）。
 - 外部 URL 图片（`![](http://...)`）**默认下载并内嵌**（`NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` 默认 `true`）；无论下载成功与否都会生成 drawing（成功内嵌资源，失败回退为外链）。下载默认仅允许可全球路由的公网 IP（DNS 解析结果与每一跳重定向目标都校验，且 socket 直连已校验 IP 以防 DNS rebinding，忽略环境 `HTTP(S)_PROXY`），私网 / 环回 / 链路本地 / 保留 / CGNAT（`100.64.0.0/10`）等一律拒绝；如需放行特定内网段，用 `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS` 配置 CIDR 白名单。若设为 `false`，外链图片整个丢弃（不生成对应 drawing，故仅含外链图片的文档不会生成 `drawings.json`）。
-- 下载的外链图片会缓存到 `<文件>.native_raw/` 同级目录（类比 `.mineru_raw`/`.docling_raw`），重新解析同一未改动文件时直接复用、不再联网下载；源文件内容或上述大小 / SVG 像素 / CIDR 配置变化时缓存自动失效。设 `LIGHTRAG_FORCE_REPARSE_NATIVE=true` 可强制丢弃缓存重新下载。删除文档时该缓存目录会一并清理。
 
-LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改 `mineru` 和 `docling` 引擎的端点地址和有效提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
+##### 环境变量
+
+native 的所有 `NATIVE_*` 环境变量与 `.native_raw/` 缓存目录**仅作用于 markdown / textpack 引擎的外链图片下载**；**docx 路径不读取任何 `NATIVE_*` 变量**。最常用的两个：
+
+- `LIGHTRAG_FORCE_REPARSE_NATIVE`（默认 `false`）：强制丢弃 `.native_raw/` 缓存、重新联网下载外链图片。
+- `NATIVE_MD_IMAGE_DOWNLOAD_ENABLED`（默认 `true`）：外链图片下载总开关，设为 `false` 时丢弃所有外链图片。
+
+其余下载/大小/SSRF 相关变量（`NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT` / `NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED` / `NATIVE_MD_IMAGE_MAX_BYTES` / `NATIVE_MD_IMAGE_MAX_SVG_PIXELS` / `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`）含义与默认值见仓库根目录 [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example)。
+
+下载的外链图片缓存到 `<文件>.native_raw/`（与 `.parsed/` 同级，类比 `.mineru_raw`/`.docling_raw`），重新解析同一未改动文件时直接复用、不再联网；源文件内容或上述大小 / SVG 像素 / CIDR 配置变化时缓存自动失效。删除文档（删除弹窗勾选「同时删除文件」）时该缓存目录会与 `.parsed/` 一并清理。
 
 #### 使用 MinerU 文件解析引擎
 
@@ -266,7 +316,7 @@ docker rm temp_mineru
 docker compose -f compose.yaml --profile api up -d
 ```
 
-#### Docling 配置方法
+#### 使用 Docling 文件解析引擎
 
 `docling` 内容提取引擎需要外部的 [docling-serve](https://github.com/DS4SD/docling-serve) 服务（v1 异步 API）。最少配置：
 

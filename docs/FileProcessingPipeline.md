@@ -129,7 +129,49 @@ When parsing the hint, content without a hyphen must match an engine name exactl
 
 `mineru` and `docling` are external content extraction engines; before enabling related rules, the services must be running first, and the corresponding endpoint/token must be configured in LightRAG.
 
+LightRAG caches the parsing results of the `mineru` and `docling` engines locally. Re-uploading the same file usually does not trigger the engine to re-parse the document. To delete the parse cache, you must click the "also delete file" option in the delete-file dialog of the document management interface. Modifying the endpoint addresses and effective extraction parameters of the `mineru` / `docling` engines will also invalidate the cache, causing the engine to re-parse the file content on the next upload of the same file.
+
+#### Using the Native File Parsing Engine
+
+`native` is LightRAG's built-in structured content extractor that runs **fully locally**: it does not depend on external services such as MinerU / Docling, the extraction stage never calls a VLM, and it works out of the box with no deployment. Its runtime dependencies are only `python-docx` + `defusedxml` (required); the markdown path additionally relies on the **optional** `cairosvg` for SVG rasterization (when missing, the SVG is skipped with a warning and the rest of the content is unaffected).
+
+Supported extensions: `docx` / `md` / `textpack`. How to enable:
+
+- `docx` and `md` still default to `legacy`; select native explicitly, e.g. a default rule `LIGHTRAG_PARSER=docx:native` / `LIGHTRAG_PARSER=md:native`, or a filename hint `report.[native-iet].docx` / `notes.[native].md` (syntax in [§2.2](#22-default-rules-lightrag_parser) / [§2.3](#23-single-file-override-filename-hints)).
+- `textpack` is a native-exclusive extension and is routed to native automatically without a hint/rule.
+
+##### docx Extraction Capabilities
+
+`native` parses OOXML directly and recognizes the following structures, writing them to the corresponding sidecars (whether a sidecar is produced depends on the document's actual content; see [§4.2](#42-__parsed__-directory-structure)):
+
+| Element | Extraction behavior | Sidecar |
+| --- | --- | --- |
+| Heading levels | Heading 1–9 (inferred from `pPr/outlineLvl` or the style inheritance chain), feeding the `P` chunking strategy's heading-based splitting | `blocks.jsonl` |
+| Paragraphs | Includes hyperlink text and list auto-numbering; tracked changes keep only the final text (deletions removed) | `blocks.jsonl` |
+| Tables | 2D structure, auto-expanding merged cells (colspan/rowspan) and extracting cross-page repeated headers | `tables.json` |
+| Images / drawings | Embedded images exported to a resource directory, with placeholders left in the body | `drawings.json` + `<base>.blocks.assets/` |
+| Equations | OMML → LaTeX, distinguishing block-level vs inline | `equations.json` |
+
+Image export details:
+
+- Embedded images are exported to a `<base>.blocks.assets/` directory beside `blocks.jsonl`, supporting `png` `jpeg` `gif` `bmp` `tiff` `webp` `emf` `wmf`.
+- **SVG images**: when Word saves an SVG it stores both the vector `.svg` and a PNG raster fallback; native docx writes that **PNG fallback** (reading `<a:blip>`'s `r:embed`, which points at the PNG) and does not export the SVG vector original. For downstream VLM consumption PNG is usually sufficient, with no further rasterization needed. (Note this differs from the md path's "SVG rasterized via cairosvg" below: docx simply takes the PNG Word already generated.)
+- **VML / OLE objects** (legacy Word images, Visio diagrams, equation-editor previews, etc.): their rendered preview is exported via `v:imagedata`, commonly EMF/WMF, landing in the same assets directory; if the relationship is marked as an external link (`TargetMode="External"`), only the URL is recorded and no bytes are exported. **Note: EMF/WMF (and the previews of OLE objects such as Visio) can currently only be "extracted to disk" and cannot enter multimodal analysis** — the downstream VLM image analysis accepts only the raster formats `png` / `jpg` / `jpeg` / `gif` / `webp`, and other formats (EMF/WMF/SVG, etc.) are silently skipped (marked `skipped`; no error, and the rest of the document is unaffected). The exception is **equations**: they are stored as LaTeX text rather than images and are analyzed by the text (EXTRACT) role rather than the VLM, so they are processed normally.
+
+##### docx Paragraph Provenance (paraId) Notice
+
+native docx collects the `w14:paraId` written by Word 2013+ as a paragraph-level provenance anchor. If a document was produced by LibreOffice / WPS / older Word, or its internal docx XML was edited by hand, some paragraphs will lack paraId, and a one-time notice is logged:
+
+```text
+[parse_native] <filename>: N paragraphs lack paraId; Re-saving file in Word 2013+ to regenerate ids.
+```
+
+The affected blocks' `positions` degrade to `[{"type": "paraid", "range": null}]`. This is only a notice and **does not affect parsing success**; if you need precise paragraph provenance, follow the hint and "Save As .docx" in Word 2013+ to regenerate the ids.
+
+##### md / textpack Extraction Capabilities
+
 Beyond `docx`, the `native` engine also supports Markdown:
+
 - `md`: splits by heading (ATX `#`), recognizes native pipe tables (with header), HTML `<table>` (with `<thead>`, preserving colspan/rowspan), block-level equations (a paragraph starting with `$$` and ending with `$$`; inline `$...$` is not recognized), and embedded images (base64 data URLs). Content inside fenced code blocks (```` ``` ````) is kept verbatim and not interpreted. As with `docx`, `md` still defaults to `legacy`; select native via `LIGHTRAG_PARSER=md:native` or a filename `[native]` hint.
 - `textpack`: a TextBundle-format zip package (markdown body plus a resource directory, conventionally `assets/`; the export format of Bear / Ulysses, etc.). Only `native` supports this extension, so it is routed to native automatically without a hint/rule.
   - **Package structure requirements** (the body is located by extension, not a fixed `text.markdown` name, so you can pack it with any zip tool):
@@ -141,9 +183,17 @@ Beyond `docx`, the `native` engine also supports Markdown:
   - File-reference images embedded by relative path are resolved relative to the bundle root and **may live in any subdirectory** (not only `assets/`); directory traversal is forbidden (`..`, absolute paths, or references escaping the bundle root are skipped with a warning), and the resolved bytes must pass an image magic-byte check or they are skipped. Relative-path images in a standalone `.md` (not a textpack) are not resolved (skipped with a warning).
 - SVG images (base64 / textpack file / downloaded) are rasterized to PNG via cairosvg before being written to the sidecar; if cairosvg is unavailable or rendering fails, the image is skipped (with a warning).
 - External URL images (`![](http://...)`) are **downloaded and embedded by default** (`NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` defaults to `true`); a drawing is always emitted (the fetched asset on success, or an external-link fallback on failure). Downloading allows only globally-routable public IPs (both DNS-resolved IPs and every redirect target are checked, and the socket dials the validated IP directly to defeat DNS rebinding; any ambient `HTTP(S)_PROXY` is ignored); private / loopback / link-local / reserved / CGNAT (`100.64.0.0/10`) ranges are all rejected. To allow specific internal ranges, configure a CIDR allowlist via `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`. Set the flag to `false` to instead drop external images entirely (no drawing emitted, so a document whose only images are external links produces no `drawings.json`).
-- Downloaded external images are cached in a `<file>.native_raw/` sibling directory (analogous to `.mineru_raw` / `.docling_raw`), so re-parsing the same unchanged file reuses them instead of re-downloading. The cache is invalidated when the source content or the size / SVG-pixel / CIDR options above change; set `LIGHTRAG_FORCE_REPARSE_NATIVE=true` to discard it and force a re-download. The cache directory is removed when the document is deleted.
 
-LightRAG caches the parsing results of the `mineru` and `docling` engines locally. Re-uploading the same file usually does not trigger the engine to re-parse the document. To delete the parse cache, you must click the "also delete file" option in the delete-file dialog of the document management interface. Modifying the endpoint addresses and effective extraction parameters of the `mineru` / `docling` engines will also invalidate the cache, causing the engine to re-parse the file content on the next upload of the same file.
+##### Environment Variables
+
+All of native's `NATIVE_*` environment variables and the `.native_raw/` cache directory **apply only to external-image downloading in the markdown / textpack engine**; **the docx path reads no `NATIVE_*` variable**. The two most common:
+
+- `LIGHTRAG_FORCE_REPARSE_NATIVE` (default `false`): discard the `.native_raw/` cache and re-download external images over the network.
+- `NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` (default `true`): the master switch for external-image downloading; set to `false` to drop all external images.
+
+The remaining download / size / SSRF variables (`NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT` / `NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED` / `NATIVE_MD_IMAGE_MAX_BYTES` / `NATIVE_MD_IMAGE_MAX_SVG_PIXELS` / `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`) — their meanings and defaults are listed in [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example) at the repository root.
+
+Downloaded external images are cached in `<file>.native_raw/` (beside `.parsed/`, analogous to `.mineru_raw`/`.docling_raw`), reused directly when re-parsing the same unchanged file instead of going back over the network; the cache is invalidated when the source content or the size / SVG-pixel / CIDR options above change. When the document is deleted (with "also delete file" checked in the delete dialog), this cache directory is removed together with `.parsed/`.
 
 #### Using the MinerU File Parsing Engine
 
@@ -266,7 +316,7 @@ After making the changes, restart the API service for them to take effect:
 docker compose -f compose.yaml --profile api up -d
 ```
 
-#### Docling Configuration
+#### Using the Docling File Parsing Engine
 
 The `docling` content extraction engine requires an external [docling-serve](https://github.com/DS4SD/docling-serve) service (v1 async API). Minimal configuration:
 
