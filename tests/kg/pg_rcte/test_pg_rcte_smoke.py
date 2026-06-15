@@ -220,6 +220,46 @@ async def test_node_degree(store):
 
 
 @pytest.mark.asyncio
+async def test_get_knowledge_graph_bfs(store):
+    """Exercise the WITH RECURSIVE BFS path against a real PostgreSQL instance.
+
+    Builds a chain A-B-C-D and verifies that get_knowledge_graph("A", max_depth=2)
+    returns A, B, C but not D (3 hops away).
+    """
+    for name in ("A", "B", "C", "D"):
+        await store.upsert_node(name, _node(name))
+    await store.upsert_edge("A", "B", _edge(1.0))
+    await store.upsert_edge("B", "C", _edge(1.0))
+    await store.upsert_edge("C", "D", _edge(1.0))
+
+    kg = await store.get_knowledge_graph("A", max_depth=2, max_nodes=100)
+
+    node_ids = {n.id for n in kg.nodes}
+    assert "A" in node_ids
+    assert "B" in node_ids
+    assert "C" in node_ids
+    assert "D" not in node_ids, "D is 3 hops from A; must not appear at max_depth=2"
+    assert kg.is_truncated is False
+
+
+@pytest.mark.asyncio
+async def test_get_all_edges_key_shape(store):
+    """get_all_edges must return 'source'/'target' keys, not 'src_id'/'tgt_id'."""
+    await store.upsert_node("X", _node("X"))
+    await store.upsert_node("Y", _node("Y"))
+    await store.upsert_edge("X", "Y", _edge(0.5))
+
+    edges = await store.get_all_edges()
+
+    assert len(edges) >= 1
+    edge = next(e for e in edges if {e.get("source"), e.get("target")} == {"X", "Y"})
+    assert "source" in edge
+    assert "target" in edge
+    assert "src_id" not in edge
+    assert "tgt_id" not in edge
+
+
+@pytest.mark.asyncio
 async def test_jsonb_unicode_and_special_chars(store):
     """JSONB round-trip must preserve Unicode and apostrophes without corruption.
 

@@ -201,3 +201,26 @@ async def test_remove_edges_raises_on_none_id():
     storage = make_storage()
     with pytest.raises((ValueError, TypeError)):
         await storage.remove_edges([(None, "B")])  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# get_all_edges — key contract (source/target, not src_id/tgt_id)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_all_edges_returns_source_target_keys():
+    """get_all_edges must emit 'source'/'target' keys to match BaseGraphStorage
+    contract consumed by storage_migrations.py."""
+    storage = make_storage()
+    with patch.object(storage, "_fetch", new=AsyncMock(return_value=[
+        {"src_id": "A", "tgt_id": "B", "properties": json.dumps({"weight": 1.0})}
+    ])):
+        edges = await storage.get_all_edges()
+
+    assert len(edges) == 1
+    assert "source" in edges[0]
+    assert "target" in edges[0]
+    assert edges[0]["source"] == "A"
+    assert edges[0]["target"] == "B"
+    assert "src_id" not in edges[0]
+    assert "tgt_id" not in edges[0]
