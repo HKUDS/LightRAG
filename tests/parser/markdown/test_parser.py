@@ -18,7 +18,9 @@ from lightrag.parser.markdown import parser as md_parser
 from lightrag.parser.markdown.parser import (
     NativeMarkdownParser,
     _host_is_public,
+    _image_bytes_and_ext,
     _image_ext_from_magic,
+    _looks_like_svg,
     _pin_socket,
 )
 
@@ -35,10 +37,112 @@ def _make_parser() -> NativeMarkdownParser:
     return NativeMarkdownParser()
 
 
+_SVG_BYTES = (
+    b'<?xml version="1.0"?>\n'
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">'
+    b'<rect width="4" height="4" fill="red"/></svg>'
+)
+
+
 def test_magic_detection():
     assert _image_ext_from_magic(_PNG_BYTES) == "png"
     assert _image_ext_from_magic(b"\xff\xd8\xff\xe0junk") == "jpg"
     assert _image_ext_from_magic(b"not an image") is None
+    # SVG is text, not a raster magic — recognised only by the SVG sniffer.
+    assert _image_ext_from_magic(_SVG_BYTES) is None
+
+
+def test_looks_like_svg():
+    assert _looks_like_svg(_SVG_BYTES) is True
+    assert _looks_like_svg(b"\xef\xbb\xbf  \n<svg></svg>") is True  # BOM + space
+    assert _looks_like_svg(_PNG_BYTES) is False
+    assert _looks_like_svg(b"<html><body>no svg</body></html>") is False
+
+
+def test_svg_rasterized_to_png_via_coerce():
+    coerced = _image_bytes_and_ext(
+        _SVG_BYTES, max_bytes=25 * 1024 * 1024, max_svg_pixels=16_000_000
+    )
+    assert coerced is not None
+    data, ext = coerced
+    assert ext == "png"
+    assert data.startswith(b"\x89PNG")
+
+
+def test_svg_coerce_skips_when_rasterization_fails(monkeypatch):
+    # cairosvg unavailable / render failure -> coerce returns None (caller skips).
+    monkeypatch.setattr(md_parser, "_rasterize_svg", lambda raw, **kw: None)
+    assert (
+        _image_bytes_and_ext(_SVG_BYTES, max_bytes=25 * 1024 * 1024, max_svg_pixels=1)
+        is None
+    )
+
+
+def test_svg_coerce_skips_when_rasterized_png_too_large(monkeypatch):
+    monkeypatch.setattr(md_parser, "_rasterize_svg", lambda raw, **kw: _PNG_BYTES)
+    assert (
+        _image_bytes_and_ext(_SVG_BYTES, max_bytes=4, max_svg_pixels=16_000_000) is None
+    )
+
+
+def test_svg_dimensions_parsed_from_width_height_and_viewbox():
+    assert md_parser._svg_pixel_dimensions(_SVG_BYTES) == (4, 4)
+    # Unit conversion: 1in = 96px, 2in = 192px.
+    svg_in = b'<svg xmlns="http://www.w3.org/2000/svg" width="1in" height="2in"/>'
+    assert md_parser._svg_pixel_dimensions(svg_in) == (96, 192)
+    # width/height missing or relative (%) -> fall back to viewBox w/h.
+    svg_vb = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 30 20"/>'
+    )
+    assert md_parser._svg_pixel_dimensions(svg_vb) == (30, 20)
+    # Neither resolvable -> None (skipped by the rasterizer).
+    svg_none = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
+    assert md_parser._svg_pixel_dimensions(svg_none) is None
+
+
+def test_svg_oversized_canvas_rejected_before_render(monkeypatch):
+    # A tiny SVG declaring a huge canvas is rejected on the pre-render pixel
+    # budget — cairosvg.svg2png must never be reached.
+    import cairosvg
+
+    def _boom(*a, **k):  # pragma: no cover - must not be called
+        raise AssertionError("cairosvg.svg2png should not run for oversized canvas")
+
+    monkeypatch.setattr(cairosvg, "svg2png", _boom)
+    big = b'<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="100000"/>'
+    assert md_parser._rasterize_svg(big, max_pixels=16_000_000) is None
+
+
+def test_base64_svg_decoded_and_rasterized():
+    import base64 as _b64
+
+    p = _make_parser()
+    b64 = _b64.b64encode(_SVG_BYTES).decode()
+    md = f"# H\n\n![x](data:image/svg+xml;base64,{b64})\n"
+    _, warnings, meta = p._extract_text(md, bundle_root=None)
+    (asset,) = meta["md_assets"].values()
+    assert asset["fmt"] == "png"
+    assert asset["data"].startswith(b"\x89PNG")
+    (drawing,) = meta["md_drawings"].values()
+    assert drawing["kind"] == "local"
+    assert not warnings
+
+
+def test_textpack_svg_file_rasterized_to_png(tmp_path: Path):
+    pack = tmp_path / "note.textpack"
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("text.markdown", "# N\n\n![logo](assets/logo.svg)\n")
+        zf.writestr("assets/logo.svg", _SVG_BYTES)
+    p = _make_parser()
+    _, warnings, meta = p.extract(
+        pack, parsed_dir=tmp_path, asset_dir=tmp_path, base_name="note"
+    )
+    (asset,) = meta["md_assets"].values()
+    assert asset["fmt"] == "png"
+    assert asset["data"].startswith(b"\x89PNG")
+    # The on-disk name takes the rasterized extension.
+    assert asset["suggested_name"] == "logo.png"
+    assert not warnings
 
 
 def test_host_is_public_rejects_internal(monkeypatch):
@@ -253,16 +357,18 @@ def _patch_download(
     )
 
 
-def test_remote_image_kept_external_when_download_disabled(monkeypatch):
+def test_remote_image_dropped_when_download_disabled(monkeypatch):
+    # Downloading is opt-in: with it disabled an external image is dropped
+    # entirely — no drawing, no asset — so a doc whose only image is an external
+    # link produces no drawings.json.
     monkeypatch.delenv("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", raising=False)
     p = _make_parser()
     _, warnings, meta = p._extract_text(
         "# H\n\n![x](http://host/y.png)\n", bundle_root=None
     )
-    (drawing,) = meta["md_drawings"].values()
-    assert drawing["kind"] == "external"
-    assert drawing["url"] == "http://host/y.png"
-    assert not meta["md_assets"]
+    assert meta["md_drawings"] == {}
+    assert meta["md_assets"] == {}
+    assert warnings.get("images_external_dropped") == 1
 
 
 def test_remote_image_downloaded_when_enabled(monkeypatch):

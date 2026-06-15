@@ -10,8 +10,14 @@ Image handling (see the parser plan):
 - file-reference images are resolved ONLY inside a ``.textpack`` bundle, from
   the safely-extracted bundle directory (with a read-side path-traversal
   guard); a relative reference in a standalone ``.md`` is skipped + warned.
-- external ``http(s)`` images are kept as external links by default; downloading
-  is opt-in via ``NATIVE_MD_IMAGE_DOWNLOAD_ENABLED`` and SSRF/size guarded.
+- external ``http(s)`` images are DROPPED by default (no drawing emitted, so a
+  doc whose only images are external links produces no drawings.json);
+  downloading + embedding is opt-in via ``NATIVE_MD_IMAGE_DOWNLOAD_ENABLED`` and
+  SSRF/size guarded. With downloading enabled a drawing is always emitted —
+  the fetched asset on success, or an external-link fallback on failure.
+- SVG images (base64 / textpack file / downloaded) are rasterized to PNG via
+  cairosvg before entering the sidecar; if cairosvg is unavailable or rendering
+  fails the image is skipped + warned.
 """
 
 from __future__ import annotations
@@ -21,11 +27,13 @@ import binascii
 import hashlib
 import http.client
 import os
+import re
 import socket
 import tempfile
 import urllib.error
 import urllib.request
 from ipaddress import ip_address, ip_network
+from math import ceil
 from pathlib import Path
 from shutil import rmtree
 from typing import TYPE_CHECKING, Any
@@ -56,9 +64,11 @@ _GENERIC_CONTENT_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 
 
 def _image_ext_from_magic(raw: bytes) -> str | None:
-    """Return the file extension for ``raw`` image bytes, or ``None`` if the
-    bytes are not a recognised image (unlike ``_vision_utils._detect_mime``,
-    which always falls back to PNG)."""
+    """Return the file extension for ``raw`` raster image bytes, or ``None`` if
+    the bytes are not a recognised raster image (unlike
+    ``_vision_utils._detect_mime``, which always falls back to PNG). SVG is text,
+    not a raster format, and is handled separately via :func:`_looks_like_svg`
+    / :func:`_rasterize_svg`."""
     if raw.startswith(_PNG_SIGNATURE):
         return "png"
     if raw.startswith(_JPEG_SIGNATURE):
@@ -67,6 +77,125 @@ def _image_ext_from_magic(raw: bytes) -> str | None:
         return "gif"
     if len(raw) >= 12 and raw[0:4] == _WEBP_RIFF and raw[8:12] == _WEBP_TAG:
         return "webp"
+    return None
+
+
+def _looks_like_svg(raw: bytes) -> bool:
+    """True iff ``raw`` sniffs as SVG markup (an ``<svg`` tag near the start,
+    possibly after an XML declaration / DOCTYPE / comments)."""
+    head = raw[:4096].lstrip(b"\xef\xbb\xbf").lstrip()  # drop UTF-8 BOM + space
+    return b"<svg" in head[:2048].lower()
+
+
+# CSS absolute-length units → pixels (96 px/in). Relative units (``%``, ``em``,
+# ``ex``) depend on a viewport we do not have, so a dimension in those units is
+# treated as unresolvable and falls back to the ``viewBox``.
+_SVG_UNIT_TO_PX = {
+    "": 1.0,
+    "px": 1.0,
+    "pt": 96.0 / 72.0,
+    "pc": 16.0,
+    "in": 96.0,
+    "cm": 96.0 / 2.54,
+    "mm": 96.0 / 25.4,
+    "q": 96.0 / 25.4 / 4.0,
+}
+_SVG_LENGTH_RE = re.compile(r"^([0-9]*\.?[0-9]+)\s*([a-z%]*)$")
+
+
+def _svg_length_px(value: str) -> float | None:
+    """Parse a CSS/SVG length to pixels, or ``None`` for an unresolvable unit
+    (``%`` / ``em`` / ``ex``) or unparseable text."""
+    match = _SVG_LENGTH_RE.match(value.strip().lower())
+    if not match:
+        return None
+    factor = _SVG_UNIT_TO_PX.get(match.group(2))
+    if factor is None:
+        return None
+    return float(match.group(1)) * factor
+
+
+def _svg_pixel_dimensions(raw: bytes) -> tuple[int, int] | None:
+    """Best-effort render dimensions (px) for an SVG, from ``width``/``height``
+    or, failing that, the ``viewBox``. Returns ``None`` when the root is not an
+    ``<svg>``, dimensions are missing/unresolvable, or the XML does not parse
+    (parsed with defusedxml, which also blocks XML entity-expansion bombs)."""
+    try:
+        from defusedxml.ElementTree import fromstring
+
+        root = fromstring(raw)
+    except Exception as exc:  # noqa: BLE001 - malformed / hostile XML
+        logger.debug("[native_md] SVG XML parse failed: %s", exc)
+        return None
+    if root.tag.rsplit("}", 1)[-1].lower() != "svg":
+        return None
+    width = _svg_length_px(root.get("width") or "")
+    height = _svg_length_px(root.get("height") or "")
+    if width is None or height is None:
+        view_box = (root.get("viewBox") or "").replace(",", " ").split()
+        if len(view_box) != 4:
+            return None
+        try:
+            width, height = float(view_box[2]), float(view_box[3])
+        except ValueError:
+            return None
+    if width <= 0 or height <= 0:
+        return None
+    return ceil(width), ceil(height)
+
+
+def _rasterize_svg(raw: bytes, *, max_pixels: int) -> bytes | None:
+    """Render SVG bytes to PNG bytes via cairosvg. Returns ``None`` (caller
+    skips the image) when cairosvg is unavailable, rendering fails, or the SVG's
+    declared canvas exceeds ``max_pixels`` — the dimension check runs *before*
+    rendering so a tiny SVG declaring a huge canvas cannot blow up memory/CPU
+    inside cairosvg before the output-size cap would catch it. A single bad SVG
+    must not abort the whole document."""
+    dims = _svg_pixel_dimensions(raw)
+    if dims is None:
+        logger.warning("[native_md] SVG dimensions missing/unparseable; skipping")
+        return None
+    width, height = dims
+    if width * height > max_pixels:
+        logger.warning(
+            "[native_md] SVG canvas %dx%d exceeds %d px budget; skipping",
+            width,
+            height,
+            max_pixels,
+        )
+        return None
+    try:
+        import cairosvg
+    except Exception as exc:  # noqa: BLE001 - optional native dep
+        logger.warning(
+            "[native_md] cairosvg unavailable, cannot rasterize SVG: %s", exc
+        )
+        return None
+    try:
+        return cairosvg.svg2png(bytestring=raw)
+    except Exception as exc:  # noqa: BLE001 - malformed / hostile SVG
+        logger.warning("[native_md] SVG rasterization failed: %s", exc)
+        return None
+
+
+def _image_bytes_and_ext(
+    raw: bytes, *, max_bytes: int, max_svg_pixels: int
+) -> tuple[bytes, str] | None:
+    """Coerce ``raw`` image bytes into a sidecar-ready raster image.
+
+    A recognised raster image passes through unchanged; an SVG is rasterized to
+    PNG — bounded *before* rendering by ``max_svg_pixels`` (declared canvas) and
+    *after* by ``max_bytes`` (output size), so a hostile SVG that explodes into a
+    giant bitmap is rejected rather than embedded. Returns ``(bytes, ext)`` or
+    ``None`` when the bytes are neither a raster image nor a convertible SVG.
+    """
+    ext = _image_ext_from_magic(raw)
+    if ext is not None:
+        return raw, ext
+    if _looks_like_svg(raw):
+        png = _rasterize_svg(raw, max_pixels=max_svg_pixels)
+        if png is not None and len(png) <= max_bytes and _image_ext_from_magic(png):
+            return png, "png"
     return None
 
 
@@ -228,6 +357,7 @@ class _MarkdownImageResolver:
         download_required: bool,
         timeout: int,
         max_bytes: int,
+        max_svg_pixels: int,
     ) -> None:
         self._bundle_root = bundle_root.resolve() if bundle_root else None
         self._warnings = warnings
@@ -235,6 +365,7 @@ class _MarkdownImageResolver:
         self._download_required = download_required
         self._timeout = timeout
         self._max_bytes = max_bytes
+        self._max_svg_pixels = max_svg_pixels
         self._cache: dict[str, ResolvedImage] = {}
 
     def resolve(self, src: str) -> ResolvedImage:
@@ -281,10 +412,14 @@ class _MarkdownImageResolver:
         except (ValueError, binascii.Error):
             return self._skip("invalid base64", src)
         # Magic bytes are authoritative — the declared MIME type is not trusted
-        # for validation (matching the remote-download path).
-        ext = _image_ext_from_magic(data)
-        if ext is None:
+        # for validation (matching the remote-download path). SVG is rasterized
+        # to PNG here.
+        coerced = _image_bytes_and_ext(
+            data, max_bytes=self._max_bytes, max_svg_pixels=self._max_svg_pixels
+        )
+        if coerced is None:
             return self._skip("unrecognised image", src)
+        data, ext = coerced
         digest = hashlib.sha256(data).hexdigest()[:12]
         return self._local(data, ext, f"image-{digest}.{ext}")
 
@@ -309,16 +444,29 @@ class _MarkdownImageResolver:
             return self._skip("image exceeds size limit", src)
         data = candidate.read_bytes()
         # Magic bytes are authoritative; the filename suffix is not trusted for
-        # validation (it is still used as the suggested on-disk name).
-        ext = _image_ext_from_magic(data)
-        if ext is None:
+        # validation. SVG is rasterized to PNG (so the on-disk name takes the
+        # resolved extension, e.g. ``logo.svg`` -> ``logo.png``).
+        coerced = _image_bytes_and_ext(
+            data, max_bytes=self._max_bytes, max_svg_pixels=self._max_svg_pixels
+        )
+        if coerced is None:
             return self._skip("unrecognised image", src)
-        return self._local(data, ext, candidate.name)
+        data, ext = coerced
+        return self._local(data, ext, f"{candidate.stem}.{ext}")
 
     def _resolve_remote(self, src: str) -> ResolvedImage:
         ext_hint = Path(urlparse(src).path).suffix.lower().lstrip(".")
         if not self._download_enabled:
-            return ResolvedImage(kind="external", url=src, fmt=ext_hint)
+            # Downloading is opt-in: with it disabled, external images are
+            # dropped entirely (no drawing emitted), so a doc whose only images
+            # are external links produces no drawings.json. This is expected
+            # configuration, not a problem, so it is logged at debug level and
+            # counted under a dedicated key rather than warned per image.
+            logger.debug(
+                "[native_md] dropping external image (download disabled): %s", src[:120]
+            )
+            self._bump("images_external_dropped")
+            return ResolvedImage(kind="skip")
         try:
             data, ext = self._download(src)
         except Exception as exc:  # noqa: BLE001 - best-effort network fetch
@@ -344,18 +492,21 @@ class _MarkdownImageResolver:
             data = resp.read(self._max_bytes + 1)
         if len(data) > self._max_bytes:
             raise ValueError(f"image exceeds {self._max_bytes} bytes")
-        ext = _image_ext_from_magic(data)
-        if ext is None:
-            raise ValueError("downloaded bytes are not a supported image")
-        # Magic bytes are authoritative; reject only an *explicit* non-image
-        # Content-Type. Missing / generic types defer to the magic check above.
+        # Magic bytes are authoritative; SVG is rasterized to PNG here. Reject
+        # only an *explicit* non-image Content-Type — but ``image/svg+xml`` is a
+        # valid image type, so the check stays correct for converted SVGs.
         if (
             content_type
             and content_type not in _GENERIC_CONTENT_TYPES
             and not content_type.startswith("image/")
         ):
             raise ValueError(f"non-image Content-Type: {content_type!r}")
-        return data, ext
+        coerced = _image_bytes_and_ext(
+            data, max_bytes=self._max_bytes, max_svg_pixels=self._max_svg_pixels
+        )
+        if coerced is None:
+            raise ValueError("downloaded bytes are not a supported image")
+        return coerced
 
 
 class NativeMarkdownParser(NativeParserBase):
@@ -425,6 +576,7 @@ class NativeMarkdownParser(NativeParserBase):
             download_required=_env_bool("NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED", False),
             timeout=_env_int("NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT", 30),
             max_bytes=_env_int("NATIVE_MD_IMAGE_MAX_BYTES", 25 * 1024 * 1024),
+            max_svg_pixels=_env_int("NATIVE_MD_IMAGE_MAX_SVG_PIXELS", 16_000_000),
         )
         extraction = extract_markdown(md_text, image_resolver=resolver)
         metadata: dict[str, Any] = {

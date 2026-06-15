@@ -94,6 +94,7 @@ api = [
     "pypdf>=6.1.0",                 # PDF processing
     "python-docx>=0.8.11,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
+    "cairosvg>=2.5.0,<3.0.0",      # SVG->PNG rasterization for native markdown images
     "defusedxml>=0.7.0,<1.0.0",    # Safer XML parser used by parser/docx
     # Chunking strategies (process_options=R / V); lazy-imported by lightrag.chunker
     "langchain-text-splitters>=0.3,<2",
