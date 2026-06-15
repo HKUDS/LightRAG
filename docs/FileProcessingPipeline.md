@@ -225,7 +225,7 @@ Make three changes to the `mineru-api` service: add `MINERU_TOOLS_CONFIG_JSON` t
       --host 0.0.0.0
       --port 8000
       --allow-public-http-client
-      --gpu-memory-utilization 0.45         # 
+      --gpu-memory-utilization 0.45         #
       --enable-vlm-preload true             # <-- added
     ulimits:
       memlock: -1
