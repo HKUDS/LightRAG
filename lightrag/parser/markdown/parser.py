@@ -50,13 +50,6 @@ _GIF_SIGNATURES = (b"GIF87a", b"GIF89a")
 _WEBP_RIFF = b"RIFF"
 _WEBP_TAG = b"WEBP"
 
-_MIME_TO_EXT = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/jpg": "jpg",
-    "image/gif": "gif",
-    "image/webp": "webp",
-}
 # Content-Type values that carry no usable type signal — fall back to magic.
 _GENERIC_CONTENT_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 
@@ -197,14 +190,15 @@ class _MarkdownImageResolver:
         # ``data:[<mime>][;base64],<payload>`` — only base64 image payloads.
         if ";base64," not in src:
             return self._skip("data url not base64", src)
-        header, _, payload = src.partition(";base64,")
-        mime = header[len("data:") :].strip().lower()
+        _, _, payload = src.partition(";base64,")
         try:
             data = base64.b64decode("".join(payload.split()), validate=True)
         except (ValueError, binascii.Error):
             return self._skip("invalid base64", src)
-        ext = _image_ext_from_magic(data) or _MIME_TO_EXT.get(mime)
-        if not ext:
+        # Magic bytes are authoritative — the declared MIME type is not trusted
+        # for validation (matching the remote-download path).
+        ext = _image_ext_from_magic(data)
+        if ext is None:
             return self._skip("unrecognised image", src)
         digest = hashlib.sha256(data).hexdigest()[:12]
         return self._local(data, ext, f"image-{digest}.{ext}")
@@ -224,7 +218,11 @@ class _MarkdownImageResolver:
         if not candidate.is_file():
             return self._skip("image file missing", src)
         data = candidate.read_bytes()
-        ext = _image_ext_from_magic(data) or candidate.suffix.lower().lstrip(".")
+        # Magic bytes are authoritative; the filename suffix is not trusted for
+        # validation (it is still used as the suggested on-disk name).
+        ext = _image_ext_from_magic(data)
+        if ext is None:
+            return self._skip("unrecognised image", src)
         return self._local(data, ext, candidate.name)
 
     def _resolve_remote(self, src: str) -> ResolvedImage:

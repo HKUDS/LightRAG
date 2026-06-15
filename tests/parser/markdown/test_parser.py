@@ -60,6 +60,17 @@ def test_base64_image_decoded_to_asset():
     assert not warnings
 
 
+def test_base64_non_image_bytes_rejected():
+    # ``data:image/png;base64,QUJD`` decodes to b"ABC" — declared PNG but not a
+    # real image. Magic bytes are authoritative, so it must be skipped.
+    p = _make_parser()
+    md = "# H\n\n![x](data:image/png;base64,QUJD)\n"
+    _, warnings, meta = p._extract_text(md, bundle_root=None)
+    assert meta["md_drawings"] == {}
+    assert meta["md_assets"] == {}
+    assert warnings.get("images_skipped") == 1
+
+
 def test_standalone_md_relative_image_is_skipped():
     p = _make_parser()
     blocks, warnings, meta = p._extract_text(
@@ -92,6 +103,38 @@ def test_textpack_file_reference_resolved(tmp_path: Path):
     assert asset["data"] == _PNG_BYTES
     assert asset["suggested_name"] == "pic.png"
     assert not warnings
+
+
+def test_textpack_image_outside_assets_dir_is_resolved(tmp_path: Path):
+    # Compatibility: a reference may point anywhere under the bundle root, not
+    # only ``assets/`` — here ``media/pic.png`` and a root-level ``cover.png``.
+    pack = tmp_path / "note.textpack"
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("text.markdown", "# N\n\n![a](media/pic.png)\n\n![b](cover.png)\n")
+        zf.writestr("media/pic.png", _PNG_BYTES)
+        zf.writestr("cover.png", _PNG_BYTES)
+    p = _make_parser()
+    _, warnings, meta = p.extract(
+        pack, parsed_dir=tmp_path, asset_dir=tmp_path, base_name="note"
+    )
+    assert len(meta["md_drawings"]) == 2
+    assert all(d["kind"] == "local" for d in meta["md_drawings"].values())
+    # Same bytes → deduped to a single asset.
+    assert len(meta["md_assets"]) == 1
+    assert not warnings
+
+
+def test_textpack_non_image_file_reference_is_skipped(tmp_path: Path):
+    pack = tmp_path / "note.textpack"
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("text.markdown", "# N\n\n![x](assets/fake.png)\n")
+        zf.writestr("assets/fake.png", b"this is not an image")
+    p = _make_parser()
+    _, warnings, meta = p.extract(
+        pack, parsed_dir=tmp_path, asset_dir=tmp_path, base_name="note"
+    )
+    assert meta["md_drawings"] == {}
+    assert warnings.get("images_skipped") == 1
 
 
 def test_textpack_traversal_reference_is_skipped(tmp_path: Path):
