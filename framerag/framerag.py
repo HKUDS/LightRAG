@@ -815,10 +815,7 @@ class FrameRAG:
 
         async def _safe_insert(text: str, doc: str) -> None:
             async with semaphore:
-                try:
-                    await self.ainsert(text, source_doc=doc)
-                except Exception as e:
-                    logger.error(f"[FrameRAG] Batch insert failed for '{doc}': {e}")
+                await self.ainsert(text, source_doc=doc)
 
         await asyncio.gather(*[_safe_insert(t, d) for t, d in zip(texts, source_docs)])
 

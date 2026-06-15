@@ -55,6 +55,32 @@ output/
 rag_storage/
 data/
 
+# FrameRAG evaluation outputs
+story_results/
+eval_storage/
+eval_storage_*/
+eval_tmp_*/
+graphs/
+cs_storage_*/
+rag_storage_*/
+_frames_samples_tmp.json
+docs_backup.json
+eval_results_*.json
+results_story*.json
+BRIDGE_REVIEW_REPORT.md
+CONVERSATION_HISTORY*.md
+EVALUATION_RESULTS.md
+EVAL_POSTFIX_RESULTS.md
+FRAME_SEMANTIC_README.md
+FSRAG_*.md
+OVERNIGHT_LOG.md
+REPORT_*.md
+RESEARCH_PROPOSALS.md
+EVAL_POSTFIX_RESULTS.md
+run_full*.sh
+run_rest*.sh
+run_all_seq.sh
+
 # Runtime-provided entity type prompt profiles (keep sample files only)
 prompts/entity_type/
 

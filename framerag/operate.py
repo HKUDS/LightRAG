@@ -104,8 +104,10 @@ async def _llm_with_retry(
                 logger.error(f"[operate] LLM failed after {max_retries} attempts: {e}")
                 raise
             err_str = str(e)
-            # 429 rate-limit: use longer wait since TPM bucket takes ~60s to drain
+            # 429 rate-limit or 500 server error: use longer wait
             if "429" in err_str or "rate_limit" in err_str.lower():
+                wait = _BACKOFF[min(attempt, len(_BACKOFF) - 1)]
+            elif "500" in err_str or "server" in err_str.lower():
                 wait = _BACKOFF[min(attempt, len(_BACKOFF) - 1)]
             else:
                 wait = 2 ** attempt
