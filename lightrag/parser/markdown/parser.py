@@ -10,11 +10,12 @@ Image handling (see the parser plan):
 - file-reference images are resolved ONLY inside a ``.textpack`` bundle, from
   the safely-extracted bundle directory (with a read-side path-traversal
   guard); a relative reference in a standalone ``.md`` is skipped + warned.
-- external ``http(s)`` images are DROPPED by default (no drawing emitted, so a
-  doc whose only images are external links produces no drawings.json);
-  downloading + embedding is opt-in via ``NATIVE_MD_IMAGE_DOWNLOAD_ENABLED`` and
-  SSRF/size guarded. With downloading enabled a drawing is always emitted —
-  the fetched asset on success, or an external-link fallback on failure.
+- external ``http(s)`` images are downloaded + embedded by default
+  (``NATIVE_MD_IMAGE_DOWNLOAD_ENABLED`` defaults to ``true``), SSRF/size guarded;
+  a drawing is always emitted — the fetched asset on success, or an external-link
+  fallback on failure. Set the flag to ``false`` to instead DROP external images
+  entirely (no drawing emitted, so a doc whose only images are external links
+  produces no drawings.json).
 - SVG images (base64 / textpack file / downloaded) are rasterized to PNG via
   cairosvg before entering the sidecar; if cairosvg is unavailable or rendering
   fails the image is skipped + warned.
@@ -572,7 +573,7 @@ class NativeMarkdownParser(NativeParserBase):
         resolver = _MarkdownImageResolver(
             bundle_root=bundle_root,
             warnings=warnings,
-            download_enabled=_env_bool("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", False),
+            download_enabled=_env_bool("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", True),
             download_required=_env_bool("NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED", False),
             timeout=_env_int("NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT", 30),
             max_bytes=_env_int("NATIVE_MD_IMAGE_MAX_BYTES", 25 * 1024 * 1024),

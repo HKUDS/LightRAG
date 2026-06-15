@@ -358,10 +358,10 @@ def _patch_download(
 
 
 def test_remote_image_dropped_when_download_disabled(monkeypatch):
-    # Downloading is opt-in: with it disabled an external image is dropped
-    # entirely — no drawing, no asset — so a doc whose only image is an external
-    # link produces no drawings.json.
-    monkeypatch.delenv("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", raising=False)
+    # With downloading explicitly disabled an external image is dropped entirely
+    # — no drawing, no asset — so a doc whose only image is an external link
+    # produces no drawings.json. (Downloading is ON by default.)
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", "false")
     p = _make_parser()
     _, warnings, meta = p._extract_text(
         "# H\n\n![x](http://host/y.png)\n", bundle_root=None
