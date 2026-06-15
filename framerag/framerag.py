@@ -302,13 +302,14 @@ class FrameRAG:
             all_fi:       list[FrameInstanceSchema]  = []
             all_info:     list[InfoNodeSchema]       = []
             all_causal:   list[CausalEdgeSchema]     = []
-            chunk_ids: list[str] = []
+            chunk_ids: list[str] = [c.chunk_id for c in chunks]
 
             # ── Per-chunk extraction (parallelised within this passage) ────────
-            # Phase 1a: add all chunks to vector store (sequential — VDB writes)
-            for chunk in chunks:
-                await self._hg.add_chunk(chunk)
-                chunk_ids.append(chunk.chunk_id)
+            # Phase 1a: batch-embed all chunk texts at once, register in KV + VDB.
+            # Runs concurrently with Phase 1b via asyncio.gather below.
+            async def _register_chunks() -> None:
+                """Batch-embed all chunks, write KV + VDB in one pass."""
+                await asyncio.gather(*[self._hg.add_chunk(c) for c in chunks])
 
             # Phase 1b: LLM extraction — all chunks concurrently (throttled by _llm_sem)
             async def _extract_chunk(
@@ -343,9 +344,12 @@ class FrameRAG:
 
                 return mentions, events, fis, infos, causal_edges, new_frames
 
-            chunk_results = await asyncio.gather(
-                *[_extract_chunk(c) for c in chunks]
+            # Run chunk registration (embed) + LLM extraction concurrently
+            results = await asyncio.gather(
+                _register_chunks(),
+                asyncio.gather(*[_extract_chunk(c) for c in chunks]),
             )
+            chunk_results = results[1]
 
             # Phase 1c: aggregate + update frame DB (sequential — DB writes)
             seen_new_frames: set[str] = set()
