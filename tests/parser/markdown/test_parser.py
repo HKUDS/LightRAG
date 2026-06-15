@@ -40,11 +40,37 @@ def test_magic_detection():
     assert _image_ext_from_magic(b"not an image") is None
 
 
-def test_host_is_public_rejects_internal():
+def test_host_is_public_rejects_internal(monkeypatch):
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    assert _host_is_public("8.8.8.8") is True
     assert _host_is_public("127.0.0.1") is False
     assert _host_is_public("10.0.0.1") is False
     assert _host_is_public("169.254.0.1") is False
     assert _host_is_public("::1") is False
+    # CGNAT 100.64.0.0/10 is not private/reserved in Python's flags but is not
+    # globally routable — default-deny via is_global must still reject it.
+    assert _host_is_public("100.64.0.1") is False
+    # TEST-NET (192.0.2.0/24) is likewise non-global.
+    assert _host_is_public("192.0.2.1") is False
+
+
+def test_allowlist_permits_configured_non_public(monkeypatch):
+    monkeypatch.setenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", "100.64.0.0/10")
+    assert _host_is_public("100.64.0.1") is True
+    # An address outside the allowlist is still rejected.
+    assert _host_is_public("10.0.0.1") is False
+
+
+def test_redirect_to_non_public_host_blocked(monkeypatch):
+    import email.message
+
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    handler = md_parser._GuardedRedirectHandler()
+    req = md_parser.urllib.request.Request("http://example.com/a")
+    with pytest.raises(md_parser.urllib.error.HTTPError):
+        handler.redirect_request(
+            req, None, 302, "Found", email.message.Message(), "http://10.0.0.1/evil"
+        )
 
 
 def test_base64_image_decoded_to_asset():

@@ -24,7 +24,7 @@ import socket
 import tempfile
 import urllib.error
 import urllib.request
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from shutil import rmtree
 from typing import TYPE_CHECKING, Any
@@ -86,31 +86,48 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
-def _host_is_public(host: str) -> bool:
-    """True iff every resolved address for ``host`` is a global/public IP.
+def _allowed_non_public_networks() -> list:
+    """Parse ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`` (comma-separated
+    CIDRs / IPs) into networks. Invalid tokens are warned and dropped."""
+    raw = os.getenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", "")
+    nets = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            nets.append(ip_network(token, strict=False))
+        except ValueError:
+            logger.warning("[native_md] ignoring invalid allowed CIDR: %s", token)
+    return nets
 
-    Blocks SSRF to loopback / private / link-local / reserved / multicast /
-    unspecified ranges. A resolution failure is treated as non-public.
+
+def _host_is_public(host: str) -> bool:
+    """True iff every resolved address for ``host`` is safe to fetch.
+
+    Default-deny: an address is allowed only when ``ip.is_global`` (so SSRF to
+    loopback / private / link-local / reserved / CGNAT ``100.64.0.0/10`` /
+    TEST-NET and any other non-globally-routable range is blocked). A
+    non-global address is allowed only when it matches the operator-configured
+    ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`` escape hatch. A resolution
+    failure is treated as non-public.
     """
+    allow = _allowed_non_public_networks()
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return False
     for info in infos:
-        addr = str(info[4][0])
+        addr = str(info[4][0]).split("%", 1)[0]
         try:
-            ip = ip_address(addr.split("%", 1)[0])
+            ip = ip_address(addr)
         except ValueError:
             return False
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            return False
+        if ip.is_global:
+            continue
+        if any(ip in net for net in allow):
+            continue
+        return False
     return True
 
 
