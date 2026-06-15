@@ -12,7 +12,6 @@ is absent so they never block offline CI.
 The CI gate is .github/workflows/pg-smoke.yml which uses a GitHub Actions
 PostgreSQL service container.
 """
-import json
 import os
 import time
 import uuid

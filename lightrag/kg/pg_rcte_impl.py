@@ -374,8 +374,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
         )
         return [
             {
-                "src_id": r["src_id"],
-                "tgt_id": r["tgt_id"],
+                "source": r["src_id"],
+                "target": r["tgt_id"],
                 # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
                 **json.loads(r["properties"]),
             }
