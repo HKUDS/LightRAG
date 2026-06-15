@@ -585,25 +585,42 @@ class NativeMarkdownParser(NativeParserBase):
             max_entries=_TEXTPACK_MAX_ENTRIES,
             max_total_bytes=_TEXTPACK_MAX_TOTAL_BYTES,
         )
-        # TextBundle: the text lives in ``text.markdown`` / ``text.md``; fall
-        # back to any single markdown file. ``bundle_root`` is its directory.
-        text_file = self._find_text_file(tmp_dir)
-        if text_file is None:
-            raise ValueError(f"no markdown text file found in textpack: {source.name}")
+        text_file = self._find_text_file(tmp_dir, source.name)
         return text_file.read_bytes().decode("utf-8-sig"), text_file.parent
 
     @staticmethod
-    def _find_text_file(root: Path) -> Path | None:
-        for name in ("text.markdown", "text.md"):
-            for candidate in (root / name, *root.glob(f"*/{name}")):
-                if candidate.is_file():
-                    return candidate
-        markdown = [
+    def _find_text_file(root: Path, source_name: str) -> Path:
+        # The body is located by extension, not a fixed ``text.markdown`` name,
+        # so any zip tool can produce a valid textpack. Layout rules:
+        #   * If the archive holds a ``*.textbundle`` directory, exactly one is
+        #     allowed and the body must live directly inside it.
+        #   * Otherwise the body must live directly in the archive root.
+        #   * The chosen directory must hold exactly one ``*.md``/``*.markdown``.
+        # ``bundle_root`` (the returned file's parent) anchors asset resolution.
+        bundles = sorted(
             p
-            for p in root.rglob("*")
+            for p in root.iterdir()
+            if p.is_dir() and p.suffix.lower() == ".textbundle"
+        )
+        if len(bundles) > 1:
+            names = ", ".join(p.name for p in bundles)
+            raise ValueError(
+                f"multiple .textbundle directories in textpack: {source_name} ({names})"
+            )
+        search_dir = bundles[0] if bundles else root
+        markdown = sorted(
+            p
+            for p in search_dir.iterdir()
             if p.is_file() and p.suffix.lower() in (".md", ".markdown")
-        ]
-        return markdown[0] if len(markdown) == 1 else None
+        )
+        if len(markdown) > 1:
+            names = ", ".join(p.name for p in markdown)
+            raise ValueError(
+                f"multiple markdown files in textpack: {source_name} ({names})"
+            )
+        if not markdown:
+            raise ValueError(f"no markdown text file found in textpack: {source_name}")
+        return markdown[0]
 
     def _extract_text(
         self,
