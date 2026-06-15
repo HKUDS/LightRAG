@@ -296,7 +296,10 @@ class PgRcteGraphStorage(BaseGraphStorage):
             source_node_id,
         )
         return [
-            (source_node_id, r["tgt_id"] if r["src_id"] == source_node_id else r["src_id"])
+            (
+                source_node_id,
+                r["tgt_id"] if r["src_id"] == source_node_id else r["src_id"],
+            )
             for r in rows
         ]
 
@@ -449,7 +452,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
             )
             SELECT DISTINCT id, properties FROM bfs
             """
-            node_rows = await self._fetch(rcte_sql, self.workspace, node_label, max_depth)
+            node_rows = await self._fetch(
+                rcte_sql, self.workspace, node_label, max_depth
+            )
 
         if not node_rows:
             return KnowledgeGraph(nodes=[], edges=[], is_truncated=False)
@@ -466,7 +471,11 @@ class PgRcteGraphStorage(BaseGraphStorage):
 
         nodes = [
             KnowledgeGraphNode(
-                id=r["id"], labels=[r["id"]], properties=json.loads(r["properties"])  # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
+                id=r["id"],
+                labels=[r["id"]],
+                properties=json.loads(
+                    r["properties"]
+                ),  # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
             )
             for r in node_rows
         ]
@@ -487,7 +496,9 @@ class PgRcteGraphStorage(BaseGraphStorage):
                     type=None,
                     source=r["src_id"],
                     target=r["tgt_id"],
-                    properties=json.loads(r["properties"]),  # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
+                    properties=json.loads(
+                        r["properties"]
+                    ),  # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
                 )
                 for r in edge_rows
             ]
@@ -559,7 +570,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
         )
         canonical_props = {
             # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
-            (r["src_id"], r["tgt_id"]): json.loads(r["properties"]) for r in rows
+            (r["src_id"], r["tgt_id"]): json.loads(r["properties"])
+            for r in rows
         }
         return {
             (p["src"], p["tgt"]): canonical_props[c]

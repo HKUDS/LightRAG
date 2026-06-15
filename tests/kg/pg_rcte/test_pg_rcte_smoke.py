@@ -12,6 +12,7 @@ is absent so they never block offline CI.
 The CI gate is .github/workflows/pg-smoke.yml which uses a GitHub Actions
 PostgreSQL service container.
 """
+
 import os
 import time
 import uuid
@@ -199,9 +200,9 @@ async def test_get_nodes_edges_batch_queried_node_first(store):
 
     for queried, edge_list in result.items():
         for src, tgt in edge_list:
-            assert src == queried, (
-                f"queried node {queried!r} must be first; got ({src!r}, {tgt!r})"
-            )
+            assert (
+                src == queried
+            ), f"queried node {queried!r} must be first; got ({src!r}, {tgt!r})"
 
 
 @pytest.mark.asyncio
