@@ -431,6 +431,12 @@ async def extract_events(
         return []
 
     raw = _safe_json(response)
+    # Unwrap {"events": [...]} or {"results": [...]} if LLM wrapped the array
+    if isinstance(raw, dict):
+        for key in ("events", "results", "items", "data"):
+            if isinstance(raw.get(key), list):
+                raw = raw[key]
+                break
     if not isinstance(raw, list):
         logger.warning(f"[operate] Event extraction returned non-list for chunk {chunk.chunk_id}")
         return []
