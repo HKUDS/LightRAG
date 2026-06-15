@@ -116,6 +116,103 @@ Output [] if no valid events found.
 ---Output (JSON array)---"""
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Call 2 (Step A) — Event Detection ONLY (no frames)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROMPTS["event_extraction"] = """---Role---
+You are an expert in event extraction from narrative text.
+
+---Entities already extracted from this chunk---
+{entity_list}
+
+---Task---
+Read the chunk text and identify ALL events. An event is something that HAPPENS or a
+state that holds — an action, occurrence, change, perception, communication, or mental
+event. Each event MUST have a clear trigger word (a verb, an event-denoting noun, or a
+nominalization such as "arrival", "discovery", "murder").
+
+For EACH event output a JSON object with:
+  - event_span        : the exact trigger phrase / clause from the text
+  - description       : 1-2 sentence plain-language description of what happened
+  - participant_names : list of entity names (from the entity list above) involved in the event
+  - temporal_marker   : optional time/ordering phrase ("the next morning", "in 1887", "after dinner") or "" if none
+  - is_negation       : true if the text says the event did NOT happen / an entity was NOT
+                        affected / was exempt / spared / unaffected; otherwise false
+
+Rules:
+- Capture NEGATION/EXEMPTION events too (e.g. "X was unaffected", "Y did not arrive",
+  "Z was spared"). Set is_negation=true for these.
+- Prefer participant names that match the entity list; you may also include clearly-named
+  participants not in the list.
+- Output ONLY a JSON array. No prose, no markdown fences.
+- If no events found, output [].
+
+---Chunk Text---
+{chunk_text}
+
+---Output (JSON array)---"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Call 2 (Step B) — Frame Annotation for ONE event
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROMPTS["frame_annotation"] = """---Role---
+You are an expert in Frame Semantics (Fillmore 1985).
+
+---Background---
+A "frame" is a schematic representation of a situation type. Each frame has a name
+(FrameNet-style PascalCase_Underscore, e.g. "Commerce_buy", "Reveal_secret",
+"Intentional_act"), a definition, and Frame Elements (FEs) — the participant/circumstance
+roles. Core FEs are definitionally central (e.g. Buyer, Goods); non-core FEs are peripheral
+(Time, Place, Manner, Purpose, Degree).
+
+---Existing Frames in Database (PREFER reusing one of these if it fits)---
+{frame_db_hints}
+
+---Entities available in this chunk---
+{entity_list}
+
+---The Event to Annotate---
+Trigger / span : {event_span}
+Description    : {event_description}
+Participants   : {participant_names}
+Negation       : {is_negation}
+
+---Source Chunk (for context)---
+{chunk_text}
+
+---Task---
+1. Choose the single best-matching frame for this event.
+   - If one of the existing database frames fits, REUSE its exact name (set is_new_frame=false).
+   - Otherwise create a new FrameNet-style frame name (set is_new_frame=true) and give a
+     1-sentence definition.
+   - If the event is a negation/exemption, prefix the frame name with "NOT_"
+     (e.g. "NOT_Affect") and use core FE "Excluded_Entity".
+2. Identify the CORE Frame Elements and which entity name or text phrase fills each.
+3. Identify any NON-CORE FEs that are present (Time, Place, Manner, Purpose, ...).
+4. For each FE filler, set filler_type to "ENTITY" if it is one of the available entities,
+   else "VALUE" (dates, prices, locations-as-values, manner phrases). If a core FE has no
+   filler in the text, set is_missing=true.
+
+---Output Format---
+Output ONLY a JSON object (no markdown fences):
+{{
+  "frame_name": "<PascalCase_Underscore>",
+  "is_new_frame": true,
+  "frame_definition": "<1 sentence; required when is_new_frame=true>",
+  "lexical_unit": "<trigger.POS, e.g. reveal.v>",
+  "core_elements": [
+    {{"fe_name": "Speaker", "filler_text": "Holmes", "filler_type": "ENTITY", "is_missing": false}},
+    {{"fe_name": "Topic",   "filler_text": "the cipher", "filler_type": "VALUE", "is_missing": false}}
+  ],
+  "noncore_elements": [
+    {{"fe_name": "Time", "filler_text": "that evening", "filler_type": "VALUE", "is_missing": false}}
+  ]
+}}
+
+---Output (JSON object)---"""
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Call 3 — Causal / Temporal Edge Extraction (optional)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -123,28 +220,40 @@ PROMPTS["causal_temporal"] = """---Role---
 You are an expert in event causality and temporal reasoning.
 
 ---Task---
-Given the events below extracted from the same document section, identify CAUSAL and TEMPORAL
-relations between them. Only output relations with explicit textual evidence.
+Below is a passage of text followed by the events extracted from it (with stable IDs).
+Identify CAUSAL and TEMPORAL relations between these events, grounded in the passage.
 
 Relation types:
   CAUSES   : Event A directly causes Event B
-  PRECEDES : Event A happens before Event B (temporal, not necessarily causal)
+  PRECEDES : Event A happens before Event B (temporal ordering, not necessarily causal)
   ENABLES  : Event A creates conditions that make Event B possible
 
----Events---
+Guidance:
+- Use the passage to judge ordering and causality. Narrative order, connectives
+  ("because", "so", "after", "then", "as a result", "which led to"), and plain
+  chronological sequence are all valid evidence.
+- It is normal for a passage to contain several relations — when two events are described
+  in sequence, a PRECEDES relation almost always holds. Be willing to assert PRECEDES for
+  clearly ordered events even without an explicit connective.
+- Copy the event_id values EXACTLY as given (do not invent or shorten them).
+
+---Passage---
+{chunk_text}
+
+---Events (use these exact IDs)---
 {event_list}
 
 ---Output Format---
-Output ONLY a JSON array. Each element:
+Output ONLY a JSON array (no markdown fences). Each element:
 {{
-  "source_event_id": "<event_id of A>",
+  "source_event_id": "<exact event_id of A>",
   "relation_type": "CAUSES|PRECEDES|ENABLES",
-  "target_event_id": "<event_id of B>",
+  "target_event_id": "<exact event_id of B>",
   "confidence": 0.0-1.0,
-  "evidence_span": "<exact text fragment that supports this relation>"
+  "evidence_span": "<short text fragment or 'narrative sequence' if ordering-based>"
 }}
 
-Output [] if no clear relations exist.
+Output [] only if the events are genuinely unrelated.
 
 ---Output (JSON array)---"""
 
@@ -154,6 +263,8 @@ Output [] if no clear relations exist.
 
 PROMPTS["query_processing"] = """---Role---
 You are a query analysis expert for a Frame-Semantic knowledge graph retrieval system.
+The queries are about narrative fiction (detective stories, novels) — character actions,
+motivations, relationships, and events.
 
 ---Task---
 Analyze the query and extract signals for graph-based retrieval.
@@ -161,32 +272,72 @@ Analyze the query and extract signals for graph-based retrieval.
 ---Output Format---
 Output ONLY a JSON object:
 {{
-  "entity_hints": ["<entity name or description implied by query>", ...],
-  "event_hints": ["<action/event type implied>", ...],
-  "frame_hints": "<primary FrameNet-style frame name or description, e.g. Commerce_buy>",
+  "entity_hints": ["<character names or entity names implied by query>", ...],
+  "event_hints": ["<action/event type implied — use verbs>", ...],
+  "frame_hints": "<primary FrameNet-style frame name, e.g. Scrutiny, Communication_tell, Motion_travel>",
   "fe_focus": ["<FE name most critical to answering the query>", ...],
-  "temporal_hints": ["<year, date, or period if query specifies time>", ...]
+  "temporal_hints": ["<time expression if query specifies time, else empty>", ...]
 }}
 
-Examples:
-  Query "Who acquired Beats Electronics?" →
-    entity_hints: ["Beats Electronics"],
-    event_hints: ["acquire", "buy", "purchase"],
-    frame_hints: "Commerce_buy",
-    fe_focus: ["Buyer"],
+Examples (narrative fiction):
+  Query "What did Holmes discover about the suspect?" →
+    entity_hints: ["Holmes", "suspect"],
+    event_hints: ["discover", "find", "investigate"],
+    frame_hints: "Scrutiny",
+    fe_focus: ["Ground", "Phenomenon"],
     temporal_hints: []
 
-  Query "What did Apple buy in 2014?" →
-    entity_hints: ["Apple"],
-    event_hints: ["buy", "acquire"],
-    frame_hints: "Commerce_buy",
-    fe_focus: ["Goods"],
-    temporal_hints: ["2014"]
+  Query "Why did Watson accompany Holmes to Baker Street?" →
+    entity_hints: ["Watson", "Holmes", "Baker Street"],
+    event_hints: ["accompany", "travel", "go"],
+    frame_hints: "Accompaniment",
+    fe_focus: ["Co-participant", "Purpose"],
+    temporal_hints: []
+
+  Query "Who did Irene Adler outwit in the story?" →
+    entity_hints: ["Irene Adler"],
+    event_hints: ["outwit", "deceive", "trick"],
+    frame_hints: "Deception",
+    fe_focus: ["Victim"],
+    temporal_hints: []
+
+  Query "How did the murderer escape after the crime?" →
+    entity_hints: ["murderer"],
+    event_hints: ["escape", "flee", "run"],
+    frame_hints: "Escaping",
+    fe_focus: ["Agent", "Source"],
+    temporal_hints: []
 
 ---Query---
 {query}
 
 ---Output (JSON object)---"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Call 4b — LLM Frame Selection (query-time, uses actual frame DB)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROMPTS["frame_selection"] = """---Role---
+You are a semantic frame retrieval expert for narrative text question answering.
+
+---Task---
+Given a query about a narrative, select the most relevant semantic frames from the list below.
+These frames describe event/action types that occurred in the story.
+
+---Available Frames---
+{frame_list}
+
+---Query---
+{query}
+
+---Instructions---
+Select up to 6 frame names that describe events or situations most directly relevant to answering
+the query. Focus on the ACTION or EVENT type the query is asking about, not just keywords.
+
+Output ONLY a JSON array of frame names from the list above.
+Example: ["Cognition_find", "Communication_tell", "Motion_flee"]
+
+---Output (JSON array)---"""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Entity Coreference Verification (LLM borderline cases)
@@ -229,61 +380,6 @@ Same JSON format as before. If none found, output [].
 ---Output (JSON array)---"""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Frame Relation Expansion (query-time — broaden retrieval scope)
-# ─────────────────────────────────────────────────────────────────────────────
-
-PROMPTS["frame_relation_expand"] = """---Task---
-Given a query and its primary FrameNet-style frame, identify 3-5 RELATED frames that would
-contain complementary information needed to fully answer the query.
-
-Consider frames that:
-  - Share participants with the primary frame
-  - Precede or follow the primary frame temporally
-  - Are causally linked (cause, enable, or result from the primary frame)
-
----Query---
-{query}
-
----Primary Frame---
-{primary_frame}
-
----Output---
-JSON array of frame name strings only. Example:
-["Commerce_buy", "Transfer", "Ownership"]
-
-Output [] if no clearly related frames exist."""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Event Coreference Verification (LLM borderline cases)
-# ─────────────────────────────────────────────────────────────────────────────
-
-PROMPTS["event_coref_verify"] = """---Task---
-Determine whether Event A and Event B describe the SAME real-world occurrence.
-
-Two events corefer only if they:
-  1. Are triggered by the same (or semantically equivalent) word
-  2. Evoke the same frame
-  3. Involve the same or highly overlapping participants in compatible roles
-
----Event A---
-Trigger: {trigger_a}
-Frame: {frame_a}
-Description: {desc_a}
-Participants: {participants_a}
-
----Event B---
-Trigger: {trigger_b}
-Frame: {frame_b}
-Description: {desc_b}
-Participants: {participants_b}
-
----Output---
-Answer SAME or DIFFERENT, followed by one concise reason.
-Format: "<SAME|DIFFERENT> - <reason>"
-Example: "SAME - both describe Apple's acquisition of Beats Electronics in 2014"
-"""
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Answer Generation (Call 5)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -309,7 +405,7 @@ Keep the result to 3-5 sentences maximum.
 # ─────────────────────────────────────────────────────────────────────────────
 
 PROMPTS["answer_generation"] = """---Role---
-You are a precise question-answering assistant. Answer using ONLY the retrieved context below.
+You are a precise question-answering assistant for narrative text. Answer using the retrieved context below.
 
 ---Structured Facts (Frame Instances)---
 {structured_facts}
@@ -324,8 +420,11 @@ You are a precise question-answering assistant. Answer using ONLY the retrieved 
 1. First, identify which frame instances and passages are most directly relevant to the question.
 2. If the question asks about multiple entities, groups, or time periods, address each one explicitly.
 3. Pay special attention to NOT_* frames — these encode what did NOT happen or who was NOT affected.
-4. If a key fact is absent from the retrieved context, state "Not found in retrieved context" rather
-   than guessing.
+4. Always provide the best answer you can from the available context:
+   - If the context fully supports the answer: answer directly and cite evidence.
+   - If the context partially supports the answer: answer with what you know, note what is uncertain.
+   - Only say "Not found in retrieved context" if the context contains absolutely no relevant
+     information whatsoever — not even indirect or partial evidence.
 5. Structure your answer:
    [Direct answer to the question]
    [Key supporting evidence from facts/passages — be specific]

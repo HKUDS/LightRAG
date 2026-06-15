@@ -470,7 +470,6 @@ class TestFrameRAGLifecycle:
             embedding_dim=4,
             enable_causal=False,
             enable_gleaning=False,
-            enable_event_coref=False,
         )
         await r.initialize()
         yield r
@@ -518,7 +517,6 @@ class TestFrameRAGLifecycle:
             embedding_dim=4,
             enable_causal=False,
             enable_gleaning=False,
-            enable_event_coref=False,
         )
         await r.initialize()
         try:

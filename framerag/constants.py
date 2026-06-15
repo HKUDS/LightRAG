@@ -57,8 +57,11 @@ DEFAULT_CHUNK_OVERLAP = 100     # overlap tokens between adjacent chunks
 # Hypergraph diffusion
 # ─────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_DIFFUSION_STEPS = 3     # number of propagation steps T
-DEFAULT_DIFFUSION_ALPHA = 0.15  # restart probability α (lower = more diffusion)
+DEFAULT_DIFFUSION_WARM_UP = 3   # Phase 1: fully-bidirectional steps for signal exploration
+DEFAULT_DIFFUSION_ALPHA = 0.15  # restart probability α
+DEFAULT_DIFFUSION_T_DECAY = 0.7 # Phase 2 cooling base: w_back(k) = t_decay^k
+                                 # 1.0 = no decay, 0.7 ≈ 13 cooling steps, 0.5 ≈ 7 steps
+DEFAULT_DIFFUSION_EPSILON = 0.01 # Phase 2 stops when w_back < epsilon (dynamic termination)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Retrieval
@@ -95,7 +98,7 @@ DEFAULT_MAX_PARALLEL_INSERT = 2
 DEFAULT_LLM_TIMEOUT = 120.0
 
 # Seconds before a single embed call is cancelled
-DEFAULT_EMBEDDING_TIMEOUT = 30.0
+DEFAULT_EMBEDDING_TIMEOUT = 120.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Embeddings

@@ -22,9 +22,9 @@ from lightrag.utils import logger
 from ..types import EntityMentionSchema, CanonicalEntitySchema
 from ..prompt import PROMPTS
 
-# Similarity thresholds
-AUTO_SAME_THRESHOLD = 0.88
-AUTO_DIFF_THRESHOLD = 0.75
+# Similarity thresholds — aligned with cross-passage merge threshold (0.70)
+AUTO_SAME_THRESHOLD = 0.70
+AUTO_DIFF_THRESHOLD = 0.55
 LLM_VERIFY_RANGE = (AUTO_DIFF_THRESHOLD, AUTO_SAME_THRESHOLD)
 
 

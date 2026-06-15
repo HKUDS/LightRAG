@@ -246,12 +246,24 @@ class HypergraphStore:
         })
         self._mention_ids.add(mention.mention_id)
 
+    @staticmethod
+    def _strip_titles(name: str) -> str:
+        import re as _re
+        _TITLE_RE = _re.compile(
+            r"^(mr\.?|mrs\.?|ms\.?|miss\.?|dr\.?|prof\.?|sir\.?|lord\.?|lady\.?)\s+",
+            _re.IGNORECASE,
+        )
+        return _TITLE_RE.sub("", name.strip()).lower()
+
     async def add_canonical_entity(self, canonical: CanonicalEntitySchema) -> None:
         """Add or merge a canonical entity. Returns the effective canonical_id."""
         norm_name = canonical.canonical_name.lower().strip()
+        stripped_name = self._strip_titles(canonical.canonical_name)
 
-        # Merge into existing canonical if same name seen before
-        existing_id = self._canonical_name_idx.get(norm_name)
+        # Merge into existing canonical if same name seen before (exact or title-stripped)
+        existing_id = self._canonical_name_idx.get(norm_name) or (
+            self._canonical_name_idx.get(stripped_name) if stripped_name != norm_name else None
+        )
         if existing_id:
             existing = await self.canonical_entities.get_by_id(existing_id)
             if existing:
@@ -299,6 +311,9 @@ class HypergraphStore:
         })
         self._canonical_ids.add(canonical.canonical_id)
         self._canonical_name_idx[norm_name] = canonical.canonical_id
+        # Also index by title-stripped name so "Mr. X" and "X" find each other
+        if stripped_name != norm_name:
+            self._canonical_name_idx.setdefault(stripped_name, canonical.canonical_id)
 
         # Update mention → canonical mapping
         for mid in canonical.mention_ids:
@@ -364,6 +379,7 @@ class HypergraphStore:
         self,
         fi: FrameInstanceSchema,
         frame_core_fe_names: set[str],
+        rich_content: str = "",
     ) -> None:
         await self.frame_instances.upsert({
             fi.fi_id: {
@@ -385,14 +401,17 @@ class HypergraphStore:
                 ],
             }
         })
-        parts = [f"Frame: {fi.frame_name}"]
-        for a in fi.core_assignments + fi.noncore_assignments:
-            if a.filler_id and a.filler_text:
-                parts.append(f"{a.fe_name}: {a.filler_text}")
-        content = " | ".join(parts)
+        # Use caller-provided rich content (frame def + entity descs + event span)
+        # if available; fall back to minimal label string
+        if not rich_content:
+            parts = [f"Frame: {fi.frame_name}"]
+            for a in fi.core_assignments + fi.noncore_assignments:
+                if a.filler_text:
+                    parts.append(f"{a.fe_name}: {a.filler_text}")
+            rich_content = " | ".join(parts)
         await self.vdb_frame_instances.upsert({
             fi.fi_id: {
-                "content":      content,
+                "content":      rich_content,
                 "frame_name":   fi.frame_name,
                 "event_id":     fi.event_id,
                 "lexical_unit": fi.lexical_unit,
@@ -413,7 +432,7 @@ class HypergraphStore:
             is_core = a.fe_name in frame_core_fe_names
             weight = CORE_FE_WEIGHT if is_core else NONCORE_FE_WEIGHT
             self._adj_frame_node[fi.fi_id].append({
-                "node_id": a.filler_id,
+                "node_id": a.filler_id,   # mention_id or info_id
                 "fe_name": a.fe_name,
                 "weight":  weight,
                 "is_core": is_core,
@@ -469,12 +488,14 @@ class HypergraphStore:
           A_cau : [n_events × n_events] (causal)
           plus ID lists and index dicts.
         """
-        chunk_ids  = list(self._chunk_ids)
-        event_ids  = list(self._event_ids)
-        fi_ids     = list(self._fi_ids)
-        mention_ids = list(self._mention_ids)
-        info_ids   = list(self._info_ids)
-        all_node_ids = mention_ids + info_ids
+        chunk_ids     = list(self._chunk_ids)
+        event_ids     = list(self._event_ids)
+        fi_ids        = list(self._fi_ids)
+        canonical_ids = list(self._canonical_ids)
+        info_ids      = list(self._info_ids)
+        # Nodes = canonical entities + info nodes (NOT raw mentions)
+        # This ensures "Holmes" in passage 1 and passage 7 share the same node.
+        all_node_ids = canonical_ids + info_ids
 
         if not event_ids or not fi_ids:
             return {}
@@ -518,12 +539,18 @@ class HypergraphStore:
         )
 
         # H_fe (FE-weighted)
+        # filler_id is a mention_id (entity) or info_id (value).
+        # Entity mention_ids are resolved to canonical_ids so that the same
+        # real-world entity maps to a single node regardless of which passage
+        # it appears in.
         rows, cols, data = [], [], []
         for fid, adj_list in self._adj_frame_node.items():
             if fid not in fi_idx:
                 continue
             for entry in adj_list:
-                nid = entry["node_id"]
+                raw_nid = entry["node_id"]
+                # Resolve mention_id → canonical_id; info_ids pass through unchanged
+                nid = self._adj_mention_canon.get(raw_nid, raw_nid)
                 if nid not in node_idx:
                     continue
                 w = entry["weight"]

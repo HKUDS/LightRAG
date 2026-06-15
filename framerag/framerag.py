@@ -10,9 +10,13 @@ Indexing pipeline (per document):
   chunk → (Call 1) entity extraction [+ gleaning]
         → (Call 2) event + frame + role extraction (with Frame DB hints)
         → (Call 3) causal edge extraction
-        → coreference resolution (entity then event)
+        → entity coreference resolution
         → entity description merging (cross-doc)
         → hypergraph storage
+
+Post-indexing (call post_process_frames() once after all docs):
+  cluster near-duplicate frames → re-evoke canonical frame from event text
+  → merge LUs + usage → delete duplicates from DB
 
 Query pipeline:
   query → LLM seed signals → vector search → sparse matrix build
@@ -36,8 +40,10 @@ from .constants import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_MAX_GLEANING,
-    DEFAULT_DIFFUSION_STEPS,
+    DEFAULT_DIFFUSION_WARM_UP,
     DEFAULT_DIFFUSION_ALPHA,
+    DEFAULT_DIFFUSION_T_DECAY,
+    DEFAULT_DIFFUSION_EPSILON,
     DEFAULT_TOP_CHUNKS,
     DEFAULT_TOP_FRAMES,
     DEFAULT_TOP_NODES,
@@ -62,13 +68,13 @@ from .frame_db import FrameDatabase
 from .hypergraph import HypergraphStore
 from .diffusion import HypergraphDiffusion
 from .coreference.entity_coref import EntityCoreferenceResolver
-from .coreference.event_coref import EventCoreferenceResolver
 from .operate import (
     extract_entities,
     glean_entities,
-    extract_events_frames_roles,
+    extract_events_frames_two_step,
     extract_causal_edges,
     expand_query_frames,
+    expand_query_frames_llm,
     process_query,
     generate_answer,
     _llm_with_retry,
@@ -105,10 +111,11 @@ class FrameRAG:
         enable_causal: bool = True,
         enable_gleaning: bool = True,
         max_gleaning_rounds: int = DEFAULT_MAX_GLEANING,
-        enable_event_coref: bool = True,
-        enable_llm_coref_verify: bool = True,
-        diffusion_steps: int = DEFAULT_DIFFUSION_STEPS,
+        enable_llm_coref_verify: bool = False,
+        diffusion_warm_up: int = DEFAULT_DIFFUSION_WARM_UP,
         diffusion_alpha: float = DEFAULT_DIFFUSION_ALPHA,
+        diffusion_t_decay: float = DEFAULT_DIFFUSION_T_DECAY,
+        diffusion_epsilon: float = DEFAULT_DIFFUSION_EPSILON,
         top_chunks: int = DEFAULT_TOP_CHUNKS,
         top_frames: int = DEFAULT_TOP_FRAMES,
         top_nodes: int = DEFAULT_TOP_NODES,
@@ -126,10 +133,11 @@ class FrameRAG:
         self._enable_causal = enable_causal
         self._enable_gleaning = enable_gleaning
         self._max_gleaning_rounds = max_gleaning_rounds
-        self._enable_event_coref = enable_event_coref
         self._enable_llm_coref_verify = enable_llm_coref_verify
-        self._diffusion_steps = diffusion_steps
+        self._diffusion_warm_up = diffusion_warm_up
         self._diffusion_alpha = diffusion_alpha
+        self._diffusion_t_decay = diffusion_t_decay
+        self._diffusion_epsilon = diffusion_epsilon
         self._top_chunks = top_chunks
         self._top_frames = top_frames
         self._top_nodes = top_nodes
@@ -138,6 +146,7 @@ class FrameRAG:
         self._llm_timeout = llm_timeout
         self._embed_timeout = embed_timeout
         self._llm_sem = asyncio.Semaphore(max_concurrent_llm)
+        self._save_lock = asyncio.Lock()
         self._desc_merge_threshold = DEFAULT_DESC_MERGE_THRESHOLD
 
         self._working_dir = working_dir
@@ -151,7 +160,6 @@ class FrameRAG:
             embed_func, llm_func,
             enable_llm_verify=enable_llm_coref_verify,
         )
-        self._event_coref  = EventCoreferenceResolver(embed_func, llm_func)
         self._doc_store  = DocStore(working_dir)
 
         # LLM response cache (JsonKVStorage)
@@ -175,10 +183,11 @@ class FrameRAG:
         logger.info("[FrameRAG] Initialized")
 
     async def finalize(self) -> None:
-        await self._hg.index_done_callback()
-        await self._frame_db.index_done_callback()
-        await self._llm_cache.index_done_callback()
-        await self._doc_store.index_done_callback()
+        async with self._save_lock:
+            await self._hg.index_done_callback()
+            await self._frame_db.index_done_callback()
+            await self._llm_cache.index_done_callback()
+            await self._doc_store.index_done_callback()
         logger.info("[FrameRAG] Storage flushed")
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -274,6 +283,10 @@ class FrameRAG:
     async def ainsert(self, text: str, source_doc: str = "unknown") -> None:
         """Index a document into the frame-semantic hypergraph."""
         doc_id = DocStore.make_doc_id(source_doc)
+        existing = await self._doc_store.get(doc_id)
+        if existing and existing.status == DocStatus.PROCESSED:
+            logger.info(f"[FrameRAG] Skipping '{source_doc}': already indexed")
+            return
         record = DocRecord(doc_id=doc_id, source_doc=source_doc, status=DocStatus.PENDING)
         await self._doc_store.upsert(record)
 
@@ -291,13 +304,24 @@ class FrameRAG:
             all_causal:   list[CausalEdgeSchema]     = []
             chunk_ids: list[str] = []
 
-            # ── Per-chunk extraction ─────────────────────────────────────────
+            # ── Per-chunk extraction (parallelised within this passage) ────────
+            # Phase 1a: add all chunks to vector store (sequential — VDB writes)
             for chunk in chunks:
-                chunk_ids.append(chunk.chunk_id)
-                # Store chunk (NanoVDB auto-embeds the text content)
                 await self._hg.add_chunk(chunk)
+                chunk_ids.append(chunk.chunk_id)
 
-                # Call 1: entity extraction (cached)
+            # Phase 1b: LLM extraction — all chunks concurrently (throttled by _llm_sem)
+            async def _extract_chunk(
+                chunk: ChunkSchema,
+            ) -> tuple[
+                list[EntityMentionSchema],
+                list[EventSchema],
+                list[FrameInstanceSchema],
+                list[InfoNodeSchema],
+                list[CausalEdgeSchema],
+                list,  # new_frames (FrameDefinitionSchema)
+            ]:
+                # Call 1: entity extraction
                 mentions = await extract_entities(chunk, self._llm)
                 if self._enable_gleaning and mentions:
                     gleaned = await glean_entities(
@@ -306,42 +330,47 @@ class FrameRAG:
                     )
                     mentions = mentions + gleaned
 
-                # Call 2: event + frame + role (cached)
-                events, fis, infos, new_frames = await extract_events_frames_roles(
+                # Call 2: event + frame + role (2-step: detect events, then
+                # annotate frames per event in parallel)
+                events, fis, infos, new_frames = await extract_events_frames_two_step(
                     chunk, mentions, self._llm, self._frame_db
                 )
 
-                # Update Frame DB
-                for fd in new_frames:
-                    await self._frame_db.upsert_frame(fd)
-                reused = {ev.frame_name for ev in events} - {f.frame_name for f in new_frames}
-                for fname in reused:
-                    await self._frame_db.increment_usage(fname)
-
-                # Call 3: causal edges (cached)
+                # Call 3: causal edges
                 causal_edges: list[CausalEdgeSchema] = []
                 if self._enable_causal and len(events) >= 2:
                     causal_edges = await extract_causal_edges(chunk, events, self._llm)
 
+                return mentions, events, fis, infos, causal_edges, new_frames
+
+            chunk_results = await asyncio.gather(
+                *[_extract_chunk(c) for c in chunks]
+            )
+
+            # Phase 1c: aggregate + update frame DB (sequential — DB writes)
+            seen_new_frames: set[str] = set()
+            for mentions, events, fis, infos, causal_edges, new_frames in chunk_results:
                 all_mentions.extend(mentions)
                 all_events.extend(events)
                 all_fi.extend(fis)
                 all_info.extend(infos)
                 all_causal.extend(causal_edges)
+                for fd in new_frames:
+                    if fd.frame_name not in seen_new_frames:
+                        await self._frame_db.upsert_frame(fd)
+                        seen_new_frames.add(fd.frame_name)
+                # Count usage for frames that appeared in events but were NOT
+                # created as new in ANY chunk of this document.
+                for ev in events:
+                    if ev.frame_name not in seen_new_frames:
+                        await self._frame_db.increment_usage(ev.frame_name)
 
             # ── Entity coreference ───────────────────────────────────────────
             logger.info(f"[FrameRAG] Entity coref: {len(all_mentions)} mentions")
             canonicals = await self._entity_coref.resolve_with_llm_verify(all_mentions)
 
             # ── Cross-document entity description merging ────────────────────
-            canonicals = await self._merge_entity_descriptions(canonicals)
-
-            # ── Event coreference ────────────────────────────────────────────
-            if self._enable_event_coref and all_events:
-                logger.info(f"[FrameRAG] Event coref: {len(all_events)} events")
-                ev_to_canon = await self._event_coref.resolve(all_events, canonicals)
-                for ev in all_events:
-                    ev.canonical_event_id = ev_to_canon.get(ev.event_id, ev.event_id)
+            canonicals = await self._merge_entity_descriptions(canonicals, all_mentions)
 
             # ── Persist to hypergraph ────────────────────────────────────────
             for m in all_mentions:
@@ -352,14 +381,24 @@ class FrameRAG:
                 await self._hg.add_event(ev)
 
             frame_core_fes: dict[str, set[str]] = {}
+            frame_defs: dict[str, str] = {}
             for ev in all_events:
                 if ev.frame_name not in frame_core_fes:
                     fd = await self._frame_db.get(ev.frame_name)
                     frame_core_fes[ev.frame_name] = fd.core_fe_names() if fd else set()
+                    frame_defs[ev.frame_name] = fd.frame_definition if fd else ""
+
+            mention_by_id = {m.mention_id: m for m in all_mentions}
+            info_by_id    = {info.info_id: info for info in all_info}
+            event_by_id   = {ev.event_id: ev for ev in all_events}
 
             for fi in all_fi:
                 core_names = frame_core_fes.get(fi.frame_name, set())
-                await self._hg.add_frame_instance(fi, core_names)
+                rich_content = self._build_fi_content(
+                    fi, frame_defs.get(fi.frame_name, ""),
+                    mention_by_id, info_by_id, event_by_id,
+                )
+                await self._hg.add_frame_instance(fi, core_names, rich_content)
             for info in all_info:
                 await self._hg.add_info_node(info)
             for edge in all_causal:
@@ -382,55 +421,118 @@ class FrameRAG:
             raise
 
     # ──────────────────────────────────────────────────────────────────────────
+    # Frame instance rich content builder
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _build_fi_content(
+        self,
+        fi: "FrameInstanceSchema",
+        frame_definition: str,
+        mention_by_id: dict,
+        info_by_id: dict,
+        event_by_id: dict,
+    ) -> str:
+        """Build semantically rich text for frame instance VDB embedding.
+
+        Format:
+          Frame: {name} — {frame_definition}
+          Trigger: {event_span}
+          {fe_name}: {filler_text} ({entity_description})
+          {fe_name}: {value}  [info_type]
+        """
+        parts: list[str] = [f"Frame: {fi.frame_name}"]
+        if frame_definition:
+            parts[0] += f" — {frame_definition}"
+
+        ev = event_by_id.get(fi.event_id)
+        if ev and ev.event_span:
+            parts.append(f"Trigger: {ev.event_span}")
+
+        for a in fi.core_assignments + fi.noncore_assignments:
+            if not a.filler_text:
+                continue
+            line = f"{a.fe_name}: {a.filler_text}"
+            if a.filler_type == "ENTITY" and a.filler_id:
+                m = mention_by_id.get(a.filler_id)
+                if m and m.description:
+                    line += f" ({m.description})"
+            elif a.filler_type == "VALUE" and a.filler_id:
+                info = info_by_id.get(a.filler_id)
+                if info and info.info_type:
+                    line += f" [{info.info_type}]"
+            parts.append(line)
+
+        return " | ".join(parts)
+
+    # ──────────────────────────────────────────────────────────────────────────
     # Entity description merging (cross-document)
     # ──────────────────────────────────────────────────────────────────────────
 
     async def _merge_entity_descriptions(
-        self, canonicals: list[CanonicalEntitySchema]
+        self,
+        canonicals: list[CanonicalEntitySchema],
+        all_mentions: list,
     ) -> list[CanonicalEntitySchema]:
-        """Merge each canonical's descriptions; summarise if over threshold."""
-        for canon in canonicals:
-            # Check whether this entity is already in storage (previous ainsert)
-            existing_id = self._hg.get_canonical_id_by_name(canon.canonical_name)
-            if existing_id and existing_id != canon.canonical_id:
-                existing = await self._hg.canonical_entities.get_by_id(existing_id)
-                if existing:
-                    all_descs = list(
-                        dict.fromkeys(
-                            existing.get("descriptions", []) + canon.descriptions
-                        )
-                    )
-                    if sum(len(d) for d in all_descs) > self._desc_merge_threshold:
-                        merged = await self._summarise_descriptions(
-                            canon.canonical_name, all_descs
-                        )
-                        all_descs = [merged]
-                    await self._hg.update_canonical_descriptions(existing_id, all_descs)
-                    canon.canonical_id = existing_id
-                    canon.descriptions = all_descs
-                    continue
+        """Cross-passage canonical ID unification.
 
-            # New canonical: check if descriptions alone are already too long
-            if sum(len(d) for d in canon.descriptions) > self._desc_merge_threshold:
-                merged = await self._summarise_descriptions(
-                    canon.canonical_name, canon.descriptions
-                )
-                canon.descriptions = [merged]
-        return canonicals
+        Identifies mentions of the same real-world entity across passages and
+        maps them to a single canonical_id so hyperedges connect correctly.
+        No description management — just ID unification.
 
-    async def _summarise_descriptions(
-        self, entity_name: str, descriptions: list[str]
-    ) -> str:
-        desc_text = "\n".join(f"- {d}" for d in descriptions)
-        prompt = PROMPTS["entity_description_merge"].format(
-            entity_name=entity_name,
-            descriptions=desc_text,
+        Two-pass lookup:
+        1. Normalized name match — strips honorifics then does O(1) hash lookup.
+        2. Embedding similarity >= 0.70 against the canonical entity VDB.
+        """
+        import re as _re
+        CROSS_EMBED_THRESHOLD = 0.70
+        _TITLE_RE = _re.compile(
+            r"^(mr\.?|mrs\.?|ms\.?|miss\.?|dr\.?|prof\.?|sir\.?|lord\.?|lady\.?)\s+",
+            _re.IGNORECASE,
         )
-        try:
-            return await self._llm(prompt)
-        except Exception as e:
-            logger.warning(f"[FrameRAG] Description merge failed for {entity_name}: {e}")
-            return descriptions[0] if descriptions else ""
+
+        def _normalize(name: str) -> str:
+            return _TITLE_RE.sub("", name.strip()).lower()
+
+        mention_by_canon: dict[str, list] = {}
+        for m in all_mentions:
+            mention_by_canon.setdefault(m.canonical_id, []).append(m)
+
+        def _unify(canon: CanonicalEntitySchema, existing_id: str) -> None:
+            old_id = canon.canonical_id
+            canon.canonical_id = existing_id
+            for m in mention_by_canon.get(old_id, []):
+                m.canonical_id = existing_id
+            # Register this surface form so future Pass-1 lookups find it.
+            norm = _normalize(canon.canonical_name)
+            self._hg._canonical_name_idx.setdefault(canon.canonical_name.lower().strip(), existing_id)
+            self._hg._canonical_name_idx.setdefault(norm, existing_id)
+
+        for canon in canonicals:
+            # Pass 1: normalized name match (handles "Mr. X" vs "X" variants)
+            norm = _normalize(canon.canonical_name)
+            existing_id = (
+                self._hg.get_canonical_id_by_name(canon.canonical_name)
+                or self._hg.get_canonical_id_by_name(norm)
+            )
+            if existing_id and existing_id != canon.canonical_id:
+                _unify(canon, existing_id)
+                continue
+
+            # Pass 2: embedding similarity match
+            search_text = f"{canon.canonical_name}: {' '.join(canon.descriptions[:1])}"
+            try:
+                vec = await self._raw_embed([search_text])
+                hits = await self._hg.search_canonical(vec[0], top_k=5)
+                for hit in hits:
+                    if hit.get("distance", 0.0) >= CROSS_EMBED_THRESHOLD:
+                        hit_id = hit["id"]
+                        if hit_id != canon.canonical_id:
+                            _unify(canon, hit_id)
+                            break
+            except Exception as e:
+                logger.debug(f"[FrameRAG] Cross-passage unify failed for '{canon.canonical_name}': {e}")
+
+        return canonicals
 
     # ──────────────────────────────────────────────────────────────────────────
     # Query
@@ -442,7 +544,7 @@ class FrameRAG:
         top_chunks: int,
         top_frames: int,
         top_nodes: int,
-        diffusion_steps: int,
+        diffusion_warm_up: int,
     ) -> tuple[list[dict], list[dict]]:
         """Shared retrieval logic: returns (frame_hits, chunk_hits)."""
         # Step 1: Extract query signals
@@ -455,13 +557,16 @@ class FrameRAG:
             temporal_hints=signals_raw.get("temporal_hints", []),
         )
 
-        # Frame expansion for broader coverage (embedding-based, no LLM call)
-        expanded_frames: list[str] = []
-        if signals.frame_hints:
+        # Frame expansion — LLM selects from actual frame DB (primary path)
+        expanded_frames: list[str] = await expand_query_frames_llm(
+            query, self._frame_db, self._llm
+        )
+        # Fallback: embedding-based expansion from query_processing hint
+        if not expanded_frames and signals.frame_hints:
             expanded_frames = await expand_query_frames(
                 query, signals.frame_hints, self._frame_db
             )
-            logger.info(f"[FrameRAG] Expanded frames: {expanded_frames}")
+        logger.info(f"[FrameRAG] Expanded frames: {expanded_frames}")
 
         # Step 2: Build sparse matrices
         matrices = await self._hg.build_matrices(fe_focus=signals.fe_focus or None)
@@ -485,10 +590,11 @@ class FrameRAG:
         chunk_idx = matrices["chunk_idx"]
 
         # Seed from canonical entity similarity
+        # node_idx now uses canonical_ids (not mention_ids), so index directly
         for hit in await self._hg.search_canonical(q_vec, top_k=20):
-            for mid in await self._hg.get_all_mention_ids_for_canonical(hit["id"]):
-                if mid in node_idx:
-                    y_node[node_idx[mid]] += hit.get("distance", 0.0)
+            cid = hit["id"]
+            if cid in node_idx:
+                y_node[node_idx[cid]] += hit.get("distance", 0.0)
 
         # Seed from frame instance similarity
         for hit in await self._hg.search_frame_instances(q_vec, top_k=20):
@@ -508,7 +614,7 @@ class FrameRAG:
                         y_fi[fi_idx[fid]] += hit.get("distance", 0.0) * 0.5
 
         # Seed from chunk similarity
-        for hit in await self._hg.search_chunks(q_vec, top_k=10):
+        for hit in await self._hg.search_chunks(q_vec, top_k=30):
             cid = hit["id"]
             if cid in chunk_idx:
                 y_chunk[chunk_idx[cid]] += hit.get("distance", 0.0)
@@ -530,7 +636,9 @@ class FrameRAG:
         f_node, f_fi, f_chunk = diffusion.run(
             _l1(y_node), _l1(y_fi), _l1(y_chunk),
             alpha=self._diffusion_alpha,
-            T=diffusion_steps,
+            warm_up_steps=self._diffusion_warm_up,
+            t_decay=self._diffusion_t_decay,
+            epsilon=self._diffusion_epsilon,
         )
 
         # Step 5: Top results — retrieve extra chunks when reranker is active
@@ -564,7 +672,7 @@ class FrameRAG:
         top_chunks: Optional[int] = None,
         top_frames: Optional[int] = None,
         top_nodes: Optional[int] = None,
-        diffusion_steps: Optional[int] = None,
+        diffusion_warm_up: Optional[int] = None,
     ) -> str:
         """Answer a query using hypergraph diffusion retrieval."""
         answer, _ = await self.aquery_with_context(
@@ -572,7 +680,7 @@ class FrameRAG:
             top_chunks=top_chunks,
             top_frames=top_frames,
             top_nodes=top_nodes,
-            diffusion_steps=diffusion_steps,
+            diffusion_warm_up=diffusion_warm_up,
         )
         return answer
 
@@ -582,7 +690,7 @@ class FrameRAG:
         top_chunks: Optional[int] = None,
         top_frames: Optional[int] = None,
         top_nodes: Optional[int] = None,
-        diffusion_steps: Optional[int] = None,
+        diffusion_warm_up: Optional[int] = None,
     ) -> tuple[str, list[str]]:
         """Answer a query and return (answer, retrieved_passages).
 
@@ -594,7 +702,7 @@ class FrameRAG:
             top_chunks=top_chunks or self._top_chunks,
             top_frames=top_frames or self._top_frames,
             top_nodes=top_nodes or self._top_nodes,
-            diffusion_steps=diffusion_steps or self._diffusion_steps,
+            diffusion_warm_up=diffusion_warm_up or self._diffusion_warm_up,
         )
         if not frame_hits and not chunk_hits:
             return "No indexed documents found. Please insert documents first.", []
@@ -617,7 +725,7 @@ class FrameRAG:
         top_chunks: Optional[int] = None,
         top_frames: Optional[int] = None,
         top_nodes: Optional[int] = None,
-        diffusion_steps: Optional[int] = None,
+        diffusion_warm_up: Optional[int] = None,
     ) -> AsyncIterator[str]:
         """Streaming version of aquery — yields answer tokens as they arrive."""
         frame_hits, chunk_hits = await self._retrieve(
@@ -625,7 +733,7 @@ class FrameRAG:
             top_chunks=top_chunks or self._top_chunks,
             top_frames=top_frames or self._top_frames,
             top_nodes=top_nodes or self._top_nodes,
-            diffusion_steps=diffusion_steps or self._diffusion_steps,
+            diffusion_warm_up=diffusion_warm_up or self._diffusion_warm_up,
         )
         if not frame_hits and not chunk_hits:
             yield "No indexed documents found. Please insert documents first."
@@ -647,12 +755,24 @@ class FrameRAG:
 
     async def _build_structured_facts(self, frame_hits: list[dict]) -> str:
         lines = []
+        seen_frame_defs: set[str] = set()
         for i, hit in enumerate(frame_hits, 1):
             fid = hit.get("id", "")
             fi_data = await self._hg.frame_instances.get_by_id(fid)
             if not fi_data:
                 continue
-            parts = [f"[{i}] Frame: {fi_data.get('frame_name','')} (LU: {fi_data.get('lexical_unit','')})"]
+            frame_name = fi_data.get("frame_name", "")
+            lu = fi_data.get("lexical_unit", "")
+
+            # Include frame definition on first occurrence of each frame type
+            frame_def_line = ""
+            if frame_name not in seen_frame_defs:
+                fd = await self._frame_db.get(frame_name)
+                if fd and fd.frame_definition:
+                    frame_def_line = f"  [def: {fd.frame_definition}]"
+                seen_frame_defs.add(frame_name)
+
+            parts = [f"[{i}] Frame: {frame_name} (LU: {lu}){frame_def_line}"]
             for slot in ("core_assignments", "noncore_assignments"):
                 for a in fi_data.get(slot, []):
                     if a.get("filler_text"):
@@ -749,7 +869,7 @@ class FrameRAG:
         top_chunks: Optional[int] = None,
         top_frames: Optional[int] = None,
         top_nodes: Optional[int] = None,
-        diffusion_steps: Optional[int] = None,
+        diffusion_warm_up: Optional[int] = None,
     ) -> dict:
         """Return raw retrieval context without calling the answer LLM.
 
@@ -764,7 +884,7 @@ class FrameRAG:
             top_chunks=top_chunks or self._top_chunks,
             top_frames=top_frames or self._top_frames,
             top_nodes=top_nodes or self._top_nodes,
-            diffusion_steps=diffusion_steps or self._diffusion_steps,
+            diffusion_warm_up=diffusion_warm_up or self._diffusion_warm_up,
         )
         structured_facts = await self._build_structured_facts(frame_hits)
         text_passages    = await self._build_text_passages(chunk_hits)

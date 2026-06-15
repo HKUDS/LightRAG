@@ -258,7 +258,6 @@ async def _run_story_framerag(
         llm_func=llm_func,
         embed_func=embed_func,
         embedding_dim=embedding_dim,
-        enable_event_coref=False,
         enable_llm_coref_verify=False,
     )
     await rag.initialize()
@@ -267,21 +266,33 @@ async def _run_story_framerag(
         f"[ChronoQA/FrameRAG] Indexing story {story_id} '{story_title}': "
         f"{len(corpus)} excerpts, {len(story_samples)} questions"
     )
-    for i, doc in enumerate(corpus):
-        if doc.strip():
-            await rag.ainsert(doc, source_doc=f"story_{story_id}_p{i}")
+    # Document-level inserts are kept sequential (concurrency=1): each ainsert
+    # mutates shared in-memory hypergraph adjacency / frame-DB state without a
+    # lock, so parallel documents would race. Intra-document parallelism (all
+    # chunks extracted concurrently, frame annotation parallel per event) already
+    # provides the speedup.
+    docs = [(i, d) for i, d in enumerate(corpus) if d.strip()]
+    await rag.ainsert_batch(
+        texts=[d for _, d in docs],
+        source_docs=[f"story_{story_id}_p{i}" for i, _ in docs],
+        concurrency=1,
+    )
 
-    results = []
-    for sample in story_samples:
-        try:
-            answer = await rag.aquery(sample["question"])
-        except Exception as e:
-            logger.error(f"[ChronoQA/FrameRAG] Query failed for {sample['id']}: {e}")
-            answer = ""
-        results.append({**sample, "response": answer, "system": "FrameRAG"})
+    # Parallel queries — hypergraph is read-only at this stage
+    query_sem = asyncio.Semaphore(4)
+
+    async def _safe_query(sample: dict) -> dict:
+        async with query_sem:
+            try:
+                answer = await rag.aquery(sample["question"])
+            except Exception as e:
+                logger.error(f"[ChronoQA/FrameRAG] Query failed for {sample['id']}: {e}")
+                answer = ""
+        return {**sample, "response": answer, "system": "FrameRAG"}
+
+    results = list(await asyncio.gather(*[_safe_query(s) for s in story_samples]))
 
     await rag.finalize()
-    shutil.rmtree(story_dir, ignore_errors=True)
     return results
 
 
@@ -338,7 +349,6 @@ async def _run_story_lightrag(
         results.append({**sample, "response": answer, "system": "LightRAG"})
 
     await rag.finalize_storages()
-    shutil.rmtree(story_dir, ignore_errors=True)
     return results
 
 

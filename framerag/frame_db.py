@@ -118,6 +118,36 @@ class FrameDatabase:
             data["usage_count"] = data.get("usage_count", 0) + 1
             await self._kv.upsert({frame_name: data})
 
+    async def delete_frame(self, frame_name: str) -> None:
+        """Remove a frame from KV, VDB, FE-VDB, and name set."""
+        await self._kv.delete([frame_name])
+        await self._vdb.delete([frame_name])
+        self._frame_names.discard(frame_name)
+
+    async def merge_duplicates_into_canonical(
+        self,
+        canonical_name: str,
+        duplicate_names: list[str],
+    ) -> None:
+        """Absorb duplicate frames into canonical: merge LUs + usage, then delete duplicates."""
+        canonical_data = await self._kv.get_by_id(canonical_name)
+        if not canonical_data:
+            return
+        merged_lus: list[str] = list(canonical_data.get("lexical_units", []))
+        merged_usage: int = canonical_data.get("usage_count", 0)
+        for dup_name in duplicate_names:
+            dup_data = await self._kv.get_by_id(dup_name)
+            if not dup_data:
+                continue
+            for lu in dup_data.get("lexical_units", []):
+                if lu not in merged_lus:
+                    merged_lus.append(lu)
+            merged_usage += dup_data.get("usage_count", 0)
+            await self.delete_frame(dup_name)
+        canonical_data["lexical_units"] = merged_lus
+        canonical_data["usage_count"] = merged_usage
+        await self._kv.upsert({canonical_name: canonical_data})
+
     # ──────────────────────────────────────────────────────────────────────────
     # Read
     # ──────────────────────────────────────────────────────────────────────────

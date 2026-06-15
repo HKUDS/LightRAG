@@ -66,60 +66,102 @@ class HypergraphDiffusion:
         self.n_frames = H_ef.shape[1]
         self.n_nodes  = H_fe.shape[1]
 
+    def _step(
+        self,
+        f_node: np.ndarray,
+        f_fi: np.ndarray,
+        f_chunk: np.ndarray,
+        y_node: np.ndarray,
+        y_fi: np.ndarray,
+        y_chunk: np.ndarray,
+        alpha: float,
+        w_back: float,
+        causal_weight: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Single PPR propagation step."""
+        # Node → FI (forward)
+        f_fi_from_node = self.H_fe_n @ f_node
+        # FI → Node (backward, weighted by w_back)
+        f_node_from_fi = self.H_fe_T_n @ f_fi * w_back
+        # FI → Event → Chunk (forward)
+        f_event = self.H_ef_n @ f_fi
+        if self.A_cau_n.nnz > 0:
+            f_event = f_event + causal_weight * (self.A_cau_n @ f_event)
+        f_chunk_from_ev = self.H_ce_n @ f_event
+
+        # PPR restart (node restart also scales with w_back — less anchoring as we cool)
+        f_node  = (1 - alpha) * _l1_normalize(f_node_from_fi)  + alpha * w_back * y_node
+        f_fi    = (1 - alpha) * _l1_normalize(f_fi_from_node)  + alpha * y_fi
+        f_chunk = (1 - alpha) * _l1_normalize(f_chunk_from_ev) + alpha * y_chunk
+        return f_node, f_fi, f_chunk
+
     def run(
         self,
-        y_node: np.ndarray,    # [n_nodes]   initial seed scores for entity+info nodes
-        y_fi: np.ndarray,      # [n_frames]  initial seed scores for frame instances
-        y_chunk: np.ndarray,   # [n_chunks]  initial seed scores for chunks
+        y_node: np.ndarray,
+        y_fi: np.ndarray,
+        y_chunk: np.ndarray,
         alpha: float = 0.15,
-        T: int = 3,
         causal_weight: float = 0.3,
+        warm_up_steps: int = 3,
+        t_decay: float = 0.7,
+        epsilon: float = 0.01,
+        # legacy param — ignored; steps now determined dynamically
+        T: int = 0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Run T iterations of personalized diffusion.
+        """Two-phase dynamic diffusion over the hypergraph.
+
+        Phase 1 — Warm-up (``warm_up_steps`` steps, w_back = 1.0):
+            Fully bidirectional. Entity ↔ FI ↔ Event ↔ Chunk exchange signal
+            freely. Weak entity seeds (low initial cosine similarity) get a
+            chance to propagate through the FI neighborhood and accumulate score
+            before the backward channel closes. Analogous to high temperature
+            in simulated annealing — exploration dominates.
+
+        Phase 2 — Cooling (dynamic, w_back = t_decay^k until w_back < epsilon):
+            Backward weight decays geometrically: w_back(k) = t_decay^k.
+            The loop terminates as soon as w_back falls below ``epsilon``.
+            Entity nodes "freeze" while accumulated signal drains forward
+            through FI → Event → Chunk. Terminates automatically — no fixed T.
+
+            With t_decay=0.7, epsilon=0.01: ceil(log(0.01)/log(0.7)) ≈ 13 steps.
+            With t_decay=0.5, epsilon=0.01: ceil(log(0.01)/log(0.5)) ≈  7 steps.
+
+        Total steps = warm_up_steps + cooling_steps (both determined by params).
+
+        Args:
+            warm_up_steps: Number of fully-bidirectional exploration steps.
+                           Suggested: 3 — enough for 2-hop entity neighborhoods
+                           to contribute before cooling.
+            t_decay:  Geometric cooling rate (0 < t_decay < 1).
+            epsilon:  Cooling stops when w_back < epsilon.
 
         Returns:
-            f_node  [n_nodes]   final scores for entity+info nodes
-            f_fi    [n_frames]  final scores for frame instances
-            f_chunk [n_chunks]  final scores for chunks
+            f_node  [n_nodes]  — entity+info scores (near 0 after cooling)
+            f_fi    [n_frames] — frame instance scores
+            f_chunk [n_chunks] — chunk scores (primary retrieval signal)
         """
         f_node  = y_node.copy().astype(np.float64)
         f_fi    = y_fi.copy().astype(np.float64)
         f_chunk = y_chunk.copy().astype(np.float64)
 
-        for _ in range(T):
-            # ── Step A: Node → FrameInstance ──
-            # Each frame instance collects scores from its entity/info fillers
-            # f_fi_new[fi] = sum_e( H_fe[fi,e] * f_node[e] )
-            # H_fe is already FE-weighted (core > noncore, focus-boosted)
-            f_fi_from_node = self.H_fe_n @ f_node          # [n_frames]
+        # ── Phase 1: Warm-up (full bidirectional) ────────────────────────────
+        for _ in range(warm_up_steps):
+            f_node, f_fi, f_chunk = self._step(
+                f_node, f_fi, f_chunk, y_node, y_fi, y_chunk,
+                alpha=alpha, w_back=1.0, causal_weight=causal_weight,
+            )
 
-            # ── Step B: FrameInstance → Node ──
-            # Each entity/info node collects from frame instances it participates in
-            # f_node_new[e] = sum_fi( H_fe_T[e,fi] * f_fi[fi] )
-            f_node_from_fi = self.H_fe_T_n @ f_fi          # [n_nodes]
-
-            # ── Step C: FrameInstance → Event → Chunk ──
-            # Frame → Event: H_ef [n_events × n_frames] @ f_fi [n_frames] = [n_events]
-            f_event = self.H_ef_n @ f_fi                   # [n_events]
-
-            # Causal propagation: if ev_A scores high, ev_B (consequence) benefits
-            if self.A_cau_n.nnz > 0:
-                f_event_causal = self.A_cau_n @ f_event    # [n_events]
-                f_event = f_event + causal_weight * f_event_causal
-
-            # Event → Chunk: H_ce [n_chunks × n_events] @ f_event [n_events] = [n_chunks]
-            f_chunk_from_ev = self.H_ce_n @ f_event        # [n_chunks]
-
-            # ── Step D: Combine ──
-            f_fi_new    = f_fi_from_node + f_fi             # merge signals
-            f_node_new  = f_node_from_fi + f_node
-            f_chunk_new = f_chunk_from_ev + f_chunk
-
-            # ── Step E: Personalized PageRank restart ──
-            # Keep alpha fraction anchored to seed — prevents drift from query
-            f_node  = (1 - alpha) * _l1_normalize(f_node_new)  + alpha * y_node
-            f_fi    = (1 - alpha) * _l1_normalize(f_fi_new)    + alpha * y_fi
-            f_chunk = (1 - alpha) * _l1_normalize(f_chunk_new) + alpha * y_chunk
+        # ── Phase 2: Cooling (dynamic — stop when w_back < epsilon) ──────────
+        cool_step = 0
+        while True:
+            w_back = t_decay ** cool_step
+            if w_back < epsilon:
+                break
+            f_node, f_fi, f_chunk = self._step(
+                f_node, f_fi, f_chunk, y_node, y_fi, y_chunk,
+                alpha=alpha, w_back=w_back, causal_weight=causal_weight,
+            )
+            cool_step += 1
 
         return f_node, f_fi, f_chunk
 
