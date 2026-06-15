@@ -211,19 +211,67 @@ def _group_by_story(samples: list[dict]) -> dict[str, list[dict]]:
 
 
 def _collect_story_corpus(story_samples: list[dict]) -> list[str]:
-    """Union all unique excerpts from every QA pair in the story.
+    """Build a single ordered document from all story passages, then return as [doc].
 
-    Uses all_excerpts (full passage windows) first, falls back to
-    supporting_docs (gold-only evidence) if all_excerpts is absent.
+    Strategy:
+      1. Collect (start_byte, end_byte, excerpt) from passages_raw across all QA pairs.
+      2. Sort by start_byte so passage order matches the original novel.
+      3. Merge overlapping / duplicate spans.
+      4. Concatenate with a separator for any gaps, producing ONE big document.
+      5. Fallback: if no byte info, fall back to the old per-excerpt list.
+
+    Returning a single-element list lets the rest of the pipeline call ainsert once,
+    so the chunker sees the full story and entity coref / causal edges can span passages.
     """
-    seen: set[str] = set()
-    docs: list[str] = []
+    # Collect spans with byte offsets from passages_raw
+    spans: list[tuple[int, int, str]] = []  # (start_byte, end_byte, excerpt)
     for s in story_samples:
-        for doc in s.get("all_excerpts") or s.get("supporting_docs", []):
-            if doc and doc not in seen:
-                seen.add(doc)
-                docs.append(doc)
-    return docs
+        for p in s.get("passages_raw") or []:
+            if not isinstance(p, dict):
+                continue
+            excerpt = (p.get("excerpt") or "").strip()
+            start = p.get("start_byte")
+            end = p.get("end_byte")
+            if excerpt and start is not None and end is not None:
+                spans.append((int(start), int(end), excerpt))
+
+    if not spans:
+        # Fallback: no byte info — return deduplicated excerpts as before
+        seen: set[str] = set()
+        docs: list[str] = []
+        for s in story_samples:
+            for doc in s.get("all_excerpts") or s.get("supporting_docs", []):
+                if doc and doc not in seen:
+                    seen.add(doc)
+                    docs.append(doc)
+        return docs
+
+    # Sort by start byte, then merge overlapping spans
+    spans.sort(key=lambda x: x[0])
+    merged: list[tuple[int, int, str]] = []
+    for start, end, text in spans:
+        if merged and start <= merged[-1][1]:
+            # Overlapping — keep whichever end is further
+            prev_start, prev_end, prev_text = merged[-1]
+            if end > prev_end:
+                # Extend: use the longer text
+                merged[-1] = (prev_start, end, prev_text if len(prev_text) >= len(text) else text)
+        else:
+            merged.append((start, end, text))
+
+    # Concatenate with gap marker between non-adjacent spans
+    parts: list[str] = []
+    for i, (start, end, text) in enumerate(merged):
+        if i > 0:
+            prev_end = merged[i - 1][1]
+            if start > prev_end + 200:   # gap > ~200 bytes → mark the omission
+                parts.append("\n\n[...]\n\n")
+            else:
+                parts.append("\n\n")
+        parts.append(text.strip())
+
+    full_doc = "".join(parts)
+    return [full_doc]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

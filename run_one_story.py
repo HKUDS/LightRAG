@@ -58,11 +58,12 @@ async def main(story_id, output_json, working_dir):
                    embedding_dim=1536, enable_llm_coref_verify=False,
                    max_concurrent_llm=MAX_LLM)
     await rag.initialize()
-    print(f"[story {story_id}] indexing {len(corpus)} excerpts, {len(grp)} questions", flush=True)
+    # corpus is now a single concatenated document (sorted by byte offset, overlaps merged)
+    print(f"[story {story_id}] indexing {len(corpus)} doc(s) (~{sum(len(d) for d in corpus)} chars), {len(grp)} questions", flush=True)
     docs = [(i, d) for i, d in enumerate(corpus) if d.strip()]
     await rag.ainsert_batch(
         texts=[d for _, d in docs],
-        source_docs=[f"story_{story_id}_p{i}" for i, _ in docs],
+        source_docs=[f"story_{story_id}_doc{i}" for i, _ in docs],
         concurrency=1,
     )
     print(f"[story {story_id}] indexed; querying", flush=True)
