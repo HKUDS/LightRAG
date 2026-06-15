@@ -430,10 +430,11 @@ class PgRcteGraphStorage(BaseGraphStorage):
         if not node_rows:
             return KnowledgeGraph(nodes=[], edges=[], is_truncated=False)
 
-        # Sort by degree DESC BEFORE truncation (matches AGE degree-prioritized behaviour)
+        # Sort before truncation so the retained set is deterministic:
+        # highest-degree nodes first, then stable id order for degree ties.
         node_ids_all = [r["id"] for r in node_rows]
         degrees = await self.node_degrees_batch(node_ids_all)
-        node_rows.sort(key=lambda r: degrees.get(r["id"], 0), reverse=True)
+        node_rows.sort(key=lambda r: (-degrees.get(r["id"], 0), r["id"]))
 
         is_truncated = len(node_rows) > max_nodes
         node_rows = node_rows[:max_nodes]

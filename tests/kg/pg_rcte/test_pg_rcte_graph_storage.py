@@ -133,6 +133,26 @@ async def test_get_knowledge_graph_clamps_max_nodes():
     assert kg.is_truncated is True
 
 
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_truncates_by_degree_then_id():
+    """Truncation must not depend on unordered PostgreSQL row order."""
+    storage = make_storage(global_config={"max_graph_nodes": 100})
+    rows = [
+        {"id": "z_low", "properties": json.dumps({"entity_id": "z_low"})},
+        {"id": "tie_b", "properties": json.dumps({"entity_id": "tie_b"})},
+        {"id": "hub", "properties": json.dumps({"entity_id": "hub"})},
+        {"id": "tie_a", "properties": json.dumps({"entity_id": "tie_a"})},
+    ]
+    degrees = {"z_low": 1, "tie_b": 3, "hub": 9, "tie_a": 3}
+
+    with patch.object(storage, "_fetch", new=AsyncMock(side_effect=[rows, []])), \
+         patch.object(storage, "node_degrees_batch", new=AsyncMock(return_value=degrees)):
+        kg = await storage.get_knowledge_graph("*", max_nodes=3)
+
+    assert [node.id for node in kg.nodes] == ["hub", "tie_a", "tie_b"]
+    assert kg.is_truncated is True
+
+
 # ---------------------------------------------------------------------------
 # self-loop degree consistency
 # ---------------------------------------------------------------------------

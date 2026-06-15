@@ -184,6 +184,10 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "offline: tests that run without any external service (default CI gate)",
+    "pg_smoke: integration tests that require a live PostgreSQL instance (POSTGRES_PASSWORD must be set)",
+]
 
 [tool.ruff]
 target-version = "py310"

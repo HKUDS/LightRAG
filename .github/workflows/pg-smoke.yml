@@ -1,0 +1,67 @@
+name: PostgreSQL Smoke Tests
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  pg-smoke:
+    name: PgRcte Smoke Tests (PostgreSQL ${{ matrix.pg }})
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        pg: ['15', '16', '17']
+      fail-fast: false
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}
+        env:
+          POSTGRES_USER: lightrag
+          POSTGRES_PASSWORD: lightrag_smoke
+          POSTGRES_DB: lightrag_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lightrag -d lightrag_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: lightrag
+      POSTGRES_PASSWORD: lightrag_smoke
+      POSTGRES_DATABASE: lightrag_test
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-pg-smoke-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-pg-smoke-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api]"
+          pip install pytest pytest-asyncio asyncpg
+
+      - name: Run pg_smoke tests
+        run: |
+          pytest tests/kg/pg_rcte/test_pg_rcte_smoke.py -m pg_smoke -v --tb=short
