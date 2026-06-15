@@ -70,6 +70,18 @@ class FrameDatabase:
     # ──────────────────────────────────────────────────────────────────────────
 
     async def upsert_frame(self, frame: FrameDefinitionSchema) -> None:
+        # Preserve accumulated usage_count if this frame already exists, and
+        # merge in any new lexical units, so re-extracting a known frame in a
+        # later document does not reset its statistics.
+        existing = await self._kv.get_by_id(frame.frame_name)
+        if existing:
+            merged_usage = existing.get("usage_count", 0) + frame.usage_count
+            merged_lus = list(existing.get("lexical_units", []))
+            for lu in frame.lexical_units:
+                if lu not in merged_lus:
+                    merged_lus.append(lu)
+            frame.usage_count = merged_usage
+            frame.lexical_units = merged_lus
         payload = {
             "frame_name":       frame.frame_name,
             "lexical_units":    frame.lexical_units,
@@ -120,6 +132,17 @@ class FrameDatabase:
 
     async def delete_frame(self, frame_name: str) -> None:
         """Remove a frame from KV, VDB, FE-VDB, and name set."""
+        # Delete FE-level vectors first (keyed "{frame_name}::{fe_name}"),
+        # using the stored definition while it is still available.
+        data = await self._kv.get_by_id(frame_name)
+        if data:
+            fe_keys = [
+                f"{frame_name}::{fe['fe_name']}"
+                for fe in (data.get("core_fes", []) + data.get("noncore_fes", []))
+                if fe.get("fe_name")
+            ]
+            if fe_keys:
+                await self._fe_vdb.delete(fe_keys)
         await self._kv.delete([frame_name])
         await self._vdb.delete([frame_name])
         self._frame_names.discard(frame_name)

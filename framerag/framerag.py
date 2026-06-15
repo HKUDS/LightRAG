@@ -344,30 +344,46 @@ class FrameRAG:
 
                 return mentions, events, fis, infos, causal_edges, new_frames
 
-            # Run chunk registration (embed) + LLM extraction concurrently
+            # Run chunk registration (embed) + LLM extraction concurrently.
+            # return_exceptions=True so one bad chunk cannot abort the whole doc.
             results = await asyncio.gather(
                 _register_chunks(),
-                asyncio.gather(*[_extract_chunk(c) for c in chunks]),
+                asyncio.gather(
+                    *[_extract_chunk(c) for c in chunks], return_exceptions=True
+                ),
             )
-            chunk_results = results[1]
+            raw_chunk_results = results[1]
+            chunk_results = []
+            for c, res in zip(chunks, raw_chunk_results):
+                if isinstance(res, Exception):
+                    logger.error(
+                        f"[FrameRAG] Chunk {c.chunk_id} extraction failed, "
+                        f"skipping: {res}"
+                    )
+                    continue
+                chunk_results.append(res)
 
-            # Phase 1c: aggregate + update frame DB (sequential — DB writes)
-            seen_new_frames: set[str] = set()
+            # Phase 1c: aggregate, THEN update frame DB (order-independent).
+            new_frame_defs: dict[str, "FrameDefinitionSchema"] = {}
             for mentions, events, fis, infos, causal_edges, new_frames in chunk_results:
                 all_mentions.extend(mentions)
                 all_events.extend(events)
                 all_fi.extend(fis)
                 all_info.extend(infos)
                 all_causal.extend(causal_edges)
+                # First-writer-wins for a given new frame name within this doc.
                 for fd in new_frames:
-                    if fd.frame_name not in seen_new_frames:
-                        await self._frame_db.upsert_frame(fd)
-                        seen_new_frames.add(fd.frame_name)
-                # Count usage for frames that appeared in events but were NOT
-                # created as new in ANY chunk of this document.
-                for ev in events:
-                    if ev.frame_name not in seen_new_frames:
-                        await self._frame_db.increment_usage(ev.frame_name)
+                    new_frame_defs.setdefault(fd.frame_name, fd)
+
+            # Persist newly-created frames once each (upsert merges usage/LUs).
+            for fd in new_frame_defs.values():
+                await self._frame_db.upsert_frame(fd)
+            # Increment usage for every event whose frame was NOT created new in
+            # THIS document (those already counted via upsert_frame's usage_count).
+            seen_new_frames = set(new_frame_defs.keys())
+            for ev in all_events:
+                if ev.frame_name not in seen_new_frames:
+                    await self._frame_db.increment_usage(ev.frame_name)
 
             # ── Entity coreference ───────────────────────────────────────────
             logger.info(f"[FrameRAG] Entity coref: {len(all_mentions)} mentions")
@@ -379,6 +395,12 @@ class FrameRAG:
             # ── Persist to hypergraph ────────────────────────────────────────
             for m in all_mentions:
                 await self._hg.add_entity_mention(m)
+            # Record chunk → mention_ids so cascade delete can clean mentions.
+            mentions_by_chunk: dict[str, list[str]] = {}
+            for m in all_mentions:
+                mentions_by_chunk.setdefault(m.chunk_id, []).append(m.mention_id)
+            for cid, mids in mentions_by_chunk.items():
+                await self._hg.attach_mentions_to_chunk(cid, mids)
             for canon in canonicals:
                 await self._hg.add_canonical_entity(canon)
             for ev in all_events:
@@ -640,7 +662,7 @@ class FrameRAG:
         f_node, f_fi, f_chunk = diffusion.run(
             _l1(y_node), _l1(y_fi), _l1(y_chunk),
             alpha=self._diffusion_alpha,
-            warm_up_steps=self._diffusion_warm_up,
+            warm_up_steps=diffusion_warm_up,
             t_decay=self._diffusion_t_decay,
             epsilon=self._diffusion_epsilon,
         )
@@ -662,7 +684,9 @@ class FrameRAG:
             for hit in chunk_hits:
                 cdata = await self._hg.chunks.get_by_id(hit["id"])
                 if cdata:
-                    chunk_texts[hit["id"]] = cdata.get("content", "")
+                    # Chunk KV stores the body under "text" (see add_chunk);
+                    # fall back to "content" for forward-compat.
+                    chunk_texts[hit["id"]] = cdata.get("text") or cdata.get("content", "")
             chunk_hits = await rerank_chunk_hits(
                 query, chunk_hits, chunk_texts, self._rerank_func, top_n=top_chunks
             )

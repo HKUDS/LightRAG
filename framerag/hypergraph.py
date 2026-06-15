@@ -223,6 +223,20 @@ class HypergraphStore:
         })
         self._chunk_ids.add(chunk.chunk_id)
 
+    async def attach_mentions_to_chunk(
+        self, chunk_id: str, mention_ids: list[str]
+    ) -> None:
+        """Record which mention_ids originated in a chunk (for cascade delete)."""
+        if not mention_ids:
+            return
+        cdata = await self.chunks.get_by_id(chunk_id)
+        if not cdata:
+            return
+        existing = cdata.get("mention_ids", [])
+        merged = list(dict.fromkeys(existing + mention_ids))
+        cdata["mention_ids"] = merged
+        await self.chunks.upsert({chunk_id: cdata})
+
     async def add_entity_mention(self, mention: EntityMentionSchema) -> None:
         await self.entity_mentions.upsert({
             mention.mention_id: {
@@ -497,8 +511,13 @@ class HypergraphStore:
         # This ensures "Holmes" in passage 1 and passage 7 share the same node.
         all_node_ids = canonical_ids + info_ids
 
-        if not event_ids or not fi_ids:
+        # Nothing indexed at all → no retrieval possible.
+        if not chunk_ids:
             return {}
+        # Chunks exist but no events/frames were extracted: still build matrices
+        # so chunk-level vector seeds survive diffusion (forward propagation just
+        # contributes zero). Without this, a doc that indexed chunks but produced
+        # no events would be completely unretrievable.
 
         chunk_idx = {c: i for i, c in enumerate(chunk_ids)}
         event_idx = {e: i for i, e in enumerate(event_ids)}
