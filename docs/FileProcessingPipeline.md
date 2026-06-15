@@ -118,7 +118,7 @@ The content inside the square brackets supports three forms:
 
 When parsing the hint, content without a hyphen must match an engine name exactly (`mineru` / `native` / `docling` / `legacy`); when there is content before a hyphen, the part before the hyphen is the engine and the part after is the options; when starting with a hyphen, it specifies only options. The legacy `[OPTIONS]` syntax is no longer valid; for example, `[iet]` must now be written as `[-iet]`.
 
-### 2.4 Content Extraction Engines
+### 2.4 File Parsing Engines
 
 | Engine | Description | Supported file formats (extensions) |
 | --- | --- | --- |
@@ -131,22 +131,38 @@ When parsing the hint, content without a hyphen must match an engine name exactl
 
 LightRAG caches the parsing results of the `mineru` and `docling` engines locally. Re-uploading the same file usually does not trigger the engine to re-parse the document. To delete the parse cache, you must click the "also delete file" option in the delete-file dialog of the document management interface. Modifying the endpoint addresses and effective extraction parameters of the `mineru` / `docling` engines will also invalidate the cache, causing the engine to re-parse the file content on the next upload of the same file.
 
-#### MinerU Configuration and Local Deployment
+#### Using the MinerU File Parsing Engine
 
 The MinerU client supports two modes; choose one:
 
-- `local`: self-hosted MinerU service (the official Docker Compose deployment is recommended); LightRAG calls the local container via HTTP.
-- `official`: directly connects to the MinerU official precise API v4; you need to apply for a token at [mineru.net](https://mineru.net).
+- `official` mode: uses MinerU's cloud API v4 service. You need to register an account at the [MinerU official website](https://mineru.net/) and create an API-KEY first. Then add the following configuration to LightRAG's `.env` file:
 
-**Local deployment with Docker Compose**
+```bash
+MINERU_API_MODE=official
+MINERU_API_TOKEN=<your_token>
+# MINERU_OFFICIAL_ENDPOINT=https://mineru.net   # Default value, usually no need to change
+```
 
-Copy `Dockerfile` and `compose.yaml` from the official GitHub repository [opendatalab/MinerU](https://github.com/opendatalab/MinerU) to your local machine. Both files can be found in the repository's `docker` directory. Then build the Docker image with the following command:
+* `local` mode: uses a locally deployed MinerU service. See the deployment instructions below. After the local MinerU service is started, add the following configuration to LightRAG's `.env` file:
+
+```bash
+MINERU_API_MODE=local
+MINERU_LOCAL_ENDPOINT=http://<your_mineru_local_server_ip>:8000
+```
+
+For the remaining detailed MinerU configuration, refer to the MinerU section of the environment variable example file [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example) at the repository root. The `official` and `local` modes each have different environment variable configurations; read the instructions in the example file carefully.
+
+#### **Local Deployment of the MinerU Service**
+
+Copy `Dockerfile` and `compose.yaml` from the official GitHub repository [opendatalab/MinerU](https://github.com/opendatalab/MinerU) to your local machine. Both files can be found in the repository's `docker` directory. For special GPUs from Chinese vendors, you need to choose the corresponding `Dockerfile`.
+
+After preparing the two files above, build the Docker image with the following command:
 
 ```bash
 docker build --tag mineru:latest .
 ```
 
-Once the image is built, start the API service with the following command (`--profile api` is required to enable the HTTP API container; the default listening port is 8000):
+Once the image is built, start the API service with the following command (the `--profile api` parameter indicates starting only MinerU's API service; the service listens on port 8000 by default):
 
 ```bash
 docker compose -f compose.yaml --profile api up -d
@@ -154,12 +170,12 @@ docker compose -f compose.yaml --profile api up -d
 
 For image build details, GPU driver setup, model weight locations, etc., refer to the official README: <https://github.com/opendatalab/MinerU>.
 
-**Advanced: enabling vLLM preload and title-level correction (optional)**
+**Advanced configuration: enabling vLLM preload and title-level correction (optional)**
 
 On top of the basic deployment, it is recommended to additionally enable two MinerU **server-side** features for your local MinerU. Both modify MinerU container-side configuration (the in-container `mineru.json` and the official `compose.yaml`), and do not involve any LightRAG env variable; title-level correction additionally requires an available LLM API.
 
 - **vLLM startup preload**: loads the VLM model into GPU memory at container startup, avoiding the model-loading latency on the first parse request.
-- **Title-level correction (`title_aided`)**: MinerU uses an external LLM to correct the title hierarchy of the parsed output, improving the quality of the structured artifacts. This is especially helpful for the [`P` (paragraph semantic) chunking strategy](#25-file-processing-options), which depends on the title structure — `P` splits by titles first, so the more accurate the title hierarchy, the better the chunking semantics.
+- **Title-level correction (`title_aided`)**: MinerU uses an external LLM to correct the title hierarchy of the parsed output, improving the quality of the structured artifacts. This is especially helpful for the [P (paragraph semantic) chunking strategy](#25-file-processing-options), which depends on the title structure; the `P` chunking strategy splits by titles first, so the more accurate the title hierarchy, the better the chunking semantics.
 
 **Step 1: Export and modify `mineru-lightrag.json`**
 
@@ -209,8 +225,8 @@ Make three changes to the `mineru-api` service: add `MINERU_TOOLS_CONFIG_JSON` t
       --host 0.0.0.0
       --port 8000
       --allow-public-http-client
-      --gpu-memory-utilization 0.45
-      --enable-vlm-preload true                              # <-- added
+      --gpu-memory-utilization 0.45         # 
+      --enable-vlm-preload true             # <-- added
     ulimits:
       memlock: -1
       stack: 67108864
@@ -226,7 +242,7 @@ Make three changes to the `mineru-api` service: add `MINERU_TOOLS_CONFIG_JSON` t
               capabilities: [gpu]
 ```
 
-> In the example, `--gpu-memory-utilization`, `device_ids`, etc. are official defaults/sample values; adjust them according to your actual GPU setup. The three items `environment` / `volumes` / `command` are the additions for this change; keep everything else as in the official file.
+> In the example, adjust `gpu-memory-utilization` according to your actual GPU setup. The three items `environment` / `volumes` / `command` are the additions for this change; keep everything else as in the official file.
 
 **Step 3: Restart to take effect**
 
@@ -235,27 +251,6 @@ After making the changes, restart the API service for them to take effect:
 ```bash
 docker compose -f compose.yaml --profile api up -d
 ```
-
-No change is needed on the LightRAG side; just configure Local mode as described below (`MINERU_API_MODE=local` + `MINERU_LOCAL_ENDPOINT`).
-
-**LightRAG-side env configuration**
-
-Local mode (self-hosted mineru-api):
-
-```bash
-MINERU_API_MODE=local
-MINERU_LOCAL_ENDPOINT=http://localhost:8000
-```
-
-Official mode (MinerU cloud API):
-
-```bash
-MINERU_API_MODE=official
-MINERU_API_TOKEN=<your_token>
-# MINERU_OFFICIAL_ENDPOINT=https://mineru.net   # Default value, usually no need to change
-```
-
-For the remaining advanced switches (`MINERU_MODEL_VERSION`, `MINERU_LANGUAGE`, `MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`, `MINERU_PAGE_RANGES`, `MINERU_LOCAL_BACKEND` / `MINERU_LOCAL_PARSE_METHOD`, `MINERU_POLL_INTERVAL_SECONDS` / `MINERU_MAX_POLLS`, `MINERU_ENGINE_VERSION`, `LIGHTRAG_FORCE_REPARSE_MINERU`, etc.), refer to the MinerU section of the `env.example` template at the repository root. Note that `MINERU_PAGE_RANGES` has different semantics in the two modes: `official` supports a complete list (e.g., `1-3,5,7-9`), while `local` only supports a single page (`3`) or a simple range (`1-10`); it does not accept comma-separated lists.
 
 #### Docling Configuration
 
