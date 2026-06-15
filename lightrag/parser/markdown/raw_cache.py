@@ -84,6 +84,11 @@ class NativeImageRawCache:
         self._source_hash = ""
         self._valid = False
         self._cleared = False
+        # ``_dirty`` gates the manifest write: it is set only when a real
+        # download is stored (:meth:`put`). A run that only reuses cached images
+        # (a pure hit) leaves it ``False`` so :meth:`flush` touches nothing on
+        # disk — the bundle's mtimes then reveal whether the cache was hit.
+        self._dirty = False
         # Index of reusable entries from a valid prior bundle (url -> entry).
         self._index: dict[str, dict] = {}
         # Entries referenced this run (reused or freshly put) -> manifest output.
@@ -153,15 +158,18 @@ class NativeImageRawCache:
             "size": len(data),
             "fmt": fmt,
         }
+        self._dirty = True
 
     def flush(self) -> None:
-        """Write the manifest for the images referenced this run and prune any
-        bundle files no longer referenced.
+        """Persist the bundle only if it actually changed this run.
 
-        No-op when nothing was downloaded or reused this run (an image-less doc
-        or a download-disabled run), so a pre-existing valid bundle is left
-        intact rather than emptied."""
-        if not self._entries:
+        Skipped entirely on a **pure cache hit** (every image reused, nothing
+        downloaded) — the source is byte-identical, so the referenced image set
+        equals the on-disk one and a rewrite would only be an idempotent write.
+        Leaving the manifest and image files untouched means their mtimes flag a
+        miss/update vs. a hit. Also a no-op for an image-less or
+        download-disabled run, so a pre-existing valid bundle is left intact."""
+        if not self._dirty:
             return
         self._ensure_writable_dir()
         referenced = {e["file"] for e in self._entries.values()}

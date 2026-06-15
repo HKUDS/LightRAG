@@ -109,6 +109,25 @@ def test_reparse_unchanged_source_is_cache_hit(tmp_path, monkeypatch):
     assert asset["data"] == _PNG_BYTES
 
 
+def test_pure_cache_hit_does_not_touch_bundle(tmp_path, monkeypatch):
+    # A pure hit must write nothing: the manifest + image mtimes stay frozen, so
+    # on-disk timestamps alone reveal whether the cache was hit.
+    _patch_download(monkeypatch)
+    p = NativeMarkdownParser()
+    src, parsed = _make_doc(tmp_path)
+    _extract(p, src, parsed)
+    raw = _raw_dir(tmp_path)
+    before = {c.name: c.stat().st_mtime_ns for c in raw.iterdir()}
+
+    _wipe_parsed(parsed)
+    _forbid_download(monkeypatch)  # pure hit: no download allowed
+    _, warnings, _ = _extract(p, src, parsed)
+    assert warnings.get("images_cache_hit") == 1
+
+    after = {c.name: c.stat().st_mtime_ns for c in raw.iterdir()}
+    assert after == before  # nothing rewritten
+
+
 def test_source_change_invalidates_cache(tmp_path, monkeypatch):
     counter = _patch_download(monkeypatch)
     p = NativeMarkdownParser()
