@@ -123,11 +123,16 @@ When parsing the hint, content without a hyphen must match an engine name exactl
 | Engine | Description | Supported file formats (extensions) |
 | --- | --- | --- |
 | `legacy` | Legacy extraction; content is centrally extracted before joining the pipeline | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
-| `native` | Built-in intelligent structured content extractor | `docx` |
+| `native` | Built-in intelligent structured content extractor | `docx` `md` `textpack` |
 | `mineru` | External MinerU content extraction engine | `pdf` `doc` `docx` `ppt` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
 | `docling` | External Docling content extraction engine | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
 
 `mineru` and `docling` are external content extraction engines; before enabling related rules, the services must be running first, and the corresponding endpoint/token must be configured in LightRAG.
+
+Beyond `docx`, the `native` engine also supports Markdown:
+- `md`: splits by heading (ATX `#`), recognizes native pipe tables (with header), HTML `<table>` (with `<thead>`, preserving colspan/rowspan), block-level equations (a paragraph starting with `$$` and ending with `$$`; inline `$...$` is not recognized), and embedded images (base64 data URLs). Content inside fenced code blocks (```` ``` ````) is kept verbatim and not interpreted. As with `docx`, `md` still defaults to `legacy`; select native via `LIGHTRAG_PARSER=md:native` or a filename `[native]` hint.
+- `textpack`: a TextBundle-format zip package (markdown text plus a resource directory, conventionally `assets/`; the export format of Bear / Ulysses, etc.). Only `native` supports this extension, so it is routed to native automatically without a hint/rule. File-reference images embedded by relative path are resolved relative to the bundle root and **may live in any subdirectory** (not only `assets/`); directory traversal is forbidden (`..`, absolute paths, or references escaping the bundle root are skipped with a warning), and the resolved bytes must pass an image magic-byte check or they are skipped. Relative-path images in a standalone `.md` (not a textpack) are not resolved (skipped with a warning).
+- External URL images (`![](http://...)`) are not downloaded by default and are kept as external links; online downloading can be enabled via `NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` below. Once enabled, only globally-routable public IPs are allowed by default (both DNS-resolved IPs and every redirect target are checked); private / loopback / link-local / reserved / CGNAT (`100.64.0.0/10`) ranges are all rejected. To allow specific internal ranges, configure a CIDR allowlist via `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`.
 
 LightRAG caches the parsing results of the `mineru` and `docling` engines locally. Re-uploading the same file usually does not trigger the engine to re-parse the document. To delete the parse cache, you must click the "also delete file" option in the delete-file dialog of the document management interface. Modifying the endpoint addresses and effective extraction parameters of the `mineru` / `docling` engines will also invalidate the cache, causing the engine to re-parse the file content on the next upload of the same file.
 
