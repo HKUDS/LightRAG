@@ -308,12 +308,15 @@ class _GuardedHTTPHandler(urllib.request.HTTPHandler):
 
 class _GuardedHTTPSHandler(urllib.request.HTTPSHandler):
     def https_open(self, req):
-        return self.do_open(
-            _GuardedHTTPSConnection,
-            req,
-            context=self._context,
-            check_hostname=self._check_hostname,
-        )
+        # Mirror the stdlib handler's own arguments, which differ across
+        # versions: Python <3.12 stores ``_check_hostname`` on the handler and
+        # forwards it; 3.12+ folds it into ``_context`` and drops the attribute.
+        # Forwarding a non-existent ``_check_hostname`` raised AttributeError on
+        # 3.12, silently failing every download into the external-link fallback.
+        kwargs = {"context": self._context}
+        if hasattr(self, "_check_hostname"):
+            kwargs["check_hostname"] = self._check_hostname
+        return self.do_open(_GuardedHTTPSConnection, req, **kwargs)
 
 
 class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):

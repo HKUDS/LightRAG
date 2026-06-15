@@ -186,6 +186,33 @@ def test_redirect_to_non_public_host_blocked(monkeypatch):
         )
 
 
+def test_guarded_https_handler_open_does_not_raise_attribute_error(monkeypatch):
+    # Regression: ``https_open`` must forward only the kwargs the stdlib handler
+    # actually has on this Python version. On 3.12 ``HTTPSHandler`` has no
+    # ``_check_hostname`` attribute, so a hard reference raised AttributeError
+    # and every real download silently fell back to an external link.
+    handler = md_parser._GuardedHTTPSHandler()
+    captured: dict = {}
+
+    def _fake_do_open(conn_cls, req, **kwargs):
+        captured["conn_cls"] = conn_cls
+        captured["kwargs"] = kwargs
+        return "ok"
+
+    monkeypatch.setattr(handler, "do_open", _fake_do_open)
+    req = md_parser.urllib.request.Request("https://example.com/x.png")
+    assert handler.https_open(req) == "ok"
+    assert captured["conn_cls"] is md_parser._GuardedHTTPSConnection
+    assert "context" in captured["kwargs"]
+
+
+def test_build_guarded_opener_constructs_with_guarded_handlers():
+    opener = md_parser._build_guarded_opener()
+    handler_types = {type(h) for h in opener.handlers}
+    assert md_parser._GuardedHTTPSHandler in handler_types
+    assert md_parser._GuardedHTTPHandler in handler_types
+
+
 def test_base64_image_decoded_to_asset():
     p = _make_parser()
     md = f"# H\n\n![x]({_PNG_B64})\n"
