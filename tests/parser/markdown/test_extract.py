@@ -93,6 +93,23 @@ def test_pipe_table_requires_delimiter_row():
     assert not ex.tables
 
 
+def test_pipe_line_over_thematic_break_is_not_a_table():
+    # A pipe-containing paragraph followed by a bare ``---`` (thematic break /
+    # setext underline) has mismatched column counts (2 vs 1) and so is NOT a
+    # GFM table — it must stay plain text rather than be misrecognised.
+    md = "foo | bar\n---\nnext paragraph\n"
+    ex = _extract(md)
+    assert not ex.tables
+    assert "foo | bar" in ex.blocks[0]["content"]
+
+
+def test_pipe_table_column_count_must_match_header():
+    # Delimiter row column count differs from the header → not a table.
+    md = "| a | b | c |\n| --- | --- |\n| 1 | 2 | 3 |\n"
+    ex = _extract(md)
+    assert not ex.tables
+
+
 def test_html_table_captured_verbatim_spanning_lines():
     md = (
         "<table>\n"

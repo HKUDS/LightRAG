@@ -19,6 +19,7 @@ from lightrag.parser.markdown.parser import (
     NativeMarkdownParser,
     _host_is_public,
     _image_ext_from_magic,
+    _pin_socket,
 )
 
 # A 1x1 transparent PNG.
@@ -59,6 +60,14 @@ def test_allowlist_permits_configured_non_public(monkeypatch):
     assert _host_is_public("100.64.0.1") is True
     # An address outside the allowlist is still rejected.
     assert _host_is_public("10.0.0.1") is False
+
+
+def test_pin_socket_refuses_internal_host(monkeypatch):
+    # The connection pins to the same resolution that authorised the host, so
+    # an internal target cannot be reached even if it would resolve.
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    with pytest.raises(OSError, match="non-public host"):
+        _pin_socket("127.0.0.1", 80, None, None)
 
 
 def test_redirect_to_non_public_host_blocked(monkeypatch):
@@ -160,6 +169,23 @@ def test_textpack_non_image_file_reference_is_skipped(tmp_path: Path):
         pack, parsed_dir=tmp_path, asset_dir=tmp_path, base_name="note"
     )
     assert meta["md_drawings"] == {}
+    assert warnings.get("images_skipped") == 1
+
+
+def test_textpack_oversized_image_is_skipped(tmp_path: Path, monkeypatch):
+    # A bundled asset larger than NATIVE_MD_IMAGE_MAX_BYTES is skipped before it
+    # is read into memory (the per-file cap, separate from the zip-bomb total).
+    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_BYTES", "16")
+    pack = tmp_path / "big.textpack"
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("text.markdown", "# N\n\n![x](assets/big.png)\n")
+        zf.writestr("assets/big.png", _PNG_BYTES)  # well over 16 bytes
+    p = _make_parser()
+    _, warnings, meta = p.extract(
+        pack, parsed_dir=tmp_path, asset_dir=tmp_path, base_name="big"
+    )
+    assert meta["md_drawings"] == {}
+    assert meta["md_assets"] == {}
     assert warnings.get("images_skipped") == 1
 
 

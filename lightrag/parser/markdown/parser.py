@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import http.client
 import os
 import socket
 import tempfile
@@ -102,38 +103,93 @@ def _allowed_non_public_networks() -> list:
     return nets
 
 
-def _host_is_public(host: str) -> bool:
-    """True iff every resolved address for ``host`` is safe to fetch.
+def _validated_addresses(host: str) -> list[str]:
+    """Resolve ``host`` and return its addresses iff ALL are safe to fetch.
 
-    Default-deny: an address is allowed only when ``ip.is_global`` (so SSRF to
+    Default-deny: an address is accepted only when ``ip.is_global`` (so SSRF to
     loopback / private / link-local / reserved / CGNAT ``100.64.0.0/10`` /
-    TEST-NET and any other non-globally-routable range is blocked). A
-    non-global address is allowed only when it matches the operator-configured
-    ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`` escape hatch. A resolution
-    failure is treated as non-public.
+    TEST-NET and any other non-globally-routable range is blocked) or it matches
+    the operator-configured ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`` escape
+    hatch. Returns ``[]`` when resolution fails or *any* resolved address is
+    non-public — so a single poisoned A/AAAA record rejects the whole host.
+
+    The returned addresses are what the connection actually dials (see
+    :class:`_GuardedHTTPConnection`): validating and connecting share one
+    resolution, closing the DNS-rebinding TOCTOU window between check and
+    connect.
     """
     allow = _allowed_non_public_networks()
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
-        return False
+        return []
+    addrs: list[str] = []
     for info in infos:
         addr = str(info[4][0]).split("%", 1)[0]
         try:
             ip = ip_address(addr)
         except ValueError:
-            return False
-        if ip.is_global:
-            continue
-        if any(ip in net for net in allow):
-            continue
-        return False
-    return True
+            return []
+        if not (ip.is_global or any(ip in net for net in allow)):
+            return []
+        addrs.append(addr)
+    return addrs
+
+
+def _host_is_public(host: str) -> bool:
+    """True iff every resolved address for ``host`` is safe to fetch."""
+    return bool(_validated_addresses(host))
+
+
+def _pin_socket(host: str, port: int, timeout, source_address):
+    """Open a TCP socket to a *validated* resolved address of ``host``.
+
+    The address comes from the same :func:`_validated_addresses` resolution
+    that authorised the host, so urllib never independently re-resolves the
+    name (which a DNS-rebinding attacker could flip to an internal IP between
+    our check and the actual connect)."""
+    addrs = _validated_addresses(host)
+    if not addrs:
+        raise OSError(f"refusing connection to non-public host: {host!r}")
+    sock = socket.create_connection((addrs[0], port), timeout, source_address)
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    return sock
+
+
+# No proxy/CONNECT-tunnel handling below: the opener disables proxies, so the
+# connection always dials the origin directly (``_tunnel_host`` is never set).
+class _GuardedHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        self.sock = _pin_socket(self.host, self.port, self.timeout, self.source_address)
+
+
+class _GuardedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        sock = _pin_socket(self.host, self.port, self.timeout, self.source_address)
+        # Wrap with the original hostname so SNI / certificate validation still
+        # runs against the domain, not the pinned IP.
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _GuardedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_GuardedHTTPConnection, req)
+
+
+class _GuardedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(
+            _GuardedHTTPSConnection,
+            req,
+            context=self._context,
+            check_hostname=self._check_hostname,
+        )
 
 
 class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Re-validate the host on every redirect so a redirect cannot bounce the
-    request to an internal address."""
+    request to an internal address. (Defense in depth: the pinned connection
+    re-validates at connect time too.)"""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
         host = urlparse(newurl).hostname or ""
@@ -142,6 +198,18 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
                 newurl, code, "redirect to non-public host blocked", headers, fp
             )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _build_guarded_opener() -> urllib.request.OpenerDirector:
+    """Opener whose connections pin to a validated IP and that ignores any
+    ambient ``HTTP(S)_PROXY`` (an env proxy would otherwise fetch the blocked
+    URL on our behalf, bypassing the IP guard)."""
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _GuardedHTTPHandler(),
+        _GuardedHTTPSHandler(),
+        _GuardedRedirectHandler(),
+    )
 
 
 class _MarkdownImageResolver:
@@ -234,6 +302,11 @@ class _MarkdownImageResolver:
             return self._skip("image path escapes bundle", src)
         if not candidate.is_file():
             return self._skip("image file missing", src)
+        # Cap a single bundled asset at the same ceiling as a remote download,
+        # so one oversized file inside the (zip-bomb-bounded) bundle cannot pull
+        # hundreds of MB into memory.
+        if candidate.stat().st_size > self._max_bytes:
+            return self._skip("image exceeds size limit", src)
         data = candidate.read_bytes()
         # Magic bytes are authoritative; the filename suffix is not trusted for
         # validation (it is still used as the suggested on-disk name).
@@ -263,7 +336,7 @@ class _MarkdownImageResolver:
             raise ValueError(f"unsupported scheme: {parsed.scheme!r}")
         if not _host_is_public(parsed.hostname or ""):
             raise ValueError("non-public host blocked")
-        opener = urllib.request.build_opener(_GuardedRedirectHandler())
+        opener = _build_guarded_opener()
         req = urllib.request.Request(src, headers={"User-Agent": "lightrag-native-md"})
         with opener.open(req, timeout=self._timeout) as resp:
             content_type = (resp.headers.get_content_type() or "").lower()

@@ -56,6 +56,9 @@ _HEADING_TRAILING_HASHES_RE = re.compile(r"\s+#+\s*$")
 _FENCE_RE = re.compile(r"^(`{3,}|~{3,})(.*)$")
 # A GFM delimiter row: one or more ``---`` cells with optional ``:`` alignment.
 _DELIMITER_ROW_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
+# A single delimiter cell (after splitting on ``|``): ``---`` with optional
+# ``:`` alignment markers, nothing else.
+_DELIMITER_CELL_RE = re.compile(r"^:?-+:?$")
 # Inline image: ``![alt](src "optional title")``. ``src`` may be wrapped in
 # angle brackets. base64 data URLs and bare URLs/paths (no spaces, no ``)``).
 _IMAGE_RE = re.compile(
@@ -136,6 +139,22 @@ def _split_pipe_row(line: str) -> list[str]:
     if s.endswith("|"):
         s = s[:-1]
     return [cell.strip() for cell in s.split("|")]
+
+
+def _is_pipe_table_delimiter(header_line: str, delim_line: str) -> bool:
+    """True iff ``delim_line`` is a GFM delimiter row matching ``header_line``.
+
+    Beyond the row-shape regex, every delimiter cell must be a bare ``---`` (no
+    stray text) and the column count must equal the header's. This rejects a
+    bare ``---`` (a thematic break or setext underline) sitting under a
+    pipe-containing paragraph — that has one column versus the header's many, so
+    it is not a table, matching GFM's column-count rule."""
+    if not _DELIMITER_ROW_RE.match(delim_line):
+        return False
+    delim_cells = _split_pipe_row(delim_line)
+    if not all(_DELIMITER_CELL_RE.match(cell) for cell in delim_cells):
+        return False
+    return len(delim_cells) == len(_split_pipe_row(header_line))
 
 
 def extract_markdown(
@@ -294,7 +313,7 @@ def extract_markdown(
                 continue
 
         # --- pipe table ----------------------------------------------------
-        if "|" in line and i + 1 < n and _DELIMITER_ROW_RE.match(lines[i + 1]):
+        if "|" in line and i + 1 < n and _is_pipe_table_delimiter(line, lines[i + 1]):
             consumed, rows, header = _consume_pipe_table(lines, i)
             if consumed > 0:
                 ref = _next_ref("t")
