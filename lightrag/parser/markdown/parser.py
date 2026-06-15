@@ -40,8 +40,13 @@ from shutil import rmtree
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
-from lightrag.constants import PARSER_ENGINE_NATIVE
+from lightrag.constants import NATIVE_RAW_DIR_SUFFIX, PARSER_ENGINE_NATIVE
+from lightrag.parser.external._common import raw_dir_for_parsed_dir
 from lightrag.parser.markdown.extract import ResolvedImage, extract_markdown
+from lightrag.parser.markdown.raw_cache import (
+    NativeImageRawCache,
+    native_md_options_signature,
+)
 from lightrag.parser.native_base import NativeParserBase
 from lightrag.utils import logger
 
@@ -362,6 +367,7 @@ class _MarkdownImageResolver:
         timeout: int,
         max_bytes: int,
         max_svg_pixels: int,
+        raw_cache: NativeImageRawCache | None = None,
     ) -> None:
         self._bundle_root = bundle_root.resolve() if bundle_root else None
         self._warnings = warnings
@@ -370,6 +376,7 @@ class _MarkdownImageResolver:
         self._timeout = timeout
         self._max_bytes = max_bytes
         self._max_svg_pixels = max_svg_pixels
+        self._raw_cache = raw_cache
         self._cache: dict[str, ResolvedImage] = {}
 
     def resolve(self, src: str) -> ResolvedImage:
@@ -471,6 +478,15 @@ class _MarkdownImageResolver:
             )
             self._bump("images_external_dropped")
             return ResolvedImage(kind="skip")
+        if self._raw_cache is not None:
+            hit = self._raw_cache.get(src)
+            if hit is not None:
+                # Reuse the cached bytes (already post-SVG-rasterization), so a
+                # re-parse skips both the network fetch and the rasterization.
+                data, ext = hit
+                self._bump("images_cache_hit")
+                digest = hashlib.sha256(data).hexdigest()[:12]
+                return self._local(data, ext, f"image-{digest}.{ext}")
         try:
             data, ext = self._download(src)
         except Exception as exc:  # noqa: BLE001 - best-effort network fetch
@@ -479,6 +495,8 @@ class _MarkdownImageResolver:
             logger.warning("[native_md] image download failed (%s): %s", exc, src[:120])
             self._bump("images_download_failed")
             return ResolvedImage(kind="external", url=src, fmt=ext_hint)
+        if self._raw_cache is not None:
+            self._raw_cache.put(src, data, ext)
         digest = hashlib.sha256(data).hexdigest()[:12]
         return self._local(data, ext, f"image-{digest}.{ext}")
 
@@ -530,15 +548,33 @@ class NativeMarkdownParser(NativeParserBase):
     def extract(
         self, source: Path, *, parsed_dir: Path, asset_dir: Path, base_name: str
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+        # Per-document downloaded-image cache. Lives in a ``<file>.native_raw/``
+        # sibling of ``parsed_dir`` so it survives the ``rmtree(parsed_dir)`` the
+        # base parser runs before each re-extraction; reused across re-parses
+        # unless the source content or download config changed.
+        raw_cache = NativeImageRawCache(
+            raw_dir_for_parsed_dir(parsed_dir, suffix=NATIVE_RAW_DIR_SUFFIX),
+            source_path=source,
+            options_signature=native_md_options_signature(),
+            force_reparse=_env_bool("LIGHTRAG_FORCE_REPARSE_NATIVE", False),
+        )
+        raw_cache.load()
         if source.suffix.lower() == ".textpack":
             tmp_dir = Path(tempfile.mkdtemp(prefix="textpack-"))
             try:
                 md_text, bundle_root = self._open_textpack(source, tmp_dir)
-                return self._extract_text(md_text, bundle_root=bundle_root)
+                result = self._extract_text(
+                    md_text, bundle_root=bundle_root, raw_cache=raw_cache
+                )
             finally:
                 rmtree(tmp_dir, ignore_errors=True)
-        md_text = source.read_bytes().decode("utf-8-sig")
-        return self._extract_text(md_text, bundle_root=None)
+        else:
+            md_text = source.read_bytes().decode("utf-8-sig")
+            result = self._extract_text(md_text, bundle_root=None, raw_cache=raw_cache)
+        # Flush only on successful extraction so a transient failure cannot prune
+        # a previously-valid bundle (an exception propagates before this line).
+        raw_cache.flush()
+        return result
 
     def _open_textpack(self, source: Path, tmp_dir: Path) -> tuple[str, Path]:
         from lightrag.parser.external._zip import safe_extract_zip
@@ -570,7 +606,11 @@ class NativeMarkdownParser(NativeParserBase):
         return markdown[0] if len(markdown) == 1 else None
 
     def _extract_text(
-        self, md_text: str, *, bundle_root: Path | None
+        self,
+        md_text: str,
+        *,
+        bundle_root: Path | None,
+        raw_cache: NativeImageRawCache | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
         warnings: dict[str, int] = {}
         resolver = _MarkdownImageResolver(
@@ -581,6 +621,7 @@ class NativeMarkdownParser(NativeParserBase):
             timeout=_env_int("NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT", 30),
             max_bytes=_env_int("NATIVE_MD_IMAGE_MAX_BYTES", 25 * 1024 * 1024),
             max_svg_pixels=_env_int("NATIVE_MD_IMAGE_MAX_SVG_PIXELS", 16_000_000),
+            raw_cache=raw_cache,
         )
         extraction = extract_markdown(md_text, image_resolver=resolver)
         metadata: dict[str, Any] = {
