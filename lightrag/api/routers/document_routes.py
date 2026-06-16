@@ -45,8 +45,9 @@ from lightrag.parser.routing import (
     canonicalize_parser_hinted_basename,
     chunk_strategy_key,
     filename_parser_hint,
+    parse_process_options,
     resolve_chunk_options,
-    resolve_file_parser_directives,
+    resolve_parser_directives,
 )
 from lightrag.utils import (
     generate_track_id,
@@ -1613,9 +1614,7 @@ async def pipeline_enqueue_file(
             file_size = 0
 
         try:
-            extraction_engine, process_options = resolve_file_parser_directives(
-                file_path
-            )
+            directives = resolve_parser_directives(file_path)
         except FilenameParserHintError as e:
             error_files = [
                 {
@@ -1632,7 +1631,43 @@ async def pipeline_enqueue_file(
             )
             return False, track_id
 
+        extraction_engine = directives.engine
+        process_options = directives.process_options
         api_process_options = process_options or PROCESS_OPTION_CHUNK_FIXED
+
+        # Overlay any per-file chunk parameters (from the filename hint or a
+        # LIGHTRAG_PARSER rule) onto the active strategy's chunk_options so the
+        # parse worker chunks this document with them. Absent params keep the
+        # legacy path (chunk_options built at enqueue time from addon_params).
+        hint_chunk_options = None
+        active_strategy = parse_process_options(api_process_options).chunking
+        hint_chunk_params = directives.chunk_params.get(active_strategy)
+        if hint_chunk_params:
+            try:
+                strategy_key = chunk_strategy_key(api_process_options)
+                hint_chunk_options = resolve_chunk_options(
+                    rag.addon_params, process_options=api_process_options
+                )
+                hint_chunk_options[strategy_key].update(hint_chunk_params)
+                _validate_effective_chunk_overlap(
+                    hint_chunk_options, strategy_key, strategy_key
+                )
+            except ValueError as e:
+                error_files = [
+                    {
+                        "file_path": str(file_path.name),
+                        "error_description": FILE_EXTRACTION_SUMMARY_PREFIX
+                        + "Chunk parameter error",
+                        "original_error": str(e),
+                        "file_size": file_size,
+                    }
+                ]
+                await rag.apipeline_enqueue_error_documents(error_files, track_id)
+                logger.error(
+                    f"[File Extraction]Invalid chunk parameters in "
+                    f"{file_path.name}: {e}"
+                )
+                return False, track_id
         # All engines defer parsing to the worker stage: the file is already
         # saved on disk, so we enqueue PENDING_PARSE with the chosen engine.
         # Legacy now extracts at the worker (LegacyParser) instead of eagerly
@@ -1646,6 +1681,8 @@ async def pipeline_enqueue_file(
                 "process_options": api_process_options,
                 "from_scan": from_scan,
             }
+            if hint_chunk_options is not None:
+                enqueue_kwargs["chunk_options"] = hint_chunk_options
             enqueue_result = await rag.apipeline_enqueue_documents("", **enqueue_kwargs)
             if enqueue_result is None:
                 try:
