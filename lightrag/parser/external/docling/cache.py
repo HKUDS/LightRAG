@@ -204,6 +204,15 @@ def is_bundle_valid(
     #    code-only changes (e.g. flipping image_export_mode or to_formats),
     #    defeating the invalidation this step is supposed to provide.
     #    Lazy import: client.py imports from cache.py.
+    #
+    #    When per-file overrides are requested (e.g. docling(force_ocr=true)) but
+    #    the manifest predates signature recording, we cannot prove the bundle was
+    #    produced with those overrides — accepting it would silently drop the
+    #    user's explicit param. Treat that as a miss so the override is honored
+    #    (mirrors MinerU, which misses on any absent signature). The no-override
+    #    case keeps the deliberate leniency above for legacy bundles.
+    if overrides and not manifest.options_signature:
+        return False
     if manifest.options_signature:
         from lightrag.parser.external.docling.client import FIXED_CONSTANTS
 
