@@ -206,7 +206,8 @@ def test_overlay_rule_then_filename_hint_wins_per_key():
 
 def test_filename_hint_key_overrides_rule_key():
     d = resolve_parser_directives(
-        "paper.[-R(chunk_ts=500)].md", parser_rules="md:legacy-R(chunk_ts=900,chunk_ol=50)"
+        "paper.[-R(chunk_ts=500)].md",
+        parser_rules="md:legacy-R(chunk_ts=900,chunk_ol=50)",
     )
     assert d.chunk_params["R"] == {
         "chunk_token_size": 500,  # filename wins over the rule's 900
@@ -220,9 +221,7 @@ def test_filename_hint_key_overrides_rule_key():
 
 
 def test_validate_parser_routing_config_accepts_good_params():
-    validate_parser_routing_config(
-        "pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R"
-    )
+    validate_parser_routing_config("pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R")
 
 
 @pytest.mark.parametrize(

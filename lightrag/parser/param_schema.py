@@ -229,9 +229,7 @@ def parse_chunk_params(
             )
             continue
         if spec.canonical in seen and not spec.is_list:
-            errors.append(
-                f"{label}: parameter {spec.canonical!r} may not be repeated"
-            )
+            errors.append(f"{label}: parameter {spec.canonical!r} may not be repeated")
             continue
         seen.add(spec.canonical)
 
