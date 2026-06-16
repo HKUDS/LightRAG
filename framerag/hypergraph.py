@@ -29,6 +29,7 @@ Directory layout under working_dir/hypergraph/:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Optional
@@ -113,6 +114,16 @@ class HypergraphStore:
         self._adj_mention_canon: dict[str, str] = {}
         self._adj_causal: list[dict] = []
 
+        # ── Pending VDB batches (flushed in one pass in index_done_callback) ──
+        # Buffering avoids one embedding API call per item; all items for a doc
+        # are embedded in batches of 32 (NanoVectorDB's embedding_batch_num).
+        self._pending_chunk_vecs:     dict[str, dict] = {}
+        self._pending_mention_vecs:   dict[str, dict] = {}
+        self._pending_canonical_vecs: dict[str, dict] = {}
+        self._pending_event_vecs:     dict[str, dict] = {}
+        self._pending_fi_vecs:        dict[str, dict] = {}
+        self._pending_info_vecs:      dict[str, dict] = {}
+
     # ──────────────────────────────────────────────────────────────────────────
     # Lifecycle
     # ──────────────────────────────────────────────────────────────────────────
@@ -130,8 +141,39 @@ class HypergraphStore:
             await vdb.initialize()
         self._load_local()
 
+    async def _flush_pending_vecs(self) -> None:
+        """Batch-embed and upsert all buffered VDB items in parallel.
+
+        All six VDB stores are processed concurrently; each store internally
+        splits its items into embedding batches of 32 (embedding_batch_num).
+        This replaces ~N individual 1-item API calls with ceil(N/32) batched
+        calls across all stores running at the same time.
+        """
+        tasks = []
+        if self._pending_chunk_vecs:
+            tasks.append(self.vdb_chunks.upsert(dict(self._pending_chunk_vecs)))
+        if self._pending_mention_vecs:
+            tasks.append(self.vdb_entity_mentions.upsert(dict(self._pending_mention_vecs)))
+        if self._pending_canonical_vecs:
+            tasks.append(self.vdb_canonical_entities.upsert(dict(self._pending_canonical_vecs)))
+        if self._pending_event_vecs:
+            tasks.append(self.vdb_events.upsert(dict(self._pending_event_vecs)))
+        if self._pending_fi_vecs:
+            tasks.append(self.vdb_frame_instances.upsert(dict(self._pending_fi_vecs)))
+        if self._pending_info_vecs:
+            tasks.append(self.vdb_info_nodes.upsert(dict(self._pending_info_vecs)))
+        if tasks:
+            await asyncio.gather(*tasks)
+        self._pending_chunk_vecs.clear()
+        self._pending_mention_vecs.clear()
+        self._pending_canonical_vecs.clear()
+        self._pending_event_vecs.clear()
+        self._pending_fi_vecs.clear()
+        self._pending_info_vecs.clear()
+
     async def index_done_callback(self) -> None:
-        """Flush KV stores to disk (LightRAG pattern)."""
+        """Flush pending VDB batches then persist all stores to disk."""
+        await self._flush_pending_vecs()
         for store in (
             self.chunks, self.entity_mentions, self.canonical_entities,
             self.events, self.frame_instances, self.info_nodes, self.causal_edges,
@@ -214,13 +256,11 @@ class HypergraphStore:
                 "tokens": chunk.tokens,
             }
         })
-        await self.vdb_chunks.upsert({
-            chunk.chunk_id: {
-                "content": chunk.text,
-                "text": chunk.text,
-                "source_doc": chunk.source_doc,
-            }
-        })
+        self._pending_chunk_vecs[chunk.chunk_id] = {
+            "content": chunk.text,
+            "text": chunk.text,
+            "source_doc": chunk.source_doc,
+        }
         self._chunk_ids.add(chunk.chunk_id)
 
     async def attach_mentions_to_chunk(
@@ -250,14 +290,12 @@ class HypergraphStore:
                 "canonical_id": mention.canonical_id,
             }
         })
-        await self.vdb_entity_mentions.upsert({
-            mention.mention_id: {
-                "content": f"{mention.name} [SEP] {mention.description}",
-                "name":        mention.name,
-                "entity_type": mention.entity_type,
-                "description": mention.description,
-            }
-        })
+        self._pending_mention_vecs[mention.mention_id] = {
+            "content":     f"{mention.name} [SEP] {mention.description}",
+            "name":        mention.name,
+            "entity_type": mention.entity_type,
+            "description": mention.description,
+        }
         self._mention_ids.add(mention.mention_id)
 
     @staticmethod
@@ -316,13 +354,11 @@ class HypergraphStore:
             }
         })
         combined_desc = " ".join(canonical.descriptions[:3])
-        await self.vdb_canonical_entities.upsert({
-            canonical.canonical_id: {
-                "content":        f"{canonical.canonical_name} [SEP] {combined_desc}",
-                "canonical_name": canonical.canonical_name,
-                "entity_type":    canonical.entity_type,
-            }
-        })
+        self._pending_canonical_vecs[canonical.canonical_id] = {
+            "content":        f"{canonical.canonical_name} [SEP] {combined_desc}",
+            "canonical_name": canonical.canonical_name,
+            "entity_type":    canonical.entity_type,
+        }
         self._canonical_ids.add(canonical.canonical_id)
         self._canonical_name_idx[norm_name] = canonical.canonical_id
         # Also index by title-stripped name so "Mr. X" and "X" find each other
@@ -374,14 +410,12 @@ class HypergraphStore:
         content = (
             f"{event.trigger_lemma} [{event.frame_name}]: {event.event_description}"
         )
-        await self.vdb_events.upsert({
-            event.event_id: {
-                "content":           content,
-                "trigger_lemma":     event.trigger_lemma,
-                "frame_name":        event.frame_name,
-                "event_description": event.event_description,
-            }
-        })
+        self._pending_event_vecs[event.event_id] = {
+            "content":           content,
+            "trigger_lemma":     event.trigger_lemma,
+            "frame_name":        event.frame_name,
+            "event_description": event.event_description,
+        }
         self._event_ids.add(event.event_id)
 
         if event.chunk_id not in self._adj_chunk_event:
@@ -423,14 +457,12 @@ class HypergraphStore:
                 if a.filler_text:
                     parts.append(f"{a.fe_name}: {a.filler_text}")
             rich_content = " | ".join(parts)
-        await self.vdb_frame_instances.upsert({
-            fi.fi_id: {
-                "content":      rich_content,
-                "frame_name":   fi.frame_name,
-                "event_id":     fi.event_id,
-                "lexical_unit": fi.lexical_unit,
-            }
-        })
+        self._pending_fi_vecs[fi.fi_id] = {
+            "content":      rich_content,
+            "frame_name":   fi.frame_name,
+            "event_id":     fi.event_id,
+            "lexical_unit": fi.lexical_unit,
+        }
         self._fi_ids.add(fi.fi_id)
 
         if fi.event_id not in self._adj_event_frame:
@@ -460,13 +492,11 @@ class HypergraphStore:
                 "info_type": info.info_type,
             }
         })
-        await self.vdb_info_nodes.upsert({
-            info.info_id: {
-                "content":   info.value,
-                "value":     info.value,
-                "info_type": info.info_type,
-            }
-        })
+        self._pending_info_vecs[info.info_id] = {
+            "content":   info.value,
+            "value":     info.value,
+            "info_type": info.info_type,
+        }
         self._info_ids.add(info.info_id)
 
     async def add_causal_edge(self, edge: CausalEdgeSchema) -> None:
