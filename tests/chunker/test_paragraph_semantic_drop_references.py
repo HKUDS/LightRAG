@@ -78,7 +78,6 @@ def _all_content(chunks: list[dict]) -> str:
         ("References", True),
         ("references", True),  # case-insensitive
         ("REFERENCES", True),
-        ("Reference", True),
         ("Bibliography", True),
         ("References [1-50]", True),  # word boundary: next char is non-alnum
         ("参考文献", True),

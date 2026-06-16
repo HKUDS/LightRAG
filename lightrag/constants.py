@@ -137,7 +137,7 @@ DEFAULT_CHUNK_P_SIZE = 2000
 # (CHUNK_P_REFERENCES_TAIL_N / CHUNK_P_REFERENCES_HEADINGS, the latter
 # pipe-separated) read live by the chunker at run time.
 DEFAULT_P_REFERENCES_TAIL_N = 2
-DEFAULT_P_REFERENCES_HEADINGS = ("Reference", "References", "Bibliography", "参考文献")
+DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 
 # LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]

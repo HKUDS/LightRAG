@@ -317,7 +317,7 @@ P chunker 直接读取 `.blocks.jsonl`，每个 content 行作为后续 TableRow
 | `chunk_overlap_token_size` | `CHUNK_P_OVERLAP_SIZE` / `chunk_overlap_token_size` | 同一内容行内长正文 fallback 与表格桥接预算的上限，默认 `100` |
 | `drop_references` | hint `drop_references`（别名 `drop_rf`）/ `CHUNK_P_DROP_REFERENCES` | 是否在分块前丢弃文末参考文献块，默认 `False`；**入队冻结进 `chunk_options`，并记录到 `doc_status.metadata['chunk_opts']`**（开启时记为 `drop_rf=True`） |
 | `references_tail_n` | `CHUNK_P_REFERENCES_TAIL_N` | 参考文献块只在文末最后 N 个内容块内才被丢弃（安全窗口），默认 `2`；**运行时实时读 env，不快照、不进 metadata** |
-| `references_headings` | `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔） | 参考文献标题前缀，默认 `Reference\|References\|Bibliography\|参考文献`；英文按单词边界、大小写不敏感匹配，`参考文献` 按前缀匹配；**运行时实时读 env，不快照、不进 metadata** |
+| `references_headings` | `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔） | 参考文献标题前缀，默认 `References\|Bibliography\|参考文献`；英文按单词边界、大小写不敏感匹配，`参考文献` 按前缀匹配；**运行时实时读 env，不快照、不进 metadata** |
 | `tokenizer` | LightRAG 已解析好的 tokenizer | 所有 token 计数与文本 overlap 截取的基准 |
 
 P 策略**不接收** `split_by_character` / `split_by_character_only`，因为正常路径由标题和段落结构驱动。
