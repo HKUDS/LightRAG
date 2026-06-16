@@ -37,6 +37,7 @@ from lightrag.parser.registry import (
     suffix_capabilities,
 )
 from lightrag.parser.param_schema import (
+    chunk_param_overlap_error,
     parse_chunk_params,
     split_top_level,
     take_paren_block,
@@ -918,8 +919,14 @@ def validate_parser_routing_config(parser_rules: str | None = None) -> None:
                     options_str, label="process options"
                 )
             )
-        _, param_errors = _parse_chunk_param_texts(chunk_param_texts, label=label)
+        parsed_chunk_params, param_errors = _parse_chunk_param_texts(
+            chunk_param_texts, label=label
+        )
         errors.extend(param_errors)
+        for selector, params in parsed_chunk_params.items():
+            overlap_msg = chunk_param_overlap_error(params)
+            if overlap_msg:
+                errors.append(f"{label} chunk strategy {selector!r}: {overlap_msg}")
 
     if errors:
         raise ParserRoutingConfigError(

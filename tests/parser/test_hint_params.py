@@ -230,11 +230,22 @@ def test_validate_parser_routing_config_accepts_good_params():
         ("pdf:legacy-V(chunk_ol=80)", "not supported for chunk strategy 'V'"),
         ("pdf:legacy-R(chunk_ts=abc)", "must be an integer"),
         ("pdf:legacy-R(foo=1)", "unknown parameter 'foo'"),
+        # Cross-field invariant: explicit overlap >= size is rejected at startup
+        # so a global rule cannot make every matching upload fail at enqueue.
+        ("pdf:legacy-R(chunk_ts=50,chunk_ol=100)", "must be < chunk_token_size"),
+        ("pdf:legacy-R(chunk_ts=100,chunk_ol=100)", "must be < chunk_token_size"),
     ],
 )
 def test_validate_parser_routing_config_rejects_bad_params(rules, needle):
     with pytest.raises(ParserRoutingConfigError, match=needle):
         validate_parser_routing_config(rules)
+
+
+def test_validate_parser_routing_config_allows_one_sided_overlap():
+    # Only overlap is explicit: the effective size depends on env / addon_params
+    # and is unknown at config time, so startup accepts it and defers to the
+    # upload-time effective-overlap check on the resolved snapshot.
+    validate_parser_routing_config("pdf:legacy-R(chunk_ol=100);*:legacy-R")
 
 
 def test_legacy_comma_rules_without_params_still_valid():

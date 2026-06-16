@@ -29,6 +29,7 @@ This module is import-cheap and has no dependency on
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -255,3 +256,23 @@ def parse_chunk_params(
             )
 
     return result, errors
+
+
+def chunk_param_overlap_error(params: Mapping[str, Any]) -> str | None:
+    """Return an error string when a block sets an invalid overlap/size pair.
+
+    Only checks the cross-field invariant when **both** ``chunk_token_size`` and
+    ``chunk_overlap_token_size`` are explicitly present in ``params`` (a parsed
+    canonical dict).  When only one is given the effective value depends on
+    env / ``addon_params`` and cannot be evaluated here — that case is left to
+    the upload-time ``_validate_effective_chunk_overlap`` on the resolved
+    snapshot.  Returns ``None`` when the pair is valid or not fully specified.
+    """
+    size = params.get("chunk_token_size")
+    overlap = params.get("chunk_overlap_token_size")
+    if size is not None and overlap is not None and overlap >= size:
+        return (
+            f"chunk_overlap_token_size ({overlap}) must be < "
+            f"chunk_token_size ({size})"
+        )
+    return None
