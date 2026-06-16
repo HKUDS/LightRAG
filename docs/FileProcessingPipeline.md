@@ -93,7 +93,7 @@ ext:engine-options
 ```
 
 - The left side matches the file extension, not the full filename; write `pdf:mineru`, not `*.pdf:mineru`.
-- Rules can be separated by either a comma `,` or a semicolon `;`.
+- Rules are separated by a semicolon `;` (recommended) or a comma `,`.
 - Rules are checked left to right; priority rules go in front, with the wildcard rule typically at the end.
 - The `-options` suffix after the engine serves as the default `process_options` for files matched by this rule. For example, `LIGHTRAG_PARSER=docx:native-iet` means all `.docx` files default to the `native` engine with image, table, and equation analysis enabled.
 
@@ -117,6 +117,27 @@ The content inside the square brackets supports three forms:
 ```
 
 When parsing the hint, content without a hyphen must match an engine name exactly (`mineru` / `native` / `docling` / `legacy`); when there is content before a hyphen, the part before the hyphen is the engine and the part after is the options; when starting with a hyphen, it specifies only options. The legacy `[OPTIONS]` syntax is no longer valid; for example, `[iet]` must now be written as `[-iet]`.
+
+#### Attaching chunk parameters
+
+A chunk-strategy selector (`F` / `R` / `V` / `P`) — in a `LIGHTRAG_PARSER` rule or a filename hint — may carry per-strategy chunking parameters in parentheses. Inside the parentheses a comma **only** separates parameters; rule splitting is parenthesis-aware, so this comma is never mistaken for a rule separator (both `;` and `,` remain valid rule separators, but `;` is recommended).
+
+```text
+notes.[-R(chunk_ts=800,chunk_ol=80)].md                            # filename hint
+LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # rule
+```
+
+Currently supported parameters (canonical name / short alias):
+
+| Parameter | Alias | Strategies | Type | Meaning |
+| --- | --- | --- | --- | --- |
+| `chunk_token_size` | `chunk_ts` | F / R / V / P | int (≥ 1) | Per-strategy chunk size |
+| `chunk_overlap_token_size` | `chunk_ol` | F / R / P | int (≥ 0) | Overlap between chunks (V has no overlap) |
+
+- `process_options` stays a pure selector string; each parameter is applied to that strategy's `chunk_options` (see §3) while the strategy's other env-derived parameters are kept. Aliases are normalized to their canonical name internally.
+- Merge priority: the selector still follows "a non-empty filename-hint options string wholesale-overrides the rule options"; parameters overlay **per strategy** — rule parameters first, then filename-hint parameters (filename wins on a shared key).
+- Validation is strict both at startup (`LIGHTRAG_PARSER`) and at upload (filename hint): an unknown parameter, a wrong type, an out-of-range value, a parameter on a strategy that does not support it (e.g. `chunk_ol` on `V`), or parameters attached to a parser engine (not supported yet) all raise a friendly error.
+- More parameters (engine parameters such as MinerU page ranges, and flag/enum parameters) will be added in later phases.
 
 ### 2.4 File Parsing Engines
 
