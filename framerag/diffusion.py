@@ -53,6 +53,9 @@ class HypergraphDiffusion:
         H_ef: sparse.csr_matrix = matrices["H_ef"]
         H_fe: sparse.csr_matrix = matrices["H_fe"]
         A_cau: sparse.csr_matrix = matrices["A_cau"]
+        A_coref: sparse.csr_matrix = matrices.get(
+            "A_coref", sparse.csr_matrix((H_fe.shape[1], H_fe.shape[1]))
+        )
 
         # Row-normalized propagation matrices (source-row convention)
         self.H_fe_n   = _row_normalize(H_fe)              # [n_frames × n_nodes]  frame→node
@@ -60,6 +63,7 @@ class HypergraphDiffusion:
         self.H_ef_n   = _row_normalize(H_ef)              # [n_events × n_frames] event←frame
         self.H_ce_n   = _row_normalize(H_ce)              # [n_chunks × n_events] chunk←event
         self.A_cau_n  = _row_normalize(A_cau) if A_cau.nnz > 0 else A_cau
+        self.A_coref_n = _row_normalize(A_coref) if A_coref.nnz > 0 else A_coref
 
         self.n_chunks = H_ce.shape[0]
         self.n_events = H_ce.shape[1]
@@ -76,15 +80,27 @@ class HypergraphDiffusion:
         y_chunk: np.ndarray,
         alpha: float,
         causal_weight: float,
+        coref_weight: float = 0.3,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Fully bidirectional PPR step with state accumulation.
 
         Signal flows both ways (Node↔FI) AND each layer adds incoming signal
         to its current state before normalising — this is genuine multi-hop
         accumulation (unlike a plain overwrite).
+
+        Co-reference expansion (Direction B): after the FI→Node backward pass,
+        a fraction (coref_weight) of each mention's current score is shared with
+        co-referent siblings via A_coref.  This lets a seeded mention of
+        "Mr. Holmes" pull in signal from "Holmes" / "the detective" without
+        completely collapsing them into one node.
         """
         f_fi_from_node  = self.H_fe_n   @ f_node   # Node  → FI  (forward)
         f_node_from_fi  = self.H_fe_T_n @ f_fi     # FI   → Node (backward)
+
+        # Co-reference expansion: co-referent mentions share score proportionally
+        if self.A_coref_n.nnz > 0:
+            f_node_from_fi = f_node_from_fi + coref_weight * (self.A_coref_n @ f_node)
+
         f_event = self.H_ef_n @ f_fi               # FI   → Event
         if self.A_cau_n.nnz > 0:
             f_event = f_event + causal_weight * (self.A_cau_n @ f_event)
@@ -145,6 +161,7 @@ class HypergraphDiffusion:
         warm_up_steps: int = 3,
         t_decay: float = 0.7,
         epsilon: float = 0.01,
+        coref_weight: float = 0.3,
         T: int = 0,  # unused, kept for call-site compatibility
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Two-phase diffusion: warm-up (explore) → cooling (drain to chunks).
@@ -186,6 +203,7 @@ class HypergraphDiffusion:
             f_node, f_fi, f_chunk = self._step_warmup(
                 f_node, f_fi, f_chunk, y_node, y_fi, y_chunk,
                 alpha=alpha, causal_weight=causal_weight,
+                coref_weight=coref_weight,
             )
 
         # ── Phase 2: Cooling — entity frozen, signal drains to chunks ────────

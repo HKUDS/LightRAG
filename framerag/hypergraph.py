@@ -532,14 +532,17 @@ class HypergraphStore:
           A_cau : [n_events × n_events] (causal)
           plus ID lists and index dicts.
         """
-        chunk_ids     = list(self._chunk_ids)
-        event_ids     = list(self._event_ids)
-        fi_ids        = list(self._fi_ids)
-        canonical_ids = list(self._canonical_ids)
-        info_ids      = list(self._info_ids)
-        # Nodes = canonical entities + info nodes (NOT raw mentions)
-        # This ensures "Holmes" in passage 1 and passage 7 share the same node.
-        all_node_ids = canonical_ids + info_ids
+        chunk_ids   = list(self._chunk_ids)
+        event_ids   = list(self._event_ids)
+        fi_ids      = list(self._fi_ids)
+        mention_ids = list(self._mention_ids)
+        info_ids    = list(self._info_ids)
+        # Direction B: Nodes = entity MENTIONS (distinct per context) + info nodes.
+        # Each occurrence of "Holmes" is a separate node tied to its local chunk/frame.
+        # Co-referent mentions are linked via A_coref (built below) so signal
+        # can still expand across mentions of the same entity — without the hard
+        # collapse that caused cross-story contamination in Direction A.
+        all_node_ids = mention_ids + info_ids
 
         # Nothing indexed at all → no retrieval possible.
         if not chunk_ids:
@@ -589,17 +592,14 @@ class HypergraphStore:
 
         # H_fe (FE-weighted)
         # filler_id is a mention_id (entity) or info_id (value).
-        # Entity mention_ids are resolved to canonical_ids so that the same
-        # real-world entity maps to a single node regardless of which passage
-        # it appears in.
+        # Direction B: use filler_id directly — mention_ids are now first-class
+        # nodes; no resolution to canonical.  info_ids pass through unchanged.
         rows, cols, data = [], [], []
         for fid, adj_list in self._adj_frame_node.items():
             if fid not in fi_idx:
                 continue
             for entry in adj_list:
-                raw_nid = entry["node_id"]
-                # Resolve mention_id → canonical_id; info_ids pass through unchanged
-                nid = self._adj_mention_canon.get(raw_nid, raw_nid)
+                nid = entry["node_id"]   # mention_id or info_id — used as-is
                 if nid not in node_idx:
                     continue
                 w = entry["weight"]
@@ -626,8 +626,41 @@ class HypergraphStore:
             if data else sparse.csr_matrix((n_e, n_e))
         )
 
+        # A_coref [n_n × n_n]: edges between co-referent entity mentions.
+        # Mentions sharing the same canonical_id receive a directed edge from
+        # each sibling, enabling signal to expand across surface-form variants
+        # ("Holmes" / "Mr. Holmes" / "the detective") while each mention
+        # retains its own local frame connections.
+        # Only the mention partition (indices 0..n_m-1) has non-zero entries;
+        # the info-node partition remains isolated.
+        n_m = len(mention_ids)
+        mention_in_node = {m: node_idx[m] for m in mention_ids if m in node_idx}
+
+        canon_to_m_idxs: dict[str, list[int]] = {}
+        for mid, cid in self._adj_mention_canon.items():
+            if mid in mention_in_node:
+                canon_to_m_idxs.setdefault(cid, []).append(mention_in_node[mid])
+
+        coref_rows, coref_cols = [], []
+        for cid, midxs in canon_to_m_idxs.items():
+            if len(midxs) < 2:
+                continue
+            for mi in midxs:
+                for mj in midxs:
+                    if mi != mj:
+                        coref_rows.append(mi)
+                        coref_cols.append(mj)
+        A_coref = (
+            sparse.csr_matrix(
+                (np.ones(len(coref_rows)), (coref_rows, coref_cols)),
+                shape=(n_n, n_n),
+            )
+            if coref_rows else sparse.csr_matrix((n_n, n_n))
+        )
+
         return {
-            "H_ce": H_ce, "H_ef": H_ef, "H_fe": H_fe, "A_cau": A_cau,
+            "H_ce": H_ce, "H_ef": H_ef, "H_fe": H_fe,
+            "A_cau": A_cau, "A_coref": A_coref,
             "chunk_ids": chunk_ids, "event_ids": event_ids,
             "fi_ids": fi_ids,       "node_ids": all_node_ids,
             "chunk_idx": chunk_idx, "event_idx": event_idx,
@@ -637,6 +670,12 @@ class HypergraphStore:
     # ──────────────────────────────────────────────────────────────────────────
     # Vector search helpers (pass pre-computed embedding as query_embedding)
     # ──────────────────────────────────────────────────────────────────────────
+
+    async def search_entity_mentions(self, q_vec: np.ndarray, top_k: int) -> list[dict]:
+        """Search mention-level VDB (Direction B seed layer)."""
+        return await self.vdb_entity_mentions.query(
+            "", top_k=top_k, query_embedding=q_vec
+        )
 
     async def search_canonical(self, q_vec: np.ndarray, top_k: int) -> list[dict]:
         return await self.vdb_canonical_entities.query(

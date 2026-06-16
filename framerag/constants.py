@@ -64,6 +64,16 @@ DEFAULT_DIFFUSION_T_DECAY = 0.7 # Phase 2 cooling base: w_back(k) = t_decay^k
 DEFAULT_DIFFUSION_EPSILON = 0.01 # Phase 2 stops when w_back < epsilon (dynamic termination)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Co-reference diffusion
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Propagation weight for co-referent mention edges in diffusion warm-up.
+# Each mention of "Holmes" stays a distinct node; this weight controls how much
+# signal leaks between co-referent mentions via A_coref during warm-up.
+# 0.0 = no cross-mention sharing (full locality); 1.0 = full merge (same as dedup).
+DEFAULT_COREF_WEIGHT = 0.3
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Retrieval
 # ─────────────────────────────────────────────────────────────────────────────
 

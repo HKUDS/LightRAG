@@ -56,6 +56,7 @@ from .constants import (
     DEFAULT_ENABLE_HYDE,
     DEFAULT_HYDE_WEIGHT,
     DEFAULT_ENTITY_HINT_WEIGHT,
+    DEFAULT_COREF_WEIGHT,
 )
 from .types import (
     ChunkSchema,
@@ -131,6 +132,7 @@ class FrameRAG:
         enable_hyde: bool = DEFAULT_ENABLE_HYDE,
         hyde_weight: float = DEFAULT_HYDE_WEIGHT,
         entity_hint_weight: float = DEFAULT_ENTITY_HINT_WEIGHT,
+        coref_weight: float = DEFAULT_COREF_WEIGHT,
     ):
         self._raw_llm = llm_func
         self._raw_embed = embed_func
@@ -153,6 +155,7 @@ class FrameRAG:
         self._enable_hyde = enable_hyde
         self._hyde_weight = hyde_weight
         self._entity_hint_weight = entity_hint_weight
+        self._coref_weight = coref_weight
         self._llm_timeout = llm_timeout
         self._embed_timeout = embed_timeout
         self._llm_sem = asyncio.Semaphore(max_concurrent_llm)
@@ -662,11 +665,14 @@ class FrameRAG:
         hint_vecs = seed_embs[hint_start:] if entity_hints else []
 
         # ── Seed accumulators (additive = union of retrieval sets) ────────────
-        async def _seed_canonical(vec: np.ndarray, weight: float, top_k: int = 20):
-            for hit in await self._hg.search_canonical(vec, top_k=top_k):
-                cid = hit["id"]
-                if cid in node_idx:
-                    y_node[node_idx[cid]] += hit.get("distance", 0.0) * weight
+        # Direction B: seed entity MENTIONS (not canonicals).  Each mention
+        # node is tied to its local chunk/frame context, so cosine-similar
+        # mentions from the right passage get seeded without cross-story bleed.
+        async def _seed_mentions(vec: np.ndarray, weight: float, top_k: int = 20):
+            for hit in await self._hg.search_entity_mentions(vec, top_k=top_k):
+                mid = hit["id"]
+                if mid in node_idx:
+                    y_node[node_idx[mid]] += hit.get("distance", 0.0) * weight
 
         async def _seed_frames(vec: np.ndarray, weight: float, top_k: int = 20):
             for hit in await self._hg.search_frame_instances(vec, top_k=top_k):
@@ -681,19 +687,19 @@ class FrameRAG:
                     y_chunk[chunk_idx[cid]] += hit.get("distance", 0.0) * weight
 
         # Raw query seeds (weight 1.0)
-        await _seed_canonical(q_vec, 1.0)
+        await _seed_mentions(q_vec, 1.0)
         await _seed_frames(q_vec, 1.0)
         await _seed_chunks(q_vec, 1.0)
 
         # HyDE seeds — the key recall bridge for paraphrased/disguised queries
         if hyde_vec is not None:
-            await _seed_canonical(hyde_vec, self._hyde_weight)
+            await _seed_mentions(hyde_vec, self._hyde_weight)
             await _seed_frames(hyde_vec, self._hyde_weight)
             await _seed_chunks(hyde_vec, self._hyde_weight)
 
-        # Entity-hint seeds — direct name-level signal into canonical entities
+        # Entity-hint seeds — direct name-level signal into mention nodes
         for hv in hint_vecs:
-            await _seed_canonical(hv, self._entity_hint_weight, top_k=5)
+            await _seed_mentions(hv, self._entity_hint_weight, top_k=5)
 
         # Boost frame instances for expanded related frames (re-embed frame names)
         if expanded_frames:
@@ -726,6 +732,7 @@ class FrameRAG:
             warm_up_steps=diffusion_warm_up,
             t_decay=self._diffusion_t_decay,
             epsilon=self._diffusion_epsilon,
+            coref_weight=self._coref_weight,
         )
 
         # Step 5: Top results — retrieve extra chunks when reranker is active
