@@ -186,6 +186,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "offline: tests that run without any external service (default CI gate)",
+    "integration: tests requiring external services; skipped by default, opt in with --run-integration",
     "pg_smoke: integration tests that require a live PostgreSQL instance (POSTGRES_PASSWORD must be set)",
 ]
 

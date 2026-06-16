@@ -60,4 +60,4 @@ jobs:
 
       - name: Run pg_smoke tests
         run: |
-          pytest tests/kg/pg_rcte/test_pg_rcte_smoke.py -m pg_smoke -v --tb=short
+          pytest tests/kg/pg_rcte/test_pg_rcte_smoke.py -m pg_smoke --run-integration -v --tb=short

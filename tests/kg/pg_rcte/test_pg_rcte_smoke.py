@@ -5,12 +5,14 @@ These tests exercise the actual DB glue that all offline unit tests mock:
   - _fetch    → PostgreSQLDB.query(..., multirows=True)   JSONB via asyncpg
   - json.loads() on JSONB columns returned by asyncpg
 
-Requires a live PostgreSQL instance.  The tests are gated behind the
-`pg_smoke` pytest marker and skip automatically when POSTGRES_PASSWORD
-is absent so they never block offline CI.
+Requires a live PostgreSQL instance.  The tests carry both the ``pg_smoke``
+and ``integration`` markers so that:
 
-The CI gate is .github/workflows/pg-smoke.yml which uses a GitHub Actions
-PostgreSQL service container.
+* Normal ``pytest`` runs skip them automatically via conftest's
+  ``pytest_collection_modifyitems`` (no ``--run-integration`` flag → skip),
+  even when ``POSTGRES_PASSWORD`` happens to be set in the developer's env.
+* The CI workflow (pg-smoke.yml) passes ``--run-integration`` to opt in, then
+  the module-level ``POSTGRES_PASSWORD`` guard provides a second safety net.
 """
 
 import os
@@ -19,7 +21,7 @@ import uuid
 
 import pytest
 
-pytestmark = pytest.mark.pg_smoke
+pytestmark = [pytest.mark.pg_smoke, pytest.mark.integration]
 
 # ---------------------------------------------------------------------------
 # Skip the whole module if no real PostgreSQL is configured
