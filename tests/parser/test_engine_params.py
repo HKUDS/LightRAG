@@ -81,6 +81,25 @@ def test_parse_engine_params_multi_segment_rejected_local(monkeypatch):
     assert errors and "local supports only a single page" in errors[0]
 
 
+def test_parse_engine_params_local_parse_method_accepted_local(monkeypatch):
+    monkeypatch.delenv("MINERU_API_MODE", raising=False)  # default local
+    parsed, errors = parse_engine_params(
+        "local_parse_method=ocr", engine="mineru", label="x"
+    )
+    assert errors == [] and parsed == {"local_parse_method": "ocr"}
+
+
+def test_parse_engine_params_local_parse_method_rejected_official(monkeypatch):
+    # local_parse_method is local-only: official neither sends it nor folds it
+    # into the cache key, so accepting it would persist a silent no-op directive.
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+    parsed, errors = parse_engine_params(
+        "local_parse_method=ocr", engine="mineru", label="x"
+    )
+    assert "local_parse_method" not in parsed
+    assert errors and "MINERU_API_MODE=local" in errors[0]
+
+
 @pytest.mark.parametrize(
     "block,engine,needle",
     [

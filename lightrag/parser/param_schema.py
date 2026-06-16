@@ -418,6 +418,15 @@ def _coerce_engine_value(
     (:func:`normalize_engine_params`) so both apply identical rules.  For the
     list-type ``page_range`` the ``value`` is the already-joined comma string.
     """
+    # ``local_parse_method`` only feeds the local MinerU request + signature;
+    # the official API neither sends it nor folds it into the cache key, so
+    # accepting it under official mode would persist a directive that silently
+    # does nothing. Reject it here (mirrors the page_range mode rule).
+    if spec.canonical == "local_parse_method" and not _mineru_api_mode_is_local():
+        return None, (
+            f"{label}: 'local_parse_method' only applies to "
+            "MINERU_API_MODE=local (the default); the official API ignores it"
+        )
     if spec.kind == "bool":
         parsed = _parse_bool(value)
         if parsed is None:
