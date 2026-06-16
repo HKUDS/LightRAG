@@ -66,7 +66,7 @@ class HypergraphDiffusion:
         self.n_frames = H_ef.shape[1]
         self.n_nodes  = H_fe.shape[1]
 
-    def _step(
+    def _step_warmup(
         self,
         f_node: np.ndarray,
         f_fi: np.ndarray,
@@ -75,25 +75,65 @@ class HypergraphDiffusion:
         y_fi: np.ndarray,
         y_chunk: np.ndarray,
         alpha: float,
-        w_back: float,
         causal_weight: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Single PPR propagation step."""
-        # Node → FI (forward)
-        f_fi_from_node = self.H_fe_n @ f_node
-        # FI → Node (backward, weighted by w_back)
-        f_node_from_fi = self.H_fe_T_n @ f_fi * w_back
-        # FI → Event → Chunk (forward)
+        """Fully bidirectional PPR step with state accumulation.
+
+        Signal flows both ways (Node↔FI) AND each layer adds incoming signal
+        to its current state before normalising — this is genuine multi-hop
+        accumulation (unlike a plain overwrite).
+        """
+        f_fi_from_node  = self.H_fe_n   @ f_node   # Node  → FI  (forward)
+        f_node_from_fi  = self.H_fe_T_n @ f_fi     # FI   → Node (backward)
+        f_event = self.H_ef_n @ f_fi               # FI   → Event
+        if self.A_cau_n.nnz > 0:
+            f_event = f_event + causal_weight * (self.A_cau_n @ f_event)
+        f_chunk_from_ev = self.H_ce_n @ f_event    # Event → Chunk
+
+        # PPR: new = (1-α)·l1(incoming + current) + α·seed
+        # Adding current state to incoming ensures prior hops accumulate.
+        f_node  = (1 - alpha) * _l1_normalize(f_node_from_fi  + f_node)  + alpha * y_node
+        f_fi    = (1 - alpha) * _l1_normalize(f_fi_from_node  + f_fi)    + alpha * y_fi
+        f_chunk = (1 - alpha) * _l1_normalize(f_chunk_from_ev + f_chunk) + alpha * y_chunk
+        return f_node, f_fi, f_chunk
+
+    def _step_cool(
+        self,
+        f_node_frozen: np.ndarray,
+        f_fi: np.ndarray,
+        f_chunk: np.ndarray,
+        y_fi: np.ndarray,
+        y_chunk: np.ndarray,
+        w_back: float,
+        alpha: float,
+        causal_weight: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Cooling step: node contribution decays, signal drains forward to chunks.
+
+        The backward channel is gradually closed by scaling the *node addend*
+        (not the result of l1-normalisation) — this is the correct fix so that
+        w_back genuinely reduces node influence in the mixed signal:
+
+            l1( w_back * node_signal + f_fi )   ← node shrinks relative to f_fi
+        vs the previous (broken) form:
+            l1( node_signal * w_back )           ← l1 cancels the scalar entirely
+
+        Entity nodes are frozen at their warm-up values.  As w_back → 0 the
+        FI layer decouples from entities and only propagates accumulated FI
+        signal forward through Event → Chunk.
+        """
+        # Decaying node→FI contribution: scale the addend, not the normalised result
+        f_fi_from_node = w_back * (self.H_fe_n @ f_node_frozen)
+
         f_event = self.H_ef_n @ f_fi
         if self.A_cau_n.nnz > 0:
             f_event = f_event + causal_weight * (self.A_cau_n @ f_event)
         f_chunk_from_ev = self.H_ce_n @ f_event
 
-        # PPR restart (node restart also scales with w_back — less anchoring as we cool)
-        f_node  = (1 - alpha) * _l1_normalize(f_node_from_fi)  + alpha * w_back * y_node
-        f_fi    = (1 - alpha) * _l1_normalize(f_fi_from_node)  + alpha * y_fi
-        f_chunk = (1 - alpha) * _l1_normalize(f_chunk_from_ev) + alpha * y_chunk
-        return f_node, f_fi, f_chunk
+        # FI: node addend shrinks each step → node "freezes out" of the mixture
+        f_fi    = (1 - alpha) * _l1_normalize(f_fi_from_node  + f_fi)    + alpha * y_fi
+        f_chunk = (1 - alpha) * _l1_normalize(f_chunk_from_ev + f_chunk) + alpha * y_chunk
+        return f_fi, f_chunk
 
     def run(
         self,
@@ -105,61 +145,59 @@ class HypergraphDiffusion:
         warm_up_steps: int = 3,
         t_decay: float = 0.7,
         epsilon: float = 0.01,
-        # legacy param — ignored; steps now determined dynamically
-        T: int = 0,
+        T: int = 0,  # unused, kept for call-site compatibility
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Two-phase dynamic diffusion over the hypergraph.
+        """Two-phase diffusion: warm-up (explore) → cooling (drain to chunks).
 
-        Phase 1 — Warm-up (``warm_up_steps`` steps, w_back = 1.0):
-            Fully bidirectional. Entity ↔ FI ↔ Event ↔ Chunk exchange signal
-            freely. Weak entity seeds (low initial cosine similarity) get a
-            chance to propagate through the FI neighborhood and accumulate score
-            before the backward channel closes. Analogous to high temperature
-            in simulated annealing — exploration dominates.
+        Phase 1 — Warm-up (``warm_up_steps`` bidirectional steps):
+            Entity ↔ FI ↔ Event ↔ Chunk all exchange signal freely.
+            Each layer *accumulates* incoming + current state before
+            normalising, so signal from 2-hop entity neighbourhoods builds
+            up inside FI nodes before the backward channel closes.
 
-        Phase 2 — Cooling (dynamic, w_back = t_decay^k until w_back < epsilon):
-            Backward weight decays geometrically: w_back(k) = t_decay^k.
-            The loop terminates as soon as w_back falls below ``epsilon``.
-            Entity nodes "freeze" while accumulated signal drains forward
-            through FI → Event → Chunk. Terminates automatically — no fixed T.
+        Phase 2 — Cooling (dynamic, terminates when w_back < epsilon):
+            Entity nodes are frozen at their warm-up values.
+            The node→FI addend is scaled by w_back = t_decay^k each step:
 
-            With t_decay=0.7, epsilon=0.01: ceil(log(0.01)/log(0.7)) ≈ 13 steps.
-            With t_decay=0.5, epsilon=0.01: ceil(log(0.01)/log(0.5)) ≈  7 steps.
+                f_fi ← l1( w_back·(H_fe @ f_node_frozen) + f_fi ) * (1-α) + α·y_fi
 
-        Total steps = warm_up_steps + cooling_steps (both determined by params).
+            Because w_back multiplies an *addend* (not the whole normalised
+            vector), it genuinely reduces node influence relative to the
+            existing f_fi signal — the effect that the previous implementation
+            accidentally cancelled via l1(·).  As w_back → 0:
+              • FI decouples from entities
+              • accumulated FI signal drains forward: FI → Event → Chunk
+              • chunks accumulate all signal that explored during warm-up
 
-        Args:
-            warm_up_steps: Number of fully-bidirectional exploration steps.
-                           Suggested: 3 — enough for 2-hop entity neighborhoods
-                           to contribute before cooling.
-            t_decay:  Geometric cooling rate (0 < t_decay < 1).
-            epsilon:  Cooling stops when w_back < epsilon.
+            With t_decay=0.7, epsilon=0.01: ~13 cooling steps.
+            With t_decay=0.5, epsilon=0.01: ~ 7 cooling steps.
 
         Returns:
-            f_node  [n_nodes]  — entity+info scores (near 0 after cooling)
-            f_fi    [n_frames] — frame instance scores
-            f_chunk [n_chunks] — chunk scores (primary retrieval signal)
+            f_node  [n_nodes]   entity+info scores (frozen after warm-up)
+            f_fi    [n_frames]  frame instance scores
+            f_chunk [n_chunks]  chunk scores — primary retrieval signal
         """
         f_node  = y_node.copy().astype(np.float64)
         f_fi    = y_fi.copy().astype(np.float64)
         f_chunk = y_chunk.copy().astype(np.float64)
 
-        # ── Phase 1: Warm-up (full bidirectional) ────────────────────────────
+        # ── Phase 1: Warm-up — fully bidirectional, accumulating ─────────────
         for _ in range(warm_up_steps):
-            f_node, f_fi, f_chunk = self._step(
+            f_node, f_fi, f_chunk = self._step_warmup(
                 f_node, f_fi, f_chunk, y_node, y_fi, y_chunk,
-                alpha=alpha, w_back=1.0, causal_weight=causal_weight,
+                alpha=alpha, causal_weight=causal_weight,
             )
 
-        # ── Phase 2: Cooling (dynamic — stop when w_back < epsilon) ──────────
+        # ── Phase 2: Cooling — entity frozen, signal drains to chunks ────────
+        f_node_frozen = f_node.copy()
         cool_step = 0
         while True:
             w_back = t_decay ** cool_step
             if w_back < epsilon:
                 break
-            f_node, f_fi, f_chunk = self._step(
-                f_node, f_fi, f_chunk, y_node, y_fi, y_chunk,
-                alpha=alpha, w_back=w_back, causal_weight=causal_weight,
+            f_fi, f_chunk = self._step_cool(
+                f_node_frozen, f_fi, f_chunk, y_fi, y_chunk,
+                w_back=w_back, alpha=alpha, causal_weight=causal_weight,
             )
             cool_step += 1
 
