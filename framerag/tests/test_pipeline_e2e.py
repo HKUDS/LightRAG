@@ -99,3 +99,71 @@ async def test_event_hint_seeding_changes_scores(indexed_rag):
 async def test_answer_generation_runs(indexed_rag):
     ans = await indexed_rag.aquery("What did Holmes play?")
     assert isinstance(ans, str) and len(ans) > 0
+
+
+async def _small_chunk_rag():
+    """A self-contained FrameRAG with tiny chunks (multiple chunks per doc) so
+    within-doc co-reference fires. Resets shared storage for isolation."""
+    import tempfile
+    from lightrag.kg.shared_storage import (
+        initialize_share_data, finalize_share_data,
+    )
+    from framerag.framerag import FrameRAG
+    from .conftest import mock_llm, mock_embed, EMB_DIM
+    finalize_share_data()
+    initialize_share_data(workers=1)
+    work = tempfile.mkdtemp(prefix="frscope_")
+    r = FrameRAG(
+        working_dir=work, llm_func=mock_llm, embed_func=mock_embed,
+        embedding_dim=EMB_DIM, chunk_size=30, chunk_overlap=5,
+        enable_hyde=False, max_concurrent_llm=4,
+    )
+    await r.initialize()
+    return r, work
+
+
+async def test_coref_scope_blocks_cross_doc():
+    """#C: the same entity in two different source_docs must NOT be linked by
+    A_coref when scope_by_doc is on; turning scope off links them."""
+    import shutil
+    from .conftest import PASSAGE
+    r, work = await _small_chunk_rag()
+    try:
+        await r.ainsert(PASSAGE, source_doc="story_A")
+        await r.ainsert(PASSAGE.replace("Baker Street", "Montague Street"),
+                        source_doc="story_B")
+
+        scoped = await r._hg.build_matrices(coref_scope_by_doc=True)
+        unscoped = await r._hg.build_matrices(coref_scope_by_doc=False)
+
+        # Unscoped links Holmes-in-A to Holmes-in-B → strictly more edges.
+        assert unscoped["A_coref"].nnz > scoped["A_coref"].nnz
+        # Scoped still links repeated mentions WITHIN each doc.
+        assert scoped["A_coref"].nnz > 0
+    finally:
+        await r.finalize()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+async def test_coref_chunk_distance_scope():
+    """#C: coref_max_chunk_dist limits edges to nearby chunks within a doc."""
+    import shutil
+    from .conftest import PASSAGE
+    r, work = await _small_chunk_rag()
+    try:
+        await r.ainsert(PASSAGE, source_doc="story_A")
+        far = await r._hg.build_matrices(coref_scope_by_doc=True,
+                                         coref_max_chunk_dist=None)
+        near = await r._hg.build_matrices(coref_scope_by_doc=True,
+                                          coref_max_chunk_dist=0)
+        # dist=0 only links mentions in the SAME chunk → fewer (or equal) edges.
+        assert near["A_coref"].nnz <= far["A_coref"].nnz
+    finally:
+        await r.finalize()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+async def test_no_canonical_vdb(rag):
+    """G: the canonical-entity VDB must be gone (no wasted embeddings)."""
+    assert not hasattr(rag._hg, "vdb_canonical_entities")
+    assert not hasattr(rag._hg, "search_canonical")

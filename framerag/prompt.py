@@ -458,23 +458,6 @@ Same JSON format as before. If none found, output [].
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Entity Description Merge (cross-document accumulation)
-# ─────────────────────────────────────────────────────────────────────────────
-
-PROMPTS["entity_description_merge"] = """---Task---
-Merge the following descriptions of the same entity into a single concise description.
-Preserve all unique facts. Remove redundancies. Write in third person.
-Keep the result to 3-5 sentences maximum.
-
----Entity Name---
-{entity_name}
-
----Descriptions to Merge---
-{descriptions}
-
----Merged Description---"""
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Answer Generation (Call 5)
 # ─────────────────────────────────────────────────────────────────────────────
 

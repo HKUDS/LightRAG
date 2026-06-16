@@ -52,17 +52,17 @@ from .constants import (
     DEFAULT_EMBEDDING_TIMEOUT,
     DEFAULT_MAX_ASYNC,
     DEFAULT_EMBEDDING_DIM,
-    DEFAULT_DESC_MERGE_THRESHOLD,
     DEFAULT_ENABLE_HYDE,
     DEFAULT_HYDE_WEIGHT,
     DEFAULT_ENTITY_HINT_WEIGHT,
     DEFAULT_EVENT_HINT_WEIGHT,
     DEFAULT_COREF_WEIGHT,
+    DEFAULT_COREF_SCOPE_BY_DOC,
+    DEFAULT_COREF_MAX_CHUNK_DIST,
 )
 from .types import (
     ChunkSchema,
     EntityMentionSchema,
-    CanonicalEntitySchema,
     EventSchema,
     FrameInstanceSchema,
     InfoNodeSchema,
@@ -135,6 +135,8 @@ class FrameRAG:
         entity_hint_weight: float = DEFAULT_ENTITY_HINT_WEIGHT,
         event_hint_weight: float = DEFAULT_EVENT_HINT_WEIGHT,
         coref_weight: float = DEFAULT_COREF_WEIGHT,
+        coref_scope_by_doc: bool = DEFAULT_COREF_SCOPE_BY_DOC,
+        coref_max_chunk_dist: Optional[int] = DEFAULT_COREF_MAX_CHUNK_DIST,
     ):
         self._raw_llm = llm_func
         self._raw_embed = embed_func
@@ -159,11 +161,12 @@ class FrameRAG:
         self._entity_hint_weight = entity_hint_weight
         self._event_hint_weight = event_hint_weight
         self._coref_weight = coref_weight
+        self._coref_scope_by_doc = coref_scope_by_doc
+        self._coref_max_chunk_dist = coref_max_chunk_dist
         self._llm_timeout = llm_timeout
         self._embed_timeout = embed_timeout
         self._llm_sem = asyncio.Semaphore(max_concurrent_llm)
         self._save_lock = asyncio.Lock()
-        self._desc_merge_threshold = DEFAULT_DESC_MERGE_THRESHOLD
 
         self._working_dir = working_dir
         os.makedirs(working_dir, exist_ok=True)
@@ -401,12 +404,14 @@ class FrameRAG:
                 if ev.frame_name not in seen_new_frames:
                     await self._frame_db.increment_usage(ev.frame_name)
 
-            # ── Entity coreference ───────────────────────────────────────────
+            # ── Entity coreference (per-document) ─────────────────────────────
+            # Groups co-referent mentions WITHIN this document into canonicals.
+            # No cross-document unification: Direction B scopes co-reference
+            # (A_coref) to a passage/sub-doc, so merging canonicals across docs
+            # would only re-introduce cross-story contamination — and the
+            # canonical VDB it required is gone.
             logger.info(f"[FrameRAG] Entity coref: {len(all_mentions)} mentions")
             canonicals = await self._entity_coref.resolve_with_llm_verify(all_mentions)
-
-            # ── Cross-document entity description merging ────────────────────
-            canonicals = await self._merge_entity_descriptions(canonicals, all_mentions)
 
             # ── Persist to hypergraph ────────────────────────────────────────
             for m in all_mentions:
@@ -507,93 +512,6 @@ class FrameRAG:
         return " | ".join(parts)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Entity description merging (cross-document)
-    # ──────────────────────────────────────────────────────────────────────────
-
-    async def _merge_entity_descriptions(
-        self,
-        canonicals: list[CanonicalEntitySchema],
-        all_mentions: list,
-    ) -> list[CanonicalEntitySchema]:
-        """Cross-passage canonical ID unification.
-
-        Identifies mentions of the same real-world entity across passages and
-        maps them to a single canonical_id so hyperedges connect correctly.
-        No description management — just ID unification.
-
-        Two-pass lookup:
-        1. Normalized name match — strips honorifics then does O(1) hash lookup.
-        2. Embedding similarity >= 0.70 against the canonical entity VDB.
-        """
-        import re as _re
-        CROSS_EMBED_THRESHOLD = 0.70
-        _TITLE_RE = _re.compile(
-            r"^(mr\.?|mrs\.?|ms\.?|miss\.?|dr\.?|prof\.?|sir\.?|lord\.?|lady\.?)\s+",
-            _re.IGNORECASE,
-        )
-
-        def _normalize(name: str) -> str:
-            return _TITLE_RE.sub("", name.strip()).lower()
-
-        mention_by_canon: dict[str, list] = {}
-        for m in all_mentions:
-            mention_by_canon.setdefault(m.canonical_id, []).append(m)
-
-        async def _type_compatible(existing_id: str, canon_type: str) -> bool:
-            """Two entities may only unify if their types agree. Prevents a
-            PERSON 'Holmes' from being merged into a LOCATION 'Holmes' just
-            because the surface names collide."""
-            existing = await self._hg.canonical_entities.get_by_id(existing_id)
-            if not existing:
-                return True  # unknown → don't block
-            et = (existing.get("entity_type") or "").upper()
-            ct = (canon_type or "").upper()
-            return not et or not ct or et == ct
-
-        def _unify(canon: CanonicalEntitySchema, existing_id: str) -> None:
-            old_id = canon.canonical_id
-            canon.canonical_id = existing_id
-            for m in mention_by_canon.get(old_id, []):
-                m.canonical_id = existing_id
-            # Register this surface form so future Pass-1 lookups find it.
-            norm = _normalize(canon.canonical_name)
-            self._hg._canonical_name_idx.setdefault(canon.canonical_name.lower().strip(), existing_id)
-            self._hg._canonical_name_idx.setdefault(norm, existing_id)
-
-        for canon in canonicals:
-            # Pass 1: normalized name match (handles "Mr. X" vs "X" variants)
-            norm = _normalize(canon.canonical_name)
-            existing_id = (
-                self._hg.get_canonical_id_by_name(canon.canonical_name)
-                or self._hg.get_canonical_id_by_name(norm)
-            )
-            if (
-                existing_id and existing_id != canon.canonical_id
-                and await _type_compatible(existing_id, canon.entity_type)
-            ):
-                _unify(canon, existing_id)
-                continue
-
-            # Pass 2: embedding similarity match (also type-guarded)
-            search_text = f"{canon.canonical_name}: {' '.join(canon.descriptions[:1])}"
-            try:
-                vec = await self._raw_embed([search_text])
-                hits = await self._hg.search_canonical(vec[0], top_k=5)
-                for hit in hits:
-                    if hit.get("distance", 0.0) >= CROSS_EMBED_THRESHOLD:
-                        hit_id = hit["id"]
-                        if (
-                            hit_id != canon.canonical_id
-                            and await _type_compatible(hit_id, canon.entity_type)
-                        ):
-                            _unify(canon, hit_id)
-                            break
-            except Exception as e:
-                logger.debug(f"[FrameRAG] Cross-passage unify failed for '{canon.canonical_name}': {e}")
-
-        return canonicals
-
-    # ──────────────────────────────────────────────────────────────────────────
     # Query
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -646,8 +564,12 @@ class FrameRAG:
         if hyde_passage:
             logger.info(f"[FrameRAG] HyDE passage: {hyde_passage[:120]}...")
 
-        # Step 2: Build sparse matrices
-        matrices = await self._hg.build_matrices(fe_focus=signals.fe_focus or None)
+        # Step 2: Build sparse matrices (A_coref scoped to passage/sub-doc)
+        matrices = await self._hg.build_matrices(
+            fe_focus=signals.fe_focus or None,
+            coref_scope_by_doc=self._coref_scope_by_doc,
+            coref_max_chunk_dist=self._coref_max_chunk_dist,
+        )
         if not matrices:
             return [], []
 

@@ -285,17 +285,6 @@ class FrameDatabase:
                 frames.append(self._dict_to_schema(data))
         return frames
 
-    async def get_frame_embedding(self, frame_name: str) -> Optional[list[float]]:
-        """Return the stored vector for a frame (for expanded-frame seeding)."""
-        results = await self._vdb.query(
-            frame_name, top_k=1, query_embedding=None
-        )
-        # No direct get-by-id for vectors; search and filter by exact name
-        for r in results:
-            if r.get("frame_name") == frame_name:
-                return None  # NanoVDB query only returns meta, not raw vector
-        return None
-
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────────────────────────────────

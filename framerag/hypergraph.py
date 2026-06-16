@@ -15,7 +15,6 @@ Directory layout under working_dir/hypergraph/:
 
   vdb_chunk_vec.json      chunk vectors
   vdb_mention_vec.json    entity mention vectors
-  vdb_canonical_vec.json  canonical entity vectors
   vdb_event_vec.json      event vectors
   vdb_fi_vec.json         frame instance vectors
   vdb_info_vec.json       info node vectors
@@ -81,10 +80,10 @@ class HypergraphStore:
             "mention_vec", hg_dir, ef,
             {"name", "entity_type", "description"},
         )
-        self.vdb_canonical_entities = make_vdb(
-            "canonical_vec", hg_dir, ef,
-            {"canonical_name", "entity_type"},
-        )
+        # NOTE: there is deliberately no canonical-entity VDB. Direction B uses
+        # mention-level nodes; canonicals only group co-referent mentions (for
+        # A_coref) and are never seeded or searched, so embedding them would be
+        # wasted API cost.
         self.vdb_events = make_vdb(
             "event_vec", hg_dir, ef,
             {"trigger_lemma", "frame_name", "event_description"},
@@ -113,13 +112,17 @@ class HypergraphStore:
         self._adj_frame_node: dict[str, list[dict]] = {}
         self._adj_mention_canon: dict[str, str] = {}
         self._adj_causal: list[dict] = []
+        # Mention → chunk_id, and chunk_id → (source_doc, chunk_index).
+        # Used to scope co-reference (A_coref) edges to a passage/sub-doc so the
+        # same entity in two different sub-stories does not bleed signal.
+        self._adj_mention_chunk: dict[str, str] = {}
+        self._chunk_meta: dict[str, list] = {}   # chunk_id -> [source_doc, chunk_index]
 
         # ── Pending VDB batches (flushed in one pass in index_done_callback) ──
         # Buffering avoids one embedding API call per item; all items for a doc
         # are embedded in batches of 32 (NanoVectorDB's embedding_batch_num).
         self._pending_chunk_vecs:     dict[str, dict] = {}
         self._pending_mention_vecs:   dict[str, dict] = {}
-        self._pending_canonical_vecs: dict[str, dict] = {}
         self._pending_event_vecs:     dict[str, dict] = {}
         self._pending_fi_vecs:        dict[str, dict] = {}
         self._pending_info_vecs:      dict[str, dict] = {}
@@ -135,7 +138,7 @@ class HypergraphStore:
         ):
             await store.initialize()
         for vdb in (
-            self.vdb_chunks, self.vdb_entity_mentions, self.vdb_canonical_entities,
+            self.vdb_chunks, self.vdb_entity_mentions,
             self.vdb_events, self.vdb_frame_instances, self.vdb_info_nodes,
         ):
             await vdb.initialize()
@@ -154,8 +157,6 @@ class HypergraphStore:
             tasks.append(self.vdb_chunks.upsert(dict(self._pending_chunk_vecs)))
         if self._pending_mention_vecs:
             tasks.append(self.vdb_entity_mentions.upsert(dict(self._pending_mention_vecs)))
-        if self._pending_canonical_vecs:
-            tasks.append(self.vdb_canonical_entities.upsert(dict(self._pending_canonical_vecs)))
         if self._pending_event_vecs:
             tasks.append(self.vdb_events.upsert(dict(self._pending_event_vecs)))
         if self._pending_fi_vecs:
@@ -166,7 +167,6 @@ class HypergraphStore:
             await asyncio.gather(*tasks)
         self._pending_chunk_vecs.clear()
         self._pending_mention_vecs.clear()
-        self._pending_canonical_vecs.clear()
         self._pending_event_vecs.clear()
         self._pending_fi_vecs.clear()
         self._pending_info_vecs.clear()
@@ -180,7 +180,7 @@ class HypergraphStore:
         ):
             await store.index_done_callback()
         for vdb in (
-            self.vdb_chunks, self.vdb_entity_mentions, self.vdb_canonical_entities,
+            self.vdb_chunks, self.vdb_entity_mentions,
             self.vdb_events, self.vdb_frame_instances, self.vdb_info_nodes,
         ):
             await vdb.index_done_callback()
@@ -214,6 +214,8 @@ class HypergraphStore:
             ("_adj_event_frame",   "event_frame"),
             ("_adj_frame_node",    "frame_node"),
             ("_adj_mention_canon", "mention_canon"),
+            ("_adj_mention_chunk", "mention_chunk"),
+            ("_chunk_meta",        "chunk_meta"),
             ("_adj_causal",        "causal"),
         ):
             path = self._adj_path(fname)
@@ -239,6 +241,8 @@ class HypergraphStore:
             ("_adj_event_frame",   "event_frame"),
             ("_adj_frame_node",    "frame_node"),
             ("_adj_mention_canon", "mention_canon"),
+            ("_adj_mention_chunk", "mention_chunk"),
+            ("_chunk_meta",        "chunk_meta"),
             ("_adj_causal",        "causal"),
         ):
             with open(self._adj_path(fname), "w", encoding="utf-8") as f:
@@ -262,6 +266,7 @@ class HypergraphStore:
             "source_doc": chunk.source_doc,
         }
         self._chunk_ids.add(chunk.chunk_id)
+        self._chunk_meta[chunk.chunk_id] = [chunk.source_doc, chunk.chunk_index]
 
     async def attach_mentions_to_chunk(
         self, chunk_id: str, mention_ids: list[str]
@@ -297,6 +302,7 @@ class HypergraphStore:
             "description": mention.description,
         }
         self._mention_ids.add(mention.mention_id)
+        self._adj_mention_chunk[mention.mention_id] = mention.chunk_id
 
     @staticmethod
     def _strip_titles(name: str) -> str:
@@ -343,7 +349,8 @@ class HypergraphStore:
                         await self.entity_mentions.upsert({mid: m_data})
                 return
 
-        # New canonical
+        # New canonical. Stored in KV only — canonicals group co-referent
+        # mentions for A_coref; they are not graph nodes and are never embedded.
         await self.canonical_entities.upsert({
             canonical.canonical_id: {
                 "canonical_id":   canonical.canonical_id,
@@ -353,12 +360,6 @@ class HypergraphStore:
                 "mention_ids":    canonical.mention_ids,
             }
         })
-        combined_desc = " ".join(canonical.descriptions[:3])
-        self._pending_canonical_vecs[canonical.canonical_id] = {
-            "content":        f"{canonical.canonical_name} [SEP] {combined_desc}",
-            "canonical_name": canonical.canonical_name,
-            "entity_type":    canonical.entity_type,
-        }
         self._canonical_ids.add(canonical.canonical_id)
         self._canonical_name_idx[norm_name] = canonical.canonical_id
         # Also index by title-stripped name so "Mr. X" and "X" find each other
@@ -372,24 +373,6 @@ class HypergraphStore:
             if m_data:
                 m_data["canonical_id"] = canonical.canonical_id
                 await self.entity_mentions.upsert({mid: m_data})
-
-    async def update_canonical_descriptions(
-        self, canonical_id: str, descriptions: list[str]
-    ) -> None:
-        """Replace descriptions for a canonical entity (after LLM merge)."""
-        data = await self.canonical_entities.get_by_id(canonical_id)
-        if not data:
-            return
-        data["descriptions"] = descriptions
-        await self.canonical_entities.upsert({canonical_id: data})
-        combined_desc = " ".join(descriptions[:3])
-        await self.vdb_canonical_entities.upsert({
-            canonical_id: {
-                "content":        f"{data['canonical_name']} [SEP] {combined_desc}",
-                "canonical_name": data["canonical_name"],
-                "entity_type":    data["entity_type"],
-            }
-        })
 
     async def add_event(self, event: EventSchema) -> None:
         await self.events.upsert({
@@ -521,7 +504,10 @@ class HypergraphStore:
     # ──────────────────────────────────────────────────────────────────────────
 
     async def build_matrices(
-        self, fe_focus: Optional[list[str]] = None
+        self,
+        fe_focus: Optional[list[str]] = None,
+        coref_scope_by_doc: bool = True,
+        coref_max_chunk_dist: Optional[int] = None,
     ) -> dict:
         """Build normalized sparse incidence matrices for hypergraph diffusion.
 
@@ -530,7 +516,16 @@ class HypergraphStore:
           H_ef  : [n_events × n_frames]
           H_fe  : [n_frames × n_nodes] (FE-weighted)
           A_cau : [n_events × n_events] (causal)
+          A_coref : [n_nodes × n_nodes] (co-reference, passage-scoped)
           plus ID lists and index dicts.
+
+        Co-reference scoping (anti cross-story contamination):
+          coref_scope_by_doc   — only link co-referent mentions from the same
+                                  source_doc (default True).
+          coref_max_chunk_dist — if set, additionally require the two mentions'
+                                  chunks to be within this many chunk indices.
+                                  Use for a single concatenated corpus where
+                                  sub-stories are contiguous chunk ranges.
         """
         chunk_ids   = list(self._chunk_ids)
         event_ids   = list(self._event_ids)
@@ -631,24 +626,49 @@ class HypergraphStore:
         # each sibling, enabling signal to expand across surface-form variants
         # ("Holmes" / "Mr. Holmes" / "the detective") while each mention
         # retains its own local frame connections.
-        # Only the mention partition (indices 0..n_m-1) has non-zero entries;
-        # the info-node partition remains isolated.
+        #
+        # Scoping: an edge is only created when the two mentions belong to the
+        # same passage/sub-doc. Without this, "Holmes" in sub-story 1 would leak
+        # signal to "Holmes" in sub-story 7 — the cross-story contamination that
+        # Direction B set out to remove. Only the mention partition has entries;
+        # info nodes stay isolated.
+        # Build per-mention scope info: (source_doc, chunk_index).
+        def _scope(mid: str) -> tuple:
+            cid = self._adj_mention_chunk.get(mid)
+            meta = self._chunk_meta.get(cid) if cid else None
+            if not meta:
+                return (None, None)
+            return (meta[0], meta[1])
+
         mention_in_node = {m: node_idx[m] for m in mention_ids if m in node_idx}
 
-        canon_to_m_idxs: dict[str, list[int]] = {}
+        # Group by canonical, carrying each member's (node_idx, source_doc, chunk_index).
+        canon_to_members: dict[str, list[tuple]] = {}
         for mid, cid in self._adj_mention_canon.items():
             if mid in mention_in_node:
-                canon_to_m_idxs.setdefault(cid, []).append(mention_in_node[mid])
+                doc, cidx = _scope(mid)
+                canon_to_members.setdefault(cid, []).append(
+                    (mention_in_node[mid], doc, cidx)
+                )
+
+        def _linkable(a: tuple, b: tuple) -> bool:
+            # a, b = (node_idx, source_doc, chunk_index)
+            if coref_scope_by_doc and a[1] != b[1]:
+                return False
+            if coref_max_chunk_dist is not None and a[2] is not None and b[2] is not None:
+                if abs(a[2] - b[2]) > coref_max_chunk_dist:
+                    return False
+            return True
 
         coref_rows, coref_cols = [], []
-        for cid, midxs in canon_to_m_idxs.items():
-            if len(midxs) < 2:
+        for cid, members in canon_to_members.items():
+            if len(members) < 2:
                 continue
-            for mi in midxs:
-                for mj in midxs:
-                    if mi != mj:
-                        coref_rows.append(mi)
-                        coref_cols.append(mj)
+            for a in members:
+                for b in members:
+                    if a[0] != b[0] and _linkable(a, b):
+                        coref_rows.append(a[0])
+                        coref_cols.append(b[0])
         A_coref = (
             sparse.csr_matrix(
                 (np.ones(len(coref_rows)), (coref_rows, coref_cols)),
@@ -686,11 +706,6 @@ class HypergraphStore:
     def frame_ids_for_event(self, event_id: str) -> list[str]:
         """Return frame-instance ids attached to an event (adjacency lookup)."""
         return list(self._adj_event_frame.get(event_id, []))
-
-    async def search_canonical(self, q_vec: np.ndarray, top_k: int) -> list[dict]:
-        return await self.vdb_canonical_entities.query(
-            "", top_k=top_k, query_embedding=q_vec
-        )
 
     async def search_frame_instances(self, q_vec: np.ndarray, top_k: int) -> list[dict]:
         return await self.vdb_frame_instances.query(
@@ -811,6 +826,7 @@ class HypergraphStore:
         # Prune adjacency lists
         for cid in chunk_set:
             self._adj_chunk_event.pop(cid, None)
+            self._chunk_meta.pop(cid, None)
             self._chunk_ids.discard(cid)
         for eid in event_ids:
             self._adj_event_frame.pop(eid, None)
@@ -820,6 +836,7 @@ class HypergraphStore:
             self._fi_ids.discard(fid)
         for mid in mention_ids:
             self._adj_mention_canon.pop(mid, None)
+            self._adj_mention_chunk.pop(mid, None)
             self._mention_ids.discard(mid)
         for iid in info_ids:
             self._info_ids.discard(iid)

@@ -73,6 +73,16 @@ DEFAULT_DIFFUSION_EPSILON = 0.01 # Phase 2 stops when w_back < epsilon (dynamic 
 # 0.0 = no cross-mention sharing (full locality); 1.0 = full merge (same as dedup).
 DEFAULT_COREF_WEIGHT = 0.3
 
+# Co-reference edge scoping (anti cross-story contamination).
+# Only link co-referent mentions that share a source_doc. Insert each
+# passage / sub-story as its own document to get clean per-passage scoping.
+DEFAULT_COREF_SCOPE_BY_DOC = True
+# Optionally also require the two mentions' chunks to be within this many chunk
+# indices. Set this (e.g. to a sub-story's chunk span) when an entire corpus is
+# concatenated into ONE document and sub-stories are contiguous chunk ranges.
+# None = distance check disabled (rely on source_doc scoping only).
+DEFAULT_COREF_MAX_CHUNK_DIST = None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Retrieval
 # ─────────────────────────────────────────────────────────────────────────────
