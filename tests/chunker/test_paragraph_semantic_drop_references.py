@@ -17,6 +17,7 @@ import logging
 import pytest
 
 from lightrag.chunker.paragraph_semantic import (
+    _format_dropped_headings,
     _is_reference_heading,
     chunking_by_paragraph_semantic,
 )
@@ -89,6 +90,32 @@ def _all_content(chunks: list[dict]) -> str:
 )
 def test_is_reference_heading(heading, expected):
     assert _is_reference_heading(heading, DEFAULT_P_REFERENCES_HEADINGS) is expected
+
+
+# --------------------------------------------------------------------------- #
+# _format_dropped_headings (length-bounded log rendering)
+# --------------------------------------------------------------------------- #
+
+
+def test_format_dropped_headings_short_list():
+    assert _format_dropped_headings(["References"]) == "'References'"
+    assert (
+        _format_dropped_headings(["References", "Bibliography"])
+        == "'References', 'Bibliography'"
+    )
+
+
+def test_format_dropped_headings_truncates_long_heading():
+    out = _format_dropped_headings(["X" * 200], max_each=60)
+    # 60 kept chars + an ellipsis, all within one repr'd string.
+    assert "X" * 60 + "…" in out
+    assert "X" * 61 not in out
+
+
+def test_format_dropped_headings_caps_item_count():
+    out = _format_dropped_headings([f"H{i}" for i in range(12)], max_items=5)
+    assert out.count("'H") == 5  # only 5 listed
+    assert "(+7 more)" in out
 
 
 # --------------------------------------------------------------------------- #

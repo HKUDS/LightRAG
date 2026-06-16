@@ -241,6 +241,26 @@ def _references_headings() -> list[str]:
     return [seg.strip() for seg in raw.split("|") if seg.strip()]
 
 
+def _format_dropped_headings(
+    headings: Sequence[str], *, max_each: int = 60, max_items: int = 5
+) -> str:
+    """Render dropped reference headings as a compact, length-bounded string.
+
+    Each heading is truncated to ``max_each`` chars and at most ``max_items``
+    are listed (the rest collapse to ``(+N more)``) so the log line stays
+    scannable even with a large ``references_tail_n`` or an unusually long
+    heading field.
+    """
+    shown = [
+        (h[:max_each] + "…") if len(h) > max_each else h for h in headings[:max_items]
+    ]
+    rendered = ", ".join(repr(h) for h in shown)
+    extra = len(headings) - max_items
+    if extra > 0:
+        rendered += f" (+{extra} more)"
+    return rendered
+
+
 def _is_reference_heading(heading: str, prefixes: Sequence[str]) -> bool:
     """Whether ``heading`` marks a reference section per ``prefixes``.
 
@@ -2146,7 +2166,7 @@ def chunking_by_paragraph_semantic(
                     "[paragraph_semantic] drop_references: removed %d reference "
                     "block(s) %s from the last %d block(s)",
                     len(dropped_headings),
-                    dropped_headings,
+                    _format_dropped_headings(dropped_headings),
                     tail_n,
                 )
                 rows = kept
@@ -2155,7 +2175,7 @@ def chunking_by_paragraph_semantic(
                     "[paragraph_semantic] drop_references: dropping reference "
                     "block(s) %s would leave no content; keeping them to avoid an "
                     "empty document",
-                    dropped_headings,
+                    _format_dropped_headings(dropped_headings),
                 )
 
     # Build initial blocks (HeadingBlocks output, already persisted).
