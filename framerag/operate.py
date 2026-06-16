@@ -735,6 +735,27 @@ async def extract_causal_edges(
 # Query Seed Extraction
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def generate_hyde_passage(
+    query: str,
+    llm_func: Callable[..., Awaitable[str]],
+) -> str:
+    """Generate a hypothetical answer passage (HyDE) to bridge the query→content gap.
+
+    For paraphrased / disguised questions the raw query embedding lands far from
+    the actual narrative wording. A hypothetical excerpt — written in the plain
+    voice of the novel — embeds much closer to the real chunks that hold the
+    answer, dramatically improving seed recall. Returns "" on any failure so the
+    caller can silently fall back to query-only seeding.
+    """
+    prompt = PROMPTS["hyde_passage"].format(query=query)
+    try:
+        passage = await _llm_with_retry(llm_func, prompt)
+        return (passage or "").strip()
+    except Exception as e:
+        logger.warning(f"[operate] HyDE generation failed: {e}")
+        return ""
+
+
 async def process_query(
     query: str,
     llm_func: Callable[..., Awaitable[str]],

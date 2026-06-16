@@ -53,6 +53,9 @@ from .constants import (
     DEFAULT_MAX_ASYNC,
     DEFAULT_EMBEDDING_DIM,
     DEFAULT_DESC_MERGE_THRESHOLD,
+    DEFAULT_ENABLE_HYDE,
+    DEFAULT_HYDE_WEIGHT,
+    DEFAULT_ENTITY_HINT_WEIGHT,
 )
 from .types import (
     ChunkSchema,
@@ -75,6 +78,7 @@ from .operate import (
     extract_causal_edges,
     expand_query_frames,
     expand_query_frames_llm,
+    generate_hyde_passage,
     process_query,
     generate_answer,
     _llm_with_retry,
@@ -124,6 +128,9 @@ class FrameRAG:
         llm_timeout: float = DEFAULT_LLM_TIMEOUT,
         embed_timeout: float = DEFAULT_EMBEDDING_TIMEOUT,
         max_concurrent_llm: int = DEFAULT_MAX_ASYNC,
+        enable_hyde: bool = DEFAULT_ENABLE_HYDE,
+        hyde_weight: float = DEFAULT_HYDE_WEIGHT,
+        entity_hint_weight: float = DEFAULT_ENTITY_HINT_WEIGHT,
     ):
         self._raw_llm = llm_func
         self._raw_embed = embed_func
@@ -143,6 +150,9 @@ class FrameRAG:
         self._top_nodes = top_nodes
         self._rerank_func = rerank_func
         self._rerank_top_k = rerank_top_k
+        self._enable_hyde = enable_hyde
+        self._hyde_weight = hyde_weight
+        self._entity_hint_weight = entity_hint_weight
         self._llm_timeout = llm_timeout
         self._embed_timeout = embed_timeout
         self._llm_sem = asyncio.Semaphore(max_concurrent_llm)
@@ -596,14 +606,22 @@ class FrameRAG:
                 query, signals.frame_hints, self._frame_db
             )
 
-        llm_frames, embed_frames = await asyncio.gather(
+        async def _hyde() -> str:
+            if not self._enable_hyde:
+                return ""
+            return await generate_hyde_passage(query, self._llm)
+
+        llm_frames, embed_frames, hyde_passage = await asyncio.gather(
             expand_query_frames_llm(query, self._frame_db, self._llm),
             _embed_expand(),
+            _hyde(),
         )
         expanded_frames: list[str] = list(
             dict.fromkeys([*llm_frames, *embed_frames])
         )
         logger.info(f"[FrameRAG] Expanded frames: {expanded_frames}")
+        if hyde_passage:
+            logger.info(f"[FrameRAG] HyDE passage: {hyde_passage[:120]}...")
 
         # Step 2: Build sparse matrices
         matrices = await self._hg.build_matrices(fe_focus=signals.fe_focus or None)
@@ -614,10 +632,6 @@ class FrameRAG:
         n_frames = len(matrices["fi_ids"])
         n_chunks = len(matrices["chunk_ids"])
 
-        # Step 3: Embed query once
-        q_emb = await self._raw_embed([query])
-        q_vec = q_emb[0]
-
         y_node  = np.zeros(n_nodes,  dtype=np.float64)
         y_fi    = np.zeros(n_frames, dtype=np.float64)
         y_chunk = np.zeros(n_chunks, dtype=np.float64)
@@ -626,18 +640,60 @@ class FrameRAG:
         fi_idx    = matrices["fi_idx"]
         chunk_idx = matrices["chunk_idx"]
 
-        # Seed from canonical entity similarity
-        # node_idx now uses canonical_ids (not mention_ids), so index directly
-        for hit in await self._hg.search_canonical(q_vec, top_k=20):
-            cid = hit["id"]
-            if cid in node_idx:
-                y_node[node_idx[cid]] += hit.get("distance", 0.0)
+        # Step 3: Batch-embed all seed texts in one call.
+        #   [0] raw query
+        #   [1] HyDE hypothetical passage (if enabled & generated)
+        #   [2:] entity_hints (character/entity names implied by the query)
+        # HyDE bridges the lexical gap on disguised queries; entity_hints (which
+        # query_processing already extracts but were previously discarded) give
+        # the canonical-entity seed a direct, name-level signal.
+        seed_texts: list[str] = [query]
+        hyde_slot = -1
+        if hyde_passage:
+            hyde_slot = len(seed_texts)
+            seed_texts.append(hyde_passage)
+        entity_hints = [h for h in (signals.entity_hints or []) if h.strip()]
+        hint_start = len(seed_texts)
+        seed_texts.extend(entity_hints)
 
-        # Seed from frame instance similarity
-        for hit in await self._hg.search_frame_instances(q_vec, top_k=20):
-            fid = hit["id"]
-            if fid in fi_idx:
-                y_fi[fi_idx[fid]] += hit.get("distance", 0.0)
+        seed_embs = await self._raw_embed(seed_texts)
+        q_vec    = seed_embs[0]
+        hyde_vec = seed_embs[hyde_slot] if hyde_slot >= 0 else None
+        hint_vecs = seed_embs[hint_start:] if entity_hints else []
+
+        # ── Seed accumulators (additive = union of retrieval sets) ────────────
+        async def _seed_canonical(vec: np.ndarray, weight: float, top_k: int = 20):
+            for hit in await self._hg.search_canonical(vec, top_k=top_k):
+                cid = hit["id"]
+                if cid in node_idx:
+                    y_node[node_idx[cid]] += hit.get("distance", 0.0) * weight
+
+        async def _seed_frames(vec: np.ndarray, weight: float, top_k: int = 20):
+            for hit in await self._hg.search_frame_instances(vec, top_k=top_k):
+                fid = hit["id"]
+                if fid in fi_idx:
+                    y_fi[fi_idx[fid]] += hit.get("distance", 0.0) * weight
+
+        async def _seed_chunks(vec: np.ndarray, weight: float, top_k: int = 30):
+            for hit in await self._hg.search_chunks(vec, top_k=top_k):
+                cid = hit["id"]
+                if cid in chunk_idx:
+                    y_chunk[chunk_idx[cid]] += hit.get("distance", 0.0) * weight
+
+        # Raw query seeds (weight 1.0)
+        await _seed_canonical(q_vec, 1.0)
+        await _seed_frames(q_vec, 1.0)
+        await _seed_chunks(q_vec, 1.0)
+
+        # HyDE seeds — the key recall bridge for paraphrased/disguised queries
+        if hyde_vec is not None:
+            await _seed_canonical(hyde_vec, self._hyde_weight)
+            await _seed_frames(hyde_vec, self._hyde_weight)
+            await _seed_chunks(hyde_vec, self._hyde_weight)
+
+        # Entity-hint seeds — direct name-level signal into canonical entities
+        for hv in hint_vecs:
+            await _seed_canonical(hv, self._entity_hint_weight, top_k=5)
 
         # Boost frame instances for expanded related frames (re-embed frame names)
         if expanded_frames:
@@ -649,12 +705,6 @@ class FrameRAG:
                     fid = hit["id"]
                     if fid in fi_idx:
                         y_fi[fi_idx[fid]] += hit.get("distance", 0.0) * 0.5
-
-        # Seed from chunk similarity
-        for hit in await self._hg.search_chunks(q_vec, top_k=30):
-            cid = hit["id"]
-            if cid in chunk_idx:
-                y_chunk[chunk_idx[cid]] += hit.get("distance", 0.0)
 
         # Seed from info node similarity (temporal hints)
         if signals.temporal_hints:

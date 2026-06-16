@@ -74,6 +74,17 @@ DEFAULT_TOP_NODES  = 15         # entity/info nodes used for diffusion seeding
 # Cosine similarity threshold below which vector hits are discarded
 DEFAULT_COSINE_THRESHOLD = 0.2
 
+# ── Seed bridging (query→content recall) ─────────────────────────────────────
+# HyDE: generate a hypothetical answer passage and use its embedding as an
+# additional seed. Bridges the lexical gap on paraphrased/disguised queries.
+DEFAULT_ENABLE_HYDE = True
+# Weight applied to HyDE-derived seed scores relative to the raw query (1.0 =
+# equal footing — union of both retrieval sets).
+DEFAULT_HYDE_WEIGHT = 1.0
+# Weight applied to entity_hint-derived canonical-entity seeds (query_processing
+# already extracts these; previously they were discarded).
+DEFAULT_ENTITY_HINT_WEIGHT = 0.5
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Reranking
 # ─────────────────────────────────────────────────────────────────────────────

@@ -318,6 +318,36 @@ Examples (narrative fiction):
 ---Output (JSON object)---"""
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HyDE — Hypothetical Document Embedding (query-time seed bridging)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROMPTS["hyde_passage"] = """---Role---
+You are a novelist's assistant generating a SHORT hypothetical excerpt that would
+answer a reader's question about a work of narrative fiction.
+
+---Task---
+The question below may use disguised, abstract, or paraphrased language (e.g.
+"a peculiar hobby", "a strange nightly sound"). Write a concise passage (3-5
+sentences) in the plain narrative voice of a classic novel that would plausibly
+CONTAIN the answer. Translate any disguised phrasing into the concrete events,
+objects, and actions a novel would actually describe.
+
+Rules:
+- Write as if it were a real excerpt from the story — narrate the events directly.
+- Use concrete nouns and verbs (people, rooms, objects, actions), NOT abstract or
+  meta language about "the question" or "the answer".
+- Do NOT mention real character names you are unsure of; describe roles/actions
+  instead (e.g. "the detective", "the visitor", "the locked room").
+- If the question hints at a cause, mechanism, or motive, spell out a plausible
+  concrete one.
+- Output ONLY the passage text. No preamble, no quotes, no explanation.
+
+---Question---
+{query}
+
+---Hypothetical excerpt---"""
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Call 4b — LLM Frame Selection (query-time, uses actual frame DB)
 # ─────────────────────────────────────────────────────────────────────────────
 
