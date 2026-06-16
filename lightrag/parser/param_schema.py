@@ -255,6 +255,13 @@ def parse_chunk_params(
                 f"{spec.kind!r}"
             )
 
+    # Cross-field invariant: reject an explicit overlap >= size pair here so
+    # every caller (rule startup validation AND filename-hint validation)
+    # rejects it uniformly, instead of only failing later at enqueue.
+    overlap_error = chunk_param_overlap_error(result)
+    if overlap_error is not None:
+        errors.append(f"{label}: {overlap_error}")
+
     return result, errors
 
 

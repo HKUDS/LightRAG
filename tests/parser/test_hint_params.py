@@ -95,6 +95,10 @@ def test_parse_chunk_params_overlap_rejected_for_vector():
         ("chunk_ts=1,chunk_ts=2", "may not be repeated"),
         ("correct_tl", "flag parameters are not supported"),
         ("", "empty parameter"),
+        # Cross-field invariant: explicit overlap >= size is rejected here, so
+        # both rule and filename-hint validation reject it (not just enqueue).
+        ("chunk_ts=50,chunk_ol=100", "must be < chunk_token_size"),
+        ("chunk_ts=100,chunk_ol=100", "must be < chunk_token_size"),
     ],
 )
 def test_parse_chunk_params_errors(block, needle):
@@ -153,6 +157,7 @@ def test_engine_params_rejected_with_friendly_error():
         "x.[-V(chunk_ol=80)].md",  # overlap invalid for V
         "x.[-R(chunk_ts=abc)].md",  # non-integer
         "x.[native-R(foo=1)].md",  # unknown parameter
+        "x.[-R(chunk_ts=50,chunk_ol=100)].md",  # explicit overlap >= size
     ],
 )
 def test_upload_validation_raises_on_bad_filename_params(name):
@@ -337,7 +342,9 @@ def test_upload_path_rejects_effective_overlap_violation(tmp_path):
     from lightrag.api.routers.document_routes import pipeline_enqueue_file
 
     rag, captured = _recording_rag()
-    # overlap (100) >= size (50) -> effective-value validation fails
+    # An explicit overlap (100) >= size (50) pair is rejected up front by
+    # filename-hint validation (uniform with rule validation), so the file
+    # never enqueues and the overlap message is surfaced in the error document.
     f = tmp_path / "tiny.[-R(chunk_ts=50,chunk_ol=100)].md"
     f.write_text("hello world", encoding="utf-8")
 
@@ -345,4 +352,7 @@ def test_upload_path_rejects_effective_overlap_violation(tmp_path):
 
     assert ok is False
     assert captured["error_files"]
-    assert "Chunk parameter error" in captured["error_files"][0]["error_description"]
+    assert (
+        "must be < chunk_token_size"
+        in captured["error_files"][0]["original_error"]
+    )
