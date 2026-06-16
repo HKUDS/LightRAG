@@ -633,7 +633,6 @@ class HypergraphStore:
         # retains its own local frame connections.
         # Only the mention partition (indices 0..n_m-1) has non-zero entries;
         # the info-node partition remains isolated.
-        n_m = len(mention_ids)
         mention_in_node = {m: node_idx[m] for m in mention_ids if m in node_idx}
 
         canon_to_m_idxs: dict[str, list[int]] = {}
@@ -676,6 +675,17 @@ class HypergraphStore:
         return await self.vdb_entity_mentions.query(
             "", top_k=top_k, query_embedding=q_vec
         )
+
+    async def search_events(self, q_vec: np.ndarray, top_k: int) -> list[dict]:
+        """Search event VDB. Used to turn query action/predicate hints into a
+        signal on the frame instances attached to the matched events."""
+        return await self.vdb_events.query(
+            "", top_k=top_k, query_embedding=q_vec
+        )
+
+    def frame_ids_for_event(self, event_id: str) -> list[str]:
+        """Return frame-instance ids attached to an event (adjacency lookup)."""
+        return list(self._adj_event_frame.get(event_id, []))
 
     async def search_canonical(self, q_vec: np.ndarray, top_k: int) -> list[dict]:
         return await self.vdb_canonical_entities.query(

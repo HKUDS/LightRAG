@@ -71,10 +71,17 @@ def _normalize_frame_name(name: str) -> str:
 
     e.g. 'communication_tell' → 'Communication_Tell'
          'NOT_affect'         → 'NOT_Affect'
+         'Music performance'  → 'Music_Performance'   (spaces → underscores)
+         'music   of  spheres'→ 'Music_Of_Spheres'
     """
     if not name:
         return name
-    parts = name.replace("-", "_").split("_")
+    # Treat spaces, hyphens, and underscores all as token separators so that
+    # LLM output like "Music performance" or "music-of-spheres" normalises to
+    # the same canonical PascalCase_Underscore form instead of creating a
+    # near-duplicate frame on every re-extraction.
+    import re as _re
+    parts = _re.split(r"[\s\-_]+", name.strip())
     normalized = []
     for p in parts:
         if not p:
@@ -424,18 +431,49 @@ async def extract_events(
 # Call 2 — Step B: Frame Annotation for ONE event (parallelizable)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_SENT_BOUNDARY = None
+
+
 def _context_window(chunk_text: str, event_span: str, window: int = 300) -> str:
-    """Return up to `window` chars around event_span in chunk_text."""
+    """Return the sentence(s) surrounding event_span.
+
+    FrameNet annotation is sentence-grounded: the frame should be evoked from
+    the clause that actually contains the trigger, not an arbitrary character
+    slice that may cut a sentence (and its participants) in half. We locate the
+    span, then snap the window out to the nearest sentence boundaries so the LLM
+    always sees whole sentences — including all participants of the event.
+    """
+    import re as _re
+    global _SENT_BOUNDARY
+    if _SENT_BOUNDARY is None:
+        # split points: end-of-sentence punctuation followed by whitespace
+        _SENT_BOUNDARY = _re.compile(r"(?<=[.!?])\s+")
+
     if not event_span:
         return chunk_text[:window * 2]
+
     idx = chunk_text.lower().find(event_span.lower()[:40])
     if idx == -1:
         return chunk_text[:window * 2]
-    start = max(0, idx - window)
-    end = min(len(chunk_text), idx + len(event_span) + window)
+
+    span_end = idx + len(event_span)
+
+    # Snap the window out to whole sentences so the trigger's clause — and all
+    # of its participants — are always present.
+    sent_starts = [0] + [m.end() for m in _SENT_BOUNDARY.finditer(chunk_text)]
+    start = max((s for s in sent_starts if s <= idx), default=0)
+    end = next((s for s in sent_starts if s >= span_end), len(chunk_text))
+
+    # Absolute safety cap for a pathological single huge "sentence" (e.g. a wall
+    # of text with no punctuation): fall back to a char window around the span.
+    HARD_CAP = max(window * 4, 1200)
+    if end - start > HARD_CAP:
+        start = max(0, idx - window)
+        end = min(len(chunk_text), span_end + window)
+
     prefix = "..." if start > 0 else ""
     suffix = "..." if end < len(chunk_text) else ""
-    return prefix + chunk_text[start:end] + suffix
+    return prefix + chunk_text[start:end].strip() + suffix
 
 
 async def annotate_frames_for_event(
@@ -587,20 +625,10 @@ async def extract_events_frames_two_step(
             if matched and matched.mention_id not in participant_mention_ids:
                 participant_mention_ids.append(matched.mention_id)
 
-        event_id = _gen_id("ev")
-        event = EventSchema(
-            event_id=event_id,
-            chunk_id=chunk.chunk_id,
-            trigger=raw_ev.get("event_span", trigger_lemma),
-            trigger_lemma=trigger_lemma,
-            trigger_pos="VERB",
-            event_span=raw_ev.get("event_span", ""),
-            event_description=raw_ev.get("description", ""),
-            frame_name=frame_name,
-            participant_mention_ids=participant_mention_ids,
-        )
-        events.append(event)
-
+        # Build FE assignments BEFORE the event so the event description can be
+        # enriched with the resolved roles (otherwise the event node — and its
+        # VDB vector — would carry only the bare paraphrase, losing all the
+        # structured Agent/Patient/Instrument/Time information).
         core_assignments = _build_assignments(ann.get("core_elements"), is_core=True)
         noncore_assignments = _build_assignments(ann.get("noncore_elements"), is_core=False)
 
@@ -615,6 +643,35 @@ async def extract_events_frames_two_step(
                 fe_name="Time", filler_id=info_id, filler_type="VALUE",
                 filler_text=tmarker, is_core=False,
             ))
+
+        # Compose a role-enriched event description:
+        #   "<paraphrase> | Agent: Holmes | Instrument: violin | Time: evening"
+        base_desc = (raw_ev.get("description", "") or "").strip()
+        role_parts = [
+            f"{a.fe_name}: {a.filler_text}"
+            for a in core_assignments + noncore_assignments
+            if a.filler_text
+        ]
+        rich_event_desc = base_desc
+        if role_parts:
+            rich_event_desc = (
+                f"{base_desc} | " + " | ".join(role_parts) if base_desc
+                else " | ".join(role_parts)
+            )
+
+        event_id = _gen_id("ev")
+        event = EventSchema(
+            event_id=event_id,
+            chunk_id=chunk.chunk_id,
+            trigger=raw_ev.get("event_span", trigger_lemma),
+            trigger_lemma=trigger_lemma,
+            trigger_pos="VERB",
+            event_span=raw_ev.get("event_span", ""),
+            event_description=rich_event_desc,
+            frame_name=frame_name,
+            participant_mention_ids=participant_mention_ids,
+        )
+        events.append(event)
 
         fi_id = _gen_id("fi")
         frame_instance = FrameInstanceSchema(

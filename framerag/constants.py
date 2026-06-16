@@ -94,6 +94,9 @@ DEFAULT_HYDE_WEIGHT = 1.0
 # Weight applied to entity_hint-derived canonical-entity seeds (query_processing
 # already extracts these; previously they were discarded).
 DEFAULT_ENTITY_HINT_WEIGHT = 0.5
+# Weight applied to event_hint-derived seeds (action/predicate cues matched
+# against the event VDB, then propagated onto each event's frame instances).
+DEFAULT_EVENT_HINT_WEIGHT = 0.5
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Reranking

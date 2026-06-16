@@ -56,6 +56,7 @@ from .constants import (
     DEFAULT_ENABLE_HYDE,
     DEFAULT_HYDE_WEIGHT,
     DEFAULT_ENTITY_HINT_WEIGHT,
+    DEFAULT_EVENT_HINT_WEIGHT,
     DEFAULT_COREF_WEIGHT,
 )
 from .types import (
@@ -132,6 +133,7 @@ class FrameRAG:
         enable_hyde: bool = DEFAULT_ENABLE_HYDE,
         hyde_weight: float = DEFAULT_HYDE_WEIGHT,
         entity_hint_weight: float = DEFAULT_ENTITY_HINT_WEIGHT,
+        event_hint_weight: float = DEFAULT_EVENT_HINT_WEIGHT,
         coref_weight: float = DEFAULT_COREF_WEIGHT,
     ):
         self._raw_llm = llm_func
@@ -155,6 +157,7 @@ class FrameRAG:
         self._enable_hyde = enable_hyde
         self._hyde_weight = hyde_weight
         self._entity_hint_weight = entity_hint_weight
+        self._event_hint_weight = event_hint_weight
         self._coref_weight = coref_weight
         self._llm_timeout = llm_timeout
         self._embed_timeout = embed_timeout
@@ -536,6 +539,17 @@ class FrameRAG:
         for m in all_mentions:
             mention_by_canon.setdefault(m.canonical_id, []).append(m)
 
+        async def _type_compatible(existing_id: str, canon_type: str) -> bool:
+            """Two entities may only unify if their types agree. Prevents a
+            PERSON 'Holmes' from being merged into a LOCATION 'Holmes' just
+            because the surface names collide."""
+            existing = await self._hg.canonical_entities.get_by_id(existing_id)
+            if not existing:
+                return True  # unknown → don't block
+            et = (existing.get("entity_type") or "").upper()
+            ct = (canon_type or "").upper()
+            return not et or not ct or et == ct
+
         def _unify(canon: CanonicalEntitySchema, existing_id: str) -> None:
             old_id = canon.canonical_id
             canon.canonical_id = existing_id
@@ -553,11 +567,14 @@ class FrameRAG:
                 self._hg.get_canonical_id_by_name(canon.canonical_name)
                 or self._hg.get_canonical_id_by_name(norm)
             )
-            if existing_id and existing_id != canon.canonical_id:
+            if (
+                existing_id and existing_id != canon.canonical_id
+                and await _type_compatible(existing_id, canon.entity_type)
+            ):
                 _unify(canon, existing_id)
                 continue
 
-            # Pass 2: embedding similarity match
+            # Pass 2: embedding similarity match (also type-guarded)
             search_text = f"{canon.canonical_name}: {' '.join(canon.descriptions[:1])}"
             try:
                 vec = await self._raw_embed([search_text])
@@ -565,7 +582,10 @@ class FrameRAG:
                 for hit in hits:
                     if hit.get("distance", 0.0) >= CROSS_EMBED_THRESHOLD:
                         hit_id = hit["id"]
-                        if hit_id != canon.canonical_id:
+                        if (
+                            hit_id != canon.canonical_id
+                            and await _type_compatible(hit_id, canon.entity_type)
+                        ):
                             _unify(canon, hit_id)
                             break
             except Exception as e:
@@ -644,12 +664,13 @@ class FrameRAG:
         chunk_idx = matrices["chunk_idx"]
 
         # Step 3: Batch-embed all seed texts in one call.
-        #   [0] raw query
-        #   [1] HyDE hypothetical passage (if enabled & generated)
-        #   [2:] entity_hints (character/entity names implied by the query)
-        # HyDE bridges the lexical gap on disguised queries; entity_hints (which
-        # query_processing already extracts but were previously discarded) give
-        # the canonical-entity seed a direct, name-level signal.
+        #   [0]        raw query
+        #   [1]        HyDE hypothetical passage (if enabled & generated)
+        #   [hint..]   entity_hints (character/entity names implied by the query)
+        #   [ev..]     event_hints (action/predicate cues — verbs / event nouns)
+        # HyDE bridges the lexical gap on disguised queries; entity_hints give the
+        # mention seed a direct name-level signal; event_hints are matched against
+        # the event VDB and the matched events' frame instances are boosted.
         seed_texts: list[str] = [query]
         hyde_slot = -1
         if hyde_passage:
@@ -658,11 +679,15 @@ class FrameRAG:
         entity_hints = [h for h in (signals.entity_hints or []) if h.strip()]
         hint_start = len(seed_texts)
         seed_texts.extend(entity_hints)
+        event_hints = [h for h in (signals.event_hints or []) if h.strip()]
+        ev_start = len(seed_texts)
+        seed_texts.extend(event_hints)
 
         seed_embs = await self._raw_embed(seed_texts)
         q_vec    = seed_embs[0]
         hyde_vec = seed_embs[hyde_slot] if hyde_slot >= 0 else None
-        hint_vecs = seed_embs[hint_start:] if entity_hints else []
+        hint_vecs = seed_embs[hint_start:ev_start] if entity_hints else []
+        ev_vecs   = seed_embs[ev_start:] if event_hints else []
 
         # ── Seed accumulators (additive = union of retrieval sets) ────────────
         # Direction B: seed entity MENTIONS (not canonicals).  Each mention
@@ -686,6 +711,17 @@ class FrameRAG:
                 if cid in chunk_idx:
                     y_chunk[chunk_idx[cid]] += hit.get("distance", 0.0) * weight
 
+        async def _seed_events(vec: np.ndarray, weight: float, top_k: int = 10):
+            """Match an action/predicate cue against the event VDB, then push the
+            score onto the frame instances of each matched event (events are an
+            intermediate layer: they have no seed slot of their own, but their
+            frame instances do)."""
+            for hit in await self._hg.search_events(vec, top_k=top_k):
+                score = hit.get("distance", 0.0) * weight
+                for fid in self._hg.frame_ids_for_event(hit["id"]):
+                    if fid in fi_idx:
+                        y_fi[fi_idx[fid]] += score
+
         # Raw query seeds (weight 1.0)
         await _seed_mentions(q_vec, 1.0)
         await _seed_frames(q_vec, 1.0)
@@ -700,6 +736,10 @@ class FrameRAG:
         # Entity-hint seeds — direct name-level signal into mention nodes
         for hv in hint_vecs:
             await _seed_mentions(hv, self._entity_hint_weight, top_k=5)
+
+        # Event-hint seeds — action/predicate cues → event VDB → frame instances
+        for ev in ev_vecs:
+            await _seed_events(ev, self._event_hint_weight, top_k=10)
 
         # Boost frame instances for expanded related frames (re-embed frame names)
         if expanded_frames:

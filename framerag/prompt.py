@@ -151,6 +151,20 @@ Rules:
 - Output ONLY a JSON array. No prose, no markdown fences.
 - If no events found, output [].
 
+---Example---
+Entities:
+  - Sherlock Holmes [PERSON] (also: Holmes): the detective
+  - Dr. Watson [PERSON] (also: Watson): the narrator
+  - violin [ARTIFACT]: a stringed instrument
+Text: "That evening Holmes played his violin while Watson read by the fire. Watson
+was not disturbed by the music."
+Output:
+[
+  {{"event_span": "Holmes played his violin", "description": "Holmes played the violin in the evening", "participant_names": ["Sherlock Holmes", "violin"], "temporal_marker": "that evening", "is_negation": false}},
+  {{"event_span": "Watson read by the fire", "description": "Watson read a book by the fire", "participant_names": ["Dr. Watson"], "temporal_marker": "that evening", "is_negation": false}},
+  {{"event_span": "Watson was not disturbed by the music", "description": "Watson was undisturbed by the violin music", "participant_names": ["Dr. Watson"], "temporal_marker": "", "is_negation": true}}
+]
+
 ---Chunk Text---
 {chunk_text}
 
@@ -213,6 +227,32 @@ Output ONLY a JSON object (no markdown fences):
     {{"fe_name": "Time", "filler_text": "that evening", "filler_type": "VALUE", "is_missing": false}}
   ]
 }}
+
+---Worked Example---
+Entities available: Sherlock Holmes [PERSON]; violin [ARTIFACT]
+Event to annotate:
+  Trigger / span : Holmes played his violin
+  Description    : Holmes played the violin in the evening
+  Participants   : Sherlock Holmes, violin
+  Negation       : False
+Source context: "That evening Holmes played his violin to soothe his nerves."
+Correct output:
+{{
+  "frame_name": "Music_Performance",
+  "is_new_frame": true,
+  "frame_definition": "An agent produces music by playing a musical instrument.",
+  "lexical_unit": "play.v",
+  "core_elements": [
+    {{"fe_name": "Agent", "filler_text": "Sherlock Holmes", "filler_type": "ENTITY", "is_missing": false}},
+    {{"fe_name": "Instrument", "filler_text": "violin", "filler_type": "ENTITY", "is_missing": false}}
+  ],
+  "noncore_elements": [
+    {{"fe_name": "Time", "filler_text": "that evening", "filler_type": "VALUE", "is_missing": false}},
+    {{"fe_name": "Purpose", "filler_text": "to soothe his nerves", "filler_type": "VALUE", "is_missing": false}}
+  ]
+}}
+Note: frame_name uses Underscores, never spaces. Entities present in the list use
+filler_type ENTITY; dates/manner/purpose phrases use VALUE.
 
 ---Output (JSON object)---"""
 
@@ -277,7 +317,7 @@ Analyze the query and extract signals for graph-based retrieval.
 Output ONLY a JSON object:
 {{
   "entity_hints": ["<character names or entity names implied by query>", ...],
-  "event_hints": ["<action/event type implied — use verbs>", ...],
+  "event_hints": ["<predicate/action CUE words that name what happens — verbs or event nouns such as 'play', 'discover', 'murder', 'arrival'; these are matched against indexed events>", ...],
   "frame_hints": "<primary FrameNet-style frame name, e.g. Scrutiny, Communication_tell, Motion_travel>",
   "fe_focus": ["<FE name most critical to answering the query>", ...],
   "temporal_hints": ["<time expression if query specifies time, else empty>", ...]
