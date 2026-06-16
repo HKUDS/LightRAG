@@ -12,6 +12,7 @@ small blocks and rewrite the surviving heading.
 """
 
 import json
+import logging
 
 import pytest
 
@@ -20,7 +21,7 @@ from lightrag.chunker.paragraph_semantic import (
     chunking_by_paragraph_semantic,
 )
 from lightrag.constants import DEFAULT_P_REFERENCES_HEADINGS
-from lightrag.utils import Tokenizer, TokenizerInterface
+from lightrag.utils import Tokenizer, TokenizerInterface, logger as _lightrag_logger
 
 
 class _CharTokenizer(TokenizerInterface):
@@ -229,6 +230,33 @@ def test_tail_n_read_live_from_env(tmp_path, monkeypatch):
         )
     )
     assert "REF_MARKER" not in body
+
+
+@pytest.mark.offline
+def test_drop_references_emits_info_log(tmp_path, caplog):
+    tokenizer = _make_tokenizer()
+    rows = [
+        _row("Introduction", "INTRO_MARKER intro body"),
+        _row("References", "REF_MARKER [1] Foo."),
+    ]
+    blocks_path = _write_blocks_jsonl(tmp_path, rows)
+
+    # The lightrag logger sets propagate=False, so caplog can't see it by
+    # default — enable propagation for the duration of the call.
+    original_propagate = _lightrag_logger.propagate
+    _lightrag_logger.propagate = True
+    try:
+        with caplog.at_level(logging.INFO, logger=_lightrag_logger.name):
+            chunking_by_paragraph_semantic(
+                tokenizer, "", 2000, blocks_path=blocks_path, drop_references=True
+            )
+    finally:
+        _lightrag_logger.propagate = original_propagate
+
+    info_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any("drop_references" in m and "References" in m for m in info_msgs), (
+        info_msgs
+    )
 
 
 @pytest.mark.offline

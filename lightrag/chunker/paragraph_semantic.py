@@ -2126,31 +2126,36 @@ def chunking_by_paragraph_semantic(
         )
         if tail_n:
             start = max(0, len(rows) - tail_n)
-            kept = [
-                row
-                for idx, row in enumerate(rows)
-                if not (
-                    idx >= start
-                    and _is_reference_heading(row.get("heading", "") or "", prefixes)
-                )
-            ]
-            dropped = len(rows) - len(kept)
+            kept: list[dict[str, Any]] = []
+            dropped_headings: list[str] = []
+            for idx, row in enumerate(rows):
+                if idx >= start and _is_reference_heading(
+                    row.get("heading", "") or "", prefixes
+                ):
+                    dropped_headings.append((row.get("heading") or "").strip())
+                else:
+                    kept.append(row)
             # Protect against an empty document: base the guard on rows that
             # still carry content (the loop below skips blank-content rows), so
             # a pathological sidecar whose only kept rows are empty does not
             # silently produce zero chunks.
-            if dropped and any((row.get("content") or "").strip() for row in kept):
+            if dropped_headings and any(
+                (row.get("content") or "").strip() for row in kept
+            ):
                 logger.info(
-                    "[paragraph_semantic] dropped %d reference block(s) from the "
-                    "last %d block(s)",
-                    dropped,
+                    "[paragraph_semantic] drop_references: removed %d reference "
+                    "block(s) %s from the last %d block(s)",
+                    len(dropped_headings),
+                    dropped_headings,
                     tail_n,
                 )
                 rows = kept
-            elif dropped:
+            elif dropped_headings:
                 logger.warning(
-                    "[paragraph_semantic] dropping references would leave no "
-                    "content; keeping them to avoid an empty document"
+                    "[paragraph_semantic] drop_references: dropping reference "
+                    "block(s) %s would leave no content; keeping them to avoid an "
+                    "empty document",
+                    dropped_headings,
                 )
 
     # Build initial blocks (HeadingBlocks output, already persisted).
