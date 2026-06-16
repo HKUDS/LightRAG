@@ -593,10 +593,13 @@ async def extract_events_frames_two_step(
                 ))
             else:
                 info_id = _gen_id("info")
+                # Use the Frame Element name as the info_type ("Time", "Price",
+                # "Location", "Manner", ...) — far more meaningful than the bare
+                # "VALUE", and it is the role the value actually plays.
                 info_nodes.append(InfoNodeSchema(
                     info_id=info_id,
                     value=str(filler_text),
-                    info_type=filler_type_raw,
+                    info_type=fe_name,
                 ))
                 out.append(FEAssignment(
                     fe_name=fe_name, filler_id=info_id, filler_type="VALUE",
@@ -638,7 +641,7 @@ async def extract_events_frames_two_step(
             a.fe_name.lower() in ("time", "duration") for a in noncore_assignments
         ):
             info_id = _gen_id("info")
-            info_nodes.append(InfoNodeSchema(info_id=info_id, value=tmarker, info_type="TIME"))
+            info_nodes.append(InfoNodeSchema(info_id=info_id, value=tmarker, info_type="Time"))
             noncore_assignments.append(FEAssignment(
                 fe_name="Time", filler_id=info_id, filler_type="VALUE",
                 filler_text=tmarker, is_core=False,

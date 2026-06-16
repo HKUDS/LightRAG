@@ -167,3 +167,14 @@ async def test_no_canonical_vdb(rag):
     """G: the canonical-entity VDB must be gone (no wasted embeddings)."""
     assert not hasattr(rag._hg, "vdb_canonical_entities")
     assert not hasattr(rag._hg, "search_canonical")
+
+
+async def test_info_type_is_fe_name(indexed_rag):
+    """info_type carries the Frame Element name (e.g. 'Time'), not bare 'VALUE'."""
+    hg = indexed_rag._hg
+    types = set()
+    for iid in hg._info_ids:
+        i = await hg.info_nodes.get_by_id(iid)
+        types.add(i["info_type"])
+    assert "Time" in types
+    assert "VALUE" not in types
