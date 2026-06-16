@@ -2218,6 +2218,7 @@ class _PipelineMixin:
                             content,
                             p_chunk_size,
                             blocks_path=p_blocks_path,
+                            doc_id=doc_id,
                             **p_opts,
                         )
                     elif strategy == "R":

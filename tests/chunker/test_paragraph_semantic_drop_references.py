@@ -275,13 +275,19 @@ def test_drop_references_emits_info_log(tmp_path, caplog):
     try:
         with caplog.at_level(logging.INFO, logger=_lightrag_logger.name):
             chunking_by_paragraph_semantic(
-                tokenizer, "", 2000, blocks_path=blocks_path, drop_references=True
+                tokenizer,
+                "",
+                2000,
+                blocks_path=blocks_path,
+                drop_references=True,
+                doc_id="doc-xyz",
             )
     finally:
         _lightrag_logger.propagate = original_propagate
 
     info_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
-    assert any("drop_references" in m and "References" in m for m in info_msgs), (
+    # Log names the dropped heading and attributes it to the doc_id.
+    assert any("References" in m and "doc_id: doc-xyz" in m for m in info_msgs), (
         info_msgs
     )
 

@@ -1965,6 +1965,7 @@ def chunking_by_paragraph_semantic(
     drop_references: bool = False,
     references_tail_n: int | None = None,
     references_headings: Sequence[str] | None = None,
+    doc_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Paragraph Semantic Chunking — the ``chunking="P"`` strategy.
 
@@ -2036,6 +2037,8 @@ def chunking_by_paragraph_semantic(
             :data:`DEFAULT_P_REFERENCES_HEADINGS`"; a kwarg is only passed by
             tests. Neither knob is snapshotted, so editing the env changes the
             behaviour of re-runs without re-enqueueing.
+        doc_id: Document id, used only to attribute the drop_references log
+            line to a document; ``None`` renders as ``"unknown"``.
 
     Returns:
         Ordered list of chunk dicts, each shaped::
@@ -2163,19 +2166,19 @@ def chunking_by_paragraph_semantic(
                 (row.get("content") or "").strip() for row in kept
             ):
                 logger.info(
-                    "[paragraph_semantic] drop_references: removed %d reference "
-                    "block(s) %s from the last %d block(s)",
+                    "[paragraph_semantic] removed %d reference block(s) %s "
+                    "from doc_id: %s",
                     len(dropped_headings),
                     _format_dropped_headings(dropped_headings),
-                    tail_n,
+                    doc_id or "unknown",
                 )
                 rows = kept
             elif dropped_headings:
                 logger.warning(
-                    "[paragraph_semantic] drop_references: dropping reference "
-                    "block(s) %s would leave no content; keeping them to avoid an "
-                    "empty document",
+                    "[paragraph_semantic] dropping reference block(s) %s would "
+                    "leave no content; keeping them from doc_id: %s",
                     _format_dropped_headings(dropped_headings),
+                    doc_id or "unknown",
                 )
 
     # Build initial blocks (HeadingBlocks output, already persisted).
