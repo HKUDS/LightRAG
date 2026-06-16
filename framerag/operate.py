@@ -48,15 +48,18 @@ def _safe_json(text: str) -> list | dict | None:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        for start_char, end_char in [("[", "]"), ("{", "}")]:
+        # Use raw_decode to correctly handle prefix/suffix text and embedded
+        # brackets inside string values (rfind-based approach breaks on those).
+        decoder = json.JSONDecoder()
+        for start_char in ("[", "{"):
             idx = text.find(start_char)
-            if idx != -1:
-                ridx = text.rfind(end_char)
-                if ridx > idx:
-                    try:
-                        return json.loads(text[idx : ridx + 1])
-                    except json.JSONDecodeError:
-                        pass
+            if idx == -1:
+                continue
+            try:
+                result, _ = decoder.raw_decode(text, idx)
+                return result
+            except json.JSONDecodeError:
+                pass
         return None
 
 
@@ -438,7 +441,11 @@ async def extract_events(
                 raw = raw[key]
                 break
     if not isinstance(raw, list):
-        logger.warning(f"[operate] Event extraction returned non-list for chunk {chunk.chunk_id}")
+        preview = (response or "")[:300].replace("\n", " ")
+        logger.warning(
+            f"[operate] Event extraction returned non-list for chunk {chunk.chunk_id} "
+            f"(type={type(raw).__name__}); LLM response preview: {preview!r}"
+        )
         return []
 
     events: list[dict] = []
@@ -519,7 +526,11 @@ async def annotate_frames_for_event(
 
     parsed = _safe_json(response)
     if not isinstance(parsed, dict):
-        logger.warning("[operate] Frame annotation returned non-dict")
+        preview = (response or "")[:300].replace("\n", " ")
+        logger.warning(
+            f"[operate] Frame annotation returned non-dict for event '{event_span[:60]}' "
+            f"(type={type(parsed).__name__}); LLM response preview: {preview!r}"
+        )
         return None
     return parsed
 
