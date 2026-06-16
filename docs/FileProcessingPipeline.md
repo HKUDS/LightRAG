@@ -154,7 +154,7 @@ Currently supported engine parameters (canonical / alias):
 | --- | --- | --- | --- | --- |
 | `mineru` | `page_range` | `pr` | list | One or more page ranges; **see the list note below** |
 | `mineru` | `language` | — | str | OCR / model language (e.g. `en`, `ch`) |
-| `mineru` | `local_parse_method` | — | enum | `auto` / `txt` / `ocr` (local mode) |
+| `mineru` | `local_parse_method` | `local_pm` | enum | `auto` / `txt` / `ocr` (local mode) |
 | `docling` | `force_ocr` | `ocr` | bool | `true` / `false` |
 
 - **`page_range` is a list — repeat the key.** Inside `(...)` a comma only separates parameters, so a multi-segment list must repeat the key: `page_range=1-3,page_range=5,page_range=7-9` (NOT the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`). A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (`page_range=1-3`).

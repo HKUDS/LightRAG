@@ -55,6 +55,9 @@ def test_parse_engine_params_basic_and_alias():
     # alias pr -> page_range
     parsed, errors = parse_engine_params("pr=2-4", engine="mineru", label="x")
     assert errors == [] and parsed == {"page_range": "2-4"}
+    # alias local_pm -> local_parse_method
+    parsed, errors = parse_engine_params("local_pm=ocr", engine="mineru", label="x")
+    assert errors == [] and parsed == {"local_parse_method": "ocr"}
 
 
 def test_parse_engine_params_bool_coercion():

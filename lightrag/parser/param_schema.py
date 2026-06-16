@@ -331,7 +331,7 @@ _ENGINE_PARAM_SPECS: dict[str, tuple[EngineParamSpec, ...]] = {
         EngineParamSpec(canonical="language", aliases=frozenset(), kind="str"),
         EngineParamSpec(
             canonical="local_parse_method",
-            aliases=frozenset(),
+            aliases=frozenset({"local_pm"}),
             kind="enum",
             enum_values=frozenset({"auto", "txt", "ocr"}),
         ),
