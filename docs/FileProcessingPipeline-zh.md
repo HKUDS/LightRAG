@@ -133,7 +133,7 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 | --- | --- | --- | --- | --- |
 | `chunk_token_size` | `chunk_ts` | F / R / V / P | int（≥ 1） | 各策略的块大小 |
 | `chunk_overlap_token_size` | `chunk_ol` | F / R / P | int（≥ 0） | 块间重叠（V 无重叠） |
-| `drop_references` | `drop_rf` | P | bool | 分块前丢弃文末参考文献节，如 `paper.[-P(drop_rf=true)].pdf`|
+| `drop_references` | `drop_rf` | P | bool | 分块前丢弃文末参考文献节，如 `paper.[-P(drop_rf=true)].pdf`；布尔参数可省略取值，`paper.[-P(drop_rf)].pdf` 等价于 `drop_rf=true` |
 
 - `process_options` 仍是纯选择符字符串；每个参数会写入该策略的 `chunk_options`（见 §3），策略其它来自环境变量的参数保持不变。别名在内部统一归一化为全称。
 - 合并优先级：选择符仍遵循“文件名 hint 的非空选项整体覆盖规则选项”；参数按**同一策略**叠加——先规则参数，再文件名 hint 参数（同一键以文件名为准）。

@@ -108,6 +108,14 @@ def test_parse_chunk_params_drop_references_invalid_bool():
     assert errors and "must be a boolean" in errors[0]
 
 
+@pytest.mark.parametrize("block", ["drop_rf", "drop_references"])
+def test_parse_chunk_params_drop_references_bare_flag_is_true(block):
+    # A bare boolean flag is shorthand for ``=true``.
+    parsed, errors = parse_chunk_params(block, selector="P", label="x")
+    assert errors == []
+    assert parsed == {"drop_references": True}
+
+
 @pytest.mark.parametrize("selector", ["F", "R", "V"])
 def test_parse_chunk_params_drop_references_rejected_off_paragraph(selector):
     parsed, errors = parse_chunk_params("drop_rf=true", selector=selector, label="x")
@@ -121,6 +129,13 @@ def test_filename_hint_drop_references_extracted():
     assert d.chunk_params == {"P": {"drop_references": True}}
 
 
+def test_filename_hint_drop_references_bare_flag():
+    # ``P(drop_rf)`` with no value is shorthand for ``drop_rf=true``.
+    d = resolve_parser_directives("notes.[-P(drop_rf)].md", parser_rules="")
+    assert d.process_options == "P"
+    assert d.chunk_params == {"P": {"drop_references": True}}
+
+
 @pytest.mark.parametrize(
     "block,needle",
     [
@@ -128,7 +143,9 @@ def test_filename_hint_drop_references_extracted():
         ("chunk_ts=0", "must be >= 1"),
         ("foo=1", "unknown parameter 'foo'"),
         ("chunk_ts=1,chunk_ts=2", "may not be repeated"),
-        ("correct_tl", "flag parameters are not supported"),
+        ("correct_tl", "unknown parameter 'correct_tl'"),
+        # A non-boolean parameter cannot be written bare (only flags can).
+        ("chunk_ts", "must be written as 'key=value'"),
         ("", "empty parameter"),
         # Cross-field invariant: explicit overlap >= size is rejected here, so
         # both rule and filename-hint validation reject it (not just enqueue).

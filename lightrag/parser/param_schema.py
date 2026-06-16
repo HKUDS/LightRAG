@@ -199,6 +199,10 @@ def parse_chunk_params(
     attached to (``F``/``R``/``V``/``P``).  Returns ``(canonical_dict,
     errors)``; ``errors`` is empty iff the block is fully valid.  Aliases are
     normalised to their canonical name in the returned dict.
+
+    A boolean parameter may be written bare as a flag — ``P(drop_rf)`` is
+    shorthand for ``P(drop_rf=true)``.  Non-boolean parameters still require
+    the explicit ``key=value`` form.
     """
     result: dict[str, Any] = {}
     errors: list[str] = []
@@ -209,15 +213,17 @@ def parse_chunk_params(
         if not segment:
             errors.append(f"{label}: empty parameter")
             continue
-        if "=" not in segment:
-            errors.append(
-                f"{label}: parameter {segment!r} must be written as 'key=value' "
-                "(flag parameters are not supported yet)"
-            )
-            continue
-        key, _, value = segment.partition("=")
-        key = key.strip()
-        value = value.strip()
+        if "=" in segment:
+            key, _, value = segment.partition("=")
+            key = key.strip()
+            value = value.strip()
+            flag_form = False
+        else:
+            # Bare flag form, e.g. ``drop_rf``.  Only valid for boolean
+            # parameters, where it is shorthand for ``drop_rf=true``.
+            key = segment
+            value = ""
+            flag_form = True
 
         spec = _CHUNK_PARAM_BY_NAME.get(key)
         if spec is None:
@@ -232,6 +238,14 @@ def parse_chunk_params(
                 f"chunk strategy {selector!r}"
             )
             continue
+        if flag_form:
+            if spec.kind != "bool":
+                errors.append(
+                    f"{label}: parameter {spec.canonical!r} must be written as "
+                    "'key=value'; only boolean flags may be written bare"
+                )
+                continue
+            value = "true"  # bare boolean flag means True
         if any(ch in _VALUE_FORBIDDEN for ch in value):
             errors.append(
                 f"{label}: value for {spec.canonical!r} may not contain any of "

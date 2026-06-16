@@ -133,7 +133,7 @@ Currently supported parameters (canonical name / short alias):
 | --- | --- | --- | --- | --- |
 | `chunk_token_size` | `chunk_ts` | F / R / V / P | int (≥ 1) | Per-strategy chunk size |
 | `chunk_overlap_token_size` | `chunk_ol` | F / R / P | int (≥ 0) | Overlap between chunks (V has no overlap) |
-| `drop_references` | `drop_rf` | P | bool | Drop the trailing reference section before chunking, e.g. `paper.[-P(drop_rf=true)].pdf` |
+| `drop_references` | `drop_rf` | P | bool | Drop the trailing reference section before chunking, e.g. `paper.[-P(drop_rf=true)].pdf`. As a boolean it may be written bare: `paper.[-P(drop_rf)].pdf` means `drop_rf=true` |
 
 - `process_options` stays a pure selector string; each parameter is applied to that strategy's `chunk_options` (see §3) while the strategy's other env-derived parameters are kept. Aliases are normalized to their canonical name internally.
 - Merge priority: the selector still follows "a non-empty filename-hint options string wholesale-overrides the rule options"; parameters overlay **per strategy** — rule parameters first, then filename-hint parameters (filename wins on a shared key).
