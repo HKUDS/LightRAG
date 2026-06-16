@@ -583,15 +583,26 @@ class FrameRAG:
             temporal_hints=signals_raw.get("temporal_hints", []),
         )
 
-        # Frame expansion — LLM selects from actual frame DB (primary path)
-        expanded_frames: list[str] = await expand_query_frames_llm(
-            query, self._frame_db, self._llm
-        )
-        # Fallback: embedding-based expansion from query_processing hint
-        if not expanded_frames and signals.frame_hints:
-            expanded_frames = await expand_query_frames(
+        # Frame expansion — union of two complementary signals for better recall:
+        #   (1) LLM selects relevant frames directly from the actual frame DB
+        #   (2) embedding similarity from the query_processing frame hint
+        # Multi-hop questions often need frames neither path catches alone, so we
+        # merge both (deduped, LLM order first) rather than treating one as a
+        # mere fallback.
+        async def _embed_expand() -> list[str]:
+            if not signals.frame_hints:
+                return []
+            return await expand_query_frames(
                 query, signals.frame_hints, self._frame_db
             )
+
+        llm_frames, embed_frames = await asyncio.gather(
+            expand_query_frames_llm(query, self._frame_db, self._llm),
+            _embed_expand(),
+        )
+        expanded_frames: list[str] = list(
+            dict.fromkeys([*llm_frames, *embed_frames])
+        )
         logger.info(f"[FrameRAG] Expanded frames: {expanded_frames}")
 
         # Step 2: Build sparse matrices

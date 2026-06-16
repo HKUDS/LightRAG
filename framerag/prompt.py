@@ -142,8 +142,12 @@ For EACH event output a JSON object with:
 Rules:
 - Capture NEGATION/EXEMPTION events too (e.g. "X was unaffected", "Y did not arrive",
   "Z was spared"). Set is_negation=true for these.
-- Prefer participant names that match the entity list; you may also include clearly-named
-  participants not in the list.
+- For participant_names, use the EXACT surface form from the entity list above whenever
+  the participant appears there (this lets the system link the event to the right entity
+  node). If a clearly-named participant is missing from the list, include its name anyway —
+  but match an existing entity name verbatim if at all possible.
+- Resolve pronouns (he/she/they/it) to the named entity they refer to, using the entity
+  list and surrounding context — do NOT output bare pronouns as participants.
 - Output ONLY a JSON array. No prose, no markdown fences.
 - If no events found, output [].
 
