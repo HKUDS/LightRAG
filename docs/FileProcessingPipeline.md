@@ -93,7 +93,7 @@ ext:engine-options
 ```
 
 - The left side matches the file extension, not the full filename; write `pdf:mineru`, not `*.pdf:mineru`.
-- Rules are separated by a semicolon `;` (preferred) or a comma `,`. Use `;` whenever a rule carries chunk parameters, because inside `(...)` a comma separates parameters (see "Attaching chunk parameters" below).
+- Rules are separated by a semicolon `;` (recommended) or a comma `,`. Both separators are parsed with parenthesis awareness, so a comma inside a parameter block `(...)` is never mistaken for a rule separator (see "Attaching chunk parameters" below); `;` is the form used in all examples here.
 - Rules are checked left to right; priority rules go in front, with the wildcard rule typically at the end.
 - The `-options` suffix after the engine serves as the default `process_options` for files matched by this rule. For example, `LIGHTRAG_PARSER=docx:native-iet` means all `.docx` files default to the `native` engine with image, table, and equation analysis enabled.
 
@@ -120,7 +120,7 @@ When parsing the hint, content without a hyphen must match an engine name exactl
 
 #### Attaching chunk parameters
 
-A chunk-strategy selector (`F` / `R` / `V` / `P`) — in a `LIGHTRAG_PARSER` rule or a filename hint — may carry per-strategy chunking parameters in parentheses. Inside the parentheses a comma **only** separates parameters, so a rule that uses parameters must be separated from other rules with a semicolon `;`.
+A chunk-strategy selector (`F` / `R` / `V` / `P`) — in a `LIGHTRAG_PARSER` rule or a filename hint — may carry per-strategy chunking parameters in parentheses. Inside the parentheses a comma **only** separates parameters; rule splitting is parenthesis-aware, so this comma is never mistaken for a rule separator (both `;` and `,` remain valid rule separators, but `;` is recommended).
 
 ```text
 notes.[-R(chunk_ts=800,chunk_ol=80)].md                            # filename hint

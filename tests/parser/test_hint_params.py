@@ -175,6 +175,22 @@ def test_rule_params_with_semicolon_separator_and_comma_in_parens():
     }
 
 
+def test_rule_params_with_comma_separator_and_comma_in_parens():
+    # Rule splitting is parenthesis-aware: a comma inside a parameter block is
+    # NOT a rule separator, so ',' still separates rules even when a rule carries
+    # parameters (the docs recommend ';' but ',' must keep working).
+    assert split_top_level(
+        "md:legacy-R(chunk_ts=800,chunk_ol=80),*:legacy-R", ";,"
+    ) == ["md:legacy-R(chunk_ts=800,chunk_ol=80)", "*:legacy-R"]
+    d = resolve_parser_directives(
+        "a.md", parser_rules="md:legacy-R(chunk_ts=800,chunk_ol=80),*:legacy-R"
+    )
+    assert d.engine == "legacy"
+    assert d.chunk_params == {
+        "R": {"chunk_token_size": 800, "chunk_overlap_token_size": 80}
+    }
+
+
 def test_overlay_rule_then_filename_hint_wins_per_key():
     # Design worked example: rule supplies chunk_ol on P, the filename hint
     # supplies chunk_ts on P; the surviving selector is the filename's "P".
