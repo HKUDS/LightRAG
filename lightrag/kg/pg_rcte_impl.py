@@ -395,15 +395,15 @@ class PgRcteGraphStorage(BaseGraphStorage):
         max_depth: int = 3,
         max_nodes: int | None = None,
     ) -> KnowledgeGraph:
-        # Mirror AGE: respect global_config["max_graph_nodes"] cap
-        if max_nodes is None:
-            max_nodes = self.global_config.get("max_graph_nodes", 1000)
-        else:
-            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
+        # Mirror AGE: respect global_config["max_graph_nodes"] cap.
+        # Use a dedicated int local so the budget is never None below (the
+        # max_nodes parameter is int | None and reassigning it keeps that type).
+        cap = self.global_config.get("max_graph_nodes", 1000)
+        node_budget: int = cap if max_nodes is None else min(max_nodes, cap)
 
         if node_label == "*":
             # Wildcard has no traversal semantics. Bound DB work by fetching
-            # only the top max_nodes + 1 nodes; the extra row detects truncation.
+            # only the top node_budget + 1 nodes; the extra row detects truncation.
             node_rows = await self._fetch(
                 """
                 WITH degrees AS (
@@ -427,7 +427,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
                 LIMIT $2
                 """,
                 self.workspace,
-                max_nodes + 1,
+                node_budget + 1,
             )
         else:
             # Exact-match seed BFS with visited-array guard (UNION ALL, no LIMIT in CTE).
@@ -487,8 +487,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
             )
         )
 
-        is_truncated = len(node_rows) > max_nodes
-        node_rows = node_rows[:max_nodes]
+        is_truncated = len(node_rows) > node_budget
+        node_rows = node_rows[:node_budget]
         node_ids = {r["id"] for r in node_rows}
 
         nodes = [
