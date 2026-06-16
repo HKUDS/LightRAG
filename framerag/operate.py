@@ -27,7 +27,6 @@ from .types import (
     NonCoreFESchema,
 )
 
-FRAME_COREF_THRESHOLD = 0.82  # embedding similarity cutoff before LLM verify
 from .frame_db import FrameDatabase
 from .prompt import PROMPTS
 
@@ -206,55 +205,6 @@ async def glean_entities(
 # ─────────────────────────────────────────────────────────────────────────────
 # Query-time Frame Relation Expansion
 # ─────────────────────────────────────────────────────────────────────────────
-
-async def resolve_frame_coref(
-    new_frames: list[FrameDefinitionSchema],
-    frame_db: FrameDatabase,
-    llm_func: Callable[..., Awaitable[str]],
-    threshold: float = FRAME_COREF_THRESHOLD,
-) -> dict[str, str]:
-    """Return {new_frame_name → canonical_frame_name} for semantically duplicate frames.
-
-    For each newly extracted frame that is NOT yet in the DB, search existing frames
-    by embedding similarity. If a match is found and LLM confirms they represent the
-    same semantic frame type, remap the new name to the existing canonical name.
-    """
-    remap: dict[str, str] = {}
-    for fd in new_frames:
-        if not fd.frame_definition:
-            continue
-        # Skip if already exists (exact normalized name already in DB)
-        if await frame_db.exists(fd.frame_name):
-            continue
-        # Search for semantically similar existing frames
-        search_text = f"{fd.frame_name} [SEP] {fd.frame_definition}"
-        similar = await frame_db.search_related_frames(
-            search_text, top_k=3, threshold=threshold, exclude={fd.frame_name}
-        )
-        if not similar:
-            continue
-        # LLM verify the top candidate only
-        candidate_name = similar[0]
-        existing_fd = await frame_db.get(candidate_name)
-        if not existing_fd:
-            continue
-        prompt = PROMPTS["frame_coref_verify"].format(
-            name_a=fd.frame_name,
-            def_a=fd.frame_definition or "(no definition)",
-            name_b=existing_fd.frame_name,
-            def_b=existing_fd.frame_definition or "(no definition)",
-        )
-        try:
-            response = await _llm_with_retry(llm_func, prompt)
-            if response.strip().upper().startswith("SAME"):
-                remap[fd.frame_name] = existing_fd.frame_name
-                logger.info(
-                    f"[operate] Frame coref: '{fd.frame_name}' → '{existing_fd.frame_name}'"
-                )
-        except Exception as e:
-            logger.debug(f"[operate] Frame coref verify failed for '{fd.frame_name}': {e}")
-    return remap
-
 
 async def expand_query_frames(
     query: str,
