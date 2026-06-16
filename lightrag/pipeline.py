@@ -161,6 +161,7 @@ _CHUNK_LOG_KEY_ALIASES: dict[str, str] = {
     "split_by_character_only": "split_only",
     "separators": "seps",
     "sentence_split_regex": "regex",
+    "drop_references": "drop_rf",
 }
 
 
@@ -2217,6 +2218,7 @@ class _PipelineMixin:
                             content,
                             p_chunk_size,
                             blocks_path=p_blocks_path,
+                            doc_id=doc_id,
                             **p_opts,
                         )
                     elif strategy == "R":

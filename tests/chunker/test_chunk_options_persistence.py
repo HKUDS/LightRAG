@@ -1552,3 +1552,118 @@ def test_partial_chunker_config_no_size_env_leaves_slot_absent(tmp_path, monkeyp
     chunker = rag.addon_params["chunker"]
     assert "chunk_token_size" not in chunker["recursive_character"]
     assert "chunk_token_size" not in chunker["fixed_token"]
+
+
+# --------------------------------------------------------------------------- #
+# drop_references: switch is snapshotted (+ recorded in chunk_opts metadata);
+# detection knobs (tail/headings) are NOT snapshotted (read live by chunker).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.offline
+def test_drop_references_env_snapshotted_but_knobs_not(tmp_path, monkeypatch):
+    """``CHUNK_P_DROP_REFERENCES`` flows into the persisted snapshot and reaches
+    the chunker even on a partial ``addon_params`` (runtime-mutation path that
+    bypasses ``_apply_chunk_size_overlay``).  The detection knobs
+    ``CHUNK_P_REFERENCES_TAIL_N`` / ``CHUNK_P_REFERENCES_HEADINGS`` must NOT be
+    snapshotted — the chunker reads them live."""
+    monkeypatch.setenv("CHUNK_P_DROP_REFERENCES", "true")
+    monkeypatch.setenv("CHUNK_P_REFERENCES_TAIL_N", "3")
+    monkeypatch.setenv("CHUNK_P_REFERENCES_HEADINGS", "Foo|Bar")
+
+    import lightrag.chunker as chunker_pkg
+
+    captured: dict = {}
+
+    def _p_spy(tokenizer, content, chunk_token_size, *, blocks_path=None, **kwargs):
+        captured.update(kwargs)
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_paragraph_semantic", _p_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Runtime mutation bypasses _apply_chunk_size_overlay, so this
+            # exercises the slim_chunk_options chokepoint.
+            rag.addon_params["chunker"] = {"paragraph_semantic": {}}
+            await rag.apipeline_enqueue_documents(
+                "drop references body",
+                ids=["doc-drop-rf"],
+                file_paths="ctor.[native-P].txt",
+                track_id="track-p-drop-rf",
+                process_options="P",
+            )
+            row = await rag.full_docs.get_by_id("doc-drop-rf")
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+        return row
+
+    row = asyncio.run(_run())
+    assert row is not None
+    p_opts = row["chunk_options"]["paragraph_semantic"]
+    # Switch is snapshotted ...
+    assert p_opts.get("drop_references") is True
+    # ... but the detection knobs are NOT.
+    assert "references_tail_n" not in p_opts
+    assert "references_headings" not in p_opts
+    # The switch reaches the chunker; the knobs do not (chunker reads env).
+    assert captured.get("drop_references") is True
+    assert "references_tail_n" not in captured
+    assert "references_headings" not in captured
+
+
+@pytest.mark.offline
+def test_explicit_drop_references_false_overrides_env_true(tmp_path, monkeypatch):
+    """An explicit ``drop_references=False`` in a caller-supplied
+    ``chunk_options`` wins over ``CHUNK_P_DROP_REFERENCES=true`` (setdefault
+    in ``slim_chunk_options`` never clobbers a present value)."""
+    monkeypatch.setenv("CHUNK_P_DROP_REFERENCES", "true")
+
+    import lightrag.chunker as chunker_pkg
+    from lightrag.parser.routing import resolve_chunk_options
+
+    captured: dict = {}
+
+    def _p_spy(tokenizer, content, chunk_token_size, *, blocks_path=None, **kwargs):
+        captured.update(kwargs)
+        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
+
+    monkeypatch.setattr(chunker_pkg, "chunking_by_paragraph_semantic", _p_spy)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            opts = resolve_chunk_options(rag.addon_params, process_options="P")
+            # Env put drop_references=True here; explicit override to False.
+            assert opts["paragraph_semantic"]["drop_references"] is True
+            opts["paragraph_semantic"]["drop_references"] = False
+            await rag.apipeline_enqueue_documents(
+                "explicit override body",
+                file_paths="ctor.[native-P].txt",
+                track_id="track-p-drop-rf-false",
+                process_options="P",
+                chunk_options=opts,
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+    assert captured.get("drop_references") is False
+
+
+@pytest.mark.offline
+def test_chunk_opts_metadata_records_only_drop_rf():
+    """``_format_chunking_params`` renders ``drop_references`` under the short
+    ``drop_rf`` alias (what lands in ``doc_status.metadata['chunk_opts']``) and
+    never the env-only detection knobs."""
+    from lightrag.pipeline import _format_chunking_params
+
+    line = _format_chunking_params(2000, {"drop_references": True})
+    assert "drop_rf=True" in line
+    assert "drop_references" not in line  # aliased, not the verbose name
+    assert "rf_tail" not in line and "rf_heads" not in line

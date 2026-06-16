@@ -315,9 +315,14 @@ P chunker 直接读取 `.blocks.jsonl`，每个 content 行作为后续 TableRow
 | `.tables.json`（隐式） | 由 `blocks_path` 推导（`<base>.blocks.jsonl` → `<base>.tables.json`） | HeaderRecovery（§3.3.3）的表头数据源；缺失时静默跳过表头注入 |
 | `chunk_token_size` | `chunk_options.chunk_token_size` / `CHUNK_P_SIZE` | 目标硬上限 N，默认 `2000` |
 | `chunk_overlap_token_size` | `CHUNK_P_OVERLAP_SIZE` / `chunk_overlap_token_size` | 同一内容行内长正文 fallback 与表格桥接预算的上限，默认 `100` |
+| `drop_references` | hint `drop_references`（别名 `drop_rf`）/ `CHUNK_P_DROP_REFERENCES` | 是否在分块前丢弃文末参考文献块，默认 `False`；**入队冻结进 `chunk_options`，并记录到 `doc_status.metadata['chunk_opts']`**（开启时记为 `drop_rf=True`） |
+| `references_tail_n` | `CHUNK_P_REFERENCES_TAIL_N` | 参考文献块只在文末最后 N 个内容块内才被丢弃（安全窗口），默认 `2`；**运行时实时读 env，不快照、不进 metadata** |
+| `references_headings` | `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔） | 参考文献标题前缀，默认 `Reference\|References\|Bibliography\|参考文献`；英文按单词边界、大小写不敏感匹配，`参考文献` 按前缀匹配；**运行时实时读 env，不快照、不进 metadata** |
 | `tokenizer` | LightRAG 已解析好的 tokenizer | 所有 token 计数与文本 overlap 截取的基准 |
 
 P 策略**不接收** `split_by_character` / `split_by_character_only`，因为正常路径由标题和段落结构驱动。
+
+**丢弃参考文献（`drop_references`）**：开启后，在 HeadingBlocks 之后、TableRowSplit/AnchorSplit/LevelMerge 之前，对从 `blocks.jsonl` 读出的有序内容块做过滤——**同时满足**「位于最后 `references_tail_n` 个块」且「`heading` 命中参考文献前缀」的块被丢弃。只有开关 `drop_references` 可经 per-file hint 设定并冻结进快照/metadata；`references_tail_n` / `references_headings` 是纯 env 调参，由 chunker 每次运行时实时读取当前环境变量——改 env 即可即时影响已入队文档的重跑。若丢弃后没有任何含内容的块剩余，则放弃丢弃并告警，避免产出空文档。
 
 ### 4.2 `.blocks.jsonl` 约定
 

@@ -312,11 +312,23 @@ def slim_chunk_options(
     if "chunk_token_size" in src:
         result["chunk_token_size"] = deepcopy(src["chunk_token_size"])
     result[key] = deepcopy(dict(src.get(key) or {}))
-    if key == "paragraph_semantic" and "chunk_token_size" not in result[key]:
-        p_size_raw = os.getenv("CHUNK_P_SIZE")
-        result[key]["chunk_token_size"] = (
-            int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE
-        )
+    if key == "paragraph_semantic":
+        if "chunk_token_size" not in result[key]:
+            p_size_raw = os.getenv("CHUNK_P_SIZE")
+            result[key]["chunk_token_size"] = (
+                int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE
+            )
+        # Mirror the CHUNK_P_DROP_REFERENCES env default for the drop-references
+        # switch here — this is the single chokepoint every enqueue path runs
+        # through, so a runtime ``addon_params`` mutation or an explicit
+        # ``chunk_options=`` that omits the slot still picks up the env default.
+        # ``setdefault`` keeps any caller-supplied value (hint/addon/kwarg).  The
+        # detection-tuning knobs (tail window / heading prefixes) are NOT
+        # snapshotted — the chunker reads them live from env at run time.
+        if os.getenv("CHUNK_P_DROP_REFERENCES") is not None:
+            result[key].setdefault(
+                "drop_references", _env_bool("CHUNK_P_DROP_REFERENCES")
+            )
     return result
 
 

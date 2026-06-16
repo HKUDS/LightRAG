@@ -15,13 +15,13 @@ Design (see ``docs/FileProcessingPipeline.md``):
 * Parameters are declared per *target* (a chunk selector char ``F``/``R``/``V``/
   ``P``) with a type and the set of selectors they apply to.
 
-Phase 1 scope (intentionally minimal — the foundation supports more):
-only ``chunk_token_size`` (alias ``chunk_ts``) and
-``chunk_overlap_token_size`` (alias ``chunk_ol``), both integers, flowing
-through the existing per-document ``chunk_options`` channel.  Engine-level
-parameters and flag/enum/float parameters are **not** accepted yet and are
-rejected with a friendly error; adding them later is a matter of registering
-new :class:`ParamSpec` entries.
+Chunk-parameter scope: the integer ``chunk_token_size`` (alias ``chunk_ts``)
+and ``chunk_overlap_token_size`` (alias ``chunk_ol``), plus the boolean
+``drop_references`` (alias ``drop_rf``, paragraph-semantic only), all flowing
+through the existing per-document ``chunk_options`` channel.  Float/enum chunk
+parameters are still rejected with a friendly error; adding them is a matter of
+registering new :class:`ParamSpec` entries and an extra ``kind`` branch in
+:func:`parse_chunk_params`.
 
 This module is import-cheap and has no dependency on
 :mod:`lightrag.parser.routing` so it can be reused without import cycles.
@@ -108,10 +108,11 @@ def take_paren_block(text: str, i: int) -> tuple[str | None, int]:
 class ParamSpec:
     """Declares one tunable hint parameter for a set of chunk selectors.
 
-    ``kind`` is ``"int"`` for every Phase 1 parameter; the field exists so
-    future types (``float``/``enum``/``flag``/``range_list``) slot in without
-    a structural change.  ``targets`` is the set of chunk selector chars the
-    parameter is valid for (e.g. overlap is invalid for ``V``).
+    ``kind`` is ``"int"`` or ``"bool"`` today; the field exists so future
+    types (``float``/``enum``/``range_list``) slot in without a structural
+    change.  ``targets`` is the set of chunk selector chars the parameter is
+    valid for (e.g. overlap is invalid for ``V``, ``drop_references`` only
+    applies to ``P``).
     """
 
     canonical: str
@@ -159,6 +160,15 @@ _CHUNK_PARAM_SPECS: tuple[ParamSpec, ...] = (
         ),
         min_value=0,
     ),
+    # Paragraph-semantic only: drop the trailing reference section before
+    # chunking.  Detection-tuning knobs (tail window / heading prefixes) are
+    # env-only and read live by the chunker, so only the switch is a hint param.
+    ParamSpec(
+        canonical="drop_references",
+        aliases=frozenset({"drop_rf"}),
+        kind="bool",
+        targets=frozenset({PROCESS_OPTION_CHUNK_PARAGRAH}),
+    ),
 )
 
 _CHUNK_PARAM_BY_NAME: dict[str, ParamSpec] = {}
@@ -189,6 +199,10 @@ def parse_chunk_params(
     attached to (``F``/``R``/``V``/``P``).  Returns ``(canonical_dict,
     errors)``; ``errors`` is empty iff the block is fully valid.  Aliases are
     normalised to their canonical name in the returned dict.
+
+    A boolean parameter may be written bare as a flag — ``P(drop_rf)`` is
+    shorthand for ``P(drop_rf=true)``.  Non-boolean parameters still require
+    the explicit ``key=value`` form.
     """
     result: dict[str, Any] = {}
     errors: list[str] = []
@@ -199,15 +213,17 @@ def parse_chunk_params(
         if not segment:
             errors.append(f"{label}: empty parameter")
             continue
-        if "=" not in segment:
-            errors.append(
-                f"{label}: parameter {segment!r} must be written as 'key=value' "
-                "(flag parameters are not supported yet)"
-            )
-            continue
-        key, _, value = segment.partition("=")
-        key = key.strip()
-        value = value.strip()
+        if "=" in segment:
+            key, _, value = segment.partition("=")
+            key = key.strip()
+            value = value.strip()
+            flag_form = False
+        else:
+            # Bare flag form, e.g. ``drop_rf``.  Only valid for boolean
+            # parameters, where it is shorthand for ``drop_rf=true``.
+            key = segment
+            value = ""
+            flag_form = True
 
         spec = _CHUNK_PARAM_BY_NAME.get(key)
         if spec is None:
@@ -222,6 +238,14 @@ def parse_chunk_params(
                 f"chunk strategy {selector!r}"
             )
             continue
+        if flag_form:
+            if spec.kind != "bool":
+                errors.append(
+                    f"{label}: parameter {spec.canonical!r} must be written as "
+                    "'key=value'; only boolean flags may be written bare"
+                )
+                continue
+            value = "true"  # bare boolean flag means True
         if any(ch in _VALUE_FORBIDDEN for ch in value):
             errors.append(
                 f"{label}: value for {spec.canonical!r} may not contain any of "
@@ -248,7 +272,16 @@ def parse_chunk_params(
                 )
                 continue
             result[spec.canonical] = parsed
-        else:  # pragma: no cover - no non-int kinds registered in Phase 1
+        elif spec.kind == "bool":
+            parsed_bool = _parse_bool(value)
+            if parsed_bool is None:
+                errors.append(
+                    f"{label}: value for {spec.canonical!r} must be a boolean "
+                    f"(true/false), got {value!r}"
+                )
+                continue
+            result[spec.canonical] = parsed_bool
+        else:  # pragma: no cover - only int/bool kinds registered today
             errors.append(
                 f"{label}: parameter {spec.canonical!r} has unsupported type "
                 f"{spec.kind!r}"

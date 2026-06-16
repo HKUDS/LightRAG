@@ -87,13 +87,65 @@ def test_parse_chunk_params_overlap_rejected_for_vector():
 
 
 @pytest.mark.parametrize(
+    "block,expected",
+    [
+        ("drop_rf=true", True),
+        ("drop_references=true", True),
+        ("drop_rf=false", False),
+        ("drop_rf=yes", True),
+        ("drop_rf=0", False),
+    ],
+)
+def test_parse_chunk_params_drop_references_bool(block, expected):
+    parsed, errors = parse_chunk_params(block, selector="P", label="x")
+    assert errors == []
+    assert parsed == {"drop_references": expected}
+
+
+def test_parse_chunk_params_drop_references_invalid_bool():
+    parsed, errors = parse_chunk_params("drop_rf=maybe", selector="P", label="x")
+    assert parsed == {}
+    assert errors and "must be a boolean" in errors[0]
+
+
+@pytest.mark.parametrize("block", ["drop_rf", "drop_references"])
+def test_parse_chunk_params_drop_references_bare_flag_is_true(block):
+    # A bare boolean flag is shorthand for ``=true``.
+    parsed, errors = parse_chunk_params(block, selector="P", label="x")
+    assert errors == []
+    assert parsed == {"drop_references": True}
+
+
+@pytest.mark.parametrize("selector", ["F", "R", "V"])
+def test_parse_chunk_params_drop_references_rejected_off_paragraph(selector):
+    parsed, errors = parse_chunk_params("drop_rf=true", selector=selector, label="x")
+    assert parsed == {}
+    assert errors and f"not supported for chunk strategy {selector!r}" in errors[0]
+
+
+def test_filename_hint_drop_references_extracted():
+    d = resolve_parser_directives("notes.[-P(drop_rf=true)].md", parser_rules="")
+    assert d.process_options == "P"  # pure selector, no params
+    assert d.chunk_params == {"P": {"drop_references": True}}
+
+
+def test_filename_hint_drop_references_bare_flag():
+    # ``P(drop_rf)`` with no value is shorthand for ``drop_rf=true``.
+    d = resolve_parser_directives("notes.[-P(drop_rf)].md", parser_rules="")
+    assert d.process_options == "P"
+    assert d.chunk_params == {"P": {"drop_references": True}}
+
+
+@pytest.mark.parametrize(
     "block,needle",
     [
         ("chunk_ts=abc", "must be an integer"),
         ("chunk_ts=0", "must be >= 1"),
         ("foo=1", "unknown parameter 'foo'"),
         ("chunk_ts=1,chunk_ts=2", "may not be repeated"),
-        ("correct_tl", "flag parameters are not supported"),
+        ("correct_tl", "unknown parameter 'correct_tl'"),
+        # A non-boolean parameter cannot be written bare (only flags can).
+        ("chunk_ts", "must be written as 'key=value'"),
         ("", "empty parameter"),
         # Cross-field invariant: explicit overlap >= size is rejected here, so
         # both rule and filename-hint validation reject it (not just enqueue).
