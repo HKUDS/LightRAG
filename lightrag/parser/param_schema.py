@@ -279,7 +279,6 @@ def chunk_param_overlap_error(params: Mapping[str, Any]) -> str | None:
     overlap = params.get("chunk_overlap_token_size")
     if size is not None and overlap is not None and overlap >= size:
         return (
-            f"chunk_overlap_token_size ({overlap}) must be < "
-            f"chunk_token_size ({size})"
+            f"chunk_overlap_token_size ({overlap}) must be < chunk_token_size ({size})"
         )
     return None

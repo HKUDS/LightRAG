@@ -352,7 +352,4 @@ def test_upload_path_rejects_effective_overlap_violation(tmp_path):
 
     assert ok is False
     assert captured["error_files"]
-    assert (
-        "must be < chunk_token_size"
-        in captured["error_files"][0]["original_error"]
-    )
+    assert "must be < chunk_token_size" in captured["error_files"][0]["original_error"]
