@@ -136,8 +136,32 @@ Currently supported parameters (canonical name / short alias):
 
 - `process_options` stays a pure selector string; each parameter is applied to that strategy's `chunk_options` (see §3) while the strategy's other env-derived parameters are kept. Aliases are normalized to their canonical name internally.
 - Merge priority: the selector still follows "a non-empty filename-hint options string wholesale-overrides the rule options"; parameters overlay **per strategy** — rule parameters first, then filename-hint parameters (filename wins on a shared key).
-- Validation is strict both at startup (`LIGHTRAG_PARSER`) and at upload (filename hint): an unknown parameter, a wrong type, an out-of-range value, a parameter on a strategy that does not support it (e.g. `chunk_ol` on `V`), or parameters attached to a parser engine (not supported yet) all raise a friendly error.
-- More parameters (engine parameters such as MinerU page ranges, and flag/enum parameters) will be added in later phases.
+- Validation is strict both at startup (`LIGHTRAG_PARSER`) and at upload (filename hint): an unknown parameter, a wrong type, an out-of-range value, or a parameter on a strategy that does not support it (e.g. `chunk_ol` on `V`) all raise a friendly error.
+
+#### Attaching engine parameters
+
+Parameters may also be attached to the **engine token** to override an external engine's per-file behaviour. They are encoded into the persisted `parse_engine` field and feed both the engine request and its raw-bundle cache signature (so changing a parameter forces a re-parse rather than reusing a stale bundle).
+
+```text
+paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # filename hint
+scan.[docling(force_ocr=true)].pdf
+LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # rule
+```
+
+Currently supported engine parameters (canonical / alias):
+
+| Engine | Parameter | Alias | Type | Notes |
+| --- | --- | --- | --- | --- |
+| `mineru` | `page_range` | `pr` | list | One or more page ranges; **see the list note below** |
+| `mineru` | `language` | — | str | OCR / model language (e.g. `en`, `ch`) |
+| `mineru` | `local_parse_method` | `local_pm` | enum | `auto` / `txt` / `ocr` (local mode) |
+| `docling` | `force_ocr` | `ocr` | bool | `true` / `false` |
+
+- **`page_range` is a list — repeat the key.** Inside `(...)` a comma only separates parameters, so a multi-segment list must repeat the key: `page_range=1-3,page_range=5,page_range=7-9` (NOT the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`). A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (`page_range=1-3`).
+- **`local_parse_method` is local-only.** It only affects the local MinerU request, so it is **rejected** under `MINERU_API_MODE=official` (the official API neither sends it nor folds it into the cache key — accepting it would silently do nothing).
+- Only `mineru` and `docling` accept engine parameters; attaching one to `legacy`/`native` is a friendly error. Validation runs at startup (`LIGHTRAG_PARSER`) and at upload.
+- Merge priority: engine parameters resolve for the **final engine** — a rule's engine parameters are dropped when a filename hint selects a different (usable) engine.
+- `parse_engine` is stored in hint syntax (e.g. `mineru(page_range=1-3)`) and shown in `doc_status` metadata so you can see the parse parameters a document used.
 
 ### 2.4 File Parsing Engines
 

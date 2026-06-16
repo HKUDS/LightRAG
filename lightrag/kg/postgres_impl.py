@@ -1433,14 +1433,17 @@ class PostgreSQLDB:
         # content_hash uses TEXT (not VARCHAR(N)) so the column stays
         # algorithm-agnostic; future SHA-512 / base64 hashes do not require a
         # schema change. process_options is an opaque selector string emitted
-        # by sanitize_process_options() (e.g. "Fi").
+        # by sanitize_process_options() (e.g. "Fi"). parse_engine is TEXT (not
+        # VARCHAR(32)) because it may carry an encoded engine-parameter
+        # directive, e.g. "mineru(page_range=1-3,language=en)", which exceeds 32
+        # chars; existing VARCHAR(32) columns are widened below.
         columns_to_add = [
             ("sidecar_location", "TEXT NULL"),
             ("parse_format", "VARCHAR(32) NULL DEFAULT 'raw'"),
             ("content_hash", "TEXT NULL"),
             ("process_options", "TEXT NULL"),
             ("chunk_options", "JSONB NULL DEFAULT '{}'::jsonb"),
-            ("parse_engine", "VARCHAR(32) NULL"),
+            ("parse_engine", "TEXT NULL"),
         ]
         try:
             existing = await self.query(
@@ -1477,6 +1480,30 @@ class PostgreSQLDB:
                 logger.error(
                     f"Failed to add column {col_name} to LIGHTRAG_DOC_FULL: {e}"
                 )
+
+        # Widen a pre-existing parse_engine column from the original
+        # VARCHAR(32) to TEXT so an encoded engine-parameter directive (e.g.
+        # "mineru(page_range=1-3,language=en)") is not truncated / rejected as
+        # too long. Idempotent: skipped when already TEXT.
+        try:
+            col = await self.query(
+                """
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_name = 'lightrag_doc_full'
+                  AND column_name = 'parse_engine'
+                """,
+            )
+            cur_type = col.get("data_type") if col else None
+            if cur_type and cur_type != "text":
+                logger.info(
+                    f"Widening LIGHTRAG_DOC_FULL.parse_engine to TEXT (was {cur_type})"
+                )
+                await self.execute(
+                    "ALTER TABLE LIGHTRAG_DOC_FULL ALTER COLUMN parse_engine TYPE TEXT"
+                )
+        except Exception as e:
+            logger.error(f"Failed to widen LIGHTRAG_DOC_FULL.parse_engine to TEXT: {e}")
 
     async def _migrate_doc_status_add_content_hash(self):
         """Add content_hash column to LIGHTRAG_DOC_STATUS table if it doesn't exist."""
@@ -7947,7 +7974,7 @@ TABLES = {
                     -- sanitize_process_options() (e.g. "Fi").
                     process_options TEXT NULL,
                     chunk_options JSONB NULL DEFAULT '{}'::jsonb,
-                    parse_engine VARCHAR(32) NULL,
+                    parse_engine TEXT NULL,
                     create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)

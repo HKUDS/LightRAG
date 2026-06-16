@@ -38,6 +38,8 @@ from lightrag.parser.registry import (
 )
 from lightrag.parser.param_schema import (
     parse_chunk_params,
+    parse_engine_params,
+    render_engine_params,
     split_top_level,
     take_paren_block,
 )
@@ -70,8 +72,66 @@ class FilenameParserHintError(ValueError):
 
 
 def normalize_parser_engine(engine: Any) -> str:
-    """Normalize engine hints such as mineru-iet to mineru."""
-    return str(engine or "").strip().split("-", 1)[0].lower()
+    """Normalize engine hints such as mineru-iet to mineru.
+
+    Also strips an engine-level parameter block, so a stored/encoded
+    ``parse_engine`` like ``mineru(page_range=1-3)`` resolves to the bare
+    engine ``mineru`` (the single chokepoint that keeps parser selection and
+    engine comparisons working once params are encoded into ``parse_engine``).
+    """
+    text = str(engine or "").strip()
+    paren = text.find("(")
+    if paren != -1:
+        text = text[:paren]
+    return text.split("-", 1)[0].strip().lower()
+
+
+def encode_parse_engine(engine: str, engine_params: Mapping[str, Any] | None) -> str:
+    """Encode ``(engine, engine_params)`` into the stored ``parse_engine`` field.
+
+    Returns the bare ``engine`` when there are no params, else
+    ``engine(key=value,...)`` in hint syntax (list params as repeated keys,
+    bools as ``true``/``false``).  Defensively normalises the params and raises
+    ``ValueError`` on invalid input, so it can never emit a string that
+    :func:`decode_parse_engine` would later reject.
+    """
+    if not engine_params:
+        return engine
+    inner, errors = render_engine_params(engine, engine_params)
+    if errors:
+        raise ValueError(
+            f"cannot encode engine parameters for {engine!r}: " + "; ".join(errors)
+        )
+    return f"{engine}({inner})" if inner else engine
+
+
+def decode_parse_engine(
+    value: Any,
+) -> tuple[str, dict[str, Any], list[str]]:
+    """Decode a stored ``parse_engine`` field into ``(engine, params, errors)``.
+
+    ``value`` may be a bare engine (``mineru``) or an encoded directive
+    (``mineru(page_range=1-3,language=en)``).  ``engine`` is the bare,
+    normalised engine name; ``params`` is the canonical coerced dict; ``errors``
+    is non-empty for a malformed/unbalanced block or invalid params (callers on
+    the parse path raise so the doc fails visibly instead of dropping params).
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "", {}, []
+    idx = raw.find("(")
+    if idx == -1:
+        return normalize_parser_engine(raw), {}, []
+    engine = normalize_parser_engine(raw[:idx])
+    inner, after = take_paren_block(raw, idx)
+    if inner is None:
+        return engine, {}, [f"unbalanced '(' in parse_engine {raw!r}"]
+    if raw[after:].strip():
+        return engine, {}, [f"unexpected text after ')' in parse_engine {raw!r}"]
+    params, errors = parse_engine_params(
+        inner, engine=engine, label=f"parse_engine {raw!r}"
+    )
+    return engine, params, errors
 
 
 # ---------------------------------------------------------------------------
@@ -600,17 +660,18 @@ def _engine_is_usable(
 
 def _filename_hint_match(
     file_path: str | Path,
-) -> tuple[re.Match[str], str, str, dict[str, dict[str, Any]]] | None:
+) -> tuple[re.Match[str], str, str, dict[str, dict[str, Any]], dict[str, Any]] | None:
     """Locate a supported ``[hint]`` segment in a basename.
 
-    Returns ``(match, engine_or_empty, options, chunk_params)`` when the
-    bracket inner is a recognised hint per the spec; otherwise ``None``.
-    ``chunk_params`` maps a chunk selector char to its canonical parameter
-    dict and is empty when the hint carries no parameters.  This low-level
-    helper stays non-throwing because scan grouping and basename
-    canonicalization need a best-effort classifier.  Ingestion entrypoints
-    must call :func:`resolve_parser_directives`, which validates malformed
-    hints and raises instead of falling back.
+    Returns ``(match, engine_or_empty, options, chunk_params, engine_params)``
+    when the bracket inner is a recognised hint per the spec; otherwise
+    ``None``.  ``chunk_params`` maps a chunk selector char to its canonical
+    parameter dict; ``engine_params`` is the engine-token block's canonical
+    parameters (empty when the hint carries none).  This low-level helper stays
+    non-throwing because scan grouping and basename canonicalization need a
+    best-effort classifier.  Ingestion entrypoints must call
+    :func:`resolve_parser_directives`, which validates malformed hints and
+    raises instead of falling back.
     """
     basename = Path(file_path).name
     m = _PARSER_HINT_RE.search(basename)
@@ -623,14 +684,11 @@ def _filename_hint_match(
     inner, engine_param, chunk_param_texts, struct_errors = _extract_param_blocks(
         raw_inner
     )
-    if struct_errors or engine_param is not None:
-        # Best-effort classifier: a malformed or not-yet-supported parameter
-        # block means "not a usable hint" here — ingestion entrypoints surface
-        # the precise error via the strict validator instead.
-        reason = "; ".join(struct_errors) or "engine parameters are not supported yet"
+    label = f"filename hint {m.group(0)!r}"
+    if struct_errors:
         logger.warning(
-            f"[parser_routing] ignoring filename hint {m.group(0)!r} in "
-            f"{basename!r}: {reason}"
+            f"[parser_routing] ignoring {label} in {basename!r}: "
+            f"{'; '.join(struct_errors)}"
         )
         return None
     inner = inner.strip()
@@ -646,23 +704,29 @@ def _filename_hint_match(
         option_errors = validate_process_options(options)
         if option_errors:
             logger.warning(
-                f"[parser_routing] ignoring filename hint {m.group(0)!r} in "
-                f"{basename!r}: {'; '.join(option_errors)}"
+                f"[parser_routing] ignoring {label} in {basename!r}: "
+                f"{'; '.join(option_errors)}"
             )
             return None
     chunk_params, param_errors = _parse_chunk_param_texts(
-        chunk_param_texts, label=f"filename hint {m.group(0)!r}"
+        chunk_param_texts, label=label
     )
+    engine_params: dict[str, Any] = {}
+    if engine_param is not None:
+        engine_params, eparam_errors = parse_engine_params(
+            engine_param, engine=engine or "", label=label
+        )
+        param_errors = [*param_errors, *eparam_errors]
     if param_errors:
         logger.warning(
-            f"[parser_routing] ignoring filename hint {m.group(0)!r} in "
-            f"{basename!r}: {'; '.join(param_errors)}"
+            f"[parser_routing] ignoring {label} in {basename!r}: "
+            f"{'; '.join(param_errors)}"
         )
         return None
     if engine in supported_parser_engines():
-        return m, engine, options, chunk_params
+        return m, engine, options, chunk_params, engine_params
     if engine is None and (options or chunk_params):
-        return m, "", options, chunk_params
+        return m, "", options, chunk_params, engine_params
     return None
 
 
@@ -691,14 +755,9 @@ def _validate_filename_hint_for_resolution(
     hint_label = f"filename hint {m.group(0)!r}"
     inner, engine_param, chunk_param_texts, struct_errors = _extract_param_blocks(inner)
     errors.extend(f"{hint_label}: {msg}" for msg in struct_errors)
-    if engine_param is not None:
-        errors.append(
-            f"{hint_label} sets parameters on a parser engine "
-            f"(got '({engine_param})'); engine parameters are not supported yet — "
-            "only chunk strategies (F/R/V/P) accept parameters"
-        )
     _, param_errors = _parse_chunk_param_texts(chunk_param_texts, label=hint_label)
     errors.extend(param_errors)
+    # Engine-param validation is deferred until ``engine`` is resolved below.
 
     engine: str | None = None
     options = ""
@@ -746,6 +805,12 @@ def _validate_filename_hint_for_resolution(
                     f"(use '[-{inner.strip()}]' instead)"
                 )
             errors.append(message)
+
+    if engine_param is not None:
+        _, e_perrors = parse_engine_params(
+            engine_param, engine=engine or "", label=hint_label
+        )
+        errors.extend(e_perrors)
 
     if engine in supported_parser_engines():
         suffix = parser_suffix(file_path)
@@ -806,6 +871,18 @@ def filename_chunk_params(file_path: str | Path) -> dict[str, dict[str, Any]]:
     if not found:
         return {}
     return found[3]
+
+
+def filename_engine_params(file_path: str | Path) -> dict[str, Any]:
+    """Return the canonical engine parameters decoded from a filename hint.
+
+    These belong to the hint's engine token (e.g. ``mineru(page_range=1-3)``);
+    empty when the hint carries no engine parameters or is not a usable hint.
+    """
+    found = _filename_hint_match(file_path)
+    if not found:
+        return {}
+    return found[4]
 
 
 def canonicalize_parser_hinted_basename(file_path: str | Path) -> str:
@@ -906,11 +983,8 @@ def validate_parser_routing_config(parser_rules: str | None = None) -> None:
             errors.append(f"{label} requires {endpoint_req} to be configured")
         errors.extend(f"{label}: {msg}" for msg in struct_errors)
         if engine_param is not None:
-            errors.append(
-                f"{label}: parameters on parser engine {engine!r} are not "
-                f"supported yet (got '({engine_param})'); only chunk strategies "
-                "(F/R/V/P) accept parameters"
-            )
+            _, e_perrors = parse_engine_params(engine_param, engine=engine, label=label)
+            errors.extend(e_perrors)
         if options_str:
             errors.extend(
                 f"{label}: {msg}"
@@ -932,26 +1006,27 @@ def _matching_rule_directives(
     *,
     parser_rules: str | None,
     require_external_endpoint: bool,
-) -> tuple[str | None, str, dict[str, dict[str, Any]]]:
+) -> tuple[str | None, str, dict[str, dict[str, Any]], dict[str, Any]]:
     """Find the first matching ``LIGHTRAG_PARSER`` rule for ``file_path``.
 
-    Returns ``(engine, options_str, chunk_params)`` where ``engine`` is
-    ``None`` when no usable rule is found.  ``options_str`` is empty when a
-    rule matched but has no ``-options`` suffix; ``chunk_params`` maps a chunk
-    selector char to its canonical parameter dict.  Rule syntax is validated
-    at startup (:func:`validate_parser_routing_config`), so a malformed
-    parameter block here is skipped best-effort rather than raised.
+    Returns ``(engine, options_str, chunk_params, engine_params)`` where
+    ``engine`` is ``None`` when no usable rule is found.  ``options_str`` is
+    empty when a rule matched but has no ``-options`` suffix; ``chunk_params``
+    maps a chunk selector char to its canonical parameter dict; ``engine_params``
+    is the matched rule's engine-token parameters.  Rule syntax is validated at
+    startup (:func:`validate_parser_routing_config`), so a malformed parameter
+    block here is skipped best-effort rather than raised.
     """
     suffix = parser_suffix(file_path)
     rules = parser_rules_from_env() if parser_rules is None else parser_rules.strip()
     if not rules:
-        return None, "", {}
+        return None, "", {}, {}
     for _, item in _iter_parser_rule_items(rules):
         if ":" not in item:
             continue
         pattern, engine_hint = item.split(":", 1)
         pattern = pattern.strip().lower()
-        stripped_hint, _engine_param, chunk_param_texts, _errs = _extract_param_blocks(
+        stripped_hint, engine_param, chunk_param_texts, _errs = _extract_param_blocks(
             engine_hint.strip()
         )
         engine, options_str = _rule_engine_and_options(stripped_hint)
@@ -965,8 +1040,13 @@ def _matching_rule_directives(
             chunk_params, _param_errors = _parse_chunk_param_texts(
                 chunk_param_texts, label=f"rule {item!r}"
             )
-            return engine, options_str, chunk_params
-    return None, "", {}
+            engine_params: dict[str, Any] = {}
+            if engine_param is not None:
+                engine_params, _e_perrors = parse_engine_params(
+                    engine_param, engine=engine, label=f"rule {item!r}"
+                )
+            return engine, options_str, chunk_params, engine_params
+    return None, "", {}, {}
 
 
 @dataclass(frozen=True)
@@ -976,8 +1056,11 @@ class ParserDirectives:
     ``process_options`` stays a pure selector string (``i/t/e/!/F/R/V/P``);
     parameters live in separate fields.  ``chunk_params`` maps a chunk
     selector char to its canonical parameter dict and feeds the existing
-    ``chunk_options`` channel.  ``engine_params`` is reserved for a future
-    per-file engine-parameter channel and is always empty in Phase 1.
+    ``chunk_options`` channel.  ``engine_params`` is the flat, canonical
+    parameter dict for the resolved engine (e.g. MinerU ``page_range`` /
+    ``language`` / ``local_parse_method``, Docling ``force_ocr``); it is
+    encoded into the persisted ``parse_engine`` field and consumed by the
+    external parser at parse time.
     """
 
     engine: str
@@ -1014,6 +1097,13 @@ def resolve_parser_directives(
 
     hinted_engine, hinted_options = filename_parser_directives(file_path)
     hinted_chunk_params = filename_chunk_params(file_path)
+    hinted_engine_params = filename_engine_params(file_path)
+    # The engine a filename hint's params belong to (captured before the
+    # usability null-out below); engine params are dropped if this engine does
+    # not win resolution.  Note: under strict validation the null-out is
+    # effectively unreachable (the validator raises first), so this normally
+    # equals the resolved engine when a hint engine is present.
+    hinted_engine_for_params = hinted_engine
     if hinted_engine and not _engine_is_usable(
         hinted_engine, suffix, require_external_endpoint=require_external_endpoint
     ):
@@ -1022,10 +1112,12 @@ def resolve_parser_directives(
         # options if any.
         hinted_engine = None
 
-    rule_engine, rule_options, rule_chunk_params = _matching_rule_directives(
-        file_path,
-        parser_rules=parser_rules,
-        require_external_endpoint=require_external_endpoint,
+    rule_engine, rule_options, rule_chunk_params, rule_engine_params = (
+        _matching_rule_directives(
+            file_path,
+            parser_rules=parser_rules,
+            require_external_endpoint=require_external_endpoint,
+        )
     )
 
     default_engine = _DEFAULT_ENGINE_BY_SUFFIX.get(suffix)
@@ -1047,11 +1139,21 @@ def resolve_parser_directives(
         if merged:
             chunk_params[selector] = merged
 
+    # Engine params are flat (one resolved engine per file). Keep only the
+    # params whose attached engine == the resolved engine: rule params first,
+    # then filename-hint params (filename wins on a shared key). Params attached
+    # to an engine that lost resolution are dropped.
+    engine_params: dict[str, Any] = {}
+    if rule_engine == engine:
+        engine_params.update(rule_engine_params)
+    if hinted_engine_for_params == engine:
+        engine_params.update(hinted_engine_params)
+
     return ParserDirectives(
         engine=engine,
         process_options=sanitize_process_options(options_str),
         chunk_params=chunk_params,
-        engine_params={},
+        engine_params=engine_params,
     )
 
 
