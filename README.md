@@ -216,7 +216,7 @@ For full description of every target see [docs/InteractiveSetup.md](./docs/Inter
 
 ### A Lightweight, Graph-Based RAG Framework
 
-LightRAG is a lightweight Retrieval-Augmented Generation (RAG) framework specifically designed for analyzing complex documents in fields such as law, healthcare, and finance. It serves as a highly efficient alternative to Microsoft GraphRAG. Utilizing a dual-level architecture to manage both knowledge graphs (KG) and vector embeddings simultaneously, LightRAG perfectly bridges the technical gap between traditional vector-based RAG and graph-based RAG. Furthermore, it effectively addresses the major bottlenecks of GraphRAG when handling large-scale data, such as heavy computational overhead, slow response times, and exorbitant incremental update costs. Designed with high scalability at its core, the system supports massive datasets while maintaining exceptional information extraction accuracy—even when powered by 30B (30 billion parameter) open-source Large Language Models (LLMs).
+LightRAG is a lightweight knowledge-graph RAG framework and an efficient alternative to Microsoft GraphRAG. It adopts a dual-layer architecture to manage both knowledge graphs (KGs) and vector embeddings, effectively bridging the gap between traditional vector-based RAG and graph-based RAG approaches. Designed for high scalability, LightRAG addresses key challenges in large-scale graph indexing and retrieval, including heavy computational overhead, slow response times, and the high cost of incremental updates. While supporting large datasets, LightRAG can still deliver exceptionally high RAG quality, even when paired with a 30B open-source large language model (LLM).
 
 ### Features & Advantages
 

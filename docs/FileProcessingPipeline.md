@@ -42,7 +42,7 @@ MINERU_LOCAL_ENDPOINT=http://localhost:8000
 
 > `P` is LightRAG's native chunking strategy; see [Paragraph Semantic Chunking](ParagraphSemanticChunking.md) for details. For VLM configuration, see [Role-based LLM/VLM Configuration Guide](RoleSpecificLLMConfiguration.md).
 
-## 2. Content Extraction and Processing Option Configuration
+## 2. File Processing Configuration
 
 LightRAG's file processing configuration is composed of two parts: the content extraction engine determines how the original file is parsed, and the processing options determine whether multimodal analysis is performed after parsing, which chunking method to use, and whether to build a knowledge graph. Typically, the environment variable `LIGHTRAG_PARSER` is first used to set default rules by file extension, and then a `[hint]` in the filename overrides individual files. Engine and options can be written in the same configuration fragment, for example `docx:native-iet` or `report.[native-R!].docx`.
 
@@ -245,7 +245,7 @@ Downloaded external images are cached in `<file>.native_raw/` (beside `.parsed/`
 
 #### Using the MinerU File Parsing Engine
 
-The MinerU client supports two modes; choose one:
+The LightRAG document processing pipeline supports MinerU as a document parser and offers two MinerU access modes:
 
 - `official` mode: uses MinerU's cloud API v4 service. You need to register an account at the [MinerU official website](https://mineru.net/) and create an API-KEY first. Then add the following configuration to LightRAG's `.env` file:
 
