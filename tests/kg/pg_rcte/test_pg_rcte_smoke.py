@@ -202,9 +202,9 @@ async def test_get_nodes_edges_batch_queried_node_first(store):
 
     for queried, edge_list in result.items():
         for src, tgt in edge_list:
-            assert src == queried, (
-                f"queried node {queried!r} must be first; got ({src!r}, {tgt!r})"
-            )
+            assert (
+                src == queried
+            ), f"queried node {queried!r} must be first; got ({src!r}, {tgt!r})"
 
 
 @pytest.mark.asyncio

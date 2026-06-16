@@ -223,9 +223,9 @@ async def test_get_knowledge_graph_seed_never_dropped_on_truncation():
         kg = await storage.get_knowledge_graph("low_seed", max_nodes=2)
 
     node_ids = [node.id for node in kg.nodes]
-    assert "low_seed" in node_ids, (
-        f"seed 'low_seed' was dropped by truncation; got {node_ids}"
-    )
+    assert (
+        "low_seed" in node_ids
+    ), f"seed 'low_seed' was dropped by truncation; got {node_ids}"
     assert len(node_ids) == 2
     assert kg.is_truncated is True
     # Seed is at position 0 (pinned), then the highest-degree neighbor.
@@ -278,9 +278,10 @@ async def test_get_knowledge_graph_bfs_depth_beats_degree_on_truncation():
         kg = await storage.get_knowledge_graph("seed", max_nodes=2)
 
     node_ids = [node.id for node in kg.nodes]
-    assert node_ids == ["seed", "near"], (
-        f"expected BFS-nearest nodes; degree leaked into selection: {node_ids}"
-    )
+    assert node_ids == [
+        "seed",
+        "near",
+    ], f"expected BFS-nearest nodes; degree leaked into selection: {node_ids}"
     assert "far_hub" not in node_ids, "depth-2 hub must not displace a depth-1 neighbor"
     assert kg.is_truncated is True
     # The retained subgraph stays connected to the seed.
