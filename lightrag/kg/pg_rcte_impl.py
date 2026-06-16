@@ -435,6 +435,12 @@ class PgRcteGraphStorage(BaseGraphStorage):
             # nodes reachable from the seed within max_depth.
             # MIN(depth) collapses multi-path nodes to their shortest hop distance,
             # which is what the BFS-level truncation below orders on.
+            # PERF NOTE: the recursion expands the full reachable set within max_depth
+            # before max_nodes is applied in Python, so on dense graphs this can
+            # materialize far more rows than are returned. The reference AGE backend
+            # mitigates the same cost with an iterative, frontier-capped BFS
+            # (postgres_impl._bfs_subgraph). Adopting that here is a deferred
+            # optimization — it requires re-benchmarking and is tracked separately.
             # $1=workspace  $2=exact node_label  $3=max_depth
             rcte_sql = """
             WITH RECURSIVE bfs(id, properties, depth, visited) AS (
