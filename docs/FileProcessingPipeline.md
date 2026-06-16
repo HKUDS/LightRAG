@@ -93,7 +93,7 @@ ext:engine-options
 ```
 
 - The left side matches the file extension, not the full filename; write `pdf:mineru`, not `*.pdf:mineru`.
-- Rules are separated by a semicolon `;` (recommended) or a comma `,`. Both separators are parsed with parenthesis awareness, so a comma inside a parameter block `(...)` is never mistaken for a rule separator (see "Attaching chunk parameters" below); `;` is the form used in all examples here.
+- Rules are separated by a semicolon `;` (recommended) or a comma `,`.
 - Rules are checked left to right; priority rules go in front, with the wildcard rule typically at the end.
 - The `-options` suffix after the engine serves as the default `process_options` for files matched by this rule. For example, `LIGHTRAG_PARSER=docx:native-iet` means all `.docx` files default to the `native` engine with image, table, and equation analysis enabled.
 
