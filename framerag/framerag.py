@@ -59,6 +59,7 @@ from .constants import (
     DEFAULT_COREF_WEIGHT,
     DEFAULT_COREF_SCOPE_BY_DOC,
     DEFAULT_COREF_MAX_CHUNK_DIST,
+    DEFAULT_RESIDUAL_BETA,
 )
 from .types import (
     ChunkSchema,
@@ -137,6 +138,7 @@ class FrameRAG:
         coref_weight: float = DEFAULT_COREF_WEIGHT,
         coref_scope_by_doc: bool = DEFAULT_COREF_SCOPE_BY_DOC,
         coref_max_chunk_dist: Optional[int] = DEFAULT_COREF_MAX_CHUNK_DIST,
+        residual_beta: float = DEFAULT_RESIDUAL_BETA,
     ):
         self._raw_llm = llm_func
         self._raw_embed = embed_func
@@ -163,6 +165,7 @@ class FrameRAG:
         self._coref_weight = coref_weight
         self._coref_scope_by_doc = coref_scope_by_doc
         self._coref_max_chunk_dist = coref_max_chunk_dist
+        self._residual_beta = residual_beta
         self._llm_timeout = llm_timeout
         self._embed_timeout = embed_timeout
         self._llm_sem = asyncio.Semaphore(max_concurrent_llm)
@@ -522,8 +525,8 @@ class FrameRAG:
         top_frames: int,
         top_nodes: int,
         diffusion_warm_up: int,
-    ) -> tuple[list[dict], list[dict]]:
-        """Shared retrieval logic: returns (frame_hits, chunk_hits)."""
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        """Shared retrieval logic: returns (frame_hits, chunk_hits, event_hits)."""
         # Step 1: Extract query signals
         signals_raw = await process_query(query, self._llm)
         signals = QuerySignals(
@@ -686,6 +689,12 @@ class FrameRAG:
             s = v.sum()
             return v / s if s > 1e-12 else v
 
+        # Snapshot raw dense-similarity seeds before diffusion.
+        # Used for residual blending (HGRAG §3.3): prevents diffusion from
+        # degrading the dense retrieval baseline on direct-answer queries.
+        y_chunk_raw = y_chunk.copy()
+        y_fi_raw    = y_fi.copy()
+
         # Step 4: Hypergraph diffusion
         diffusion = HypergraphDiffusion(matrices)
         f_node, f_fi, f_chunk = diffusion.run(
@@ -697,6 +706,14 @@ class FrameRAG:
             coref_weight=self._coref_weight,
         )
 
+        # Residual β blend: final = (1-β)·diffused + β·raw_dense
+        # β=0 → pure diffusion (old behaviour); β=0.3 recommended.
+        if self._residual_beta > 0.0:
+            f_chunk = ((1 - self._residual_beta) * f_chunk
+                       + self._residual_beta * _l1(y_chunk_raw))
+            f_fi    = ((1 - self._residual_beta) * f_fi
+                       + self._residual_beta * _l1(y_fi_raw))
+
         # Step 5: Top results — retrieve extra chunks when reranker is active
         fetch_chunks = self._rerank_top_k if self._rerank_func else top_chunks
         results = diffusion.top_results(
@@ -705,8 +722,9 @@ class FrameRAG:
             top_frames=top_frames,
             top_nodes=top_nodes,
         )
-        frame_hits = results["frame_hits"]
-        chunk_hits = results["chunk_hits"]
+        frame_hits  = results["frame_hits"]
+        chunk_hits  = results["chunk_hits"]
+        event_hits  = results["event_hits"]
 
         # Step 6: Rerank chunks (optional)
         if self._rerank_func and chunk_hits:
@@ -722,7 +740,7 @@ class FrameRAG:
             )
             logger.info(f"[FrameRAG] Reranked to {len(chunk_hits)} chunks")
 
-        return frame_hits, chunk_hits
+        return frame_hits, chunk_hits, event_hits
 
     async def aquery(
         self,
@@ -755,7 +773,7 @@ class FrameRAG:
         The retrieved_passages list is suitable for RAGAS context metrics.
         Each element is one text chunk retrieved from the hypergraph.
         """
-        frame_hits, chunk_hits = await self._retrieve(
+        frame_hits, chunk_hits, _ = await self._retrieve(
             query,
             top_chunks=top_chunks or self._top_chunks,
             top_frames=top_frames or self._top_frames,
@@ -786,7 +804,7 @@ class FrameRAG:
         diffusion_warm_up: Optional[int] = None,
     ) -> AsyncIterator[str]:
         """Streaming version of aquery — yields answer tokens as they arrive."""
-        frame_hits, chunk_hits = await self._retrieve(
+        frame_hits, chunk_hits, _ = await self._retrieve(
             query,
             top_chunks=top_chunks or self._top_chunks,
             top_frames=top_frames or self._top_frames,
@@ -933,8 +951,9 @@ class FrameRAG:
             text_passages    : str   — formatted chunk context
             frame_hits       : list  — raw frame instance hits with scores
             chunk_hits       : list  — raw chunk hits with scores
+            event_hits       : list  — raw event hits with scores (derived from f_fi)
         """
-        frame_hits, chunk_hits = await self._retrieve(
+        frame_hits, chunk_hits, event_hits = await self._retrieve(
             query,
             top_chunks=top_chunks or self._top_chunks,
             top_frames=top_frames or self._top_frames,
@@ -948,6 +967,7 @@ class FrameRAG:
             "text_passages":    text_passages,
             "frame_hits":       frame_hits,
             "chunk_hits":       chunk_hits,
+            "event_hits":       event_hits,
         }
 
     # ──────────────────────────────────────────────────────────────────────────

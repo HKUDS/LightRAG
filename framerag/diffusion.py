@@ -229,8 +229,15 @@ class HypergraphDiffusion:
         top_chunks: int = 20,
         top_frames: int = 10,
         top_nodes: int = 15,
+        top_events: int = 10,
     ) -> dict:
-        """Extract top-k indices and scores from diffusion output."""
+        """Extract top-k indices and scores from diffusion output.
+
+        Event scores are derived by projecting f_fi back through H_ef (already
+        row-normalised): each event's score is the weighted average of its
+        linked frame instances' scores.  Events are thus fully first-class
+        output nodes — not just intermediate propagation hops.
+        """
 
         def _topk(scores: np.ndarray, k: int, ids: list[str]) -> list[dict]:
             k = min(k, len(ids))
@@ -241,8 +248,13 @@ class HypergraphDiffusion:
             return [{"id": ids[i], "score": float(scores[i])} for i in idxs
                     if scores[i] > 1e-10]
 
+        # H_ef_n is [n_events × n_frames] (row-normalised event→frame matrix).
+        # Multiplying by f_fi gives each event a score = avg FI score it links to.
+        f_event = self.H_ef_n @ f_fi  # [n_events]
+
         return {
             "chunk_hits":  _topk(f_chunk, top_chunks, self.matrices["chunk_ids"]),
             "frame_hits":  _topk(f_fi,    top_frames, self.matrices["fi_ids"]),
             "node_hits":   _topk(f_node,  top_nodes,  self.matrices["node_ids"]),
+            "event_hits":  _topk(f_event, top_events, self.matrices["event_ids"]),
         }

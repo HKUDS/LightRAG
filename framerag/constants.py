@@ -148,3 +148,12 @@ DEFAULT_EMBEDDING_BATCH_NUM = 32
 
 # Cosine similarity threshold for NanoVDB queries (mirrors LightRAG default)
 DEFAULT_VDB_COSINE_THRESHOLD = 0.2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Residual blending (HGRAG §3.3 safety net)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# final = (1-β)·diffused_score + β·raw_dense_seed
+# Prevents hypergraph diffusion from degrading the dense retrieval baseline.
+# β=0 → pure diffusion; β=1 → pure VDB cosine similarity; β=0.3 recommended.
+DEFAULT_RESIDUAL_BETA = 0.3

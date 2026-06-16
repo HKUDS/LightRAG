@@ -96,6 +96,42 @@ async def test_event_hint_seeding_changes_scores(indexed_rag):
     assert base_scores != boosted_scores
 
 
+async def test_event_hits_populated(indexed_rag):
+    """Events must appear as first-class scored output nodes (not just intermediate hops)."""
+    ctx = await indexed_rag.aretrieve_context(
+        "What instrument did the detective play to relax?"
+    )
+    assert "event_hits" in ctx, "aretrieve_context must expose event_hits"
+    assert ctx["event_hits"], "at least one event should be scored"
+    for h in ctx["event_hits"]:
+        assert "id" in h and "score" in h
+        assert h["score"] > 0
+
+
+async def test_residual_beta_changes_scores(indexed_rag):
+    """Residual β=0 (pure diffusion) vs β=0.9 must yield different frame-instance scores.
+
+    The fixture produces a single chunk, so chunk scores are always normalised to
+    [1.0] and cannot show differential ranking.  Frame instances (2 of them) are
+    seeded both by VDB cosine similarity (y_fi_raw) AND by entity-mention/chunk
+    diffusion — these two vectors are unlikely to be co-linear, so blending them
+    at β=0 vs β=0.9 changes relative scores.
+    """
+    q = "What instrument did the detective play to relax?"
+    rag = indexed_rag
+
+    rag._residual_beta = 0.0
+    base = await rag.aretrieve_context(q)
+    rag._residual_beta = 0.9
+    blended = await rag.aretrieve_context(q)
+
+    base_scores    = {h["id"]: round(h["score"], 8) for h in base["frame_hits"]}
+    blended_scores = {h["id"]: round(h["score"], 8) for h in blended["frame_hits"]}
+    assert base_scores != blended_scores, (
+        "residual_beta must shift frame-instance scores relative to pure diffusion"
+    )
+
+
 async def test_answer_generation_runs(indexed_rag):
     ans = await indexed_rag.aquery("What did Holmes play?")
     assert isinstance(ans, str) and len(ans) > 0
