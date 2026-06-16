@@ -157,23 +157,162 @@ def _hdr(t: str) -> None:
     print("\n" + "=" * 78 + f"\n{t}\n" + "=" * 78)
 
 
+async def _trace_query_phases(rag, query: str) -> None:
+    """Re-run the query pipeline step by step, printing every intermediate so
+    the data flowing through each phase is visible (mirrors _retrieve)."""
+    import numpy as np
+    from framerag.operate import (
+        process_query, generate_hyde_passage,
+        expand_query_frames, expand_query_frames_llm,
+    )
+    from framerag.diffusion import HypergraphDiffusion
+    hg = rag._hg
+
+    # Phase Q1 — query signals
+    sig = await process_query(query, rag._llm)
+    _hdr("Q1 — QUERY SIGNALS (process_query)")
+    for k, v in sig.items():
+        print(f"  {k:15} = {v}")
+
+    # Phase Q2 — frame expansion + HyDE (parallel in product)
+    hyde = await generate_hyde_passage(query, rag._llm)
+    llm_frames = await expand_query_frames_llm(query, rag._frame_db, rag._llm)
+    emb_frames = await expand_query_frames(query, sig.get("frame_hints", ""), rag._frame_db)
+    _hdr("Q2 — EXPANSION")
+    print(f"  HyDE passage   = {hyde!r}")
+    print(f"  LLM frames     = {llm_frames}")
+    print(f"  embed frames   = {emb_frames}")
+    print(f"  union          = {list(dict.fromkeys([*llm_frames, *emb_frames]))}")
+
+    # Phase Q3 — matrices
+    matrices = await hg.build_matrices(fe_focus=sig.get("fe_focus") or None)
+    _hdr("Q3 — SPARSE MATRICES (shape / nnz)")
+    for key in ("H_ce", "H_ef", "H_fe", "A_cau", "A_coref"):
+        M = matrices[key]
+        print(f"  {key:8} shape={str(M.shape):12} nnz={M.nnz}")
+    print(f"  node_ids  = {[n[:10] for n in matrices['node_ids']]}")
+    print(f"  fi_ids    = {[n[:10] for n in matrices['fi_ids']]}")
+
+    node_idx, fi_idx, chunk_idx = (
+        matrices["node_idx"], matrices["fi_idx"], matrices["chunk_idx"])
+    n_n, n_f, n_c = len(node_idx), len(fi_idx), len(chunk_idx)
+    y_node, y_fi, y_chunk = np.zeros(n_n), np.zeros(n_f), np.zeros(n_c)
+
+    # Phase Q4 — seeding (show which nodes/frames/chunks each seed fires)
+    _hdr("Q4 — SEEDING (which targets each seed source hits)")
+    q_vec = (await mock_embed([query]))[0]
+
+    async def show_mentions(vec, tag, w):
+        hits = await hg.search_entity_mentions(vec, top_k=20)
+        for h in hits:
+            if h["id"] in node_idx:
+                y_node[node_idx[h["id"]]] += h["distance"] * w
+        print(f"  [{tag}] mentions -> " + ", ".join(
+            f"{h['id'][:10]}:{h['distance']:.3f}" for h in hits if h['id'] in node_idx))
+
+    async def show_frames(vec, tag, w):
+        hits = await hg.search_frame_instances(vec, top_k=20)
+        for h in hits:
+            if h["id"] in fi_idx:
+                y_fi[fi_idx[h["id"]]] += h["distance"] * w
+        print(f"  [{tag}] frames   -> " + ", ".join(
+            f"{h['id'][:10]}:{h['distance']:.3f}" for h in hits if h['id'] in fi_idx))
+
+    async def show_chunks(vec, tag, w):
+        hits = await hg.search_chunks(vec, top_k=30)
+        for h in hits:
+            if h["id"] in chunk_idx:
+                y_chunk[chunk_idx[h["id"]]] += h["distance"] * w
+        print(f"  [{tag}] chunks   -> " + ", ".join(
+            f"{h['id'][:12]}:{h['distance']:.3f}" for h in hits if h['id'] in chunk_idx))
+
+    await show_mentions(q_vec, "query", 1.0)
+    await show_frames(q_vec, "query", 1.0)
+    await show_chunks(q_vec, "query", 1.0)
+    if hyde:
+        hv = (await mock_embed([hyde]))[0]
+        await show_mentions(hv, "hyde ", rag._hyde_weight)
+    # event-hint seeding → events VDB → frame instances
+    for eh in sig.get("event_hints", []):
+        ev = (await mock_embed([eh]))[0]
+        ev_hits = await hg.search_events(ev, top_k=10)
+        boosted = []
+        for h in ev_hits:
+            for fid in hg.frame_ids_for_event(h["id"]):
+                if fid in fi_idx:
+                    y_fi[fi_idx[fid]] += h["distance"] * rag._event_hint_weight
+                    boosted.append((fid[:10], round(h["distance"], 3)))
+        print(f"  [evhint {eh!r}] event->FI boost -> {boosted}")
+
+    def _l1(v):
+        s = v.sum()
+        return v / s if s > 1e-12 else v
+
+    print("\n  seed vectors (post-L1, nonzero entries):")
+    print("   y_node :", {matrices['node_ids'][i][:10]: round(float(x), 3)
+                          for i, x in enumerate(_l1(y_node)) if x > 1e-9})
+    print("   y_fi   :", {matrices['fi_ids'][i][:10]: round(float(x), 3)
+                          for i, x in enumerate(_l1(y_fi)) if x > 1e-9})
+    print("   y_chunk:", {matrices['chunk_ids'][i][:12]: round(float(x), 3)
+                          for i, x in enumerate(_l1(y_chunk)) if x > 1e-9})
+
+    # Phase Q5 — diffusion, step by step
+    _hdr("Q5 — DIFFUSION (warm-up then cooling; top values per step)")
+    diff = HypergraphDiffusion(matrices)
+    fn, ff, fc = _l1(y_node).copy(), _l1(y_fi).copy(), _l1(y_chunk).copy()
+    yn, yf, yc = fn.copy(), ff.copy(), fc.copy()
+
+    def _top(vec, ids):
+        i = int(np.argmax(vec))
+        return f"{ids[i][:12]}={vec[i]:.4f}"
+
+    for k in range(rag._diffusion_warm_up):
+        fn, ff, fc = diff._step_warmup(
+            fn, ff, fc, yn, yf, yc,
+            alpha=rag._diffusion_alpha, causal_weight=0.3,
+            coref_weight=rag._coref_weight)
+        print(f"  warmup[{k}]  topNode={_top(fn, matrices['node_ids'])}  "
+              f"topFI={_top(ff, matrices['fi_ids'])}  "
+              f"topChunk={_top(fc, matrices['chunk_ids'])}")
+    fn_frozen = fn.copy()
+    k = 0
+    while True:
+        wb = rag._diffusion_t_decay ** k
+        if wb < rag._diffusion_epsilon:
+            break
+        ff, fc = diff._step_cool(
+            fn_frozen, ff, fc, yf, yc,
+            w_back=wb, alpha=rag._diffusion_alpha, causal_weight=0.3)
+        if k < 3 or wb < rag._diffusion_epsilon * 2:
+            print(f"  cool[{k:2}] wb={wb:.3f}  topFI={_top(ff, matrices['fi_ids'])}  "
+                  f"topChunk={_top(fc, matrices['chunk_ids'])}")
+        k += 1
+    print(f"  (cooling ran {k} steps total)")
+
+
 async def main() -> None:
     from lightrag.kg.shared_storage import initialize_share_data
     initialize_share_data(workers=1)
 
     work = tempfile.mkdtemp(prefix="frtrace_")
+    # Small chunk_size so the passage splits into several chunks. The mock LLM
+    # emits Holmes/Watson/violin for EVERY chunk, so coreference merges the
+    # repeated mentions into one canonical each → A_coref edges fire → diffusion
+    # has real multi-hop / cross-chunk structure to propagate over.
     rag = FrameRAG(
         working_dir=work, llm_func=mock_llm, embed_func=mock_embed,
-        embedding_dim=EMB_DIM, chunk_size=400, chunk_overlap=20,
+        embedding_dim=EMB_DIM, chunk_size=30, chunk_overlap=5,
         enable_hyde=True, max_concurrent_llm=4,
     )
     await rag.initialize()
 
     passage = (
-        "Sherlock Holmes sat in his armchair at Baker Street. In the evening he "
-        "drew the bow across his violin, playing a haunting melody to relax after "
-        "a long case. Dr. Watson was undisturbed by the music, having grown used "
-        "to his friend's late-night recitals."
+        "Sherlock Holmes sat in his armchair at Baker Street, thinking about the "
+        "case. In the evening he drew the bow across his violin, playing a haunting "
+        "melody to relax after a long day of investigation. Later that night Holmes "
+        "set down the violin and lit his pipe by the fire. Dr. Watson was "
+        "undisturbed by the music, having grown used to his friend's late-night "
+        "recitals at Baker Street."
     )
     _hdr("INPUT DOCUMENT")
     print(passage)
@@ -230,8 +369,10 @@ async def main() -> None:
     query = "What instrument did the detective play to relax?"
     _hdr(f"QUERY: {query!r}")
 
+    await _trace_query_phases(rag, query)
+
     ctx = await rag.aretrieve_context(query)
-    _hdr("RETRIEVAL OUTPUT")
+    _hdr("RETRIEVAL OUTPUT (via aretrieve_context)")
     print("  frame_hits:")
     for h in ctx["frame_hits"]:
         print(f"    {h['id'][:12]}  score={h['score']:.5f}")
