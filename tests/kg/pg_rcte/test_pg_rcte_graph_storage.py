@@ -233,6 +233,61 @@ async def test_get_knowledge_graph_seed_never_dropped_on_truncation():
     assert node_ids[1] == "big_hub_1"
 
 
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_bfs_depth_beats_degree_on_truncation():
+    """Truncation must follow BFS-level order, not global degree.
+
+    Regression for the design bug where the exact-label path sorted the full
+    reachable set by global degree before truncating. That can drop a low-degree
+    immediate neighbor in favour of a high-degree node two hops away, yielding a
+    subgraph that is disconnected from the requested seed. The reference backends
+    (networkx / AGE _bfs_subgraph) always retain nearer nodes first, so a depth-1
+    neighbour must outrank a depth-2 hub regardless of degree.
+    """
+    storage = make_storage(global_config={"max_graph_nodes": 100})
+    # Topology:  seed --- near (depth 1, low degree) --- far_hub (depth 2, huge degree)
+    # The recursive CTE returns rows carrying their shortest-hop depth.
+    rows = [
+        {"id": "seed", "properties": json.dumps({"entity_id": "seed"}), "depth": 0},
+        {"id": "near", "properties": json.dumps({"entity_id": "near"}), "depth": 1},
+        {
+            "id": "far_hub",
+            "properties": json.dumps({"entity_id": "far_hub"}),
+            "depth": 2,
+        },
+    ]
+    # far_hub has the highest degree by far; pure degree-sort would keep it.
+    degrees = {"seed": 1, "near": 1, "far_hub": 99}
+    # Edge fetch (second _fetch call) returns only the seed--near edge, since
+    # after truncation to {seed, near} that is the only intra-set edge.
+    edge_rows = [
+        {
+            "src_id": "seed",
+            "tgt_id": "near",
+            "properties": json.dumps({"weight": 1.0}),
+        }
+    ]
+
+    with (
+        patch.object(storage, "_fetch", new=AsyncMock(side_effect=[rows, edge_rows])),
+        patch.object(
+            storage, "node_degrees_batch", new=AsyncMock(return_value=degrees)
+        ),
+    ):
+        # max_nodes=2: budget covers depth 0 + depth 1; depth 2 must be excluded.
+        kg = await storage.get_knowledge_graph("seed", max_nodes=2)
+
+    node_ids = [node.id for node in kg.nodes]
+    assert node_ids == ["seed", "near"], (
+        f"expected BFS-nearest nodes; degree leaked into selection: {node_ids}"
+    )
+    assert "far_hub" not in node_ids, "depth-2 hub must not displace a depth-1 neighbor"
+    assert kg.is_truncated is True
+    # The retained subgraph stays connected to the seed.
+    assert len(kg.edges) == 1
+    assert {kg.edges[0].source, kg.edges[0].target} == {"seed", "near"}
+
+
 # ---------------------------------------------------------------------------
 # self-loop degree consistency
 # ---------------------------------------------------------------------------

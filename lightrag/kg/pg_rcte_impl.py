@@ -433,6 +433,8 @@ class PgRcteGraphStorage(BaseGraphStorage):
             # Exact-match seed BFS with visited-array guard (UNION ALL, no LIMIT in CTE).
             # max_nodes bounds the returned graph only; traversal cost scales with
             # nodes reachable from the seed within max_depth.
+            # MIN(depth) collapses multi-path nodes to their shortest hop distance,
+            # which is what the BFS-level truncation below orders on.
             # $1=workspace  $2=exact node_label  $3=max_depth
             rcte_sql = """
             WITH RECURSIVE bfs(id, properties, depth, visited) AS (
@@ -450,7 +452,7 @@ class PgRcteGraphStorage(BaseGraphStorage):
                 WHERE b.depth < $3
                   AND NOT (next_n.id = ANY(b.visited))
             )
-            SELECT DISTINCT id, properties FROM bfs
+            SELECT id, properties, MIN(depth) AS depth FROM bfs GROUP BY id, properties
             """
             node_rows = await self._fetch(
                 rcte_sql, self.workspace, node_label, max_depth
@@ -459,16 +461,22 @@ class PgRcteGraphStorage(BaseGraphStorage):
         if not node_rows:
             return KnowledgeGraph(nodes=[], edges=[], is_truncated=False)
 
-        # Sort before truncation so the retained set is deterministic:
-        # highest-degree nodes first, then stable id order for degree ties.
-        # For exact-label queries the seed is pinned to position 0 so truncation
-        # can never drop the node the caller explicitly requested.
+        # Sort before truncation so the retained set is deterministic AND faithful
+        # to the BFS-level semantics of the reference backends (networkx/AGE):
+        #   1. seed pinned to position 0 (exact-label queries),
+        #   2. shallower BFS depth first — never drop a near node for a distant one,
+        #      which keeps the truncated subgraph connected to the seed,
+        #   3. higher degree first within a depth level (matches networkx),
+        #   4. stable id order as the final tie-breaker.
+        # Wildcard rows carry no "depth" key (all default to 0), so the depth term is
+        # inert there and selection collapses to the SQL's degree-desc ordering.
         node_ids_all = [r["id"] for r in node_rows]
         degrees = await self.node_degrees_batch(node_ids_all)
         node_rows.sort(
             key=lambda r: (
                 r["id"] != node_label,  # False (0) for seed → always first
-                -degrees.get(r["id"], 0),
+                r.get("depth", 0),  # shallower BFS level first
+                -degrees.get(r["id"], 0),  # higher degree first within a level
                 r["id"],
             )
         )
