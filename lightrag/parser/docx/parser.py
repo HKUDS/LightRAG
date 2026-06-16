@@ -14,6 +14,14 @@ if TYPE_CHECKING:
 
 
 class NativeDocxParser(NativeParserBase):
+    """Native DOCX parser for LightRAG's production parsing path.
+
+    Keep ``extract_docx_blocks(..., fixlevel=0)`` here.  ``fixlevel=0`` splits
+    at every real DOCX heading while disabling the ``fixlevel=None`` smart
+    long-block anchor splitting path, preserving the one-heading-one-block
+    sidecar contract consumed by paragraph-semantic chunking.
+    """
+
     engine_name = PARSER_ENGINE_NATIVE
     sidecar_path_style = "basename_only"  # legacy native docx convention
     empty_content_label = "DOCX"
@@ -29,6 +37,8 @@ class NativeDocxParser(NativeParserBase):
     def extract(
         self, source: Path, *, parsed_dir: Path, asset_dir: Path, base_name: str
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+        """Extract DOCX blocks; production native parsing requires ``fixlevel=0``."""
+
         from lightrag.parser.docx.drawing_image_extractor import (
             DrawingExtractionContext,
             load_relationships,
