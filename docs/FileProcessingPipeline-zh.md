@@ -136,8 +136,31 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 
 - `process_options` 仍是纯选择符字符串；每个参数会写入该策略的 `chunk_options`（见 §3），策略其它来自环境变量的参数保持不变。别名在内部统一归一化为全称。
 - 合并优先级：选择符仍遵循“文件名 hint 的非空选项整体覆盖规则选项”；参数按**同一策略**叠加——先规则参数，再文件名 hint 参数（同一键以文件名为准）。
-- 启动期（`LIGHTRAG_PARSER`）与上传期（文件名 hint）均严格校验：未知参数、类型错误、取值越界、把参数加到不支持的策略（如 `V` 上的 `chunk_ol`）、或把参数加到解析引擎（暂不支持）都会给出友好报错。
-- 更多参数（如 MinerU 页码范围等引擎参数，以及 flag/枚举类参数）将在后续阶段加入。
+- 启动期（`LIGHTRAG_PARSER`）与上传期（文件名 hint）均严格校验：未知参数、类型错误、取值越界、把参数加到不支持的策略（如 `V` 上的 `chunk_ol`）都会给出友好报错。
+
+#### 为解析引擎附加参数
+
+参数也可以附加到**引擎 token** 上，按文件覆盖外部引擎的行为。它们被编码进持久化的 `parse_engine` 字段，同时作用于引擎请求与其原始包缓存签名（因此改动参数会触发重解析，而非复用旧缓存包）。
+
+```text
+paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # 文件名 hint
+scan.[docling(force_ocr=true)].pdf
+LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规则
+```
+
+当前支持的引擎参数（全称 / 别名）：
+
+| 引擎 | 参数 | 别名 | 类型 | 说明 |
+| --- | --- | --- | --- | --- |
+| `mineru` | `page_range` | `pr` | 列表 | 一个或多个页码范围；**见下方列表说明** |
+| `mineru` | `language` | — | str | OCR / 模型语言（如 `en`、`ch`） |
+| `mineru` | `local_parse_method` | — | 枚举 | `auto` / `txt` / `ocr`（local 模式） |
+| `docling` | `force_ocr` | `ocr` | bool | `true` / `false` |
+
+- **`page_range` 是列表——请重复键。** 括号 `(...)` 内逗号只分隔参数，因此多段列表必须重复键：`page_range=1-3,page_range=5,page_range=7-9`（不是环境变量的单串形式 `MINERU_PAGE_RANGES="1-3,5,7-9"`）。**多段** `page_range` 需要 `MINERU_API_MODE=official`；`local` 模式只接受单页/单段（`page_range=1-3`）。
+- 只有 `mineru` 与 `docling` 接受引擎参数；把参数加到 `legacy`/`native` 会友好报错。校验在启动期（`LIGHTRAG_PARSER`）与上传期均执行。
+- 合并优先级：引擎参数按**最终引擎**解析——当文件名 hint 选中了另一个可用引擎时，规则的引擎参数会被丢弃。
+- `parse_engine` 以 hint 语法存储（如 `mineru(page_range=1-3)`），并展示在 `doc_status` metadata 中，便于查看文档当时使用的解析参数。
 
 ### 2.4 文件解析引擎
 

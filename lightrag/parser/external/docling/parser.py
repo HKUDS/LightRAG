@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from lightrag.constants import DOCLING_RAW_DIR_SUFFIX, PARSER_ENGINE_DOCLING
 from lightrag.parser.external._base import ExternalParserBase
@@ -17,20 +18,31 @@ class DoclingParser(ExternalParserBase):
     raw_dir_suffix = DOCLING_RAW_DIR_SUFFIX
     force_reparse_env = "LIGHTRAG_FORCE_REPARSE_DOCLING"
 
-    def is_bundle_valid(self, raw_dir: Path, source_path: Path) -> bool:
+    def is_bundle_valid(
+        self,
+        raw_dir: Path,
+        source_path: Path,
+        *,
+        engine_params: "Mapping[str, Any] | None" = None,
+    ) -> bool:
         from lightrag.parser.external.docling import is_bundle_valid
 
-        return is_bundle_valid(raw_dir, source_path)
+        return is_bundle_valid(raw_dir, source_path, overrides=engine_params)
 
     async def download_into(
-        self, raw_dir: Path, source_path: Path, *, upload_name: str
+        self,
+        raw_dir: Path,
+        source_path: Path,
+        *,
+        upload_name: str,
+        engine_params: "Mapping[str, Any] | None" = None,
     ) -> None:
         from lightrag.parser.external.docling import DoclingRawClient
 
         # Map the canonical ``upload_name`` onto docling-serve's multipart
         # filename so the bundle's main JSON is named ``<canonical_stem>.json``
         # (the IR builder locates it via that canonical stem).
-        await DoclingRawClient().download_into(
+        await DoclingRawClient(overrides=engine_params).download_into(
             raw_dir, source_path, upload_filename=upload_name
         )
 

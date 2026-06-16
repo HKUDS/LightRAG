@@ -398,8 +398,25 @@ class _PipelineMixin:
         def _parse_engine_at(index: int) -> str | None:
             if parse_engine is None:
                 return None
-            engine = str(parse_engine[index] or "").strip().lower()
-            return engine or None
+            raw = str(parse_engine[index] or "").strip()
+            if not raw:
+                return None
+            # ``parse_engine`` may carry engine parameters encoded in hint
+            # syntax (``mineru(page_range=1-3,language=en)``).  Decode +
+            # validate + re-encode canonically so a direct SDK/API caller (who
+            # bypasses ``resolve_parser_directives``) gets the same rejection /
+            # coercion as the upload path; raise on a malformed directive.
+            from lightrag.parser.routing import (
+                decode_parse_engine,
+                encode_parse_engine,
+            )
+
+            engine, params, errs = decode_parse_engine(raw)
+            if errs:
+                raise ValueError(f"Invalid parse_engine {raw!r}: " + "; ".join(errs))
+            if not engine:
+                return None
+            return encode_parse_engine(engine, params) if params else engine
 
         def _process_options_at(index: int) -> str:
             if process_options is None:
@@ -1543,6 +1560,11 @@ class _PipelineMixin:
             # Best-effort engine attribution for the FAILED metadata when the
             # failure happens before the per-doc engine is resolved below.
             resolved_engine_w: str | None = None
+            # doc_status ``parse_engine`` value, computed once below and used at
+            # BOTH the success stamp and the failure engine_hint so the field
+            # never jumps across transitions. Encoded (engine+params) when the
+            # engine that runs matches the stored engine, else bare effective.
+            status_engine_w: str | None = None
             try:
                 doc_id_w, status_doc_w = item
                 file_path_w = getattr(status_doc_w, "file_path", "unknown_source")
@@ -1629,6 +1651,30 @@ class _PipelineMixin:
                     )
                 effective_key = key if parser is not None else "legacy"
                 resolved_engine_w = effective_key
+                # When the stored parse_engine carries engine params AND the
+                # engine that actually ran matches it, preserve the encoded
+                # directive for the doc_status stamp so the per-file params stay
+                # user-visible. Left None otherwise (no params, or an engine
+                # mismatch / internal passthrough-reuse key) so the existing
+                # resolver logic decides the displayed engine unchanged.
+                _stored_pe_w = (
+                    content_data_w.get("parse_engine")
+                    if isinstance(content_data_w, dict)
+                    else None
+                )
+                if _stored_pe_w and "(" in str(_stored_pe_w):
+                    from lightrag.parser.routing import (
+                        decode_parse_engine,
+                        encode_parse_engine,
+                        normalize_parser_engine,
+                    )
+
+                    if normalize_parser_engine(_stored_pe_w) == effective_key:
+                        _, _stored_params_w, _ = decode_parse_engine(_stored_pe_w)
+                        if _stored_params_w:
+                            status_engine_w = encode_parse_engine(
+                                effective_key, _stored_params_w
+                            )
                 parser = parser or get_parser("legacy", specs=specs)
                 # Suffix gate only for real engines on a PENDING_PARSE parse;
                 # reuse/passthrough (raw/lightrag/unknown_source) are skipped.
@@ -1702,10 +1748,18 @@ class _PipelineMixin:
                 parse_format_w = (
                     parsed_data_w.get("parse_format") or FULL_DOCS_FORMAT_RAW
                 )
-                explicit_engine_w = parsed_data_w.get("parse_engine") or (
-                    content_data_w.get("parse_engine")
-                    if isinstance(content_data_w, dict)
-                    else None
+                # ``status_engine_w`` (computed pre-parse) is the encoded
+                # directive for the engine that actually ran; prefer it so the
+                # recorded value keeps the per-file params, then the parser's
+                # own bare report, then the stored value.
+                explicit_engine_w = (
+                    status_engine_w
+                    or parsed_data_w.get("parse_engine")
+                    or (
+                        content_data_w.get("parse_engine")
+                        if isinstance(content_data_w, dict)
+                        else None
+                    )
                 )
                 status_doc_w.metadata["parse_format"] = parse_format_w
                 status_doc_w.metadata["parse_engine"] = resolve_doc_status_parse_engine(
@@ -1789,7 +1843,7 @@ class _PipelineMixin:
                 extra_fields_w, metadata_extra_w = doc_status_parse_failure_fields(
                     e,
                     status_doc=status_doc_w,
-                    engine_hint=resolved_engine_w or engine,
+                    engine_hint=status_engine_w or resolved_engine_w or engine,
                 )
                 try:
                     await self._upsert_doc_status_transition(
@@ -2642,8 +2696,11 @@ class _PipelineMixin:
         if not content_already_extracted:
             return
 
+        from lightrag.parser.routing import normalize_parser_engine
+
         intended_engine, _ = resolve_file_parser_directives(file_path)
-        stored_engine = (content_data.get("parse_engine") or "").lower()
+        # ``parse_engine`` may carry encoded params; compare bare engine names.
+        stored_engine = normalize_parser_engine(content_data.get("parse_engine"))
         if intended_engine and stored_engine and intended_engine != stored_engine:
             log_message = (
                 f"[resume] {doc_id}: filename hint / "

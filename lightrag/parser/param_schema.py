@@ -29,11 +29,15 @@ This module is import-cheap and has no dependency on
 
 from __future__ import annotations
 
+import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from lightrag.constants import (
+    PARSER_ENGINE_DOCLING,
+    PARSER_ENGINE_MINERU,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
@@ -168,11 +172,6 @@ def supported_chunk_param_names() -> str:
     return ", ".join(sorted(spec.canonical for spec in _CHUNK_PARAM_SPECS))
 
 
-def engine_params_supported(engine: str) -> bool:  # noqa: ARG001
-    """Whether any engine accepts hint parameters yet (Phase 1: none do)."""
-    return False
-
-
 def _parse_int(value: str) -> int | None:
     try:
         return int(value, 10)
@@ -282,3 +281,320 @@ def chunk_param_overlap_error(params: Mapping[str, Any]) -> str | None:
             f"chunk_overlap_token_size ({overlap}) must be < chunk_token_size ({size})"
         )
     return None
+
+
+# ---------------------------------------------------------------------------
+# Engine parameters (Phase 2) — per-file params attached to the engine token,
+# e.g. ``mineru(page_range=1-3,language=en)`` / ``docling(force_ocr=true)``.
+# Keyed by engine name (unlike chunk params, which are keyed by F/R/V/P).
+# ---------------------------------------------------------------------------
+
+_BOOL_TRUE = frozenset({"1", "true", "yes", "on", "t", "y"})
+_BOOL_FALSE = frozenset({"0", "false", "no", "off", "f", "n"})
+# A single page-range segment: ``N`` or ``N-M`` (validated for positivity /
+# ordering separately).
+_PAGE_SEGMENT_RE = re.compile(r"^\d+(?:-\d+)?$")
+
+
+@dataclass(frozen=True)
+class EngineParamSpec:
+    """Declares one tunable engine parameter (Phase 2).
+
+    Separate from the chunk :class:`ParamSpec` (which requires a ``targets``
+    set of F/R/V/P selectors that is meaningless for engines).  ``kind`` is one
+    of ``"str"`` / ``"enum"`` / ``"bool"``.  ``is_list`` marks a repeated-key
+    parameter (``page_range``) whose canonical value is a comma-joined string.
+    ``enum_values`` constrains an ``"enum"`` parameter.
+    """
+
+    canonical: str
+    aliases: frozenset[str]
+    kind: str
+    is_list: bool = False
+    enum_values: frozenset[str] | None = None
+    names: frozenset[str] = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "names", frozenset({self.canonical}) | self.aliases)
+
+
+# Phase 2 registry — keyed by engine name; expand by adding specs (and, for a
+# new engine, a new dict entry).  An engine absent here accepts NO parameters.
+_ENGINE_PARAM_SPECS: dict[str, tuple[EngineParamSpec, ...]] = {
+    PARSER_ENGINE_MINERU: (
+        EngineParamSpec(
+            canonical="page_range",
+            aliases=frozenset({"pr"}),
+            kind="str",
+            is_list=True,
+        ),
+        EngineParamSpec(canonical="language", aliases=frozenset(), kind="str"),
+        EngineParamSpec(
+            canonical="local_parse_method",
+            aliases=frozenset(),
+            kind="enum",
+            enum_values=frozenset({"auto", "txt", "ocr"}),
+        ),
+    ),
+    PARSER_ENGINE_DOCLING: (
+        EngineParamSpec(canonical="force_ocr", aliases=frozenset({"ocr"}), kind="bool"),
+    ),
+}
+
+_ENGINE_PARAM_BY_NAME: dict[str, dict[str, EngineParamSpec]] = {
+    engine: {name: spec for spec in specs for name in spec.names}
+    for engine, specs in _ENGINE_PARAM_SPECS.items()
+}
+
+
+def engine_params_supported(engine: str) -> bool:
+    """Whether ``engine`` declares any tunable hint parameters."""
+    return engine in _ENGINE_PARAM_SPECS
+
+
+def supported_engine_param_names(engine: str) -> str:
+    """Comma-joined canonical engine-param names, for error messages."""
+    specs = _ENGINE_PARAM_SPECS.get(engine, ())
+    return ", ".join(sorted(spec.canonical for spec in specs))
+
+
+def _parse_bool(value: str) -> bool | None:
+    low = value.strip().lower()
+    if low in _BOOL_TRUE:
+        return True
+    if low in _BOOL_FALSE:
+        return False
+    return None
+
+
+def _mineru_api_mode_is_local() -> bool:
+    """True when MinerU runs in local mode (the default when unset).
+
+    Read here (rather than importing ``mineru.cache``) to keep this module a
+    dependency-free leaf.  Mirrors ``cache._normalize_api_mode``: anything that
+    is not ``official`` is treated as local.
+    """
+    return (os.getenv("MINERU_API_MODE", "") or "").strip().lower() != "official"
+
+
+def _validate_page_range_segments(parts: list[str]) -> list[str]:
+    """Validate page-range segment shape + the MinerU local single-segment rule.
+
+    ``official`` mode forwards a multi-segment list verbatim; ``local`` accepts
+    only a single page / range (mirrors ``cache.local_page_bounds``).  The
+    download-time ``local_page_bounds`` remains the final backstop.
+    """
+    errors: list[str] = []
+    for seg in parts:
+        if not _PAGE_SEGMENT_RE.match(seg):
+            errors.append(
+                f"page_range segment {seg!r} must be a page 'N' or range 'N-M'"
+            )
+            continue
+        if "-" in seg:
+            left, _, right = seg.partition("-")
+            if int(left) < 1 or int(right) < 1:
+                errors.append(f"page_range segment {seg!r} must use positive pages")
+            elif int(right) < int(left):
+                errors.append(f"page_range segment {seg!r} must have end >= start")
+        elif int(seg) < 1:
+            errors.append(f"page_range segment {seg!r} must be a positive page")
+    if not errors and len(parts) > 1 and _mineru_api_mode_is_local():
+        errors.append(
+            "page_range with MINERU_API_MODE=local supports only a single page "
+            "or range such as '1-10'; use MINERU_API_MODE=official for a "
+            "multi-segment list"
+        )
+    return errors
+
+
+def _coerce_engine_value(
+    spec: EngineParamSpec, value: str, *, label: str
+) -> tuple[Any, str | None]:
+    """Validate + coerce a single engine-param value to its canonical type.
+
+    Returns ``(coerced, error)``; ``error`` is ``None`` when valid.  Shared by
+    the text path (:func:`parse_engine_params`) and the resolved-dict path
+    (:func:`normalize_engine_params`) so both apply identical rules.  For the
+    list-type ``page_range`` the ``value`` is the already-joined comma string.
+    """
+    if spec.kind == "bool":
+        parsed = _parse_bool(value)
+        if parsed is None:
+            return None, (
+                f"{label}: value for {spec.canonical!r} must be a boolean "
+                f"(true/false), got {value!r}"
+            )
+        return parsed, None
+    if spec.kind == "enum":
+        if spec.enum_values is not None and value not in spec.enum_values:
+            allowed = ", ".join(sorted(spec.enum_values))
+            return None, (
+                f"{label}: value for {spec.canonical!r} must be one of "
+                f"{allowed}, got {value!r}"
+            )
+        return value, None
+    # str (incl. the list-type page_range, whose value is a comma-joined string)
+    if not value:
+        return None, f"{label}: value for {spec.canonical!r} must be non-empty"
+    if spec.is_list and spec.canonical == "page_range":
+        segments = [p.strip() for p in value.split(",")]
+        seg_errors = _validate_page_range_segments(segments)
+        if seg_errors:
+            return None, f"{label}: " + "; ".join(seg_errors)
+        return ",".join(segments), None
+    return value, None
+
+
+def parse_engine_params(
+    text: str, *, engine: str, label: str
+) -> tuple[dict[str, Any], list[str]]:
+    """Parse one engine parameter block into a canonical, coerced dict.
+
+    ``text`` is the raw text inside ``(...)`` for an engine token; ``engine`` is
+    the (bare) engine the block is attached to.  Returns ``(canonical_dict,
+    errors)``; aliases are normalised to canonical and values are coerced to
+    their declared type (so ``force_ocr`` is a real ``bool``).  A list-type
+    ``page_range`` collects repeated keys and joins them with ``,``.
+    """
+    by_name = _ENGINE_PARAM_BY_NAME.get(engine)
+    if by_name is None:
+        if text.strip():
+            return {}, [f"{label}: parser engine {engine!r} does not accept parameters"]
+        return {}, []
+
+    result: dict[str, Any] = {}
+    list_values: dict[str, list[str]] = {}
+    errors: list[str] = []
+    seen: set[str] = set()
+
+    for raw in split_top_level(text, ","):
+        segment = raw.strip()
+        if not segment:
+            errors.append(f"{label}: empty parameter")
+            continue
+        if "=" not in segment:
+            if _PAGE_SEGMENT_RE.match(segment) and (
+                "page_range" in by_name or "pr" in by_name
+            ):
+                errors.append(
+                    f"{label}: page lists must repeat the key, e.g. "
+                    "'page_range=1-3,page_range=5' (a comma only separates "
+                    "parameters)"
+                )
+            else:
+                errors.append(
+                    f"{label}: parameter {segment!r} must be written as "
+                    "'key=value' (flag parameters are not supported yet)"
+                )
+            continue
+        key, _, value = segment.partition("=")
+        key = key.strip()
+        value = value.strip()
+
+        spec = by_name.get(key)
+        if spec is None:
+            errors.append(
+                f"{label}: unknown parameter {key!r} for engine {engine!r}; "
+                f"supported parameters: {supported_engine_param_names(engine)}"
+            )
+            continue
+        if any(ch in _VALUE_FORBIDDEN for ch in value):
+            errors.append(
+                f"{label}: value for {spec.canonical!r} may not contain any of "
+                "',' '(' ')' ']'"
+            )
+            continue
+        if spec.is_list:
+            list_values.setdefault(spec.canonical, []).append(value)
+            continue
+        if spec.canonical in seen:
+            errors.append(f"{label}: parameter {spec.canonical!r} may not be repeated")
+            continue
+        seen.add(spec.canonical)
+        coerced, error = _coerce_engine_value(spec, value, label=label)
+        if error is not None:
+            errors.append(error)
+            continue
+        result[spec.canonical] = coerced
+
+    # Join repeated-key list params, then coerce/validate the joined value.
+    for canonical, values in list_values.items():
+        spec = by_name[canonical]
+        coerced, error = _coerce_engine_value(spec, ",".join(values), label=label)
+        if error is not None:
+            errors.append(error)
+            continue
+        result[canonical] = coerced
+
+    return result, errors
+
+
+def normalize_engine_params(
+    engine: str, params: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Normalise + validate an already-resolved engine-param dict.
+
+    Used by the pipeline layer where direct (SDK/API) callers bypass routing's
+    text parsing.  Returns a **coerced** dict (e.g. ``force_ocr`` becomes a real
+    ``bool``, ``page_range`` a validated comma-joined string) so what gets
+    persisted is exactly what the engine override seam consumes.  Accepts a
+    ``page_range`` value as either a list or a comma-joined string.
+    """
+    if not params:
+        return {}, []
+    by_name = _ENGINE_PARAM_BY_NAME.get(engine)
+    if by_name is None:
+        return {}, [f"parser engine {engine!r} does not accept parameters"]
+
+    result: dict[str, Any] = {}
+    errors: list[str] = []
+    for key, value in params.items():
+        spec = by_name.get(str(key))
+        if spec is None:
+            errors.append(
+                f"unknown parameter {key!r} for engine {engine!r}; supported "
+                f"parameters: {supported_engine_param_names(engine)}"
+            )
+            continue
+        if spec.is_list and isinstance(value, (list, tuple)):
+            value = ",".join(str(v).strip() for v in value)
+        else:
+            value = str(value).strip()
+        coerced, error = _coerce_engine_value(
+            spec, value, label=f"engine parameter {spec.canonical!r}"
+        )
+        if error is not None:
+            errors.append(error)
+            continue
+        result[spec.canonical] = coerced
+    return result, errors
+
+
+def render_engine_params(
+    engine: str, params: Mapping[str, Any]
+) -> tuple[str, list[str]]:
+    """Render a resolved engine-param dict to the canonical inner text.
+
+    Returns ``(inner_text, errors)`` where ``inner_text`` is the
+    ``key=value,...`` string that goes inside the ``parse_engine`` parens (e.g.
+    ``page_range=1-3,page_range=5,language=en``).  Normalises first (so the
+    output always round-trips through :func:`parse_engine_params`); a list-type
+    value is emitted as **repeated keys**, a bool as ``true``/``false``.  Keys
+    are sorted for deterministic output.
+    """
+    normalized, errors = normalize_engine_params(engine, params)
+    if errors:
+        return "", errors
+    by_name = _ENGINE_PARAM_BY_NAME.get(engine, {})
+    parts: list[str] = []
+    for canonical in sorted(normalized):
+        spec = by_name[canonical]
+        value = normalized[canonical]
+        if spec.is_list:
+            parts.extend(f"{canonical}={seg}" for seg in str(value).split(","))
+        elif spec.kind == "bool":
+            parts.append(f"{canonical}={'true' if value else 'false'}")
+        else:
+            parts.append(f"{canonical}={value}")
+    return ",".join(parts), []

@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import time
 from abc import abstractmethod
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from lightrag.constants import FULL_DOCS_FORMAT_LIGHTRAG
 from lightrag.parser.base import BaseParser, ParseContext, ParseResult
@@ -38,15 +39,36 @@ class ExternalParserBase(BaseParser):
 
     # --- engine-private hooks ------------------------------------------------
     @abstractmethod
-    def is_bundle_valid(self, raw_dir: Path, source_path: Path) -> bool:
-        """Cheap cache-hit check against the raw bundle on disk."""
+    def is_bundle_valid(
+        self,
+        raw_dir: Path,
+        source_path: Path,
+        *,
+        engine_params: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Cheap cache-hit check against the raw bundle on disk.
+
+        ``engine_params`` is the per-file engine-parameter override (decoded
+        from ``parse_engine``); it MUST participate in the cache signature so an
+        overridden document does not spuriously hit a bundle parsed with
+        different params.
+        """
         ...
 
     @abstractmethod
     async def download_into(
-        self, raw_dir: Path, source_path: Path, *, upload_name: str
+        self,
+        raw_dir: Path,
+        source_path: Path,
+        *,
+        upload_name: str,
+        engine_params: Mapping[str, Any] | None = None,
     ) -> None:
-        """Fetch the raw bundle into ``raw_dir`` (called on cache miss only)."""
+        """Fetch the raw bundle into ``raw_dir`` (called on cache miss only).
+
+        ``engine_params`` is the per-file engine-parameter override applied to
+        both the request payload and the recorded cache signature.
+        """
         ...
 
     @abstractmethod
@@ -64,11 +86,30 @@ class ExternalParserBase(BaseParser):
             env_bool,
             raw_dir_for_parsed_dir,
         )
+        from lightrag.parser.routing import decode_parse_engine, encode_parse_engine
         from lightrag.sidecar import write_sidecar
         from lightrag.utils_pipeline import (
             make_lightrag_doc_content,
             sidecar_uri_for,
         )
+
+        # Per-file engine params are encoded in the stored ``parse_engine``
+        # directive (e.g. ``mineru(page_range=1-3)``); decode them once and
+        # thread the SAME dict into both the cache-hit check and the download so
+        # an overridden doc can never hit a bundle parsed with different params.
+        # A malformed/corrupt directive fails this doc loudly rather than
+        # silently parsing with no params.
+        _engine, engine_params, decode_errs = decode_parse_engine(
+            ctx.content_data.get("parse_engine")
+            if isinstance(ctx.content_data, dict)
+            else None
+        )
+        if decode_errs:
+            raise ValueError(
+                f"{self.engine_name}: invalid parse_engine for doc_id={ctx.doc_id}: "
+                + "; ".join(decode_errs)
+            )
+        engine_params = engine_params or None
 
         rs = ctx.resolve(self.engine_name)
         source = rs.source_path
@@ -80,7 +121,9 @@ class ExternalParserBase(BaseParser):
         force_reparse = env_bool(self.force_reparse_env, False)
 
         parse_stage_skipped = False
-        if not force_reparse and self.is_bundle_valid(raw_dir, source):
+        if not force_reparse and self.is_bundle_valid(
+            raw_dir, source, engine_params=engine_params
+        ):
             # Cache hit: stay purely local so a re-parse still works when the
             # external endpoint is temporarily unavailable.
             parse_stage_skipped = True
@@ -103,7 +146,12 @@ class ExternalParserBase(BaseParser):
                 ctx.doc_id,
                 source.name,
             )
-            await self.download_into(raw_dir, source, upload_name=rs.document_name)
+            await self.download_into(
+                raw_dir,
+                source,
+                upload_name=rs.document_name,
+                engine_params=engine_params,
+            )
 
         ir = self.build_ir(raw_dir, rs.document_name)
         self.validate_ir(ir, file_path=ctx.file_path, raw_dir=raw_dir)
@@ -121,7 +169,11 @@ class ExternalParserBase(BaseParser):
                 "file_path": ctx.file_path,
                 "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
                 "sidecar_location": sidecar_uri_for(rs.parsed_dir),
-                "parse_engine": self.engine_name,
+                # Re-encode the engine + params so the persisted directive keeps
+                # the per-file params (the `{**existing, **record}` merge in
+                # _persist_parsed_full_docs would otherwise revert it to the
+                # bare engine name).
+                "parse_engine": encode_parse_engine(self.engine_name, engine_params),
                 "update_time": int(time.time()),
             },
         )

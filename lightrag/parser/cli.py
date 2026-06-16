@@ -213,7 +213,11 @@ async def _run(args: argparse.Namespace) -> int:
         # and the source file sit side by side.
         return parsed_dir
 
-    def _lenient_bundle(raw_dir_arg: Path, _source_file: Path) -> bool:
+    def _lenient_bundle(
+        raw_dir_arg: Path, _source_file: Path | None = None, *_args: Any, **_kwargs: Any
+    ) -> bool:
+        # Tolerate the ExternalParserBase hook's keyword-only ``engine_params``
+        # (and any future args) — this stub replaces ``is_bundle_valid``.
         return raw_dir_arg.exists() and any(raw_dir_arg.iterdir())
 
     def _force_miss(*_args: Any, **_kwargs: Any) -> bool:

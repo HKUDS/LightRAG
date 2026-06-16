@@ -22,7 +22,7 @@ import json
 import os
 import shutil
 import zipfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -116,7 +116,8 @@ class MinerURawClient:
     cannot expose without leaking abstractions.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, overrides: "Mapping[str, Any] | None" = None) -> None:
+        self._overrides = overrides or {}
         self.api_mode = (
             os.getenv("MINERU_API_MODE", DEFAULT_MINERU_API_MODE).strip().lower()
         )
@@ -163,7 +164,9 @@ class MinerURawClient:
         self.max_polls = int(os.getenv("MINERU_MAX_POLLS", "600"))
         self.engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
 
-        options = MinerUParserOptions.from_env(api_mode=self.api_mode)
+        options = MinerUParserOptions.from_env(
+            api_mode=self.api_mode, overrides=self._overrides
+        )
         self._parser_options = options
         self.model_version = options.model_version
         self.language = options.language

@@ -3607,3 +3607,82 @@ def test_reinsert_without_process_options_skips_stale_mm_chunks(tmp_path):
         await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+def test_engine_params_survive_persist_to_full_docs(tmp_path, monkeypatch):
+    """Per-file engine params encoded in parse_engine survive the parse persist.
+
+    Regression for the ``{**existing, **record}`` merge in
+    ``_persist_parsed_full_docs``: the external parser must re-encode
+    ``engine_name(params)`` so full_docs keeps the per-file params instead of
+    reverting to the bare engine name.
+    """
+    from lightrag.parser.external.mineru import compute_size_and_hash
+    from lightrag.parser.external.mineru.cache import (
+        current_mineru_options_signature,
+    )
+    from lightrag.parser.external.mineru.client import MinerURawClient
+    from lightrag.parser.external.mineru.manifest import (
+        Manifest,
+        ManifestFile,
+        write_manifest,
+    )
+
+    async def _run():
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+        monkeypatch.setenv("MINERU_API_MODE", "local")
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
+
+        rag = _new_rag(tmp_path / "work")
+        await rag.initialize_storages()
+
+        src_file = input_dir / "demo.pdf"
+        src_file.write_bytes(b"fake-pdf")
+
+        async def _fake_download(self, raw_dir, source_file_path, **_kwargs):
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            (raw_dir / "content_list.json").write_text(
+                json.dumps([{"type": "text", "text": "正文"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            src_size, src_hash = compute_size_and_hash(source_file_path)
+            crit_size, crit_hash = compute_size_and_hash(raw_dir / "content_list.json")
+            write_manifest(
+                raw_dir,
+                Manifest(
+                    source_content_hash=src_hash,
+                    source_size_bytes=src_size,
+                    source_filename_at_parse=source_file_path.name,
+                    critical_file=ManifestFile(
+                        path="content_list.json", size=crit_size, sha256=crit_hash
+                    ),
+                    files=[],
+                    total_size_bytes=crit_size,
+                    task_id="fake-task",
+                    api_mode="local",
+                    options_signature=current_mineru_options_signature(
+                        {"page_range": "1-3"}
+                    ),
+                ),
+            )
+
+        monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
+
+        await _parse_via_registry(
+            rag,
+            "mineru",
+            doc_id="doc-ep",
+            file_path=str(src_file),
+            content_data={"content": "", "parse_engine": "mineru(page_range=1-3)"},
+        )
+
+        stored = await rag.full_docs.get_by_id("doc-ep")
+        assert stored is not None
+        # The encoded directive (with params) is preserved, not reverted to bare.
+        assert stored["parse_engine"] == "mineru(page_range=1-3)"
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())

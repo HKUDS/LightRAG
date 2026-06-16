@@ -140,12 +140,13 @@ def test_canonicalize_strips_parameterised_hint():
     )
 
 
-def test_engine_params_rejected_with_friendly_error():
-    # Lenient classifier ignores it (engine stays resolved, no chunk params)...
+def test_engine_params_rejected_for_engine_that_declares_none():
+    # Chunk params on a chunk char still work...
     d = resolve_parser_directives("doc.[native-F(chunk_ts=900)].docx", parser_rules="")
     assert d.chunk_params == {"F": {"chunk_token_size": 900}}
-    # ...but an engine-level block is a hard error on ingestion.
-    with pytest.raises(FilenameParserHintError, match="engine parameters are not"):
+    # ...but native declares no engine params, so an engine-level block on it is
+    # a hard error on ingestion (Phase 2: only mineru/docling accept params).
+    with pytest.raises(FilenameParserHintError, match="does not accept parameters"):
         resolve_file_parser_directives(
             "doc.[native(do_ocr=true)-F].docx", parser_rules=""
         )

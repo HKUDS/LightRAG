@@ -32,7 +32,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from lightrag.parser.external._common import compute_size_and_hash, env_bool
 from lightrag.parser.external._manifest import load_manifest
@@ -115,11 +117,24 @@ def compute_options_signature(
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def snapshot_tunable_env() -> dict[str, str]:
-    """Read effective docling tunables so equivalent requests share a signature."""
+def snapshot_tunable_env(
+    overrides: "Mapping[str, Any] | None" = None,
+) -> dict[str, str]:
+    """Read effective docling tunables so equivalent requests share a signature.
+
+    ``overrides`` carries decoded per-file engine params (Phase 2: ``force_ocr``)
+    and replaces the corresponding env value so the override feeds BOTH the live
+    request and the cache signature.
+    """
+    overrides = overrides or {}
+    force_ocr = (
+        bool(overrides["force_ocr"])
+        if "force_ocr" in overrides
+        else env_bool("DOCLING_FORCE_OCR", True)
+    )
     return {
         "DOCLING_DO_OCR": str(env_bool("DOCLING_DO_OCR", True)).lower(),
-        "DOCLING_FORCE_OCR": str(env_bool("DOCLING_FORCE_OCR", True)).lower(),
+        "DOCLING_FORCE_OCR": str(force_ocr).lower(),
         "DOCLING_OCR_ENGINE": os.getenv("DOCLING_OCR_ENGINE", "auto").strip() or "auto",
         "DOCLING_OCR_PRESET": os.getenv("DOCLING_OCR_PRESET", "auto").strip() or "auto",
         "DOCLING_OCR_LANG": os.getenv("DOCLING_OCR_LANG", "").strip(),
@@ -129,7 +144,12 @@ def snapshot_tunable_env() -> dict[str, str]:
     }
 
 
-def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
+def is_bundle_valid(
+    raw_dir: Path,
+    source_file: Path,
+    *,
+    overrides: "Mapping[str, Any] | None" = None,
+) -> bool:
     """Return True iff the bundle matches the current source + env state."""
     if not raw_dir.is_dir():
         return False
@@ -188,7 +208,7 @@ def is_bundle_valid(raw_dir: Path, source_file: Path) -> bool:
         from lightrag.parser.external.docling.client import FIXED_CONSTANTS
 
         cur_options = compute_options_signature(
-            tunable_env=snapshot_tunable_env(),
+            tunable_env=snapshot_tunable_env(overrides),
             fixed_constants=FIXED_CONSTANTS,
         )
         if cur_options != manifest.options_signature:
