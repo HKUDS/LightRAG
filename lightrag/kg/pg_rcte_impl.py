@@ -461,9 +461,17 @@ class PgRcteGraphStorage(BaseGraphStorage):
 
         # Sort before truncation so the retained set is deterministic:
         # highest-degree nodes first, then stable id order for degree ties.
+        # For exact-label queries the seed is pinned to position 0 so truncation
+        # can never drop the node the caller explicitly requested.
         node_ids_all = [r["id"] for r in node_rows]
         degrees = await self.node_degrees_batch(node_ids_all)
-        node_rows.sort(key=lambda r: (-degrees.get(r["id"], 0), r["id"]))
+        node_rows.sort(
+            key=lambda r: (
+                r["id"] != node_label,  # False (0) for seed → always first
+                -degrees.get(r["id"], 0),
+                r["id"],
+            )
+        )
 
         is_truncated = len(node_rows) > max_nodes
         node_rows = node_rows[:max_nodes]

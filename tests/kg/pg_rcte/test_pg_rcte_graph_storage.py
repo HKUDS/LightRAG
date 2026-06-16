@@ -196,6 +196,43 @@ async def test_get_knowledge_graph_truncates_by_degree_then_id():
     assert kg.is_truncated is True
 
 
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_seed_never_dropped_on_truncation():
+    """Exact-label seed must survive truncation even when it has a low degree.
+
+    Regression for the P2 bug where degree-sort ran before truncation without
+    pinning the seed, so a low-degree seed connected to high-degree neighbors
+    could be evicted when max_nodes was tight.
+    """
+    storage = make_storage(global_config={"max_graph_nodes": 100})
+    # BFS returns seed "low_seed" (degree 1) + two high-degree neighbors.
+    rows = [
+        {"id": "low_seed", "properties": json.dumps({"entity_id": "low_seed"})},
+        {"id": "big_hub_1", "properties": json.dumps({"entity_id": "big_hub_1"})},
+        {"id": "big_hub_2", "properties": json.dumps({"entity_id": "big_hub_2"})},
+    ]
+    degrees = {"low_seed": 1, "big_hub_1": 99, "big_hub_2": 97}
+
+    with (
+        patch.object(storage, "_fetch", new=AsyncMock(side_effect=[rows, []])),
+        patch.object(
+            storage, "node_degrees_batch", new=AsyncMock(return_value=degrees)
+        ),
+    ):
+        # max_nodes=2 forces truncation; without the seed-pin fix, low_seed drops out.
+        kg = await storage.get_knowledge_graph("low_seed", max_nodes=2)
+
+    node_ids = [node.id for node in kg.nodes]
+    assert "low_seed" in node_ids, (
+        f"seed 'low_seed' was dropped by truncation; got {node_ids}"
+    )
+    assert len(node_ids) == 2
+    assert kg.is_truncated is True
+    # Seed is at position 0 (pinned), then the highest-degree neighbor.
+    assert node_ids[0] == "low_seed"
+    assert node_ids[1] == "big_hub_1"
+
+
 # ---------------------------------------------------------------------------
 # self-loop degree consistency
 # ---------------------------------------------------------------------------
