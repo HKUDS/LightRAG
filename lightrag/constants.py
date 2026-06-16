@@ -127,6 +127,18 @@ DEFAULT_SENTENCE_SPLIT_REGEX = r"(?<=[.?!])\s+|(?<=[。？！])"
 # the strategy's purpose.
 DEFAULT_CHUNK_P_SIZE = 2000
 
+# Paragraph-semantic "drop references" detection defaults (the chunking="P"
+# drop_references option).  DEFAULT_P_REFERENCES_TAIL_N: a reference block is
+# only dropped when it sits within the last N content blocks of the document
+# (a safety window so a mid-document "References" subsection is not removed).
+# DEFAULT_P_REFERENCES_HEADINGS: heading prefixes that mark a reference
+# section — English words matched case-insensitively at a word boundary,
+# the Chinese "参考文献" matched as a plain prefix.  Both are tunable via env
+# (CHUNK_P_REFERENCES_TAIL_N / CHUNK_P_REFERENCES_HEADINGS, the latter
+# pipe-separated) read live by the chunker at run time.
+DEFAULT_P_REFERENCES_TAIL_N = 2
+DEFAULT_P_REFERENCES_HEADINGS = ("Reference", "References", "Bibliography", "参考文献")
+
 # LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]
 # Post-parse persistence marker: full_docs rows written by the parsers carry

@@ -87,6 +87,41 @@ def test_parse_chunk_params_overlap_rejected_for_vector():
 
 
 @pytest.mark.parametrize(
+    "block,expected",
+    [
+        ("drop_rf=true", True),
+        ("drop_references=true", True),
+        ("drop_rf=false", False),
+        ("drop_rf=yes", True),
+        ("drop_rf=0", False),
+    ],
+)
+def test_parse_chunk_params_drop_references_bool(block, expected):
+    parsed, errors = parse_chunk_params(block, selector="P", label="x")
+    assert errors == []
+    assert parsed == {"drop_references": expected}
+
+
+def test_parse_chunk_params_drop_references_invalid_bool():
+    parsed, errors = parse_chunk_params("drop_rf=maybe", selector="P", label="x")
+    assert parsed == {}
+    assert errors and "must be a boolean" in errors[0]
+
+
+@pytest.mark.parametrize("selector", ["F", "R", "V"])
+def test_parse_chunk_params_drop_references_rejected_off_paragraph(selector):
+    parsed, errors = parse_chunk_params("drop_rf=true", selector=selector, label="x")
+    assert parsed == {}
+    assert errors and f"not supported for chunk strategy {selector!r}" in errors[0]
+
+
+def test_filename_hint_drop_references_extracted():
+    d = resolve_parser_directives("notes.[-P(drop_rf=true)].md", parser_rules="")
+    assert d.process_options == "P"  # pure selector, no params
+    assert d.chunk_params == {"P": {"drop_references": True}}
+
+
+@pytest.mark.parametrize(
     "block,needle",
     [
         ("chunk_ts=abc", "must be an integer"),
