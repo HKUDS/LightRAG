@@ -8,6 +8,8 @@ from typing import Any
 
 import networkx as nx
 
+from lightrag.constants import GRAPH_FIELD_SEP
+
 from .models import KGSnapshot, SnapshotEdge, SnapshotNode
 
 NODE_FIELDS = {"label", "entity_type", "description", "source_id", "file_path"}
@@ -125,10 +127,18 @@ def _relation_stats(snapshot: KGSnapshot) -> list[dict[str, Any]]:
 
 
 def _source_coverage(snapshot: KGSnapshot) -> dict[str, Any]:
-    node_files = Counter(node.file_path for node in snapshot.nodes if node.file_path)
-    edge_files = Counter(edge.file_path for edge in snapshot.edges if edge.file_path)
-    node_sources = Counter(node.source_id for node in snapshot.nodes if node.source_id)
-    edge_sources = Counter(edge.source_id for edge in snapshot.edges if edge.source_id)
+    node_files: Counter[str] = Counter()
+    edge_files: Counter[str] = Counter()
+    node_sources: Counter[str] = Counter()
+    edge_sources: Counter[str] = Counter()
+
+    for node in snapshot.nodes:
+        node_files.update(_split_provenance_field(node.file_path))
+        node_sources.update(_split_provenance_field(node.source_id))
+
+    for edge in snapshot.edges:
+        edge_files.update(_split_provenance_field(edge.file_path))
+        edge_sources.update(_split_provenance_field(edge.source_id))
 
     return {
         "source_files": snapshot.source_files,
@@ -152,6 +162,10 @@ def _sorted_stats(counts: Counter[str]) -> list[dict[str, Any]]:
 
 def _sorted_counter_items(counter: Counter[str]) -> list[tuple[str, int]]:
     return sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _split_provenance_field(value: str) -> list[str]:
+    return [part for part in value.split(GRAPH_FIELD_SEP) if part]
 
 
 def _extra_properties(data: dict[str, Any], known_fields: set[str]) -> dict[str, Any]:

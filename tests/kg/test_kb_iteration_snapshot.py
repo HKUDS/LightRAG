@@ -3,6 +3,7 @@ from pathlib import Path
 
 import networkx as nx
 
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kb_iteration.snapshot import (
     build_snapshot_from_graphml,
     write_snapshot_artifacts,
@@ -128,6 +129,52 @@ def test_write_snapshot_artifacts_creates_machine_readable_stats(tmp_path: Path)
     assert source_coverage["source_id_counts"]["edges"] == {
         "chunk-2": 2,
         "chunk-1": 1,
+    }
+
+
+def test_write_snapshot_artifacts_splits_joined_provenance_fields(tmp_path: Path):
+    graph = nx.MultiDiGraph()
+    graph.add_node(
+        "Disease",
+        entity_type="Disease",
+        source_id=GRAPH_FIELD_SEP.join(["chunk-1", "", "chunk-2"]),
+        file_path=GRAPH_FIELD_SEP.join(["a.md", "b.md"]),
+    )
+    graph.add_node(
+        "Symptom",
+        entity_type="Symptom",
+        source_id="chunk-2",
+        file_path="b.md",
+    )
+    graph.add_edge(
+        "Disease",
+        "Symptom",
+        keywords="manifestation",
+        source_id=GRAPH_FIELD_SEP.join(["chunk-2", "chunk-3"]),
+        file_path=GRAPH_FIELD_SEP.join(["b.md", "", "c.md"]),
+    )
+    graph_path = tmp_path / "graph.graphml"
+    nx.write_graphml(graph, graph_path)
+    snapshot = build_snapshot_from_graphml(graph_path, workspace="demo")
+
+    output_dir = tmp_path / "work" / "kb-iteration" / "demo"
+    write_snapshot_artifacts(snapshot, output_dir)
+
+    source_coverage = json.loads(
+        (output_dir / "snapshots" / "source_coverage.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert source_coverage["file_path_counts"]["nodes"] == {"b.md": 2, "a.md": 1}
+    assert source_coverage["file_path_counts"]["edges"] == {"b.md": 1, "c.md": 1}
+    assert source_coverage["source_id_counts"]["nodes"] == {
+        "chunk-2": 2,
+        "chunk-1": 1,
+    }
+    assert source_coverage["source_id_counts"]["edges"] == {
+        "chunk-2": 1,
+        "chunk-3": 1,
     }
 
 
