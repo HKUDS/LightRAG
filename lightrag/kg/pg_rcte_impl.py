@@ -349,11 +349,33 @@ class PgRcteGraphStorage(BaseGraphStorage):
         return [r["id"] for r in rows]
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
+        q = query.strip().lower()
+        if not q:
+            return []
         rows = await self._fetch(
-            "SELECT id FROM lightrag_graph_nodes WHERE workspace=$1 AND id ILIKE $2 ORDER BY id LIMIT $3",
+            """
+            SELECT id FROM lightrag_graph_nodes
+            WHERE workspace=$1 AND LOWER(id) ILIKE $2
+            ORDER BY
+                CASE
+                    WHEN LOWER(id) = $3          THEN 1000
+                    WHEN LOWER(id) LIKE $4        THEN 500
+                    ELSE 100 - LENGTH(id)
+                END +
+                CASE
+                    WHEN LOWER(id) LIKE $5 OR LOWER(id) LIKE $6 THEN 50
+                    ELSE 0
+                END DESC,
+                id ASC
+            LIMIT $7
+            """,
             self.workspace,
-            f"%{query}%",
-            limit,
+            f"%{q}%",  # $2 contains match
+            q,  # $3 exact
+            f"{q}%",  # $4 prefix
+            f"% {q}%",  # $5 word boundary (space)
+            f"%_{q}%",  # $6 word boundary (underscore)
+            limit,  # $7
         )
         return [r["id"] for r in rows]
 
@@ -668,9 +690,10 @@ class PgRcteGraphStorage(BaseGraphStorage):
         for src, tgt, edge_data in edges:
             key = (min(src, tgt), max(src, tgt))
             deduped[key] = edge_data
-        srcs = [k[0] for k in deduped]
-        tgts = [k[1] for k in deduped]
-        props = [json.dumps(v) for v in deduped.values()]
+        sorted_keys = sorted(deduped.keys())
+        srcs = [k[0] for k in sorted_keys]
+        tgts = [k[1] for k in sorted_keys]
+        props = [json.dumps(deduped[k]) for k in sorted_keys]
         await self._execute(
             """
             INSERT INTO lightrag_graph_edges (workspace, src_id, tgt_id, properties, updated_at)
