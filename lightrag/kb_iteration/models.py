@@ -76,3 +76,20 @@ class QualityScore:
             "findings": [finding.to_dict() for finding in self.findings],
             "critical_blockers": self.critical_blockers,
         }
+
+
+@dataclass(frozen=True)
+class ImprovementProposal:
+    id: str
+    type: str
+    target: str
+    proposed_change: str
+    reason: str
+    evidence: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    risk: str = "medium"
+    requires_approval: bool = True
+    expected_metric_change: dict[str, int | float] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
