@@ -160,7 +160,7 @@ Currently supported engine parameters (canonical / alias):
 | `mineru` | `local_parse_method` | `local_pm` | enum | `auto` / `txt` / `ocr` (local mode) |
 | `docling` | `force_ocr` | `ocr` | bool | `true` / `false` |
 
-- **`page_range` is a list — repeat the key.** Inside `(...)` a comma only separates parameters, so a multi-segment list must repeat the key: `page_range=1-3,page_range=5,page_range=7-9` (NOT the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`). A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (`page_range=1-3`).
+- **`page_range` may contain multiple page segments — write one `page_range=...` item per segment.** Inside `(...)` a comma only separates parameters, so a multi-segment list should be written as `page_range=1-3,page_range=5,page_range=7-9`, not as the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`. A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (for example, `page_range=1-3`).
 - **`local_parse_method` is local-only.** It only affects the local MinerU request, so it is **rejected** under `MINERU_API_MODE=official` (the official API neither sends it nor folds it into the cache key — accepting it would silently do nothing).
 - Only `mineru` and `docling` accept engine parameters; attaching one to `legacy`/`native` is a friendly error. Validation runs at startup (`LIGHTRAG_PARSER`) and at upload.
 - Merge priority: engine parameters resolve for the **final engine** — a rule's engine parameters are dropped when a filename hint selects a different (usable) engine.
