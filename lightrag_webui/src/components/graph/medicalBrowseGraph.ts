@@ -13,6 +13,11 @@ export type MedicalBrowsePosition = {
   y: number
 }
 
+export type MedicalBrowseNodeSizeOptions = {
+  degree?: number
+  maxDegree?: number
+}
+
 const ROLE_RADII: Record<string, number> = {
   root: 0,
   category: 2,
@@ -22,6 +27,25 @@ const ROLE_RADII: Record<string, number> = {
 }
 
 const roundPosition = (value: number): number => Number(value.toFixed(6))
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value))
+
+const degreeImportance = (degree: number = 0, maxDegree: number = 0): number => {
+  if (degree <= 0 || maxDegree <= 0) {
+    return 0
+  }
+
+  const relativeImportance = Math.sqrt(clamp(degree / maxDegree, 0, 1))
+  const absoluteConfidence = 1 - Math.exp(-degree / 8)
+
+  return relativeImportance * absoluteConfidence
+}
+
+const collapsedGroupCount = (
+  nodeId: string,
+  browse?: LightragMedicalBrowseMetadata
+): number => browse?.collapsed_groups?.find((group) => group.id === nodeId)?.count ?? 0
 
 const sortedRoleNodeIds = (
   role: MedicalBrowseNodeRole,
@@ -72,6 +96,40 @@ export const getMedicalBrowseNodeRole = (
   }
 
   return browse.node_roles?.[nodeId] ?? 'leaf'
+}
+
+export const getMedicalBrowseNodeSize = (
+  nodeId: string,
+  nodeEntityType: string | undefined,
+  browse?: LightragMedicalBrowseMetadata,
+  options: MedicalBrowseNodeSizeOptions = {}
+): number | undefined => {
+  if (!browse) {
+    return undefined
+  }
+
+  const role = getMedicalBrowseNodeRole(nodeId, browse)
+  const importance = degreeImportance(options.degree, options.maxDegree)
+
+  if (role === 'root') {
+    return 24
+  }
+
+  if (role === 'category') {
+    return Math.round(14 + 4 * importance)
+  }
+
+  if (role === 'subgroup') {
+    return Math.round(11 + 4 * importance)
+  }
+
+  if (role === 'collapsed_group' || nodeEntityType === 'MedicalCollapsedGroup') {
+    const count = collapsedGroupCount(nodeId, browse)
+    const countBoost = count > 0 ? Math.sqrt(count) : 0
+    return Math.round(clamp(9 + 3 * importance + countBoost, 10, 16))
+  }
+
+  return Math.round(6 + 10 * importance)
 }
 
 export const getMedicalBrowsePosition = (

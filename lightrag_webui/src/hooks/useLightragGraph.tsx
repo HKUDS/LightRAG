@@ -6,10 +6,9 @@ import * as Constants from '@/lib/constants'
 import { useGraphStore, RawGraph, RawNodeType, RawEdgeType, mergeGraphMetadata } from '@/stores/graph'
 import { toast } from 'sonner'
 import { queryGraphs } from '@/api/lightrag'
-import type { LightragMedicalBrowseMetadata } from '@/api/lightrag'
 import {
   applyMedicalBrowseProjection,
-  getMedicalBrowseNodeRole,
+  getMedicalBrowseNodeSize,
   getMedicalBrowsePosition
 } from '@/components/graph/medicalBrowseGraph'
 import { useBackendState } from '@/stores/state'
@@ -17,6 +16,24 @@ import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
 import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
+
+type GraphViewMode = 'medical' | 'raw'
+
+const resolveGraphViewMode = (mode: unknown): GraphViewMode => (mode === 'raw' ? 'raw' : 'medical')
+
+const prepareGraphDataForMode = (rawData: any, graphViewMode: GraphViewMode) => {
+  if (graphViewMode === 'medical') {
+    return applyMedicalBrowseProjection(rawData)
+  }
+
+  if (!rawData?.metadata?.medical_browse) {
+    return rawData
+  }
+
+  const metadata = { ...rawData.metadata }
+  delete metadata.medical_browse
+  return { ...rawData, metadata }
+}
 
 // Select color based on node type
 const getNodeColorByType = (nodeType: string | undefined): string => {
@@ -29,25 +46,6 @@ const getNodeColorByType = (nodeType: string | undefined): string => {
 
   return color || DEFAULT_NODE_COLOR
 };
-
-const getMedicalBrowseNodeSize = (
-  nodeId: string,
-  nodeEntityType: string | undefined,
-  browse?: LightragMedicalBrowseMetadata
-): number | undefined => {
-  if (!browse) {
-    return undefined
-  }
-
-  const role = getMedicalBrowseNodeRole(nodeId, browse)
-
-  if (role === 'root') return 22
-  if (role === 'category') return 16
-  if (role === 'subgroup') return 13
-  if (role === 'collapsed_group' || nodeEntityType === 'MedicalCollapsedGroup') return 11
-
-  return 10
-}
 
 const validateGraph = (graph: RawGraph) => {
   // Check if graph exists
@@ -114,7 +112,12 @@ export type EdgeType = {
   hidden?: boolean
 }
 
-const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
+const fetchGraph = async (
+  label: string,
+  maxDepth: number,
+  maxNodes: number,
+  graphViewMode: GraphViewMode
+) => {
   let rawData: any;
 
   // Trigger GraphLabels component to check if the label is valid
@@ -125,8 +128,14 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
   const queryLabel = label || '*';
 
   try {
-    console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`);
-    rawData = applyMedicalBrowseProjection(await queryGraphs(queryLabel, maxDepth, maxNodes));
+    const medicalView = graphViewMode === 'medical'
+    console.log(
+      `Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}, mode: ${graphViewMode}`
+    );
+    rawData = prepareGraphDataForMode(
+      await queryGraphs(queryLabel, maxDepth, maxNodes, medicalView),
+      graphViewMode
+    );
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
     return null;
@@ -146,12 +155,11 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
       const position = medicalBrowse
         ? getMedicalBrowsePosition(node.id, medicalBrowse, i)
         : { x: Math.random(), y: Math.random() }
-      const nodeEntityType = node.properties?.entity_type as string | undefined
 
       node.x = position.x
       node.y = position.y
       node.degree = 0
-      node.size = getMedicalBrowseNodeSize(node.id, nodeEntityType, medicalBrowse) ?? 10
+      node.size = 10
     }
 
     for (let i = 0; i < rawData.edges.length; i++) {
@@ -186,7 +194,17 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
       maxDegree = Math.max(maxDegree, node.degree)
     }
     const range = maxDegree - minDegree
-    if (!medicalBrowse && range > 0) {
+    if (medicalBrowse) {
+      for (const node of rawData.nodes) {
+        node.size =
+          getMedicalBrowseNodeSize(
+            node.id,
+            node.properties?.entity_type as string | undefined,
+            medicalBrowse,
+            { degree: node.degree, maxDegree }
+          ) ?? node.size
+      }
+    } else if (range > 0) {
       const scale = Constants.maxNodeSize - Constants.minNodeSize
       for (const node of rawData.nodes) {
         node.size = Math.round(
@@ -227,6 +245,10 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   // Create new graph instance
   const graph = new UndirectedGraph()
   const medicalBrowse = rawGraph.metadata?.medical_browse
+  const maxNodeDegree = rawGraph.nodes.reduce(
+    (maxDegree, node) => Math.max(maxDegree, node.degree ?? 0),
+    0
+  )
 
   // Add nodes from raw graph data
   for (const [index, rawNode] of (rawGraph?.nodes ?? []).entries()) {
@@ -243,7 +265,8 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
         getMedicalBrowseNodeSize(
           rawNode.id,
           rawNode.properties?.entity_type as string | undefined,
-          medicalBrowse
+          medicalBrowse,
+          { degree: rawNode.degree, maxDegree: maxNodeDegree }
         ) ?? rawNode.size
     } else {
       // Ensure we have fresh random positions for nodes
@@ -314,6 +337,9 @@ const useLightrangeGraph = () => {
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
   const maxNodes = useSettingsStore.use.graphMaxNodes()
+  const graphViewMode = useSettingsStore((state) =>
+    resolveGraphViewMode((state as { graphViewMode?: unknown }).graphViewMode)
+  )
   const isFetching = useGraphStore.use.isFetching()
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
@@ -391,13 +417,19 @@ const useLightrangeGraph = () => {
       const currentQueryLabel = queryLabel
       const currentMaxQueryDepth = maxQueryDepth
       const currentMaxNodes = maxNodes
+      const currentGraphViewMode = graphViewMode
 
       // Declare a variable to store data promise
       let dataPromise: Promise<{ rawGraph: RawGraph | null; is_truncated: boolean | undefined } | null>;
 
       // 1. If query label is not empty, use fetchGraph
       if (currentQueryLabel) {
-        dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMaxNodes);
+        dataPromise = fetchGraph(
+          currentQueryLabel,
+          currentMaxQueryDepth,
+          currentMaxNodes,
+          currentGraphViewMode
+        );
       } else {
         // 2. If query label is empty, set data to null
         console.log('Query label is empty, show empty graph')
@@ -504,7 +536,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
+  }, [queryLabel, maxQueryDepth, maxNodes, graphViewMode, isFetching, t, graphDataVersion])
 
   // Handle node expansion
   useEffect(() => {
@@ -530,8 +562,15 @@ const useLightrangeGraph = () => {
           return;
         }
 
+        const currentGraphViewMode = resolveGraphViewMode(
+          (useSettingsStore.getState() as { graphViewMode?: unknown }).graphViewMode
+        )
+
         // Fetch the extended subgraph with depth 2
-        const extendedGraph = applyMedicalBrowseProjection(await queryGraphs(label, 2, 1000));
+        const extendedGraph = prepareGraphDataForMode(
+          await queryGraphs(label, 2, 1000, currentGraphViewMode === 'medical'),
+          currentGraphViewMode
+        );
 
         if (!extendedGraph || !extendedGraph.nodes || !extendedGraph.edges) {
           console.error('Failed to fetch extended graph');
@@ -557,7 +596,7 @@ const useLightrangeGraph = () => {
             id: node.id,
             labels: node.labels,
             properties: node.properties,
-            size: getMedicalBrowseNodeSize(node.id, nodeEntityType, medicalBrowse) ?? 10,
+            size: 10,
             x: position.x, // Random or medical browse position, may be adjusted later
             y: position.y, // Random or medical browse position, may be adjusted later
             color: color, // Random color
@@ -699,7 +738,20 @@ const useLightrangeGraph = () => {
                 Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
               );
 
-              sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
+              const rawNode = rawGraph.getNode(nodeId)
+              const medicalNodeSize =
+                getMedicalBrowseNodeSize(
+                  nodeId,
+                  rawNode?.properties?.entity_type as string | undefined,
+                  medicalBrowse,
+                  { degree: limitedDegree, maxDegree }
+                ) ?? newSize
+
+              sigmaGraph.setNodeAttribute(nodeId, 'size', medicalNodeSize);
+              if (rawNode) {
+                rawNode.size = medicalNodeSize
+                rawNode.degree = newDegree
+              }
             }
           }
         };
@@ -775,7 +827,8 @@ const useLightrangeGraph = () => {
             getMedicalBrowseNodeSize(
               nodeId,
               newNode.properties?.entity_type as string | undefined,
-              medicalBrowse
+              medicalBrowse,
+              { degree: limitedDegree, maxDegree }
             ) ?? genericNodeSize
 
           // Calculate angle for polar coordinates
@@ -876,7 +929,8 @@ const useLightrangeGraph = () => {
             getMedicalBrowseNodeSize(
               nodeId,
               nodeToExpand.properties?.entity_type as string | undefined,
-              medicalBrowse
+              medicalBrowse,
+              { degree: limitedDegree, maxDegree }
             ) ?? genericNodeSize
           sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
           nodeToExpand.size = newSize;

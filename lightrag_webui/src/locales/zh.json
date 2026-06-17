@@ -410,6 +410,12 @@
       "refreshCurrentLabelTooltip": "刷新当前页面图数据",
       "refreshingTooltip": "正在刷新数据..."
     },
+    "viewMode": {
+      "medical": "医学浏览",
+      "medicalTooltip": "按医学层级组织，适合人类阅读知识库",
+      "raw": "原始KG",
+      "rawTooltip": "查看原始提取出来的知识图谱"
+    },
     "emptyGraph": "无数据(请重载图形数据)"
   },
   "retrievePanel": {

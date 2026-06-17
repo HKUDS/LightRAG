@@ -20,6 +20,7 @@ import PropertiesView from '@/components/graph/PropertiesView'
 import SettingsDisplay from '@/components/graph/SettingsDisplay'
 import Legend from '@/components/graph/Legend'
 import LegendButton from '@/components/graph/LegendButton'
+import GraphViewModeSwitch from '@/components/graph/GraphViewModeSwitch'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -212,6 +213,7 @@ const GraphViewer = () => {
 
         <div className="absolute top-2 left-2 flex items-start gap-2">
           <GraphLabels />
+          <GraphViewModeSwitch />
           {showNodeSearchBar && !isThemeSwitching && (
             <GraphSearch
               value={searchInitSelectedNode}

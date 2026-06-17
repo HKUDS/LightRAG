@@ -9,6 +9,7 @@ type DocumentsRequest = {
 }
 
 type LightragApiModule = typeof import('./lightrag')
+type SettingsModule = typeof import('../stores/settings')
 
 const storageMock = () => {
   const data = new Map<string, string>()
@@ -28,6 +29,7 @@ const storageMock = () => {
 }
 
 let apiModule: LightragApiModule
+let settingsModule: SettingsModule
 
 beforeAll(async () => {
   Object.defineProperty(globalThis, 'localStorage', {
@@ -40,11 +42,14 @@ beforeAll(async () => {
   })
 
   apiModule = await import('./lightrag')
+  settingsModule = await import('../stores/settings')
 })
 
 afterEach(() => {
   apiModule.__resetPaginatedDocumentRequestsForTests()
   ;(apiModule as any).__resetConfigWorkbenchRequestsForTests?.()
+  ;(apiModule as any).__resetGraphRequestsForTests?.()
+  settingsModule.useSettingsStore.setState({ graphViewMode: 'medical' })
 })
 
 describe('getDocumentsPaginated', () => {
@@ -267,6 +272,58 @@ describe('graph api', () => {
     expect(apiModule.buildGraphQueryPath('COVID-19 & fever', 2, 150)).toBe(
       '/graphs?label=COVID-19%20%26%20fever&max_depth=2&max_nodes=150&medical_view=true&medical_browse=true'
     )
+  })
+
+  test('builds raw graph query paths without medical browse flags', () => {
+    expect(apiModule.buildGraphQueryPath('COVID-19 & fever', 2, 150, 'raw')).toBe(
+      '/graphs?label=COVID-19%20%26%20fever&max_depth=2&max_nodes=150'
+    )
+  })
+
+  test('queries medical browse graph by default', async () => {
+    let capturedPath: string | undefined
+
+    ;(apiModule as any).__setGraphGetForTests(async (path: string) => {
+      capturedPath = path
+      return { nodes: [], edges: [] }
+    })
+
+    await expect(apiModule.queryGraphs('COVID-19 & fever', 2, 150)).resolves.toEqual({
+      nodes: [],
+      edges: []
+    })
+
+    expect(capturedPath).toBe(
+      '/graphs?label=COVID-19%20%26%20fever&max_depth=2&max_nodes=150&medical_view=true&medical_browse=true'
+    )
+  })
+
+  test('queries raw graph without medical browse flags when requested', async () => {
+    let capturedPath: string | undefined
+
+    ;(apiModule as any).__setGraphGetForTests(async (path: string) => {
+      capturedPath = path
+      return { nodes: [], edges: [] }
+    })
+
+    await expect(apiModule.queryGraphs('COVID-19 & fever', 2, 150, 'raw')).resolves.toEqual({
+      nodes: [],
+      edges: []
+    })
+
+    expect(capturedPath).toBe(
+      '/graphs?label=COVID-19%20%26%20fever&max_depth=2&max_nodes=150'
+    )
+  })
+})
+
+describe('settings store graph view mode', () => {
+  test('defaults to medical browsing mode and can switch to raw', () => {
+    expect(settingsModule.useSettingsStore.getState().graphViewMode).toBe('medical')
+
+    settingsModule.useSettingsStore.getState().setGraphViewMode('raw')
+
+    expect(settingsModule.useSettingsStore.getState().graphViewMode).toBe('raw')
   })
 })
 

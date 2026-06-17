@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
 import { defaultQueryLabel, suggestedUserPrompts } from '@/lib/constants'
-import { Message, QueryRequest } from '@/api/lightrag'
+import type { GraphViewMode, Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi'
@@ -42,6 +42,9 @@ interface SettingsState {
 
   graphQueryMaxDepth: number
   setGraphQueryMaxDepth: (depth: number) => void
+
+  graphViewMode: GraphViewMode
+  setGraphViewMode: (mode: GraphViewMode) => void
 
   graphMaxNodes: number
   setGraphMaxNodes: (nodes: number, triggerRefresh?: boolean) => void
@@ -104,6 +107,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       maxEdgeSize: 1,
 
       graphQueryMaxDepth: 3,
+      graphViewMode: 'medical',
       graphMaxNodes: 1000,
       backendMaxGraphNodes: null,
       graphLayoutMaxIterations: 15,
@@ -153,6 +157,8 @@ const useSettingsStoreBase = create<SettingsState>()(
         }),
 
       setGraphQueryMaxDepth: (depth: number) => set({ graphQueryMaxDepth: depth }),
+
+      setGraphViewMode: (graphViewMode: GraphViewMode) => set({ graphViewMode }),
 
       setGraphMaxNodes: (nodes: number, triggerRefresh: boolean = false) => {
         const state = useSettingsStore.getState()
@@ -238,7 +244,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 20,
+      version: 21,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -351,6 +357,9 @@ const useSettingsStoreBase = create<SettingsState>()(
             ...existing,
             ...suggestedUserPrompts.filter((p: string) => !existing.includes(p))
           ]
+        }
+        if (version < 21 || !['medical', 'raw'].includes(state.graphViewMode)) {
+          state.graphViewMode = 'medical'
         }
         return state
       }

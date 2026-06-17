@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   applyMedicalBrowseProjection,
+  getMedicalBrowseNodeSize,
   getMedicalBrowseNodeRole,
   getMedicalBrowsePosition
 } from './medicalBrowseGraph'
@@ -148,5 +149,53 @@ describe('medical browse role layout', () => {
     expect(Math.hypot(firstCategory.x, firstCategory.y)).toBeCloseTo(2, 6)
     expect(Math.hypot(subgroup.x, subgroup.y)).toBeCloseTo(4, 6)
     expect(Math.hypot(collapsed.x, collapsed.y)).toBeCloseTo(5.5, 6)
+  })
+
+  test('scales medical browse node size by role, degree, and collapsed count', () => {
+    const ordinaryLeaf = getMedicalBrowseNodeSize('plain_leaf', 'Symptom', browse, {
+      degree: 1,
+      maxDegree: 20
+    })
+    const importantLeaf = getMedicalBrowseNodeSize('important_leaf', 'Drug', browse, {
+      degree: 18,
+      maxDegree: 20
+    })
+    const collapsedGroup = getMedicalBrowseNodeSize(
+      'collapse:respiratory',
+      'MedicalCollapsedGroup',
+      browse,
+      {
+        degree: 3,
+        maxDegree: 20
+      }
+    )
+    const root = getMedicalBrowseNodeSize('flu', 'Disease', browse, {
+      degree: 20,
+      maxDegree: 20
+    })
+
+    expect(ordinaryLeaf).toBeLessThan(importantLeaf)
+    expect(collapsedGroup).toBeGreaterThan(ordinaryLeaf)
+    expect(root).toBeGreaterThan(importantLeaf)
+    expect(new Set([ordinaryLeaf, importantLeaf, collapsedGroup, root]).size).toBe(4)
+  })
+
+  test('keeps low-degree medical leaves small even in sparse local views', () => {
+    const sparseComplication = getMedicalBrowseNodeSize(
+      'acute_respiratory_distress_syndrome',
+      'disease',
+      browse,
+      {
+        degree: 2,
+        maxDegree: 2
+      }
+    )
+    const connectedTreatment = getMedicalBrowseNodeSize('important_treatment', 'Drug', browse, {
+      degree: 18,
+      maxDegree: 20
+    })
+
+    expect(sparseComplication).toBeLessThanOrEqual(9)
+    expect(connectedTreatment).toBeGreaterThan(sparseComplication)
   })
 })

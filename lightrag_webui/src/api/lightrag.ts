@@ -70,6 +70,8 @@ export type LightragGraphType = {
   metadata?: LightragGraphMetadata
 }
 
+export type GraphViewMode = 'medical' | 'raw'
+
 export type LightragQueueStatus = {
   available: boolean
   queue_name?: string
@@ -688,20 +690,37 @@ axiosInstance.interceptors.response.use(
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
-  maxNodes: number
+  maxNodes: number,
+  graphViewMode: GraphViewMode | boolean = 'medical'
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(buildGraphQueryPath(label, maxDepth, maxNodes))
-  return response.data
+  return graphGet(buildGraphQueryPath(label, maxDepth, maxNodes, graphViewMode))
 }
 
 export const buildGraphQueryPath = (
   label: string,
   maxDepth: number,
   maxNodes: number,
-  medicalView: boolean = true
+  graphViewMode: GraphViewMode | boolean = 'medical'
 ): string => {
   const path = `/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`
-  return medicalView ? `${path}&medical_view=true&medical_browse=true` : path
+  return graphViewMode === 'raw' || graphViewMode === false
+    ? path
+    : `${path}&medical_view=true&medical_browse=true`
+}
+
+const defaultGraphGet = async (path: string): Promise<LightragGraphType> => {
+  const response = await axiosInstance.get(path)
+  return response.data
+}
+
+let graphGet = defaultGraphGet
+
+export const __resetGraphRequestsForTests = (): void => {
+  graphGet = defaultGraphGet
+}
+
+export const __setGraphGetForTests = (get: typeof defaultGraphGet): void => {
+  graphGet = get
 }
 
 export const getGraphLabels = async (): Promise<string[]> => {

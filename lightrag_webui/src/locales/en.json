@@ -410,6 +410,12 @@
       "refreshCurrentLabelTooltip": "Refresh current page graph data",
       "refreshingTooltip": "Refreshing data..."
     },
+    "viewMode": {
+      "medical": "Medical browse",
+      "medicalTooltip": "Show the medical browsing graph organized for human reading",
+      "raw": "Raw KG",
+      "rawTooltip": "Show the original extracted knowledge graph"
+    },
     "emptyGraph": "Empty(Try Reload Again)"
   },
   "retrievePanel": {
