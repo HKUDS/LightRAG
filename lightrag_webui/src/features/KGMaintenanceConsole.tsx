@@ -22,7 +22,10 @@ import {
 } from '@/api/lightrag'
 import { EntityCatalogPanel, RelationCatalogPanel } from '@/components/kg-maintenance/CatalogPanels'
 import EvidenceInspector from '@/components/kg-maintenance/EvidenceInspector'
-import { findEdgeById, findNodeById } from '@/components/kg-maintenance/kgMaintenanceData'
+import {
+  findEdgeByIdAcrossSources,
+  findNodeByIdAcrossSources
+} from '@/components/kg-maintenance/kgMaintenanceData'
 import type {
   ProposalDecisionReview,
   ProposalSummary
@@ -199,17 +202,17 @@ export default function KGMaintenanceConsole() {
 
   const selectedNode = useMemo(
     () =>
-      selectedItem?.kind === 'node' && graph
-        ? findNodeById(graph.nodes, selectedItem.id)
+      selectedItem?.kind === 'node'
+        ? findNodeByIdAcrossSources(selectedItem.id, graph?.nodes, entities?.entities)
         : null,
-    [graph, selectedItem]
+    [entities, graph, selectedItem]
   )
   const selectedEdge = useMemo(
     () =>
-      selectedItem?.kind === 'edge' && graph
-        ? findEdgeById(graph.edges, selectedItem.id)
+      selectedItem?.kind === 'edge'
+        ? findEdgeByIdAcrossSources(selectedItem.id, graph?.edges, relations?.relations)
         : null,
-    [graph, selectedItem]
+    [graph, relations, selectedItem]
   )
 
   return (

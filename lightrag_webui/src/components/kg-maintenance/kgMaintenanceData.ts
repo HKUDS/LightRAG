@@ -128,6 +128,28 @@ export function findEdgeById(edges: KBIterationGraphEdge[], id: string) {
   return edges.find((edge) => edge.id === id) || null
 }
 
+export function findNodeByIdAcrossSources(
+  id: string,
+  ...sources: Array<KBIterationGraphNode[] | null | undefined>
+) {
+  for (const source of sources) {
+    const node = findNodeById(source ?? [], id)
+    if (node) return node
+  }
+  return null
+}
+
+export function findEdgeByIdAcrossSources(
+  id: string,
+  ...sources: Array<KBIterationGraphEdge[] | null | undefined>
+) {
+  for (const source of sources) {
+    const edge = findEdgeById(source ?? [], id)
+    if (edge) return edge
+  }
+  return null
+}
+
 type ProposalSafetyFields = Pick<ProposalSummary, 'risk' | 'requiresApproval'> &
   Partial<Pick<ProposalSummary, 'type'>>
 

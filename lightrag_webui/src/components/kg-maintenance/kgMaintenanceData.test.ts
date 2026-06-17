@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import {
   canSubmitProposalDecision,
+  findEdgeByIdAcrossSources,
+  findNodeByIdAcrossSources,
   formatRunSubtitle,
   getEvidenceCoveragePercent,
   parseProposalSummaries,
@@ -127,5 +129,27 @@ describe('KG maintenance overview display helpers', () => {
     expect(formatRunSubtitle('clinical_guideline_zh', 'pending_user_review')).toBe(
       'clinical_guideline_zh / Pending user review'
     )
+  })
+})
+
+describe('KG maintenance evidence selection helpers', () => {
+  test('falls back to catalog nodes when a selected entity is absent from the graph projection', () => {
+    expect(
+      findNodeByIdAcrossSources(
+        'catalog-only',
+        [{ id: 'graph-node', label: 'Graph node', entity_type: 'Disease', properties: {} }],
+        [{ id: 'catalog-only', label: 'Catalog node', entity_type: 'Symptom', properties: {} }]
+      )?.label
+    ).toBe('Catalog node')
+  })
+
+  test('falls back to catalog relations when a selected edge is absent from the graph projection', () => {
+    expect(
+      findEdgeByIdAcrossSources(
+        'catalog-edge',
+        [{ id: 'graph-edge', source: 'a', target: 'b', label: 'graph relation' }],
+        [{ id: 'catalog-edge', source: 'c', target: 'd', label: 'catalog relation' }]
+      )?.label
+    ).toBe('catalog relation')
   })
 })
