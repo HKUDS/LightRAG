@@ -510,6 +510,164 @@ export type LoginResponse = {
   webui_description?: string
 }
 
+export type KBIterationArtifactManifestItem = {
+  key: string
+  contentType: 'application/json' | 'text/markdown' | string
+  exists: boolean
+}
+
+export type KBIterationQualityFinding = {
+  severity: string
+  category: string
+  message: string
+  evidence: string[]
+  suggested_fix_type: string
+  requires_approval: boolean
+}
+
+export type KBIterationQualityScore = {
+  overall?: number
+  subscores?: Record<string, number>
+  metrics?: Record<string, any>
+  findings?: KBIterationQualityFinding[]
+  critical_blockers?: string[]
+}
+
+export type KBIterationSummaryResponse = {
+  workspace: string
+  latestRunId: string
+  generatedAt?: string
+  profile?: string
+  phase: string
+  counts: {
+    nodes: number
+    edges: number
+    sources: number
+  }
+  quality: KBIterationQualityScore
+  pendingApprovalCount: number
+  highRiskFindingCount: number
+  artifacts: KBIterationArtifactManifestItem[]
+}
+
+export type KBIterationWorkspacesResponse = {
+  workspaces: string[]
+}
+
+export type KBIterationGraphNode = {
+  id: string
+  label: string
+  entity_type: string
+  description?: string
+  source_id?: string
+  file_path?: string
+  role?: string
+  evidenceStatus?: string
+  qualityFlags?: string[]
+  properties?: Record<string, any>
+}
+
+export type KBIterationGraphEdge = {
+  id: string
+  source: string
+  target: string
+  label: string
+  keywords?: string
+  description?: string
+  source_id?: string
+  file_path?: string
+  direction?: 'outgoing' | 'incoming' | string
+  sourceLabel?: string
+  targetLabel?: string
+  evidenceStatus?: string
+  qualityFlags?: string[]
+  properties?: Record<string, any>
+}
+
+export type KBIterationGraphResponse = {
+  workspace: string
+  runId: string
+  generatedAt?: string
+  nodes: KBIterationGraphNode[]
+  edges: KBIterationGraphEdge[]
+  metadata?: Record<string, any>
+}
+
+export type KBIterationQualityResponse = {
+  workspace: string
+  runId: string
+  quality: KBIterationQualityScore
+  report: string
+}
+
+export type KBIterationEntityCatalogResponse = {
+  workspace: string
+  runId: string
+  catalog: string
+  stats: Array<Record<string, any>>
+  entities: KBIterationGraphNode[]
+}
+
+export type KBIterationRelationCatalogResponse = {
+  workspace: string
+  runId: string
+  catalog: string
+  stats: Array<Record<string, any>>
+  relations: KBIterationGraphEdge[]
+}
+
+export type KBIterationDiffResponse = {
+  workspace: string
+  runId: string
+  summary: Record<string, any>
+  report: string
+}
+
+export type KBIterationRulesResponse = {
+  workspace: string
+  qualityRules: string
+  knownIssues: string
+  acceptedChanges: string
+  rejectedChanges: string
+}
+
+export type KBIterationRunsResponse = {
+  workspace: string
+  runs: Array<Record<string, any>>
+}
+
+export type KBIterationArtifactResponse =
+  | {
+    artifactKey: string
+    contentType: 'application/json' | string
+    payload: any
+  }
+  | {
+    artifactKey: string
+    contentType: 'text/markdown' | string
+    content: string
+  }
+
+export type KBIterationProposalDecision = 'accept' | 'reject' | 'defer'
+
+export type KBIterationProposalDecisionRequest = {
+  reviewer: string
+  reason: string
+  impact_scope?: string
+  verification?: string
+}
+
+export type KBIterationProposalDecisionResponse = {
+  workspace: string
+  proposalId: string
+  decision: KBIterationProposalDecision
+  record: Record<string, any>
+}
+
+export type KBIterationRunRequest = {
+  profile?: string | null
+}
+
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
@@ -851,6 +1009,115 @@ export const __setConfigFolderPickPostForTests = (
 
 export const __setEntityPromptPutForTests = (put: typeof defaultEntityPromptPut): void => {
   entityPromptPut = put
+}
+
+const defaultKBIterationGet = async <T = any>(path: string): Promise<T> => {
+  const response = await axiosInstance.get(path)
+  return response.data
+}
+
+const defaultKBIterationPost = async <T = any>(path: string, body?: any): Promise<T> => {
+  const response = await axiosInstance.post(path, body)
+  return response.data
+}
+
+let kbIterationGet = defaultKBIterationGet
+let kbIterationPost = defaultKBIterationPost
+
+const encodePathSegment = (value: string): string => encodeURIComponent(value)
+
+export const getKBIterationWorkspaces = async (): Promise<KBIterationWorkspacesResponse> => {
+  return kbIterationGet('/kb-iteration/workspaces')
+}
+
+export const getKBIterationSummary = async (
+  workspace: string
+): Promise<KBIterationSummaryResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/summary`)
+}
+
+export const getKBIterationRuns = async (
+  workspace: string
+): Promise<KBIterationRunsResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/runs`)
+}
+
+export const runKBIteration = async (
+  workspace: string,
+  request: KBIterationRunRequest = {}
+): Promise<KBIterationSummaryResponse> => {
+  return kbIterationPost(`/kb-iteration/${encodePathSegment(workspace)}/runs`, request)
+}
+
+export const getKBIterationArtifact = async (
+  workspace: string,
+  artifactKey: string,
+  runId: string = 'latest'
+): Promise<KBIterationArtifactResponse> => {
+  return kbIterationGet(
+    `/kb-iteration/${encodePathSegment(workspace)}/runs/${encodePathSegment(runId)}/artifacts/${encodePathSegment(artifactKey)}`
+  )
+}
+
+export const getKBIterationGraph = async (
+  workspace: string
+): Promise<KBIterationGraphResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/graph`)
+}
+
+export const getKBIterationQuality = async (
+  workspace: string
+): Promise<KBIterationQualityResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/quality`)
+}
+
+export const getKBIterationEntityCatalog = async (
+  workspace: string
+): Promise<KBIterationEntityCatalogResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/catalog/entities`)
+}
+
+export const getKBIterationRelationCatalog = async (
+  workspace: string
+): Promise<KBIterationRelationCatalogResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/catalog/relations`)
+}
+
+export const getKBIterationDiff = async (
+  workspace: string
+): Promise<KBIterationDiffResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/diff`)
+}
+
+export const getKBIterationRules = async (
+  workspace: string
+): Promise<KBIterationRulesResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/rules`)
+}
+
+export const recordKBIterationProposalDecision = async (
+  workspace: string,
+  proposalId: string,
+  decision: KBIterationProposalDecision,
+  request: KBIterationProposalDecisionRequest
+): Promise<KBIterationProposalDecisionResponse> => {
+  return kbIterationPost(
+    `/kb-iteration/${encodePathSegment(workspace)}/proposals/${encodePathSegment(proposalId)}/${decision}`,
+    request
+  )
+}
+
+export const __resetKBIterationRequestsForTests = (): void => {
+  kbIterationGet = defaultKBIterationGet
+  kbIterationPost = defaultKBIterationPost
+}
+
+export const __setKBIterationGetForTests = (get: typeof defaultKBIterationGet): void => {
+  kbIterationGet = get
+}
+
+export const __setKBIterationPostForTests = (post: typeof defaultKBIterationPost): void => {
+  kbIterationPost = post
 }
 
 export const getDocuments = async (): Promise<DocsStatusesResponse> => {

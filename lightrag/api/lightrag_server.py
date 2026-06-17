@@ -60,6 +60,7 @@ from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.config_routes import create_config_routes
+from lightrag.api.routers.kb_iteration_routes import create_kb_iteration_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 
 from lightrag.utils import logger, set_verbose_debug
@@ -2087,6 +2088,7 @@ def create_app(args):
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
     app.include_router(create_config_routes(rag, args, api_key))
+    app.include_router(create_kb_iteration_routes(rag, args, api_key))
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)

@@ -6,7 +6,8 @@ import type { GraphViewMode, Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi'
-type Tab = 'config' | 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
+type Tab = 'config' | 'documents' | 'knowledge-graph' | 'kg-maintenance' | 'retrieval' | 'api'
+const VALID_TABS: Tab[] = ['config', 'documents', 'knowledge-graph', 'kg-maintenance', 'retrieval', 'api']
 
 interface SettingsState {
   // Document manager settings
@@ -244,7 +245,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 21,
+      version: 22,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -360,6 +361,9 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 21 || !['medical', 'raw'].includes(state.graphViewMode)) {
           state.graphViewMode = 'medical'
+        }
+        if (version < 22 && !VALID_TABS.includes(state.currentTab)) {
+          state.currentTab = 'documents'
         }
         return state
       }

@@ -16,6 +16,7 @@ import DocumentManager from '@/features/DocumentManager'
 import RetrievalView from '@/features/RetrievalView'
 import ApiSite from '@/features/ApiSite'
 import ConfigWorkbench from '@/features/ConfigWorkbench'
+import KGMaintenanceConsole from '@/features/KGMaintenanceConsole'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
@@ -209,7 +210,7 @@ function App() {
           <main className="flex h-screen w-screen overflow-hidden">
             <Tabs
               defaultValue={currentTab}
-              className="!m-0 flex grow flex-col overflow-hidden !p-0"
+              className="!m-0 flex min-w-0 grow flex-col overflow-hidden !p-0"
               onValueChange={handleTabChange}
             >
               <SiteHeader />
@@ -231,6 +232,12 @@ function App() {
                   className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
                 >
                   <GraphViewer />
+                </TabsContent>
+                <TabsContent
+                  value="kg-maintenance"
+                  className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
+                >
+                  <KGMaintenanceConsole />
                 </TabsContent>
                 <TabsContent
                   value="retrieval"

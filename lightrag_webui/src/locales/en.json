@@ -10,6 +10,7 @@
     "documents": "Documents",
     "config": "Config",
     "knowledgeGraph": "Knowledge Graph",
+    "kgMaintenance": "KG Maintenance",
     "retrieval": "Retrieval",
     "api": "API",
     "projectRepository": "Project Repository",

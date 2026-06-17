@@ -36,7 +36,7 @@ function TabsNavigation() {
   const { t } = useTranslation()
 
   return (
-    <div className="flex h-8 self-center">
+    <div className="flex h-8 min-w-max self-center">
       <TabsList className="h-full gap-2">
         <NavigationTab value="documents" currentTab={currentTab}>
           {t('header.documents')}
@@ -46,6 +46,9 @@ function TabsNavigation() {
         </NavigationTab>
         <NavigationTab value="knowledge-graph" currentTab={currentTab}>
           {t('header.knowledgeGraph')}
+        </NavigationTab>
+        <NavigationTab value="kg-maintenance" currentTab={currentTab}>
+          {t('header.kgMaintenance', 'KG Maintenance')}
         </NavigationTab>
         <NavigationTab value="retrieval" currentTab={currentTab}>
           {t('header.retrieval')}
@@ -78,19 +81,19 @@ export default function SiteHeader() {
   }
 
   return (
-    <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
-      <div className="flex w-auto min-w-[200px] items-center">
-        <a href={webuiPrefix} className="flex items-center gap-2">
+    <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full min-w-0 border-b px-2 backdrop-blur sm:px-4">
+      <div className="flex min-w-0 shrink items-center sm:min-w-40 lg:min-w-[200px]">
+        <a href={webuiPrefix} className="flex min-w-0 items-center gap-2">
           <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
-          <span className="font-bold md:inline-block">{SiteInfo.name}</span>
+          <span className="hidden font-bold sm:inline-block">{SiteInfo.name}</span>
         </a>
         {webuiTitle && (
-          <div className="flex items-center">
+          <div className="hidden min-w-0 items-center md:flex">
             <span className="mx-1 text-xs text-gray-500 dark:text-gray-400">|</span>
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="cursor-default text-sm font-medium">{webuiTitle}</span>
+                  <span className="truncate text-sm font-medium">{webuiTitle}</span>
                 </TooltipTrigger>
                 {webuiDescription && (
                   <TooltipContent side="bottom">{webuiDescription}</TooltipContent>
@@ -101,16 +104,16 @@ export default function SiteHeader() {
         )}
       </div>
 
-      <div className="flex h-10 flex-1 items-center justify-center">
+      <div className="flex h-10 min-w-0 flex-1 items-center justify-start overflow-x-auto px-1 sm:justify-center">
         <TabsNavigation />
         {isGuestMode && (
-          <div className="ml-2 self-center rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+          <div className="ml-2 shrink-0 self-center rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">
             {t('login.guestMode', 'Guest Mode')}
           </div>
         )}
       </div>
 
-      <nav className="flex w-[200px] items-center justify-end">
+      <nav className="flex w-auto shrink-0 items-center justify-end sm:w-40 lg:w-[200px]">
         <div className="flex items-center gap-2">
           {versionDisplay && (
             <TooltipProvider>

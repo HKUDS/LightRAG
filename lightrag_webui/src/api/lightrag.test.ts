@@ -429,3 +429,53 @@ describe('config workbench api', () => {
     })
   })
 })
+
+describe('kb iteration api', () => {
+  test('gets a workspace summary through an encoded kb-iteration path', async () => {
+    let capturedPath: string | undefined
+    const payload = {
+      workspace: 'influenza medical',
+      latestRunId: 'latest',
+      phase: 'pending_user_review'
+    }
+
+    ;(apiModule as any).__setKBIterationGetForTests(async (path: string) => {
+      capturedPath = path
+      return payload
+    })
+
+    await expect((apiModule as any).getKBIterationSummary('influenza medical')).resolves.toEqual(
+      payload
+    )
+    expect(capturedPath).toBe('/kb-iteration/influenza%20medical/summary')
+  })
+
+  test('posts proposal decisions without mutating facts directly', async () => {
+    let capturedPath: string | undefined
+    let capturedBody: Record<string, string> | undefined
+    const response = { proposalId: 'p1', decision: 'reject' }
+
+    ;(apiModule as any).__setKBIterationPostForTests(
+      async (path: string, body?: Record<string, string>) => {
+        capturedPath = path
+        capturedBody = body
+        return response
+      }
+    )
+
+    await expect(
+      (apiModule as any).recordKBIterationProposalDecision(
+        'influenza_medical_v1',
+        'p1',
+        'reject',
+        { reviewer: 'maintainer', reason: 'Needs source evidence' }
+      )
+    ).resolves.toEqual(response)
+
+    expect(capturedPath).toBe('/kb-iteration/influenza_medical_v1/proposals/p1/reject')
+    expect(capturedBody).toEqual({
+      reviewer: 'maintainer',
+      reason: 'Needs source evidence'
+    })
+  })
+})

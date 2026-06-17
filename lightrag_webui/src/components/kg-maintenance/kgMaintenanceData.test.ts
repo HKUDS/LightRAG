@@ -1,0 +1,131 @@
+import { describe, expect, test } from 'bun:test'
+import {
+  canSubmitProposalDecision,
+  formatRunSubtitle,
+  getEvidenceCoveragePercent,
+  parseProposalSummaries,
+  proposalNeedsConfirmation
+} from './kgMaintenanceData'
+
+describe('KG maintenance proposal decision safety', () => {
+  test('requires explicit confirmation for high-risk proposal decisions', () => {
+    const proposal = {
+      id: 'p1',
+      type: 'hierarchy_rule_change',
+      target: 'kg_structure.md',
+      risk: 'high',
+      requiresApproval: true,
+      evidence: ['edge:e1']
+    }
+
+    expect(proposalNeedsConfirmation(proposal)).toBe(true)
+    expect(
+      canSubmitProposalDecision(proposal, {
+        reason: 'Evidence checked',
+        impactScope: 'Hierarchy rules',
+        verification: 'Re-run quality report',
+        confirmation: ''
+      })
+    ).toBe(false)
+    expect(
+      canSubmitProposalDecision(proposal, {
+        reason: 'Evidence checked',
+        impactScope: 'Hierarchy rules',
+        verification: 'Re-run quality report',
+        confirmation: '该操作会改变知识库行为或重建结果。请确认已检查来源证据、影响范围和回滚方式。'
+      })
+    ).toBe(true)
+  })
+
+  test('requires reason, impact scope, and verification for all proposal decisions', () => {
+    const proposal = {
+      id: 'p2',
+      type: 'quality_report_note',
+      target: 'quality_report.md',
+      risk: 'low',
+      requiresApproval: false,
+      evidence: []
+    }
+
+    expect(proposalNeedsConfirmation(proposal)).toBe(false)
+    expect(
+      canSubmitProposalDecision(proposal, {
+        reason: '',
+        impactScope: 'Report only',
+        verification: 'No mutation',
+        confirmation: ''
+      })
+    ).toBe(false)
+    expect(
+      canSubmitProposalDecision(proposal, {
+        reason: 'No mutation requested',
+        impactScope: '',
+        verification: 'No mutation',
+        confirmation: ''
+      })
+    ).toBe(false)
+    expect(
+      canSubmitProposalDecision(proposal, {
+        reason: 'No mutation requested',
+        impactScope: 'Report only',
+        verification: 'No mutation',
+        confirmation: ''
+      })
+    ).toBe(true)
+  })
+
+  test('treats unknown proposal types as confirmation-gated by default', () => {
+    const proposal = {
+      id: 'p3',
+      type: 'new_mutation_type',
+      target: 'unknown',
+      risk: 'medium',
+      requiresApproval: false,
+      evidence: []
+    }
+
+    expect(proposalNeedsConfirmation(proposal)).toBe(true)
+  })
+
+  test('parses human approval fields from proposal markdown', () => {
+    const [proposal] = parseProposalSummaries(`
+proposals:
+- id: p1
+  type: web_display_change
+  target: MedicalHierarchyGraph.tsx
+  proposed_change: Add relation legend
+  reason: Reviewers need relation semantics
+  evidence:
+  - edge:e1
+  confidence: 0.75
+  risk: high
+  requires_approval: true
+  expected_metric_change:
+    web_readability: 5
+`)
+
+    expect(proposal.proposedChange).toBe('Add relation legend')
+    expect(proposal.reason).toBe('Reviewers need relation semantics')
+    expect(proposal.confidence).toBe('0.75')
+    expect(proposal.expectedMetricChange).toContain('web_readability')
+  })
+})
+
+describe('KG maintenance overview display helpers', () => {
+  test('falls back to evidence grounding when evidence coverage metric is absent', () => {
+    expect(
+      getEvidenceCoveragePercent({
+        metrics: {},
+        subscores: {
+          evidence_grounding: 100
+        }
+      })
+    ).toBe(100)
+  })
+
+  test('formats run subtitle with an ASCII separator', () => {
+    expect(formatRunSubtitle('clinical_guideline_zh', 'pending_user_review')).toBe(
+      'clinical_guideline_zh / Pending user review'
+    )
+  })
+})

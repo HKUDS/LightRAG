@@ -10,6 +10,7 @@
     "documents": "文档",
     "config": "配置",
     "knowledgeGraph": "知识图谱",
+    "kgMaintenance": "KG 维护",
     "retrieval": "检索",
     "api": "API",
     "projectRepository": "项目仓库",
