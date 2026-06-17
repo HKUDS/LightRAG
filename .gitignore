@@ -83,6 +83,7 @@ ignore_this.txt
 
 # AI Agent files
 memory-bank
+.superpowers/
 /task_plan.md
 /findings.md
 /progress.md
