@@ -508,9 +508,8 @@ The reviewer must not recommend adding unstated medical facts. It may recommend 
 
 Track:
 
-- Whether medical browse differs meaningfully from raw KG.
-- Whether root/category/subgroup/leaf roles have visible size or layout differences.
-- Whether collapsed groups reduce clutter while preserving representative examples.
+- Whether the raw KG clearly presents factual nodes and relationships.
+- Whether medical grouping reduces noise in the property panel.
 - Whether property rows show relation labels instead of `邻接`.
 - Whether relation details preserve full triple direction.
 
@@ -547,7 +546,7 @@ Draft prompt:
 - 关系方向和描述是否支持三元组。
 - 每条事实关系是否有来源元数据。
 - 疾病、症状、诊断、治疗、预防、人群、指南等层级是否适合人类浏览。
-- 医学浏览图是否比原始 KG 更清晰。
+- 医学分组是否让原始 KG 更容易理解。
 - 本轮建议是否适合自动报告、进入待办、进入审批队列或需要人工复核。
 
 输出格式：
@@ -603,6 +602,159 @@ Proposal types:
 - `web_display_change`
 - `workspace_rebuild`
 - `manual_review`
+
+## Agent Control Loop
+
+The agent's core behavior is a closed loop:
+
+```text
+Observe -> Think -> Propose -> Approve -> Execute -> Evaluate -> Remember -> Repeat
+```
+
+This loop is the primary contract for every KB iteration run. The detailed workflows below are concrete entry points into this loop, but the loop itself is the agent's operating model.
+
+### 1. Observe
+
+The agent reads the current workspace and builds a reliable picture of the KB state.
+
+Inputs:
+
+- `.env` workspace configuration.
+- Graph, entity, relation, and source metadata files.
+- Existing `kb_context.md`, quality rules, known issues, accepted decisions, and rejected decisions.
+- Optional previous workspace snapshots for comparison.
+
+Outputs:
+
+- Fresh machine snapshots.
+- Refreshed Markdown memory.
+- A run record in `iteration_log.md`.
+
+### 2. Think
+
+The agent analyzes the current state before proposing changes.
+
+Thinking must combine deterministic checks and LLM review:
+
+- Deterministic checks compute measurable issues such as value-like nodes, missing source metadata, illegal relation labels, and required branch coverage.
+- LLM review judges higher-level structure, readability, ambiguity, and likely causes.
+- The agent must state its diagnosis, evidence, assumptions, and uncertainty.
+
+The output of this step is not a mutation. It is an analysis package that feeds quality scoring and proposal generation.
+
+### 3. Propose
+
+The agent converts diagnosed issues into structured improvement proposals.
+
+Each proposal must identify:
+
+- The problem.
+- The proposed change.
+- The target file, rule, prompt, workspace, or UI behavior.
+- Supporting evidence.
+- Expected metric improvement.
+- Risk and confidence.
+- Whether approval is required.
+
+All behavior-changing proposals enter `approval_queue.md`. Lower-risk observations enter `improvement_backlog.md`.
+
+### 4. Approve
+
+Approval is the human gate between analysis and mutation.
+
+The agent may continue reporting without approval, but it must not apply prompt edits, ontology edits, hierarchy changes, relation-rule changes, factual KG corrections, or workspace rebuilds until approval is recorded.
+
+Approval results are written to:
+
+- `accepted_changes.md`
+- `rejected_changes.md`
+- `iteration_log.md`
+
+Rejected proposals become future negative memory so the agent does not keep re-asking for the same change.
+
+### 5. Execute
+
+Execution applies only approved changes.
+
+Execution may include:
+
+- Editing extraction prompts.
+- Updating alias, relation, category, or hierarchy rules.
+- Creating a new workspace.
+- Rebuilding a workspace.
+- Updating Web display behavior.
+
+Execution must record the exact files changed, commands run, workspace names, and rebuild parameters. If the action fails, the failed attempt is recorded and the next attempt must use a different approach.
+
+### 6. Evaluate
+
+After execution, the agent immediately measures the result.
+
+Evaluation includes:
+
+- Regenerating snapshots.
+- Recomputing quality scores.
+- Comparing before/after metrics.
+- Writing `diff_report.md`.
+- Detecting regressions.
+- Deciding whether the iteration should be accepted, revised, or rolled back.
+
+No iteration is considered successful only because changes were applied. It is successful only if quality metrics and regression checks support that conclusion or the user explicitly accepts the trade-off.
+
+### 7. Remember
+
+The agent updates long-term memory.
+
+Memory updates include:
+
+- New accepted rules in `quality_rules.md`.
+- New failure cases in `known_issues.md`.
+- Accepted and rejected proposals.
+- Run summaries in `iteration_log.md`.
+- Lessons that should affect future reviewer prompts.
+
+This makes each loop more informed than the previous one.
+
+### Loop State Record
+
+Each loop should produce a compact state record:
+
+```yaml
+loop_id: kb-loop-20260617-001
+workspace: influenza_medical_v1
+phase: evaluate
+input_snapshot: snapshots/kg_snapshot.json
+previous_snapshot: null
+analysis: quality_report.md
+proposals:
+  - proposals/proposal-20260617-001.yml
+approved_changes: []
+executed_changes: []
+quality_before: null
+quality_after: snapshots/quality_score.json
+decision: pending_user_review
+```
+
+This state record can live inside `iteration_log.md` or as `snapshots/loop_state.json`.
+
+### Loop Stop Conditions
+
+The loop stops when one of these conditions is met:
+
+- Quality score meets the accepted threshold and no critical blockers remain.
+- The agent has produced approval-required proposals and is waiting for user review.
+- A rebuild or mutation requires explicit user confirmation.
+- A critical error prevents reliable snapshot or score generation.
+- The user intentionally pauses the iteration.
+
+### Loop Invariants
+
+- Observation and evaluation use structured data, not only free-text summaries.
+- Thinking produces evidence-backed diagnosis, not silent assumptions.
+- Proposals are structured and reviewable.
+- Execution is confirmation-gated.
+- Evaluation happens after every execution.
+- Memory is updated after every accepted or rejected decision.
 
 ## Workflow
 
