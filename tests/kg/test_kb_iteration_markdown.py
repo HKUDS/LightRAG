@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kb_iteration.markdown import write_markdown_memory
 from lightrag.kb_iteration.models import KGSnapshot, SnapshotEdge, SnapshotNode
 
@@ -147,6 +148,62 @@ def test_entity_catalog_sorts_set_aliases_deterministically(tmp_path: Path):
     assert "Aliases: alpha, beta" in content
 
 
+def test_entity_catalog_sorts_list_aliases_deterministically(tmp_path: Path):
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode(
+                "entity-1",
+                "Entity One",
+                "Finding",
+                properties={"aliases": ["beta", "alpha"]},
+            ),
+        ],
+        edges=[],
+        metadata={},
+    )
+
+    write_markdown_memory(snapshot, tmp_path)
+
+    content = (tmp_path / "entity_catalog.md").read_text(encoding="utf-8")
+    assert "Aliases: alpha, beta" in content
+
+
+def test_source_metadata_splits_dedupes_and_sorts_joined_provenance(
+    tmp_path: Path,
+):
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode(
+                "entity-1",
+                "Entity One",
+                "Finding",
+                source_id=GRAPH_FIELD_SEP.join(["chunk-2", "chunk-1", "chunk-2"]),
+                file_path=GRAPH_FIELD_SEP.join(["b.md", "a.md", "", "b.md"]),
+            ),
+            SnapshotNode(
+                "entity-2",
+                "Entity Two",
+                "Finding",
+                source_id=GRAPH_FIELD_SEP.join(["chunk-1", "chunk-2"]),
+                file_path=GRAPH_FIELD_SEP.join(["a.md", "b.md"]),
+            ),
+        ],
+        edges=[],
+        metadata={},
+    )
+
+    write_markdown_memory(snapshot, tmp_path)
+
+    content = (tmp_path / "entity_catalog.md").read_text(encoding="utf-8")
+    assert content.count("Source: a.md, b.md / chunk-1, chunk-2") == 2
+
+
 def test_relation_catalog_groups_by_keyword_and_preserves_direction(
     tmp_path: Path,
 ):
@@ -162,6 +219,29 @@ def test_relation_catalog_groups_by_keyword_and_preserves_direction(
     assert "Source: guideline.md / chunk-1" in content
 
 
+def test_blank_entity_types_and_keywords_render_as_unknown(tmp_path: Path):
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode("entity-1", "Entity One", "   "),
+            SnapshotNode("entity-2", "Entity Two", "Finding"),
+        ],
+        edges=[
+            SnapshotEdge("edge-1", "entity-1", "entity-2", " \t "),
+        ],
+        metadata={},
+    )
+
+    write_markdown_memory(snapshot, tmp_path)
+
+    entity_content = (tmp_path / "entity_catalog.md").read_text(encoding="utf-8")
+    relation_content = (tmp_path / "relation_catalog.md").read_text(encoding="utf-8")
+    assert "## Unknown (1)" in entity_content
+    assert "## Unknown (1)" in relation_content
+
+
 def test_kg_structure_lists_hierarchy_like_edges(tmp_path: Path):
     write_markdown_memory(_snapshot(), tmp_path)
 
@@ -169,6 +249,50 @@ def test_kg_structure_lists_hierarchy_like_edges(tmp_path: Path):
 
     assert "发热 -> 症状" in content
     assert "症状归类" in content
+    assert "No hierarchy-like edges detected." not in content
+
+
+def test_kg_structure_detects_comma_merged_hierarchy_keywords(tmp_path: Path):
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode("disease", "Disease", "Disease"),
+            SnapshotNode("symptom", "Symptom", "Symptom"),
+        ],
+        edges=[
+            SnapshotEdge("edge-1", "disease", "symptom", "clinical, category"),
+        ],
+        metadata={},
+    )
+
+    write_markdown_memory(snapshot, tmp_path)
+
+    content = (tmp_path / "kg_structure.md").read_text(encoding="utf-8")
+    assert "disease -> symptom" in content
+    assert "No hierarchy-like edges detected." not in content
+
+
+def test_kg_structure_keeps_medical_group_endpoint_detection(tmp_path: Path):
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode("fever", "Fever", "Symptom"),
+            SnapshotNode("symptoms", "Symptoms", "MedicalGroup"),
+        ],
+        edges=[
+            SnapshotEdge("edge-1", "fever", "symptoms", "related_to"),
+        ],
+        metadata={},
+    )
+
+    write_markdown_memory(snapshot, tmp_path)
+
+    content = (tmp_path / "kg_structure.md").read_text(encoding="utf-8")
+    assert "fever -> symptoms" in content
     assert "No hierarchy-like edges detected." not in content
 
 

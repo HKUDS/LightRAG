@@ -4,6 +4,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from lightrag.constants import GRAPH_FIELD_SEP
+
 from .models import KGSnapshot, SnapshotEdge, SnapshotNode
 
 HIERARCHY_KEYWORDS = {
@@ -180,7 +182,7 @@ def _is_hierarchy_like(
     target: SnapshotNode | None,
 ) -> bool:
     return (
-        edge.keywords in HIERARCHY_KEYWORDS
+        any(keyword in HIERARCHY_KEYWORDS for keyword in _keyword_tokens(edge.keywords))
         or _is_medical_group(source)
         or _is_medical_group(target)
     )
@@ -251,22 +253,31 @@ def _display_node(node: SnapshotNode) -> str:
 
 
 def _label_or_unknown(value: Any) -> str:
-    text = "" if value is None else str(value)
+    text = "" if value is None else str(value).strip()
     return text or "Unknown"
 
 
 def _format_aliases(value: Any) -> str:
-    if isinstance(value, set):
+    if isinstance(value, (list, tuple, set)):
         return ", ".join(sorted(str(item) for item in value))
-    if isinstance(value, (list, tuple)):
-        return ", ".join(str(item) for item in value)
     return str(value)
 
 
 def _source_detail(file_path: str, source_id: str) -> str:
-    if file_path and source_id:
-        return f"{file_path} / {source_id}"
-    return file_path or source_id
+    files = _normalized_joined_values(file_path)
+    sources = _normalized_joined_values(source_id)
+    if files and sources:
+        return f"{files} / {sources}"
+    return files or sources
+
+
+def _keyword_tokens(keywords: str) -> list[str]:
+    return [keyword.strip() for keyword in keywords.split(",") if keyword.strip()]
+
+
+def _normalized_joined_values(value: str) -> str:
+    values = {part.strip() for part in value.split(GRAPH_FIELD_SEP) if part.strip()}
+    return ", ".join(sorted(values))
 
 
 def _join_markdown(lines: list[str]) -> str:
