@@ -425,6 +425,7 @@
       "parametersDescription": "쿼리 매개변수를 구성하세요",
       "queryMode": "쿼리 모드",
       "queryModeTooltip": "검색 전략을 선택하세요:\n• Naive: 전통적인 텍스트 청크 벡터 검색\n• Local: 엔티티 검색에 집중\n• Global: 관계 검색에 집중\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 검색 건너뛰기, 대화 기록과 현재 질문을 LLM에 전송",
+      "queryModeWarning": "검색 품질이 저하될 수 있습니다",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

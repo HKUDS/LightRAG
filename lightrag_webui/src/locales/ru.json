@@ -425,6 +425,7 @@
       "parametersDescription": "Настройте параметры вашего запроса",
       "queryMode": "Режим запроса",
       "queryModeTooltip": "Выберите стратегию поиска:\n• Naive: Традиционный поиск по вектору текстовых фрагментов\n• Local: Фокус на поиске сущностей\n• Global: Фокус на поиске связей\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Пропустить поиск, отправить историю разговора и текущий вопрос в LLM",
+      "queryModeWarning": "Может снизить качество поиска",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

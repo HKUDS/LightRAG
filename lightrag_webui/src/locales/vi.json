@@ -425,6 +425,7 @@
       "parametersDescription": "Cấu hình tham số truy vấn của bạn",
       "queryMode": "Chế Độ Truy Vấn",
       "queryModeTooltip": "Chọn chiến lược truy xuất:\n• Naive: Truy xuất vector đoạn văn bản truyền thống\n• Local: Tập trung vào truy xuất thực thể\n• Global: Tập trung vào truy xuất quan hệ\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Bỏ qua truy xuất, gửi lịch sử hội thoại và câu hỏi hiện tại đến LLM",
+      "queryModeWarning": "Có thể làm giảm chất lượng truy xuất",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

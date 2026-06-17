@@ -425,6 +425,7 @@
       "parametersDescription": "Konfigurieren Sie Ihre Abfrageparameter",
       "queryMode": "Abfragemodus",
       "queryModeTooltip": "Abfragestrategie auswählen:\n• Naive: Traditionelle Text-Chunk-Vektorabfrage\n• Local: Fokus auf Entitätsabfrage\n• Global: Fokus auf Beziehungsabfrage\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Abfrage überspringen, Konversationsverlauf und aktuelle Frage an LLM senden",
+      "queryModeWarning": "Kann die Abrufqualität verringern",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
