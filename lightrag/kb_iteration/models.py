@@ -45,3 +45,34 @@ class KGSnapshot:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class QualityFinding:
+    severity: str
+    category: str
+    message: str
+    evidence: list[str] = field(default_factory=list)
+    suggested_fix_type: str = "review"
+    requires_approval: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class QualityScore:
+    overall: int
+    subscores: dict[str, int]
+    metrics: dict[str, Any]
+    findings: list[QualityFinding] = field(default_factory=list)
+    critical_blockers: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "overall": self.overall,
+            "subscores": self.subscores,
+            "metrics": self.metrics,
+            "findings": [finding.to_dict() for finding in self.findings],
+            "critical_blockers": self.critical_blockers,
+        }
