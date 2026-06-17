@@ -2692,7 +2692,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def _purge_doc_chunks_and_kg(
         self,
         doc_id: str,
-        chunk_ids: set[str],
+        chunk_ids: list[str],
         *,
         pipeline_status: dict,
         pipeline_status_lock: Any,
@@ -2743,6 +2743,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """
         if not chunk_ids:
             return
+
+        # Set view for membership/intersection checks below (chunk_ids stays a list
+        # so it satisfies the storage delete contract: ``delete(ids: list[str])``).
+        chunk_ids_set = set(chunk_ids)
 
         # ---- 1. Analyze affected entities/relations from full_entities/full_relations ----
         entities_to_delete: set[str] = set()
@@ -2829,7 +2833,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                 remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
                 graph_references_deleted_chunks = bool(
-                    graph_sources and set(graph_sources) & chunk_ids
+                    graph_sources and set(graph_sources) & chunk_ids_set
                 )
 
                 if not remaining_sources:
@@ -2893,7 +2897,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                 remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
                 graph_references_deleted_chunks = bool(
-                    graph_sources and set(graph_sources) & chunk_ids
+                    graph_sources and set(graph_sources) & chunk_ids_set
                 )
 
                 if not remaining_sources:
@@ -3269,12 +3273,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 metadata.get("deletion_llm_cache_ids", []),
                 context=f"doc {doc_id} metadata.deletion_llm_cache_ids",
             )
-            chunk_ids = set(
-                normalize_string_list(
-                    doc_status_data.get("chunks_list", []),
-                    context=f"doc {doc_id} chunks_list",
+            # Order-preserving dedup so chunk_ids stays a list and satisfies the
+            # storage delete contract (``delete(ids: list[str])``); a set view is
+            # built below for membership/intersection checks.
+            chunk_ids = list(
+                dict.fromkeys(
+                    normalize_string_list(
+                        doc_status_data.get("chunks_list", []),
+                        context=f"doc {doc_id} chunks_list",
+                    )
                 )
             )
+            chunk_ids_set = set(chunk_ids)
 
             if not chunk_ids:
                 logger.warning(f"No chunks found for document {doc_id}")
@@ -3364,9 +3374,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                 else:
                     try:
-                        chunk_data_list = await self.text_chunks.get_by_ids(
-                            list(chunk_ids)
-                        )
+                        chunk_data_list = await self.text_chunks.get_by_ids(chunk_ids)
                         seen_cache_ids: set[str] = set(doc_llm_cache_ids)
                         for chunk_data in chunk_data_list:
                             if not chunk_data or not isinstance(chunk_data, dict):
@@ -3528,7 +3536,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # rebuild/delete so the graph metadata gets synchronized instead of being
                     # left untouched with orphaned source references.
                     graph_references_deleted_chunks = bool(
-                        graph_sources and set(graph_sources) & chunk_ids
+                        graph_sources and set(graph_sources) & chunk_ids_set
                     )
 
                     if not remaining_sources:
@@ -3603,7 +3611,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # chunk deleted in this attempt. Treat that as an affected relation so retry
                     # deletion can repair the graph metadata rather than skipping it as "untouched".
                     graph_references_deleted_chunks = bool(
-                        graph_sources and set(graph_sources) & chunk_ids
+                        graph_sources and set(graph_sources) & chunk_ids_set
                     )
 
                     if not remaining_sources:
