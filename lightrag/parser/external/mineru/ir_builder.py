@@ -273,6 +273,15 @@ class MinerUIRBuilder:
                 continue
             item_type = str(item.get("type") or item.get("label") or "").lower()
 
+            # Page numbers are layout noise, not document body. MinerU emits a
+            # ``page_number`` item per page; skip it entirely so it never enters
+            # the block content nor leaks its page_idx into block positions.
+            # (Empty-text page numbers were already dropped by the fallback's
+            # _append_text guard; this also drops page numbers that carry real
+            # text like "12" / "iii".)
+            if item_type == "page_number":
+                continue
+
             heading_text, heading_level = _detect_heading(item, item_type)
             if heading_text:
                 clean_heading = strip_heading_markdown_prefix(heading_text)
