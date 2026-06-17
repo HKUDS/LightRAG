@@ -718,7 +718,7 @@ def test_apipeline_enqueue_persists_process_options(tmp_path):
 
 @pytest.mark.offline
 def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
-    """``_purge_doc_chunks_and_kg`` with an empty chunk_ids set must be a
+    """``_purge_doc_chunks_and_kg`` with an empty chunk_ids list must be a
     no-op so callers (including the resume branch) can invoke it
     unconditionally without first checking for non-empty chunks_list.
     """
@@ -738,10 +738,10 @@ def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
             pipeline_status_lock = get_namespace_lock(
                 "pipeline_status", workspace=rag.workspace
             )
-            # Empty set: must return immediately without touching storage.
+            # Empty list: must return immediately without touching storage.
             await rag._purge_doc_chunks_and_kg(
                 "doc-empty",
-                set(),
+                [],
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
             )
@@ -749,7 +749,7 @@ def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
             # since the helper is idempotent on the empty input.
             await rag._purge_doc_chunks_and_kg(
                 "doc-empty",
-                set(),
+                [],
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
             )
@@ -826,7 +826,7 @@ def test_purge_doc_chunks_and_kg_clears_chunks_for_unknown_doc(tmp_path):
 
             await rag._purge_doc_chunks_and_kg(
                 "doc-X",
-                {"doc-X-chunk-0", "doc-X-chunk-1"},
+                ["doc-X-chunk-0", "doc-X-chunk-1"],
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
             )
