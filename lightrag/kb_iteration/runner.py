@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from lightrag.utils import validate_workspace
+
 from .markdown import write_markdown_memory
 from .models import KGSnapshot, QualityScore
 from .quality import evaluate_snapshot_quality, write_quality_artifacts
@@ -28,6 +30,8 @@ def run_iteration(
     output_root: str | Path,
     profile: str | None = None,
 ) -> IterationRunResult:
+    workspace = validate_workspace(workspace)
+
     storage_workspace = Path(storage_root) / workspace
     graph_path = storage_workspace / GRAPH_FILENAME
     if not graph_path.exists():
