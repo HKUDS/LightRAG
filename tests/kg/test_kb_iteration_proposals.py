@@ -111,6 +111,42 @@ def test_validate_proposal_rejects_unknown_no_approval_type():
         validate_proposal(proposal)
 
 
+def test_validate_proposal_rejects_ungated_report_note_targeting_workspace():
+    proposal = ImprovementProposal(
+        id="proposal-20260617-unsafe-note-target",
+        type="quality_report_note",
+        target="workspace/demo",
+        proposed_change="Record a quality observation.",
+        reason="Report notes without approval must stay in the report artifact.",
+        evidence=[],
+        confidence=0.4,
+        risk="low",
+        requires_approval=False,
+        expected_metric_change={},
+    )
+
+    with pytest.raises(ValueError, match="quality_report_note"):
+        validate_proposal(proposal)
+
+
+def test_validate_proposal_rejects_ungated_report_note_with_mutation_intent():
+    proposal = ImprovementProposal(
+        id="proposal-20260617-unsafe-note-text",
+        type="quality_report_note",
+        target="quality_report.md",
+        proposed_change="Rebuild the workspace and change ontology rules.",
+        reason="This text implies controlled mutations.",
+        evidence=["delete stale KG facts"],
+        confidence=0.8,
+        risk="high",
+        requires_approval=False,
+        expected_metric_change={},
+    )
+
+    with pytest.raises(ValueError, match="requires approval"):
+        validate_proposal(proposal)
+
+
 def test_improvement_proposal_exposes_required_fields():
     proposal = ImprovementProposal(
         id="proposal-20260617-003",

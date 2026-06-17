@@ -21,6 +21,18 @@ NO_APPROVAL_PROPOSAL_TYPES = {"quality_report_note"}
 _ALLOWED_RISKS = {"low", "medium", "high"}
 _TYPE_PATTERN = re.compile(r"^[a-z0-9_]+$")
 _METRIC_KEY_PATTERN = re.compile(r"^[a-z0-9_.-]+$")
+_REPORT_NOTE_MUTATION_PATTERN = re.compile(
+    r"\b(?:delete|clear|rebuild|reset|drop)\b"
+    r"|"
+    r"\b(?:add|change|correct|edit|fix|modify|move|remove|rewrite|revise|update)\b"
+    r".{0,60}"
+    r"\b(?:fact|hierarchy|kg\s+fact|ontology|prompt|relation|rule|web\s+display|workspace)\b"
+    r"|"
+    r"\b(?:fact|hierarchy|kg\s+fact|ontology|prompt|relation|rule|web\s+display|workspace)\b"
+    r".{0,60}"
+    r"\b(?:add|change|correct|edit|fix|modify|move|remove|rewrite|revise|update)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 _REQUIRED_STRING_FIELDS = (
     "id",
@@ -74,6 +86,11 @@ def validate_proposal(proposal: ImprovementProposal) -> None:
 
     if proposal.type in MUTATION_PROPOSAL_TYPES and proposal.requires_approval is not True:
         raise ValueError(f"proposal type {proposal.type} requires approval")
+    if (
+        proposal.type == "quality_report_note"
+        and proposal.requires_approval is not True
+    ):
+        _validate_no_approval_report_note(proposal)
     if (
         proposal.type not in MUTATION_PROPOSAL_TYPES
         and proposal.type not in NO_APPROVAL_PROPOSAL_TYPES
@@ -152,3 +169,23 @@ def _proposal_to_render_dict(proposal: ImprovementProposal) -> dict[str, object]
 
 def _is_canonical_type(value: str) -> bool:
     return value == value.strip().casefold() and bool(_TYPE_PATTERN.fullmatch(value))
+
+
+def _validate_no_approval_report_note(proposal: ImprovementProposal) -> None:
+    if proposal.target != "quality_report.md":
+        raise ValueError(
+            "quality_report_note without approval must target quality_report.md"
+        )
+
+    review_text = "\n".join(
+        [
+            proposal.target,
+            proposal.proposed_change,
+            proposal.reason,
+            *proposal.evidence,
+        ]
+    )
+    if _REPORT_NOTE_MUTATION_PATTERN.search(review_text):
+        raise ValueError(
+            "quality_report_note implies controlled mutation and requires approval"
+        )

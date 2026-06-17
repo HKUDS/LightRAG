@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from pathlib import Path
+import re
 from typing import Any
 
 from lightrag.constants import GRAPH_FIELD_SEP
@@ -15,6 +16,9 @@ HIERARCHY_KEYWORDS = {
     "category",
     "hierarchy",
 }
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+_MARKDOWN_ESCAPE_PATTERN = re.compile(r"([\\`*{}\[\]()#!>|])")
+_MARKDOWN_LIST_MARKER_PATTERN = re.compile(r"(^|\s)([+-])(?=\s)")
 
 RULE_MEMORY_TEMPLATES = {
     "quality_rules.md": "# Quality Rules\n\n- Add durable KB quality rules here.\n",
@@ -52,18 +56,20 @@ def write_markdown_memory(
 
 
 def _render_kb_context(snapshot: KGSnapshot) -> str:
-    profile = snapshot.metadata.get("profile") or "Not specified"
+    profile = _markdown_text(snapshot.metadata.get("profile") or "Not specified")
     node_count = snapshot.metadata.get("graph_node_count", len(snapshot.nodes))
     edge_count = snapshot.metadata.get("graph_edge_count", len(snapshot.edges))
-    score_summary = snapshot.metadata.get("latest_score_summary") or "Not generated yet"
+    score_summary = _markdown_text(
+        snapshot.metadata.get("latest_score_summary") or "Not generated yet"
+    )
 
     lines = [
         "# KB Context",
         "",
         "## Snapshot",
         "",
-        f"- Workspace: {snapshot.workspace}",
-        f"- Generated At: {snapshot.generated_at}",
+        f"- Workspace: {_markdown_text(snapshot.workspace)}",
+        f"- Generated At: {_markdown_text(snapshot.generated_at)}",
         f"- Profile: {profile}",
         "",
         "## Source Files",
@@ -108,7 +114,7 @@ def _render_kb_context(snapshot: KGSnapshot) -> str:
 def _render_entity_catalog(snapshot: KGSnapshot) -> str:
     groups: dict[str, list[SnapshotNode]] = defaultdict(list)
     for node in snapshot.nodes:
-        groups[_label_or_unknown(node.entity_type)].append(node)
+        groups[_markdown_label_or_unknown(node.entity_type)].append(node)
 
     lines = ["# Entity Catalog", ""]
     if not groups:
@@ -130,7 +136,7 @@ def _render_entity_catalog(snapshot: KGSnapshot) -> str:
 def _render_relation_catalog(snapshot: KGSnapshot) -> str:
     groups: dict[str, list[SnapshotEdge]] = defaultdict(list)
     for edge in snapshot.edges:
-        groups[_label_or_unknown(edge.keywords)].append(edge)
+        groups[_markdown_label_or_unknown(edge.keywords)].append(edge)
 
     lines = ["# Relation Catalog", ""]
     if not groups:
@@ -142,7 +148,9 @@ def _render_relation_catalog(snapshot: KGSnapshot) -> str:
         for edge in sorted(
             edges, key=lambda item: (item.source, item.target, item.id)
         ):
-            lines.append(f"- {edge.source} -> {edge.target}")
+            lines.append(
+                f"- {_markdown_text(edge.source)} -> {_markdown_text(edge.target)}"
+            )
             details = _edge_details(edge)
             if details:
                 lines.extend(f"  - {detail}" for detail in details)
@@ -165,10 +173,10 @@ def _render_kg_structure(snapshot: KGSnapshot) -> str:
         return _join_markdown(lines)
 
     for edge in sorted(hierarchy_edges, key=lambda item: (item.source, item.target, item.id)):
-        lines.append(f"- {edge.source} -> {edge.target}")
-        lines.append(f"  - Keyword: {_label_or_unknown(edge.keywords)}")
+        lines.append(f"- {_markdown_text(edge.source)} -> {_markdown_text(edge.target)}")
+        lines.append(f"  - Keyword: {_markdown_label_or_unknown(edge.keywords)}")
         if edge.description:
-            lines.append(f"  - Description: {edge.description}")
+            lines.append(f"  - Description: {_markdown_text(edge.description)}")
         source = _source_detail(edge.file_path, edge.source_id)
         if source:
             lines.append(f"  - Source: {source}")
@@ -200,7 +208,7 @@ def _node_details(node: SnapshotNode) -> list[str]:
     if aliases:
         details.append(f"Aliases: {_format_aliases(aliases)}")
     if node.description:
-        details.append(f"Description: {node.description}")
+        details.append(f"Description: {_markdown_text(node.description)}")
     source = _source_detail(node.file_path, node.source_id)
     if source:
         details.append(f"Source: {source}")
@@ -210,7 +218,7 @@ def _node_details(node: SnapshotNode) -> list[str]:
 def _edge_details(edge: SnapshotEdge) -> list[str]:
     details = []
     if edge.description:
-        details.append(f"Description: {edge.description}")
+        details.append(f"Description: {_markdown_text(edge.description)}")
     source = _source_detail(edge.file_path, edge.source_id)
     if source:
         details.append(f"Source: {source}")
@@ -225,7 +233,7 @@ def _initialize_rule_memory_files(output_dir: Path) -> None:
 
 
 def _count_values(values: Any) -> Counter[str]:
-    return Counter(_label_or_unknown(value) for value in values)
+    return Counter(_markdown_label_or_unknown(value) for value in values)
 
 
 def _stats_lines(counter: Counter[str]) -> list[str]:
@@ -237,7 +245,7 @@ def _stats_lines(counter: Counter[str]) -> list[str]:
 def _bullet_list(values: list[str], *, empty: str) -> list[str]:
     if not values:
         return [empty]
-    return [f"- {value}" for value in sorted(values)]
+    return [f"- {_markdown_text(value)}" for value in sorted(values)]
 
 
 def _sorted_groups(groups: dict[str, list[Any]]) -> list[tuple[str, list[Any]]]:
@@ -249,7 +257,7 @@ def _sorted_counter_items(counter: Counter[str]) -> list[tuple[str, int]]:
 
 
 def _display_node(node: SnapshotNode) -> str:
-    return node.label or node.id
+    return _markdown_text(node.label or node.id)
 
 
 def _label_or_unknown(value: Any) -> str:
@@ -257,10 +265,23 @@ def _label_or_unknown(value: Any) -> str:
     return text or "Unknown"
 
 
+def _markdown_label_or_unknown(value: Any) -> str:
+    return _markdown_text(_label_or_unknown(value))
+
+
+def _markdown_text(value: Any, *, empty: str = "Unknown") -> str:
+    text = "" if value is None else str(value)
+    text = _WHITESPACE_PATTERN.sub(" ", text).strip()
+    if not text:
+        return empty
+    text = _MARKDOWN_ESCAPE_PATTERN.sub(r"\\\1", text)
+    return _MARKDOWN_LIST_MARKER_PATTERN.sub(r"\1\\\2", text)
+
+
 def _format_aliases(value: Any) -> str:
     if isinstance(value, (list, tuple, set)):
-        return ", ".join(sorted(str(item) for item in value))
-    return str(value)
+        return ", ".join(_markdown_text(item) for item in sorted(value, key=str))
+    return _markdown_text(value)
 
 
 def _source_detail(file_path: str, source_id: str) -> str:
@@ -277,7 +298,7 @@ def _keyword_tokens(keywords: str) -> list[str]:
 
 def _normalized_joined_values(value: str) -> str:
     values = {part.strip() for part in value.split(GRAPH_FIELD_SEP) if part.strip()}
-    return ", ".join(sorted(values))
+    return ", ".join(_markdown_text(part) for part in sorted(values))
 
 
 def _join_markdown(lines: list[str]) -> str:
