@@ -147,7 +147,7 @@ def test_build_snapshot_from_graphml_preserves_edge_ids_defaults_and_weight(
     snapshot = build_snapshot_from_graphml(graph_path, workspace="demo")
 
     assert snapshot.nodes[0].id == "A"
-    assert snapshot.nodes[0].label == "A"
+    assert snapshot.nodes[0].label == ""
     assert snapshot.nodes[0].entity_type == ""
     assert snapshot.nodes[0].description == ""
     assert snapshot.nodes[0].source_id == ""

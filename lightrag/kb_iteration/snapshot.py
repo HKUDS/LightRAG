@@ -76,7 +76,7 @@ def write_snapshot_artifacts(
 def _snapshot_node(node_id: str, data: dict[str, Any]) -> SnapshotNode:
     return SnapshotNode(
         id=str(node_id),
-        label=_as_text(data.get("label", node_id)),
+        label=_as_text(data.get("label")),
         entity_type=_as_text(data.get("entity_type")),
         description=_as_text(data.get("description")),
         source_id=_as_text(data.get("source_id")),
