@@ -103,6 +103,21 @@ def test_jsonb_roundtrip():
 
 
 # ---------------------------------------------------------------------------
+# DDL — referential integrity
+# ---------------------------------------------------------------------------
+
+
+def test_ddl_adds_cascading_edge_foreign_keys():
+    """Edges must not survive after endpoint nodes are deleted."""
+    from lightrag.kg.pg_rcte_impl import _DDL
+
+    assert "fk_lightrag_graph_edges_src" in _DDL
+    assert "fk_lightrag_graph_edges_tgt" in _DDL
+    assert "ON DELETE CASCADE" in _DDL
+    assert "DELETE FROM lightrag_graph_edges e" in _DDL
+
+
+# ---------------------------------------------------------------------------
 # entity_id validation
 # ---------------------------------------------------------------------------
 
@@ -119,6 +134,30 @@ async def test_upsert_node_succeeds_with_entity_id():
     storage = make_storage()
     with patch.object(storage, "_execute", new=AsyncMock()):
         await storage.upsert_node("node1", {"entity_id": "node1", "name": "Alice"})
+
+
+# ---------------------------------------------------------------------------
+# upsert_edge — endpoint existence policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_skips_missing_endpoints_in_sql():
+    """Missing endpoint edges should be skipped instead of violating FK constraints."""
+    storage = make_storage()
+    execute = AsyncMock()
+
+    with patch.object(storage, "_execute", new=execute):
+        await storage.upsert_edge("A", "B", {"weight": 1.0})
+
+    sql, workspace, src, tgt, props = execute.call_args.args
+    assert workspace == "test"
+    assert src == "A"
+    assert tgt == "B"
+    assert json.loads(props)["weight"] == 1.0
+    assert "WHERE EXISTS" in sql
+    assert "workspace = $1 AND id = $2" in sql
+    assert "workspace = $1 AND id = $3" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +262,9 @@ async def test_get_knowledge_graph_seed_never_dropped_on_truncation():
         kg = await storage.get_knowledge_graph("low_seed", max_nodes=2)
 
     node_ids = [node.id for node in kg.nodes]
-    assert (
-        "low_seed" in node_ids
-    ), f"seed 'low_seed' was dropped by truncation; got {node_ids}"
+    assert "low_seed" in node_ids, (
+        f"seed 'low_seed' was dropped by truncation; got {node_ids}"
+    )
     assert len(node_ids) == 2
     assert kg.is_truncated is True
     # Seed is at position 0 (pinned), then the highest-degree neighbor.
@@ -290,6 +329,66 @@ async def test_get_knowledge_graph_bfs_depth_beats_degree_on_truncation():
 
 
 # ---------------------------------------------------------------------------
+# search_labels — literal SQL pattern semantics
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_labels_strips_and_relevance_orders():
+    storage = make_storage()
+    fetch = AsyncMock(return_value=[])
+
+    with patch.object(storage, "_fetch", new=fetch):
+        assert await storage.search_labels("   ") == []
+        await storage.search_labels(" Foo ", limit=7)
+
+    (
+        sql,
+        workspace,
+        contains,
+        exact,
+        prefix,
+        space_boundary,
+        underscore_boundary,
+        limit,
+    ) = fetch.call_args.args
+    assert workspace == "test"
+    assert contains == "%foo%"
+    assert exact == "foo"
+    assert prefix == "foo%"
+    assert space_boundary == "% foo%"
+    assert underscore_boundary == "%\\_foo%"
+    assert limit == 7
+    assert "ORDER BY" in sql
+    assert "ESCAPE '\\'" in sql
+
+
+@pytest.mark.asyncio
+async def test_search_labels_escapes_like_wildcards():
+    storage = make_storage()
+    fetch = AsyncMock(return_value=[])
+
+    with patch.object(storage, "_fetch", new=fetch):
+        await storage.search_labels(r"a_%\b")
+
+    (
+        _sql,
+        _workspace,
+        contains,
+        exact,
+        prefix,
+        space_boundary,
+        underscore_boundary,
+        _limit,
+    ) = fetch.call_args.args
+    assert contains == r"%a\_\%\\b%"
+    assert exact == r"a_%\b"
+    assert prefix == r"a\_\%\\b%"
+    assert space_boundary == r"% a\_\%\\b%"
+    assert underscore_boundary == r"%\_a\_\%\\b%"
+
+
+# ---------------------------------------------------------------------------
 # self-loop degree consistency
 # ---------------------------------------------------------------------------
 
@@ -313,6 +412,21 @@ async def test_self_loop_degree_consistency():
         single = await storage.node_degree("A")
         batch = await storage.node_degrees_batch(["A"])
     assert single == batch["A"]
+
+
+@pytest.mark.asyncio
+async def test_get_popular_labels_counts_self_loop_once():
+    storage = make_storage()
+    fetch = AsyncMock(return_value=[])
+
+    with patch.object(storage, "_fetch", new=fetch):
+        await storage.get_popular_labels(limit=5)
+
+    sql, workspace, limit = fetch.call_args.args
+    assert workspace == "test"
+    assert limit == 5
+    assert "src_id <> tgt_id" in sql
+    assert "ORDER BY degree DESC, id ASC" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +459,9 @@ async def test_get_all_edges_returns_source_target_keys():
                 {
                     "src_id": "A",
                     "tgt_id": "B",
-                    "properties": json.dumps({"weight": 1.0}),
+                    "properties": json.dumps(
+                        {"weight": 1.0, "source": "wrong", "target": "wrong"}
+                    ),
                 }
             ]
         ),
@@ -357,5 +473,6 @@ async def test_get_all_edges_returns_source_target_keys():
     assert "target" in edges[0]
     assert edges[0]["source"] == "A"
     assert edges[0]["target"] == "B"
+    assert edges[0]["weight"] == 1.0
     assert "src_id" not in edges[0]
     assert "tgt_id" not in edges[0]

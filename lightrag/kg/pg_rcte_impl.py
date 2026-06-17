@@ -54,6 +54,45 @@ CREATE TABLE IF NOT EXISTS lightrag_graph_edges (
 
 CREATE INDEX IF NOT EXISTS idx_lightrag_graph_edges_tgt
     ON lightrag_graph_edges (workspace, tgt_id);
+
+DELETE FROM lightrag_graph_edges e
+WHERE NOT EXISTS (
+        SELECT 1 FROM lightrag_graph_nodes n
+        WHERE n.workspace = e.workspace AND n.id = e.src_id
+    )
+   OR NOT EXISTS (
+        SELECT 1 FROM lightrag_graph_nodes n
+        WHERE n.workspace = e.workspace AND n.id = e.tgt_id
+    );
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_lightrag_graph_edges_src'
+          AND conrelid = 'lightrag_graph_edges'::regclass
+    ) THEN
+        ALTER TABLE lightrag_graph_edges
+            ADD CONSTRAINT fk_lightrag_graph_edges_src
+            FOREIGN KEY (workspace, src_id)
+            REFERENCES lightrag_graph_nodes (workspace, id)
+            ON DELETE CASCADE;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_lightrag_graph_edges_tgt'
+          AND conrelid = 'lightrag_graph_edges'::regclass
+    ) THEN
+        ALTER TABLE lightrag_graph_edges
+            ADD CONSTRAINT fk_lightrag_graph_edges_tgt
+            FOREIGN KEY (workspace, tgt_id)
+            REFERENCES lightrag_graph_nodes (workspace, id)
+            ON DELETE CASCADE;
+    END IF;
+END $$;
 """
 
 # ---------------------------------------------------------------------------
@@ -256,7 +295,15 @@ class PgRcteGraphStorage(BaseGraphStorage):
         await self._execute(
             """
             INSERT INTO lightrag_graph_edges (workspace, src_id, tgt_id, properties, updated_at)
-            VALUES ($1, $2, $3, $4, now())
+            SELECT $1, $2, $3, $4::jsonb, now()
+            WHERE EXISTS (
+                SELECT 1 FROM lightrag_graph_nodes
+                WHERE workspace = $1 AND id = $2
+            )
+              AND EXISTS (
+                SELECT 1 FROM lightrag_graph_nodes
+                WHERE workspace = $1 AND id = $3
+            )
             ON CONFLICT (workspace, src_id, tgt_id)
             DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
             """,
@@ -337,10 +384,11 @@ class PgRcteGraphStorage(BaseGraphStorage):
             FROM (
                 SELECT src_id AS id FROM lightrag_graph_edges WHERE workspace = $1
                 UNION ALL
-                SELECT tgt_id AS id FROM lightrag_graph_edges WHERE workspace = $1
+                SELECT tgt_id AS id FROM lightrag_graph_edges
+                WHERE workspace = $1 AND src_id <> tgt_id
             ) sub
             GROUP BY id
-            ORDER BY degree DESC
+            ORDER BY degree DESC, id ASC
             LIMIT $2
             """,
             self.workspace,
@@ -352,32 +400,38 @@ class PgRcteGraphStorage(BaseGraphStorage):
         q = query.strip().lower()
         if not q:
             return []
+        q_like = self._escape_like(q)
         rows = await self._fetch(
             """
             SELECT id FROM lightrag_graph_nodes
-            WHERE workspace=$1 AND LOWER(id) ILIKE $2
+            WHERE workspace=$1 AND LOWER(id) ILIKE $2 ESCAPE '\\'
             ORDER BY
                 CASE
                     WHEN LOWER(id) = $3          THEN 1000
-                    WHEN LOWER(id) LIKE $4        THEN 500
+                    WHEN LOWER(id) LIKE $4 ESCAPE '\\' THEN 500
                     ELSE 100 - LENGTH(id)
                 END +
                 CASE
-                    WHEN LOWER(id) LIKE $5 OR LOWER(id) LIKE $6 THEN 50
+                    WHEN LOWER(id) LIKE $5 ESCAPE '\\'
+                      OR LOWER(id) LIKE $6 ESCAPE '\\' THEN 50
                     ELSE 0
                 END DESC,
                 id ASC
             LIMIT $7
             """,
             self.workspace,
-            f"%{q}%",  # $2 contains match
+            f"%{q_like}%",  # $2 contains match
             q,  # $3 exact
-            f"{q}%",  # $4 prefix
-            f"% {q}%",  # $5 word boundary (space)
-            f"%_{q}%",  # $6 word boundary (underscore)
+            f"{q_like}%",  # $4 prefix
+            f"% {q_like}%",  # $5 word boundary (space)
+            f"%\\_{q_like}%",  # $6 word boundary (literal underscore)
             limit,  # $7
         )
         return [r["id"] for r in rows]
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     async def get_all_nodes(self) -> list[dict]:
         rows = await self._fetch(
@@ -399,10 +453,10 @@ class PgRcteGraphStorage(BaseGraphStorage):
         )
         return [
             {
-                "source": r["src_id"],
-                "target": r["tgt_id"],
                 # asyncpg returns JSONB as str without an explicit codec; json.loads is correct here
                 **json.loads(r["properties"]),
+                "source": r["src_id"],
+                "target": r["tgt_id"],
             }
             for r in rows
         ]
@@ -665,18 +719,19 @@ class PgRcteGraphStorage(BaseGraphStorage):
                     "PostgreSQL: node properties must contain an 'entity_id' field"
                 )
             deduped[node_id] = node_data
-        ids = list(deduped.keys())
-        props = [json.dumps(v) for v in deduped.values()]
+        sorted_ids = sorted(deduped)
+        props = [json.dumps(deduped[node_id]) for node_id in sorted_ids]
         await self._execute(
             """
             INSERT INTO lightrag_graph_nodes (workspace, id, properties, updated_at)
             SELECT $1, u.id, u.props::jsonb, now()
             FROM unnest($2::text[], $3::text[]) AS u(id, props)
+            ORDER BY u.id
             ON CONFLICT (workspace, id)
             DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
             """,
             self.workspace,
-            ids,
+            sorted_ids,
             props,
         )
 
@@ -699,6 +754,11 @@ class PgRcteGraphStorage(BaseGraphStorage):
             INSERT INTO lightrag_graph_edges (workspace, src_id, tgt_id, properties, updated_at)
             SELECT $1, u.src, u.tgt, u.props::jsonb, now()
             FROM unnest($2::text[], $3::text[], $4::text[]) AS u(src, tgt, props)
+            JOIN lightrag_graph_nodes src_n
+              ON src_n.workspace = $1 AND src_n.id = u.src
+            JOIN lightrag_graph_nodes tgt_n
+              ON tgt_n.workspace = $1 AND tgt_n.id = u.tgt
+            ORDER BY u.src, u.tgt
             ON CONFLICT (workspace, src_id, tgt_id)
             DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
             """,

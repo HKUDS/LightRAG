@@ -151,6 +151,24 @@ async def test_upsert_and_get_edge(store):
 
 
 @pytest.mark.asyncio
+async def test_upsert_edge_skips_missing_endpoint(store):
+    """Missing endpoint edges should not create dangling edges or raise FK errors."""
+    await store.upsert_node("OnlyA", _node("OnlyA"))
+
+    await store.upsert_edge("OnlyA", "MissingB", _edge())
+    await store.upsert_edges_batch(
+        [
+            ("OnlyA", "MissingC", _edge()),
+            ("MissingD", "OnlyA", _edge()),
+        ]
+    )
+
+    assert await store.has_edge("OnlyA", "MissingB") is False
+    assert await store.has_edge("OnlyA", "MissingC") is False
+    assert await store.has_edge("MissingD", "OnlyA") is False
+
+
+@pytest.mark.asyncio
 async def test_has_edge(store):
     await store.upsert_node("X", _node("X"))
     await store.upsert_node("Y", _node("Y"))
@@ -202,9 +220,9 @@ async def test_get_nodes_edges_batch_queried_node_first(store):
 
     for queried, edge_list in result.items():
         for src, tgt in edge_list:
-            assert (
-                src == queried
-            ), f"queried node {queried!r} must be first; got ({src!r}, {tgt!r})"
+            assert src == queried, (
+                f"queried node {queried!r} must be first; got ({src!r}, {tgt!r})"
+            )
 
 
 @pytest.mark.asyncio
@@ -250,7 +268,11 @@ async def test_get_all_edges_key_shape(store):
     """get_all_edges must return 'source'/'target' keys, not 'src_id'/'tgt_id'."""
     await store.upsert_node("X", _node("X"))
     await store.upsert_node("Y", _node("Y"))
-    await store.upsert_edge("X", "Y", _edge(0.5))
+    await store.upsert_edge(
+        "X",
+        "Y",
+        dict(_edge(0.5), source="property-source", target="property-target"),
+    )
 
     edges = await store.get_all_edges()
 
@@ -258,6 +280,8 @@ async def test_get_all_edges_key_shape(store):
     edge = next(e for e in edges if {e.get("source"), e.get("target")} == {"X", "Y"})
     assert "source" in edge
     assert "target" in edge
+    assert edge["source"] == "X"
+    assert edge["target"] == "Y"
     assert "src_id" not in edge
     assert "tgt_id" not in edge
 

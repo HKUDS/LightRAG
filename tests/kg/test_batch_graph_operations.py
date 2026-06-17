@@ -490,12 +490,12 @@ class TestAinsertCustomKgBatchPath:
             await rag.ainsert_custom_kg(custom_kg)
 
             graph = rag.chunk_entity_relation_graph
-            assert await graph.has_node(
-                "ImplicitNode"
-            ), "Implicit node should be created"
-            assert await graph.has_node(
-                "AnotherImplicit"
-            ), "Implicit node should be created"
+            assert await graph.has_node("ImplicitNode"), (
+                "Implicit node should be created"
+            )
+            assert await graph.has_node("AnotherImplicit"), (
+                "Implicit node should be created"
+            )
 
             await rag.finalize_storages()
 
@@ -890,7 +890,7 @@ class TestPgRcteBatchOrdering:
         execute_args: list[tuple] = []
 
         async def spy(_sql, *args):
-            execute_args.append(args)
+            execute_args.append((_sql, *args))
 
         storage._execute = spy  # type: ignore[assignment]
 
@@ -905,10 +905,37 @@ class TestPgRcteBatchOrdering:
 
         # All nodes in a single _execute call
         assert len(execute_args) == 1
-        _ws, ids, props = execute_args[0]
+        sql, _ws, ids, props = execute_args[0]
         assert ids == ["EntityA", "EntityB"]
         assert json.loads(props[0])["description"] == "latest"
         assert json.loads(props[1])["description"] == "Description of EntityB"
+        assert "ORDER BY u.id" in sql
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_upsert_nodes_batch_sorts_ids_for_lock_ordering(self):
+        from lightrag.kg.pg_rcte_impl import PgRcteGraphStorage
+
+        storage = PgRcteGraphStorage.__new__(PgRcteGraphStorage)
+        storage.workspace = "test"
+        execute_args: list[tuple] = []
+
+        async def spy(_sql, *args):
+            execute_args.append((_sql, *args))
+
+        storage._execute = spy  # type: ignore[assignment]
+
+        await PgRcteGraphStorage.upsert_nodes_batch(
+            storage,
+            [
+                ("ZNode", _make_node("ZNode")),
+                ("ANode", _make_node("ANode")),
+            ],
+        )
+
+        sql, _ws, ids, _props = execute_args[0]
+        assert ids == ["ANode", "ZNode"]
+        assert "ORDER BY u.id" in sql
 
     @pytest.mark.offline
     @pytest.mark.asyncio
@@ -922,7 +949,7 @@ class TestPgRcteBatchOrdering:
         execute_args: list[tuple] = []
 
         async def spy(_sql, *args):
-            execute_args.append(args)
+            execute_args.append((_sql, *args))
 
         storage._execute = spy  # type: ignore[assignment]
 
@@ -941,11 +968,14 @@ class TestPgRcteBatchOrdering:
 
         # (A,B) and (B,A) collapse to one row; all edges in one _execute call
         assert len(execute_args) == 1
-        _ws, srcs, tgts, props = execute_args[0]
+        sql, _ws, srcs, tgts, props = execute_args[0]
         edge_pairs = list(zip(srcs, tgts))
         assert len(edge_pairs) == 2
         assert ("EntityA", "EntityB") in edge_pairs
         assert ("EntityB", "EntityC") in edge_pairs
+        assert "ORDER BY u.src, u.tgt" in sql
+        assert "JOIN lightrag_graph_nodes src_n" in sql
+        assert "JOIN lightrag_graph_nodes tgt_n" in sql
         # Last write wins: weight 2.0 (from the (B,A) call) survives
         ab_idx = edge_pairs.index(("EntityA", "EntityB"))
         assert json.loads(props[ab_idx])["weight"] == 2.0
@@ -961,7 +991,7 @@ class TestPgRcteBatchOrdering:
         execute_args: list[tuple] = []
 
         async def spy(_sql, *args):
-            execute_args.append(args)
+            execute_args.append((_sql, *args))
 
         storage._execute = spy  # type: ignore[assignment]
 
@@ -970,9 +1000,12 @@ class TestPgRcteBatchOrdering:
             [("ZNode", "ANode", _make_edge())],
         )
 
-        _ws, srcs, tgts, _ = execute_args[0]
+        sql, _ws, srcs, tgts, _ = execute_args[0]
         assert srcs == ["ANode"]
         assert tgts == ["ZNode"]
+        assert "ORDER BY u.src, u.tgt" in sql
+        assert "JOIN lightrag_graph_nodes src_n" in sql
+        assert "JOIN lightrag_graph_nodes tgt_n" in sql
 
 
 class TestPgRctePipelineIntegration:
