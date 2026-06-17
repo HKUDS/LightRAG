@@ -43,6 +43,8 @@ from lightrag.utils import (
     generate_reference_list_from_chunks,
     apply_source_ids_limit,
     merge_source_ids,
+    filter_chunk_tracking_source_ids,
+    collect_chunk_tracking_source_ids,
     make_relation_chunk_key,
     _cooperative_yield,
     performance_timing_log,
@@ -90,6 +92,28 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+
+
+async def _sync_chunk_tracking_storage(
+    chunk_tracking_storage: BaseKVStorage | None,
+    storage_key: str,
+    chunk_ids: list[str],
+) -> None:
+    if chunk_tracking_storage is None:
+        return
+
+    tracking_chunk_ids = filter_chunk_tracking_source_ids(chunk_ids)
+    if tracking_chunk_ids:
+        await chunk_tracking_storage.upsert(
+            {
+                storage_key: {
+                    "chunk_ids": tracking_chunk_ids,
+                    "count": len(tracking_chunk_ids),
+                }
+            }
+        )
+    else:
+        await chunk_tracking_storage.delete([storage_key])
 
 
 def _get_relationship_vdb_timeout_seconds(global_config: dict[str, Any]) -> float:
@@ -1545,15 +1569,11 @@ async def _rebuild_single_entity(
     # normalized_chunk_ids = merge_source_ids([], chunk_ids)
     normalized_chunk_ids = chunk_ids
 
-    if entity_chunks_storage is not None and normalized_chunk_ids:
-        await entity_chunks_storage.upsert(
-            {
-                entity_name: {
-                    "chunk_ids": normalized_chunk_ids,
-                    "count": len(normalized_chunk_ids),
-                }
-            }
-        )
+    await _sync_chunk_tracking_storage(
+        entity_chunks_storage,
+        entity_name,
+        normalized_chunk_ids,
+    )
 
     limit_method = (
         global_config.get("source_ids_limit_method") or SOURCE_IDS_LIMIT_METHOD_KEEP
@@ -1743,16 +1763,12 @@ async def _rebuild_single_relationship(
     # normalized_chunk_ids = merge_source_ids([], chunk_ids)
     normalized_chunk_ids = chunk_ids
 
-    if relation_chunks_storage is not None and normalized_chunk_ids:
-        storage_key = make_relation_chunk_key(src, tgt)
-        await relation_chunks_storage.upsert(
-            {
-                storage_key: {
-                    "chunk_ids": normalized_chunk_ids,
-                    "count": len(normalized_chunk_ids),
-                }
-            }
-        )
+    storage_key = make_relation_chunk_key(src, tgt)
+    await _sync_chunk_tracking_storage(
+        relation_chunks_storage,
+        storage_key,
+        normalized_chunk_ids,
+    )
 
     limit_method = (
         global_config.get("source_ids_limit_method") or SOURCE_IDS_LIMIT_METHOD_KEEP
@@ -1895,15 +1911,11 @@ async def _rebuild_single_relationship(
             await knowledge_graph_inst.upsert_node(node_id, node_data=node_data)
 
             # Update entity_chunks_storage for the newly created entity
-            if entity_chunks_storage is not None and limited_chunk_ids:
-                await entity_chunks_storage.upsert(
-                    {
-                        node_id: {
-                            "chunk_ids": limited_chunk_ids,
-                            "count": len(limited_chunk_ids),
-                        }
-                    }
-                )
+            await _sync_chunk_tracking_storage(
+                entity_chunks_storage,
+                node_id,
+                limited_chunk_ids,
+            )
 
             # Update entity_vdb for the newly created entity
             if entities_vdb is not None:
@@ -2049,6 +2061,7 @@ async def _merge_nodes_then_upsert(
                 already_description.extend(existing_desc.split(GRAPH_FIELD_SEP))
 
         new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
+        new_chunk_tracking_source_ids = collect_chunk_tracking_source_ids(nodes_data)
 
         existing_full_source_ids = []
         if entity_chunks_storage is not None:
@@ -2067,16 +2080,16 @@ async def _merge_nodes_then_upsert(
 
         # 2. Merging new source ids with existing ones
         full_source_ids = merge_source_ids(existing_full_source_ids, new_source_ids)
+        full_chunk_tracking_source_ids = merge_source_ids(
+            filter_chunk_tracking_source_ids(existing_full_source_ids),
+            new_chunk_tracking_source_ids,
+        )
 
-        if entity_chunks_storage is not None and full_source_ids:
-            await entity_chunks_storage.upsert(
-                {
-                    entity_name: {
-                        "chunk_ids": full_source_ids,
-                        "count": len(full_source_ids),
-                    }
-                }
-            )
+        await _sync_chunk_tracking_storage(
+            entity_chunks_storage,
+            entity_name,
+            full_chunk_tracking_source_ids,
+        )
 
         # 3. Finalize source_id by applying source ids limit
         limit_method = global_config.get("source_ids_limit_method")
@@ -2390,6 +2403,7 @@ async def _merge_edges_then_upsert(
                     )
 
         new_source_ids = [dp["source_id"] for dp in edges_data if dp.get("source_id")]
+        new_chunk_tracking_source_ids = collect_chunk_tracking_source_ids(edges_data)
 
         storage_key = make_relation_chunk_key(src_id, tgt_id)
         existing_full_source_ids = []
@@ -2409,16 +2423,16 @@ async def _merge_edges_then_upsert(
 
         # 2. Merge new source ids with existing ones
         full_source_ids = merge_source_ids(existing_full_source_ids, new_source_ids)
+        full_chunk_tracking_source_ids = merge_source_ids(
+            filter_chunk_tracking_source_ids(existing_full_source_ids),
+            new_chunk_tracking_source_ids,
+        )
 
-        if relation_chunks_storage is not None and full_source_ids:
-            await relation_chunks_storage.upsert(
-                {
-                    storage_key: {
-                        "chunk_ids": full_source_ids,
-                        "count": len(full_source_ids),
-                    }
-                }
-            )
+        await _sync_chunk_tracking_storage(
+            relation_chunks_storage,
+            storage_key,
+            full_chunk_tracking_source_ids,
+        )
 
         # 3. Finalize source_id by applying source ids limit
         limit_method = global_config.get("source_ids_limit_method")
@@ -2654,17 +2668,11 @@ async def _merge_edges_then_upsert(
                 )
 
                 # Update entity_chunks_storage for the newly created entity
-                if entity_chunks_storage is not None:
-                    chunk_ids = [chunk_id for chunk_id in full_source_ids if chunk_id]
-                    if chunk_ids:
-                        await entity_chunks_storage.upsert(
-                            {
-                                need_insert_id: {
-                                    "chunk_ids": chunk_ids,
-                                    "count": len(chunk_ids),
-                                }
-                            }
-                        )
+                await _sync_chunk_tracking_storage(
+                    entity_chunks_storage,
+                    need_insert_id,
+                    full_source_ids,
+                )
 
                 if entity_vdb is not None:
                     entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
@@ -2731,26 +2739,37 @@ async def _merge_edges_then_upsert(
                         )
 
                 # 2. Merge with new source_ids from this relationship
-                new_source_ids_from_relation = [
+                new_graph_source_ids_from_relation = [
                     chunk_id for chunk_id in source_ids if chunk_id
                 ]
                 merged_full_source_ids = merge_source_ids(
-                    existing_full_source_ids, new_source_ids_from_relation
+                    existing_full_source_ids, new_graph_source_ids_from_relation
+                )
+                existing_chunk_tracking_source_ids = (
+                    filter_chunk_tracking_source_ids(existing_full_source_ids)
+                )
+                new_source_ids_from_relation = filter_chunk_tracking_source_ids(
+                    source_ids
+                )
+                merged_chunk_tracking_source_ids = merge_source_ids(
+                    existing_chunk_tracking_source_ids, new_source_ids_from_relation
                 )
 
                 # 3. Save merged full list to entity_chunks_storage (conditional)
                 if (
                     entity_chunks_storage is not None
-                    and merged_full_source_ids != existing_full_source_ids
+                    and (
+                        merged_chunk_tracking_source_ids
+                        != existing_chunk_tracking_source_ids
+                        or existing_full_source_ids
+                        != existing_chunk_tracking_source_ids
+                    )
                 ):
                     updated = True
-                    await entity_chunks_storage.upsert(
-                        {
-                            need_insert_id: {
-                                "chunk_ids": merged_full_source_ids,
-                                "count": len(merged_full_source_ids),
-                            }
-                        }
+                    await _sync_chunk_tracking_storage(
+                        entity_chunks_storage,
+                        need_insert_id,
+                        merged_chunk_tracking_source_ids,
                     )
 
                 # 4. Apply source_ids limit for graph and vector db
@@ -3618,6 +3637,24 @@ async def extract_entities(
                     # New edge from gleaning stage
                     maybe_edges[edge_key] = list(glean_edge_list)
                 await _cooperative_yield(i, every=8)
+
+        medical_kg_profile = (
+            str(addon_params.get("medical_kg_profile") or "").strip().lower()
+        )
+        if medical_kg_profile == "clinical_guideline_zh":
+            from lightrag.medical_kg.hierarchy import build_medical_hierarchy_edges
+            from lightrag.medical_kg.normalizer import normalize_medical_extraction
+
+            normalized_extraction = normalize_medical_extraction(
+                maybe_nodes,
+                maybe_edges,
+                enabled=True,
+            )
+            maybe_nodes = normalized_extraction.nodes
+            maybe_edges = normalized_extraction.edges
+            maybe_nodes, hierarchy_edges = build_medical_hierarchy_edges(maybe_nodes)
+            for edge_key, edge_list in hierarchy_edges.items():
+                maybe_edges.setdefault(edge_key, []).extend(edge_list)
 
         # Inject multimodal entity + associations for drawing/table/equation
         # chunks. Placed before update_chunk_cache_list so the per-chunk

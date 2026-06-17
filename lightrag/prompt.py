@@ -546,6 +546,7 @@ def get_default_entity_extraction_prompt_profile() -> EntityExtractionPromptProf
 _ALLOWED_PROMPT_SUFFIXES = frozenset({".yml", ".yaml"})
 _DEFAULT_PROMPT_DIR = "./prompts"
 _ENTITY_TYPE_SUBDIR = "entity_type"
+_BUNDLED_ENTITY_TYPE_PROMPT_FILES = frozenset({"医学实体类型提示词.yml"})
 
 
 def get_entity_type_prompt_dir() -> Path:
@@ -553,10 +554,11 @@ def get_entity_type_prompt_dir() -> Path:
 
     Resolves ``PROMPT_DIR`` (defaults to ``./prompts`` relative to the current
     working directory, mirroring ``INPUT_DIR`` / ``WORKING_DIR``) and appends
-    the hard-coded ``entity_type`` subdirectory. Profile files are provided by
-    the user at runtime and are not shipped with the distribution. The
-    file-name sandbox in :func:`resolve_entity_type_prompt_path` ensures
-    user-supplied file names cannot escape the resolved directory.
+    the hard-coded ``entity_type`` subdirectory. Bundled profiles may also live
+    under ``lightrag/prompts/entity_type``; custom runtime files are loaded from
+    ``PROMPT_DIR/entity_type``. The file-name sandbox in
+    :func:`resolve_entity_type_prompt_path` ensures user-supplied file names
+    cannot escape the resolved directory.
     """
 
     configured = os.getenv("PROMPT_DIR", "").strip() or _DEFAULT_PROMPT_DIR
@@ -570,11 +572,12 @@ def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
     if not file_name:
         raise ValueError(
             "ENTITY_TYPE_PROMPT_FILE must be a file name such as "
-            "'entity_type_prompt.sample.yml'."
+            "'my_entity_type_prompt.yml'."
         )
     if "\\" in file_name:
         raise ValueError(
-            "ENTITY_TYPE_PROMPT_FILE must not contain directory separators. "
+            "ENTITY_TYPE_PROMPT_FILE must be a file name only and must not "
+            "contain directory separators. "
             "Only file names inside PROMPT_DIR/entity_type are allowed."
         )
 
@@ -594,7 +597,17 @@ def resolve_entity_type_prompt_path(prompt_file_name: str | Path) -> Path:
             "ENTITY_TYPE_PROMPT_FILE must use a '.yml' or '.yaml' extension."
         )
 
-    return get_entity_type_prompt_dir() / candidate.name
+    prompt_path = get_entity_type_prompt_dir() / candidate.name
+    if prompt_path.exists() or candidate.name not in _BUNDLED_ENTITY_TYPE_PROMPT_FILES:
+        return prompt_path
+
+    bundled_path = (
+        Path(__file__).resolve().parent
+        / "prompts"
+        / _ENTITY_TYPE_SUBDIR
+        / candidate.name
+    )
+    return bundled_path if bundled_path.exists() else prompt_path
 
 
 def _normalize_prompt_examples(

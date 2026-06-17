@@ -3,9 +3,15 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
-import { useGraphStore, RawGraph, RawNodeType, RawEdgeType } from '@/stores/graph'
+import { useGraphStore, RawGraph, RawNodeType, RawEdgeType, mergeGraphMetadata } from '@/stores/graph'
 import { toast } from 'sonner'
 import { queryGraphs } from '@/api/lightrag'
+import type { LightragMedicalBrowseMetadata } from '@/api/lightrag'
+import {
+  applyMedicalBrowseProjection,
+  getMedicalBrowseNodeRole,
+  getMedicalBrowsePosition
+} from '@/components/graph/medicalBrowseGraph'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -24,6 +30,24 @@ const getNodeColorByType = (nodeType: string | undefined): string => {
   return color || DEFAULT_NODE_COLOR
 };
 
+const getMedicalBrowseNodeSize = (
+  nodeId: string,
+  nodeEntityType: string | undefined,
+  browse?: LightragMedicalBrowseMetadata
+): number | undefined => {
+  if (!browse) {
+    return undefined
+  }
+
+  const role = getMedicalBrowseNodeRole(nodeId, browse)
+
+  if (role === 'root') return 22
+  if (role === 'category') return 16
+  if (role === 'subgroup') return 13
+  if (role === 'collapsed_group' || nodeEntityType === 'MedicalCollapsedGroup') return 11
+
+  return 10
+}
 
 const validateGraph = (graph: RawGraph) => {
   // Check if graph exists
@@ -102,7 +126,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
 
   try {
     console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`);
-    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes);
+    rawData = applyMedicalBrowseProjection(await queryGraphs(queryLabel, maxDepth, maxNodes));
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
     return null;
@@ -111,6 +135,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
   let rawGraph = null;
 
   if (rawData) {
+    const medicalBrowse = rawData.metadata?.medical_browse
     const nodeIdMap: Record<string, number> = {}
     const edgeIdMap: Record<string, number> = {}
 
@@ -118,10 +143,15 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
       const node = rawData.nodes[i]
       nodeIdMap[node.id] = i
 
-      node.x = Math.random()
-      node.y = Math.random()
+      const position = medicalBrowse
+        ? getMedicalBrowsePosition(node.id, medicalBrowse, i)
+        : { x: Math.random(), y: Math.random() }
+      const nodeEntityType = node.properties?.entity_type as string | undefined
+
+      node.x = position.x
+      node.y = position.y
       node.degree = 0
-      node.size = 10
+      node.size = getMedicalBrowseNodeSize(node.id, nodeEntityType, medicalBrowse) ?? 10
     }
 
     for (let i = 0; i < rawData.edges.length; i++) {
@@ -156,7 +186,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
       maxDegree = Math.max(maxDegree, node.degree)
     }
     const range = maxDegree - minDegree
-    if (range > 0) {
+    if (!medicalBrowse && range > 0) {
       const scale = Constants.maxNodeSize - Constants.minNodeSize
       for (const node of rawData.nodes) {
         node.size = Math.round(
@@ -168,6 +198,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
     rawGraph = new RawGraph()
     rawGraph.nodes = rawData.nodes
     rawGraph.edges = rawData.edges
+    rawGraph.metadata = rawData.metadata
     rawGraph.nodeIdMap = nodeIdMap
     rawGraph.edgeIdMap = edgeIdMap
 
@@ -195,13 +226,31 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
 
   // Create new graph instance
   const graph = new UndirectedGraph()
+  const medicalBrowse = rawGraph.metadata?.medical_browse
 
   // Add nodes from raw graph data
-  for (const rawNode of rawGraph?.nodes ?? []) {
-    // Ensure we have fresh random positions for nodes
-    seedrandom(rawNode.id + Date.now().toString(), { global: true })
-    const x = Math.random()
-    const y = Math.random()
+  for (const [index, rawNode] of (rawGraph?.nodes ?? []).entries()) {
+    let x: number
+    let y: number
+
+    if (medicalBrowse) {
+      const position = getMedicalBrowsePosition(rawNode.id, medicalBrowse, index)
+      x = position.x
+      y = position.y
+      rawNode.x = x
+      rawNode.y = y
+      rawNode.size =
+        getMedicalBrowseNodeSize(
+          rawNode.id,
+          rawNode.properties?.entity_type as string | undefined,
+          medicalBrowse
+        ) ?? rawNode.size
+    } else {
+      // Ensure we have fresh random positions for nodes
+      seedrandom(rawNode.id + Date.now().toString(), { global: true })
+      x = Math.random()
+      y = Math.random()
+    }
 
     graph.addNode(rawNode.id, {
       label: rawNode.labels.join(', '),
@@ -482,12 +531,15 @@ const useLightrangeGraph = () => {
         }
 
         // Fetch the extended subgraph with depth 2
-        const extendedGraph = await queryGraphs(label, 2, 1000);
+        const extendedGraph = applyMedicalBrowseProjection(await queryGraphs(label, 2, 1000));
 
         if (!extendedGraph || !extendedGraph.nodes || !extendedGraph.edges) {
           console.error('Failed to fetch extended graph');
           return;
         }
+
+        rawGraph.metadata = mergeGraphMetadata(rawGraph.metadata, extendedGraph.metadata)
+        const medicalBrowse = rawGraph.metadata?.medical_browse
 
         // Process nodes to add required properties for RawNodeType
         const processedNodes: RawNodeType[] = [];
@@ -496,15 +548,18 @@ const useLightrangeGraph = () => {
           seedrandom(node.id, { global: true });
           const nodeEntityType = node.properties?.entity_type as string | undefined;
           const color = getNodeColorByType(nodeEntityType);
+          const position = medicalBrowse
+            ? getMedicalBrowsePosition(node.id, medicalBrowse, processedNodes.length)
+            : { x: Math.random(), y: Math.random() }
 
           // Create a properly typed RawNodeType
           processedNodes.push({
             id: node.id,
             labels: node.labels,
             properties: node.properties,
-            size: 10, // Default size, will be calculated later
-            x: Math.random(), // Random position, will be adjusted later
-            y: Math.random(), // Random position, will be adjusted later
+            size: getMedicalBrowseNodeSize(node.id, nodeEntityType, medicalBrowse) ?? 10,
+            x: position.x, // Random or medical browse position, may be adjusted later
+            y: position.y, // Random or medical browse position, may be adjusted later
             color: color, // Random color
             degree: 0 // Initial degree, will be calculated later
           });
@@ -518,7 +573,7 @@ const useLightrangeGraph = () => {
             id: edge.id,
             source: edge.source,
             target: edge.target,
-            type: edge.type,
+            type: edge.type ?? undefined,
             properties: edge.properties,
             dynamicId: '' // Will be set when adding to sigma graph
           });
@@ -671,6 +726,7 @@ const useLightrangeGraph = () => {
         // If no new connectable nodes found, show toast and return
         if (nodesToAdd.size === 0) {
           updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, maxDegree);
+          useGraphStore.getState().incrementGraphDataVersion()
           toast.info(t('graphPanel.propertiesView.node.noNewNodes'));
           return;
         }
@@ -712,17 +768,28 @@ const useLightrangeGraph = () => {
           // Calculate node size
           // Limit nodeDegree to maxDegree + 1 to prevent new nodes from being too large
           const limitedDegree = Math.min(nodeDegree, maxDegree + 1);
-          const nodeSize = Math.round(
+          const genericNodeSize = Math.round(
             Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
           );
+          const nodeSize =
+            getMedicalBrowseNodeSize(
+              nodeId,
+              newNode.properties?.entity_type as string | undefined,
+              medicalBrowse
+            ) ?? genericNodeSize
 
           // Calculate angle for polar coordinates
           const angle = 2 * Math.PI * (Array.from(nodesToAdd).indexOf(nodeId) / nodesToAdd.size);
+          const medicalBrowsePosition = medicalBrowse
+            ? getMedicalBrowsePosition(nodeId, medicalBrowse, Array.from(nodesToAdd).indexOf(nodeId))
+            : undefined
 
           // Calculate final position
-          const x = nodePositions[nodeId]?.x ||
+          const x = nodePositions[nodeId]?.x ??
+                    medicalBrowsePosition?.x ??
                     (nodePositions[nodeToExpand.id].x + Math.cos(randomAngle + angle) * spreadFactor);
-          const y = nodePositions[nodeId]?.y ||
+          const y = nodePositions[nodeId]?.y ??
+                    medicalBrowsePosition?.y ??
                     (nodePositions[nodeToExpand.id].y + Math.sin(randomAngle + angle) * spreadFactor);
 
           // Add the new node to the sigma graph with calculated position
@@ -802,14 +869,21 @@ const useLightrangeGraph = () => {
         if (sigmaGraph.hasNode(nodeId)) {
           const finalDegree = sigmaGraph.degree(nodeId);
           const limitedDegree = Math.min(finalDegree, maxDegree + 1);
-          const newSize = Math.round(
+          const genericNodeSize = Math.round(
             Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
           );
+          const newSize =
+            getMedicalBrowseNodeSize(
+              nodeId,
+              nodeToExpand.properties?.entity_type as string | undefined,
+              medicalBrowse
+            ) ?? genericNodeSize
           sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
           nodeToExpand.size = newSize;
           nodeToExpand.degree = finalDegree;
         }
 
+        useGraphStore.getState().incrementGraphDataVersion()
       } catch (error) {
         console.error('Error expanding node:', error);
       }

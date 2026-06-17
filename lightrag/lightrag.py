@@ -130,6 +130,7 @@ from lightrag.utils import (
     logger,
     make_relation_vdb_ids,
     subtract_source_ids,
+    filter_chunk_tracking_source_ids,
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
     normalize_string_list,
@@ -2806,18 +2807,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 if self.entity_chunks:
                     stored_chunks = await self.entity_chunks.get_by_id(node_label)
                     if stored_chunks and isinstance(stored_chunks, dict):
-                        existing_sources = [
-                            chunk_id
-                            for chunk_id in stored_chunks.get("chunk_ids", [])
-                            if chunk_id
-                        ]
+                        existing_sources = filter_chunk_tracking_source_ids(
+                            stored_chunks.get("chunk_ids", [])
+                        )
 
                 if node_data.get("source_id"):
-                    graph_sources = [
-                        chunk_id
-                        for chunk_id in node_data["source_id"].split(GRAPH_FIELD_SEP)
-                        if chunk_id
-                    ]
+                    graph_sources = filter_chunk_tracking_source_ids(
+                        node_data["source_id"].split(GRAPH_FIELD_SEP)
+                    )
 
                 if not existing_sources:
                     existing_sources = graph_sources
@@ -2870,18 +2867,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     storage_key = make_relation_chunk_key(src, tgt)
                     stored_chunks = await self.relation_chunks.get_by_id(storage_key)
                     if stored_chunks and isinstance(stored_chunks, dict):
-                        existing_sources = [
-                            chunk_id
-                            for chunk_id in stored_chunks.get("chunk_ids", [])
-                            if chunk_id
-                        ]
+                        existing_sources = filter_chunk_tracking_source_ids(
+                            stored_chunks.get("chunk_ids", [])
+                        )
 
                 if edge_data.get("source_id"):
-                    graph_sources = [
-                        chunk_id
-                        for chunk_id in edge_data["source_id"].split(GRAPH_FIELD_SEP)
-                        if chunk_id
-                    ]
+                    graph_sources = filter_chunk_tracking_source_ids(
+                        edge_data["source_id"].split(GRAPH_FIELD_SEP)
+                    )
 
                 if not existing_sources:
                     existing_sources = graph_sources
@@ -3497,20 +3490,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     if self.entity_chunks:
                         stored_chunks = await self.entity_chunks.get_by_id(node_label)
                         if stored_chunks and isinstance(stored_chunks, dict):
-                            existing_sources = [
-                                chunk_id
-                                for chunk_id in stored_chunks.get("chunk_ids", [])
-                                if chunk_id
-                            ]
+                            existing_sources = filter_chunk_tracking_source_ids(
+                                stored_chunks.get("chunk_ids", [])
+                            )
 
                     if node_data.get("source_id"):
-                        graph_sources = [
-                            chunk_id
-                            for chunk_id in node_data["source_id"].split(
-                                GRAPH_FIELD_SEP
-                            )
-                            if chunk_id
-                        ]
+                        graph_sources = filter_chunk_tracking_source_ids(
+                            node_data["source_id"].split(GRAPH_FIELD_SEP)
+                        )
 
                     if not existing_sources:
                         existing_sources = graph_sources
@@ -3573,20 +3560,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             storage_key
                         )
                         if stored_chunks and isinstance(stored_chunks, dict):
-                            existing_sources = [
-                                chunk_id
-                                for chunk_id in stored_chunks.get("chunk_ids", [])
-                                if chunk_id
-                            ]
+                            existing_sources = filter_chunk_tracking_source_ids(
+                                stored_chunks.get("chunk_ids", [])
+                            )
 
                     if edge_data.get("source_id"):
-                        graph_sources = [
-                            chunk_id
-                            for chunk_id in edge_data["source_id"].split(
-                                GRAPH_FIELD_SEP
-                            )
-                            if chunk_id
-                        ]
+                        graph_sources = filter_chunk_tracking_source_ids(
+                            edge_data["source_id"].split(GRAPH_FIELD_SEP)
+                        )
 
                     if not existing_sources:
                         existing_sources = graph_sources

@@ -4480,6 +4480,42 @@ def merge_source_ids(
     return merged
 
 
+SYNTHETIC_CHUNK_TRACKING_SOURCE_IDS: set[str] = {"medical_kg_profile"}
+
+
+def filter_chunk_tracking_source_ids(source_ids: Iterable[str] | None) -> list[str]:
+    """Return real chunk IDs suitable for chunk-tracking storages."""
+
+    filtered: list[str] = []
+    seen: set[str] = set()
+    if not source_ids:
+        return filtered
+
+    for source_id in source_ids:
+        if not source_id or source_id in SYNTHETIC_CHUNK_TRACKING_SOURCE_IDS:
+            continue
+        if source_id not in seen:
+            seen.add(source_id)
+            filtered.append(source_id)
+    return filtered
+
+
+def collect_chunk_tracking_source_ids(records: Iterable[dict] | None) -> list[str]:
+    """Collect real chunk IDs from extraction fragments, excluding synthetic rows."""
+
+    if not records:
+        return []
+
+    return filter_chunk_tracking_source_ids(
+        [
+            record["source_id"]
+            for record in records
+            if record.get("source_id")
+            and record.get("generated_by") not in SYNTHETIC_CHUNK_TRACKING_SOURCE_IDS
+        ]
+    )
+
+
 def apply_source_ids_limit(
     source_ids: Sequence[str],
     limit: int,

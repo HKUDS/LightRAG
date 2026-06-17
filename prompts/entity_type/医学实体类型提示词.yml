@@ -1,0 +1,158 @@
+entity_types_guidance: |
+  面向中文临床指南、诊疗方案、专家共识和公共卫生规范文本抽取医学知识图谱。
+  只抽取原文明确支持、对检索和问答有稳定价值的医学概念与关系；不要从常识、标题层级或表格排版中补推未写明的事实。
+
+  实体必须是可复用医学概念，不是一次性数值、条件、页面/表格碎片、行列标题、脚注编号或只在当前句子中临时成立的短语。
+  同义词、简称和全称必须合并到同一个规范实体，例如“流感”与“流行性感冒”统一为“流行性感冒”，“ARDS”与“急性呼吸窘迫综合征（ARDS）”统一为“急性呼吸窘迫综合征（ARDS）”。
+
+  允许的实体类型仅限以下集合：
+  - Disease: 疾病、综合征、感染类型、诊断名称。
+  - Pathogen: 病原体、病毒型别、亚型、毒株。
+  - Symptom: 症状、体征、临床表现。
+  - Complication: 并发症、严重后果。
+  - Population: 稳定人群类别，如儿童、孕妇、老年人、慢性基础疾病患者。
+  - RiskFactor: 稳定危险因素或重症风险因素。
+  - Drug: 药物、活性成分、治疗药品。
+  - Vaccine: 疫苗、免疫预防产品。
+  - TreatmentRegimen: 治疗方案、治疗原则、支持治疗方案。
+  - DiagnosticTest: 检查、检验、检测方法。
+  - DiagnosticCriterion: 诊断标准、分型标准、重症或危重症判定标准。
+  - PublicHealthMeasure: 隔离、报告、预防、监测、院感控制措施。
+  - Guideline: 指南、诊疗方案、专家共识、规范性文件。
+  - Recommendation: 指南建议、推荐意见、处置建议。
+  - ClinicalDepartment: 科室、医疗机构、诊疗场景。
+  - Anatomy: 器官、系统、解剖部位。
+
+  禁止 Dosage、TimeCourse、Biomarker、Other 作为实体类型。
+  剂量、频次、疗程、用药窗口、年龄、体重、阈值、检验数值、影像学征象、适用条件和禁忌条件应进入关系 description，不作为节点。
+  不要生成“75 mg”“每日2次”“5日疗程”“发病48小时内”“≥5岁儿童”“体重≥40 kg”“PaO2/FiO2≤300”“磨玻璃影”等实体。
+  若原文出现具体检验项目名称，可抽为 DiagnosticTest；若只是具体检测值、阈值或结果范围，应写入诊断、重症判定或适用关系的 description。
+
+  关系关键词必须从以下集合中选择：
+  病原导致、病原分型、临床表现、症状归类、并发风险、高危因素、推荐治疗、剂量用法、诊断依据、检测方法、重症判定、预防措施、指南建议、适用于、属于。
+
+  关系抽取要求：
+  - 只抽取原文明确支持的关系，并在 description 中保留原文关键限定信息。
+  - 不要把所有实体都直接连接到疾病；优先保留“指南 -> 推荐/措施/方案 -> 适用对象”的证据链，也可保留“药物/方案 -> 适用对象”“检测方法 -> 诊断依据”等中间关系。
+  - 药物的剂量、频次、疗程、用药窗口、适用年龄、体重和禁忌条件写入“推荐治疗”或“剂量用法”关系 description。
+  - 症状上位归类、病原体分型、指南归属等层级关系使用“属于”或“症状归类”，不要创造不在允许集合内的新关系词。
+  - 没有明确关系的实体不要输出；每个 chunk 优先输出核心实体和核心关系，不要追求数量。
+
+entity_extraction_examples:
+  - |
+    entity{tuple_delimiter}流行性感冒{tuple_delimiter}Disease{tuple_delimiter}由流感病毒引起的急性呼吸道传染病，可出现发热、咳嗽、咽痛等表现。
+    entity{tuple_delimiter}甲型流感病毒{tuple_delimiter}Pathogen{tuple_delimiter}可导致流行性感冒的流感病毒型别之一。
+    entity{tuple_delimiter}流感病毒{tuple_delimiter}Pathogen{tuple_delimiter}引起流行性感冒的病原体类别。
+    entity{tuple_delimiter}发热{tuple_delimiter}Symptom{tuple_delimiter}流行性感冒常见的全身症状之一。
+    entity{tuple_delimiter}全身症状{tuple_delimiter}Symptom{tuple_delimiter}发热、乏力、肌痛等全身性临床表现的归类。
+    entity{tuple_delimiter}奥司他韦{tuple_delimiter}Drug{tuple_delimiter}神经氨酸酶抑制剂，可用于流行性感冒抗病毒治疗。
+    entity{tuple_delimiter}儿童{tuple_delimiter}Population{tuple_delimiter}临床用药和免疫预防中常见的适用人群。
+    relation{tuple_delimiter}流行性感冒{tuple_delimiter}甲型流感病毒{tuple_delimiter}病原导致{tuple_delimiter}原文明确说明流行性感冒可由甲型流感病毒等流感病毒感染导致。
+    relation{tuple_delimiter}甲型流感病毒{tuple_delimiter}流感病毒{tuple_delimiter}属于{tuple_delimiter}甲型流感病毒属于流感病毒的型别。
+    relation{tuple_delimiter}流行性感冒{tuple_delimiter}发热{tuple_delimiter}临床表现{tuple_delimiter}发热是流行性感冒的常见临床表现之一。
+    relation{tuple_delimiter}发热{tuple_delimiter}全身症状{tuple_delimiter}属于{tuple_delimiter}发热可归入全身症状。
+    relation{tuple_delimiter}奥司他韦{tuple_delimiter}流行性感冒{tuple_delimiter}推荐治疗{tuple_delimiter}奥司他韦可用于流行性感冒抗病毒治疗；儿童剂量如每次75 mg、每日2次、疗程5日等具体信息只保留在关系描述中，不生成剂量实体。
+    relation{tuple_delimiter}奥司他韦{tuple_delimiter}儿童{tuple_delimiter}剂量用法{tuple_delimiter}儿童使用奥司他韦时应按年龄或体重确定剂量；示例剂量75 mg、给药频次和疗程属于用法说明，不作为实体节点。
+    {completion_delimiter}
+
+entity_extraction_json_examples:
+  - |
+    {
+      "entities": [
+        {
+          "name": "流行性感冒",
+          "type": "Disease",
+          "description": "由流感病毒引起的急性呼吸道传染病，可出现发热、咳嗽、咽痛等表现。"
+        },
+        {
+          "name": "甲型流感病毒",
+          "type": "Pathogen",
+          "description": "可导致流行性感冒的流感病毒型别之一。"
+        },
+        {
+          "name": "流感病毒",
+          "type": "Pathogen",
+          "description": "引起流行性感冒的病原体类别。"
+        },
+        {
+          "name": "发热",
+          "type": "Symptom",
+          "description": "流行性感冒常见的全身症状之一。"
+        },
+        {
+          "name": "全身症状",
+          "type": "Symptom",
+          "description": "发热、乏力、肌痛等全身性临床表现的归类。"
+        },
+        {
+          "name": "奥司他韦",
+          "type": "Drug",
+          "description": "神经氨酸酶抑制剂，可用于流行性感冒抗病毒治疗。"
+        },
+        {
+          "name": "儿童",
+          "type": "Population",
+          "description": "临床用药和免疫预防中常见的适用人群。"
+        },
+        {
+          "name": "流感诊疗方案",
+          "type": "Guideline",
+          "description": "面向流行性感冒诊断、治疗和预防的规范性文件。"
+        },
+        {
+          "name": "抗病毒治疗建议",
+          "type": "Recommendation",
+          "description": "指南中针对流行性感冒抗病毒治疗的推荐意见。"
+        }
+      ],
+      "relationships": [
+        {
+          "source": "流行性感冒",
+          "target": "甲型流感病毒",
+          "keywords": "病原导致",
+          "description": "原文明确说明流行性感冒可由甲型流感病毒等流感病毒感染导致。"
+        },
+        {
+          "source": "甲型流感病毒",
+          "target": "流感病毒",
+          "keywords": "属于",
+          "description": "甲型流感病毒属于流感病毒的型别。"
+        },
+        {
+          "source": "流行性感冒",
+          "target": "发热",
+          "keywords": "临床表现",
+          "description": "发热是流行性感冒的常见临床表现之一。"
+        },
+        {
+          "source": "发热",
+          "target": "全身症状",
+          "keywords": "属于",
+          "description": "发热可归入全身症状。"
+        },
+        {
+          "source": "流感诊疗方案",
+          "target": "抗病毒治疗建议",
+          "keywords": "指南建议",
+          "description": "流感诊疗方案提出抗病毒治疗建议，应结合病情、用药窗口和适用人群执行。"
+        },
+        {
+          "source": "抗病毒治疗建议",
+          "target": "儿童",
+          "keywords": "适用于",
+          "description": "抗病毒治疗建议可适用于符合原文条件的儿童；年龄、体重和用药窗口等限定信息保留在描述中。"
+        },
+        {
+          "source": "奥司他韦",
+          "target": "流行性感冒",
+          "keywords": "推荐治疗",
+          "description": "奥司他韦可用于流行性感冒抗病毒治疗；儿童剂量如每次75 mg、每日2次、疗程5日等具体信息只保留在关系描述中，不生成剂量实体。"
+        },
+        {
+          "source": "奥司他韦",
+          "target": "儿童",
+          "keywords": "剂量用法",
+          "description": "儿童使用奥司他韦时应按年龄或体重确定剂量；示例剂量75 mg、给药频次和疗程属于用法说明，不作为实体节点。"
+        }
+      ]
+    }

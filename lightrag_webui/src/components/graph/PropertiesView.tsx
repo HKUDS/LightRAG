@@ -7,6 +7,11 @@ import useLightragGraph from '@/hooks/useLightragGraph'
 import { useTranslation } from 'react-i18next'
 import { GitBranchPlus, Scissors, Lock } from 'lucide-react'
 import EditablePropertyRow from './EditablePropertyRow'
+import {
+  groupMedicalRelations,
+  type GroupedMedicalRelations,
+  type MedicalRelation
+} from './medicalRelationGroups'
 
 /**
  * Component that view properties of elements in graph.
@@ -53,7 +58,7 @@ const PropertiesView = () => {
     return <></>
   }
   return (
-    <div className="bg-background/80 max-w-xs rounded-lg border-2 p-2 text-xs backdrop-blur-lg">
+    <div className="bg-background/80 max-w-sm rounded-lg border-2 p-2 text-xs backdrop-blur-lg">
       {currentType == 'node' ? (
         <NodePropertiesView node={currentElement as any} pipelineBusy={pipelineBusy} />
       ) : (
@@ -64,11 +69,7 @@ const PropertiesView = () => {
 }
 
 type NodeType = RawNodeType & {
-  relationships: {
-    type: string
-    id: string
-    label: string
-  }[]
+  relationshipGroups: GroupedMedicalRelations[]
 }
 
 type EdgeType = RawEdgeType & {
@@ -78,7 +79,7 @@ type EdgeType = RawEdgeType & {
 
 const refineNodeProperties = (node: RawNodeType): NodeType => {
   const state = useGraphStore.getState()
-  const relationships = []
+  const relationships: MedicalRelation[] = []
 
   if (state.sigmaGraph && state.rawGraph) {
     try {
@@ -86,7 +87,7 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
         console.warn('Node not found in sigmaGraph:', node.id)
         return {
           ...node,
-          relationships: []
+          relationshipGroups: []
         }
       }
 
@@ -105,9 +106,15 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
           const neighbour = state.rawGraph.getNode(neighbourId)
           if (neighbour) {
             relationships.push({
-              type: 'Neighbour',
               id: neighbourId,
-              label: neighbour.properties['entity_id'] ? neighbour.properties['entity_id'] : neighbour.labels.join(', ')
+              label: neighbour.properties['entity_id'] ? neighbour.properties['entity_id'] : neighbour.labels.join(', '),
+              edgeId: edge.id,
+              selectedNodeId: node.id,
+              sourceId: edge.source,
+              targetId: edge.target,
+              edgeKeywords: edge.properties?.keywords,
+              neighborEntityType: neighbour.properties?.entity_type,
+              neighborLabels: neighbour.labels
             })
           }
         }
@@ -119,7 +126,7 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
 
   return {
     ...node,
-    relationships
+    relationshipGroups: groupMedicalRelations(relationships, state.rawGraph?.metadata)
   }
 }
 
@@ -336,24 +343,36 @@ const NodePropertiesView = ({ node, pipelineBusy }: { node: NodeType; pipelineBu
             )
           })}
       </div>
-      {node.relationships.length > 0 && (
+      {node.relationshipGroups.length > 0 && (
         <>
           <h3 className="text-md pl-1 font-bold tracking-wide text-emerald-700">
-            {t('graphPanel.propertiesView.node.relationships')}
+            {t('graphPanel.propertiesView.node.medicalRelationships', '医学关系')}
           </h3>
           <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
-            {node.relationships.map(({ type, id, label }) => {
-              return (
-                <PropertyRow
-                  key={id}
-                  name={type}
-                  value={label}
-                  onClick={() => {
-                    useGraphStore.getState().setSelectedNode(id, true)
-                  }}
-                />
-              )
-            })}
+            {node.relationshipGroups.map((group) => (
+              <div key={group.key} className="mb-2 last:mb-0">
+                <div className="px-1 pb-1 font-semibold text-primary/70">
+                  {t(
+                    `graphPanel.propertiesView.node.medicalGroups.${group.key}`,
+                    group.metadataLabel || group.key
+                  )}
+                  <span className="ml-1 text-primary/40">({group.relations.length})</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  {group.relations.map((relation) => (
+                    <PropertyRow
+                      key={relation.edgeId || relation.id}
+                      name={relation.displayName || t('graphPanel.propertiesView.node.related', '相关')}
+                      value={relation.displayValue || relation.label}
+                      tooltip={relation.triple || relation.label}
+                      onClick={() => {
+                        useGraphStore.getState().setSelectedNode(relation.id, true)
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         </>
       )}

@@ -160,6 +160,9 @@ lightrag-download-cache = "lightrag.tools.download_cache:main"
 lightrag-clean-llmqc = "lightrag.tools.clean_llm_query_cache:main"
 lightrag-rebuild-vdb = "lightrag.tools.rebuild_vdb:main"
 
+[project.entry-points."lightrag.parsers"]
+raganything = "lightrag_raganything_parser.plugin:register"
+
 [project.urls]
 Homepage = "https://github.com/HKUDS/LightRAG"
 Documentation = "https://github.com/HKUDS/LightRAG"
@@ -167,7 +170,7 @@ Repository = "https://github.com/HKUDS/LightRAG"
 "Bug Tracker" = "https://github.com/HKUDS/LightRAG/issues"
 
 [tool.setuptools.packages.find]
-include = ["lightrag*"]
+include = ["lightrag*", "lightrag_raganything_parser*"]
 exclude = ["data*", "tests*", "scripts*", "examples*", "dickens*", "reproduce*", "output_complete*", "rag_storage*", "inputs*"]
 
 [tool.setuptools]
@@ -177,7 +180,7 @@ include-package-data = true
 version = {attr = "lightrag._version.__version__"}
 
 [tool.setuptools.package-data]
-lightrag = ["api/webui/**/*", "api/static/**/*"]
+lightrag = ["api/webui/**/*", "api/static/**/*", "prompts/entity_type/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

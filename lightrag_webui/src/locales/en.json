@@ -8,6 +8,7 @@
   },
   "header": {
     "documents": "Documents",
+    "config": "Config",
     "knowledgeGraph": "Knowledge Graph",
     "retrieval": "Retrieval",
     "api": "API",
@@ -359,6 +360,22 @@
         "deleteAllNodesError": "Refuse to delete all nodes in the graph",
         "nodesRemoved": "{{count}} nodes removed, including orphan nodes",
         "noNewNodes": "No expandable nodes found",
+        "medicalRelationships": "Medical Relations",
+        "neighbor": "Neighbor",
+        "related": "Related",
+        "neighborType": "Type",
+        "relationKeywords": "Relation Keywords",
+        "medicalGroups": {
+          "pathogen": "Pathogen",
+          "symptom": "Clinical Findings",
+          "complication": "Complications",
+          "diagnosis": "Diagnosis",
+          "treatment": "Treatment",
+          "prevention": "Prevention",
+          "population": "Population",
+          "guideline": "Guideline Recommendations",
+          "other": "Other"
+        },
         "propertyNames": {
           "description": "Description",
           "entity_id": "Name",

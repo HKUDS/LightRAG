@@ -25,6 +25,9 @@ from lightrag.utils import get_env_value, logger
 # so existing configs surface their drift without breaking.
 _DEPRECATED_ADDON_PARAM_KEYS: tuple[str, ...] = ("enable_multimodal_pipeline",)
 _warned_deprecated_keys: set[str] = set()
+_MEDICAL_PROFILE_PROMPT_FILES: dict[str, str] = {
+    "clinical_guideline_zh": "医学实体类型提示词.yml",
+}
 
 
 def _emit_deprecated_addon_warnings(params: Mapping[str, Any]) -> None:
@@ -38,15 +41,30 @@ def _emit_deprecated_addon_warnings(params: Mapping[str, Any]) -> None:
             _warned_deprecated_keys.add(key)
 
 
+def _apply_medical_profile_defaults(params: dict[str, Any]) -> None:
+    profile = str(params.get("medical_kg_profile") or "").strip().lower()
+    if not profile:
+        return
+
+    prompt_file = str(params.get("entity_type_prompt_file") or "").strip()
+    if prompt_file:
+        return
+
+    profile_prompt = _MEDICAL_PROFILE_PROMPT_FILES.get(profile)
+    if profile_prompt:
+        params["entity_type_prompt_file"] = profile_prompt
+
+
 def default_addon_params() -> dict[str, Any]:
     # Lazy import to avoid the parser_routing → utils → … cycle that
     # would otherwise form when parser_routing imports back into this
     # module via ``LightRAG`` construction paths.
     from lightrag.parser.routing import default_chunker_config
 
-    return {
+    params = {
         "language": get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE, str),
         "entity_type_prompt_file": get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
+        "medical_kg_profile": get_env_value("MEDICAL_KG_PROFILE", "", str),
         # Per-strategy chunker parameters; mutate at runtime (e.g.
         # ``rag.addon_params["chunker"]["recursive_character"]["separators"]
         # = [...]``) to change defaults applied to subsequently
@@ -55,6 +73,8 @@ def default_addon_params() -> dict[str, Any]:
         # are not affected by later runtime mutations.
         "chunker": default_chunker_config(),
     }
+    _apply_medical_profile_defaults(params)
+    return params
 
 
 def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -85,6 +105,11 @@ def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, 
         "entity_type_prompt_file",
         get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
     )
+    normalized.setdefault(
+        "medical_kg_profile",
+        get_env_value("MEDICAL_KG_PROFILE", "", str),
+    )
+    _apply_medical_profile_defaults(normalized)
     # Build the chunker default lazily — `default_chunker_config()` reads env
     # vars (e.g. CHUNK_R_SEPARATORS via json.loads) and would raise on a
     # malformed value, which would prevent an explicit caller-supplied

@@ -14,6 +14,7 @@ venv/
 # Enviroment Variable Files
 .env
 .env.backup.*
+.env.backup-*
 
 # Generated Docker Compose files (output of setup wizard)
 docker-compose.*.yml
@@ -30,6 +31,7 @@ site/
 *.logfire
 *.coverage/
 log/
+work/
 
 # Caches
 .cache/
@@ -55,8 +57,9 @@ output/
 rag_storage/
 data/
 
-# User cumstomized prompt directory
-prompts/entity_type/
+# User customized prompt directory
+prompts/entity_type/*
+!prompts/entity_type/医学实体类型提示词.yml
 
 # Evaluation results
 lightrag/evaluation/results/
@@ -80,6 +83,10 @@ ignore_this.txt
 
 # AI Agent files
 memory-bank
+/task_plan.md
+/findings.md
+/progress.md
+/LIGHTRAG_CONFIG_VERIFIED.md
 # Ignore .claude/ by default; only track the shared hook and settings
 # (local overrides like settings.local.json stay ignored via .claude/*)
 .claude/*

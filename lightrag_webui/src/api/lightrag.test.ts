@@ -44,6 +44,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   apiModule.__resetPaginatedDocumentRequestsForTests()
+  ;(apiModule as any).__resetConfigWorkbenchRequestsForTests?.()
 })
 
 describe('getDocumentsPaginated', () => {
@@ -78,10 +79,7 @@ describe('getDocumentsPaginated', () => {
     expect(callCount).toBe(1)
 
     apiModule.abortDocumentsPaginated(request)
-    const [firstResult, secondResult] = await Promise.allSettled([
-      firstRequest,
-      secondRequest
-    ])
+    const [firstResult, secondResult] = await Promise.allSettled([firstRequest, secondRequest])
     expect(firstResult.status).toBe('rejected')
     expect(secondResult.status).toBe('rejected')
 
@@ -140,9 +138,9 @@ describe('getDocumentsPaginated', () => {
       })
     })
 
-    await expect(
-      apiModule.getDocumentsPaginatedWithTimeout(request, 1)
-    ).rejects.toThrow('Document fetch timeout')
+    await expect(apiModule.getDocumentsPaginatedWithTimeout(request, 1)).rejects.toThrow(
+      'Document fetch timeout'
+    )
 
     expect(callCount).toBe(1)
 
@@ -261,5 +259,116 @@ describe('isUserAbortError', () => {
     const controller = new AbortController()
     expect(apiModule.isUserAbortError(controller.signal, new Error('network down'))).toBe(false)
     expect(apiModule.isUserAbortError(undefined, new Error('network down'))).toBe(false)
+  })
+})
+
+describe('graph api', () => {
+  test('builds graph query paths with medical browse enabled by default', () => {
+    expect(apiModule.buildGraphQueryPath('COVID-19 & fever', 2, 150)).toBe(
+      '/graphs?label=COVID-19%20%26%20fever&max_depth=2&max_nodes=150&medical_view=true&medical_browse=true'
+    )
+  })
+})
+
+describe('config workbench api', () => {
+  test('gets the config workbench payload', async () => {
+    let capturedEnvProfile: string | undefined
+    let capturedPromptProfile: string | undefined
+    const payload = {
+      workspace: { current: 'project_a', dynamic_switching: false },
+      env: { active_profile: '.env', profiles: [], sections: [] },
+      prompts: {
+        entity_type_active_profile: 'finance.yml',
+        entity_type_profiles: [],
+        stages: []
+      },
+      requires_restart: true
+    }
+
+    ;(apiModule as any).__setConfigWorkbenchGetForTests(
+      async (envProfile?: string, promptProfile?: string) => {
+        capturedEnvProfile = envProfile
+        capturedPromptProfile = promptProfile
+        return payload
+      }
+    )
+
+    await expect(
+      (apiModule as any).getConfigWorkbench('.env.local', 'medical.yml')
+    ).resolves.toEqual(payload)
+    expect(capturedEnvProfile).toBe('.env.local')
+    expect(capturedPromptProfile).toBe('medical.yml')
+  })
+
+  test('updates env values through the config workbench endpoint', async () => {
+    let capturedValues: Record<string, string | null> | undefined
+    const response = { updated: ['LLM_MODEL'], requires_restart: true }
+
+    ;(apiModule as any).__setConfigEnvPutForTests(async (values: Record<string, string | null>) => {
+      capturedValues = values
+      return response
+    })
+
+    await expect(
+      (apiModule as any).updateEnvConfig({
+        LLM_MODEL: 'gpt-5-mini',
+        LLM_BINDING_API_KEY: ''
+      })
+    ).resolves.toEqual(response)
+
+    expect(capturedValues).toEqual({
+      LLM_MODEL: 'gpt-5-mini',
+      LLM_BINDING_API_KEY: ''
+    })
+  })
+
+  test('picks a workspace folder through the config workbench endpoint', async () => {
+    let capturedRequest: { initial_dir?: string | null } | undefined
+    const response = {
+      selected_path: 'D:\\LightRAG\\inputs\\project_a',
+      workspace: 'project_a',
+      input_dir: 'D:\\LightRAG\\inputs'
+    }
+
+    ;(apiModule as any).__setConfigFolderPickPostForTests(
+      async (request: { initial_dir?: string | null }) => {
+        capturedRequest = request
+        return response
+      }
+    )
+
+    await expect(
+      (apiModule as any).pickWorkspaceFolder({
+        initial_dir: 'D:\\LightRAG\\inputs'
+      })
+    ).resolves.toEqual(response)
+
+    expect(capturedRequest).toEqual({
+      initial_dir: 'D:\\LightRAG\\inputs'
+    })
+  })
+
+  test('updates an entity-type prompt profile', async () => {
+    let capturedRequest: { profile: string; entity_types_guidance: string } | undefined
+    const response = { profile: 'finance.yml', requires_restart: true }
+
+    ;(apiModule as any).__setEntityPromptPutForTests(
+      async (request: { profile: string; entity_types_guidance: string }) => {
+        capturedRequest = request
+        return response
+      }
+    )
+
+    await expect(
+      (apiModule as any).updateEntityTypePrompt({
+        profile: 'finance.yml',
+        entity_types_guidance: '- Company\n- Person'
+      })
+    ).resolves.toEqual(response)
+
+    expect(capturedRequest).toEqual({
+      profile: 'finance.yml',
+      entity_types_guidance: '- Company\n- Person'
+    })
   })
 })

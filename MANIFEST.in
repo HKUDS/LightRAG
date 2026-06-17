@@ -3,3 +3,4 @@ include lightrag/api/requirements.txt
 recursive-include lightrag/api/webui *
 recursive-include lightrag/api/static *
 recursive-include prompts/samples *
+recursive-include prompts/entity_type *

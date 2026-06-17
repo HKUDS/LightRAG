@@ -41,6 +41,9 @@ function TabsNavigation() {
         <NavigationTab value="documents" currentTab={currentTab}>
           {t('header.documents')}
         </NavigationTab>
+        <NavigationTab value="config" currentTab={currentTab}>
+          {t('header.config', 'Config')}
+        </NavigationTab>
         <NavigationTab value="knowledge-graph" currentTab={currentTab}>
           {t('header.knowledgeGraph')}
         </NavigationTab>
@@ -57,25 +60,26 @@ function TabsNavigation() {
 
 export default function SiteHeader() {
   const { t } = useTranslation()
-  const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
+  const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } =
+    useAuthStore()
 
-  const versionDisplay = (coreVersion && apiVersion)
-    ? `${coreVersion}/${apiVersion}`
-    : null;
+  const versionDisplay = coreVersion && apiVersion ? `${coreVersion}/${apiVersion}` : null
 
   // Check if frontend needs rebuild (apiVersion ends with warning symbol)
-  const hasWarning = apiVersion?.endsWith('⚠️');
+  const hasWarning = apiVersion?.endsWith('⚠️')
   const versionTooltip = hasWarning
     ? t('header.frontendNeedsRebuild')
-    : versionDisplay ? `v${versionDisplay}` : '';
+    : versionDisplay
+      ? `v${versionDisplay}`
+      : ''
 
   const handleLogout = () => {
-    navigationService.navigateToLogin();
+    navigationService.navigateToLogin()
   }
 
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
-      <div className="min-w-[200px] w-auto flex items-center">
+      <div className="flex w-auto min-w-[200px] items-center">
         <a href={webuiPrefix} className="flex items-center gap-2">
           <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
           <span className="font-bold md:inline-block">{SiteInfo.name}</span>
@@ -86,14 +90,10 @@ export default function SiteHeader() {
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="font-medium text-sm cursor-default">
-                    {webuiTitle}
-                  </span>
+                  <span className="cursor-default text-sm font-medium">{webuiTitle}</span>
                 </TooltipTrigger>
                 {webuiDescription && (
-                  <TooltipContent side="bottom">
-                    {webuiDescription}
-                  </TooltipContent>
+                  <TooltipContent side="bottom">{webuiDescription}</TooltipContent>
                 )}
               </Tooltip>
             </TooltipProvider>
@@ -104,25 +104,23 @@ export default function SiteHeader() {
       <div className="flex h-10 flex-1 items-center justify-center">
         <TabsNavigation />
         {isGuestMode && (
-          <div className="ml-2 self-center px-2 py-1 text-xs bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 rounded-md">
+          <div className="ml-2 self-center rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">
             {t('login.guestMode', 'Guest Mode')}
           </div>
         )}
       </div>
 
-      <nav className="w-[200px] flex items-center justify-end">
+      <nav className="flex w-[200px] items-center justify-end">
         <div className="flex items-center gap-2">
           {versionDisplay && (
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="text-xs text-gray-500 dark:text-gray-400 mr-1 cursor-default">
+                  <span className="mr-1 cursor-default text-xs text-gray-500 dark:text-gray-400">
                     v{versionDisplay}
                   </span>
                 </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {versionTooltip}
-                </TooltipContent>
+                <TooltipContent side="bottom">{versionTooltip}</TooltipContent>
               </Tooltip>
             </TooltipProvider>
           )}

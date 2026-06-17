@@ -3,6 +3,11 @@ import { createSelectors } from '@/lib/utils'
 import { DirectedGraph } from 'graphology'
 import MiniSearch from 'minisearch'
 import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
+import type {
+  LightragGraphMetadata,
+  LightragMedicalBrowseCollapsedGroup,
+  LightragMedicalBrowseMetadata
+} from '@/api/lightrag'
 
 const createErrorWithCause = (message: string, cause: unknown): Error => {
   const error = new Error(message) as Error & { cause?: unknown }
@@ -37,6 +42,104 @@ export type RawEdgeType = {
   dynamicId: string
 }
 
+const mergeCollapsedGroups = (
+  current?: LightragMedicalBrowseCollapsedGroup[],
+  incoming?: LightragMedicalBrowseCollapsedGroup[]
+): LightragMedicalBrowseCollapsedGroup[] => {
+  const groups = new Map<string, LightragMedicalBrowseCollapsedGroup>()
+
+  for (const group of [...(current ?? []), ...(incoming ?? [])]) {
+    groups.set(group.id, {
+      ...group,
+      child_ids: [...group.child_ids],
+      examples: [...group.examples]
+    })
+  }
+
+  return Array.from(groups.values())
+}
+
+const mergeMedicalBrowseMetadata = (
+  current?: LightragMedicalBrowseMetadata,
+  incoming?: LightragMedicalBrowseMetadata
+): LightragMedicalBrowseMetadata | undefined => {
+  if (!current && !incoming) {
+    return undefined
+  }
+
+  return {
+    ...(current ?? {}),
+    ...(incoming ?? {}),
+    category_order: Array.from(
+      new Set([...(current?.category_order ?? []), ...(incoming?.category_order ?? [])])
+    ),
+    node_roles: {
+      ...(current?.node_roles ?? {}),
+      ...(incoming?.node_roles ?? {})
+    },
+    collapsed_groups: mergeCollapsedGroups(current?.collapsed_groups, incoming?.collapsed_groups),
+    relation_details: {
+      ...(current?.relation_details ?? {}),
+      ...(incoming?.relation_details ?? {})
+    }
+  }
+}
+
+export const mergeGraphMetadata = (
+  current?: LightragGraphMetadata,
+  incoming?: LightragGraphMetadata
+): LightragGraphMetadata | undefined => {
+  if (!current) {
+    if (!incoming) {
+      return undefined
+    }
+
+    const medicalBrowse = mergeMedicalBrowseMetadata(undefined, incoming.medical_browse)
+    return medicalBrowse ? { ...incoming, medical_browse: medicalBrowse } : { ...incoming }
+  }
+  if (!incoming) {
+    const medicalBrowse = mergeMedicalBrowseMetadata(current.medical_browse, undefined)
+    return medicalBrowse ? { ...current, medical_browse: medicalBrowse } : { ...current }
+  }
+
+  const merged: LightragGraphMetadata = { ...current, ...incoming }
+  const groups = new Map<
+    string,
+    { key: string; label: string; node_ids: string[]; count: number }
+  >()
+
+  for (const sourceGroup of [
+    ...(current.medical_groups ?? []),
+    ...(incoming.medical_groups ?? [])
+  ]) {
+    const existing = groups.get(sourceGroup.key)
+    if (!existing) {
+      groups.set(sourceGroup.key, {
+        ...sourceGroup,
+        node_ids: [...sourceGroup.node_ids],
+        count: sourceGroup.node_ids.length
+      })
+      continue
+    }
+
+    for (const nodeId of sourceGroup.node_ids) {
+      if (!existing.node_ids.includes(nodeId)) {
+        existing.node_ids.push(nodeId)
+      }
+    }
+    existing.label = existing.label || sourceGroup.label
+    existing.count = existing.node_ids.length
+  }
+
+  if (groups.size) {
+    merged.medical_groups = Array.from(groups.values())
+  }
+
+  merged.medical_browse = mergeMedicalBrowseMetadata(current.medical_browse, incoming.medical_browse)
+
+  return merged
+}
+
 /**
  * Interface for tracking edges that need updating when a node ID changes
  */
@@ -49,6 +152,7 @@ interface EdgeToUpdate {
 export class RawGraph {
   nodes: RawNodeType[] = []
   edges: RawEdgeType[] = []
+  metadata?: LightragGraphMetadata
   // nodeIDMap: map node id to index in nodes array (SigmaGraph has nodeId as key)
   nodeIdMap: Record<string, number> = {}
   // edgeIDMap: map edge id to index in edges array (SigmaGraph not use id as key)

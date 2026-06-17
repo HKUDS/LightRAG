@@ -1,0 +1,1509 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LightRAG 配置工作台原型</title>
+  <style>
+    :root {
+      --background: #ffffff;
+      --foreground: #09090b;
+      --muted: #f4f4f5;
+      --muted-foreground: #71717a;
+      --border: #e4e4e7;
+      --input: #e4e4e7;
+      --primary: #18181b;
+      --primary-foreground: #fafafa;
+      --accent: #f4f4f5;
+      --accent-foreground: #18181b;
+      --success: #22c55e;
+      --success-strong: #10b981;
+      --warning-bg: #fff7ed;
+      --warning-fg: #b45309;
+      --changed-bg: #ecfdf5;
+      --changed-border: #a7f3d0;
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--background);
+      color: var(--foreground);
+      font-size: 14px;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .topbar {
+      height: 58px;
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: minmax(370px, 1fr) auto minmax(260px, 1fr);
+      align-items: center;
+      padding: 0 18px;
+      background: rgba(255, 255, 255, 0.95);
+    }
+
+    .brand-zone {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+      font-size: 21px;
+      white-space: nowrap;
+      padding-left: 14px;
+      border-left: 1px solid var(--border);
+    }
+
+    .brand svg {
+      width: 20px;
+      height: 20px;
+      color: #10b981;
+      flex: 0 0 auto;
+    }
+
+    .brand strong {
+      font-weight: 760;
+    }
+
+    .brand span {
+      color: #18181b;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .workspace-switcher {
+      display: grid;
+      grid-template-columns: auto minmax(150px, 190px);
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .workspace-switcher span {
+      color: #71717a;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .workspace-switcher select {
+      height: 34px;
+      font-size: 13px;
+      background: #ffffff;
+    }
+
+    .tabs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      border-radius: 10px;
+      background: var(--accent);
+      padding: 3px;
+      min-width: 0;
+    }
+
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 38px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: #71717a;
+      padding: 0 13px;
+      font-size: 17px;
+      line-height: 1;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .tab svg {
+      width: 17px;
+      height: 17px;
+      stroke-width: 2;
+    }
+
+    .tab.active {
+      color: #ffffff;
+      background: #10b981;
+      box-shadow: 0 1px 2px rgba(16, 185, 129, 0.25);
+    }
+
+    .tab:not(.active):hover {
+      color: #18181b;
+      background: rgba(255, 255, 255, 0.75);
+    }
+
+    .right-nav {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 18px;
+      min-width: 0;
+      color: #64748b;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      height: 28px;
+      border-radius: 9px;
+      padding: 0 10px;
+      font-size: 14px;
+      color: var(--warning-fg);
+      background: var(--warning-bg);
+      border: 1px solid #fed7aa;
+      white-space: nowrap;
+    }
+
+    .icon-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: #18181b;
+      cursor: pointer;
+    }
+
+    .icon-button svg {
+      width: 19px;
+      height: 19px;
+    }
+
+    .icon-button:hover {
+      border-color: var(--border);
+      background: var(--muted);
+    }
+
+    .workspace {
+      min-height: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #fafafa;
+    }
+
+    .page-head {
+      min-height: 78px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 29px;
+      background: #ffffff;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .title-wrap {
+      min-width: 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .subline {
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted-foreground);
+      font-size: 13px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 25px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: #ffffff;
+      padding: 0 9px;
+      color: #52525b;
+      white-space: nowrap;
+    }
+
+    .pill.changed {
+      border-color: var(--changed-border);
+      background: var(--changed-bg);
+      color: #047857;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #ffffff;
+      color: #18181b;
+      padding: 0 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn svg {
+      width: 17px;
+      height: 17px;
+    }
+
+    .btn:hover {
+      background: #f8fafc;
+    }
+
+    .btn.primary {
+      border-color: #18181b;
+      background: #18181b;
+      color: #ffffff;
+    }
+
+    .btn.primary:hover {
+      background: #27272a;
+    }
+
+    .main-grid {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 280px minmax(680px, 1fr);
+      gap: 0;
+    }
+
+    .side {
+      border-right: 1px solid var(--border);
+      background: #ffffff;
+      min-height: 0;
+      overflow: auto;
+      padding: 16px 13px;
+    }
+
+    .search {
+      position: relative;
+      margin-bottom: 14px;
+    }
+
+    .search svg {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 16px;
+      height: 16px;
+      color: #71717a;
+      pointer-events: none;
+    }
+
+    .search input {
+      width: 100%;
+      height: 38px;
+      border: 1px solid var(--input);
+      border-radius: 8px;
+      padding: 0 12px 0 36px;
+      outline: none;
+      background: #ffffff;
+    }
+
+    .search input:focus,
+    .field:focus,
+    select:focus,
+    textarea:focus {
+      border-color: #a1a1aa;
+      box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.08);
+    }
+
+    .selector-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .selector-card select {
+      height: 34px;
+      font-size: 13px;
+    }
+
+    .selector-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: #71717a;
+      font-size: 12px;
+    }
+
+    .section-label {
+      margin: 18px 8px 8px;
+      color: #71717a;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .category {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 9px;
+      min-height: 42px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: #3f3f46;
+      padding: 0 9px;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .category span {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+    }
+
+    .category svg {
+      width: 17px;
+      height: 17px;
+      color: #52525b;
+      flex: 0 0 auto;
+    }
+
+    .category small {
+      color: #71717a;
+      font-size: 12px;
+    }
+
+    .category.active {
+      border-color: #d4d4d8;
+      background: #f4f4f5;
+      color: #09090b;
+      box-shadow: inset 3px 0 0 #10b981;
+    }
+
+    .category:hover {
+      background: #f8fafc;
+    }
+
+    .content {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 18px 28px 22px;
+    }
+
+    .view[hidden] {
+      display: none;
+    }
+
+    .content-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 13px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 21px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .muted {
+      margin: 5px 0 0;
+      color: var(--muted-foreground);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .segmented {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 3px;
+      background: #ffffff;
+    }
+
+    .segmented button {
+      min-height: 30px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      padding: 0 10px;
+      color: #52525b;
+      cursor: pointer;
+    }
+
+    .segmented button.active {
+      background: #18181b;
+      color: #ffffff;
+    }
+
+    .table-wrap {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #ffffff;
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--border);
+      padding: 11px 12px;
+      vertical-align: middle;
+    }
+
+    th {
+      background: #fafafa;
+      color: #52525b;
+      font-size: 12px;
+      text-align: left;
+      font-weight: 650;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .key {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .key code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      color: #18181b;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .key span {
+      color: #71717a;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .field,
+    select {
+      width: 100%;
+      height: 36px;
+      border: 1px solid var(--input);
+      border-radius: 7px;
+      background: #ffffff;
+      padding: 0 10px;
+      outline: none;
+    }
+
+    .field.changed,
+    select.changed {
+      border-color: var(--changed-border);
+      background: var(--changed-bg);
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      padding: 0 8px;
+      color: #52525b;
+      background: #fafafa;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .tag.green {
+      color: #047857;
+      border-color: var(--changed-border);
+      background: var(--changed-bg);
+    }
+
+    .switch {
+      display: inline-flex;
+      align-items: center;
+      width: 43px;
+      height: 24px;
+      border-radius: 999px;
+      background: #18181b;
+      padding: 3px;
+      vertical-align: middle;
+    }
+
+    .switch::after {
+      content: "";
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: #ffffff;
+      margin-left: auto;
+    }
+
+    .prompt-workbench {
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .prompt-head {
+      padding: 18px 18px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .prompt-tabs {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+      margin-top: 14px;
+    }
+
+    .prompt-tab {
+      min-height: 36px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #ffffff;
+      color: #52525b;
+      cursor: pointer;
+      padding: 0 9px;
+      white-space: nowrap;
+    }
+
+    .prompt-tab.active {
+      color: #047857;
+      border-color: var(--changed-border);
+      background: var(--changed-bg);
+      font-weight: 650;
+    }
+
+    .prompt-body {
+      padding: 17px 18px 18px;
+    }
+
+    .prompt-meta {
+      display: grid;
+      grid-template-columns: minmax(240px, 420px) auto;
+      gap: 9px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: #52525b;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 390px;
+      resize: vertical;
+      border: 1px solid var(--input);
+      border-radius: 8px;
+      background: #fcfcfc;
+      color: #18181b;
+      outline: none;
+      padding: 12px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .preview {
+      margin-top: 13px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fafafa;
+      overflow: hidden;
+    }
+
+    .preview-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 38px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border);
+      color: #52525b;
+      font-weight: 650;
+      font-size: 12px;
+    }
+
+    .preview-body {
+      padding: 12px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .prompt-chip {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 9px 10px;
+      color: #3f3f46;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .bottom-status {
+      position: fixed;
+      right: 17px;
+      bottom: 13px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #71717a;
+      background: rgba(250, 250, 250, 0.85);
+      padding: 4px 8px;
+      border-radius: 999px;
+    }
+
+    .dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      background: #22c55e;
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12);
+    }
+
+    .sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+    }
+
+    @media (max-width: 1200px) {
+      .main-grid {
+        grid-template-columns: 240px minmax(450px, 1fr);
+      }
+    }
+
+    @media (max-width: 860px) {
+      .topbar {
+        height: auto;
+        min-height: 58px;
+        grid-template-columns: 1fr;
+        gap: 10px;
+        padding: 10px 14px;
+      }
+
+      .brand-zone {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .workspace-switcher {
+        grid-template-columns: 82px minmax(0, 1fr);
+      }
+
+      .brand {
+        border-left: 0;
+        padding-left: 0;
+      }
+
+      .tabs,
+      .right-nav {
+        justify-self: start;
+      }
+
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .side {
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        padding: 10px;
+      }
+
+      .search,
+      .section-label {
+        grid-column: 1 / -1;
+      }
+
+      .page-head,
+      .content-head {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .actions,
+      .toolbar {
+        justify-content: flex-start;
+      }
+
+      .prompt-tabs,
+      .preview-body,
+      .prompt-meta {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand-zone">
+        <label class="workspace-switcher">
+          <span>Workspace</span>
+          <select id="workspaceSelect">
+            <option value="default" selected>default</option>
+            <option value="finance_kb">finance_kb</option>
+            <option value="medical_kb">medical_kb</option>
+            <option value="mineru_lab">mineru_lab</option>
+          </select>
+        </label>
+        <div class="brand">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <path d="M13 2 3 14h8l-1 8 11-14h-8l1-6z"></path>
+          </svg>
+          <span><strong>LightRAG</strong> | LightRAG Local</span>
+        </div>
+      </div>
+
+      <nav class="tabs" aria-label="主导航">
+        <button class="tab active" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <path d="M4 21v-7"></path><path d="M4 10V3"></path><path d="M12 21v-9"></path><path d="M12 8V3"></path><path d="M20 21v-5"></path><path d="M20 12V3"></path><path d="M2 14h4"></path><path d="M10 8h4"></path><path d="M18 16h4"></path>
+          </svg>
+          配置
+        </button>
+        <button class="tab" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path>
+          </svg>
+          文档
+        </button>
+        <button class="tab" type="button">知识图谱</button>
+        <button class="tab" type="button">检索</button>
+        <button class="tab" type="button">API</button>
+      </nav>
+
+      <div class="right-nav">
+        <span class="badge">无需登陆</span>
+        <span>v1.5.3/0311</span>
+        <button class="icon-button" type="button" aria-label="GitHub">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-6.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 1 5 1 5 1c-.3 1.15-.3 2.35 0 3.5A5.4 5.4 0 0 0 4 8c0 4.5 3 6.5 6 6.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"></path><path d="M9 18c-4.51 2-5-2-7-2"></path>
+          </svg>
+        </button>
+        <button class="icon-button" type="button" aria-label="主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <circle cx="13.5" cy="6.5" r=".5"></circle><circle cx="17.5" cy="10.5" r=".5"></circle><circle cx="8.5" cy="7.5" r=".5"></circle><circle cx="6.5" cy="12.5" r=".5"></circle><path d="M12 2a10 10 0 0 0 0 20 3 3 0 0 0 3-3 2 2 0 0 1 2-2h1a4 4 0 0 0 4-4A11 11 0 0 0 12 2Z"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <div class="page-head">
+        <div class="title-wrap">
+          <h1>参数与提示词</h1>
+          <div class="subline">
+            <span class="pill" id="activeWorkspacePill">Workspace default</span>
+            <span class="pill" id="activeEnvPill">配置文件 .env</span>
+            <span class="pill" id="activePromptPill">提示词 entity_type_prompt.yml</span>
+            <span class="pill changed">3 项待保存</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M16 16h5v5"></path>
+            </svg>
+            重新加载
+          </button>
+          <button class="btn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path><path d="M17 21v-7H7v7"></path><path d="M7 3v5h8"></path>
+            </svg>
+            保存草稿
+          </button>
+          <button class="btn primary" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path>
+            </svg>
+            应用并重启
+          </button>
+        </div>
+      </div>
+
+      <div class="main-grid">
+        <aside class="side">
+          <div class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path d="m21 21-4.34-4.34"></path><circle cx="11" cy="11" r="8"></circle>
+            </svg>
+            <input id="settingSearch" type="search" placeholder="搜索参数或提示词">
+          </div>
+
+          <div class="section-label">配置方案</div>
+          <div class="selector-card">
+            <label>
+              环境配置
+              <select id="envProfileSelect">
+                <option value=".env" selected>.env 当前配置</option>
+                <option value="env.example">env.example 完整模板</option>
+                <option value="env.docker-compose-full">env.docker-compose-full</option>
+                <option value=".env.backup-mineru-docker-20260616-114138">MinerU Docker 备份</option>
+                <option value=".env.backup-20260616-110515">历史备份 11:05</option>
+              </select>
+            </label>
+            <div class="selector-meta">
+              <span>当前来源</span>
+              <span class="tag" id="envSourcePill">.env</span>
+            </div>
+          </div>
+          <div class="selector-card">
+            <label>
+              提示词配置
+              <select id="promptProfileSelect">
+                <option value="entity_type_prompt.yml" selected>entity_type_prompt.yml</option>
+                <option value="prompts/samples/entity_type_prompt.sample.yml">entity_type_prompt.sample.yml</option>
+                <option value="finance_profile.yml">finance_profile.yml</option>
+                <option value="medical_profile.yml">medical_profile.yml</option>
+              </select>
+            </label>
+            <div class="selector-meta">
+              <span>当前 profile</span>
+              <span class="tag" id="promptSourcePill">entity_type_prompt.yml</span>
+            </div>
+          </div>
+
+          <div class="section-label">.env 分组</div>
+          <button class="category active" type="button" data-section="模型与角色">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="M12 2v5"></path><path d="M12 17v5"></path><path d="M4.93 4.93l3.54 3.54"></path><path d="M15.54 15.54l3.53 3.53"></path><path d="M2 12h5"></path><path d="M17 12h5"></path><path d="M4.93 19.07l3.54-3.53"></path><path d="M15.54 8.46l3.53-3.53"></path><circle cx="12" cy="12" r="3"></circle>
+              </svg>
+              模型与角色
+            </span>
+            <small>18</small>
+          </button>
+          <button class="category" type="button" data-section="Embedding">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="M6 3h12l4 6-10 12L2 9Z"></path><path d="M11 3 8 9l4 12 4-12-3-6"></path><path d="M2 9h20"></path>
+              </svg>
+              Embedding
+            </span>
+            <small>9</small>
+          </button>
+          <button class="category" type="button" data-section="检索与重排">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="M3 6h18"></path><path d="M7 12h10"></path><path d="M10 18h4"></path>
+              </svg>
+              检索与重排
+            </span>
+            <small>14</small>
+          </button>
+          <button class="category" type="button" data-section="文档处理">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6"></path><path d="M16 13H8"></path><path d="M16 17H8"></path><path d="M10 9H8"></path>
+              </svg>
+              文档处理
+            </span>
+            <small>31</small>
+          </button>
+          <button class="category" type="button" data-section="存储后端">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"></path>
+              </svg>
+              存储后端
+            </span>
+            <small>46</small>
+          </button>
+          <button class="category" type="button" data-section="鉴权安全">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.2 1.2 0 0 1 1.52 0C14.51 3.8 17 5 19 5a1 1 0 0 1 1 1z"></path>
+              </svg>
+              鉴权安全
+            </span>
+            <small>11</small>
+          </button>
+
+          <div class="section-label">提示词阶段</div>
+          <button class="category" type="button" data-section="实体关系抽取" data-prompt="entity">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <circle cx="6" cy="7" r="3"></circle><circle cx="18" cy="7" r="3"></circle><circle cx="12" cy="17" r="3"></circle><path d="M8.7 8.4 10.8 15"></path><path d="M15.3 8.4 13.2 15"></path>
+              </svg>
+              实体关系抽取
+            </span>
+            <small>YAML</small>
+          </button>
+          <button class="category" type="button" data-section="关键词抽取" data-prompt="keyword">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="M15.5 7.5 18 5l1 1-2.5 2.5"></path><path d="M6 18 18 6"></path><path d="M5 7h5"></path><path d="M5 12h3"></path><path d="M5 17h2"></path>
+              </svg>
+              关键词抽取
+            </span>
+            <small>Prompt</small>
+          </button>
+          <button class="category" type="button" data-section="查询回答" data-prompt="query">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="M21 15a4 4 0 0 1-4 4H7l-4 4V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
+              </svg>
+              查询回答
+            </span>
+            <small>Prompt</small>
+          </button>
+          <button class="category" type="button" data-section="多模态分析" data-prompt="vlm">
+            <span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <rect width="18" height="18" x="3" y="3" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"></path>
+              </svg>
+              多模态分析
+            </span>
+            <small>VLM</small>
+          </button>
+        </aside>
+
+        <main class="content">
+          <section id="settingsView" class="view">
+          <div class="content-head">
+            <div>
+              <h2 id="sectionTitle">模型与角色</h2>
+              <p class="muted" id="sectionDescription">运行时 LLM、角色模型、并发和超时参数。</p>
+            </div>
+            <div class="toolbar">
+              <div class="segmented" aria-label="参数过滤">
+                <button class="active" type="button">全部</button>
+                <button type="button">已修改</button>
+                <button type="button">必填</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table aria-label=".env 参数">
+              <colgroup>
+                <col style="width: 31%">
+                <col style="width: 39%">
+                <col style="width: 15%">
+                <col style="width: 15%">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>参数</th>
+                  <th>值</th>
+                  <th>来源</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="settingsRows">
+                <tr data-key="LLM_BINDING 模型 openai">
+                  <td>
+                    <div class="key">
+                      <code>LLM_BINDING</code>
+                      <span>基础 LLM provider</span>
+                    </div>
+                  </td>
+                  <td>
+                    <select class="changed">
+                      <option selected>openai</option>
+                      <option>ollama</option>
+                      <option>azure_openai</option>
+                      <option>gemini</option>
+                      <option>bedrock</option>
+                    </select>
+                  </td>
+                  <td><span class="tag">.env</span></td>
+                  <td><span class="tag green">已修改</span></td>
+                </tr>
+                <tr data-key="LLM_MODEL gpt model 模型">
+                  <td>
+                    <div class="key">
+                      <code>LLM_MODEL</code>
+                      <span>默认生成模型</span>
+                    </div>
+                  </td>
+                  <td><input class="field changed" value="gpt-5-mini"></td>
+                  <td><span class="tag">.env</span></td>
+                  <td><span class="tag green">已修改</span></td>
+                </tr>
+                <tr data-key="LLM_BINDING_HOST endpoint url">
+                  <td>
+                    <div class="key">
+                      <code>LLM_BINDING_HOST</code>
+                      <span>OpenAI-compatible endpoint</span>
+                    </div>
+                  </td>
+                  <td><input class="field" value="https://api.openai.com/v1"></td>
+                  <td><span class="tag">.env</span></td>
+                  <td><span class="tag">已加载</span></td>
+                </tr>
+                <tr data-key="LLM_BINDING_API_KEY api key">
+                  <td>
+                    <div class="key">
+                      <code>LLM_BINDING_API_KEY</code>
+                      <span>密钥字段默认隐藏</span>
+                    </div>
+                  </td>
+                  <td><input class="field" type="password" value="sk-prototype-value"></td>
+                  <td><span class="tag">.env</span></td>
+                  <td><span class="tag">敏感</span></td>
+                </tr>
+                <tr data-key="EXTRACT_LLM_MODEL entity extraction prompt">
+                  <td>
+                    <div class="key">
+                      <code>EXTRACT_LLM_MODEL</code>
+                      <span>实体关系抽取角色</span>
+                    </div>
+                  </td>
+                  <td><input class="field" value="gpt-5-mini"></td>
+                  <td><span class="tag">角色</span></td>
+                  <td><span class="tag">继承</span></td>
+                </tr>
+                <tr data-key="QUERY_LLM_MODEL query answer">
+                  <td>
+                    <div class="key">
+                      <code>QUERY_LLM_MODEL</code>
+                      <span>最终回答角色</span>
+                    </div>
+                  </td>
+                  <td><input class="field" value="gpt-5"></td>
+                  <td><span class="tag">角色</span></td>
+                  <td><span class="tag">已加载</span></td>
+                </tr>
+                <tr data-key="MAX_ASYNC_LLM concurrency">
+                  <td>
+                    <div class="key">
+                      <code>MAX_ASYNC_LLM</code>
+                      <span>LLM 并发上限</span>
+                    </div>
+                  </td>
+                  <td><input class="field" value="4"></td>
+                  <td><span class="tag">.env</span></td>
+                  <td><span class="tag">已加载</span></td>
+                </tr>
+                <tr data-key="ENTITY_EXTRACTION_USE_JSON json">
+                  <td>
+                    <div class="key">
+                      <code>ENTITY_EXTRACTION_USE_JSON</code>
+                      <span>实体关系抽取 JSON 输出</span>
+                    </div>
+                  </td>
+                  <td><span class="switch" aria-label="开启"></span></td>
+                  <td><span class="tag">.env</span></td>
+                  <td><span class="tag green">推荐</span></td>
+                </tr>
+                <tr data-key="ENTITY_TYPE_PROMPT_FILE prompt yaml">
+                  <td>
+                    <div class="key">
+                      <code>ENTITY_TYPE_PROMPT_FILE</code>
+                      <span>实体类型指导 profile</span>
+                    </div>
+                  </td>
+                  <td><input class="field changed" value="entity_type_prompt.yml"></td>
+                  <td><span class="tag">提示词</span></td>
+                  <td><span class="tag green">已修改</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          </section>
+
+          <section id="promptView" class="view" hidden>
+        <div class="prompt-workbench">
+          <div class="prompt-head">
+            <h2 id="promptTitle">实体关系抽取</h2>
+            <p class="muted" id="promptDescription">维护实体类型指导、输出示例和关系抽取约束。</p>
+          </div>
+
+          <div class="prompt-body">
+            <div class="prompt-meta">
+              <label>
+                当前提示词配置
+                <input class="field" id="activePromptProfile" value="entity_type_prompt.yml" readonly>
+              </label>
+              <span class="tag green">JSON 模式</span>
+            </div>
+
+            <label>
+              <span id="promptFieldLabel">entity_types_guidance</span>
+              <textarea id="promptEditor">Classify each entity using one of the following types. If no type fits, use `Other`.
+
+- Person: Human individuals, real or fictional
+- Organization: Companies, institutions, government bodies, groups
+- Location: Geographic places, facilities, regions
+- Event: Incidents, ceremonies, meetings, operations
+- Concept: Abstract ideas, theories, policies, principles
+- Method: Procedures, algorithms, workflows
+- Content: Reports, files, articles, books, media
+- Data: Statistics, datasets, measurements
+- Artifact: Physical or digital objects created by humans
+- Other: Entities outside the configured taxonomy
+
+Relationships must connect entities already listed in the response. Use concise relationship keywords separated by commas.</textarea>
+            </label>
+
+            <div class="preview">
+              <div class="preview-title">
+                <span>结构预览</span>
+                <span class="tag">entities + relationships</span>
+              </div>
+              <div class="preview-body">
+                <div class="prompt-chip"><strong>entities[]</strong> name, type, description</div>
+                <div class="prompt-chip"><strong>relationships[]</strong> source, target, keywords, description</div>
+                <div class="prompt-chip"><strong>加载路径</strong> PROMPT_DIR/entity_type/entity_type_prompt.yml</div>
+              </div>
+            </div>
+
+            <div class="actions" style="margin-top: 14px; justify-content: flex-start;">
+              <button class="btn" type="button">恢复默认</button>
+              <button class="btn primary" type="button">保存提示词</button>
+            </div>
+          </div>
+        </div>
+          </section>
+        </main>
+      </div>
+    </section>
+  </div>
+
+  <div class="bottom-status">
+    <span class="dot"></span>
+    <span>已连接</span>
+  </div>
+
+  <script>
+    const categories = document.querySelectorAll('.category');
+    const title = document.getElementById('sectionTitle');
+    const sectionDescription = document.getElementById('sectionDescription');
+    const search = document.getElementById('settingSearch');
+    const rows = document.querySelectorAll('#settingsRows tr');
+    const workspaceSelect = document.getElementById('workspaceSelect');
+    const envProfileSelect = document.getElementById('envProfileSelect');
+    const promptProfileSelect = document.getElementById('promptProfileSelect');
+    const envSourcePill = document.getElementById('envSourcePill');
+    const promptSourcePill = document.getElementById('promptSourcePill');
+    const activeWorkspacePill = document.getElementById('activeWorkspacePill');
+    const activeEnvPill = document.getElementById('activeEnvPill');
+    const activePromptPill = document.getElementById('activePromptPill');
+    const activePromptProfile = document.getElementById('activePromptProfile');
+    const settingsView = document.getElementById('settingsView');
+    const promptView = document.getElementById('promptView');
+    const promptTitle = document.getElementById('promptTitle');
+    const promptDescription = document.getElementById('promptDescription');
+    const promptFieldLabel = document.getElementById('promptFieldLabel');
+    const editor = document.getElementById('promptEditor');
+    let currentPromptKey = 'entity';
+
+    const settingDescriptions = {
+      '模型与角色': '运行时 LLM、角色模型、并发和超时参数。',
+      'Embedding': '向量模型、维度、token 限制和非对称 embedding 配置。',
+      '检索与重排': '查询召回、上下文预算、reranker 和相似度阈值。',
+      '文档处理': '解析路由、分块策略、上传限制和实体抽取开关。',
+      '存储后端': 'KV、向量、图、文档状态存储及外部数据库连接。',
+      '鉴权安全': '登录账号、API Key、JWT、白名单和 token 续期策略。'
+    };
+
+    const promptConfig = {
+      entity: {
+        field: 'entity_types_guidance',
+        description: '维护实体类型指导、JSON 示例和关系抽取约束。',
+        text: editor.value
+      },
+      keyword: {
+        field: 'keyword_extraction_prompt',
+        description: '维护查询关键词、高低层关键词和检索意图提取提示词。',
+        text: 'Extract high-level and low-level keywords from the query. Keep terms concise, domain-specific, and useful for graph retrieval.'
+      },
+      query: {
+        field: 'query_answer_prompt',
+        description: '维护最终回答、引用约束、上下文使用和事实边界提示词。',
+        text: 'Answer using only the provided context. Prefer grounded claims, cite source chunks when available, and avoid unsupported assumptions.'
+      },
+      vlm: {
+        field: 'vlm_analysis_prompt',
+        description: '维护图片、表格、公式和图示分析提示词。',
+        text: 'Analyze figures, tables, equations, and diagrams. Return factual descriptions that can support entity and relationship extraction.'
+      }
+    };
+
+    const envProfiles = {
+      '.env': {
+        label: '.env',
+        values: {
+          LLM_BINDING: 'openai',
+          LLM_MODEL: 'gpt-5-mini',
+          LLM_BINDING_HOST: 'https://api.openai.com/v1',
+          EXTRACT_LLM_MODEL: 'gpt-5-mini',
+          QUERY_LLM_MODEL: 'gpt-5',
+          MAX_ASYNC_LLM: '4',
+          ENTITY_TYPE_PROMPT_FILE: 'entity_type_prompt.yml'
+        }
+      },
+      'env.example': {
+        label: 'env.example',
+        values: {
+          LLM_BINDING: 'openai',
+          LLM_MODEL: 'gpt-4o-mini',
+          LLM_BINDING_HOST: 'https://api.openai.com/v1',
+          EXTRACT_LLM_MODEL: 'gpt-4o-mini',
+          QUERY_LLM_MODEL: 'gpt-4o',
+          MAX_ASYNC_LLM: '4',
+          ENTITY_TYPE_PROMPT_FILE: 'entity_type_prompt.sample.yml'
+        }
+      },
+      'env.docker-compose-full': {
+        label: 'env.docker-compose-full',
+        values: {
+          LLM_BINDING: 'ollama',
+          LLM_MODEL: 'qwen3.5:9b',
+          LLM_BINDING_HOST: 'http://host.docker.internal:11434',
+          EXTRACT_LLM_MODEL: 'qwen3.5:9b',
+          QUERY_LLM_MODEL: 'qwen3.5:9b',
+          MAX_ASYNC_LLM: '2',
+          ENTITY_TYPE_PROMPT_FILE: 'entity_type_prompt.yml'
+        }
+      },
+      '.env.backup-mineru-docker-20260616-114138': {
+        label: 'MinerU Docker 备份',
+        values: {
+          LLM_BINDING: 'openai',
+          LLM_MODEL: 'gpt-5-mini',
+          LLM_BINDING_HOST: 'https://api.openai.com/v1',
+          EXTRACT_LLM_MODEL: 'gpt-5-mini',
+          QUERY_LLM_MODEL: 'gpt-5',
+          MAX_ASYNC_LLM: '3',
+          ENTITY_TYPE_PROMPT_FILE: 'entity_type_prompt.yml'
+        }
+      },
+      '.env.backup-20260616-110515': {
+        label: '历史备份 11:05',
+        values: {
+          LLM_BINDING: 'openai',
+          LLM_MODEL: 'gpt-4o-mini',
+          LLM_BINDING_HOST: 'https://api.openai.com/v1',
+          EXTRACT_LLM_MODEL: 'gpt-4o-mini',
+          QUERY_LLM_MODEL: 'gpt-4o',
+          MAX_ASYNC_LLM: '4',
+          ENTITY_TYPE_PROMPT_FILE: 'entity_type_prompt.yml'
+        }
+      }
+    };
+
+    const promptProfiles = {
+      'entity_type_prompt.yml': {
+        label: 'entity_type_prompt.yml',
+        entityText: promptConfig.entity.text
+      },
+      'prompts/samples/entity_type_prompt.sample.yml': {
+        label: 'entity_type_prompt.sample.yml',
+        entityText: promptConfig.entity.text
+      },
+      'finance_profile.yml': {
+        label: 'finance_profile.yml',
+        entityText: 'Classify financial documents with the following entity types.\n\n- Company: Listed companies, private companies, subsidiaries\n- Person: Executives, analysts, regulators, investors\n- FinancialInstrument: Stocks, bonds, funds, derivatives\n- Metric: Revenue, margin, EBITDA, cash flow, valuation ratios\n- Event: Earnings calls, mergers, financing rounds, regulatory actions\n- Market: Exchanges, sectors, regions, macro conditions\n- Other: Entities outside the finance taxonomy\n\nRelationships should describe ownership, investment, reporting, exposure, competition, or regulatory connections.'
+      },
+      'medical_profile.yml': {
+        label: 'medical_profile.yml',
+        entityText: 'Classify medical and life-science documents with the following entity types.\n\n- Disease: Diagnoses, syndromes, symptoms, conditions\n- Drug: Medicines, compounds, biologics, vaccines\n- Person: Clinicians, researchers, patients when explicitly named\n- Organization: Hospitals, labs, regulators, manufacturers\n- Procedure: Tests, surgeries, treatment workflows\n- Biomarker: Genes, proteins, lab values, clinical markers\n- Study: Trials, cohorts, publications, protocols\n- Other: Entities outside the medical taxonomy\n\nRelationships should be clinically stated and avoid unsupported causal claims.'
+      }
+    };
+
+    const workspaceProfiles = {
+      default: {
+        label: 'default',
+        env: '.env',
+        prompt: 'entity_type_prompt.yml'
+      },
+      finance_kb: {
+        label: 'finance_kb',
+        env: 'env.example',
+        prompt: 'finance_profile.yml'
+      },
+      medical_kb: {
+        label: 'medical_kb',
+        env: '.env',
+        prompt: 'medical_profile.yml'
+      },
+      mineru_lab: {
+        label: 'mineru_lab',
+        env: 'env.docker-compose-full',
+        prompt: 'prompts/samples/entity_type_prompt.sample.yml'
+      }
+    };
+
+    function setField(key, value) {
+      rows.forEach((row) => {
+        const code = row.querySelector('code');
+        if (!code || code.textContent !== key) return;
+
+        const control = row.querySelector('input, select');
+        if (!control) return;
+
+        if (control.tagName === 'SELECT' && !Array.from(control.options).some((option) => option.value === value)) {
+          control.append(new Option(value, value));
+        }
+
+        control.value = value;
+        control.classList.add('changed');
+      });
+    }
+
+    function applyEnvProfile(profileName) {
+      const profile = envProfiles[profileName] || envProfiles['.env'];
+      envSourcePill.textContent = profile.label;
+      activeEnvPill.textContent = `配置文件 ${profile.label}`;
+      Object.entries(profile.values).forEach(([key, value]) => setField(key, value));
+    }
+
+    function applyPromptProfile(profileName) {
+      const profile = promptProfiles[profileName] || promptProfiles['entity_type_prompt.yml'];
+      promptSourcePill.textContent = profile.label;
+      activePromptPill.textContent = `提示词 ${profile.label}`;
+      activePromptProfile.value = profile.label;
+      promptConfig.entity.text = profile.entityText;
+      setField('ENTITY_TYPE_PROMPT_FILE', profile.label);
+
+      if (currentPromptKey === 'entity') {
+        editor.value = profile.entityText;
+      }
+    }
+
+    function applyWorkspace(workspaceName) {
+      const workspace = workspaceProfiles[workspaceName] || workspaceProfiles.default;
+      activeWorkspacePill.textContent = `Workspace ${workspace.label}`;
+      envProfileSelect.value = workspace.env;
+      promptProfileSelect.value = workspace.prompt;
+      applyEnvProfile(workspace.env);
+      applyPromptProfile(workspace.prompt);
+    }
+
+    categories.forEach((item) => {
+      item.addEventListener('click', () => {
+        categories.forEach((next) => next.classList.remove('active'));
+        item.classList.add('active');
+
+        const section = item.dataset.section || '配置';
+        if (item.dataset.prompt) {
+          currentPromptKey = item.dataset.prompt;
+          const prompt = promptConfig[item.dataset.prompt] || promptConfig.entity;
+          settingsView.hidden = true;
+          promptView.hidden = false;
+          promptTitle.textContent = section;
+          promptDescription.textContent = prompt.description;
+          promptFieldLabel.textContent = prompt.field;
+          editor.value = prompt.text;
+          return;
+        }
+
+        settingsView.hidden = false;
+        promptView.hidden = true;
+        title.textContent = section;
+        sectionDescription.textContent = settingDescriptions[section] || '编辑当前分组的 .env 参数。';
+      });
+    });
+
+    workspaceSelect.addEventListener('change', () => {
+      applyWorkspace(workspaceSelect.value);
+    });
+
+    envProfileSelect.addEventListener('change', () => {
+      applyEnvProfile(envProfileSelect.value);
+    });
+
+    promptProfileSelect.addEventListener('change', () => {
+      applyPromptProfile(promptProfileSelect.value);
+    });
+
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      rows.forEach((row) => {
+        row.style.display = row.dataset.key.toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
+  </script>
+</body>
+</html>
