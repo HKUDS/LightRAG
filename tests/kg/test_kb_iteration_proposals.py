@@ -147,6 +147,52 @@ def test_validate_proposal_rejects_ungated_report_note_with_mutation_intent():
         validate_proposal(proposal)
 
 
+@pytest.mark.parametrize(
+    "proposed_change",
+    [
+        "Replace the extraction prompt.",
+        "Alter ontology rules.",
+        "Recreate the workspace.",
+        "Apply prompt patch.",
+    ],
+)
+def test_validate_proposal_rejects_ungated_report_note_bypass_phrases(
+    proposed_change: str,
+):
+    proposal = ImprovementProposal(
+        id="proposal-20260617-unsafe-note-bypass",
+        type="quality_report_note",
+        target="quality_report.md",
+        proposed_change=proposed_change,
+        reason="Mutation-shaped notes must enter approval flow.",
+        evidence=[],
+        confidence=0.8,
+        risk="high",
+        requires_approval=False,
+        expected_metric_change={},
+    )
+
+    with pytest.raises(ValueError, match="requires approval"):
+        validate_proposal(proposal)
+
+
+def test_validate_proposal_allows_approval_gated_report_note_with_mutation_shape():
+    proposal = ImprovementProposal(
+        id="proposal-20260617-reviewable-note",
+        type="quality_report_note",
+        target="quality_report.md",
+        proposed_change="Replace the extraction prompt.",
+        reason="Human approval can review mutation-shaped report notes.",
+        evidence=["review finding"],
+        confidence=0.8,
+        risk="high",
+        requires_approval=True,
+        expected_metric_change={},
+    )
+
+    validate_proposal(proposal)
+
+
 def test_improvement_proposal_exposes_required_fields():
     proposal = ImprovementProposal(
         id="proposal-20260617-003",

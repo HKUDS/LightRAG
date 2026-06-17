@@ -21,17 +21,27 @@ NO_APPROVAL_PROPOSAL_TYPES = {"quality_report_note"}
 _ALLOWED_RISKS = {"low", "medium", "high"}
 _TYPE_PATTERN = re.compile(r"^[a-z0-9_]+$")
 _METRIC_KEY_PATTERN = re.compile(r"^[a-z0-9_.-]+$")
-_REPORT_NOTE_MUTATION_PATTERN = re.compile(
-    r"\b(?:delete|clear|rebuild|reset|drop)\b"
+_REPORT_NOTE_SAFE_PREFIXES = ("Record ", "Add note ", "Document ", "Summarize ")
+_CONTROLLED_MUTATION_ACTIONS = (
+    r"add|alter|apply|change|clear|correct|delete|drop|edit|fix|modify|move|patch|"
+    r"rebuild|recreate|remove|replace|reset|rewrite|revise|update"
+)
+_CONTROLLED_MUTATION_TARGETS = (
+    r"extraction\s+prompt|facts?|hierarchy(?:\s+rules?)?|kg\s+facts?|ontology"
+    r"(?:\s+rules?)?|prompts?|relations?(?:\s+rules?)?|rules?|web\s+display|"
+    r"workspace"
+)
+_REPORT_NOTE_MUTATION_INTENT_PATTERN = re.compile(
+    rf"\b(?:{_CONTROLLED_MUTATION_ACTIONS})\w*\b"
+    rf".{{0,80}}\b(?:{_CONTROLLED_MUTATION_TARGETS})\b"
     r"|"
-    r"\b(?:add|change|correct|edit|fix|modify|move|remove|rewrite|revise|update)\b"
-    r".{0,60}"
-    r"\b(?:fact|hierarchy|kg\s+fact|ontology|prompt|relation|rule|web\s+display|workspace)\b"
-    r"|"
-    r"\b(?:fact|hierarchy|kg\s+fact|ontology|prompt|relation|rule|web\s+display|workspace)\b"
-    r".{0,60}"
-    r"\b(?:add|change|correct|edit|fix|modify|move|remove|rewrite|revise|update)\b",
+    rf"\b(?:{_CONTROLLED_MUTATION_TARGETS})\b"
+    rf".{{0,80}}\b(?:{_CONTROLLED_MUTATION_ACTIONS})\w*\b",
     re.IGNORECASE | re.DOTALL,
+)
+_REPORT_NOTE_DESTRUCTIVE_ACTION_PATTERN = re.compile(
+    r"\b(?:clear|delete|drop|rebuild|recreate|reset)\w*\b",
+    re.IGNORECASE,
 )
 
 _REQUIRED_STRING_FIELDS = (
@@ -176,16 +186,31 @@ def _validate_no_approval_report_note(proposal: ImprovementProposal) -> None:
         raise ValueError(
             "quality_report_note without approval must target quality_report.md"
         )
+    proposed_change_body = _report_note_body(proposal.proposed_change)
+    if proposed_change_body is None:
+        raise ValueError(
+            "quality_report_note without approval must be a report-only note "
+            "or requires approval"
+        )
 
     review_text = "\n".join(
         [
-            proposal.target,
-            proposal.proposed_change,
+            proposed_change_body,
             proposal.reason,
             *proposal.evidence,
         ]
     )
-    if _REPORT_NOTE_MUTATION_PATTERN.search(review_text):
+    if (
+        _REPORT_NOTE_MUTATION_INTENT_PATTERN.search(review_text)
+        or _REPORT_NOTE_DESTRUCTIVE_ACTION_PATTERN.search(review_text)
+    ):
         raise ValueError(
             "quality_report_note implies controlled mutation and requires approval"
         )
+
+
+def _report_note_body(proposed_change: str) -> str | None:
+    for prefix in _REPORT_NOTE_SAFE_PREFIXES:
+        if proposed_change.startswith(prefix):
+            return proposed_change.removeprefix(prefix)
+    return None
