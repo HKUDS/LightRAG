@@ -2718,11 +2718,15 @@ class _PipelineMixin:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-        stored_chunk_ids = {
-            chunk_id
-            for chunk_id in (status_doc.chunks_list or [])
-            if isinstance(chunk_id, str) and chunk_id
-        }
+        # Order-preserving dedup; keep a list so it satisfies the storage delete
+        # contract (``delete(ids: list[str])``) when passed down to purge.
+        stored_chunk_ids = list(
+            dict.fromkeys(
+                chunk_id
+                for chunk_id in (status_doc.chunks_list or [])
+                if isinstance(chunk_id, str) and chunk_id
+            )
+        )
         if not stored_chunk_ids:
             return
 

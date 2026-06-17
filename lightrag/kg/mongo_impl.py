@@ -780,6 +780,9 @@ class MongoDocStatusStorage(DocStatusStorage):
             return {"status": "error", "message": str(e)}
 
     async def delete(self, ids: list[str]) -> None:
+        # Convert to list if it's a set (MongoDB BSON cannot encode sets)
+        if isinstance(ids, set):
+            ids = list(ids)
         await self._data.delete_many({"_id": {"$in": ids}})
 
     async def create_and_migrate_indexes_if_not_exists(self):
