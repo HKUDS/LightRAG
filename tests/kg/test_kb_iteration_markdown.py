@@ -124,6 +124,29 @@ def test_entity_catalog_groups_by_type_with_source_metadata(tmp_path: Path):
     assert "Aliases: 临床表现" in content
 
 
+def test_entity_catalog_sorts_set_aliases_deterministically(tmp_path: Path):
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode(
+                "entity-1",
+                "Entity One",
+                "Finding",
+                properties={"aliases": {"beta", "alpha"}},
+            ),
+        ],
+        edges=[],
+        metadata={},
+    )
+
+    write_markdown_memory(snapshot, tmp_path)
+
+    content = (tmp_path / "entity_catalog.md").read_text(encoding="utf-8")
+    assert "Aliases: alpha, beta" in content
+
+
 def test_relation_catalog_groups_by_keyword_and_preserves_direction(
     tmp_path: Path,
 ):

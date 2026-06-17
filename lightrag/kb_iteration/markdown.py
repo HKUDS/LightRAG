@@ -256,7 +256,9 @@ def _label_or_unknown(value: Any) -> str:
 
 
 def _format_aliases(value: Any) -> str:
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, set):
+        return ", ".join(sorted(str(item) for item in value))
+    if isinstance(value, (list, tuple)):
         return ", ".join(str(item) for item in value)
     return str(value)
 
