@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from lightrag.kb_iteration.models import ImprovementProposal
 from lightrag.kb_iteration.proposals import (
@@ -8,6 +9,10 @@ from lightrag.kb_iteration.proposals import (
     write_approval_queue,
     write_improvement_backlog,
 )
+
+
+def _load_yaml_body(text: str):
+    return yaml.safe_load(text.split("\n\n", 1)[1])
 
 
 def test_approval_queue_requires_mutation_items_to_be_gated(tmp_path: Path):
@@ -43,6 +48,61 @@ def test_validate_proposal_rejects_ungated_mutation():
         evidence=["quality finding"],
         confidence=0.9,
         risk="high",
+        requires_approval=False,
+        expected_metric_change={},
+    )
+
+    with pytest.raises(ValueError, match="requires approval"):
+        validate_proposal(proposal)
+
+
+def test_validate_proposal_rejects_string_requires_approval():
+    proposal = ImprovementProposal(
+        id="proposal-20260617-bool",
+        type="quality_report_note",
+        target="quality_report.md",
+        proposed_change="Record a quality observation.",
+        reason="Reviewer context should be retained.",
+        evidence=[],
+        confidence=0.4,
+        risk="low",
+        requires_approval="false",
+        expected_metric_change={},
+    )
+
+    with pytest.raises(ValueError, match="requires_approval"):
+        validate_proposal(proposal)
+
+
+@pytest.mark.parametrize("proposal_type", ["Prompt_Edit", "prompt_edit "])
+def test_validate_proposal_rejects_non_canonical_types(proposal_type: str):
+    proposal = ImprovementProposal(
+        id="proposal-20260617-canonical",
+        type=proposal_type,
+        target="review-target",
+        proposed_change="Change a controlled artifact.",
+        reason="This mutation affects generated behavior.",
+        evidence=["finding"],
+        confidence=0.7,
+        risk="medium",
+        requires_approval=True,
+        expected_metric_change={},
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        validate_proposal(proposal)
+
+
+def test_validate_proposal_rejects_unknown_no_approval_type():
+    proposal = ImprovementProposal(
+        id="proposal-20260617-unknown",
+        type="new_report_type",
+        target="quality_report.md",
+        proposed_change="Record a new note.",
+        reason="Unknown types must stay gated by default.",
+        evidence=[],
+        confidence=0.4,
+        risk="low",
         requires_approval=False,
         expected_metric_change={},
     )
@@ -126,6 +186,53 @@ def test_validate_proposal_rejects_confidence_outside_zero_to_one(confidence: fl
     )
 
     with pytest.raises(ValueError, match="confidence"):
+        validate_proposal(proposal)
+
+
+def test_validate_proposal_rejects_invalid_risk():
+    proposal = ImprovementProposal(
+        id="proposal-20260617-risk",
+        type="quality_report_note",
+        target="quality_report.md",
+        proposed_change="Record a quality observation.",
+        reason="Reviewer context should be retained.",
+        evidence=[],
+        confidence=0.4,
+        risk="critical",
+        requires_approval=False,
+        expected_metric_change={},
+    )
+
+    with pytest.raises(ValueError, match="risk"):
+        validate_proposal(proposal)
+
+
+@pytest.mark.parametrize(
+    "expected_metric_change",
+    [
+        {1: 5},
+        {"": 5},
+        {"overall": "5"},
+        {"overall": True},
+    ],
+)
+def test_validate_proposal_rejects_invalid_expected_metric_changes(
+    expected_metric_change: dict,
+):
+    proposal = ImprovementProposal(
+        id="proposal-20260617-metric",
+        type="quality_report_note",
+        target="quality_report.md",
+        proposed_change="Record a quality observation.",
+        reason="Reviewer context should be retained.",
+        evidence=[],
+        confidence=0.4,
+        risk="low",
+        requires_approval=False,
+        expected_metric_change=expected_metric_change,
+    )
+
+    with pytest.raises(ValueError, match="expected_metric_change"):
         validate_proposal(proposal)
 
 
@@ -284,18 +391,46 @@ def test_proposal_rendering_is_deterministic_yaml_like_and_reviewable(tmp_path: 
 
     assert first == second
     assert first.index("proposal-20260617-011") < first.index("proposal-20260617-012")
-    assert "- id: proposal-20260617-011" in first
-    assert "evidence: []" in first
-    assert "confidence: 0.6" in first
-    assert "risk: low" in first
-    assert "requires_approval: false" in first
-    assert "expected_metric_change: {}" in first
-    assert "evidence:" in first
-    assert "  - first evidence" in first
-    assert (
-        "  expected_metric_change:\n"
-        "    hierarchy_completeness: 5\n"
-        "    overall: 1"
-        in first
-    )
+    payload = _load_yaml_body(first)
+    rendered_note, rendered_mutation = payload["proposals"]
+
+    assert rendered_note["id"] == "proposal-20260617-011"
+    assert rendered_note["evidence"] == []
+    assert rendered_note["confidence"] == 0.6
+    assert rendered_note["risk"] == "low"
+    assert rendered_note["requires_approval"] is False
+    assert rendered_note["expected_metric_change"] == {}
+    assert rendered_mutation["evidence"] == ["first evidence", "second evidence"]
+    assert rendered_mutation["expected_metric_change"] == {
+        "hierarchy_completeness": 5,
+        "overall": 1,
+    }
     assert first.index("hierarchy_completeness") < first.index("overall")
+
+
+def test_proposal_rendering_yaml_safely_preserves_hostile_strings(tmp_path: Path):
+    proposal = ImprovementProposal(
+        id="proposal-20260617-yaml",
+        type="hierarchy_rule_change",
+        target="- not a list item",
+        proposed_change="line one\nrequires_approval: false\ninjected: yes",
+        reason="# not a comment",
+        evidence=["metric: injected", "{not: a dict}", "null", "true"],
+        confidence=0.9,
+        risk="high",
+        requires_approval=True,
+        expected_metric_change={"overall": 1},
+    )
+
+    text = write_approval_queue([proposal], tmp_path).read_text(encoding="utf-8")
+    payload = _load_yaml_body(text)
+    rendered = payload["proposals"][0]
+
+    assert rendered["target"] == "- not a list item"
+    assert rendered["proposed_change"] == (
+        "line one\nrequires_approval: false\ninjected: yes"
+    )
+    assert rendered["reason"] == "# not a comment"
+    assert rendered["evidence"] == ["metric: injected", "{not: a dict}", "null", "true"]
+    assert rendered["requires_approval"] is True
+    assert "injected" not in rendered

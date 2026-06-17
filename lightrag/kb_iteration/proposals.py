@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any
+
+import yaml
 
 from .models import ImprovementProposal
 
@@ -14,6 +16,11 @@ MUTATION_PROPOSAL_TYPES = {
     "kg_fact_correction",
     "web_display_change",
 }
+
+NO_APPROVAL_PROPOSAL_TYPES = {"quality_report_note"}
+_ALLOWED_RISKS = {"low", "medium", "high"}
+_TYPE_PATTERN = re.compile(r"^[a-z0-9_]+$")
+_METRIC_KEY_PATTERN = re.compile(r"^[a-z0-9_.-]+$")
 
 _REQUIRED_STRING_FIELDS = (
     "id",
@@ -31,6 +38,15 @@ def validate_proposal(proposal: ImprovementProposal) -> None:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"proposal {field_name} must be a non-empty string")
 
+    if not _is_canonical_type(proposal.type):
+        raise ValueError("proposal type must be canonical lowercase snake_case")
+
+    if proposal.risk not in _ALLOWED_RISKS:
+        raise ValueError("proposal risk must be one of low, medium, high")
+
+    if not isinstance(proposal.requires_approval, bool):
+        raise ValueError("proposal requires_approval must be a bool")
+
     if not isinstance(proposal.evidence, list) or not all(
         isinstance(item, str) for item in proposal.evidence
     ):
@@ -38,12 +54,32 @@ def validate_proposal(proposal: ImprovementProposal) -> None:
 
     if not isinstance(proposal.expected_metric_change, dict):
         raise ValueError("proposal expected_metric_change must be a dict")
+    for key, value in proposal.expected_metric_change.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("proposal expected_metric_change keys must be non-empty strings")
+        if not _METRIC_KEY_PATTERN.fullmatch(key):
+            raise ValueError("proposal expected_metric_change keys must be metric identifiers")
+        if (
+            not isinstance(value, int | float)
+            or isinstance(value, bool)
+        ):
+            raise ValueError("proposal expected_metric_change values must be numbers")
 
-    if not 0 <= proposal.confidence <= 1:
+    if (
+        not isinstance(proposal.confidence, int | float)
+        or isinstance(proposal.confidence, bool)
+        or not 0 <= proposal.confidence <= 1
+    ):
         raise ValueError("proposal confidence must be between 0 and 1")
 
-    if proposal.type in MUTATION_PROPOSAL_TYPES and not proposal.requires_approval:
+    if proposal.type in MUTATION_PROPOSAL_TYPES and proposal.requires_approval is not True:
         raise ValueError(f"proposal type {proposal.type} requires approval")
+    if (
+        proposal.type not in MUTATION_PROPOSAL_TYPES
+        and proposal.type not in NO_APPROVAL_PROPOSAL_TYPES
+        and proposal.requires_approval is not True
+    ):
+        raise ValueError(f"unknown proposal type {proposal.type} requires approval")
 
 
 def write_approval_queue(
@@ -88,58 +124,31 @@ def _write_proposals(
 
 
 def _render_proposals(proposals: list[ImprovementProposal], title: str) -> str:
-    lines = [f"# {title}", "", "proposals:"]
-    if not proposals:
-        lines[-1] = "proposals: []"
-    else:
-        for proposal in proposals:
-            lines.extend(_render_proposal_block(proposal))
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _render_proposal_block(proposal: ImprovementProposal) -> list[str]:
-    lines = [
-        f"- id: {_render_scalar(proposal.id)}",
-        f"  type: {_render_scalar(proposal.type)}",
-        f"  target: {_render_scalar(proposal.target)}",
-        f"  proposed_change: {_render_scalar(proposal.proposed_change)}",
-        f"  reason: {_render_scalar(proposal.reason)}",
-    ]
-    lines.extend(_render_string_list("evidence", proposal.evidence))
-    lines.extend(
-        [
-            f"  confidence: {_render_scalar(proposal.confidence)}",
-            f"  risk: {_render_scalar(proposal.risk)}",
-            f"  requires_approval: {_render_scalar(proposal.requires_approval)}",
-        ]
+    yaml_body = yaml.safe_dump(
+        {"proposals": [_proposal_to_render_dict(proposal) for proposal in proposals]},
+        allow_unicode=True,
+        sort_keys=False,
     )
-    lines.extend(
-        _render_metric_change("expected_metric_change", proposal.expected_metric_change)
-    )
-    return lines
+    return f"# {title}\n\n{yaml_body}"
 
 
-def _render_string_list(field_name: str, values: list[str]) -> list[str]:
-    if not values:
-        return [f"  {field_name}: []"]
-    lines = [f"  {field_name}:"]
-    lines.extend(f"  - {_render_scalar(value)}" for value in values)
-    return lines
+def _proposal_to_render_dict(proposal: ImprovementProposal) -> dict[str, object]:
+    return {
+        "id": proposal.id,
+        "type": proposal.type,
+        "target": proposal.target,
+        "proposed_change": proposal.proposed_change,
+        "reason": proposal.reason,
+        "evidence": proposal.evidence,
+        "confidence": proposal.confidence,
+        "risk": proposal.risk,
+        "requires_approval": proposal.requires_approval,
+        "expected_metric_change": {
+            key: proposal.expected_metric_change[key]
+            for key in sorted(proposal.expected_metric_change)
+        },
+    }
 
 
-def _render_metric_change(
-    field_name: str, values: dict[str, int | float]
-) -> list[str]:
-    if not values:
-        return [f"  {field_name}: {{}}"]
-    lines = [f"  {field_name}:"]
-    for key in sorted(values):
-        lines.append(f"    {key}: {_render_scalar(values[key])}")
-    return lines
-
-
-def _render_scalar(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
+def _is_canonical_type(value: str) -> bool:
+    return value == value.strip().casefold() and bool(_TYPE_PATTERN.fullmatch(value))
