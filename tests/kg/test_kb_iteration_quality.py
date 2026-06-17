@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kb_iteration.models import KGSnapshot, SnapshotEdge, SnapshotNode
 from lightrag.kb_iteration.quality import (
     evaluate_snapshot_quality,
@@ -253,3 +254,205 @@ def test_findings_expose_required_review_fields():
     assert finding.evidence
     assert finding.suggested_fix_type
     assert isinstance(finding.requires_approval, bool)
+
+
+def test_empty_snapshot_has_critical_blocker_and_zero_overall():
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[],
+        edges=[],
+        metadata={},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    assert score.critical_blockers
+    assert score.overall == 0
+
+
+def test_generic_relation_detection_handles_lightrag_and_chinese_separators():
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode("flu", "Flu", "Disease", source_id="chunk-1", file_path="a.md"),
+            SnapshotNode("fever", "Fever", "Symptom", source_id="chunk-1", file_path="a.md"),
+        ],
+        edges=[
+            SnapshotEdge(
+                "e1",
+                "flu",
+                "fever",
+                f"相关{GRAPH_FIELD_SEP}临床表现",
+                source_id="chunk-1",
+                file_path="a.md",
+            ),
+            SnapshotEdge(
+                "e2",
+                "flu",
+                "fever",
+                "相关，临床表现",
+                source_id="chunk-1",
+                file_path="a.md",
+            ),
+            SnapshotEdge(
+                "e3",
+                "flu",
+                "fever",
+                f"manifestation{GRAPH_FIELD_SEP}treatment",
+                source_id="chunk-1",
+                file_path="a.md",
+            ),
+        ],
+        metadata={},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    assert score.metrics["generic_relation_count"] == 2
+
+
+def test_missing_evidence_treats_whitespace_and_separator_only_values_as_missing():
+    separator_only = f" {GRAPH_FIELD_SEP}  {GRAPH_FIELD_SEP}"
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode("n1", "N1", "Disease", source_id="   ", file_path="a.md"),
+            SnapshotNode("n2", "N2", "Symptom", source_id="chunk-1", file_path=separator_only),
+        ],
+        edges=[
+            SnapshotEdge(
+                "e1",
+                "n1",
+                "n2",
+                "causes",
+                source_id=separator_only,
+                file_path="   ",
+            ),
+        ],
+        metadata={},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    assert score.metrics["missing_node_source_count"] == 1
+    assert score.metrics["missing_node_file_path_count"] == 1
+    assert score.metrics["missing_edge_source_count"] == 1
+    assert score.metrics["missing_edge_file_path_count"] == 1
+
+
+def test_missing_evidence_findings_include_bounded_concrete_examples():
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode("n1", "N1", "Disease", source_id="", file_path="a.md"),
+            SnapshotNode("n2", "N2", "Symptom", source_id="chunk-1", file_path=""),
+        ],
+        edges=[
+            SnapshotEdge("e1", "n1", "n2", "causes", source_id="", file_path="a.md"),
+            SnapshotEdge("e2", "n2", "n1", "causes", source_id="chunk-1", file_path=""),
+        ],
+        metadata={},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+    evidence_finding = next(
+        finding
+        for finding in score.findings
+        if finding.category == "evidence_grounding"
+    )
+
+    assert "node:n1 missing source_id" in evidence_finding.evidence
+    assert "node:n2 missing file_path" in evidence_finding.evidence
+    assert "edge:e1 missing source_id" in evidence_finding.evidence
+    assert "edge:e2 missing file_path" in evidence_finding.evidence
+
+
+def test_hierarchy_and_hub_structural_findings_require_approval():
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode("flu", "Flu", "Disease", source_id="chunk-1", file_path="a.md"),
+            SnapshotNode("fever", "Fever", "Symptom", source_id="chunk-1", file_path="a.md"),
+            SnapshotNode("cough", "Cough", "Symptom", source_id="chunk-1", file_path="a.md"),
+        ],
+        edges=[
+            SnapshotEdge("e1", "flu", "fever", "manifestation", source_id="chunk-1", file_path="a.md"),
+            SnapshotEdge("e2", "flu", "cough", "manifestation", source_id="chunk-1", file_path="a.md"),
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+    by_fix_type = {finding.suggested_fix_type: finding for finding in score.findings}
+
+    assert by_fix_type["add_hierarchy_branch"].requires_approval is True
+    assert by_fix_type["split_hub_edges"].requires_approval is True
+
+
+def test_medical_hierarchy_coverage_accepts_keys_aliases_and_medical_group():
+    categories = TOP_LEVEL_MEDICAL_CATEGORIES[:3]
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode(
+                categories[0].key,
+                "Category by key",
+                "MedicalCategory",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "alias-node",
+                categories[1].aliases[0],
+                "MedicalCategory",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "group-node",
+                "Category by property",
+                "MedicalCategory",
+                source_id="chunk-1",
+                file_path="guide.md",
+                properties={"medical_group": categories[2].key},
+            ),
+        ],
+        edges=[],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    assert score.metrics["hierarchy_present_branch_count"] == 3
+
+
+def test_disease_hub_detection_strips_entity_type_whitespace():
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-17T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode("flu", "Flu", " Disease ", source_id="chunk-1", file_path="a.md"),
+            SnapshotNode("fever", "Fever", "Symptom", source_id="chunk-1", file_path="a.md"),
+        ],
+        edges=[
+            SnapshotEdge("e1", "flu", "fever", "manifestation", source_id="chunk-1", file_path="a.md"),
+        ],
+        metadata={},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    assert score.metrics["disease_hub_overload_ratio"] == 1.0
