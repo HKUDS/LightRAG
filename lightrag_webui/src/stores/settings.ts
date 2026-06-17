@@ -122,7 +122,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       userPromptHistory: [...suggestedUserPrompts],
 
       querySettings: {
-        mode: 'global',
+        mode: 'mix',
         top_k: 40,
         chunk_top_k: 20,
         max_entity_tokens: 6000,

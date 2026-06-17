@@ -425,6 +425,7 @@
       "parametersDescription": "クエリパラメータを設定",
       "queryMode": "クエリモード",
       "queryModeTooltip": "検索戦略を選択:\n• Naive: 従来のテキストチャンクベクトル検索\n• Local: エンティティ検索に焦点\n• Global: 関係検索に焦点\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 検索をスキップし、会話履歴と現在の質問をLLMに送信",
+      "queryModeWarning": "検索品質が低下する可能性があります",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

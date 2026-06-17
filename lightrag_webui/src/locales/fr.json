@@ -425,6 +425,7 @@
       "parametersDescription": "Configurez vos paramètres de requête",
       "queryMode": "Mode de requête",
       "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Récupération vectorielle traditionnelle par blocs de texte\n• Local : Axé sur la récupération d'entités\n• Global : Axé sur la récupération de relations\n• Hybride : Local+Global\n• Mixte : Local+Global+Naïf\n• Bypass : Ignorer la récupération, envoyer l'historique de conversation et la question actuelle au LLM",
+      "queryModeWarning": "Peut réduire la qualité de récupération",
       "queryModeOptions": {
         "naive": "Naïf",
         "local": "Local",

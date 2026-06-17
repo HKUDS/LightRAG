@@ -425,6 +425,7 @@
       "parametersDescription": "Налаштуйте параметри вашого запиту",
       "queryMode": "Режим запиту",
       "queryModeTooltip": "Виберіть стратегію пошуку:\n• Naive: Традиційний пошук векторів текстових чанків\n• Local: Фокус на пошуку сутностей\n• Global: Фокус на пошуку відношень\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Пропустити пошук, надіслати історію розмови та поточне питання в LLM",
+      "queryModeWarning": "Може знизити якість пошуку",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

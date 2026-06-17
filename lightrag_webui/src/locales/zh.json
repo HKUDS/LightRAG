@@ -425,6 +425,7 @@
       "parametersDescription": "配置查询参数",
       "queryMode": "查询模式",
       "queryModeTooltip": "选择检索策略：\n• Naive：传统文本块向量检索\n• Local：侧重实体检索\n• Global：侧重关系检索\n• Hybrid：Local+Global\n• Mix：Local+Global+Naive\n• Bypass：跳过检索,把历史会话与当前问题送LLM",
+      "queryModeWarning": "可能降低检索质量",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
