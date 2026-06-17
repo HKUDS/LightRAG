@@ -12,6 +12,7 @@ from .models import KGSnapshot, SnapshotEdge, SnapshotNode
 
 NODE_FIELDS = {"label", "entity_type", "description", "source_id", "file_path"}
 EDGE_FIELDS = {
+    "id",
     "keywords",
     "description",
     "source_id",
@@ -106,10 +107,11 @@ def _iter_edges(graph: nx.Graph) -> list[tuple[str, str, str, dict[str, Any]]]:
             for source, target, key, data in graph.edges(keys=True, data=True)
         ]
 
-    return [
-        (str(source), str(target), f"{source}->{target}", dict(data))
-        for source, target, data in graph.edges(data=True)
-    ]
+    edges = []
+    for source, target, data in graph.edges(data=True):
+        edge_id = data.get("id") or f"{source}->{target}"
+        edges.append((str(source), str(target), str(edge_id), dict(data)))
+    return edges
 
 
 def _entity_stats(snapshot: KGSnapshot) -> list[dict[str, Any]]:

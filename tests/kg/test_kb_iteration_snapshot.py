@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import networkx as nx
@@ -60,12 +61,28 @@ def test_write_snapshot_artifacts_creates_machine_readable_stats(tmp_path: Path)
         "流行性感冒", entity_type="Disease", source_id="chunk-1", file_path="a.md"
     )
     graph.add_node("发热", entity_type="Symptom", source_id="chunk-1", file_path="a.md")
+    graph.add_node("咳嗽", entity_type="Symptom", source_id="chunk-2", file_path="b.md")
+    graph.add_node("抗病毒治疗", entity_type="Treatment", source_id="chunk-2", file_path="b.md")
     graph.add_edge(
         "流行性感冒",
         "发热",
         keywords="临床表现",
         source_id="chunk-1",
         file_path="a.md",
+    )
+    graph.add_edge(
+        "流行性感冒",
+        "咳嗽",
+        keywords="临床表现",
+        source_id="chunk-2",
+        file_path="b.md",
+    )
+    graph.add_edge(
+        "流行性感冒",
+        "抗病毒治疗",
+        keywords="治疗建议",
+        source_id="chunk-2",
+        file_path="b.md",
     )
     graph_path = tmp_path / "graph.graphml"
     nx.write_graphml(graph, graph_path)
@@ -77,4 +94,67 @@ def test_write_snapshot_artifacts_creates_machine_readable_stats(tmp_path: Path)
     assert (output_dir / "snapshots" / "kg_snapshot.json").exists()
     assert (output_dir / "snapshots" / "entity_stats.json").exists()
     assert (output_dir / "snapshots" / "relation_stats.json").exists()
+    assert (output_dir / "snapshots" / "hierarchy_paths.json").exists()
+    assert (output_dir / "snapshots" / "source_coverage.json").exists()
     assert written["kg_snapshot"].name == "kg_snapshot.json"
+
+    entity_stats = json.loads(
+        (output_dir / "snapshots" / "entity_stats.json").read_text(encoding="utf-8")
+    )
+    relation_stats = json.loads(
+        (output_dir / "snapshots" / "relation_stats.json").read_text(encoding="utf-8")
+    )
+    source_coverage = json.loads(
+        (output_dir / "snapshots" / "source_coverage.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert entity_stats == [
+        {"label": "Symptom", "count": 2},
+        {"label": "Disease", "count": 1},
+        {"label": "Treatment", "count": 1},
+    ]
+    assert relation_stats == [
+        {"label": "临床表现", "count": 2},
+        {"label": "治疗建议", "count": 1},
+    ]
+    assert source_coverage["file_path_counts"]["nodes"] == {"a.md": 2, "b.md": 2}
+    assert source_coverage["file_path_counts"]["edges"] == {"b.md": 2, "a.md": 1}
+    assert source_coverage["source_id_counts"]["nodes"] == {
+        "chunk-1": 2,
+        "chunk-2": 2,
+    }
+    assert source_coverage["source_id_counts"]["edges"] == {
+        "chunk-2": 2,
+        "chunk-1": 1,
+    }
+
+
+def test_build_snapshot_from_graphml_preserves_edge_ids_defaults_and_weight(
+    tmp_path: Path,
+):
+    graph = nx.DiGraph()
+    graph.add_node("A")
+    graph.add_node("B", entity_type="Target")
+    graph.add_edge("A", "B", id="rel-2", weight="2.5")
+    graph_path = tmp_path / "graph.graphml"
+    nx.write_graphml(graph, graph_path)
+
+    loaded = nx.read_graphml(graph_path)
+    assert not loaded.is_multigraph()
+
+    snapshot = build_snapshot_from_graphml(graph_path, workspace="demo")
+
+    assert snapshot.nodes[0].id == "A"
+    assert snapshot.nodes[0].label == "A"
+    assert snapshot.nodes[0].entity_type == ""
+    assert snapshot.nodes[0].description == ""
+    assert snapshot.nodes[0].source_id == ""
+    assert snapshot.nodes[0].file_path == ""
+    assert snapshot.edges[0].id == "rel-2"
+    assert snapshot.edges[0].keywords == ""
+    assert snapshot.edges[0].description == ""
+    assert snapshot.edges[0].source_id == ""
+    assert snapshot.edges[0].file_path == ""
+    assert snapshot.edges[0].weight == 2.5
