@@ -519,6 +519,39 @@ def test_adapter_empty_table_dropped(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_adapter_page_number_dropped(tmp_path: Path) -> None:
+    """``page_number`` items are layout noise and MUST NOT enter the IR.
+
+    MinerU emits a ``page_number`` item per page. Empty-text page numbers were
+    already dropped by the fallback's _append_text guard, but page numbers that
+    carry real text (``"12"``, ``"iii"``) previously leaked into block content
+    and contaminated the block's positions with their page_idx. The IR builder
+    now skips them outright regardless of text.
+    """
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "text", "text": "kept", "page_idx": 0},
+            # Page number carrying real text — the regression case.
+            {"type": "page_number", "text": "12", "page_idx": 7},
+            # Roman-numeral page number.
+            {"type": "page_number", "text": "iii", "page_idx": 8},
+            # Blank/whitespace page number.
+            {"type": "page_number", "text": "- ", "page_idx": 9},
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="p.pdf")
+    joined = "\n".join(b.content_template for b in ir.blocks)
+    assert "12" not in joined
+    assert "iii" not in joined
+    assert "kept" in joined
+    # The page_idx of skipped page numbers must not leak into block positions.
+    # Anchors are 1-based strings, so page_idx 7/8/9 would surface as 8/9/10.
+    anchors = {pos.anchor for b in ir.blocks for pos in b.positions}
+    assert anchors.isdisjoint({"8", "9", "10"})
+
+
+@pytest.mark.offline
 def test_adapter_bbox_attributes_default_and_override(tmp_path: Path) -> None:
     raw = _write_bundle(tmp_path, [{"type": "text", "text": "x"}])
     adapter = MinerUIRBuilder()
