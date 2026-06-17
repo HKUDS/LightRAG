@@ -292,6 +292,10 @@ def test_proposal_rendering_is_deterministic_yaml_like_and_reviewable(tmp_path: 
     assert "expected_metric_change: {}" in first
     assert "evidence:" in first
     assert "  - first evidence" in first
-    assert "expected_metric_change:" in first
-    assert "  hierarchy_completeness: 5" in first
+    assert (
+        "  expected_metric_change:\n"
+        "    hierarchy_completeness: 5\n"
+        "    overall: 1"
+        in first
+    )
     assert first.index("hierarchy_completeness") < first.index("overall")

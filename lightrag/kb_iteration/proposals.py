@@ -135,7 +135,7 @@ def _render_metric_change(
         return [f"  {field_name}: {{}}"]
     lines = [f"  {field_name}:"]
     for key in sorted(values):
-        lines.append(f"  {key}: {_render_scalar(values[key])}")
+        lines.append(f"    {key}: {_render_scalar(values[key])}")
     return lines
 
 
