@@ -1,0 +1,138 @@
+# KB Iteration Agent
+
+The KB iteration agent is a deterministic maintenance workflow for a LightRAG knowledge base. It helps an operator inspect the current graph, summarize it for later LLM review, calculate quality signals, prepare reviewable improvement proposals, and compare iteration runs.
+
+It is not a medical fact editor. It does not automatically mutate extracted medical facts, prompts, ontology rules, hierarchy rules, relation rules, WebUI behavior, or workspace data. LLM output is treated as analysis and proposal material, not as source of truth.
+
+## Safety Boundary
+
+The first deterministic runner is intentionally read-only with respect to the LightRAG workspace. It reads graph and input files, then writes reports under an iteration output directory.
+
+The workflow may automatically:
+
+- Generate graph snapshots and statistics.
+- Generate compact Markdown memory for LLM and human review.
+- Run deterministic quality checks.
+- Write quality reports and score JSON.
+- Write proposal queues and backlog files when proposals are supplied.
+- Compare two snapshots and write a diff report.
+
+The workflow must not automatically:
+
+- Add medical facts that are not grounded in imported source documents.
+- Correct fact-level KG data without explicit approval.
+- Edit extraction prompts, ontology, aliases, hierarchy rules, relation rules, or WebUI display behavior.
+- Delete, clear, rebuild, or rename a workspace.
+- Treat LLM conclusions as evidence.
+
+Generated files can help an LLM understand the state of the KB, but source-grounded evidence is still required before any medical or KG mutation is accepted.
+
+## Deterministic Modules
+
+The current deterministic implementation lives in `lightrag/kb_iteration/`:
+
+- `snapshot.py`: builds `KGSnapshot` objects from GraphML and writes snapshot JSON through `write_snapshot_artifacts`.
+- `markdown.py`: writes `kb_context.md`, `entity_catalog.md`, `relation_catalog.md`, `kg_structure.md`, and initializes memory files through `write_markdown_memory`.
+- `quality.py`: evaluates deterministic quality metrics through `evaluate_snapshot_quality` and writes `quality_report.md` plus `snapshots/quality_score.json` through `write_quality_artifacts`.
+- `proposals.py`: validates structured `ImprovementProposal` records and writes `approval_queue.md` and `improvement_backlog.md`.
+- `diff.py`: compares snapshots through `compare_snapshots` and writes `diff_report.md` plus `snapshots/diff_summary.json` through `write_diff_report`.
+- `runner.py`: orchestrates the first deterministic run through `run_iteration`.
+
+`run_iteration` validates the workspace name before joining paths, so unsafe names such as path traversal attempts are rejected before reports are written.
+
+## Artifact Layout
+
+Artifacts are written under:
+
+```text
+work/kb-iteration/<workspace>/
+```
+
+Expected files include:
+
+```text
+work/kb-iteration/<workspace>/
+  kb_context.md
+  entity_catalog.md
+  relation_catalog.md
+  kg_structure.md
+  quality_report.md
+  improvement_backlog.md
+  approval_queue.md
+  quality_rules.md
+  known_issues.md
+  accepted_changes.md
+  rejected_changes.md
+  diff_report.md
+  iteration_log.md
+  snapshots/
+    kg_snapshot.json
+    entity_stats.json
+    relation_stats.json
+    hierarchy_paths.json
+    source_coverage.json
+    quality_score.json
+    diff_summary.json
+  proposals/
+    <proposal-id>.yml
+```
+
+The runner currently writes the core snapshot, Markdown, quality, and iteration log artifacts. Proposal and diff artifacts are written by their dedicated modules when proposal objects or before/after snapshots are available.
+
+## First Deterministic Run
+
+Use the first run after ingestion or after a workspace rebuild to create a review package.
+
+1. Confirm the LightRAG workspace already has `graph_chunk_entity_relation.graphml`.
+2. Run `run_iteration` with the workspace, storage root, input root, output root, and optional profile.
+3. Read `kb_context.md` first for a compact overview.
+4. Review `quality_report.md` and `snapshots/quality_score.json`.
+5. Review `approval_queue.md`, `improvement_backlog.md`, `known_issues.md`, and `quality_rules.md` as persistent memory files.
+6. Stop at the recorded `pending_user_review` phase unless a human explicitly approves a mutation or rebuild.
+
+Example:
+
+```python
+from lightrag.kb_iteration.runner import run_iteration
+
+result = run_iteration(
+    workspace="influenza_medical_v1",
+    storage_root="data/rag_storage",
+    input_root="data/inputs",
+    output_root="work/kb-iteration",
+    profile="clinical_guideline_zh",
+)
+
+print(result.output_dir)
+print(result.quality_score.overall)
+```
+
+The first runner appends `phase: pending_user_review` to `iteration_log.md`. That phase means the review package is ready, not that any proposed change has been applied.
+
+## Source Grounding
+
+Treat `source_id`, `file_path`, and chunk linkage as the evidence trail for factual KG content. If evidence is missing, the correct response is to flag source repair, re-extraction, or manual review.
+
+The agent can suggest navigation or category structure to organize already-extracted facts, but it must not invent clinical claims. A useful proposal explains the target, evidence, risk, expected metric change, and required approval.
+
+## Approval Queue Behavior
+
+Mutation proposals require explicit review. Examples include:
+
+- `prompt_edit`
+- `ontology_rule_change`
+- `hierarchy_rule_change`
+- `relation_rule_change`
+- `workspace_rebuild`
+- `kg_fact_correction`
+- `web_display_change`
+
+`proposals.py` enforces approval for known mutation proposal types and for unknown proposal types unless they are explicitly safe report notes. `write_approval_queue` writes only approval-required items, while `write_improvement_backlog` records all valid proposals.
+
+Accepted changes should be copied into `accepted_changes.md` with the reviewer, reason, affected files, and verification needed. Rejected changes should be copied into `rejected_changes.md` with the reason and whether they may be reconsidered later. Rejected items become negative memory so future runs avoid repeating the same request.
+
+## Diff And Follow-Up Runs
+
+After an approved rebuild or rule change, generate a new snapshot and compare it with the previous one by using `compare_snapshots` and `write_diff_report`. A diff should be reviewed for added or removed nodes, relation keyword changes, entity type changes, quality deltas, and dangerous regression flags.
+
+An iteration is accepted only when the evidence, quality metrics, and regression review support the change, or when the user explicitly accepts the trade-off.

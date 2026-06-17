@@ -34,7 +34,7 @@
 LightRAG 已经可以从文档中抽取实体和关系，并构建知识图谱。但一个持续迭代的知识库还需要回答这些问题：
 
 - 当前知识库里有哪些实体、关系、分类和来源文档？
-- 哪些图谱结构存在噪声、重复、证据不足或不适合人类浏览？
+- 哪些图谱结构存在噪声、重复、证据不足或不适合人类理解？
 - 最新一轮提示词、规则或 workspace 迭代，是让 KG 变好了还是变差了？
 - 哪些修复建议可以自动生成报告，哪些必须等待人工确认？
 - 哪些失败案例已经在之前被接受、拒绝或归入长期规则？
@@ -85,7 +85,7 @@ Agent 应接入现有 LightRAG 数据和源码边界。
 | 医学本体/同义词 | `lightrag/medical_kg/ontology.py` |
 | 医学层级补全 | `lightrag/medical_kg/hierarchy.py` |
 | 抽取归一化挂点 | `lightrag/operate.py::extract_entities` |
-| 图谱浏览投影 | `lightrag/medical_kg/graph_projection.py` 和 WebUI 图谱投影代码 |
+| 图谱医学分组 | `lightrag/medical_kg/graph_projection.py` 和 WebUI 医学关系分组代码 |
 
 Agent 应尽量使用结构化解析器和稳定文件 API 读取数据。不要在可以保留字段结构的情况下，把大型 JSON 或 GraphML 当成普通文本硬读。
 
@@ -261,13 +261,13 @@ source - relation -> target
 
 ### `kg_structure.md`
 
-人类可读的层级和浏览结构。
+人类可读的层级和图谱结构。
 
 必须包含：
 
 - 疾病中心导航路径。
 - 一级类别和二级子类。
-- 叶子节点折叠组。
+- 分组后的关系类别。
 - 缺失分支。
 - 过载分支。
 - 事实边和导航/分类边的区分。
@@ -444,7 +444,7 @@ workspace 或运行结果对比报告。
 | 关系语义 | 20 | 合法关系词、方向、描述是否支撑关系 |
 | 层级完整性 | 20 | 疾病/类别/子类/叶子组织结构 |
 | 证据绑定 | 20 | source id、file path、chunk 链接、事实边和生成边区分 |
-| Web 可读性 | 10 | 人类浏览质量、折叠组、关系化属性面板 |
+| Web 可读性 | 10 | 原始 KG 可读性、医学分组质量、关系化属性面板 |
 | 迭代就绪度 | 10 | 可对比、可审批、待办是否可执行 |
 
 ### 实体卫生指标
@@ -542,7 +542,7 @@ workspace 或运行结果对比报告。
 草案：
 
 ```text
-你是医学知识图谱质量审查专家。你的任务不是补充医学常识，而是审查当前知识库是否忠实、清晰、可检索、适合人类浏览。
+你是医学知识图谱质量审查专家。你的任务不是补充医学常识，而是审查当前知识库是否忠实、清晰、可检索、适合人类理解。
 
 必须遵守：
 1. 不得新增原文未支持的医学事实。
@@ -558,7 +558,7 @@ workspace 或运行结果对比报告。
 - 关系是否有明确医学语义，而不是“相关/邻接”。
 - 关系方向和描述是否支持三元组。
 - 每条事实关系是否有来源元数据。
-- 疾病、症状、诊断、治疗、预防、人群、指南等层级是否适合人类浏览。
+- 疾病、症状、诊断、治疗、预防、人群、指南等层级是否适合人类理解。
 - 医学分组是否让原始 KG 更容易理解。
 - 本轮建议是否适合自动报告、进入待办、进入审批队列或需要人工复核。
 
@@ -625,6 +625,20 @@ Agent 的核心行为是一条闭环：
 ```
 
 这条闭环是每次知识库迭代的主要契约。下面的“工作流”章节只是这条闭环在不同入口场景中的具体展开；真正的运行模型是闭环本身。
+
+### 闭环落点
+
+这条闭环不能只停留在流程图里。每个阶段都必须落到明确文件或模块上，让未来的 LLM、开发者或审查者不用猜测就能检查本轮迭代发生了什么。
+
+- 观察落在 `snapshot.py`、`markdown.py`、`snapshots/kg_snapshot.json`、`kb_context.md`、`entity_catalog.md`、`relation_catalog.md` 和 `kg_structure.md`。
+- 思考/诊断落在确定性的 `quality.py`、未来的 `quality_reviewer_prompt.md`、`quality_score.json` 和 `quality_report.md`。Agent 不应持久化私密推理链，而应持久化可审计的诊断、证据、假设、不确定性和下一步建议。
+- 提案落在 `proposals.py`、`approval_queue.md` 和 `improvement_backlog.md`。
+- 审批落在人工审阅后的 `accepted_changes.md`、`rejected_changes.md`，以及 `iteration_log.md` 中的审批记录。
+- 执行在第一版中刻意不自动开放，除非已经存在审批记录。未来执行适配器可以修改提示词、规则、本体文件、Web 展示代码或重建 workspace，但每个动作都必须在 `iteration_log.md` 记录修改文件、执行命令、workspace 名称和回滚说明。
+- 评估落在 `diff.py`、刷新后的快照、刷新后的 `quality_score.json`、`snapshots/diff_summary.json` 和 `diff_report.md`。
+- 记忆/下一轮落在 `quality_rules.md`、`known_issues.md`、已接受/已拒绝历史，以及下一轮刷新的 `kb_context.md`。
+
+因此，第一版确定性 runner 默认应实现 `观察 -> 思考 -> 提案 -> 等待审批`。如果没有已批准的变更，闭环停在 `pending_user_review`。当用户批准重建或规则修改后，Agent 可以带着 `previous_snapshot` 再运行一次，进入评估和记忆阶段。
 
 ### 1. 观察
 
@@ -905,3 +919,18 @@ Agent 必须记录错误并优雅降级：
 8. 补充文档和测试。
 
 这样即使 LLM 质检还没有接入，第一版也已经能产生有用的知识库状态报告和确定性质量指标。
+
+## 已实现的确定性工作流
+
+Task 7 已在 `docs/KBIterationAgent-zh.md` 中补充面向使用者的中文操作文档，并记录当前已经位于 `lightrag/kb_iteration/` 下的确定性模块。
+
+当前已实现模块：
+
+- `snapshot.py` 从 GraphML 构建 `KGSnapshot`，并通过 `write_snapshot_artifacts` 写入快照产物。
+- `markdown.py` 通过 `write_markdown_memory` 写入适合 LLM 阅读的记忆文件。
+- `quality.py` 通过 `evaluate_snapshot_quality` 计算确定性质量指标，并通过 `write_quality_artifacts` 写入质量产物。
+- `proposals.py` 校验需要审批的 `ImprovementProposal`，并写入审批队列和改进 backlog。
+- `diff.py` 通过 `compare_snapshots` 比较快照，并写入 `diff_report.md` 和 `snapshots/diff_summary.json`。
+- `runner.py` 提供第一版确定性端到端入口 `run_iteration`。
+
+第一版 runner 刻意保持非变更型。它会在路径拼接前校验 workspace 名称，读取现有 workspace 图谱，写入快照、Markdown、质量和迭代日志产物，然后记录 `pending_user_review`。它不会自动应用提示词变更、规则变更、本体编辑、事实修正、WebUI 变更或 workspace 重建。

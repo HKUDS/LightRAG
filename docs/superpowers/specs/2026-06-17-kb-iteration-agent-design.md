@@ -26,7 +26,7 @@ The design must also support future workspaces and non-influenza medical documen
 LightRAG can extract entities and relationships into a graph, but an evolving knowledge base needs more than one-time extraction. Over time the project needs to answer:
 
 - What entities, relationships, categories, and source documents exist now?
-- Which parts of the graph are noisy, duplicated, weakly sourced, or hard to browse?
+- Which parts of the graph are noisy, duplicated, weakly sourced, or hard to understand?
 - Did the latest prompt/rule/workspace iteration improve the KG or make it worse?
 - Which proposed fixes are safe to apply automatically, and which require human confirmation?
 - Which failure cases have already been accepted or rejected in earlier review cycles?
@@ -77,7 +77,7 @@ The agent should integrate with existing LightRAG data and source boundaries:
 | Medical ontology/aliases | `lightrag/medical_kg/ontology.py` |
 | Medical hierarchy completion | `lightrag/medical_kg/hierarchy.py` |
 | Extraction normalization hook | `lightrag/operate.py::extract_entities` |
-| Graph browsing projection | `lightrag/medical_kg/graph_projection.py` and WebUI graph projection code |
+| Graph medical grouping | `lightrag/medical_kg/graph_projection.py` and WebUI medical relation grouping code |
 
 The agent should read these sources through stable parsers and structured file APIs where possible. It should not scrape large JSON as free text when a parser can preserve fields.
 
@@ -117,7 +117,7 @@ Outputs:
 
 ### 3. KG Quality Reviewer
 
-Evaluates entity hygiene, relation semantics, evidence grounding, hierarchy completeness, browsing readability, and iteration readiness. It combines deterministic checks with LLM review.
+Evaluates entity hygiene, relation semantics, evidence grounding, hierarchy completeness, graph readability, and iteration readiness. It combines deterministic checks with LLM review.
 
 Outputs:
 
@@ -248,13 +248,13 @@ Direction must be preserved even if the Web graph renders visually undirected.
 
 ### `kg_structure.md`
 
-Human-readable hierarchy and browsing structure.
+Human-readable hierarchy and graph structure.
 
 Required sections:
 
 - Disease-centered navigation paths.
 - Top-level categories and subgroups.
-- Leaf collapse groups.
+- Grouped relation categories.
 - Missing branches.
 - Overloaded branches.
 - Factual edges versus navigation/category edges.
@@ -431,7 +431,7 @@ Recommended weights:
 | Relation semantics | 20 | Legal relation labels, direction, description support |
 | Hierarchy completeness | 20 | Disease/category/subgroup/leaf organization |
 | Evidence grounding | 20 | Source ids, file paths, chunk linkage, factual versus generated edge clarity |
-| Web readability | 10 | Human browsing quality, collapsed groups, relation-aware display |
+| Web readability | 10 | Raw KG readability, medical grouping quality, relation-aware display |
 | Iteration readiness | 10 | Diffability, approval queue, actionable backlog |
 
 ### Entity Hygiene Metrics
@@ -612,6 +612,20 @@ Observe -> Think -> Propose -> Approve -> Execute -> Evaluate -> Remember -> Rep
 ```
 
 This loop is the primary contract for every KB iteration run. The detailed workflows below are concrete entry points into this loop, but the loop itself is the agent's operating model.
+
+### Where the Loop Lives
+
+The loop is not only a diagram. Each phase must be anchored in explicit files or modules so a future LLM, developer, or reviewer can inspect the run without guessing what happened.
+
+- Observe lives in `snapshot.py`, `markdown.py`, `snapshots/kg_snapshot.json`, `kb_context.md`, `entity_catalog.md`, `relation_catalog.md`, and `kg_structure.md`.
+- Think/diagnose lives in deterministic `quality.py`, the future `quality_reviewer_prompt.md`, `quality_score.json`, and `quality_report.md`. The agent should not persist private chain-of-thought; it should persist audit-grade diagnosis, evidence, assumptions, uncertainty, and recommended next actions.
+- Propose lives in `proposals.py`, `approval_queue.md`, and `improvement_backlog.md`.
+- Approve lives in human-reviewed `accepted_changes.md`, `rejected_changes.md`, and the approval entries in `iteration_log.md`.
+- Execute is intentionally outside the automatic first version unless approval exists. Future execution adapters may edit prompts, rules, ontology files, Web display code, or rebuild workspaces, but each action must record changed files, commands, workspace names, and rollback notes in `iteration_log.md`.
+- Evaluate lives in `diff.py`, refreshed snapshots, refreshed `quality_score.json`, `snapshots/diff_summary.json`, and `diff_report.md`.
+- Remember/repeat lives in `quality_rules.md`, `known_issues.md`, accepted/rejected history, and the next refreshed `kb_context.md`.
+
+The first deterministic runner should therefore implement `observe -> think -> propose -> pending approval` as its default path. If no approved mutation is present, the loop stops at `pending_user_review`. After the user approves a rebuild or rule change, the agent can run again with a `previous_snapshot` and enter the evaluate/remember portion of the loop.
 
 ### 1. Observe
 
@@ -892,3 +906,18 @@ Recommended implementation order:
 8. Documentation and tests.
 
 This sequence keeps the first implementation useful even before LLM review is wired in.
+
+## Implemented Deterministic Workflow
+
+Task 7 documents the deterministic modules now available under `lightrag/kb_iteration/` and the operator workflow in `docs/KBIterationAgent.md`.
+
+Current implemented modules:
+
+- `snapshot.py` builds `KGSnapshot` objects from GraphML and writes snapshot artifacts with `write_snapshot_artifacts`.
+- `markdown.py` writes LLM-readable memory files with `write_markdown_memory`.
+- `quality.py` computes deterministic quality metrics with `evaluate_snapshot_quality` and writes quality artifacts with `write_quality_artifacts`.
+- `proposals.py` validates approval-gated `ImprovementProposal` objects and writes the approval queue plus backlog.
+- `diff.py` compares snapshots with `compare_snapshots` and writes `diff_report.md` plus `snapshots/diff_summary.json`.
+- `runner.py` exposes `run_iteration`, the first deterministic end-to-end runner.
+
+The first runner is intentionally non-mutating. It validates workspace names before path joins, reads the existing workspace graph, writes snapshot, Markdown, quality, and iteration-log artifacts, then records `pending_user_review`. It does not apply prompt changes, rule changes, ontology edits, fact corrections, WebUI changes, or workspace rebuilds.
