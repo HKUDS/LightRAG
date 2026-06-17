@@ -113,6 +113,19 @@ def test_compare_snapshots_reports_dangerous_regression_flags_from_quality_score
     ]
 
 
+def test_explicit_empty_core_disease_list_disables_removed_disease_regression_flag():
+    before = _snapshot(
+        [SnapshotNode("Influenza", "Influenza", "Disease")],
+        [],
+    )
+    after = _snapshot([], [])
+
+    diff = compare_snapshots(before, after, core_disease_node_ids=[])
+
+    assert diff.removed_nodes == ["Influenza"]
+    assert diff.dangerous_regression_flags == []
+
+
 def test_write_diff_report_creates_deterministic_json_summary(tmp_path: Path):
     before = _snapshot(
         [
@@ -147,12 +160,64 @@ def test_write_diff_report_creates_deterministic_json_summary(tmp_path: Path):
         "added_edge_pairs": [{"source": "A", "target": "C"}],
         "added_nodes": ["C"],
         "changed_entity_types": {"A": {"after": "Condition", "before": "Disease"}},
-        "changed_relation_keywords": {
-            "A -> B": {"after": "clinical", "before": "related"}
-        },
+        "changed_relation_keywords": [
+            {
+                "after": "clinical",
+                "before": "related",
+                "source": "A",
+                "target": "B",
+            }
+        ],
         "dangerous_regression_flags": [],
         "quality_delta": {},
         "removed_edge_pairs": [{"source": "B", "target": "A"}],
         "removed_nodes": ["B"],
         "workspace": {"after": "demo", "before": "demo"},
     }
+
+
+def test_write_diff_report_keeps_changed_relation_edge_pairs_lossless(
+    tmp_path: Path,
+):
+    before = _snapshot(
+        [
+            SnapshotNode("A -> B", "A -> B", "Entity"),
+            SnapshotNode("A", "A", "Entity"),
+            SnapshotNode("B -> C", "B -> C", "Entity"),
+            SnapshotNode("C", "C", "Entity"),
+        ],
+        [
+            SnapshotEdge("e1", "A -> B", "C", "old-left"),
+            SnapshotEdge("e2", "A", "B -> C", "old-right"),
+        ],
+    )
+    after = _snapshot(
+        before.nodes,
+        [
+            SnapshotEdge("e1", "A -> B", "C", "new-left"),
+            SnapshotEdge("e2", "A", "B -> C", "new-right"),
+        ],
+    )
+
+    diff = compare_snapshots(before, after)
+    write_diff_report(diff, tmp_path)
+
+    summary = json.loads(
+        (tmp_path / "snapshots" / "diff_summary.json").read_text(encoding="utf-8")
+    )
+
+    assert len(diff.changed_relation_keywords) == 2
+    assert summary["changed_relation_keywords"] == [
+        {
+            "after": "new-right",
+            "before": "old-right",
+            "source": "A",
+            "target": "B -> C",
+        },
+        {
+            "after": "new-left",
+            "before": "old-left",
+            "source": "A -> B",
+            "target": "C",
+        },
+    ]

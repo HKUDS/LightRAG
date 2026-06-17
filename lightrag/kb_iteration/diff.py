@@ -29,10 +29,9 @@ class SnapshotDiff:
             "added_edge_pairs": _edge_pairs_to_dicts(self.added_edge_pairs),
             "added_nodes": self.added_nodes,
             "changed_entity_types": self.changed_entity_types,
-            "changed_relation_keywords": {
-                _format_edge_pair(pair): change
-                for pair, change in sorted(self.changed_relation_keywords.items())
-            },
+            "changed_relation_keywords": _relation_keyword_changes_to_dicts(
+                self.changed_relation_keywords
+            ),
             "dangerous_regression_flags": self.dangerous_regression_flags,
             "quality_delta": self.quality_delta,
             "removed_edge_pairs": _edge_pairs_to_dicts(self.removed_edge_pairs),
@@ -154,7 +153,10 @@ def _dangerous_regression_flags(
     core_disease_node_ids: list[str] | set[str] | tuple[str, ...] | None,
 ) -> list[str]:
     flags: list[str] = []
-    core_nodes = set(core_disease_node_ids or _disease_node_ids(before_nodes))
+    if core_disease_node_ids is None:
+        core_nodes = _disease_node_ids(before_nodes)
+    else:
+        core_nodes = set(core_disease_node_ids)
     for node_id in sorted(core_nodes & set(removed_nodes)):
         flags.append(f"core_disease_node_removed:{node_id}")
 
@@ -282,6 +284,20 @@ def _quality_delta_lines(delta: dict[str, int | float]) -> list[str]:
 
 def _edge_pairs_to_dicts(pairs: list[EdgePair]) -> list[dict[str, str]]:
     return [{"source": source, "target": target} for source, target in pairs]
+
+
+def _relation_keyword_changes_to_dicts(
+    changes: dict[EdgePair, dict[str, str]],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "source": source,
+            "target": target,
+            "before": change["before"],
+            "after": change["after"],
+        }
+        for (source, target), change in sorted(changes.items())
+    ]
 
 
 def _format_edge_pair(pair: EdgePair) -> str:
