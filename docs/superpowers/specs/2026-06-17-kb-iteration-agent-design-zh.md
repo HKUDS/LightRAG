@@ -141,7 +141,6 @@ Agent 应尽量使用结构化解析器和稳定文件 API 读取数据。不要
 输出：
 
 - `improvement_backlog.md`
-- `proposals/*.yml` 或 `proposals/*.json`
 - 更新后的 `approval_queue.md`
 
 ### 5. Diff Engine
@@ -198,8 +197,6 @@ work/kb-iteration/influenza_medical_v1/
     source_coverage.json
     quality_score.json
     diff_summary.json
-  proposals/
-    <proposal-id>.yml
 ```
 
 ## Markdown 产物
@@ -577,44 +574,54 @@ workspace 或运行结果对比报告。
 
 ## 结构化改进建议格式
 
-任何可能改变行为或数据的建议，都必须有机器可读格式。
+任何可能改变行为或数据的建议，都必须表示为 `ImprovementProposal` 记录，并由 `proposals.py` 渲染到 `approval_queue.md` 或 `improvement_backlog.md`。
 
-建议 YAML：
+已实现字段：
+
+- `id`：非空字符串。
+- `type`：规范的小写 snake_case 字符串。
+- `target`：非空字符串。
+- `proposed_change`：非空字符串。
+- `reason`：非空字符串。
+- `evidence`：字符串列表。
+- `confidence`：0 到 1 之间的数字。
+- `risk`：`low`、`medium` 或 `high`。
+- `requires_approval`：布尔值。
+- `expected_metric_change`：指标标识符到数字增量的映射。
+
+渲染后的记录示例：
 
 ```yaml
 id: proposal-20260617-001
-type: alias_merge
-target: lightrag/medical_kg/ontology.py
-proposed_change:
-  from: 流感
-  to: 流行性感冒
-reason: 当前 workspace 中已知同义词仍然拆分。
+type: hierarchy_rule_change
+target: lightrag/medical_kg/hierarchy.py
+proposed_change: Add a controlled symptom branch for fever under the existing clinical presentation hierarchy.
+reason: Direct disease-to-leaf overload was detected in the current workspace.
 evidence:
-  triples:
-    - source: 流感
-      relation: 临床表现
-      target: 发热
-  files:
-    - data/rag_storage/influenza_medical_v1/graph_chunk_entity_relation.graphml
-confidence: high
-risk: low
+  - "流行性感冒 -> 发热"
+  - "quality finding: disease hub overload"
+confidence: 0.8
+risk: medium
 requires_approval: true
 expected_metric_change:
-  synonym_duplicate_count: -1
-status: pending_review
+  hierarchy_completeness: 5
 ```
 
-建议类型：
+已实现且必须审批的 mutation proposal 类型：
 
-- `alias_merge`
-- `hierarchy_edge_add`
-- `hierarchy_edge_remove`
-- `relation_keyword_mapping`
-- `prompt_change`
-- `controlled_category_add`
-- `web_display_change`
+- `prompt_edit`
+- `ontology_rule_change`
+- `hierarchy_rule_change`
+- `relation_rule_change`
 - `workspace_rebuild`
-- `manual_review`
+- `kg_fact_correction`
+- `web_display_change`
+
+已实现的免审批报告备注类型：
+
+- `quality_report_note`
+
+未知 proposal 类型默认需要审批，除非它们在代码中被明确加入免审批报告备注集合。
 
 ## Agent 闭环
 
@@ -638,7 +645,7 @@ Agent 的核心行为是一条闭环：
 - 评估落在 `diff.py`、刷新后的快照、刷新后的 `quality_score.json`、`snapshots/diff_summary.json` 和 `diff_report.md`。
 - 记忆/下一轮落在 `quality_rules.md`、`known_issues.md`、已接受/已拒绝历史，以及下一轮刷新的 `kb_context.md`。
 
-因此，第一版确定性 runner 默认应实现 `观察 -> 思考 -> 提案 -> 等待审批`。如果没有已批准的变更，闭环停在 `pending_user_review`。当用户批准重建或规则修改后，Agent 可以带着 `previous_snapshot` 再运行一次，进入评估和记忆阶段。
+因此，第一版确定性 runner 默认应实现 `观察 -> 确定性质量报告 -> pending_user_review`。它写入快照、Markdown 记忆、质量产物和迭代日志记录。结构化 proposal 生成是单独步骤：只有在已有或后续生成 `ImprovementProposal` 对象时，`proposals.py` 才会填充 `approval_queue.md` 和 `improvement_backlog.md`。当用户批准重建或规则修改后，Agent 可以带着 `previous_snapshot` 再运行一次，进入评估和记忆阶段。
 
 ### 1. 观察
 
@@ -754,7 +761,7 @@ input_snapshot: snapshots/kg_snapshot.json
 previous_snapshot: null
 analysis: quality_report.md
 proposals:
-  - proposals/proposal-20260617-001.yml
+  - proposal-20260617-001
 approved_changes: []
 executed_changes: []
 quality_before: null
@@ -914,7 +921,7 @@ Agent 必须记录错误并优雅降级：
 3. 生成确定性质量检查和 `quality_score.json`。
 4. 接入 LLM 质检提示词和报告生成。
 5. 生成改进 backlog 和审批队列。
-6. 生成结构化 proposal 文件并做 schema 校验。
+6. 生成结构化 proposal 记录并做 schema 校验。
 7. 生成快照 diff 和回归报告。
 8. 补充文档和测试。
 

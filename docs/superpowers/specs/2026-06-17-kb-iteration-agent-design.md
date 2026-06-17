@@ -132,7 +132,6 @@ Turns quality findings into actionable proposals. It does not mutate prompts, ru
 Outputs:
 
 - `improvement_backlog.md`
-- `proposals/*.yml` or `proposals/*.json`
 - Updated `approval_queue.md`
 
 ### 5. Diff Engine
@@ -185,8 +184,6 @@ work/kb-iteration/influenza_medical_v1/
     source_coverage.json
     quality_score.json
     diff_summary.json
-  proposals/
-    <proposal-id>.yml
 ```
 
 ## Markdown Artifacts
@@ -564,44 +561,54 @@ Draft prompt:
 
 ## Structured Proposal Format
 
-Every proposal that may change behavior or data must have a machine-readable form.
+Every proposal that may change behavior or data must be represented as an `ImprovementProposal` record and rendered into `approval_queue.md` or `improvement_backlog.md` by `proposals.py`.
 
-Suggested YAML:
+Implemented fields:
+
+- `id`: non-empty string.
+- `type`: canonical lowercase snake_case string.
+- `target`: non-empty string.
+- `proposed_change`: non-empty string.
+- `reason`: non-empty string.
+- `evidence`: list of strings.
+- `confidence`: number from 0 to 1.
+- `risk`: `low`, `medium`, or `high`.
+- `requires_approval`: boolean.
+- `expected_metric_change`: mapping of metric identifiers to numeric deltas.
+
+Example rendered record:
 
 ```yaml
 id: proposal-20260617-001
-type: alias_merge
-target: lightrag/medical_kg/ontology.py
-proposed_change:
-  from: 流感
-  to: 流行性感冒
-reason: Known synonym remains split in the current workspace.
+type: hierarchy_rule_change
+target: lightrag/medical_kg/hierarchy.py
+proposed_change: Add a controlled symptom branch for fever under the existing clinical presentation hierarchy.
+reason: Direct disease-to-leaf overload was detected in the current workspace.
 evidence:
-  triples:
-    - source: 流感
-      relation: 临床表现
-      target: 发热
-  files:
-    - data/rag_storage/influenza_medical_v1/graph_chunk_entity_relation.graphml
-confidence: high
-risk: low
+  - "流行性感冒 -> 发热"
+  - "quality finding: disease hub overload"
+confidence: 0.8
+risk: medium
 requires_approval: true
 expected_metric_change:
-  synonym_duplicate_count: -1
-status: pending_review
+  hierarchy_completeness: 5
 ```
 
-Proposal types:
+Implemented mutation proposal types that require approval:
 
-- `alias_merge`
-- `hierarchy_edge_add`
-- `hierarchy_edge_remove`
-- `relation_keyword_mapping`
-- `prompt_change`
-- `controlled_category_add`
-- `web_display_change`
+- `prompt_edit`
+- `ontology_rule_change`
+- `hierarchy_rule_change`
+- `relation_rule_change`
 - `workspace_rebuild`
-- `manual_review`
+- `kg_fact_correction`
+- `web_display_change`
+
+Implemented no-approval report note type:
+
+- `quality_report_note`
+
+Unknown proposal types require approval unless they are explicitly added to the no-approval report-note set in code.
 
 ## Agent Control Loop
 
@@ -625,7 +632,7 @@ The loop is not only a diagram. Each phase must be anchored in explicit files or
 - Evaluate lives in `diff.py`, refreshed snapshots, refreshed `quality_score.json`, `snapshots/diff_summary.json`, and `diff_report.md`.
 - Remember/repeat lives in `quality_rules.md`, `known_issues.md`, accepted/rejected history, and the next refreshed `kb_context.md`.
 
-The first deterministic runner should therefore implement `observe -> think -> propose -> pending approval` as its default path. If no approved mutation is present, the loop stops at `pending_user_review`. After the user approves a rebuild or rule change, the agent can run again with a `previous_snapshot` and enter the evaluate/remember portion of the loop.
+The first deterministic runner should therefore implement `observe -> deterministic quality report -> pending_user_review` as its default path. It writes snapshot, Markdown memory, quality artifacts, and an iteration-log entry. Structured proposal generation is a separate step: `proposals.py` can populate `approval_queue.md` and `improvement_backlog.md` only when `ImprovementProposal` objects are supplied or generated later. After the user approves a rebuild or rule change, the agent can run again with a `previous_snapshot` and enter the evaluate/remember portion of the loop.
 
 ### 1. Observe
 
@@ -741,7 +748,7 @@ input_snapshot: snapshots/kg_snapshot.json
 previous_snapshot: null
 analysis: quality_report.md
 proposals:
-  - proposals/proposal-20260617-001.yml
+  - proposal-20260617-001
 approved_changes: []
 executed_changes: []
 quality_before: null
@@ -901,7 +908,7 @@ Recommended implementation order:
 3. Deterministic quality checks and score JSON.
 4. LLM reviewer prompt and report generation.
 5. Improvement backlog and approval queue.
-6. Structured proposal files and schema validation.
+6. Structured proposal records and schema validation.
 7. Snapshot diff and regression report.
 8. Documentation and tests.
 

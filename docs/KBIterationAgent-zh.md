@@ -73,11 +73,9 @@ work/kb-iteration/<workspace>/
     source_coverage.json
     quality_score.json
     diff_summary.json
-  proposals/
-    <proposal-id>.yml
 ```
 
-当前 runner 会写入核心快照、Markdown、质量报告和迭代日志。proposal 和 diff 产物在已有 proposal 对象或前后快照时，由对应模块写入。
+当前 runner 会写入核心快照、Markdown、质量报告和迭代日志。它不会创建 proposal 对象、proposal YAML 文件或已填充的队列条目。审批队列和 backlog 由 `proposals.py` 在已有或后续生成 `ImprovementProposal` 对象时写入。diff 产物在已有前后快照时由 `diff.py` 写入。
 
 ## 第一次确定性运行
 
@@ -107,7 +105,7 @@ print(result.output_dir)
 print(result.quality_score.overall)
 ```
 
-第一版 runner 会向 `iteration_log.md` 追加 `phase: pending_user_review`。这个阶段表示审阅包已经生成，不表示任何建议已经被应用。
+第一版 runner 会向 `iteration_log.md` 追加 `phase: pending_user_review`。这个阶段表示审阅包已经生成，不表示任何建议已经被生成或应用。
 
 ## 来源约束
 
