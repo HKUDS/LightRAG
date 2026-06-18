@@ -33,8 +33,8 @@ describe('LLM review panels', () => {
   test('renders patch candidates with proposal ids and selected patch', () => {
     const markup = renderToStaticMarkup(
       <PatchCandidatesPanel
-        proposals={`proposals:\n  - id: p1\n    title: candidate one`}
-        patchText={`--- a/file\n+++ b/file\n@@\n-old\n+new`}
+        proposals={'proposals:\n  - id: p1\n    title: candidate one'}
+        patchText={'--- a/file\n+++ b/file\n@@\n-old\n+new'}
         onLoadPatch={() => undefined}
       />
     )
@@ -46,7 +46,7 @@ describe('LLM review panels', () => {
 
   test('renders judge report content', () => {
     const markup = renderToStaticMarkup(
-      <LLMJudgePanel report={`# Judge Report\n\nstatus: needs_human`} />
+      <LLMJudgePanel report={'# Judge Report\n\nstatus: needs_human'} />
     )
 
     expect(markup).toContain('Judge 评判')
