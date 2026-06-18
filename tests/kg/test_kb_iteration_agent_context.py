@@ -1,5 +1,9 @@
 import json
+import os
 from pathlib import Path
+import subprocess
+
+import pytest
 
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kb_iteration.agent_context import (
@@ -100,6 +104,45 @@ def test_write_agent_context_writes_stage_context_json(tmp_path: Path):
     assert raw_context.endswith("\n")
 
 
+def test_write_agent_context_replaces_windows_junction_without_touching_target(
+    tmp_path: Path,
+):
+    if os.name != "nt":
+        pytest.skip("Windows junction regression")
+
+    package = tmp_path / "package"
+    package.mkdir()
+    external_context = tmp_path / "external_context"
+    external_context.mkdir()
+    external_file = external_context / "explain-context.json"
+    external_file.write_text("outside sentinel", encoding="utf-8")
+    context_junction = package / "agent_context"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(context_junction), str(external_context)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {result.stderr or result.stdout}")
+
+    try:
+        written = write_agent_context(package, "explain", {"safe": True})
+    finally:
+        if context_junction.exists() and _is_windows_junction(context_junction):
+            subprocess.run(
+                ["cmd", "/c", "rmdir", str(context_junction)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+    assert external_file.read_text(encoding="utf-8") == "outside sentinel"
+    assert written == package / "agent_context" / "explain-context.json"
+    assert not _is_windows_junction(package / "agent_context")
+    assert json.loads(written.read_text(encoding="utf-8")) == {"safe": True}
+
+
 def _make_agent_package(tmp_path: Path) -> Path:
     package = tmp_path / "package"
     snapshot_dir = package / "snapshots"
@@ -178,3 +221,9 @@ def _write_json(path: Path, payload: dict) -> None:
     with path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
         file.write("\n")
+
+
+def _is_windows_junction(path: Path) -> bool:
+    if os.name != "nt" or not path.exists():
+        return False
+    return bool(os.stat(path, follow_symlinks=False).st_file_attributes & 0x400)

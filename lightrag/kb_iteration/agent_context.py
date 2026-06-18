@@ -1,12 +1,37 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from lightrag.constants import GRAPH_FIELD_SEP
 
 AGENT_CONTEXT_DIR = "agent_context"
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def safe_package_child_path(package_dir: str | Path, relative_path: str) -> Path:
+    package_path = Path(package_dir)
+    package_root = package_path.resolve(strict=False)
+    candidate = package_path / relative_path
+    resolved_candidate = candidate.resolve(strict=False)
+    if not _is_relative_to(resolved_candidate, package_root):
+        raise ValueError("generated artifact path escapes KB iteration package")
+    return candidate
+
+
+def remove_agent_context_link(package_dir: str | Path) -> None:
+    context_dir = Path(package_dir) / AGENT_CONTEXT_DIR
+    if _is_link_or_junction(context_dir):
+        _remove_link(context_dir)
+
+
+def ensure_safe_agent_context_dir(package_dir: str | Path) -> Path:
+    remove_agent_context_link(package_dir)
+    context_dir = safe_package_child_path(package_dir, AGENT_CONTEXT_DIR)
+    context_dir.mkdir(parents=True, exist_ok=True)
+    return context_dir
 
 
 def build_agent_observation(
@@ -65,8 +90,12 @@ def build_stage_context(
 def write_agent_context(
     package_dir: str | Path, stage: str, context: dict[str, Any]
 ) -> Path:
-    output_path = Path(package_dir) / AGENT_CONTEXT_DIR / f"{stage}-context.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    context_dir = ensure_safe_agent_context_dir(package_dir)
+    output_path = safe_package_child_path(
+        package_dir, f"{AGENT_CONTEXT_DIR}/{stage}-context.json"
+    )
+    if output_path.parent != context_dir:
+        raise ValueError("agent context path escapes KB iteration package")
     with output_path.open("w", encoding="utf-8") as file:
         json.dump(context, file, ensure_ascii=False, indent=2)
         file.write("\n")
@@ -94,6 +123,40 @@ def _artifact_status(package_path: Path) -> dict[str, dict[str, Any]]:
             "snapshots/quality_score.json",
         )
     }
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", lambda: False)
+    return (
+        path.is_symlink()
+        or bool(is_junction())
+        or _is_windows_reparse_point(path)
+    )
+
+
+def _remove_link(path: Path) -> None:
+    try:
+        path.unlink()
+    except (IsADirectoryError, PermissionError):
+        path.rmdir()
+
+
+def _is_windows_reparse_point(path: Path) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        file_attributes = os.stat(path, follow_symlinks=False).st_file_attributes
+    except (FileNotFoundError, OSError, AttributeError):
+        return False
+    return bool(file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def _file_status(path: Path) -> dict[str, Any]:
