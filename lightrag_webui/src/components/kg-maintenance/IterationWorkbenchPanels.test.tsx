@@ -4,7 +4,9 @@ import type { KBIterationSummaryResponse } from '@/api/lightrag'
 import {
   DecisionMemoryPanel,
   IterationOverviewPanel,
-  JsonArtifactPanel
+  JsonArtifactPanel,
+  QualityScoreJsonPanel,
+  SnapshotReviewPanel
 } from './IterationWorkbenchPanels'
 
 describe('iteration workbench panels', () => {
@@ -64,6 +66,8 @@ describe('iteration workbench panels', () => {
     expect(markup).toContain('rejected_changes.md')
     expect(markup).toContain('当前阶段')
     expect(markup).toContain('iteration_log.md')
+    expect(markup).toContain('已生成')
+    expect(markup).toContain('缺失')
   })
 
   test('json artifact renders title file summary and raw json without graph markup', () => {
@@ -93,6 +97,69 @@ describe('iteration workbench panels', () => {
     expect(markup).toContain('节点数')
     expect(markup).toContain('medical-kb')
     expect(markup).toContain('&quot;snapshotId&quot;: &quot;snap-1&quot;')
+    expect(markup).not.toContain('<svg')
+    expect(markup).not.toContain('Medical knowledge graph hierarchy')
+  })
+
+  test('json artifact treats an empty string payload as empty', () => {
+    const markup = renderToStaticMarkup(
+      <JsonArtifactPanel
+        title="质量分数"
+        fileName="snapshots/quality_score.json"
+        payload=""
+        summaryRows={[['Overall', '—']]}
+        emptyText="暂无质量分数。"
+      />
+    )
+
+    expect(markup).toContain('暂无质量分数。')
+    expect(markup).not.toContain('&quot;&quot;')
+  })
+
+  test('snapshot review summarizes snapshot counts and identity without graph markup', () => {
+    const markup = renderToStaticMarkup(
+      <SnapshotReviewPanel
+        snapshot={{
+          workspace: 'medical-kb',
+          snapshot_id: 'snap-2',
+          nodes: [{ id: 'n1' }, { id: 'n2' }],
+          edges: [{ id: 'e1' }]
+        }}
+      />
+    )
+
+    expect(markup).toContain('图谱快照')
+    expect(markup).toContain('节点数')
+    expect(markup).toContain('关系数')
+    expect(markup).toContain('medical-kb')
+    expect(markup).toContain('snap-2')
+    expect(markup).toContain('&quot;snapshot_id&quot;: &quot;snap-2&quot;')
+    expect(markup).not.toContain('<svg')
+    expect(markup).not.toContain('Medical knowledge graph hierarchy')
+  })
+
+  test('quality score json summarizes overall findings and blockers', () => {
+    const markup = renderToStaticMarkup(
+      <QualityScoreJsonPanel
+        qualityScore={{
+          overall: 76,
+          findings: [
+            { severity: 'high', message: '缺少溯源' },
+            { severity: 'medium', message: '命名不一致' }
+          ],
+          critical_blockers: ['规则冲突']
+        }}
+      />
+    )
+
+    expect(markup).toContain('质量分数')
+    expect(markup).toContain('Overall')
+    expect(markup).toContain('76')
+    expect(markup).toContain('Findings')
+    expect(markup).toContain('2')
+    expect(markup).toContain('Critical blockers')
+    expect(markup).toContain('1')
+    expect(markup).toContain('&quot;overall&quot;: 76')
     expect(markup).not.toContain('<svg')
     expect(markup).not.toContain('Medical knowledge graph hierarchy')
   })

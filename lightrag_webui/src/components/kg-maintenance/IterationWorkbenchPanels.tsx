@@ -326,7 +326,7 @@ export function JsonArtifactPanel({
   summaryRows,
   emptyText
 }: JsonArtifactPanelProps) {
-  const hasPayload = payload !== null && payload !== undefined
+  const hasPayload = payload !== null && payload !== undefined && payload !== ''
 
   return (
     <section className="border-border/70 rounded-lg border p-3">
