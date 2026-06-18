@@ -71,7 +71,7 @@ function renderMainPanel(activeSection: KGMaintenanceSection) {
             }
           ]
         },
-        report: '# Quality Report'
+        report: '# 质量报告'
       }}
       rules={{
         workspace: 'influenza_medical_v1',
@@ -88,7 +88,7 @@ function renderMainPanel(activeSection: KGMaintenanceSection) {
         edges: [{ source: 'flu', target: 'fever' }]
       }}
       qualityScore={{ overall: 82, findings: [{ severity: 'medium' }] }}
-      approvalQueue=""
+      approvalQueue="# 待审批 proposal\n\n- id: proposal-1\n  type: add_edge"
       improvementBacklog="backlog content marker"
       iterationLog="iteration log marker"
       llmTrace={{
@@ -219,6 +219,22 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('# 当前 KB 摘要')
   })
 
+  test('stage renders the current iteration log artifact', () => {
+    const markup = renderMainPanel('stage')
+
+    expect(markup).toContain('当前阶段')
+    expect(markup).toContain('iteration_log.md')
+    expect(markup).toContain('iteration log marker')
+  })
+
+  test('quality renders markdown quality and JSON score artifacts', () => {
+    const markup = renderMainPanel('quality')
+
+    expect(markup).toContain('质量报告')
+    expect(markup).toContain('质量分数')
+    expect(markup).toContain('snapshots/quality_score.json')
+  })
+
   test('snapshot renders raw JSON without the graph canvas', () => {
     const markup = renderMainPanel('snapshot')
 
@@ -227,6 +243,21 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('&quot;snapshot_id&quot;')
     expect(markup).not.toContain('Medical knowledge graph hierarchy')
     expect(markup).not.toContain('<svg')
+  })
+
+  test('approval renders proposal review content', () => {
+    const markup = renderMainPanel('approval')
+
+    expect(markup).toContain('待审批 proposal')
+    expect(markup).toContain('proposal-1')
+  })
+
+  test('backlog renders the improvement backlog artifact', () => {
+    const markup = renderMainPanel('backlog')
+
+    expect(markup).toContain('改进 backlog')
+    expect(markup).toContain('improvement_backlog.md')
+    expect(markup).toContain('backlog content marker')
   })
 
   test('memory renders accepted and rejected decision memory', () => {
