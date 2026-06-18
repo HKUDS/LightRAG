@@ -65,6 +65,7 @@ class QualityScore:
     overall: int
     subscores: dict[str, int]
     metrics: dict[str, Any]
+    details: dict[str, Any] = field(default_factory=dict)
     findings: list[QualityFinding] = field(default_factory=list)
     critical_blockers: list[str] = field(default_factory=list)
 
@@ -73,6 +74,7 @@ class QualityScore:
             "overall": self.overall,
             "subscores": self.subscores,
             "metrics": self.metrics,
+            "details": self.details,
             "findings": [finding.to_dict() for finding in self.findings],
             "critical_blockers": self.critical_blockers,
         }

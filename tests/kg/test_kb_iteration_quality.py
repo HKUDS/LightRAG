@@ -70,12 +70,14 @@ def test_write_quality_artifacts_creates_score_json_and_report(tmp_path: Path):
         "overall",
         "subscores",
         "metrics",
+        "details",
         "findings",
         "critical_blockers",
     }
     assert payload["overall"] == score.overall
     assert payload["subscores"] == score.subscores
     assert payload["metrics"] == score.metrics
+    assert payload["details"] == score.details
     assert payload["critical_blockers"] == score.critical_blockers
 
     report = written["quality_report"].read_text(encoding="utf-8")
@@ -456,3 +458,112 @@ def test_disease_hub_detection_strips_entity_type_whitespace():
     score = evaluate_snapshot_quality(snapshot)
 
     assert score.metrics["disease_hub_overload_ratio"] == 1.0
+
+
+def test_quality_score_exposes_hierarchy_branch_details_for_medical_profile():
+    categories = TOP_LEVEL_MEDICAL_CATEGORIES
+    present = categories[:2]
+    missing = categories[2:]
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-19T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode(
+                present[0].key,
+                "Category by key",
+                "MedicalCategory",
+                source_id="medical_kg_profile",
+                file_path="medical_kg_profile",
+            ),
+            SnapshotNode(
+                "alias-node",
+                present[1].aliases[0],
+                "MedicalCategory",
+                source_id="medical_kg_profile",
+                file_path="medical_kg_profile",
+            ),
+        ],
+        edges=[],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    branches = score.details["hierarchy_branches"]
+    assert [branch["key"] for branch in branches["required"]] == [
+        category.key for category in categories
+    ]
+    assert [branch["key"] for branch in branches["present"]] == [
+        category.key for category in present
+    ]
+    assert [branch["key"] for branch in branches["missing"]] == [
+        category.key for category in missing
+    ]
+    assert branches["present"][0]["matched_node_ids"] == [present[0].key]
+    assert branches["present"][1]["matched_node_ids"] == ["alias-node"]
+
+
+def test_quality_artifacts_include_hierarchy_branch_details(tmp_path: Path):
+    category = TOP_LEVEL_MEDICAL_CATEGORIES[0]
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-19T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode(
+                category.label,
+                category.label,
+                "MedicalCategory",
+                source_id="medical_kg_profile",
+                file_path="medical_kg_profile",
+            )
+        ],
+        edges=[],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+    score = evaluate_snapshot_quality(snapshot)
+
+    written = write_quality_artifacts(score, tmp_path)
+
+    payload = json.loads(written["quality_score"].read_text(encoding="utf-8"))
+    assert "details" in payload
+    assert "hierarchy_branches" in payload["details"]
+    report = written["quality_report"].read_text(encoding="utf-8")
+    assert "## Hierarchy Branches" in report
+    assert category.key in report
+
+
+def test_hierarchy_branch_matched_node_ids_are_sorted():
+    category = TOP_LEVEL_MEDICAL_CATEGORIES[0]
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-19T00:00:00+08:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode(
+                "z-category-match",
+                category.label,
+                "MedicalCategory",
+                source_id="medical_kg_profile",
+                file_path="medical_kg_profile",
+            ),
+            SnapshotNode(
+                "a-category-match",
+                category.key,
+                "MedicalCategory",
+                source_id="medical_kg_profile",
+                file_path="medical_kg_profile",
+            ),
+        ],
+        edges=[],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    branches = score.details["hierarchy_branches"]
+    assert branches["present"][0]["matched_node_ids"] == [
+        "a-category-match",
+        "z-category-match",
+    ]

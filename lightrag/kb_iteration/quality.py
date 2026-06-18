@@ -44,7 +44,8 @@ def evaluate_snapshot_quality(snapshot: KGSnapshot) -> QualityScore:
         edge for edge in snapshot.edges if not _has_provenance(edge.file_path)
     ]
 
-    hierarchy = _hierarchy_metrics(snapshot)
+    hierarchy_details = _hierarchy_details(snapshot)
+    hierarchy = _hierarchy_metrics_from_details(hierarchy_details)
     disease_hub_overload_ratio = _disease_hub_overload_ratio(snapshot)
 
     metrics = {
@@ -84,6 +85,7 @@ def evaluate_snapshot_quality(snapshot: KGSnapshot) -> QualityScore:
         overall=overall,
         subscores=subscores,
         metrics=metrics,
+        details={"hierarchy_branches": hierarchy_details},
         findings=findings,
         critical_blockers=critical_blockers,
     )
@@ -124,22 +126,62 @@ def _has_provenance(value: str) -> bool:
     return any(part.strip() for part in value.split(GRAPH_FIELD_SEP))
 
 
-def _hierarchy_metrics(snapshot: KGSnapshot) -> dict[str, int]:
-    required_identifiers = _medical_category_identifiers()
+def _hierarchy_details(snapshot: KGSnapshot) -> dict[str, list[dict[str, Any]]]:
     if not _needs_medical_hierarchy(snapshot):
-        return {"required": 0, "present": 0, "missing": 0}
+        return {"required": [], "present": [], "missing": []}
 
-    present = sum(
-        1
-        for identifiers in required_identifiers.values()
-        if any(
-            node_identifier in identifiers
-            for node in snapshot.nodes
-            for node_identifier in _node_hierarchy_identifiers(node)
+    matched_by_key = _matched_hierarchy_nodes_by_key(snapshot)
+    required = [
+        _hierarchy_branch_payload(category)
+        for category in TOP_LEVEL_MEDICAL_CATEGORIES
+    ]
+    present = [
+        _hierarchy_branch_payload(
+            category, matched_node_ids=matched_by_key[category.key]
         )
-    )
-    required = len(required_identifiers)
-    return {"required": required, "present": present, "missing": required - present}
+        for category in TOP_LEVEL_MEDICAL_CATEGORIES
+        if matched_by_key[category.key]
+    ]
+    missing = [
+        _hierarchy_branch_payload(category)
+        for category in TOP_LEVEL_MEDICAL_CATEGORIES
+        if not matched_by_key[category.key]
+    ]
+    return {"required": required, "present": present, "missing": missing}
+
+
+def _hierarchy_branch_payload(
+    category: Any, matched_node_ids: list[str] | None = None
+) -> dict[str, Any]:
+    payload = {
+        "key": category.key,
+        "label": category.label,
+        "aliases": list(category.aliases),
+    }
+    if matched_node_ids is not None:
+        payload["matched_node_ids"] = sorted(matched_node_ids)
+    return payload
+
+
+def _hierarchy_metrics_from_details(
+    details: dict[str, list[dict[str, Any]]]
+) -> dict[str, int]:
+    return {
+        "required": len(details["required"]),
+        "present": len(details["present"]),
+        "missing": len(details["missing"]),
+    }
+
+
+def _matched_hierarchy_nodes_by_key(snapshot: KGSnapshot) -> dict[str, list[str]]:
+    required_identifiers = _medical_category_identifiers()
+    matched_by_key = {category.key: [] for category in TOP_LEVEL_MEDICAL_CATEGORIES}
+    for node in snapshot.nodes:
+        node_identifiers = _node_hierarchy_identifiers(node)
+        for key, identifiers in required_identifiers.items():
+            if node_identifiers & identifiers:
+                matched_by_key[key].append(node.id)
+    return matched_by_key
 
 
 def _medical_category_identifiers() -> dict[str, set[str]]:
@@ -366,6 +408,19 @@ def _quality_report(score: QualityScore) -> str:
     lines.extend(["", "## Metrics"])
     for name in sorted(score.metrics):
         lines.append(f"- {name}: {score.metrics[name]}")
+
+    hierarchy_branches = score.details.get("hierarchy_branches")
+    if hierarchy_branches:
+        lines.extend(["", "## Hierarchy Branches"])
+        for status in ("required", "present", "missing"):
+            branches = hierarchy_branches[status]
+            lines.append(f"- {status}: {len(branches)}")
+            for branch in branches:
+                line = f"  - {branch['key']} | {branch['label']}"
+                matched_node_ids = branch.get("matched_node_ids")
+                if matched_node_ids:
+                    line += f" | matched: {', '.join(matched_node_ids)}"
+                lines.append(line)
 
     lines.extend(["", "## Findings"])
     if score.findings:
