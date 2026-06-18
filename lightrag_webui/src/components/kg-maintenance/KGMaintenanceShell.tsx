@@ -5,11 +5,9 @@ import {
   BookOpenIcon,
   ClipboardCheckIcon,
   FileSearchIcon,
-  GitCompareIcon,
   HistoryIcon,
   LayoutDashboardIcon,
   ListTreeIcon,
-  NetworkIcon,
   RefreshCwIcon,
   ShieldCheckIcon
 } from 'lucide-react'
@@ -24,19 +22,15 @@ type SectionItem = {
 }
 
 const sections: SectionItem[] = [
-  { id: 'overview', label: 'Overview', group: 'Workbench', icon: LayoutDashboardIcon },
-  { id: 'graph', label: 'Medical Graph', group: 'Workbench', icon: NetworkIcon },
-  { id: 'entities', label: 'Entity Catalog', group: 'Workbench', icon: ListTreeIcon },
-  { id: 'relations', label: 'Relation Catalog', group: 'Workbench', icon: GitCompareIcon },
-  { id: 'evidence', label: 'Evidence Review', group: '审阅', icon: FileSearchIcon },
-  { id: 'quality', label: 'Quality Report', group: '审阅', icon: ShieldCheckIcon },
-  { id: 'llm-review', label: 'LLM 审阅', group: '审阅', icon: FileSearchIcon },
-  { id: 'patches', label: '候选 Patch', group: '审阅', icon: GitCompareIcon },
-  { id: 'judge', label: 'Judge 评判', group: '审阅', icon: ShieldCheckIcon },
-  { id: 'approval', label: 'Approval Queue', group: '审阅', icon: ClipboardCheckIcon },
-  { id: 'runs', label: 'Run Log', group: 'Iteration', icon: HistoryIcon },
-  { id: 'diff', label: 'Diff Review', group: 'Iteration', icon: GitCompareIcon },
-  { id: 'rules', label: 'Rule Memory', group: 'Iteration', icon: BookOpenIcon }
+  { id: 'overview', label: '审阅包概览', group: '知识库迭代', icon: LayoutDashboardIcon },
+  { id: 'stage', label: '当前阶段', group: '知识库迭代', icon: HistoryIcon },
+  { id: 'kb-summary', label: '当前 KB 摘要', group: '知识库迭代', icon: BookOpenIcon },
+  { id: 'quality', label: '质量检查', group: '质量与快照', icon: ShieldCheckIcon },
+  { id: 'snapshot', label: '快照审阅', group: '质量与快照', icon: FileSearchIcon },
+  { id: 'approval', label: 'Proposal 审批', group: '人工审阅', icon: ClipboardCheckIcon },
+  { id: 'backlog', label: '改进 backlog', group: '人工审阅', icon: ListTreeIcon },
+  { id: 'memory', label: '决策记忆', group: '人工审阅', icon: BookOpenIcon },
+  { id: 'llm-review', label: 'LLM 审阅材料', group: '辅助材料', icon: FileSearchIcon }
 ]
 
 interface KGMaintenanceShellProps {
@@ -77,9 +71,9 @@ export default function KGMaintenanceShell({
     <section className="bg-background flex h-full min-h-0 flex-col">
       <div className="border-border/70 flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-2 border-b px-4 py-2">
         <div className="min-w-0">
-          <h1 className="text-base font-semibold">KG Maintenance</h1>
+          <h1 className="text-base font-semibold">知识库迭代 Agent</h1>
           <p className="text-muted-foreground truncate text-xs">
-            {selectedWorkspace || 'No workspace selected'}
+            {selectedWorkspace || '未选择 workspace'}
           </p>
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -87,9 +81,9 @@ export default function KGMaintenanceShell({
             value={selectedWorkspace || ''}
             onChange={(event) => onWorkspaceChange(event.target.value)}
             className="border-input bg-background h-9 min-w-0 rounded-md border px-3 text-sm sm:min-w-52"
-            aria-label="Workspace"
+            aria-label="workspace"
           >
-            {workspaces.length === 0 && <option value="">No workspace</option>}
+            {workspaces.length === 0 && <option value="">未选择 workspace</option>}
             {workspaces.map((workspace) => (
               <option key={workspace} value={workspace}>
                 {workspace}
@@ -98,11 +92,11 @@ export default function KGMaintenanceShell({
           </select>
           <Button variant="outline" size="sm" onClick={onRefresh} disabled={loading}>
             <RefreshCwIcon className={cn('size-4', loading && 'animate-spin')} />
-            Refresh
+            刷新
           </Button>
           <Button size="sm" onClick={onRunReview} disabled={!selectedWorkspace || running}>
             <ShieldCheckIcon className={cn('size-4', running && 'animate-pulse')} />
-            {running ? 'Running' : 'Run Review'}
+            {running ? '运行中' : '运行审阅包'}
           </Button>
         </div>
       </div>
@@ -111,7 +105,7 @@ export default function KGMaintenanceShell({
         <div className="border-destructive/30 bg-destructive/10 text-destructive mx-4 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
           <span>{error}</span>
           <button type="button" className="underline" onClick={onRefresh}>
-            Retry / check server logs
+            重试 / 查看服务日志
           </button>
         </div>
       )}
@@ -119,8 +113,8 @@ export default function KGMaintenanceShell({
       {(running || loading) && !error && (
         <div className="border-border/70 bg-muted/30 mx-4 mt-3 rounded-md border px-3 py-2 text-sm">
           {running
-            ? 'Running KB iteration review. The package will remain pending user review.'
-            : 'Loading review artifacts...'}
+            ? '正在生成 KB 审阅包。产物会进入人工审阅，不会自动修改 KG。'
+            : '正在加载审阅包产物...'}
         </div>
       )}
 

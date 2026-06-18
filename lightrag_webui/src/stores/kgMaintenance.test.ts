@@ -2,18 +2,13 @@ import { describe, expect, test } from 'bun:test'
 import { useKGMaintenanceStore } from './kgMaintenance'
 
 describe('KG maintenance store', () => {
-  test('tracks active section, selected item, workspace, and run id', () => {
-    useKGMaintenanceStore.getState().setActiveSection('graph')
-    useKGMaintenanceStore.getState().setSelectedItem({ kind: 'node', id: 'persistent-fever' })
+  test('tracks active workflow section, workspace, and run id', () => {
+    useKGMaintenanceStore.getState().setActiveSection('snapshot')
     useKGMaintenanceStore.getState().setSelectedWorkspace('influenza_medical_v1')
-    useKGMaintenanceStore.getState().setLatestRunId('latest')
+    useKGMaintenanceStore.getState().setLatestRunId('review-run-2026-06-18')
 
-    expect(useKGMaintenanceStore.getState().activeSection).toBe('graph')
-    expect(useKGMaintenanceStore.getState().selectedItem).toEqual({
-      kind: 'node',
-      id: 'persistent-fever'
-    })
+    expect(useKGMaintenanceStore.getState().activeSection).toBe('snapshot')
     expect(useKGMaintenanceStore.getState().selectedWorkspace).toBe('influenza_medical_v1')
-    expect(useKGMaintenanceStore.getState().latestRunId).toBe('latest')
+    expect(useKGMaintenanceStore.getState().latestRunId).toBe('review-run-2026-06-18')
   })
 })

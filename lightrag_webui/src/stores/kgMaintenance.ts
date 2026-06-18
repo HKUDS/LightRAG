@@ -3,18 +3,14 @@ import { createSelectors } from '@/lib/utils'
 
 export type KGMaintenanceSection =
   | 'overview'
-  | 'graph'
-  | 'entities'
-  | 'relations'
-  | 'evidence'
+  | 'stage'
+  | 'kb-summary'
   | 'quality'
-  | 'llm-review'
-  | 'patches'
-  | 'judge'
+  | 'snapshot'
   | 'approval'
-  | 'runs'
-  | 'diff'
-  | 'rules'
+  | 'backlog'
+  | 'memory'
+  | 'llm-review'
 
 export type KGMaintenanceSelectedItem =
   | { kind: 'node'; id: string }
