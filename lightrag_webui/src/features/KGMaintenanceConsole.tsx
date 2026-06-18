@@ -34,6 +34,7 @@ import {
   SnapshotReviewPanel
 } from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import {
+  normalizeWorkspaceList,
   normalizeOptionalMarkdown,
   optionalMissingResponse,
   runWorkspaceAction,
@@ -106,11 +107,18 @@ export default function KGMaintenanceConsole() {
     setError(null)
     try {
       const data = await getKBIterationWorkspaces()
-      setWorkspaces(data.workspaces)
+      const workspaceList = normalizeWorkspaceList(data?.workspaces)
+      setWorkspaces(workspaceList)
+      if (
+        !Array.isArray(data?.workspaces) ||
+        data.workspaces.some((workspace) => typeof workspace !== 'string')
+      ) {
+        setError('KG workspace list response was malformed. Showing no workspaces.')
+      }
       if (!selectedWorkspace) {
-        const nextWorkspace = data.workspaces.includes(PREFERRED_WORKSPACE)
+        const nextWorkspace = workspaceList.includes(PREFERRED_WORKSPACE)
           ? PREFERRED_WORKSPACE
-          : data.workspaces[0] || null
+          : workspaceList[0] || null
         setSelectedWorkspace(nextWorkspace)
       }
     } catch (err) {

@@ -19,6 +19,7 @@ const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
 const { MainPanel } = await import('@/features/KGMaintenanceConsole')
 const {
   applyWorkspaceResponse,
+  normalizeWorkspaceList,
   normalizeOptionalMarkdown,
   optionalMissingResponse,
   runWorkspaceAction,
@@ -170,6 +171,29 @@ function deferred<T>() {
 }
 
 describe('KGMaintenanceShell responsive layout', () => {
+  test('renders the fallback workspace option when workspaces is empty', () => {
+    const markup = renderToStaticMarkup(
+      <KGMaintenanceShell
+        activeSection="overview"
+        onSectionChange={() => undefined}
+        workspaces={[]}
+        selectedWorkspace={null}
+        onWorkspaceChange={() => undefined}
+        onRefresh={() => undefined}
+        onRunReview={() => undefined}
+        loading={false}
+        running={false}
+        error={null}
+        inspector={<div>Inspector</div>}
+      >
+        <div>Console body</div>
+      </KGMaintenanceShell>
+    )
+
+    expect(markup).toContain('value=""')
+    expect(markup).toContain('未选择 workspace')
+  })
+
   test('allows the workspace toolbar to wrap on narrow screens', () => {
     const markup = renderToStaticMarkup(
       <KGMaintenanceShell
@@ -255,6 +279,16 @@ describe('KGMaintenanceShell responsive layout', () => {
 })
 
 describe('MainPanel workflow routing', () => {
+  test('workspace normalization preserves valid workspace arrays', () => {
+    expect(normalizeWorkspaceList(['influenza_medical_v1'])).toEqual(['influenza_medical_v1'])
+  })
+
+  test('workspace normalization collapses malformed HTML fallback responses', () => {
+    expect(normalizeWorkspaceList('<!doctype html><html><body>dev fallback</body></html>')).toEqual(
+      []
+    )
+  })
+
   test('optional response helper returns fallback for missing resources only', async () => {
     const result = await optionalMissingResponse(async () => {
       throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })

@@ -1,6 +1,9 @@
 export const normalizeOptionalMarkdown = (value: unknown): string =>
   typeof value === 'string' ? value : ''
 
+export const normalizeWorkspaceList = (value: unknown): string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : []
+
 export const shouldApplyWorkspaceResponse = (
   requestWorkspace: string,
   getCurrentWorkspace: () => string | null

@@ -62,6 +62,7 @@ export default function KGMaintenanceShell({
   children,
   inspector
 }: KGMaintenanceShellProps) {
+  const workspaceOptions = Array.isArray(workspaces) ? workspaces : []
   const grouped = sections.reduce<Record<string, SectionItem[]>>((acc, section) => {
     acc[section.group] = [...(acc[section.group] || []), section]
     return acc
@@ -83,8 +84,8 @@ export default function KGMaintenanceShell({
             className="border-input bg-background h-9 min-w-0 rounded-md border px-3 text-sm sm:min-w-52"
             aria-label="workspace"
           >
-            {workspaces.length === 0 && <option value="">未选择 workspace</option>}
-            {workspaces.map((workspace) => (
+            {workspaceOptions.length === 0 && <option value="">未选择 workspace</option>}
+            {workspaceOptions.map((workspace) => (
               <option key={workspace} value={workspace}>
                 {workspace}
               </option>
