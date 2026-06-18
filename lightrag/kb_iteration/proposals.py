@@ -15,9 +15,16 @@ MUTATION_PROPOSAL_TYPES = {
     "workspace_rebuild",
     "kg_fact_correction",
     "web_display_change",
+    "source_evidence_repair",
+    "synonym_merge_rule",
+    "relation_keyword_mapping",
 }
 
 NO_APPROVAL_PROPOSAL_TYPES = {"quality_report_note"}
+REVIEW_ONLY_PROPOSAL_TYPES = {
+    "review_context_request",
+    "llm_judge_rejection",
+}
 _ALLOWED_RISKS = {"low", "medium", "high"}
 _TYPE_PATTERN = re.compile(r"^[a-z0-9_]+$")
 _METRIC_KEY_PATTERN = re.compile(r"^[a-z0-9_.-]+$")
@@ -87,6 +94,12 @@ def validate_proposal(proposal: ImprovementProposal) -> None:
         ):
             raise ValueError("proposal expected_metric_change values must be numbers")
 
+    if not isinstance(proposal.patch_candidate, str):
+        raise ValueError("proposal patch_candidate must be a string")
+
+    if not isinstance(proposal.judge, dict):
+        raise ValueError("proposal judge must be a dict")
+
     if (
         not isinstance(proposal.confidence, int | float)
         or isinstance(proposal.confidence, bool)
@@ -104,9 +117,12 @@ def validate_proposal(proposal: ImprovementProposal) -> None:
     if (
         proposal.type not in MUTATION_PROPOSAL_TYPES
         and proposal.type not in NO_APPROVAL_PROPOSAL_TYPES
+        and proposal.type not in REVIEW_ONLY_PROPOSAL_TYPES
         and proposal.requires_approval is not True
     ):
         raise ValueError(f"unknown proposal type {proposal.type} requires approval")
+    if proposal.type in REVIEW_ONLY_PROPOSAL_TYPES and proposal.requires_approval is not True:
+        raise ValueError(f"proposal type {proposal.type} requires approval")
 
 
 def write_approval_queue(
@@ -160,7 +176,7 @@ def _render_proposals(proposals: list[ImprovementProposal], title: str) -> str:
 
 
 def _proposal_to_render_dict(proposal: ImprovementProposal) -> dict[str, object]:
-    return {
+    rendered: dict[str, object] = {
         "id": proposal.id,
         "type": proposal.type,
         "target": proposal.target,
@@ -175,6 +191,11 @@ def _proposal_to_render_dict(proposal: ImprovementProposal) -> dict[str, object]
             for key in sorted(proposal.expected_metric_change)
         },
     }
+    if proposal.patch_candidate:
+        rendered["patch_candidate"] = proposal.patch_candidate
+    if proposal.judge:
+        rendered["judge"] = proposal.judge
+    return rendered
 
 
 def _is_canonical_type(value: str) -> bool:

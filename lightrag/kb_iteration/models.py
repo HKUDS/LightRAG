@@ -90,6 +90,8 @@ class ImprovementProposal:
     risk: str = "medium"
     requires_approval: bool = True
     expected_metric_change: dict[str, int | float] = field(default_factory=dict)
+    patch_candidate: str = ""
+    judge: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

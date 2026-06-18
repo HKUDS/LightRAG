@@ -218,7 +218,127 @@ def test_improvement_proposal_exposes_required_fields():
         "risk",
         "requires_approval",
         "expected_metric_change",
+        "patch_candidate",
+        "judge",
     }
+
+
+def test_improvement_proposal_renders_patch_candidate_and_judge(tmp_path: Path):
+    proposal = ImprovementProposal(
+        id="proposal-20260618-001",
+        type="relation_keyword_mapping",
+        target="lightrag/medical_kg/ontology.py",
+        proposed_change="Map generic relation keywords to controlled relation labels.",
+        reason="Generic relation labels reduce KG readability.",
+        evidence=["edge:e1"],
+        confidence=0.82,
+        risk="medium",
+        requires_approval=True,
+        expected_metric_change={"relation_semantics": 8},
+        patch_candidate="patch_candidates/proposal-20260618-001.patch",
+        judge={
+            "decision": "needs_human",
+            "reason": "Rule change requires maintainer review.",
+        },
+    )
+
+    text = write_approval_queue([proposal], tmp_path).read_text(encoding="utf-8")
+    payload = _load_yaml_body(text)
+    rendered = payload["proposals"][0]
+
+    assert rendered["type"] == "relation_keyword_mapping"
+    assert rendered["patch_candidate"] == "patch_candidates/proposal-20260618-001.patch"
+    assert rendered["judge"]["decision"] == "needs_human"
+
+
+def test_validate_proposal_rejects_invalid_patch_candidate_type():
+    proposal = ImprovementProposal(
+        id="proposal-20260618-invalid-patch",
+        type="relation_keyword_mapping",
+        target="lightrag/medical_kg/ontology.py",
+        proposed_change="Map generic relation keywords to controlled relation labels.",
+        reason="Generic relation labels reduce KG readability.",
+        evidence=["edge:e1"],
+        confidence=0.82,
+        risk="medium",
+        requires_approval=True,
+        expected_metric_change={"relation_semantics": 8},
+        patch_candidate={"path": "patch_candidates/proposal.patch"},
+    )
+
+    with pytest.raises(ValueError, match="patch_candidate"):
+        validate_proposal(proposal)
+
+
+def test_validate_proposal_rejects_invalid_judge_type():
+    proposal = ImprovementProposal(
+        id="proposal-20260618-invalid-judge",
+        type="llm_judge_rejection",
+        target="review-context",
+        proposed_change="Record judge rejection details.",
+        reason="The judge payload is LLM-originated.",
+        evidence=["review-context:round-001"],
+        confidence=0.7,
+        risk="medium",
+        requires_approval=True,
+        expected_metric_change={},
+        judge="needs_human",
+    )
+
+    with pytest.raises(ValueError, match="judge"):
+        validate_proposal(proposal)
+
+
+def test_proposal_rendering_omits_empty_patch_candidate_and_judge(tmp_path: Path):
+    proposal = ImprovementProposal(
+        id="proposal-20260618-empty-extensions",
+        type="quality_report_note",
+        target="quality_report.md",
+        proposed_change="Record a low-risk review note.",
+        reason="This does not mutate source policy or facts.",
+        evidence=[],
+        confidence=0.6,
+        risk="low",
+        requires_approval=False,
+        expected_metric_change={},
+    )
+
+    text = write_improvement_backlog([proposal], tmp_path).read_text(encoding="utf-8")
+    payload = _load_yaml_body(text)
+    rendered = payload["proposals"][0]
+
+    assert "patch_candidate" not in rendered
+    assert "judge" not in rendered
+
+
+@pytest.mark.parametrize(
+    "proposal_type",
+    [
+        "source_evidence_repair",
+        "synonym_merge_rule",
+        "relation_keyword_mapping",
+        "review_context_request",
+        "llm_judge_rejection",
+    ],
+)
+def test_new_llm_review_proposal_types_require_approval_by_default(
+    proposal_type: str,
+):
+    proposal = ImprovementProposal(
+        id=f"proposal-20260618-{proposal_type}",
+        type=proposal_type,
+        target="review-target",
+        proposed_change="Record or prepare a review action.",
+        reason="LLM review generated a structured proposal.",
+        evidence=["review-context:round-001"],
+        confidence=0.7,
+        risk="medium",
+        requires_approval=False,
+        expected_metric_change={},
+    )
+
+    with pytest.raises(ValueError, match="requires approval"):
+        validate_proposal(proposal)
 
 
 @pytest.mark.parametrize(
