@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import KGMaintenanceShell from './KGMaintenanceShell'
+import type { KBIterationSummaryResponse } from '@/api/lightrag'
+import type { KGMaintenanceSection } from '@/stores/kgMaintenance'
 
 if (!('localStorage' in globalThis)) {
   const storage = new Map<string, string>()
@@ -12,6 +13,101 @@ if (!('localStorage' in globalThis)) {
       clear: () => storage.clear()
     }
   })
+}
+
+const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
+const { MainPanel } = await import('@/features/KGMaintenanceConsole')
+
+const summary: KBIterationSummaryResponse = {
+  workspace: 'influenza_medical_v1',
+  latestRunId: 'snapshot-1',
+  phase: 'pending_human_review',
+  counts: {
+    nodes: 1,
+    edges: 1,
+    sources: 1
+  },
+  quality: {
+    overall: 82
+  },
+  pendingApprovalCount: 1,
+  highRiskFindingCount: 0,
+  artifacts: [
+    'kb_context',
+    'quality_report',
+    'kg_snapshot',
+    'quality_score',
+    'approval_queue',
+    'improvement_backlog',
+    'accepted_changes',
+    'rejected_changes',
+    'iteration_log'
+  ].map((key) => ({
+    key,
+    contentType:
+      key === 'kg_snapshot' || key === 'quality_score' ? 'application/json' : 'text/markdown',
+    exists: true
+  }))
+}
+
+function renderMainPanel(activeSection: KGMaintenanceSection) {
+  return renderToStaticMarkup(
+    <MainPanel
+      activeSection={activeSection}
+      summary={summary}
+      quality={{
+        workspace: 'influenza_medical_v1',
+        runId: 'snapshot-1',
+        quality: {
+          overall: 82,
+          findings: [
+            {
+              severity: 'medium',
+              category: 'coverage',
+              message: 'Need more evidence',
+              evidence: [],
+              suggested_fix_type: 'manual_review',
+              requires_approval: true
+            }
+          ]
+        },
+        report: '# Quality Report'
+      }}
+      rules={{
+        workspace: 'influenza_medical_v1',
+        qualityRules: '',
+        knownIssues: '',
+        acceptedChanges: 'accepted content marker',
+        rejectedChanges: 'rejected content marker'
+      }}
+      kbContext="# 当前 KB 摘要"
+      kgSnapshot={{
+        workspace: 'influenza_medical_v1',
+        snapshot_id: 'snapshot-1',
+        nodes: [{ id: 'flu' }],
+        edges: [{ source: 'flu', target: 'fever' }]
+      }}
+      qualityScore={{ overall: 82, findings: [{ severity: 'medium' }] }}
+      approvalQueue=""
+      improvementBacklog="backlog content marker"
+      iterationLog="iteration log marker"
+      llmTrace={{
+        stop_reason: 'pending_human_review',
+        rounds: [{ round_id: 'round-1', state: 'pending_human_review' }]
+      }}
+      llmReport="# LLM Review Report"
+      llmProposals="- id: proposal-1"
+      llmJudgeReport="# Judge Report"
+      patchText="patch content marker"
+      llmRunning={false}
+      running={false}
+      loading={false}
+      onOpenSection={() => undefined}
+      onProposalDecision={() => undefined}
+      onRunLLMReview={() => undefined}
+      onLoadPatch={() => undefined}
+    />
+  )
 }
 
 describe('KGMaintenanceShell responsive layout', () => {
@@ -96,5 +192,58 @@ describe('KGMaintenanceShell responsive layout', () => {
     )
 
     expect(markup).toContain('LLM body')
+  })
+})
+
+describe('MainPanel workflow routing', () => {
+  test('overview renders the review package artifact list', () => {
+    const markup = renderMainPanel('overview')
+
+    expect(markup).toContain('审阅包概览')
+    expect(markup).toContain('kb_context.md')
+    expect(markup).toContain('quality_report.md')
+    expect(markup).toContain('snapshots/kg_snapshot.json')
+    expect(markup).toContain('snapshots/quality_score.json')
+    expect(markup).toContain('approval_queue.md')
+    expect(markup).toContain('improvement_backlog.md')
+    expect(markup).toContain('accepted_changes.md')
+    expect(markup).toContain('rejected_changes.md')
+    expect(markup).toContain('iteration_log.md')
+  })
+
+  test('kb-summary renders the current KB context artifact', () => {
+    const markup = renderMainPanel('kb-summary')
+
+    expect(markup).toContain('当前 KB 摘要')
+    expect(markup).toContain('kb_context.md')
+    expect(markup).toContain('# 当前 KB 摘要')
+  })
+
+  test('snapshot renders raw JSON without the graph canvas', () => {
+    const markup = renderMainPanel('snapshot')
+
+    expect(markup).toContain('图谱快照')
+    expect(markup).toContain('snapshots/kg_snapshot.json')
+    expect(markup).toContain('&quot;snapshot_id&quot;')
+    expect(markup).not.toContain('Medical knowledge graph hierarchy')
+    expect(markup).not.toContain('<svg')
+  })
+
+  test('memory renders accepted and rejected decision memory', () => {
+    const markup = renderMainPanel('memory')
+
+    expect(markup).toContain('已接受变更记忆')
+    expect(markup).toContain('accepted content marker')
+    expect(markup).toContain('已拒绝变更记忆')
+    expect(markup).toContain('rejected content marker')
+  })
+
+  test('llm-review renders auxiliary review materials without memory fallthrough', () => {
+    const markup = renderMainPanel('llm-review')
+
+    expect(markup).toContain('LLM 审阅材料')
+    expect(markup).toContain('pending_human_review')
+    expect(markup).toContain('# LLM Review Report')
+    expect(markup).not.toContain('accepted content marker')
   })
 })

@@ -1,56 +1,44 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   getKBIterationArtifact,
-  getKBIterationDiff,
-  getKBIterationEntityCatalog,
-  getKBIterationGraph,
   getKBIterationLLMJudgeReport,
   getKBIterationLLMReviewPatch,
   getKBIterationLLMReviewProposals,
   getKBIterationLLMReviewReport,
   getKBIterationLLMReviewTrace,
   getKBIterationQuality,
-  getKBIterationRelationCatalog,
   getKBIterationRules,
   getKBIterationSummary,
   getKBIterationWorkspaces,
   recordKBIterationProposalDecision,
   runKBIteration,
   runKBIterationLLMReview,
-  type KBIterationDiffResponse,
-  type KBIterationEntityCatalogResponse,
-  type KBIterationGraphResponse,
   type KBIterationQualityResponse,
-  type KBIterationRelationCatalogResponse,
   type KBIterationRulesResponse,
   type KBIterationSummaryResponse,
   type KBIterationProposalDecision
 } from '@/api/lightrag'
-import { EntityCatalogPanel, RelationCatalogPanel } from '@/components/kg-maintenance/CatalogPanels'
-import EvidenceInspector from '@/components/kg-maintenance/EvidenceInspector'
-import {
-  findEdgeByIdAcrossSources,
-  findNodeByIdAcrossSources
-} from '@/components/kg-maintenance/kgMaintenanceData'
 import type {
   ProposalDecisionReview,
   ProposalSummary
 } from '@/components/kg-maintenance/kgMaintenanceData'
-import KGMaintenanceOverview from '@/components/kg-maintenance/KGMaintenanceOverview'
 import KGMaintenanceShell from '@/components/kg-maintenance/KGMaintenanceShell'
+import {
+  BacklogPanel,
+  DecisionMemoryPanel,
+  IterationOverviewPanel,
+  IterationReviewAside,
+  IterationStagePanel,
+  KBSummaryPanel,
+  QualityScoreJsonPanel,
+  SnapshotReviewPanel
+} from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import {
   LLMJudgePanel,
   LLMReviewPanel,
   PatchCandidatesPanel
 } from '@/components/kg-maintenance/LLMReviewPanels'
-import MedicalHierarchyGraph from '@/components/kg-maintenance/MedicalHierarchyGraph'
-import {
-  ApprovalPanel,
-  DiffPanel,
-  QualityPanel,
-  RuleMemoryPanel,
-  RunLogPanel
-} from '@/components/kg-maintenance/QualityAndApprovalPanels'
+import { ApprovalPanel, QualityPanel } from '@/components/kg-maintenance/QualityAndApprovalPanels'
 import { errorMessage } from '@/lib/utils'
 import { useKGMaintenanceStore, type KGMaintenanceSection } from '@/stores/kgMaintenance'
 import { useSettingsStore } from '@/stores/settings'
@@ -59,6 +47,9 @@ const PREFERRED_WORKSPACE = 'influenza_medical_v1'
 
 const markdownContent = (artifact: Awaited<ReturnType<typeof getKBIterationArtifact>>) =>
   'content' in artifact ? artifact.content : ''
+
+const artifactPayload = (artifact: Awaited<ReturnType<typeof getKBIterationArtifact>>) =>
+  'payload' in artifact ? artifact.payload : null
 
 const optionalArtifactContent = async (
   loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
@@ -73,24 +64,32 @@ const optionalArtifactContent = async (
   }
 }
 
+const optionalArtifactPayload = async (
+  loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
+) => {
+  try {
+    const artifact = await loader()
+    return artifactPayload(artifact)
+  } catch {
+    return null
+  }
+}
+
 export default function KGMaintenanceConsole() {
   const currentTab = useSettingsStore.use.currentTab()
   const activeSection = useKGMaintenanceStore.use.activeSection()
-  const selectedItem = useKGMaintenanceStore.use.selectedItem()
   const selectedWorkspace = useKGMaintenanceStore.use.selectedWorkspace()
   const setActiveSection = useKGMaintenanceStore.use.setActiveSection()
-  const setSelectedItem = useKGMaintenanceStore.use.setSelectedItem()
   const setSelectedWorkspace = useKGMaintenanceStore.use.setSelectedWorkspace()
   const setLatestRunId = useKGMaintenanceStore.use.setLatestRunId()
 
   const [workspaces, setWorkspaces] = useState<string[]>([])
   const [summary, setSummary] = useState<KBIterationSummaryResponse | null>(null)
-  const [graph, setGraph] = useState<KBIterationGraphResponse | null>(null)
   const [quality, setQuality] = useState<KBIterationQualityResponse | null>(null)
-  const [entities, setEntities] = useState<KBIterationEntityCatalogResponse | null>(null)
-  const [relations, setRelations] = useState<KBIterationRelationCatalogResponse | null>(null)
-  const [diff, setDiff] = useState<KBIterationDiffResponse | null>(null)
   const [rules, setRules] = useState<KBIterationRulesResponse | null>(null)
+  const [kbContext, setKbContext] = useState('')
+  const [kgSnapshot, setKgSnapshot] = useState<Record<string, any> | null>(null)
+  const [qualityScore, setQualityScore] = useState<Record<string, any> | null>(null)
   const [approvalQueue, setApprovalQueue] = useState('')
   const [improvementBacklog, setImprovementBacklog] = useState('')
   const [iterationLog, setIterationLog] = useState('')
@@ -130,12 +129,11 @@ export default function KGMaintenanceConsole() {
     try {
       const [
         summaryPayload,
-        graphPayload,
         qualityPayload,
-        entityPayload,
-        relationPayload,
-        diffPayload,
         rulesPayload,
+        kbContextArtifact,
+        kgSnapshotArtifact,
+        qualityScoreArtifact,
         approvalArtifact,
         backlogArtifact,
         logArtifact,
@@ -145,12 +143,11 @@ export default function KGMaintenanceConsole() {
         llmJudgeReportArtifact
       ] = await Promise.all([
         getKBIterationSummary(selectedWorkspace),
-        getKBIterationGraph(selectedWorkspace),
         getKBIterationQuality(selectedWorkspace),
-        getKBIterationEntityCatalog(selectedWorkspace),
-        getKBIterationRelationCatalog(selectedWorkspace),
-        getKBIterationDiff(selectedWorkspace),
         getKBIterationRules(selectedWorkspace),
+        getKBIterationArtifact(selectedWorkspace, 'kb_context'),
+        optionalArtifactPayload(() => getKBIterationArtifact(selectedWorkspace, 'kg_snapshot')),
+        optionalArtifactPayload(() => getKBIterationArtifact(selectedWorkspace, 'quality_score')),
         getKBIterationArtifact(selectedWorkspace, 'approval_queue'),
         getKBIterationArtifact(selectedWorkspace, 'improvement_backlog'),
         getKBIterationArtifact(selectedWorkspace, 'iteration_log'),
@@ -160,12 +157,23 @@ export default function KGMaintenanceConsole() {
         optionalArtifactContent(() => getKBIterationLLMJudgeReport(selectedWorkspace))
       ])
       setSummary(summaryPayload)
-      setGraph(graphPayload)
       setQuality(qualityPayload)
-      setEntities(entityPayload)
-      setRelations(relationPayload)
-      setDiff(diffPayload)
       setRules(rulesPayload)
+      setKbContext(markdownContent(kbContextArtifact))
+      setKgSnapshot(
+        kgSnapshotArtifact &&
+          typeof kgSnapshotArtifact === 'object' &&
+          !Array.isArray(kgSnapshotArtifact)
+          ? kgSnapshotArtifact
+          : null
+      )
+      setQualityScore(
+        qualityScoreArtifact &&
+          typeof qualityScoreArtifact === 'object' &&
+          !Array.isArray(qualityScoreArtifact)
+          ? qualityScoreArtifact
+          : null
+      )
       setApprovalQueue(markdownContent(approvalArtifact))
       setImprovementBacklog(markdownContent(backlogArtifact))
       setIterationLog(markdownContent(logArtifact))
@@ -205,9 +213,8 @@ export default function KGMaintenanceConsole() {
     (workspace: string) => {
       setPatchText('')
       setSelectedWorkspace(workspace || null)
-      setSelectedItem(null)
     },
-    [setSelectedItem, setSelectedWorkspace]
+    [setSelectedWorkspace]
   )
 
   const handleRunReview = useCallback(async () => {
@@ -293,21 +300,6 @@ export default function KGMaintenanceConsole() {
     [loadWorkspaceData, selectedWorkspace]
   )
 
-  const selectedNode = useMemo(
-    () =>
-      selectedItem?.kind === 'node'
-        ? findNodeByIdAcrossSources(selectedItem.id, graph?.nodes, entities?.entities)
-        : null,
-    [entities, graph, selectedItem]
-  )
-  const selectedEdge = useMemo(
-    () =>
-      selectedItem?.kind === 'edge'
-        ? findEdgeByIdAcrossSources(selectedItem.id, graph?.edges, relations?.relations)
-        : null,
-    [graph, relations, selectedItem]
-  )
-
   return (
     <KGMaintenanceShell
       activeSection={activeSection}
@@ -320,17 +312,22 @@ export default function KGMaintenanceConsole() {
       loading={loading}
       running={running || llmRunning}
       error={error}
-      inspector={<EvidenceInspector node={selectedNode} edge={selectedEdge} />}
+      inspector={
+        <IterationReviewAside
+          phase={summary?.phase}
+          pendingApprovalCount={summary?.pendingApprovalCount}
+          highRiskFindingCount={summary?.highRiskFindingCount}
+        />
+      }
     >
       <MainPanel
         activeSection={activeSection}
         summary={summary}
-        graph={graph}
         quality={quality}
-        entities={entities}
-        relations={relations}
-        diff={diff}
         rules={rules}
+        kbContext={kbContext}
+        kgSnapshot={kgSnapshot}
+        qualityScore={qualityScore}
         approvalQueue={approvalQueue}
         improvementBacklog={improvementBacklog}
         iterationLog={iterationLog}
@@ -343,7 +340,6 @@ export default function KGMaintenanceConsole() {
         running={running}
         loading={loading}
         onOpenSection={setActiveSection}
-        onSelectItem={setSelectedItem}
         onProposalDecision={handleProposalDecision}
         onRunLLMReview={handleRunLLMReview}
         onLoadPatch={handleLoadPatch}
@@ -355,12 +351,11 @@ export default function KGMaintenanceConsole() {
 interface MainPanelProps {
   activeSection: KGMaintenanceSection
   summary: KBIterationSummaryResponse | null
-  graph: KBIterationGraphResponse | null
   quality: KBIterationQualityResponse | null
-  entities: KBIterationEntityCatalogResponse | null
-  relations: KBIterationRelationCatalogResponse | null
-  diff: KBIterationDiffResponse | null
   rules: KBIterationRulesResponse | null
+  kbContext: string
+  kgSnapshot: Record<string, any> | null
+  qualityScore: Record<string, any> | null
   approvalQueue: string
   improvementBacklog: string
   iterationLog: string
@@ -373,7 +368,6 @@ interface MainPanelProps {
   running: boolean
   loading: boolean
   onOpenSection: (section: KGMaintenanceSection) => void
-  onSelectItem: (item: { kind: 'node' | 'edge'; id: string } | null) => void
   onProposalDecision: (
     proposal: ProposalSummary,
     decision: KBIterationProposalDecision,
@@ -386,12 +380,11 @@ interface MainPanelProps {
 export function MainPanel({
   activeSection,
   summary,
-  graph,
   quality,
-  entities,
-  relations,
-  diff,
   rules,
+  kbContext,
+  kgSnapshot,
+  qualityScore,
   approvalQueue,
   improvementBacklog,
   iterationLog,
@@ -404,76 +397,74 @@ export function MainPanel({
   running,
   loading,
   onOpenSection,
-  onSelectItem,
   onProposalDecision,
   onRunLLMReview,
   onLoadPatch
 }: MainPanelProps) {
   if (activeSection === 'overview') {
     return (
-      <KGMaintenanceOverview summary={summary} loading={loading} onOpenSection={onOpenSection} />
+      <section>
+        <h2 className="sr-only">审阅包概览</h2>
+        <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
+      </section>
     )
   }
-  if (activeSection === 'graph' || activeSection === 'evidence') {
-    return <MedicalHierarchyGraph graph={graph} onSelectItem={onSelectItem} />
+  if (activeSection === 'stage') {
+    return <IterationStagePanel iterationLog={iterationLog} />
   }
-  if (activeSection === 'entities') {
-    return <EntityCatalogPanel catalog={entities} onSelect={onSelectItem} />
-  }
-  if (activeSection === 'relations') {
-    return <RelationCatalogPanel catalog={relations} onSelect={onSelectItem} />
+  if (activeSection === 'kb-summary') {
+    return <KBSummaryPanel kbContext={kbContext} />
   }
   if (activeSection === 'quality') {
-    return <QualityPanel quality={quality} />
+    return (
+      <section className="space-y-4">
+        <QualityPanel quality={quality} />
+        <QualityScoreJsonPanel qualityScore={qualityScore} />
+      </section>
+    )
+  }
+  if (activeSection === 'snapshot') {
+    return <SnapshotReviewPanel snapshot={kgSnapshot} />
   }
   if (activeSection === 'approval') {
     return (
       <ApprovalPanel
         approvalQueue={approvalQueue}
         improvementBacklog={improvementBacklog}
-        onOpenEvidence={(evidenceId) => {
-          if (evidenceId.startsWith('edge:')) {
-            onSelectItem({ kind: 'edge', id: evidenceId.slice(5) })
-          } else if (evidenceId.startsWith('node:')) {
-            onSelectItem({ kind: 'node', id: evidenceId.slice(5) })
-          }
-          onOpenSection('evidence')
-        }}
         onDecision={onProposalDecision}
       />
     )
   }
-  if (activeSection === 'runs') {
-    return <RunLogPanel runsText={iterationLog} summary={summary} />
+  if (activeSection === 'backlog') {
+    return <BacklogPanel improvementBacklog={improvementBacklog} />
   }
-  if (activeSection === 'diff') {
-    return <DiffPanel diff={diff} />
+  if (activeSection === 'memory') {
+    return (
+      <DecisionMemoryPanel
+        acceptedChanges={rules?.acceptedChanges || ''}
+        rejectedChanges={rules?.rejectedChanges || ''}
+      />
+    )
   }
   if (activeSection === 'llm-review') {
     return (
-      <LLMReviewPanel
-        trace={llmTrace}
-        report={llmReport}
-        proposals={llmProposals}
-        running={llmRunning || running}
-        onRun={onRunLLMReview}
-      />
+      <section className="space-y-4">
+        <h2 className="sr-only">LLM 审阅材料</h2>
+        <LLMReviewPanel
+          trace={llmTrace}
+          report={llmReport}
+          proposals={llmProposals}
+          running={llmRunning || running}
+          onRun={onRunLLMReview}
+        />
+        <PatchCandidatesPanel
+          proposals={llmProposals}
+          patchText={patchText}
+          onLoadPatch={onLoadPatch}
+        />
+        <LLMJudgePanel report={llmJudgeReport} />
+      </section>
     )
   }
-  if (activeSection === 'patches') {
-    return (
-      <PatchCandidatesPanel
-        proposals={llmProposals}
-        patchText={patchText}
-        onLoadPatch={onLoadPatch}
-      />
-    )
-  }
-  if (activeSection === 'judge') {
-    return <LLMJudgePanel report={llmJudgeReport} />
-  }
-  if (activeSection === 'rules') {
-    return <RuleMemoryPanel rules={rules} />
-  }
-  return <RuleMemoryPanel rules={rules} />
+  return <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
 }
