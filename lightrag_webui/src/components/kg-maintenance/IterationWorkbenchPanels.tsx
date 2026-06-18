@@ -8,7 +8,6 @@ import {
   FileTextIcon,
   GitPullRequestIcon,
   ListChecksIcon,
-  MemoryStickIcon,
   ShieldAlertIcon,
   TimerIcon,
   XCircleIcon
