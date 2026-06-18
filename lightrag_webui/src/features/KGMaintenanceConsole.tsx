@@ -45,8 +45,8 @@ import { useSettingsStore } from '@/stores/settings'
 
 const PREFERRED_WORKSPACE = 'influenza_medical_v1'
 
-const markdownContent = (artifact: Awaited<ReturnType<typeof getKBIterationArtifact>>) =>
-  'content' in artifact ? artifact.content : ''
+export const normalizeOptionalMarkdown = (value: unknown): string =>
+  typeof value === 'string' ? value : ''
 
 const artifactPayload = (artifact: Awaited<ReturnType<typeof getKBIterationArtifact>>) =>
   'payload' in artifact ? artifact.payload : null
@@ -175,7 +175,7 @@ export default function KGMaintenanceConsole() {
       setSummary(summaryPayload)
       setQuality(qualityPayload)
       setRules(rulesPayload)
-      setKbContext(markdownContent(kbContextArtifact))
+      setKbContext(normalizeOptionalMarkdown(kbContextArtifact))
       setKgSnapshot(
         kgSnapshotArtifact &&
           typeof kgSnapshotArtifact === 'object' &&
@@ -190,9 +190,9 @@ export default function KGMaintenanceConsole() {
           ? qualityScoreArtifact
           : null
       )
-      setApprovalQueue(markdownContent(approvalArtifact))
-      setImprovementBacklog(markdownContent(backlogArtifact))
-      setIterationLog(markdownContent(logArtifact))
+      setApprovalQueue(normalizeOptionalMarkdown(approvalArtifact))
+      setImprovementBacklog(normalizeOptionalMarkdown(backlogArtifact))
+      setIterationLog(normalizeOptionalMarkdown(logArtifact))
       setLlmTrace(
         typeof llmTraceArtifact === 'object' &&
           llmTraceArtifact !== null &&

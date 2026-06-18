@@ -16,7 +16,9 @@ if (!('localStorage' in globalThis)) {
 }
 
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
-const { MainPanel, optionalResponse } = await import('@/features/KGMaintenanceConsole')
+const { MainPanel, normalizeOptionalMarkdown, optionalResponse } = await import(
+  '@/features/KGMaintenanceConsole'
+)
 
 const summary: KBIterationSummaryResponse = {
   workspace: 'influenza_medical_v1',
@@ -231,6 +233,11 @@ describe('MainPanel workflow routing', () => {
     }, null)
 
     expect(result).toBeNull()
+  })
+
+  test('markdown normalization accepts pre-normalized optional strings', () => {
+    expect(normalizeOptionalMarkdown('loaded markdown')).toBe('loaded markdown')
+    expect(normalizeOptionalMarkdown(null)).toBe('')
   })
 
   test('overview renders the review package artifact list', () => {
