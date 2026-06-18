@@ -26,6 +26,7 @@ REVIEW_ONLY_PROPOSAL_TYPES = {
     "llm_judge_rejection",
 }
 _ALLOWED_RISKS = {"low", "medium", "high"}
+PROPOSAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _TYPE_PATTERN = re.compile(r"^[a-z0-9_]+$")
 _METRIC_KEY_PATTERN = re.compile(r"^[a-z0-9_.-]+$")
 _REPORT_NOTE_SAFE_PREFIXES = ("Record ", "Add note ", "Document ", "Summarize ")
@@ -61,11 +62,20 @@ _REQUIRED_STRING_FIELDS = (
 )
 
 
+def validate_proposal_id(proposal_id: str) -> None:
+    if not isinstance(proposal_id, str) or not PROPOSAL_ID_PATTERN.fullmatch(
+        proposal_id
+    ):
+        raise ValueError("proposal id must match [A-Za-z0-9_.-]+")
+
+
 def validate_proposal(proposal: ImprovementProposal) -> None:
     for field_name in _REQUIRED_STRING_FIELDS:
         value = getattr(proposal, field_name)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"proposal {field_name} must be a non-empty string")
+
+    validate_proposal_id(proposal.id)
 
     if not _is_canonical_type(proposal.type):
         raise ValueError("proposal type must be canonical lowercase snake_case")

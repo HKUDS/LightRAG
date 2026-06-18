@@ -113,6 +113,7 @@ def test_run_llm_review_loop_writes_artifacts_and_stops_for_human_review(
 def test_run_llm_review_loop_writes_trace_when_client_fails(tmp_path: Path):
     package = tmp_path / "package"
     _write_review_package(package)
+    _write_stale_llm_artifacts(package)
 
     result = run_llm_review_loop(
         workspace="demo",
@@ -129,10 +130,19 @@ def test_run_llm_review_loop_writes_trace_when_client_fails(tmp_path: Path):
     assert "boom" in round_trace["error"]
     assert round_trace["context_files"] == ["review_context/round-001-context.json"]
 
+    report_text = (package / "llm_review_report.md").read_text(encoding="utf-8")
+    proposals_text = (package / "proposals.generated.yaml").read_text(encoding="utf-8")
+    assert "stale successful review" not in report_text
+    assert "stale-success-proposal" not in proposals_text
+    assert "llm_client_error" in report_text
+    assert "boom" in report_text
+    assert "proposals: []" in proposals_text
+
 
 def test_run_llm_review_loop_marks_trace_when_llm_output_is_invalid(tmp_path: Path):
     package = tmp_path / "package"
     _write_review_package(package)
+    _write_stale_llm_artifacts(package)
 
     result = run_llm_review_loop(
         workspace="demo",
@@ -148,6 +158,14 @@ def test_run_llm_review_loop_marks_trace_when_llm_output_is_invalid(tmp_path: Pa
     assert round_trace["completed_at"]
     assert round_trace["output_token_estimate"] > 0
     assert "valid JSON" in round_trace["error"]
+
+    report_text = (package / "llm_review_report.md").read_text(encoding="utf-8")
+    proposals_text = (package / "proposals.generated.yaml").read_text(encoding="utf-8")
+    assert "stale successful review" not in report_text
+    assert "stale-success-proposal" not in proposals_text
+    assert "invalid_llm_output" in report_text
+    assert "valid JSON" in report_text
+    assert "proposals: []" in proposals_text
 
 
 def test_run_llm_review_loop_stops_when_no_proposals_are_generated(tmp_path: Path):
@@ -421,3 +439,17 @@ def _write_json(path: Path, payload: dict) -> None:
     with path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
         file.write("\n")
+
+
+def _write_stale_llm_artifacts(package: Path) -> None:
+    (package / "llm_review_report.md").write_text(
+        "# stale successful review\n\n- stale-success-proposal\n",
+        encoding="utf-8",
+    )
+    (package / "proposals.generated.yaml").write_text(
+        "# Generated Proposals\n\n"
+        "proposals:\n"
+        "- id: stale-success-proposal\n"
+        "  requires_approval: true\n",
+        encoding="utf-8",
+    )

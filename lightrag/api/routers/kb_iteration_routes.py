@@ -14,6 +14,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from lightrag.kb_iteration.proposals import validate_proposal_id
 from lightrag.kb_iteration.review_loop import (
     LLMReviewLoopConfig,
     run_llm_review_loop,
@@ -292,8 +293,7 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
         workspace: str, proposal_id: str
     ) -> dict[str, Any]:
         workspace = _validate_workspace_or_400(workspace)
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+", proposal_id):
-            raise HTTPException(status_code=400, detail="Invalid proposal id")
+        proposal_id = _validate_proposal_id_or_400(proposal_id)
         path = _safe_patch_candidate_path(args, workspace, proposal_id)
         if not path.exists() or not path.is_file():
             raise HTTPException(
@@ -475,6 +475,7 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
         request: ProposalDecisionRequest,
     ) -> dict[str, Any]:
         workspace = _validate_workspace_or_400(workspace)
+        proposal_id = _validate_proposal_id_or_400(proposal_id)
         with _exclusive_workspace_file_lock(
             _output_root(args), workspace, ".kb_iteration_decisions.lock"
         ):
@@ -494,6 +495,14 @@ def _validate_workspace_or_400(workspace: str) -> str:
         return validate_workspace(workspace)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _validate_proposal_id_or_400(proposal_id: str) -> str:
+    try:
+        validate_proposal_id(proposal_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return proposal_id
 
 
 def _output_root(args) -> Path:

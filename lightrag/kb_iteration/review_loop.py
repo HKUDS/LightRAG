@@ -33,6 +33,13 @@ class LLMReviewRunResult:
     artifact_paths: dict[str, Path] = field(default_factory=dict)
 
 
+_FAILURE_STOP_REASONS = {
+    "context_too_large",
+    "invalid_llm_output",
+    "llm_client_error",
+}
+
+
 def run_llm_review_loop(
     *,
     workspace: str,
@@ -271,6 +278,8 @@ def _finish_run(
 ) -> LLMReviewRunResult:
     trace["completed_at"] = _utc_timestamp()
     trace["stop_reason"] = stop_reason
+    if stop_reason in _FAILURE_STOP_REASONS:
+        artifact_paths.update(_write_failure_artifacts(output_dir, stop_reason, trace))
     trace_path = output_dir / "llm_review_trace.json"
     with trace_path.open("w", encoding="utf-8") as file:
         json.dump(trace, file, ensure_ascii=False, indent=2)
@@ -282,6 +291,67 @@ def _finish_run(
         proposal_ids=proposal_ids,
         artifact_paths=artifact_paths,
     )
+
+
+def _write_failure_artifacts(
+    output_dir: Path, stop_reason: str, trace: dict[str, Any]
+) -> dict[str, Path]:
+    report_path = output_dir / "llm_review_report.md"
+    proposals_path = output_dir / "proposals.generated.yaml"
+    latest_round = _latest_round_trace(trace)
+    error = str(latest_round.get("error", "")).strip()
+    state = str(latest_round.get("state", "")).strip()
+    round_id = str(latest_round.get("round_id", "")).strip()
+
+    report_lines = [
+        "# LLM Review Report",
+        "",
+        "## Summary",
+        "",
+        f"- Stop reason: {stop_reason}",
+        "- Generated proposals: 0",
+        "",
+        "## Failure",
+        "",
+    ]
+    if round_id:
+        report_lines.append(f"- Round: {round_id}")
+    if state:
+        report_lines.append(f"- State: {state}")
+    if error:
+        report_lines.append(f"- Error: {_single_line(error)}")
+    if not any(line.startswith("- ") for line in report_lines[-3:]):
+        report_lines.append("- Error: unknown")
+    report_lines.extend(
+        [
+            "",
+            "## Generated Proposals",
+            "",
+            "- none",
+            "",
+        ]
+    )
+
+    report_path.write_text("\n".join(report_lines), encoding="utf-8")
+    proposals_path.write_text(
+        "# Generated Proposals\n\nproposals: []\n",
+        encoding="utf-8",
+    )
+    return {
+        "llm_review_report": report_path,
+        "proposals_generated": proposals_path,
+    }
+
+
+def _latest_round_trace(trace: dict[str, Any]) -> dict[str, Any]:
+    rounds = trace.get("rounds", [])
+    if isinstance(rounds, list) and rounds and isinstance(rounds[-1], dict):
+        return rounds[-1]
+    return {}
+
+
+def _single_line(value: str) -> str:
+    return " ".join(value.split())
 
 
 def _system_prompt(config: LLMReviewLoopConfig, profile: str | None) -> str:

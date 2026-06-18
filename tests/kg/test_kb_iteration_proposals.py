@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from lightrag.kb_iteration.models import ImprovementProposal
+from lightrag.kb_iteration.patches import PatchCandidate, validate_patch_candidate
 from lightrag.kb_iteration.proposals import (
     validate_proposal,
     write_approval_queue,
@@ -109,6 +110,84 @@ def test_validate_proposal_rejects_unknown_no_approval_type():
 
     with pytest.raises(ValueError, match="requires approval"):
         validate_proposal(proposal)
+
+
+def test_validate_proposal_allows_route_compatible_proposal_id():
+    proposal = ImprovementProposal(
+        id="Proposal_20260618.001-A",
+        type="quality_report_note",
+        target="quality_report.md",
+        proposed_change="Record a quality observation.",
+        reason="Reviewer context should be retained.",
+        evidence=[],
+        confidence=0.4,
+        risk="low",
+        requires_approval=False,
+        expected_metric_change={},
+    )
+
+    validate_proposal(proposal)
+
+
+@pytest.mark.parametrize(
+    "proposal_id",
+    [
+        "proposal 20260618",
+        "proposal\n20260618",
+        "proposal/20260618",
+        r"proposal\20260618",
+        "../proposal",
+        "proposal:20260618",
+    ],
+)
+def test_validate_proposal_rejects_unsafe_proposal_ids(proposal_id: str):
+    proposal = ImprovementProposal(
+        id=proposal_id,
+        type="quality_report_note",
+        target="quality_report.md",
+        proposed_change="Record a quality observation.",
+        reason="Reviewer context should be retained.",
+        evidence=[],
+        confidence=0.4,
+        risk="low",
+        requires_approval=False,
+        expected_metric_change={},
+    )
+
+    with pytest.raises(ValueError, match="proposal id"):
+        validate_proposal(proposal)
+
+
+def test_validate_patch_candidate_allows_route_compatible_proposal_id():
+    validate_patch_candidate(
+        PatchCandidate(
+            proposal_id="Proposal_20260618.001-A",
+            target_path="docs/review.md",
+            diff_text="--- a/docs/review.md\n+++ b/docs/review.md\n",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "proposal_id",
+    [
+        "proposal 20260618",
+        "proposal\n20260618",
+        "proposal/20260618",
+        r"proposal\20260618",
+        "../proposal",
+        "proposal:20260618",
+    ],
+)
+def test_validate_patch_candidate_rejects_unsafe_proposal_ids(proposal_id: str):
+    with pytest.raises(ValueError, match="proposal id"):
+        validate_patch_candidate(
+            PatchCandidate(
+                proposal_id=proposal_id,
+                target_path="docs/review.md",
+                diff_text="--- a/docs/review.md\n+++ b/docs/review.md\n",
+            )
+        )
 
 
 def test_validate_proposal_rejects_ungated_report_note_targeting_workspace():

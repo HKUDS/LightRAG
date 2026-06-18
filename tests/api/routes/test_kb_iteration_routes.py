@@ -356,6 +356,21 @@ def test_proposal_decision_rejects_unknown_proposal(tmp_path: Path, monkeypatch)
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize("proposal_id", ["bad%20id", "bad%0Aid", "bad:id", "bad%5Cid"])
+def test_proposal_decision_rejects_invalid_proposal_id(
+    tmp_path: Path, monkeypatch, proposal_id: str
+):
+    client, _ = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        f"/kb-iteration/influenza_medical_v1/proposals/{proposal_id}/accept",
+        headers=HEADERS,
+        json={"reviewer": "maintainer", "reason": "No unsafe identifiers"},
+    )
+
+    assert response.status_code == 400
+
+
 def test_proposal_decision_rejects_conflicting_decision(
     tmp_path: Path, monkeypatch
 ):

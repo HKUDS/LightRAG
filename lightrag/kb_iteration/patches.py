@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+
+from .proposals import PROPOSAL_ID_PATTERN as PROPOSAL_ID_PATTERN
+from .proposals import validate_proposal_id
 
 
 ALLOWED_PATCH_TARGET_PREFIXES = (
@@ -12,7 +14,6 @@ ALLOWED_PATCH_TARGET_PREFIXES = (
     "lightrag_webui/src/components/kg-maintenance/",
 )
 DISALLOWED_PATCH_TARGETS = {".env", "uv.lock"}
-PROPOSAL_ID_PATTERN = re.compile(r"^[a-z0-9_.-]+$")
 
 
 @dataclass(frozen=True)
@@ -36,8 +37,7 @@ def _normalize_target(target_path: str) -> str:
 
 
 def validate_patch_candidate(candidate: PatchCandidate) -> None:
-    if not PROPOSAL_ID_PATTERN.fullmatch(candidate.proposal_id):
-        raise ValueError("Unsafe proposal id")
+    validate_proposal_id(candidate.proposal_id)
 
     if not candidate.diff_text.strip():
         raise ValueError("Patch diff text cannot be empty")
