@@ -107,6 +107,12 @@ print(result.quality_score.overall)
 
 The first runner appends `phase: pending_user_review` to `iteration_log.md`. That phase means the review package is ready, not that any proposed change has been generated or applied.
 
+## LLM Review Loop
+
+After deterministic artifacts exist, maintainers can run the optional LLM review loop. The loop reads the snapshot, quality score, Markdown memory, rule memory, accepted changes, and rejected changes. It builds focused context packages under `review_context/`, writes `llm_review_trace.json`, writes `llm_review_report.md`, writes `proposals.generated.yaml`, and updates the approval queue through the existing proposal validator.
+
+The LLM review loop does not apply patches, mutate KG facts, edit prompts or rules, or rebuild a workspace. LLM output is analysis and proposal material only. Mutation proposals still require approval.
+
 ## Source Grounding
 
 Treat `source_id`, `file_path`, and chunk linkage as the evidence trail for factual KG content. If evidence is missing, the correct response is to flag source repair, re-extraction, or manual review.

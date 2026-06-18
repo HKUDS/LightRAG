@@ -107,6 +107,12 @@ print(result.quality_score.overall)
 
 第一版 runner 会向 `iteration_log.md` 追加 `phase: pending_user_review`。这个阶段表示审阅包已经生成，不表示任何建议已经被生成或应用。
 
+## LLM 审阅循环
+
+确定性产物生成后，维护者可以运行可选的 LLM 审阅循环。该循环读取快照、质量评分、Markdown 记忆、规则记忆、已接受变更和已拒绝变更；随后在 `review_context/` 下生成聚焦上下文，写入 `llm_review_trace.json`、`llm_review_report.md`、`proposals.generated.yaml`，并通过现有 proposal 校验器更新审批队列。
+
+LLM 审阅循环不会应用 patch，不会修改 KG 事实，不会编辑提示词或规则，也不会重建 workspace。LLM 输出只作为分析和建议材料；所有 mutation proposal 仍然必须经过审批。
+
 ## 来源约束
 
 把 `source_id`、`file_path` 和 chunk 链接视为事实型 KG 内容的证据链。如果证据缺失，正确处理方式是标记来源修复、重新抽取或人工复核。
