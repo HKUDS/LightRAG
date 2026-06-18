@@ -66,11 +66,11 @@ The table below maps each rule of §3 to the effect it achieves and the internal
 
 ### 2.2 Processing Pipeline Overview
 
-The rules above chain into a pipeline that takes `.blocks.jsonl` as input (`fixlevel=0` mode, **each `type == "content"` line is treated as one heading-level basic block**):
+The rules above chain into a pipeline that takes `.blocks.jsonl` as input (**each `type == "content"` line is treated as one heading-level basic block**):
 
 ```text
 DOCX / PDF / PPTX / …
-  ↓  native(docx, fixlevel=0) / mineru / docling parser —— emit basic blocks by heading, no token splitting
+  ↓  native(docx) / mineru / docling parser —— emit basic blocks by heading, no token splitting
 .blocks.jsonl + sidecar (.tables.json / .equations.json / .drawings.json / .blocks.assets/)
   ↓  TableRowSplit: slice oversized tables along row boundaries and assign first/middle/last roles   → §3.2
   ↓  HeaderRecovery: budget + re-inject the repeating header into middle/last slices during the split → §3.3.3
@@ -92,7 +92,7 @@ Final chunk list
 
 The three sidecar-producing engines all carve out basic blocks by heading, each obtaining `heading` / `level` / `parent_headings`:
 
-- **native (docx, `fixlevel=0`)**: reads `styles.xml`, builds the style-inheritance chain via `<w:basedOn>` to recover the effective `<w:outlineLvl>`; walks the `document.xml` paragraphs resolving the outline level along the chain, mapping original outline levels 0–8 to internal `level` 1–9; maintains a `current_heading_stack`, clearing old headings no shallower than the current level and computing `parent_headings` on each new heading.
+- **native (docx)**: reads `styles.xml`, builds the style-inheritance chain via `<w:basedOn>` to recover the effective `<w:outlineLvl>`; walks the `document.xml` paragraphs resolving the outline level along the chain, mapping original outline levels 0–8 to internal `level` 1–9; maintains a `current_heading_stack`, clearing old headings no shallower than the current level and computing `parent_headings` on each new heading.
 - **mineru**: detects headings by an item's `text_level > 0` or `label` being `title` / `section_header`, using a heading_stack to maintain the parent chain.
 - **docling**: `label="title"` → level 1, `label="section_header"` → `item.level + 1` (default level 2), likewise maintaining the parent chain.
 
@@ -330,7 +330,7 @@ The P strategy only processes `type == "content"` lines. Each content line typic
 - `positions`: the original paragraph positions (for traceability).
 - `blockid`: a stable identifier of this content line (optional). When present, it is carried into the final chunk's `sidecar` field, letting the multimodal pipeline and document deletion trace back by source block; when absent (raw / legacy input), the output contains no `sidecar`.
 
-The parser guarantees "the body under one heading as one basic block" (native via `fixlevel=0` mode, mineru / docling via their respective IR builders), with no token-threshold splitting at parse time. Tables stay whole, inserted into `content`.
+The parser guarantees "the body under one heading as one basic block" (native via heading-driven structural splitting, mineru / docling via their respective IR builders), with no token-threshold splitting at parse time. Tables stay whole, inserted into `content`.
 
 ### 4.3 Output
 

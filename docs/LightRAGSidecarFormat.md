@@ -53,7 +53,6 @@ inputs/space1/__parsed__/<canonical filename>.parsed/
   "equation_file": true,
   "drawing_file": true,
   "asset_dir": true,
-  "split_option": { "fixlevel": 0 },
   "blocks": 39,
   "doc_id": "doc-f1bee60173d067d88595c00e7d9b0ce5",
   "parse_engine": "native",
@@ -72,7 +71,7 @@ inputs/space1/__parsed__/<canonical filename>.parsed/
 | `document_hash` | `"sha256:<hex>"` | Sidecar body fingerprint, defined as `SHA-256(merged_text)`, where `merged_text` is the concatenation of all non-empty content lines' `content` fields joined by `"\n\n"`. Used by external consumers to quickly determine whether two `.parsed/` directories share the same source (without line-by-line body comparison), and serves as a self-describing content checksum for the sidecar file. Note: the LightRAG ingestion pipeline itself does not read this field; cross-document deduplication is handled separately by `doc_status.content_hash`. |
 | `table_file` / `equation_file` / `drawing_file` | `bool` | Whether the corresponding sidecar files exist (when true, the corresponding file must exist) |
 | `asset_dir` | `bool` | Whether the `blocks.assets` asset directory exists |
-| `split_option` | `object` | Chunking parameters used during file extraction. This field is reserved for the extraction engine itself to record and use |
+| `split_option` | `object` | Optional. Free-form metadata the parsing engine records about itself (e.g. `engine_version`, engine-specific extras). Omitted entirely when the engine recorded nothing (the common native/markdown case). Chunking is NOT performed at the parse stage — it is the downstream chunker's responsibility — so this field never carries chunking parameters. |
 | `blocks` | `int` | Number of content lines (excluding meta) |
 | `doc_id` | `"doc-<md5>"` | Global document ID. Sidecar item IDs (`im-/tb-/eq-`) use the hash portion of `doc_id` with the `doc-` prefix removed, in order to shorten the placeholder tags embedded in body text. |
 | `parse_engine` | `str` | Parsing engine `native/mineru/docling/legacy` |

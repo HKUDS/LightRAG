@@ -239,7 +239,7 @@ def _stub_docx_blocks(monkeypatch, body_paragraphs: list[str]) -> None:
     the adapter still writes the canonical .blocks.jsonl + sidecars and
     persists the lightrag-format full_docs row."""
 
-    def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+    def _stub_extract(file_path, drawing_context=None, **kwargs):
         return [
             {
                 "uuid": f"para-{i}",
