@@ -6,6 +6,16 @@ export const shouldApplyWorkspaceResponse = (
   getCurrentWorkspace: () => string | null
 ): boolean => getCurrentWorkspace() === requestWorkspace
 
+export const applyWorkspaceResponse = (
+  requestWorkspace: string,
+  getCurrentWorkspace: () => string | null,
+  apply: () => void
+): boolean => {
+  if (!shouldApplyWorkspaceResponse(requestWorkspace, getCurrentWorkspace)) return false
+  apply()
+  return true
+}
+
 export const optionalMissingResponse = async <T,>(
   loader: () => Promise<T>,
   fallback: T

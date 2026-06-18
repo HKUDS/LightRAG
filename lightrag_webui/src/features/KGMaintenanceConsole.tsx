@@ -34,6 +34,7 @@ import {
   SnapshotReviewPanel
 } from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import {
+  applyWorkspaceResponse,
   normalizeOptionalMarkdown,
   optionalMissingResponse,
   shouldApplyWorkspaceResponse
@@ -231,17 +232,26 @@ export default function KGMaintenanceConsole() {
 
   const handleRunReview = useCallback(async () => {
     if (!selectedWorkspace || running || llmRunning) return
+    const requestWorkspace = selectedWorkspace
+    const getCurrentWorkspace = () => useKGMaintenanceStore.getState().selectedWorkspace
     setPatchText('')
     setRunning(true)
     setError(null)
     try {
-      const refreshedSummary = await runKBIteration(selectedWorkspace, {
+      const refreshedSummary = await runKBIteration(requestWorkspace, {
         profile: activeProfile
       })
-      setSummary(refreshedSummary)
-      await loadWorkspaceData()
+      if (
+        applyWorkspaceResponse(requestWorkspace, getCurrentWorkspace, () => {
+          setSummary(refreshedSummary)
+        })
+      ) {
+        await loadWorkspaceData()
+      }
     } catch (err) {
-      setError(errorMessage(err))
+      applyWorkspaceResponse(requestWorkspace, getCurrentWorkspace, () => {
+        setError(errorMessage(err))
+      })
     } finally {
       setRunning(false)
     }
@@ -249,11 +259,13 @@ export default function KGMaintenanceConsole() {
 
   const handleRunLLMReview = useCallback(async () => {
     if (!selectedWorkspace || running || llmRunning) return
+    const requestWorkspace = selectedWorkspace
+    const getCurrentWorkspace = () => useKGMaintenanceStore.getState().selectedWorkspace
     setLlmRunning(true)
     setError(null)
     setPatchText('')
     try {
-      await runKBIterationLLMReview(selectedWorkspace, {
+      await runKBIterationLLMReview(requestWorkspace, {
         profile: activeProfile,
         max_review_rounds: 4,
         max_focus_items_per_round: 3,
@@ -263,10 +275,16 @@ export default function KGMaintenanceConsole() {
         generate_patch_candidates: false,
         require_human_for_mutation: true
       })
-      await loadWorkspaceData()
-      setPatchText('')
+      if (shouldApplyWorkspaceResponse(requestWorkspace, getCurrentWorkspace)) {
+        await loadWorkspaceData()
+        applyWorkspaceResponse(requestWorkspace, getCurrentWorkspace, () => {
+          setPatchText('')
+        })
+      }
     } catch (err) {
-      setError(errorMessage(err))
+      applyWorkspaceResponse(requestWorkspace, getCurrentWorkspace, () => {
+        setError(errorMessage(err))
+      })
     } finally {
       setLlmRunning(false)
     }
@@ -280,10 +298,21 @@ export default function KGMaintenanceConsole() {
       setPatchText('')
       try {
         const artifact = await getKBIterationLLMReviewPatch(requestWorkspace, proposalId)
-        if (useKGMaintenanceStore.getState().selectedWorkspace !== requestWorkspace) return
-        setPatchText('content' in artifact ? artifact.content : '')
+        applyWorkspaceResponse(
+          requestWorkspace,
+          () => useKGMaintenanceStore.getState().selectedWorkspace,
+          () => {
+            setPatchText('content' in artifact ? artifact.content : '')
+          }
+        )
       } catch (err) {
-        setError(errorMessage(err))
+        applyWorkspaceResponse(
+          requestWorkspace,
+          () => useKGMaintenanceStore.getState().selectedWorkspace,
+          () => {
+            setError(errorMessage(err))
+          }
+        )
       }
     },
     [selectedWorkspace]

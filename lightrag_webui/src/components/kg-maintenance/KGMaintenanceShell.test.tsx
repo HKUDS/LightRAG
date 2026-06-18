@@ -18,6 +18,7 @@ if (!('localStorage' in globalThis)) {
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
 const { MainPanel } = await import('@/features/KGMaintenanceConsole')
 const {
+  applyWorkspaceResponse,
   normalizeOptionalMarkdown,
   optionalMissingResponse,
   shouldApplyWorkspaceResponse
@@ -279,6 +280,24 @@ describe('MainPanel workflow routing', () => {
   test('workspace response guard rejects stale workspace payloads', () => {
     expect(shouldApplyWorkspaceResponse('workspace-a', () => 'workspace-a')).toBe(true)
     expect(shouldApplyWorkspaceResponse('workspace-a', () => 'workspace-b')).toBe(false)
+  })
+
+  test('workspace response applier skips stale action results', () => {
+    let applied = ''
+
+    expect(
+      applyWorkspaceResponse('workspace-a', () => 'workspace-b', () => {
+        applied = 'stale summary'
+      })
+    ).toBe(false)
+    expect(applied).toBe('')
+
+    expect(
+      applyWorkspaceResponse('workspace-a', () => 'workspace-a', () => {
+        applied = 'fresh summary'
+      })
+    ).toBe(true)
+    expect(applied).toBe('fresh summary')
   })
 
   test('markdown normalization accepts pre-normalized optional strings', () => {
