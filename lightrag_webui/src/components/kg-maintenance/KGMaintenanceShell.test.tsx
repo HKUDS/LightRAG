@@ -19,10 +19,12 @@ const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
 const { MainPanel } = await import('@/features/KGMaintenanceConsole')
 const {
   applyWorkspaceResponse,
+  loadKGMaintenanceWorkspaceBundle,
   normalizeWorkspaceList,
   normalizeOptionalMarkdown,
   optionalMissingResponse,
   runWorkspaceAction,
+  submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse
 } = await import('./kgIterationLoadUtils')
 
@@ -335,6 +337,110 @@ describe('MainPanel workflow routing', () => {
     ).rejects.toThrow('missing artifact')
   })
 
+  test('workspace bundle rethrows missing core summary responses', async () => {
+    await expect(
+      loadKGMaintenanceWorkspaceBundle('workspace-a', {
+        getSummary: async () => {
+          throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
+        },
+        getQuality: async () => ({
+          workspace: 'workspace-a',
+          runId: 'run-1',
+          quality: { overall: 80, findings: [] },
+          report: '# quality'
+        }),
+        getRules: async () => ({
+          workspace: 'workspace-a',
+          qualityRules: '',
+          knownIssues: '',
+          acceptedChanges: '',
+          rejectedChanges: ''
+        }),
+        getArtifact: async () => ({
+          artifactKey: 'artifact',
+          contentType: 'text/markdown',
+          content: 'artifact'
+        }),
+        getTrace: async () => ({ artifactKey: 'trace', contentType: 'application/json', payload: {} }),
+        getReport: async () => ({
+          artifactKey: 'report',
+          contentType: 'text/markdown',
+          content: 'report'
+        }),
+        getProposals: async () => ({
+          artifactKey: 'proposals',
+          contentType: 'text/markdown',
+          content: 'proposals'
+        }),
+        getJudgeReport: async () => ({
+          artifactKey: 'judge',
+          contentType: 'text/markdown',
+          content: 'judge'
+        })
+      })
+    ).rejects.toThrow('404 Not Found')
+  })
+
+  test('workspace bundle keeps optional artifact fallbacks for missing files', async () => {
+    const bundle = await loadKGMaintenanceWorkspaceBundle('workspace-a', {
+      getSummary: async () => ({
+        workspace: 'workspace-a',
+        latestRunId: 'run-1',
+        phase: 'pending_human_review',
+        counts: { nodes: 1, edges: 1, sources: 1 },
+        quality: { overall: 80, findings: [] },
+        pendingApprovalCount: 0,
+        highRiskFindingCount: 0,
+        artifacts: []
+      }),
+      getQuality: async () => ({
+        workspace: 'workspace-a',
+        runId: 'run-1',
+        quality: { overall: 80, findings: [] },
+        report: '# quality'
+      }),
+      getRules: async () => ({
+        workspace: 'workspace-a',
+        qualityRules: '',
+        knownIssues: '',
+        acceptedChanges: '',
+        rejectedChanges: ''
+      }),
+      getArtifact: async (_workspace, key) => {
+        if (key === 'kb_context') {
+          throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
+        }
+        return {
+          artifactKey: key,
+          contentType: 'text/markdown',
+          content: `${key} content`
+        }
+      },
+      getTrace: async () => {
+        throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
+      },
+      getReport: async () => ({
+        artifactKey: 'report',
+        contentType: 'text/markdown',
+        content: 'report'
+      }),
+      getProposals: async () => ({
+        artifactKey: 'proposals',
+        contentType: 'text/markdown',
+        content: 'proposals'
+      }),
+      getJudgeReport: async () => ({
+        artifactKey: 'judge',
+        contentType: 'text/markdown',
+        content: 'judge'
+      })
+    })
+
+    expect(bundle.kbContextArtifact).toBe('')
+    expect(bundle.llmTraceArtifact).toBeNull()
+    expect(bundle.approvalArtifact).toBe('approval_queue content')
+  })
+
   test('workspace response guard rejects stale workspace payloads', () => {
     expect(shouldApplyWorkspaceResponse('workspace-a', () => 'workspace-a')).toBe(true)
     expect(shouldApplyWorkspaceResponse('workspace-a', () => 'workspace-b')).toBe(false)
@@ -486,6 +592,126 @@ describe('MainPanel workflow routing', () => {
     expect(sawRecheckFunction).toBe(true)
     expect(applied).toBe('')
     expect(completed).toBe(true)
+  })
+
+  test('proposal decision skips stale workspace refreshes', async () => {
+    const recordDecision = deferred<{ proposalId: string; decision: string }>()
+    let currentWorkspace = 'workspace-a'
+    let refreshCalls = 0
+    let bannerError = ''
+
+    const run = submitProposalDecisionForWorkspace({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => currentWorkspace,
+      proposal: {
+        id: 'proposal-1',
+        type: 'prompt_edit',
+        target: 'workspace_profile.json',
+        proposedChange: 'Tighten approval policy',
+        reason: 'More evidence needed',
+        evidence: [],
+        confidence: '0.8',
+        risk: 'high',
+        requiresApproval: true,
+        expectedMetricChange: 'approval_latency: -1'
+      },
+      decision: 'accept',
+      review: {
+        reason: 'Looks good',
+        impactScope: 'workspace profile only',
+        verification: 'rerun review package',
+        confirmation: ''
+      },
+      reloadWorkspaceData: async () => {
+        refreshCalls += 1
+      },
+      recordDecision: () => recordDecision.promise,
+      onError: (error) => {
+        bannerError = error instanceof Error ? error.message : String(error)
+      }
+    })
+
+    currentWorkspace = 'workspace-b'
+    recordDecision.resolve({ proposalId: 'proposal-1', decision: 'accept' })
+    await run
+
+    expect(refreshCalls).toBe(0)
+    expect(bannerError).toBe('')
+  })
+
+  test('proposal decision skips stale workspace errors', async () => {
+    const recordDecision = deferred<{ proposalId: string; decision: string }>()
+    let currentWorkspace = 'workspace-a'
+    let bannerError = ''
+
+    const run = submitProposalDecisionForWorkspace({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => currentWorkspace,
+      proposal: {
+        id: 'proposal-1',
+        type: 'prompt_edit',
+        target: 'workspace_profile.json',
+        proposedChange: 'Tighten approval policy',
+        reason: 'More evidence needed',
+        evidence: [],
+        confidence: '0.8',
+        risk: 'high',
+        requiresApproval: true,
+        expectedMetricChange: 'approval_latency: -1'
+      },
+      decision: 'reject',
+      review: {
+        reason: 'Need better evidence',
+        impactScope: 'none',
+        verification: 'keep current profile',
+        confirmation: ''
+      },
+      reloadWorkspaceData: async () => undefined,
+      recordDecision: () => recordDecision.promise,
+      onError: (error) => {
+        bannerError = error instanceof Error ? error.message : String(error)
+      }
+    })
+
+    currentWorkspace = 'workspace-b'
+    recordDecision.reject(new Error('stale failure'))
+    await run
+
+    expect(bannerError).toBe('')
+  })
+
+  test('proposal decision refreshes the current workspace after success', async () => {
+    let refreshCalls = 0
+
+    await submitProposalDecisionForWorkspace({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => 'workspace-a',
+      proposal: {
+        id: 'proposal-1',
+        type: 'prompt_edit',
+        target: 'workspace_profile.json',
+        proposedChange: 'Tighten approval policy',
+        reason: 'More evidence needed',
+        evidence: [],
+        confidence: '0.8',
+        risk: 'high',
+        requiresApproval: true,
+        expectedMetricChange: 'approval_latency: -1'
+      },
+      decision: 'defer',
+      review: {
+        reason: 'Need another pass',
+        impactScope: 'review queue only',
+        verification: 'revisit next run',
+        confirmation: ''
+      },
+      reloadWorkspaceData: async () => {
+        refreshCalls += 1
+      },
+      recordDecision: async () => ({ proposalId: 'proposal-1', decision: 'defer' })
+    })
+
+    expect(refreshCalls).toBe(1)
   })
 
   test('markdown normalization accepts pre-normalized optional strings', () => {

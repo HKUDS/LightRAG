@@ -1,3 +1,23 @@
+import {
+  getKBIterationArtifact,
+  getKBIterationLLMJudgeReport,
+  getKBIterationLLMReviewProposals,
+  getKBIterationLLMReviewReport,
+  getKBIterationLLMReviewTrace,
+  getKBIterationQuality,
+  getKBIterationRules,
+  getKBIterationSummary,
+  recordKBIterationProposalDecision,
+  type KBIterationProposalDecision,
+  type KBIterationQualityResponse,
+  type KBIterationRulesResponse,
+  type KBIterationSummaryResponse
+} from '@/api/lightrag'
+import type {
+  ProposalDecisionReview,
+  ProposalSummary
+} from '@/components/kg-maintenance/kgMaintenanceData'
+
 export const normalizeOptionalMarkdown = (value: unknown): string =>
   typeof value === 'string' ? value : ''
 
@@ -59,6 +79,157 @@ export const optionalMissingResponse = async <T,>(
     if (isMissingResourceError(error)) return fallback
     throw error
   }
+}
+
+const artifactPayload = (artifact: Awaited<ReturnType<typeof getKBIterationArtifact>>) =>
+  'payload' in artifact ? artifact.payload : null
+
+const optionalArtifactContent = async (
+  loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
+) => {
+  const artifact = await optionalMissingResponse<
+    Awaited<ReturnType<typeof getKBIterationArtifact>> | null
+  >(loader, null)
+  return artifact && 'content' in artifact ? artifact.content : ''
+}
+
+const optionalArtifactPayload = async (
+  loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
+) => {
+  const artifact = await optionalMissingResponse<
+    Awaited<ReturnType<typeof getKBIterationArtifact>> | null
+  >(loader, null)
+  return artifact ? artifactPayload(artifact) : null
+}
+
+type KGMaintenanceWorkspaceBundle = {
+  summaryPayload: KBIterationSummaryResponse
+  qualityPayload: KBIterationQualityResponse
+  rulesPayload: KBIterationRulesResponse
+  kbContextArtifact: string
+  kgSnapshotArtifact: unknown
+  qualityScoreArtifact: unknown
+  approvalArtifact: string
+  backlogArtifact: string
+  logArtifact: string
+  llmTraceArtifact: unknown
+  llmReportArtifact: string
+  llmProposalsArtifact: string
+  llmJudgeReportArtifact: string
+}
+
+type KGMaintenanceWorkspaceLoaders = {
+  getSummary: typeof getKBIterationSummary
+  getQuality: typeof getKBIterationQuality
+  getRules: typeof getKBIterationRules
+  getArtifact: typeof getKBIterationArtifact
+  getTrace: typeof getKBIterationLLMReviewTrace
+  getReport: typeof getKBIterationLLMReviewReport
+  getProposals: typeof getKBIterationLLMReviewProposals
+  getJudgeReport: typeof getKBIterationLLMJudgeReport
+}
+
+const defaultWorkspaceLoaders: KGMaintenanceWorkspaceLoaders = {
+  getSummary: getKBIterationSummary,
+  getQuality: getKBIterationQuality,
+  getRules: getKBIterationRules,
+  getArtifact: getKBIterationArtifact,
+  getTrace: getKBIterationLLMReviewTrace,
+  getReport: getKBIterationLLMReviewReport,
+  getProposals: getKBIterationLLMReviewProposals,
+  getJudgeReport: getKBIterationLLMJudgeReport
+}
+
+export async function loadKGMaintenanceWorkspaceBundle(
+  requestWorkspace: string,
+  loaders: KGMaintenanceWorkspaceLoaders = defaultWorkspaceLoaders
+): Promise<KGMaintenanceWorkspaceBundle> {
+  const [
+    summaryPayload,
+    qualityPayload,
+    rulesPayload,
+    kbContextArtifact,
+    kgSnapshotArtifact,
+    qualityScoreArtifact,
+    approvalArtifact,
+    backlogArtifact,
+    logArtifact,
+    llmTraceArtifact,
+    llmReportArtifact,
+    llmProposalsArtifact,
+    llmJudgeReportArtifact
+  ] = await Promise.all([
+    loaders.getSummary(requestWorkspace),
+    loaders.getQuality(requestWorkspace),
+    loaders.getRules(requestWorkspace),
+    optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'kb_context')),
+    optionalArtifactPayload(() => loaders.getArtifact(requestWorkspace, 'kg_snapshot')),
+    optionalArtifactPayload(() => loaders.getArtifact(requestWorkspace, 'quality_score')),
+    optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'approval_queue')),
+    optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'improvement_backlog')),
+    optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'iteration_log')),
+    optionalArtifactPayload(() => loaders.getTrace(requestWorkspace)),
+    optionalArtifactContent(() => loaders.getReport(requestWorkspace)),
+    optionalArtifactContent(() => loaders.getProposals(requestWorkspace)),
+    optionalArtifactContent(() => loaders.getJudgeReport(requestWorkspace))
+  ])
+
+  return {
+    summaryPayload,
+    qualityPayload,
+    rulesPayload,
+    kbContextArtifact,
+    kgSnapshotArtifact,
+    qualityScoreArtifact,
+    approvalArtifact,
+    backlogArtifact,
+    logArtifact,
+    llmTraceArtifact,
+    llmReportArtifact,
+    llmProposalsArtifact,
+    llmJudgeReportArtifact
+  }
+}
+
+type ProposalDecisionActionArgs = {
+  requestWorkspace: string
+  getCurrentWorkspace: () => string | null
+  proposal: ProposalSummary
+  decision: KBIterationProposalDecision
+  review: ProposalDecisionReview
+  reloadWorkspaceData: () => Promise<void>
+  recordDecision?: typeof recordKBIterationProposalDecision
+  onError?: (error: unknown) => void
+}
+
+export async function submitProposalDecisionForWorkspace({
+  requestWorkspace,
+  getCurrentWorkspace,
+  proposal,
+  decision,
+  review,
+  reloadWorkspaceData,
+  recordDecision = recordKBIterationProposalDecision,
+  onError
+}: ProposalDecisionActionArgs): Promise<void> {
+  await runWorkspaceAction({
+    requestWorkspace,
+    getCurrentWorkspace,
+    action: () =>
+      recordDecision(requestWorkspace, proposal.id, decision, {
+        reviewer: 'maintainer',
+        reason: review.reason,
+        impact_scope: review.impactScope,
+        verification: review.verification
+      }),
+    onSuccess: async (_result, shouldApply) => {
+      if (!shouldApply()) return
+      await reloadWorkspaceData()
+    },
+    onError: (error) => {
+      onError?.(error)
+    }
+  })
 }
 
 function isMissingResourceError(error: unknown): boolean {
