@@ -34,6 +34,11 @@ import {
   SnapshotReviewPanel
 } from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import {
+  normalizeOptionalMarkdown,
+  optionalMissingResponse,
+  shouldApplyWorkspaceResponse
+} from '@/components/kg-maintenance/kgIterationLoadUtils'
+import {
   LLMJudgePanel,
   LLMReviewPanel,
   PatchCandidatesPanel
@@ -45,27 +50,13 @@ import { useSettingsStore } from '@/stores/settings'
 
 const PREFERRED_WORKSPACE = 'influenza_medical_v1'
 
-export const normalizeOptionalMarkdown = (value: unknown): string =>
-  typeof value === 'string' ? value : ''
-
 const artifactPayload = (artifact: Awaited<ReturnType<typeof getKBIterationArtifact>>) =>
   'payload' in artifact ? artifact.payload : null
-
-export const optionalResponse = async <T,>(
-  loader: () => Promise<T>,
-  fallback: T
-): Promise<T> => {
-  try {
-    return await loader()
-  } catch {
-    return fallback
-  }
-}
 
 const optionalArtifactContent = async (
   loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
 ) => {
-  const artifact = await optionalResponse<
+  const artifact = await optionalMissingResponse<
     Awaited<ReturnType<typeof getKBIterationArtifact>> | null
   >(loader, null)
   return artifact && 'content' in artifact ? artifact.content : ''
@@ -74,7 +65,7 @@ const optionalArtifactContent = async (
 const optionalArtifactPayload = async (
   loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
 ) => {
-  const artifact = await optionalResponse<
+  const artifact = await optionalMissingResponse<
     Awaited<ReturnType<typeof getKBIterationArtifact>> | null
   >(loader, null)
   return artifact ? artifactPayload(artifact) : null
@@ -131,6 +122,12 @@ export default function KGMaintenanceConsole() {
     setLoading(true)
     setError(null)
     setPatchText('')
+    const requestWorkspace = selectedWorkspace
+    const isCurrentWorkspace = () =>
+      shouldApplyWorkspaceResponse(
+        requestWorkspace,
+        () => useKGMaintenanceStore.getState().selectedWorkspace
+      )
     try {
       const [
         summaryPayload,
@@ -147,31 +144,30 @@ export default function KGMaintenanceConsole() {
         llmProposalsArtifact,
         llmJudgeReportArtifact
       ] = await Promise.all([
-        optionalResponse<KBIterationSummaryResponse | null>(
-          () => getKBIterationSummary(selectedWorkspace),
+        optionalMissingResponse<KBIterationSummaryResponse | null>(
+          () => getKBIterationSummary(requestWorkspace),
           null
         ),
-        optionalResponse<KBIterationQualityResponse | null>(
-          () => getKBIterationQuality(selectedWorkspace),
+        optionalMissingResponse<KBIterationQualityResponse | null>(
+          () => getKBIterationQuality(requestWorkspace),
           null
         ),
-        optionalResponse<KBIterationRulesResponse | null>(
-          () => getKBIterationRules(selectedWorkspace),
+        optionalMissingResponse<KBIterationRulesResponse | null>(
+          () => getKBIterationRules(requestWorkspace),
           null
         ),
-        optionalArtifactContent(() => getKBIterationArtifact(selectedWorkspace, 'kb_context')),
-        optionalArtifactPayload(() => getKBIterationArtifact(selectedWorkspace, 'kg_snapshot')),
-        optionalArtifactPayload(() => getKBIterationArtifact(selectedWorkspace, 'quality_score')),
-        optionalArtifactContent(() => getKBIterationArtifact(selectedWorkspace, 'approval_queue')),
-        optionalArtifactContent(() =>
-          getKBIterationArtifact(selectedWorkspace, 'improvement_backlog')
-        ),
-        optionalArtifactContent(() => getKBIterationArtifact(selectedWorkspace, 'iteration_log')),
-        optionalArtifactPayload(() => getKBIterationLLMReviewTrace(selectedWorkspace)),
-        optionalArtifactContent(() => getKBIterationLLMReviewReport(selectedWorkspace)),
-        optionalArtifactContent(() => getKBIterationLLMReviewProposals(selectedWorkspace)),
-        optionalArtifactContent(() => getKBIterationLLMJudgeReport(selectedWorkspace))
+        optionalArtifactContent(() => getKBIterationArtifact(requestWorkspace, 'kb_context')),
+        optionalArtifactPayload(() => getKBIterationArtifact(requestWorkspace, 'kg_snapshot')),
+        optionalArtifactPayload(() => getKBIterationArtifact(requestWorkspace, 'quality_score')),
+        optionalArtifactContent(() => getKBIterationArtifact(requestWorkspace, 'approval_queue')),
+        optionalArtifactContent(() => getKBIterationArtifact(requestWorkspace, 'improvement_backlog')),
+        optionalArtifactContent(() => getKBIterationArtifact(requestWorkspace, 'iteration_log')),
+        optionalArtifactPayload(() => getKBIterationLLMReviewTrace(requestWorkspace)),
+        optionalArtifactContent(() => getKBIterationLLMReviewReport(requestWorkspace)),
+        optionalArtifactContent(() => getKBIterationLLMReviewProposals(requestWorkspace)),
+        optionalArtifactContent(() => getKBIterationLLMJudgeReport(requestWorkspace))
       ])
+      if (!isCurrentWorkspace()) return
       setSummary(summaryPayload)
       setQuality(qualityPayload)
       setRules(rulesPayload)
@@ -205,9 +201,9 @@ export default function KGMaintenanceConsole() {
       setLlmJudgeReport(typeof llmJudgeReportArtifact === 'string' ? llmJudgeReportArtifact : '')
       if (summaryPayload) setLatestRunId(summaryPayload.latestRunId)
     } catch (err) {
-      setError(errorMessage(err))
+      if (isCurrentWorkspace()) setError(errorMessage(err))
     } finally {
-      setLoading(false)
+      if (isCurrentWorkspace()) setLoading(false)
     }
   }, [currentTab, selectedWorkspace, setLatestRunId])
 

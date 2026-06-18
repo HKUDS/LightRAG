@@ -16,9 +16,12 @@ if (!('localStorage' in globalThis)) {
 }
 
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
-const { MainPanel, normalizeOptionalMarkdown, optionalResponse } = await import(
-  '@/features/KGMaintenanceConsole'
-)
+const { MainPanel } = await import('@/features/KGMaintenanceConsole')
+const {
+  normalizeOptionalMarkdown,
+  optionalMissingResponse,
+  shouldApplyWorkspaceResponse
+} = await import('./kgIterationLoadUtils')
 
 const summary: KBIterationSummaryResponse = {
   workspace: 'influenza_medical_v1',
@@ -227,12 +230,25 @@ describe('KGMaintenanceShell responsive layout', () => {
 })
 
 describe('MainPanel workflow routing', () => {
-  test('optional response helper returns fallback when a loader fails', async () => {
-    const result = await optionalResponse(async () => {
-      throw new Error('missing artifact')
+  test('optional response helper returns fallback for missing resources only', async () => {
+    const result = await optionalMissingResponse(async () => {
+      throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
     }, null)
 
     expect(result).toBeNull()
+  })
+
+  test('optional response helper rethrows unexpected core failures', async () => {
+    await expect(
+      optionalMissingResponse(async () => {
+        throw Object.assign(new Error('500 Internal Server Error'), { response: { status: 500 } })
+      }, null)
+    ).rejects.toThrow('500 Internal Server Error')
+  })
+
+  test('workspace response guard rejects stale workspace payloads', () => {
+    expect(shouldApplyWorkspaceResponse('workspace-a', () => 'workspace-a')).toBe(true)
+    expect(shouldApplyWorkspaceResponse('workspace-a', () => 'workspace-b')).toBe(false)
   })
 
   test('markdown normalization accepts pre-normalized optional strings', () => {
