@@ -308,7 +308,131 @@ def test_build_review_context_ignores_unprefixed_metric_evidence_for_edges(
         package, round_id="round-001", focus=["hierarchy_completeness"]
     )
 
-    assert [relation["id"] for relation in context["relations"]] == ["3", "e2"]
+    assert context["relations"] == []
+
+
+def test_build_review_context_hierarchy_missing_branch_skips_edge_fallback(
+    tmp_path: Path,
+):
+    package = tmp_path / "package"
+    snapshot_dir = package / "snapshots"
+    snapshot_dir.mkdir(parents=True)
+    missing_branches = [{"key": "symptom", "label": "Symptoms"}]
+    _write_json(
+        snapshot_dir / "kg_snapshot.json",
+        {
+            "nodes": [
+                {"id": "flu", "label": "Flu", "entity_type": "Disease"},
+            ],
+            "edges": [
+                {
+                    "id": "unrelated-self-edge",
+                    "source": "flu",
+                    "target": "flu",
+                    "keywords": "clinical_context",
+                }
+            ],
+        },
+    )
+    _write_json(
+        snapshot_dir / "quality_score.json",
+        {
+            "findings": [
+                {
+                    "category": "hierarchy_completeness",
+                    "message": "Medical hierarchy is missing expected branches.",
+                    "suggested_fix_type": "add_hierarchy_branch",
+                }
+            ],
+            "details": {
+                "hierarchy_branches": {
+                    "required": [],
+                    "present": [],
+                    "missing": missing_branches,
+                }
+            },
+        },
+    )
+
+    context = build_review_context(
+        package, round_id="round-001", focus=["hierarchy_missing_branch"]
+    )
+
+    assert context["hierarchy_branches"]["missing"] == missing_branches
+    assert context["relations"] == []
+
+
+def test_build_review_context_mixed_hierarchy_and_evidence_allows_edge_fallback(
+    tmp_path: Path,
+):
+    package = tmp_path / "package"
+    snapshot_dir = package / "snapshots"
+    snapshot_dir.mkdir(parents=True)
+    _write_json(
+        snapshot_dir / "kg_snapshot.json",
+        {
+            "nodes": [
+                {
+                    "id": "flu",
+                    "label": "Flu",
+                    "entity_type": "Disease",
+                    "source_id": "chunk-1",
+                    "file_path": "guide.md",
+                },
+                {
+                    "id": "fever",
+                    "label": "Fever",
+                    "entity_type": "Symptom",
+                    "source_id": "chunk-1",
+                    "file_path": "guide.md",
+                },
+            ],
+            "edges": [
+                {
+                    "id": "edge-flu-fever",
+                    "source": "flu",
+                    "target": "fever",
+                    "keywords": "clinical_manifestation",
+                    "source_id": "chunk-1",
+                    "file_path": "guide.md",
+                }
+            ],
+        },
+    )
+    _write_json(
+        snapshot_dir / "quality_score.json",
+        {
+            "findings": [
+                {
+                    "category": "hierarchy_completeness",
+                    "message": "Medical hierarchy is missing expected branches.",
+                    "suggested_fix_type": "add_hierarchy_branch",
+                },
+                {
+                    "category": "evidence_grounding",
+                    "message": "A node is missing source evidence.",
+                    "evidence": ["node:flu missing file_path"],
+                    "suggested_fix_type": "restore_evidence",
+                },
+            ]
+        },
+    )
+
+    context = build_review_context(
+        package,
+        round_id="round-001",
+        focus=["hierarchy_missing_branch", "missing_evidence"],
+    )
+
+    assert [relation["id"] for relation in context["relations"]] == [
+        "edge-flu-fever"
+    ]
+    assert {entity["id"] for entity in context["entities"]} == {"flu", "fever"}
+    assert {window["item_id"] for window in context["evidence_windows"]} == {
+        "flu",
+        "fever",
+        "edge-flu-fever",
+    }
 
 
 def test_write_review_context_writes_round_context_json(tmp_path: Path):

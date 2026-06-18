@@ -57,6 +57,7 @@ def build_review_context(
         "round_id": round_id,
         "focus": focus,
         "quality_findings": findings,
+        "hierarchy_branches": _hierarchy_branches(quality),
         "entities": selected_nodes,
         "relations": selected_edges,
         "evidence_windows": _evidence_windows(selected_nodes, selected_edges),
@@ -84,7 +85,8 @@ def _select_edges(
     focus: list[str],
     quality_findings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    normalized_focus = {_normalize_text(item) for item in focus}
+    normalized_focus = _focus_terms(focus)
+    canonical_focus = _canonical_focus(focus)
     selected_ids: set[str] = set()
     selected_edges: list[dict[str, Any]] = []
 
@@ -106,6 +108,9 @@ def _select_edges(
     if selected_edges:
         return selected_edges
 
+    if canonical_focus == {"hierarchy_missing_branch"}:
+        return []
+
     return edges[:10]
 
 
@@ -115,12 +120,7 @@ def _quality_findings_for_focus(
     if not focus:
         return findings
 
-    focus_terms = set()
-    for item in focus:
-        normalized = _normalize_text(item)
-        focus_terms.add(normalized)
-        focus_terms.update(FOCUS_ALIASES.get(normalized, set()))
-    focus_terms.update({term.replace("_", " ") for term in focus_terms})
+    focus_terms = _focus_terms(focus)
     return [
         finding
         for finding in findings
@@ -188,6 +188,33 @@ def _evidence_edge_ids(findings: list[dict[str, Any]]) -> set[str]:
     return edge_ids
 
 
+def _focus_terms(focus: list[str]) -> set[str]:
+    terms = set()
+    for item in focus:
+        normalized = _normalize_text(item)
+        terms.add(normalized)
+        for canonical, aliases in FOCUS_ALIASES.items():
+            if normalized == canonical or normalized in aliases:
+                terms.add(canonical)
+                terms.update(aliases)
+    terms.update({term.replace("_", " ") for term in terms})
+    return terms
+
+
+def _canonical_focus(focus: list[str]) -> set[str]:
+    terms = set()
+    for item in focus:
+        normalized = _normalize_text(item)
+        matched = False
+        for canonical, aliases in FOCUS_ALIASES.items():
+            if normalized == canonical or normalized in aliases:
+                terms.add(canonical)
+                matched = True
+        if not matched:
+            terms.add(normalized)
+    return terms
+
+
 def _is_generic_relation(edge: dict[str, Any]) -> bool:
     tokens = _relation_tokens(edge.get("keywords", ""))
     if not tokens:
@@ -210,6 +237,19 @@ def _read_text(path: Path) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+def _hierarchy_branches(quality: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    details = quality.get("details", {})
+    if not isinstance(details, dict):
+        details = {}
+    branches = details.get("hierarchy_branches", {})
+    if not isinstance(branches, dict):
+        branches = {}
+    return {
+        key: _dict_items(branches.get(key))
+        for key in ("required", "present", "missing")
+    }
 
 
 def _dict_items(value: Any) -> list[dict[str, Any]]:
