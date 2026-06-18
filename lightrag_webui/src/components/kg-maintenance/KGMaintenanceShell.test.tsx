@@ -27,4 +27,28 @@ describe('KGMaintenanceShell responsive layout', () => {
     expect(markup).toContain('grid-cols-1')
     expect(markup).toContain('lg:grid-cols-[220px_minmax(0,1fr)_320px]')
   })
+
+  test('renders LLM review navigation sections', () => {
+    const markup = renderToStaticMarkup(
+      <KGMaintenanceShell
+        activeSection="llm-review"
+        onSectionChange={() => undefined}
+        workspaces={['influenza_medical_v1']}
+        selectedWorkspace="influenza_medical_v1"
+        onWorkspaceChange={() => undefined}
+        onRefresh={() => undefined}
+        onRunReview={() => undefined}
+        loading={false}
+        running={false}
+        error={null}
+        inspector={<div>Inspector</div>}
+      >
+        <div>Console body</div>
+      </KGMaintenanceShell>
+    )
+
+    expect(markup).toContain('LLM 审阅')
+    expect(markup).toContain('候选 Patch')
+    expect(markup).toContain('Judge 评判')
+  })
 })
