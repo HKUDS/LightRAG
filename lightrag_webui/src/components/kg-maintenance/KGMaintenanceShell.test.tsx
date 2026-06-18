@@ -16,7 +16,7 @@ if (!('localStorage' in globalThis)) {
 }
 
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
-const { MainPanel } = await import('@/features/KGMaintenanceConsole')
+const { MainPanel, optionalResponse } = await import('@/features/KGMaintenanceConsole')
 
 const summary: KBIterationSummaryResponse = {
   workspace: 'influenza_medical_v1',
@@ -99,6 +99,35 @@ function renderMainPanel(activeSection: KGMaintenanceSection) {
       llmProposals="- id: proposal-1"
       llmJudgeReport="# Judge Report"
       patchText="patch content marker"
+      llmRunning={false}
+      running={false}
+      loading={false}
+      onOpenSection={() => undefined}
+      onProposalDecision={() => undefined}
+      onRunLLMReview={() => undefined}
+      onLoadPatch={() => undefined}
+    />
+  )
+}
+
+function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
+  return renderToStaticMarkup(
+    <MainPanel
+      activeSection={activeSection}
+      summary={null}
+      quality={null}
+      rules={null}
+      kbContext=""
+      kgSnapshot={null}
+      qualityScore={null}
+      approvalQueue=""
+      improvementBacklog=""
+      iterationLog=""
+      llmTrace={null}
+      llmReport=""
+      llmProposals=""
+      llmJudgeReport=""
+      patchText=""
       llmRunning={false}
       running={false}
       loading={false}
@@ -196,6 +225,14 @@ describe('KGMaintenanceShell responsive layout', () => {
 })
 
 describe('MainPanel workflow routing', () => {
+  test('optional response helper returns fallback when a loader fails', async () => {
+    const result = await optionalResponse(async () => {
+      throw new Error('missing artifact')
+    }, null)
+
+    expect(result).toBeNull()
+  })
+
   test('overview renders the review package artifact list', () => {
     const markup = renderMainPanel('overview')
 
@@ -235,6 +272,15 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('snapshots/quality_score.json')
   })
 
+  test('quality tolerates missing quality responses and score artifacts', () => {
+    const markup = renderEmptyMainPanel('quality')
+
+    expect(markup).toContain('Quality Report')
+    expect(markup).toContain('质量分数')
+    expect(markup).toContain('snapshots/quality_score.json')
+    expect(markup).toContain('暂无质量分数')
+  })
+
   test('snapshot renders raw JSON without the graph canvas', () => {
     const markup = renderMainPanel('snapshot')
 
@@ -243,6 +289,14 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('&quot;snapshot_id&quot;')
     expect(markup).not.toContain('Medical knowledge graph hierarchy')
     expect(markup).not.toContain('<svg')
+  })
+
+  test('snapshot tolerates a missing snapshot artifact', () => {
+    const markup = renderEmptyMainPanel('snapshot')
+
+    expect(markup).toContain('图谱快照')
+    expect(markup).toContain('snapshots/kg_snapshot.json')
+    expect(markup).toContain('暂无图谱快照')
   })
 
   test('approval renders proposal review content', () => {

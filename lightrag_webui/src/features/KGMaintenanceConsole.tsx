@@ -51,28 +51,33 @@ const markdownContent = (artifact: Awaited<ReturnType<typeof getKBIterationArtif
 const artifactPayload = (artifact: Awaited<ReturnType<typeof getKBIterationArtifact>>) =>
   'payload' in artifact ? artifact.payload : null
 
+export const optionalResponse = async <T,>(
+  loader: () => Promise<T>,
+  fallback: T
+): Promise<T> => {
+  try {
+    return await loader()
+  } catch {
+    return fallback
+  }
+}
+
 const optionalArtifactContent = async (
   loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
 ) => {
-  try {
-    const artifact = await loader()
-    if ('content' in artifact) return artifact.content
-    if ('payload' in artifact) return artifact.payload
-    return ''
-  } catch {
-    return ''
-  }
+  const artifact = await optionalResponse<
+    Awaited<ReturnType<typeof getKBIterationArtifact>> | null
+  >(loader, null)
+  return artifact && 'content' in artifact ? artifact.content : ''
 }
 
 const optionalArtifactPayload = async (
   loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
 ) => {
-  try {
-    const artifact = await loader()
-    return artifactPayload(artifact)
-  } catch {
-    return null
-  }
+  const artifact = await optionalResponse<
+    Awaited<ReturnType<typeof getKBIterationArtifact>> | null
+  >(loader, null)
+  return artifact ? artifactPayload(artifact) : null
 }
 
 export default function KGMaintenanceConsole() {
@@ -142,16 +147,27 @@ export default function KGMaintenanceConsole() {
         llmProposalsArtifact,
         llmJudgeReportArtifact
       ] = await Promise.all([
-        getKBIterationSummary(selectedWorkspace),
-        getKBIterationQuality(selectedWorkspace),
-        getKBIterationRules(selectedWorkspace),
-        getKBIterationArtifact(selectedWorkspace, 'kb_context'),
+        optionalResponse<KBIterationSummaryResponse | null>(
+          () => getKBIterationSummary(selectedWorkspace),
+          null
+        ),
+        optionalResponse<KBIterationQualityResponse | null>(
+          () => getKBIterationQuality(selectedWorkspace),
+          null
+        ),
+        optionalResponse<KBIterationRulesResponse | null>(
+          () => getKBIterationRules(selectedWorkspace),
+          null
+        ),
+        optionalArtifactContent(() => getKBIterationArtifact(selectedWorkspace, 'kb_context')),
         optionalArtifactPayload(() => getKBIterationArtifact(selectedWorkspace, 'kg_snapshot')),
         optionalArtifactPayload(() => getKBIterationArtifact(selectedWorkspace, 'quality_score')),
-        getKBIterationArtifact(selectedWorkspace, 'approval_queue'),
-        getKBIterationArtifact(selectedWorkspace, 'improvement_backlog'),
-        getKBIterationArtifact(selectedWorkspace, 'iteration_log'),
-        optionalArtifactContent(() => getKBIterationLLMReviewTrace(selectedWorkspace)),
+        optionalArtifactContent(() => getKBIterationArtifact(selectedWorkspace, 'approval_queue')),
+        optionalArtifactContent(() =>
+          getKBIterationArtifact(selectedWorkspace, 'improvement_backlog')
+        ),
+        optionalArtifactContent(() => getKBIterationArtifact(selectedWorkspace, 'iteration_log')),
+        optionalArtifactPayload(() => getKBIterationLLMReviewTrace(selectedWorkspace)),
         optionalArtifactContent(() => getKBIterationLLMReviewReport(selectedWorkspace)),
         optionalArtifactContent(() => getKBIterationLLMReviewProposals(selectedWorkspace)),
         optionalArtifactContent(() => getKBIterationLLMJudgeReport(selectedWorkspace))
@@ -187,7 +203,7 @@ export default function KGMaintenanceConsole() {
       setLlmReport(typeof llmReportArtifact === 'string' ? llmReportArtifact : '')
       setLlmProposals(typeof llmProposalsArtifact === 'string' ? llmProposalsArtifact : '')
       setLlmJudgeReport(typeof llmJudgeReportArtifact === 'string' ? llmJudgeReportArtifact : '')
-      setLatestRunId(summaryPayload.latestRunId)
+      if (summaryPayload) setLatestRunId(summaryPayload.latestRunId)
     } catch (err) {
       setError(errorMessage(err))
     } finally {
