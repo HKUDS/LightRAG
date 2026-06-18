@@ -14,6 +14,10 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from lightrag.kb_iteration.review_loop import (
+    LLMReviewLoopConfig,
+    run_llm_review_loop,
+)
 from lightrag.kb_iteration.runner import PENDING_REVIEW_PHASE, run_iteration
 from lightrag.utils import validate_workspace
 
@@ -46,6 +50,10 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
     "diff_report": ("diff_report.md", "text/markdown"),
     "quality_rules": ("quality_rules.md", "text/markdown"),
     "known_issues": ("known_issues.md", "text/markdown"),
+    "llm_review_trace": ("llm_review_trace.json", "application/json"),
+    "llm_review_report": ("llm_review_report.md", "text/markdown"),
+    "llm_judge_report": ("llm_judge_report.md", "text/markdown"),
+    "proposals_generated": ("proposals.generated.yaml", "text/markdown"),
 }
 
 DECISION_FILES = {
@@ -66,6 +74,28 @@ class ProposalDecisionRequest(BaseModel):
 
 class RunIterationRequest(BaseModel):
     profile: Optional[str] = Field(default=None, max_length=200)
+
+
+class RunLLMReviewRequest(BaseModel):
+    profile: Optional[str] = Field(default=None, max_length=200)
+    mode: Literal["loop"] = "loop"
+    max_review_rounds: int = Field(default=4, ge=1, le=10)
+    max_focus_items_per_round: int = Field(default=3, ge=1, le=10)
+    max_context_tokens_per_round: int = Field(default=12000, ge=1000, le=100000)
+    allow_llm_judge: bool = True
+    allow_llm_auto_accept: bool = False
+    allow_low_risk_auto_reject: bool = True
+    generate_patch_candidates: bool = False
+    require_human_for_mutation: bool = True
+
+
+class _UnavailableLLMReviewClient:
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        raise RuntimeError("LLM review client is not configured")
+
+
+def _default_llm_review_client(rag):
+    return _UnavailableLLMReviewClient()
 
 
 def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
@@ -130,6 +160,152 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
             lock.release()
 
         return _build_summary(args, workspace)
+
+    @router.post("/{workspace}/llm-review/runs", dependencies=[Depends(combined_auth)])
+    async def create_llm_review_run(
+        workspace: str, request: RunLLMReviewRequest | None = None
+    ) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        request = request or RunLLMReviewRequest()
+        package_dir = _workspace_dir(args, workspace)
+        if not package_dir.is_dir():
+            raise HTTPException(
+                status_code=404, detail="KB iteration workspace package not found"
+            )
+        run_lock = _run_lock_for_workspace(workspace)
+        llm_review_lock = _run_lock_for_workspace(f"{workspace}:llm-review")
+        acquired_locks: list[Lock] = []
+        try:
+            if not run_lock.acquire(blocking=False):
+                raise HTTPException(
+                    status_code=409, detail="KB iteration run is already in progress"
+                )
+            acquired_locks.append(run_lock)
+            if not llm_review_lock.acquire(blocking=False):
+                raise HTTPException(
+                    status_code=409,
+                    detail="KB LLM review run is already in progress",
+                )
+            acquired_locks.append(llm_review_lock)
+            with _exclusive_workspace_file_lock(_output_root(args), workspace):
+                with _exclusive_workspace_file_lock(
+                    _output_root(args), workspace, ".kb_iteration_llm_review.lock"
+                ):
+                    client = _default_llm_review_client(rag)
+                    if isinstance(client, _UnavailableLLMReviewClient):
+                        raise RuntimeError("LLM review client is not configured")
+                    result = await asyncio.to_thread(
+                        run_llm_review_loop,
+                        workspace=workspace,
+                        package_dir=package_dir,
+                        client=client,
+                        config=LLMReviewLoopConfig(
+                            max_review_rounds=request.max_review_rounds,
+                            max_focus_items_per_round=(
+                                request.max_focus_items_per_round
+                            ),
+                            max_context_tokens_per_round=(
+                                request.max_context_tokens_per_round
+                            ),
+                            allow_llm_judge=request.allow_llm_judge,
+                            allow_llm_auto_accept=request.allow_llm_auto_accept,
+                            allow_low_risk_auto_reject=(
+                                request.allow_low_risk_auto_reject
+                            ),
+                            generate_patch_candidates=(
+                                request.generate_patch_candidates
+                            ),
+                            require_human_for_mutation=(
+                                request.require_human_for_mutation
+                            ),
+                        ),
+                        profile=request.profile,
+                    )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            for acquired_lock in reversed(acquired_locks):
+                acquired_lock.release()
+
+        return {
+            "workspace": workspace,
+            "stopReason": result.stop_reason,
+            "proposalIds": result.proposal_ids,
+        }
+
+    @router.get("/{workspace}/llm-review/trace", dependencies=[Depends(combined_auth)])
+    async def get_llm_review_trace(workspace: str) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        return _read_artifact(args, workspace, "llm_review_trace")
+
+    @router.get("/{workspace}/llm-review/report", dependencies=[Depends(combined_auth)])
+    async def get_llm_review_report(workspace: str) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        return _read_artifact(args, workspace, "llm_review_report")
+
+    @router.get(
+        "/{workspace}/llm-review/proposals", dependencies=[Depends(combined_auth)]
+    )
+    async def get_llm_review_proposals(workspace: str) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        return _read_artifact(args, workspace, "proposals_generated")
+
+    @router.get(
+        "/{workspace}/llm-review/judge-report",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_llm_review_judge_report(workspace: str) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        return _read_artifact(args, workspace, "llm_judge_report")
+
+    @router.get(
+        "/{workspace}/llm-review/context/{round_id}",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_llm_review_context(
+        workspace: str, round_id: str
+    ) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        if not re.fullmatch(r"round-\d{3}", round_id):
+            raise HTTPException(status_code=400, detail="Invalid LLM review round id")
+        path = _safe_workspace_path(
+            args, workspace, Path("review_context") / f"{round_id}-context.json"
+        )
+        if not path.exists() or not path.is_file():
+            raise HTTPException(status_code=404, detail="LLM review context not found")
+        return {
+            "workspace": workspace,
+            "roundId": round_id,
+            "contentType": "application/json",
+            "payload": _load_json(path),
+        }
+
+    @router.get(
+        "/{workspace}/llm-review/patches/{proposal_id}",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_llm_review_patch(
+        workspace: str, proposal_id: str
+    ) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", proposal_id):
+            raise HTTPException(status_code=400, detail="Invalid proposal id")
+        path = _safe_patch_candidate_path(args, workspace, proposal_id)
+        if not path.exists() or not path.is_file():
+            raise HTTPException(
+                status_code=404, detail="LLM review patch candidate not found"
+            )
+        return {
+            "artifactKey": f"patch_candidates/{proposal_id}.patch",
+            "workspace": workspace,
+            "proposalId": proposal_id,
+            "contentType": "text/x-diff",
+            "content": path.read_text(encoding="utf-8"),
+        }
 
     @router.get("/{workspace}/runs/{run_id}", dependencies=[Depends(combined_auth)])
     async def get_run(workspace: str, run_id: str) -> dict[str, Any]:
@@ -338,17 +514,34 @@ def _workspace_dir(args, workspace: str) -> Path:
     return _output_root(args) / workspace
 
 
-def _safe_artifact_path(args, workspace: str, artifact_key: str) -> tuple[Path, str]:
-    if artifact_key not in ARTIFACTS:
-        raise HTTPException(status_code=400, detail="Unknown KB iteration artifact")
-
-    relative_path, content_type = ARTIFACTS[artifact_key]
+def _safe_workspace_path(args, workspace: str, relative_path: Path) -> Path:
     base_dir = _workspace_dir(args, workspace).resolve()
     path = (base_dir / relative_path).resolve()
     try:
         path.relative_to(base_dir)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Unsafe artifact path") from exc
+    return path
+
+
+def _safe_patch_candidate_path(args, workspace: str, proposal_id: str) -> Path:
+    patch_dir = (_workspace_dir(args, workspace) / "patch_candidates").resolve()
+    path = (patch_dir / f"{proposal_id}.patch").resolve()
+    try:
+        path.relative_to(patch_dir)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="Unsafe patch candidate path"
+        ) from exc
+    return path
+
+
+def _safe_artifact_path(args, workspace: str, artifact_key: str) -> tuple[Path, str]:
+    if artifact_key not in ARTIFACTS:
+        raise HTTPException(status_code=400, detail="Unknown KB iteration artifact")
+
+    relative_path, content_type = ARTIFACTS[artifact_key]
+    path = _safe_workspace_path(args, workspace, Path(relative_path))
     return path, content_type
 
 
@@ -716,8 +909,10 @@ def _exclusive_workspace_file_lock(
     package_dir.mkdir(parents=True, exist_ok=True)
     lock_path = package_dir / lock_name
     fd: int | None = None
+    created_lock = False
     try:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        created_lock = True
         with os.fdopen(fd, "w", encoding="utf-8") as file:
             fd = None
             file.write(
@@ -739,7 +934,8 @@ def _exclusive_workspace_file_lock(
     finally:
         if fd is not None:
             os.close(fd)
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
+        if created_lock:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass

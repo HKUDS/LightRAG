@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi import FastAPI
+import pytest
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -429,6 +430,31 @@ def test_run_trigger_rejects_when_workspace_file_lock_is_held(
     assert response.status_code == 409
 
 
+def test_workspace_file_lock_failed_acquire_preserves_existing_lock(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.routers import kb_iteration_routes
+
+    _, fixture = _client(tmp_path, monkeypatch)
+    lock_path = fixture.package / ".kb_iteration_run.lock"
+    with kb_iteration_routes._exclusive_workspace_file_lock(
+        fixture.output_root, fixture.workspace
+    ):
+        assert lock_path.exists()
+
+        with pytest.raises(HTTPException) as exc_info:
+            with kb_iteration_routes._exclusive_workspace_file_lock(
+                fixture.output_root, fixture.workspace
+            ):
+                pass
+
+        assert exc_info.value.status_code == 409
+        assert lock_path.exists()
+
+    assert not lock_path.exists()
+
+
 def test_run_trigger_uses_validated_roots(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     from lightrag.api.routers import kb_iteration_routes
@@ -474,3 +500,285 @@ def test_run_trigger_uses_validated_roots(tmp_path: Path, monkeypatch):
             "profile": "clinical_guideline_zh",
         }
     ]
+
+
+def test_llm_review_artifact_routes_read_whitelisted_outputs(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+    _write_text(fixture.package / "llm_review_report.md", "# LLM Review\n")
+    _write_json(
+        fixture.package / "llm_review_trace.json",
+        {"stop_reason": "pending_human_review"},
+    )
+    _write_text(
+        fixture.package / "proposals.generated.yaml",
+        "# Generated\nproposals: []\n",
+    )
+    _write_text(fixture.package / "llm_judge_report.md", "# Judge\n")
+    _write_json(
+        fixture.package / "review_context" / "round-001-context.json",
+        {"focus": ["generic_relation"]},
+    )
+    _write_text(
+        fixture.package / "patch_candidates" / "proposal-1.patch",
+        "--- a/x\n+++ b/x\n",
+    )
+
+    report = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/report",
+        headers=HEADERS,
+    )
+    trace = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/trace",
+        headers=HEADERS,
+    )
+    context = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/context/round-001",
+        headers=HEADERS,
+    )
+    proposals = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/proposals",
+        headers=HEADERS,
+    )
+    judge_report = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/judge-report",
+        headers=HEADERS,
+    )
+    patch = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/patches/proposal-1",
+        headers=HEADERS,
+    )
+
+    assert report.status_code == 200
+    assert report.json()["content"] == "# LLM Review\n"
+    assert trace.status_code == 200
+    assert trace.json()["payload"]["stop_reason"] == "pending_human_review"
+    assert context.status_code == 200
+    assert context.json()["payload"]["focus"] == ["generic_relation"]
+    assert proposals.status_code == 200
+    assert proposals.json()["content"] == "# Generated\nproposals: []\n"
+    assert judge_report.status_code == 200
+    assert judge_report.json()["content"] == "# Judge\n"
+    assert patch.status_code == 200
+    assert patch.json()["artifactKey"] == "patch_candidates/proposal-1.patch"
+    assert patch.json()["contentType"] == "text/x-diff"
+    assert "--- a/x" in patch.json()["content"]
+
+
+def test_llm_review_context_rejects_invalid_round_id(tmp_path: Path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/context/latest",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 400
+
+
+def test_llm_review_patch_route_rejects_invalid_proposal_id(
+    tmp_path: Path, monkeypatch
+):
+    client, _ = _client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/patches/bad$id",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 400
+
+
+def test_llm_review_patch_route_reads_only_patch_candidates(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+    _write_text(fixture.package / "proposal-outside.patch", "outside\n")
+
+    outside_only = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/patches/proposal-outside",
+        headers=HEADERS,
+    )
+
+    assert outside_only.status_code == 404
+
+    _write_text(
+        fixture.package / "patch_candidates" / "proposal-outside.patch",
+        "inside\n",
+    )
+    inside = client.get(
+        "/kb-iteration/influenza_medical_v1/llm-review/patches/proposal-outside",
+        headers=HEADERS,
+    )
+
+    assert inside.status_code == 200
+    assert inside.json()["content"] == "inside\n"
+
+
+def test_llm_review_patch_candidate_paths_are_confined_to_patch_dir(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.routers import kb_iteration_routes
+
+    fixture = _create_artifact_package(tmp_path)
+    args = SimpleNamespace(
+        workspace=fixture.workspace,
+        working_dir=str(fixture.storage_root),
+        input_dir=str(fixture.input_root),
+        kb_iteration_output_dir=str(fixture.output_root),
+    )
+
+    valid_path = kb_iteration_routes._safe_patch_candidate_path(
+        args, fixture.workspace, "proposal-1"
+    )
+    assert valid_path == (
+        fixture.package / "patch_candidates" / "proposal-1.patch"
+    ).resolve()
+
+    with pytest.raises(HTTPException) as exc_info:
+        kb_iteration_routes._safe_patch_candidate_path(
+            args, fixture.workspace, "../outside"
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+def test_llm_review_run_default_unavailable_client_returns_503(
+    tmp_path: Path, monkeypatch
+):
+    client, _ = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/llm-review/runs",
+        headers=HEADERS,
+        json={"profile": "clinical_guideline_zh"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "LLM review client is not configured"
+
+
+def test_llm_review_run_missing_workspace_does_not_create_phantom_package(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+    missing_workspace = "unreviewed_workspace"
+
+    response = client.post(
+        f"/kb-iteration/{missing_workspace}/llm-review/runs",
+        headers=HEADERS,
+        json={"profile": "clinical_guideline_zh"},
+    )
+
+    assert not (fixture.output_root / missing_workspace).exists()
+    assert response.status_code == 404
+
+    workspaces_response = client.get("/kb-iteration/workspaces", headers=HEADERS)
+
+    assert workspaces_response.status_code == 200
+    assert workspaces_response.json()["workspaces"] == ["influenza_medical_v1"]
+
+
+def test_llm_review_run_rejects_when_deterministic_file_lock_is_held(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.routers import kb_iteration_routes
+
+    client, fixture = _client(tmp_path, monkeypatch)
+    calls = []
+
+    class FakeClient:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            return "{}"
+
+    def fake_run_llm_review_loop(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            output_dir=fixture.package,
+            stop_reason="should_not_run",
+            proposal_ids=[],
+            artifact_paths={},
+        )
+
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "run_llm_review_loop",
+        fake_run_llm_review_loop,
+    )
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda rag: FakeClient(),
+    )
+
+    with kb_iteration_routes._exclusive_workspace_file_lock(
+        fixture.output_root, fixture.workspace
+    ):
+        response = client.post(
+            "/kb-iteration/influenza_medical_v1/llm-review/runs",
+            headers=HEADERS,
+            json={"profile": "clinical_guideline_zh"},
+        )
+
+    assert response.status_code == 409
+    assert calls == []
+
+
+def test_llm_review_run_uses_lock_and_validated_paths(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.routers import kb_iteration_routes
+
+    client, fixture = _client(tmp_path, monkeypatch)
+    calls = []
+
+    class FakeClient:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            return json.dumps(
+                {
+                    "confirmed_issues": [],
+                    "hypotheses": [],
+                    "missing_evidence": [],
+                    "out_of_scope": [],
+                    "proposals": [],
+                }
+            )
+
+    def fake_run_llm_review_loop(**kwargs):
+        calls.append(kwargs)
+        _write_json(
+            fixture.package / "llm_review_trace.json",
+            {"stop_reason": "all_proposals_invalid"},
+        )
+        _write_text(fixture.package / "llm_review_report.md", "# Review\n")
+        _write_text(fixture.package / "proposals.generated.yaml", "proposals: []\n")
+        return SimpleNamespace(
+            output_dir=fixture.package,
+            stop_reason="all_proposals_invalid",
+            proposal_ids=[],
+            artifact_paths={},
+        )
+
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "run_llm_review_loop",
+        fake_run_llm_review_loop,
+    )
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda rag: FakeClient(),
+    )
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/llm-review/runs",
+        headers=HEADERS,
+        json={"profile": "clinical_guideline_zh", "max_review_rounds": 1},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["stopReason"] == "all_proposals_invalid"
+    assert calls[0]["workspace"] == "influenza_medical_v1"
+    assert calls[0]["package_dir"] == fixture.package
