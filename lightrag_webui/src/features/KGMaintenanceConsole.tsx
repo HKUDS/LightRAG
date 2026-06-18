@@ -34,9 +34,9 @@ import {
   SnapshotReviewPanel
 } from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import {
-  applyWorkspaceResponse,
   normalizeOptionalMarkdown,
   optionalMissingResponse,
+  runWorkspaceAction,
   shouldApplyWorkspaceResponse
 } from '@/components/kg-maintenance/kgIterationLoadUtils'
 import {
@@ -237,24 +237,24 @@ export default function KGMaintenanceConsole() {
     setPatchText('')
     setRunning(true)
     setError(null)
-    try {
-      const refreshedSummary = await runKBIteration(requestWorkspace, {
-        profile: activeProfile
-      })
-      if (
-        applyWorkspaceResponse(requestWorkspace, getCurrentWorkspace, () => {
-          setSummary(refreshedSummary)
-        })
-      ) {
+    await runWorkspaceAction({
+      requestWorkspace,
+      getCurrentWorkspace,
+      action: () =>
+        runKBIteration(requestWorkspace, {
+          profile: activeProfile
+        }),
+      onSuccess: async (refreshedSummary) => {
+        setSummary(refreshedSummary)
         await loadWorkspaceData()
-      }
-    } catch (err) {
-      applyWorkspaceResponse(requestWorkspace, getCurrentWorkspace, () => {
+      },
+      onError: (err) => {
         setError(errorMessage(err))
-      })
-    } finally {
-      setRunning(false)
-    }
+      },
+      onComplete: () => {
+        setRunning(false)
+      }
+    })
   }, [activeProfile, llmRunning, loadWorkspaceData, running, selectedWorkspace])
 
   const handleRunLLMReview = useCallback(async () => {
@@ -264,56 +264,51 @@ export default function KGMaintenanceConsole() {
     setLlmRunning(true)
     setError(null)
     setPatchText('')
-    try {
-      await runKBIterationLLMReview(requestWorkspace, {
-        profile: activeProfile,
-        max_review_rounds: 4,
-        max_focus_items_per_round: 3,
-        allow_llm_judge: true,
-        allow_llm_auto_accept: false,
-        allow_low_risk_auto_reject: true,
-        generate_patch_candidates: false,
-        require_human_for_mutation: true
-      })
-      if (shouldApplyWorkspaceResponse(requestWorkspace, getCurrentWorkspace)) {
+    await runWorkspaceAction({
+      requestWorkspace,
+      getCurrentWorkspace,
+      action: () =>
+        runKBIterationLLMReview(requestWorkspace, {
+          profile: activeProfile,
+          max_review_rounds: 4,
+          max_focus_items_per_round: 3,
+          allow_llm_judge: true,
+          allow_llm_auto_accept: false,
+          allow_low_risk_auto_reject: true,
+          generate_patch_candidates: false,
+          require_human_for_mutation: true
+        }),
+      onSuccess: async () => {
         await loadWorkspaceData()
-        applyWorkspaceResponse(requestWorkspace, getCurrentWorkspace, () => {
-          setPatchText('')
-        })
-      }
-    } catch (err) {
-      applyWorkspaceResponse(requestWorkspace, getCurrentWorkspace, () => {
+        setPatchText('')
+      },
+      onError: (err) => {
         setError(errorMessage(err))
-      })
-    } finally {
-      setLlmRunning(false)
-    }
+      },
+      onComplete: () => {
+        setLlmRunning(false)
+      }
+    })
   }, [activeProfile, llmRunning, loadWorkspaceData, running, selectedWorkspace])
 
   const handleLoadPatch = useCallback(
     async (proposalId: string) => {
       if (!selectedWorkspace) return
       const requestWorkspace = selectedWorkspace
+      const getCurrentWorkspace = () => useKGMaintenanceStore.getState().selectedWorkspace
       setError(null)
       setPatchText('')
-      try {
-        const artifact = await getKBIterationLLMReviewPatch(requestWorkspace, proposalId)
-        applyWorkspaceResponse(
-          requestWorkspace,
-          () => useKGMaintenanceStore.getState().selectedWorkspace,
-          () => {
-            setPatchText('content' in artifact ? artifact.content : '')
-          }
-        )
-      } catch (err) {
-        applyWorkspaceResponse(
-          requestWorkspace,
-          () => useKGMaintenanceStore.getState().selectedWorkspace,
-          () => {
-            setError(errorMessage(err))
-          }
-        )
-      }
+      await runWorkspaceAction({
+        requestWorkspace,
+        getCurrentWorkspace,
+        action: () => getKBIterationLLMReviewPatch(requestWorkspace, proposalId),
+        onSuccess: (artifact) => {
+          setPatchText('content' in artifact ? artifact.content : '')
+        },
+        onError: (err) => {
+          setError(errorMessage(err))
+        }
+      })
     },
     [selectedWorkspace]
   )

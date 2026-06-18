@@ -16,6 +16,35 @@ export const applyWorkspaceResponse = (
   return true
 }
 
+export const runWorkspaceAction = async <T,>({
+  requestWorkspace,
+  getCurrentWorkspace,
+  action,
+  onSuccess,
+  onError,
+  onComplete
+}: {
+  requestWorkspace: string
+  getCurrentWorkspace: () => string | null
+  action: () => Promise<T>
+  onSuccess?: (value: T) => void | Promise<void>
+  onError?: (error: unknown) => void | Promise<void>
+  onComplete?: () => void
+}): Promise<void> => {
+  try {
+    const value = await action()
+    if (shouldApplyWorkspaceResponse(requestWorkspace, getCurrentWorkspace)) {
+      await onSuccess?.(value)
+    }
+  } catch (error) {
+    if (shouldApplyWorkspaceResponse(requestWorkspace, getCurrentWorkspace)) {
+      await onError?.(error)
+    }
+  } finally {
+    onComplete?.()
+  }
+}
+
 export const optionalMissingResponse = async <T,>(
   loader: () => Promise<T>,
   fallback: T

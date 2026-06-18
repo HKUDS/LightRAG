@@ -21,6 +21,7 @@ const {
   applyWorkspaceResponse,
   normalizeOptionalMarkdown,
   optionalMissingResponse,
+  runWorkspaceAction,
   shouldApplyWorkspaceResponse
 } = await import('./kgIterationLoadUtils')
 
@@ -143,6 +144,16 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       onLoadPatch={() => undefined}
     />
   )
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+  return { promise, resolve, reject }
 }
 
 describe('KGMaintenanceShell responsive layout', () => {
@@ -298,6 +309,101 @@ describe('MainPanel workflow routing', () => {
       })
     ).toBe(true)
     expect(applied).toBe('fresh summary')
+  })
+
+  test('workspace action skips stale success but still completes', async () => {
+    const action = deferred<string>()
+    let currentWorkspace = 'workspace-a'
+    let applied = ''
+    let completed = false
+
+    const run = runWorkspaceAction({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => currentWorkspace,
+      action: () => action.promise,
+      onSuccess: (value) => {
+        applied = value
+      },
+      onComplete: () => {
+        completed = true
+      }
+    })
+
+    currentWorkspace = 'workspace-b'
+    action.resolve('stale summary')
+    await run
+
+    expect(applied).toBe('')
+    expect(completed).toBe(true)
+  })
+
+  test('workspace action skips stale errors but still completes', async () => {
+    const action = deferred<string>()
+    let currentWorkspace = 'workspace-a'
+    let error = ''
+    let completed = false
+
+    const run = runWorkspaceAction({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => currentWorkspace,
+      action: () => action.promise,
+      onError: (err) => {
+        error = err instanceof Error ? err.message : String(err)
+      },
+      onComplete: () => {
+        completed = true
+      }
+    })
+
+    currentWorkspace = 'workspace-b'
+    action.reject(new Error('stale failure'))
+    await run
+
+    expect(error).toBe('')
+    expect(completed).toBe(true)
+  })
+
+  test('workspace action applies current success and error callbacks', async () => {
+    const success = deferred<string>()
+    let applied = ''
+    let completedSuccess = false
+
+    const runSuccess = runWorkspaceAction({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => 'workspace-a',
+      action: () => success.promise,
+      onSuccess: (value) => {
+        applied = value
+      },
+      onComplete: () => {
+        completedSuccess = true
+      }
+    })
+    success.resolve('fresh summary')
+    await runSuccess
+
+    expect(applied).toBe('fresh summary')
+    expect(completedSuccess).toBe(true)
+
+    const failure = deferred<string>()
+    let error = ''
+    let completedFailure = false
+    const runFailure = runWorkspaceAction({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => 'workspace-a',
+      action: () => failure.promise,
+      onError: (err) => {
+        error = err instanceof Error ? err.message : String(err)
+      },
+      onComplete: () => {
+        completedFailure = true
+      }
+    })
+    failure.reject(new Error('fresh failure'))
+    await runFailure
+
+    expect(error).toBe('fresh failure')
+    expect(completedFailure).toBe(true)
   })
 
   test('markdown normalization accepts pre-normalized optional strings', () => {
