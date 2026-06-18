@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  MEDICAL_REVIEW_CONFIRMATION,
   canSubmitProposalDecision,
   findEdgeByIdAcrossSources,
   findNodeByIdAcrossSources,
@@ -34,7 +35,7 @@ describe('KG maintenance proposal decision safety', () => {
         reason: 'Evidence checked',
         impactScope: 'Hierarchy rules',
         verification: 'Re-run quality report',
-        confirmation: '该操作会改变知识库行为或重建结果。请确认已检查来源证据、影响范围和回滚方式。'
+        confirmation: MEDICAL_REVIEW_CONFIRMATION
       })
     ).toBe(true)
   })

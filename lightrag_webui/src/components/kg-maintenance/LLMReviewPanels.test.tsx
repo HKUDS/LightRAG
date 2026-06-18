@@ -24,9 +24,12 @@ describe('LLM review panels', () => {
       />
     )
 
-    expect(markup).toContain('LLM 审阅')
+    expect(markup).toContain('LLM 审阅材料')
+    expect(markup).toContain('辅助材料，不会自动修改 KG')
+    expect(markup).toContain('停止原因')
     expect(markup).toContain('pending_human_review')
     expect(markup).toContain('generic_relation')
+    expect(markup).toContain('生成的 proposal')
     expect(markup).toContain('# LLM Review Report')
   })
 
@@ -40,6 +43,8 @@ describe('LLM review panels', () => {
     )
 
     expect(markup).toContain('候选 Patch')
+    expect(markup).toContain('已选择 Patch')
+    expect(markup).toContain('proposal 来源')
     expect(markup).toContain('--- a/file')
     expect(markup).toContain('p1')
   })
@@ -50,6 +55,7 @@ describe('LLM review panels', () => {
     )
 
     expect(markup).toContain('Judge 评判')
+    expect(markup).toContain('人工复核状态')
     expect(markup).toContain('needs_human')
   })
 })

@@ -36,23 +36,26 @@ export function LLMReviewPanel({
 }: LLMReviewPanelProps) {
   const stopReason = typeof trace?.stop_reason === 'string' ? trace.stop_reason : ''
   const rounds = Array.isArray(trace?.rounds) ? (trace.rounds as TraceRound[]) : []
+  const subtitle = stopReason
+    ? `停止原因：${stopReason}。辅助材料，不会自动修改 KG。`
+    : '尚未生成 LLM 审阅 trace。辅助材料，不会自动修改 KG。'
 
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <PanelHeader
           icon={<BrainCircuitIcon className="size-4 text-sky-500" />}
-          title="LLM 审阅"
-          subtitle={stopReason ? `停止原因：${stopReason}` : '尚未生成 LLM 审阅 trace'}
+          title="LLM 审阅材料"
+          subtitle={subtitle}
         />
         <Button variant="outline" size="sm" disabled={running} onClick={onRun}>
           <BrainCircuitIcon className="size-4" />
-          {running ? '运行中' : '运行审阅'}
+          {running ? '运行中' : '运行 LLM 审阅'}
         </Button>
       </div>
 
       <div className="border-border/70 bg-muted/20 rounded-lg border p-3 text-sm">
-        <span className="text-muted-foreground mr-2">Trace stop reason</span>
+        <span className="text-muted-foreground mr-2">停止原因</span>
         <span className="font-medium">{stopReason || '暂无 stop_reason'}</span>
       </div>
 
@@ -70,12 +73,8 @@ export function LLMReviewPanel({
                   <span className="bg-muted rounded-md px-2 py-1 text-xs">{round.state}</span>
                 ) : null}
               </div>
-              <RoundField label="Focus" values={round.focus} emptyText="暂无 focus 项" />
-              <RoundField
-                label="Proposal IDs"
-                values={round.proposal_ids}
-                emptyText="暂无 proposal id"
-              />
+              <RoundField label="关注项" values={round.focus} emptyText="暂无关注项。" />
+              <RoundField label="proposal ID" values={round.proposal_ids} emptyText="暂无 proposal ID。" />
             </article>
           ))
         ) : (
@@ -83,8 +82,8 @@ export function LLMReviewPanel({
         )}
       </div>
 
-      <ArtifactBlock title="LLM Review Report" content={report} emptyText="暂无审阅报告。" />
-      <ArtifactBlock title="Generated Proposals" content={proposals} emptyText="暂无候选 proposal。" />
+      <ArtifactBlock title="LLM 审阅报告" content={report} emptyText="暂无审阅报告。" />
+      <ArtifactBlock title="生成的 proposal" content={proposals} emptyText="暂无候选 proposal。" />
     </section>
   )
 }
@@ -101,11 +100,11 @@ export function PatchCandidatesPanel({
       <PanelHeader
         icon={<FileDiffIcon className="size-4 text-emerald-500" />}
         title="候选 Patch"
-        subtitle="从候选 proposal 加载并检查 patch"
+        subtitle="从 proposal 加载 Patch 候选，仅供人工检查，不会自动应用。"
       />
 
       <div className="space-y-2">
-        <h3 className="text-sm font-medium">Proposal IDs</h3>
+        <h3 className="text-sm font-medium">proposal ID</h3>
         {proposalIds.length ? (
           <div className="flex flex-wrap gap-2">
             {proposalIds.map((proposalId) => (
@@ -120,12 +119,12 @@ export function PatchCandidatesPanel({
             ))}
           </div>
         ) : (
-          <EmptyBlock>暂无可加载的 proposal id。</EmptyBlock>
+          <EmptyBlock>暂无可加载的 proposal ID。</EmptyBlock>
         )}
       </div>
 
-      <ArtifactBlock title="Selected Patch" content={patchText} emptyText="尚未选择候选 patch。" />
-      <ArtifactBlock title="Proposal Source" content={proposals} emptyText="暂无候选 proposal。" />
+      <ArtifactBlock title="已选择 Patch" content={patchText} emptyText="尚未选择候选 Patch。" />
+      <ArtifactBlock title="proposal 来源" content={proposals} emptyText="暂无候选 proposal。" />
     </section>
   )
 }
@@ -138,7 +137,7 @@ export function LLMJudgePanel({ report }: LLMJudgePanelProps) {
         title="Judge 评判"
         subtitle="LLM judge 报告与人工复核状态"
       />
-      <ArtifactBlock title="Judge Report" content={report} emptyText="暂无 judge 评判报告。" />
+      <ArtifactBlock title="Judge 报告" content={report} emptyText="暂无 Judge 评判报告。" />
     </section>
   )
 }

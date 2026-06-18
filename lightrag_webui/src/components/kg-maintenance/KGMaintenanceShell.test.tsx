@@ -95,7 +95,20 @@ function renderMainPanel(activeSection: KGMaintenanceSection) {
         edges: [{ source: 'flu', target: 'fever' }]
       }}
       qualityScore={{ overall: 82, findings: [{ severity: 'medium' }] }}
-      approvalQueue="# 待审批 proposal\n\n- id: proposal-1\n  type: add_edge"
+      approvalQueue={`# 待审批 proposal
+
+- id: proposal-1
+  type: prompt_edit
+  target: workspace_profile.json
+  proposed_change: 调整 workspace 审阅 profile
+  reason: 需要更精确的 proposal 审批策略
+  evidence:
+  - rule:r1
+  confidence: 0.80
+  risk: high
+  requires_approval: true
+  expected_metric_change:
+    approval_latency: -1`}
       improvementBacklog="backlog content marker"
       iterationLog="iteration log marker"
       llmTrace={{
@@ -488,7 +501,7 @@ describe('MainPanel workflow routing', () => {
   test('quality tolerates missing quality responses and score artifacts', () => {
     const markup = renderEmptyMainPanel('quality')
 
-    expect(markup).toContain('Quality Report')
+    expect(markup).toContain('质量报告')
     expect(markup).toContain('质量分数')
     expect(markup).toContain('snapshots/quality_score.json')
     expect(markup).toContain('暂无质量分数')
@@ -516,6 +529,13 @@ describe('MainPanel workflow routing', () => {
     const markup = renderMainPanel('approval')
 
     expect(markup).toContain('待审批 proposal')
+    expect(markup).toContain('1 个需要人工审批')
+    expect(markup).toContain('审批理由')
+    expect(markup).toContain('影响范围')
+    expect(markup).toContain('验证 / 回滚说明')
+    expect(markup).toContain('接受')
+    expect(markup).toContain('拒绝')
+    expect(markup).toContain('延后')
     expect(markup).toContain('proposal-1')
   })
 

@@ -46,45 +46,47 @@ interface RunLogPanelProps {
   summary: KBIterationSummaryResponse | null
 }
 
+const DECISION_LABELS: Record<KBIterationProposalDecision, string> = {
+  accept: '接受',
+  reject: '拒绝',
+  defer: '延后'
+}
+
 export function QualityPanel({ quality }: QualityPanelProps) {
   const [severityFilter, setSeverityFilter] = useState('all')
   const [query, setQuery] = useState('')
   const findings = useMemo(() => {
     const source = quality?.quality.findings || []
     return source.filter((finding) => {
-      const matchesSeverity =
-        severityFilter === 'all' || finding.severity === severityFilter
+      const matchesSeverity = severityFilter === 'all' || finding.severity === severityFilter
       const haystack =
         `${finding.severity} ${finding.category} ${finding.message} ${finding.suggested_fix_type}`.toLowerCase()
       return matchesSeverity && haystack.includes(query.trim().toLowerCase())
     })
   }, [quality, query, severityFilter])
 
-  if (!quality) return <EmptyPanel title="Quality Report" />
+  if (!quality) return <EmptyPanel title="质量报告" />
 
   return (
     <section className="space-y-4">
-      <PanelHeader
-        title="Quality Report"
-        subtitle={`Overall score ${quality.quality.overall ?? 0}/100`}
-      />
+      <PanelHeader title="质量报告" subtitle={`总分 ${quality.quality.overall ?? 0}/100`} />
       <div className="flex flex-wrap gap-2">
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           className="border-input bg-background h-9 min-w-56 rounded-md border px-3 text-sm"
-          placeholder="Search findings"
+          placeholder="搜索质量发现"
         />
         <select
           value={severityFilter}
           onChange={(event) => setSeverityFilter(event.target.value)}
           className="border-input bg-background h-9 rounded-md border px-3 text-sm"
         >
-          <option value="all">All severities</option>
-          <option value="critical">Critical</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
+          <option value="all">全部严重级别</option>
+          <option value="critical">严重</option>
+          <option value="high">高</option>
+          <option value="medium">中</option>
+          <option value="low">低</option>
         </select>
       </div>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -97,7 +99,7 @@ export function QualityPanel({ quality }: QualityPanelProps) {
       </div>
       {quality.quality.critical_blockers?.length ? (
         <div className="border-destructive/40 bg-destructive/10 rounded-lg border p-3">
-          <div className="text-sm font-semibold">Critical Blockers</div>
+          <div className="text-sm font-semibold">阻塞问题</div>
           <ul className="mt-2 space-y-1 text-sm">
             {quality.quality.critical_blockers.map((blocker) => (
               <li key={blocker}>{blocker}</li>
@@ -120,12 +122,12 @@ export function QualityPanel({ quality }: QualityPanelProps) {
               </span>
             </div>
             <div className="text-muted-foreground mt-2 text-xs">
-              Evidence: {finding.evidence.join(', ') || 'Missing'}
+              证据: {finding.evidence.join(', ') || '缺失'}
             </div>
           </article>
         ))}
       </div>
-      <MarkdownArtifact title="Quality Markdown" content={quality.report} />
+      <MarkdownArtifact title="quality_report.md" content={quality.report} />
     </section>
   )
 }
@@ -141,16 +143,17 @@ export function ApprovalPanel({
   const [impactScopes, setImpactScopes] = useState<Record<string, string>>({})
   const [verifications, setVerifications] = useState<Record<string, string>>({})
   const [confirmations, setConfirmations] = useState<Record<string, string>>({})
+
   return (
     <section className="space-y-4">
       <PanelHeader
-        title="Approval Queue"
-        subtitle={`${countApprovalRequired(proposals)} approval-gated proposals`}
+        title="待审批 proposal"
+        subtitle={`${countApprovalRequired(proposals)} 个需要人工审批`}
       />
       <div className="space-y-2">
         {proposals.length === 0 ? (
           <div className="border-border/70 bg-muted/20 rounded-lg border p-4 text-sm">
-            No proposal is waiting for review.
+            暂无待审批 proposal。
           </div>
         ) : (
           proposals.map((proposal) => (
@@ -159,21 +162,21 @@ export function ApprovalPanel({
                 <div>
                   <div className="text-sm font-semibold">{proposal.id}</div>
                   <div className="text-muted-foreground mt-1 text-xs">
-                    {proposal.type || 'unknown'} / {proposal.target || 'No target'}
+                    {proposal.type || '未知类型'} / {proposal.target || '未指定目标'}
                   </div>
                 </div>
                 <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                  {proposal.risk || 'risk unknown'}
+                  {proposal.risk || '风险未知'}
                 </span>
               </div>
               <div className="mt-3 grid gap-2 text-sm">
-                <ProposalField label="Proposed change" value={proposal.proposedChange} />
-                <ProposalField label="Reason" value={proposal.reason} />
+                <ProposalField label="建议变更" value={proposal.proposedChange} />
+                <ProposalField label="原因" value={proposal.reason} />
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <ProposalField label="Confidence" value={proposal.confidence || 'Not stated'} />
+                  <ProposalField label="置信度" value={proposal.confidence || '未说明'} />
                   <ProposalField
-                    label="Expected metric change"
-                    value={proposal.expectedMetricChange || 'Not stated'}
+                    label="预期指标变化"
+                    value={proposal.expectedMetricChange || '未说明'}
                   />
                 </div>
               </div>
@@ -197,7 +200,7 @@ export function ApprovalPanel({
                     setReasons((draft) => ({ ...draft, [proposal.id]: event.target.value }))
                   }
                   className="border-input bg-background min-h-20 rounded-md border px-3 py-2 text-sm"
-                  placeholder="Review reason"
+                  placeholder="审批理由"
                 />
                 <textarea
                   value={impactScopes[proposal.id] || ''}
@@ -208,7 +211,7 @@ export function ApprovalPanel({
                     }))
                   }
                   className="border-input bg-background min-h-16 rounded-md border px-3 py-2 text-sm"
-                  placeholder="Impact scope"
+                  placeholder="影响范围"
                 />
                 <textarea
                   value={verifications[proposal.id] || ''}
@@ -219,7 +222,7 @@ export function ApprovalPanel({
                     }))
                   }
                   className="border-input bg-background min-h-16 rounded-md border px-3 py-2 text-sm"
-                  placeholder="Verification / rollback notes"
+                  placeholder="验证 / 回滚说明"
                 />
                 {proposalNeedsConfirmation(proposal) && (
                   <div className="border-amber-300 bg-amber-50 text-amber-950 rounded-md border p-3 text-sm dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
@@ -233,7 +236,7 @@ export function ApprovalPanel({
                         }))
                       }
                       className="border-input bg-background mt-2 h-9 w-full rounded-md border px-3 text-sm"
-                      placeholder={`Type: ${MEDICAL_REVIEW_CONFIRMATION}`}
+                      placeholder={MEDICAL_REVIEW_CONFIRMATION}
                     />
                   </div>
                 )}
@@ -258,8 +261,8 @@ export function ApprovalPanel({
           ))
         )}
       </div>
-      <MarkdownArtifact title="Approval Queue Markdown" content={approvalQueue} />
-      <MarkdownArtifact title="Improvement Backlog Markdown" content={improvementBacklog} />
+      <MarkdownArtifact title="approval_queue.md" content={approvalQueue} />
+      <MarkdownArtifact title="improvement_backlog.md" content={improvementBacklog} />
     </section>
   )
 }
@@ -293,7 +296,7 @@ function DecisionButton({
       disabled={!onDecision || !canSubmitProposalDecision(proposal, review)}
       onClick={() => void onDecision?.(proposal, decision, review)}
     >
-      {decision}
+      {DECISION_LABELS[decision]}
     </Button>
   )
 }
@@ -302,42 +305,42 @@ function ProposalField({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md bg-muted/30 p-2">
       <div className="text-muted-foreground text-xs">{label}</div>
-      <div className="mt-1 whitespace-pre-wrap break-words text-sm">{value || 'Not stated'}</div>
+      <div className="mt-1 whitespace-pre-wrap break-words text-sm">{value || '未说明'}</div>
     </div>
   )
 }
 
 export function DiffPanel({ diff }: DiffPanelProps) {
-  if (!diff) return <EmptyPanel title="Diff Review" />
+  if (!diff) return <EmptyPanel title="Diff 审阅" />
   const flags = diff.summary?.dangerous_regression_flags || []
   return (
     <section className="space-y-4">
-      <PanelHeader title="Diff Review" subtitle="Snapshot regression comparison" />
+      <PanelHeader title="Diff 审阅" subtitle="快照回归对比" />
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <DiffMetric label="Added Nodes" value={diff.summary?.added_nodes?.length || 0} />
-        <DiffMetric label="Removed Nodes" value={diff.summary?.removed_nodes?.length || 0} />
-        <DiffMetric label="Added Relations" value={diff.summary?.added_edge_pairs?.length || 0} />
-        <DiffMetric label="Removed Relations" value={diff.summary?.removed_edge_pairs?.length || 0} />
+        <DiffMetric label="新增节点" value={diff.summary?.added_nodes?.length || 0} />
+        <DiffMetric label="移除节点" value={diff.summary?.removed_nodes?.length || 0} />
+        <DiffMetric label="新增关系" value={diff.summary?.added_edge_pairs?.length || 0} />
+        <DiffMetric label="移除关系" value={diff.summary?.removed_edge_pairs?.length || 0} />
       </div>
       {flags.length ? (
         <div className="border-destructive/40 bg-destructive/10 rounded-lg border p-3 text-sm">
           {flags.join(', ')}
         </div>
       ) : null}
-      <MarkdownArtifact title="Diff Markdown" content={diff.report} />
+      <MarkdownArtifact title="diff_report.md" content={diff.report} />
     </section>
   )
 }
 
 export function RuleMemoryPanel({ rules }: RuleMemoryPanelProps) {
-  if (!rules) return <EmptyPanel title="Rule Memory" />
+  if (!rules) return <EmptyPanel title="规则记忆" />
   return (
     <section className="space-y-4">
-      <PanelHeader title="Rule Memory" subtitle="Long-lived review rules and decisions" />
-      <MarkdownArtifact title="Quality Rules" content={rules.qualityRules} />
-      <MarkdownArtifact title="Known Issues" content={rules.knownIssues} />
-      <MarkdownArtifact title="Accepted Changes" content={rules.acceptedChanges} />
-      <MarkdownArtifact title="Rejected Changes" content={rules.rejectedChanges} />
+      <PanelHeader title="规则记忆" subtitle="长期审阅规则与决策" />
+      <MarkdownArtifact title="质量规则" content={rules.qualityRules} />
+      <MarkdownArtifact title="已知问题" content={rules.knownIssues} />
+      <MarkdownArtifact title="已接受变更" content={rules.acceptedChanges} />
+      <MarkdownArtifact title="已拒绝变更" content={rules.rejectedChanges} />
     </section>
   )
 }
@@ -346,14 +349,14 @@ export function RunLogPanel({ runsText, summary }: RunLogPanelProps) {
   return (
     <section className="space-y-4">
       <PanelHeader
-        title="Run Log"
-        subtitle={summary?.phase === 'pending_user_review' ? 'Review package generated' : 'Run history'}
+        title="运行日志"
+        subtitle={summary?.phase === 'pending_user_review' ? '审阅包已生成' : '运行历史'}
       />
       <div className="border-border/70 rounded-lg border p-3 text-sm">
         <ClipboardCheckIcon className="mr-2 inline size-4 text-emerald-500" />
-        {summary?.phase || 'No run phase'}
+        {summary?.phase || '暂无运行阶段'}
       </div>
-      <MarkdownArtifact title="Iteration Log Markdown" content={runsText} />
+      <MarkdownArtifact title="iteration_log.md" content={runsText} />
     </section>
   )
 }
@@ -380,7 +383,7 @@ function EmptyPanel({ title }: { title: string }) {
   return (
     <section className="border-border/70 bg-muted/20 rounded-lg border p-6">
       <h2 className="text-sm font-semibold">{title}</h2>
-      <p className="text-muted-foreground mt-2 text-sm">Run KB iteration review first.</p>
+      <p className="text-muted-foreground mt-2 text-sm">请先运行知识库审阅包。</p>
     </section>
   )
 }
@@ -390,7 +393,7 @@ function MarkdownArtifact({ title, content }: { title: string; content: string }
     <details className="border-border/70 rounded-lg border p-3" open={false}>
       <summary className="cursor-pointer text-sm font-medium">{title}</summary>
       <pre className="text-muted-foreground mt-3 max-h-80 overflow-auto whitespace-pre-wrap text-xs">
-        {content || 'No artifact content'}
+        {content || '暂无产物内容'}
       </pre>
     </details>
   )
