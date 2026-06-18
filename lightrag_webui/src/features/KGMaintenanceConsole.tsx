@@ -4,6 +4,11 @@ import {
   getKBIterationDiff,
   getKBIterationEntityCatalog,
   getKBIterationGraph,
+  getKBIterationLLMJudgeReport,
+  getKBIterationLLMReviewPatch,
+  getKBIterationLLMReviewProposals,
+  getKBIterationLLMReviewReport,
+  getKBIterationLLMReviewTrace,
   getKBIterationQuality,
   getKBIterationRelationCatalog,
   getKBIterationRules,
@@ -11,6 +16,7 @@ import {
   getKBIterationWorkspaces,
   recordKBIterationProposalDecision,
   runKBIteration,
+  runKBIterationLLMReview,
   type KBIterationDiffResponse,
   type KBIterationEntityCatalogResponse,
   type KBIterationGraphResponse,
@@ -32,6 +38,11 @@ import type {
 } from '@/components/kg-maintenance/kgMaintenanceData'
 import KGMaintenanceOverview from '@/components/kg-maintenance/KGMaintenanceOverview'
 import KGMaintenanceShell from '@/components/kg-maintenance/KGMaintenanceShell'
+import {
+  LLMJudgePanel,
+  LLMReviewPanel,
+  PatchCandidatesPanel
+} from '@/components/kg-maintenance/LLMReviewPanels'
 import MedicalHierarchyGraph from '@/components/kg-maintenance/MedicalHierarchyGraph'
 import {
   ApprovalPanel,
@@ -48,6 +59,19 @@ const PREFERRED_WORKSPACE = 'influenza_medical_v1'
 
 const markdownContent = (artifact: Awaited<ReturnType<typeof getKBIterationArtifact>>) =>
   'content' in artifact ? artifact.content : ''
+
+const optionalArtifactContent = async (
+  loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
+) => {
+  try {
+    const artifact = await loader()
+    if ('content' in artifact) return artifact.content
+    if ('payload' in artifact) return artifact.payload
+    return ''
+  } catch {
+    return ''
+  }
+}
 
 export default function KGMaintenanceConsole() {
   const currentTab = useSettingsStore.use.currentTab()
@@ -70,6 +94,12 @@ export default function KGMaintenanceConsole() {
   const [approvalQueue, setApprovalQueue] = useState('')
   const [improvementBacklog, setImprovementBacklog] = useState('')
   const [iterationLog, setIterationLog] = useState('')
+  const [llmTrace, setLlmTrace] = useState<Record<string, any> | null>(null)
+  const [llmReport, setLlmReport] = useState('')
+  const [llmProposals, setLlmProposals] = useState('')
+  const [llmJudgeReport, setLlmJudgeReport] = useState('')
+  const [patchText, setPatchText] = useState('')
+  const [llmRunning, setLlmRunning] = useState(false)
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -96,6 +126,7 @@ export default function KGMaintenanceConsole() {
     if (currentTab !== 'kg-maintenance' || !selectedWorkspace) return
     setLoading(true)
     setError(null)
+    setPatchText('')
     try {
       const [
         summaryPayload,
@@ -107,7 +138,11 @@ export default function KGMaintenanceConsole() {
         rulesPayload,
         approvalArtifact,
         backlogArtifact,
-        logArtifact
+        logArtifact,
+        llmTraceArtifact,
+        llmReportArtifact,
+        llmProposalsArtifact,
+        llmJudgeReportArtifact
       ] = await Promise.all([
         getKBIterationSummary(selectedWorkspace),
         getKBIterationGraph(selectedWorkspace),
@@ -118,7 +153,11 @@ export default function KGMaintenanceConsole() {
         getKBIterationRules(selectedWorkspace),
         getKBIterationArtifact(selectedWorkspace, 'approval_queue'),
         getKBIterationArtifact(selectedWorkspace, 'improvement_backlog'),
-        getKBIterationArtifact(selectedWorkspace, 'iteration_log')
+        getKBIterationArtifact(selectedWorkspace, 'iteration_log'),
+        optionalArtifactContent(() => getKBIterationLLMReviewTrace(selectedWorkspace)),
+        optionalArtifactContent(() => getKBIterationLLMReviewReport(selectedWorkspace)),
+        optionalArtifactContent(() => getKBIterationLLMReviewProposals(selectedWorkspace)),
+        optionalArtifactContent(() => getKBIterationLLMJudgeReport(selectedWorkspace))
       ])
       setSummary(summaryPayload)
       setGraph(graphPayload)
@@ -130,6 +169,16 @@ export default function KGMaintenanceConsole() {
       setApprovalQueue(markdownContent(approvalArtifact))
       setImprovementBacklog(markdownContent(backlogArtifact))
       setIterationLog(markdownContent(logArtifact))
+      setLlmTrace(
+        typeof llmTraceArtifact === 'object' &&
+          llmTraceArtifact !== null &&
+          !Array.isArray(llmTraceArtifact)
+          ? llmTraceArtifact
+          : null
+      )
+      setLlmReport(typeof llmReportArtifact === 'string' ? llmReportArtifact : '')
+      setLlmProposals(typeof llmProposalsArtifact === 'string' ? llmProposalsArtifact : '')
+      setLlmJudgeReport(typeof llmJudgeReportArtifact === 'string' ? llmJudgeReportArtifact : '')
       setLatestRunId(summaryPayload.latestRunId)
     } catch (err) {
       setError(errorMessage(err))
@@ -154,6 +203,7 @@ export default function KGMaintenanceConsole() {
 
   const handleWorkspaceChange = useCallback(
     (workspace: string) => {
+      setPatchText('')
       setSelectedWorkspace(workspace || null)
       setSelectedItem(null)
     },
@@ -161,7 +211,8 @@ export default function KGMaintenanceConsole() {
   )
 
   const handleRunReview = useCallback(async () => {
-    if (!selectedWorkspace) return
+    if (!selectedWorkspace || running || llmRunning) return
+    setPatchText('')
     setRunning(true)
     setError(null)
     try {
@@ -175,7 +226,49 @@ export default function KGMaintenanceConsole() {
     } finally {
       setRunning(false)
     }
-  }, [activeProfile, loadWorkspaceData, selectedWorkspace])
+  }, [activeProfile, llmRunning, loadWorkspaceData, running, selectedWorkspace])
+
+  const handleRunLLMReview = useCallback(async () => {
+    if (!selectedWorkspace || running || llmRunning) return
+    setLlmRunning(true)
+    setError(null)
+    setPatchText('')
+    try {
+      await runKBIterationLLMReview(selectedWorkspace, {
+        profile: activeProfile,
+        max_review_rounds: 4,
+        max_focus_items_per_round: 3,
+        allow_llm_judge: true,
+        allow_llm_auto_accept: false,
+        allow_low_risk_auto_reject: true,
+        generate_patch_candidates: false,
+        require_human_for_mutation: true
+      })
+      await loadWorkspaceData()
+      setPatchText('')
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setLlmRunning(false)
+    }
+  }, [activeProfile, llmRunning, loadWorkspaceData, running, selectedWorkspace])
+
+  const handleLoadPatch = useCallback(
+    async (proposalId: string) => {
+      if (!selectedWorkspace) return
+      const requestWorkspace = selectedWorkspace
+      setError(null)
+      setPatchText('')
+      try {
+        const artifact = await getKBIterationLLMReviewPatch(requestWorkspace, proposalId)
+        if (useKGMaintenanceStore.getState().selectedWorkspace !== requestWorkspace) return
+        setPatchText('content' in artifact ? artifact.content : '')
+      } catch (err) {
+        setError(errorMessage(err))
+      }
+    },
+    [selectedWorkspace]
+  )
 
   const handleProposalDecision = useCallback(
     async (
@@ -225,7 +318,7 @@ export default function KGMaintenanceConsole() {
       onRefresh={loadWorkspaceData}
       onRunReview={handleRunReview}
       loading={loading}
-      running={running}
+      running={running || llmRunning}
       error={error}
       inspector={<EvidenceInspector node={selectedNode} edge={selectedEdge} />}
     >
@@ -241,10 +334,19 @@ export default function KGMaintenanceConsole() {
         approvalQueue={approvalQueue}
         improvementBacklog={improvementBacklog}
         iterationLog={iterationLog}
+        llmTrace={llmTrace}
+        llmReport={llmReport}
+        llmProposals={llmProposals}
+        llmJudgeReport={llmJudgeReport}
+        patchText={patchText}
+        llmRunning={llmRunning}
+        running={running}
         loading={loading}
         onOpenSection={setActiveSection}
         onSelectItem={setSelectedItem}
         onProposalDecision={handleProposalDecision}
+        onRunLLMReview={handleRunLLMReview}
+        onLoadPatch={handleLoadPatch}
       />
     </KGMaintenanceShell>
   )
@@ -262,6 +364,13 @@ interface MainPanelProps {
   approvalQueue: string
   improvementBacklog: string
   iterationLog: string
+  llmTrace: Record<string, any> | null
+  llmReport: string
+  llmProposals: string
+  llmJudgeReport: string
+  patchText: string
+  llmRunning: boolean
+  running: boolean
   loading: boolean
   onOpenSection: (section: KGMaintenanceSection) => void
   onSelectItem: (item: { kind: 'node' | 'edge'; id: string } | null) => void
@@ -270,9 +379,11 @@ interface MainPanelProps {
     decision: KBIterationProposalDecision,
     review: ProposalDecisionReview
   ) => void | Promise<void>
+  onRunLLMReview: () => void
+  onLoadPatch: (proposalId: string) => void
 }
 
-function MainPanel({
+export function MainPanel({
   activeSection,
   summary,
   graph,
@@ -284,10 +395,19 @@ function MainPanel({
   approvalQueue,
   improvementBacklog,
   iterationLog,
+  llmTrace,
+  llmReport,
+  llmProposals,
+  llmJudgeReport,
+  patchText,
+  llmRunning,
+  running,
   loading,
   onOpenSection,
   onSelectItem,
-  onProposalDecision
+  onProposalDecision,
+  onRunLLMReview,
+  onLoadPatch
 }: MainPanelProps) {
   if (activeSection === 'overview') {
     return (
@@ -328,6 +448,32 @@ function MainPanel({
   }
   if (activeSection === 'diff') {
     return <DiffPanel diff={diff} />
+  }
+  if (activeSection === 'llm-review') {
+    return (
+      <LLMReviewPanel
+        trace={llmTrace}
+        report={llmReport}
+        proposals={llmProposals}
+        running={llmRunning || running}
+        onRun={onRunLLMReview}
+      />
+    )
+  }
+  if (activeSection === 'patches') {
+    return (
+      <PatchCandidatesPanel
+        proposals={llmProposals}
+        patchText={patchText}
+        onLoadPatch={onLoadPatch}
+      />
+    )
+  }
+  if (activeSection === 'judge') {
+    return <LLMJudgePanel report={llmJudgeReport} />
+  }
+  if (activeSection === 'rules') {
+    return <RuleMemoryPanel rules={rules} />
   }
   return <RuleMemoryPanel rules={rules} />
 }
