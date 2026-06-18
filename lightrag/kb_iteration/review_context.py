@@ -7,6 +7,37 @@ from typing import Any
 from lightrag.constants import GRAPH_FIELD_SEP
 
 GENERIC_RELATION_KEYWORDS = {"", "相关", "邻接", "related", "neighbor", "adjacent"}
+FOCUS_ALIASES = {
+    "generic_relation": {
+        "generic",
+        "generic relation",
+        "relation",
+        "relation semantics",
+        "relation_semantics",
+        "replace relation keyword",
+        "replace_relation_keyword",
+    },
+    "hierarchy_missing_branch": {
+        "hierarchy",
+        "hierarchy completeness",
+        "hierarchy_completeness",
+        "missing branch",
+        "add hierarchy branch",
+        "add_hierarchy_branch",
+    },
+    "missing_evidence": {
+        "evidence",
+        "evidence grounding",
+        "evidence_grounding",
+        "source",
+        "source evidence",
+        "source_id",
+        "file_path",
+        "missing evidence",
+        "restore evidence",
+        "restore_evidence",
+    },
+}
 
 
 def build_review_context(
@@ -54,16 +85,26 @@ def _select_edges(
     quality_findings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     normalized_focus = {_normalize_text(item) for item in focus}
+    selected_ids: set[str] = set()
+    selected_edges: list[dict[str, Any]] = []
+
     if "generic_relation" in normalized_focus:
-        return [edge for edge in edges if _is_generic_relation(edge)]
+        for edge in edges:
+            if _is_generic_relation(edge):
+                edge_id = str(edge.get("id", ""))
+                selected_ids.add(edge_id)
+                selected_edges.append(edge)
 
     evidence_edge_ids = _evidence_edge_ids(quality_findings)
     if evidence_edge_ids:
-        return [
-            edge
-            for edge in edges
-            if str(edge.get("id", "")) in evidence_edge_ids
-        ]
+        for edge in edges:
+            edge_id = str(edge.get("id", ""))
+            if edge_id in evidence_edge_ids and edge_id not in selected_ids:
+                selected_ids.add(edge_id)
+                selected_edges.append(edge)
+
+    if selected_edges:
+        return selected_edges
 
     return edges[:10]
 
@@ -74,7 +115,11 @@ def _quality_findings_for_focus(
     if not focus:
         return findings
 
-    focus_terms = {_normalize_text(item) for item in focus}
+    focus_terms = set()
+    for item in focus:
+        normalized = _normalize_text(item)
+        focus_terms.add(normalized)
+        focus_terms.update(FOCUS_ALIASES.get(normalized, set()))
     focus_terms.update({term.replace("_", " ") for term in focus_terms})
     return [
         finding

@@ -201,6 +201,65 @@ def test_build_review_context_selects_edge_from_quality_evidence_example(
     assert [relation["id"] for relation in context["relations"]] == ["e1"]
 
 
+def test_build_review_context_combines_generic_and_evidence_edges(
+    tmp_path: Path,
+):
+    package = tmp_path / "package"
+    snapshot_dir = package / "snapshots"
+    snapshot_dir.mkdir(parents=True)
+    _write_json(
+        snapshot_dir / "kg_snapshot.json",
+        {
+            "nodes": [
+                {"id": "flu", "label": "Flu", "entity_type": "Disease"},
+                {"id": "fever", "label": "Fever", "entity_type": "Symptom"},
+                {"id": "cough", "label": "Cough", "entity_type": "Symptom"},
+            ],
+            "edges": [
+                {
+                    "id": "e1",
+                    "source": "flu",
+                    "target": "fever",
+                    "keywords": "相关",
+                },
+                {
+                    "id": "e2",
+                    "source": "flu",
+                    "target": "cough",
+                    "keywords": "clinical_manifestation",
+                },
+            ],
+        },
+    )
+    _write_json(
+        snapshot_dir / "quality_score.json",
+        {
+            "findings": [
+                {
+                    "category": "relation_semantics",
+                    "message": "Generic relation keywords should be reviewed.",
+                    "evidence": ["edge:e1"],
+                    "suggested_fix_type": "replace_relation_keyword",
+                },
+                {
+                    "category": "evidence_grounding",
+                    "message": "Source evidence is missing.",
+                    "evidence": ["edge:e2 missing source_id"],
+                    "suggested_fix_type": "restore_evidence",
+                },
+            ]
+        },
+    )
+
+    context = build_review_context(
+        package,
+        round_id="round-001",
+        focus=["generic_relation", "missing_evidence"],
+    )
+
+    assert [relation["id"] for relation in context["relations"]] == ["e1", "e2"]
+
+
 def test_build_review_context_ignores_unprefixed_metric_evidence_for_edges(
     tmp_path: Path,
 ):
