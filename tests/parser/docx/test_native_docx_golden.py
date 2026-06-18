@@ -73,7 +73,6 @@ def _run_new_path(
     def _stub_extract(
         file_path,
         *,
-        fixlevel=None,
         drawing_context=None,
         parse_warnings=None,
         parse_metadata=None,

@@ -308,13 +308,22 @@ def write_sidecar(
         "equation_file": bool(equations),
         "drawing_file": bool(drawings),
         "asset_dir": asset_dir_present,
-        "split_option": dict(ir.split_option or {}),
-        "blocks": len(blocks_lines),
-        "doc_id": doc_id,
-        "parse_engine": engine,
-        "parse_time": parse_time,
-        "doc_title": ir.doc_title,
     }
+    # Engine-recorded metadata (e.g. engine_version); omitted entirely when the
+    # engine recorded nothing so the common native/markdown case doesn't carry a
+    # dead ``{}`` field. Inserted here to keep the meta key order stable.
+    split_option = dict(ir.split_option or {})
+    if split_option:
+        meta["split_option"] = split_option
+    meta.update(
+        {
+            "blocks": len(blocks_lines),
+            "doc_id": doc_id,
+            "parse_engine": engine,
+            "parse_time": parse_time,
+            "doc_title": ir.doc_title,
+        }
+    )
     if ir.bbox_attributes is not None:
         meta["bbox_attributes"] = dict(ir.bbox_attributes)
 

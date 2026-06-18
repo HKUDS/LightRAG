@@ -1854,7 +1854,7 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
 
-    def _fake_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+    def _fake_extract(file_path, drawing_context=None, **kwargs):
         # extract_docx_blocks returns a list of block dicts; a single text
         # block is enough to exercise the archive + full_docs side-effects
         # tested below — the adapter will turn it into one .blocks.jsonl
@@ -1937,7 +1937,7 @@ async def test_parse_native_docx_content_list_failure_raises_without_fallback(
     source_path.write_bytes(b"docx bytes")
     rag = _ParseRag(tmp_path / "work", source_path)
 
-    def _raise_parser(file_path, fixlevel=None, drawing_context=None, **kwargs):
+    def _raise_parser(file_path, drawing_context=None, **kwargs):
         raise RuntimeError("content list boom")
 
     monkeypatch.setattr(

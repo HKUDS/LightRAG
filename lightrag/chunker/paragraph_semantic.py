@@ -1,16 +1,16 @@
 """Paragraph Semantic Chunking for LightRAG.
 
 Reads a LightRAG ``.blocks.jsonl`` sidecar — produced by any sidecar-emitting
-parser (native / mineru / docling; native uses ``fixlevel=0``): heading-driven
-blocks, tables kept whole — and produces a chunk list compatible with
+parser (native / mineru / docling): heading-driven blocks, tables kept whole —
+and produces a chunk list compatible with
 :func:`lightrag.chunker.chunking_by_token_size`.
 
 The full algorithm and rationale are documented in
-``docs/ParagraphSemanticChunking-zh.md``. This module re-implements the
-post-HeadingBlocks pipeline (TableRowSplit/AnchorSplit/LevelMerge) on top of
+``docs/ParagraphSemanticChunking-zh.md``. Parsers perform only heading-driven
+structural splitting; all block sizing happens here. This module re-implements
+the post-HeadingBlocks pipeline (TableRowSplit/AnchorSplit/LevelMerge) on top of
 blocks.jsonl input, parameterised on ``chunk_token_size`` so chunk-size targets
-follow the user's RAG configuration rather than the audit-mode constants in
-``lightrag/parser/docx/parse_document.py``.
+follow the user's RAG configuration.
 
 Pipeline:
   - HeadingBlocks — heading-driven initial split: done at parse time and

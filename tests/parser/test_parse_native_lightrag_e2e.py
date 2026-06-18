@@ -119,7 +119,7 @@ def test_native_lightrag_path_produces_stable_merged_text(tmp_path, monkeypatch)
             ),
         ]
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             return [dict(b) for b in stable_blocks]
 
         monkeypatch.setattr(
@@ -201,7 +201,7 @@ def test_native_lightrag_path_writes_blocks_jsonl_and_skips_meta_on_load(
         source_path = input_dir / "skipmeta.docx"
         source_path.write_bytes(b"fake")
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             return [_block("the body")]
 
         monkeypatch.setattr(
@@ -243,7 +243,7 @@ def test_native_lightrag_path_leaves_unknown_table_caption_empty(tmp_path, monke
         source_path = input_dir / "table.docx"
         source_path.write_bytes(b"fake")
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             return [_block('before\n<table>[["A"]]</table>\nafter')]
 
         monkeypatch.setattr(
@@ -305,7 +305,7 @@ def test_analyze_entrypoint_backfills_surrounding_for_all_sidecars(
         source_path = input_dir / "all_modalities.docx"
         source_path.write_bytes(b"fake")
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             assert drawing_context is not None
             assert drawing_context.export_dir_path is not None
             (drawing_context.export_dir_path / "pic.png").write_bytes(b"PNG")
@@ -381,7 +381,7 @@ def test_native_lightrag_path_writes_image_assets_to_blocks_assets_dir(
         source_path = input_dir / "with_pics.docx"
         source_path.write_bytes(b"fake")
 
-        def _stub_extract(file_path, fixlevel=None, drawing_context=None, **kwargs):
+        def _stub_extract(file_path, drawing_context=None, **kwargs):
             # The adapter already created the asset dir before calling us;
             # write the fake image bytes there as a side-effect, then return
             # a block whose content references that asset via <drawing .../>.

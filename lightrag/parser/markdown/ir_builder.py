@@ -148,7 +148,7 @@ class NativeMarkdownIRBuilder:
             document_name=document_name,
             document_format=Path(document_name).suffix.lower().lstrip("."),
             doc_title=doc_title,
-            split_option={"fixlevel": 0},
+            split_option={},
             blocks=ir_blocks,
             assets=assets,
             bbox_attributes=None,

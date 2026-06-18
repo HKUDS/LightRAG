@@ -53,7 +53,6 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   "equation_file": true,
   "drawing_file": true,
   "asset_dir": true,
-  "split_option": { "fixlevel": 0 },
   "blocks": 39,
   "doc_id": "doc-f1bee60173d067d88595c00e7d9b0ce5",
   "parse_engine": "native",
@@ -72,7 +71,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `document_hash` | `"sha256:<hex>"` | sidecar 正文指纹，定义为 `SHA-256(merged_text)`，其中 `merged_text` 是所有非空 content 行的 `content` 字段按 `"\n\n"` 拼接后的字符串。供外部消费者快速判断两份 `.parsed/` 是否同源（不必逐行比对 body），并作为 sidecar 文件的自描述内容校验位。注意：LightRAG 入库流水线本身不读此字段，跨文档去重由 `doc_status.content_hash` 单独承担 |
 | `table_file` / `equation_file` / `drawing_file` | `bool` | 是否存在对应 sidecar 文件（为真时对应文件必然存在） |
 | `asset_dir` | `bool` | 是否存在`blocks.assets`资源目录 |
-| `split_option` | `object` | 文件提取时的分块参数。此字段留给文件提取引擎自己记录和使用 |
+| `split_option` | `object` | 可选。解析引擎自我记录的元数据（如 `engine_version` 及引擎特定附加信息）；引擎无任何记录时（native/markdown 常见情形）整个字段省略。分块不在解析阶段进行（由下游 chunker 负责），故此字段从不含分块参数 |
 | `blocks` | `int` | content 行数（不含 meta） |
 | `doc_id` | `"doc-<md5>"` | 文档全局 id。sidecar item id（`im-/tb-/eq-`）使用 `doc_id` 去掉 `doc-` 前缀后的哈希部分，以缩短嵌入正文中的占位标签 |
 | `parse_engine` | `str` | 解析引擎`native/mineru/docling/legacy` |
