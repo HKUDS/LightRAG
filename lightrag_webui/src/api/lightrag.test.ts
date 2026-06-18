@@ -49,6 +49,7 @@ afterEach(() => {
   apiModule.__resetPaginatedDocumentRequestsForTests()
   ;(apiModule as any).__resetConfigWorkbenchRequestsForTests?.()
   ;(apiModule as any).__resetGraphRequestsForTests?.()
+  apiModule.__resetKBIterationRequestsForTests()
   settingsModule.useSettingsStore.setState({ graphViewMode: 'medical' })
 })
 
@@ -431,6 +432,38 @@ describe('config workbench api', () => {
 })
 
 describe('kb iteration api', () => {
+  test('kb llm review wrappers call expected paths', async () => {
+    const getCalls: string[] = []
+    const postCalls: Array<{ path: string; body: any }> = []
+    apiModule.__setKBIterationGetForTests(async (path) => {
+      getCalls.push(path)
+      return { artifactKey: path, contentType: 'text/markdown', content: 'ok' }
+    })
+    apiModule.__setKBIterationPostForTests(async (path, body) => {
+      postCalls.push({ path, body })
+      return { workspace: 'demo', stopReason: 'pending_human_review', proposalIds: [] }
+    })
+
+    await apiModule.runKBIterationLLMReview('demo workspace', { max_review_rounds: 1 })
+    await apiModule.getKBIterationLLMReviewTrace('demo workspace')
+    await apiModule.getKBIterationLLMReviewReport('demo workspace')
+    await apiModule.getKBIterationLLMReviewProposals('demo workspace')
+    await apiModule.getKBIterationLLMJudgeReport('demo workspace')
+    await apiModule.getKBIterationLLMReviewPatch('demo workspace', 'proposal 1')
+
+    expect(postCalls[0]).toEqual({
+      path: '/kb-iteration/demo%20workspace/llm-review/runs',
+      body: { max_review_rounds: 1 }
+    })
+    expect(getCalls).toEqual([
+      '/kb-iteration/demo%20workspace/llm-review/trace',
+      '/kb-iteration/demo%20workspace/llm-review/report',
+      '/kb-iteration/demo%20workspace/llm-review/proposals',
+      '/kb-iteration/demo%20workspace/llm-review/judge-report',
+      '/kb-iteration/demo%20workspace/llm-review/patches/proposal%201'
+    ])
+  })
+
   test('gets a workspace summary through an encoded kb-iteration path', async () => {
     let capturedPath: string | undefined
     const payload = {

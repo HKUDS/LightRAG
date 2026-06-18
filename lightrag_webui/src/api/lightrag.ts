@@ -668,6 +668,25 @@ export type KBIterationRunRequest = {
   profile?: string | null
 }
 
+export type KBIterationLLMReviewRunRequest = {
+  profile?: string | null
+  mode?: 'loop'
+  max_review_rounds?: number
+  max_focus_items_per_round?: number
+  max_context_tokens_per_round?: number
+  allow_llm_judge?: boolean
+  allow_llm_auto_accept?: boolean
+  allow_low_risk_auto_reject?: boolean
+  generate_patch_candidates?: boolean
+  require_human_for_mutation?: boolean
+}
+
+export type KBIterationLLMReviewRunResponse = {
+  workspace: string
+  stopReason: string
+  proposalIds: string[]
+}
+
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
@@ -1047,6 +1066,51 @@ export const runKBIteration = async (
   request: KBIterationRunRequest = {}
 ): Promise<KBIterationSummaryResponse> => {
   return kbIterationPost(`/kb-iteration/${encodePathSegment(workspace)}/runs`, request)
+}
+
+export const runKBIterationLLMReview = async (
+  workspace: string,
+  request: KBIterationLLMReviewRunRequest = {}
+): Promise<KBIterationLLMReviewRunResponse> => {
+  return kbIterationPost(
+    `/kb-iteration/${encodePathSegment(workspace)}/llm-review/runs`,
+    request
+  )
+}
+
+export const getKBIterationLLMReviewTrace = async (
+  workspace: string
+): Promise<KBIterationArtifactResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/llm-review/trace`)
+}
+
+export const getKBIterationLLMReviewReport = async (
+  workspace: string
+): Promise<KBIterationArtifactResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/llm-review/report`)
+}
+
+export const getKBIterationLLMReviewProposals = async (
+  workspace: string
+): Promise<KBIterationArtifactResponse> => {
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/llm-review/proposals`)
+}
+
+export const getKBIterationLLMJudgeReport = async (
+  workspace: string
+): Promise<KBIterationArtifactResponse> => {
+  return kbIterationGet(
+    `/kb-iteration/${encodePathSegment(workspace)}/llm-review/judge-report`
+  )
+}
+
+export const getKBIterationLLMReviewPatch = async (
+  workspace: string,
+  proposalId: string
+): Promise<KBIterationArtifactResponse> => {
+  return kbIterationGet(
+    `/kb-iteration/${encodePathSegment(workspace)}/llm-review/patches/${encodePathSegment(proposalId)}`
+  )
 }
 
 export const getKBIterationArtifact = async (
