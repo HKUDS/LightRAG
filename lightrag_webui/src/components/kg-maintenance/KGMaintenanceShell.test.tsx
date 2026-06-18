@@ -238,12 +238,42 @@ describe('MainPanel workflow routing', () => {
     expect(result).toBeNull()
   })
 
+  test('optional response helper returns fallback for wrapper-style 404 messages', async () => {
+    const result = await optionalMissingResponse(async () => {
+      throw new Error('404 Not Found\n{"detail":"missing"}\n/kb-iteration/workspace/summary')
+    }, null)
+
+    expect(result).toBeNull()
+  })
+
   test('optional response helper rethrows unexpected core failures', async () => {
     await expect(
       optionalMissingResponse(async () => {
         throw Object.assign(new Error('500 Internal Server Error'), { response: { status: 500 } })
       }, null)
     ).rejects.toThrow('500 Internal Server Error')
+  })
+
+  test('optional response helper rethrows wrapper-style 500 with not-found body text', async () => {
+    await expect(
+      optionalMissingResponse(async () => {
+        throw new Error('500 Internal Server Error\n{"detail":"not found"}\n/kb-iteration/workspace/summary')
+      }, null)
+    ).rejects.toThrow('500 Internal Server Error')
+  })
+
+  test('optional response helper rethrows plain missing artifact messages without explicit 404', async () => {
+    await expect(
+      optionalMissingResponse(async () => {
+        throw new Error('artifact not found')
+      }, null)
+    ).rejects.toThrow('artifact not found')
+
+    await expect(
+      optionalMissingResponse(async () => {
+        throw new Error('missing artifact')
+      }, null)
+    ).rejects.toThrow('missing artifact')
   })
 
   test('workspace response guard rejects stale workspace payloads', () => {

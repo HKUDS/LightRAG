@@ -23,7 +23,8 @@ function isMissingResourceError(error: unknown): boolean {
   if (status === 404) return true
 
   const message = error instanceof Error ? error.message : String(error)
-  return /\b404\b/.test(message) || /not found/i.test(message) || /missing artifact/i.test(message)
+  const firstLine = message.split(/\r?\n/, 1)[0]?.trim() || ''
+  return /^404\b/.test(firstLine)
 }
 
 function getErrorStatus(error: unknown): number | undefined {
