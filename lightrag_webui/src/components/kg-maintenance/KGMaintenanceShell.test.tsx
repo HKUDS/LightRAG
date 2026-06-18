@@ -157,7 +157,7 @@ describe('MainPanel section routing', () => {
   test('renders rule memory content for rules section', async () => {
     const markup = await renderMainPanel('rules')
 
-    expect(markup).toContain('规则记忆')
+    expect(markup).toContain('Rule Memory')
     expect(markup).toContain('RULE_MARKER')
   })
 })
