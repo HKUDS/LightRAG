@@ -406,6 +406,41 @@ describe('MainPanel workflow routing', () => {
     expect(completedFailure).toBe(true)
   })
 
+  test('workspace action can recheck freshness after nested refresh awaits', async () => {
+    const action = deferred<string>()
+    const refresh = deferred<void>()
+    let currentWorkspace = 'workspace-a'
+    let applied = ''
+    let completed = false
+    let sawRecheckFunction = false
+
+    const run = runWorkspaceAction({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => currentWorkspace,
+      action: () => action.promise,
+      onSuccess: async (value, shouldApply) => {
+        sawRecheckFunction = typeof shouldApply === 'function'
+        await refresh.promise
+        if (shouldApply()) {
+          applied = value
+        }
+      },
+      onComplete: () => {
+        completed = true
+      }
+    })
+
+    action.resolve('post-refresh patch clear')
+    await Promise.resolve()
+    currentWorkspace = 'workspace-b'
+    refresh.resolve()
+    await run
+
+    expect(sawRecheckFunction).toBe(true)
+    expect(applied).toBe('')
+    expect(completed).toBe(true)
+  })
+
   test('markdown normalization accepts pre-normalized optional strings', () => {
     expect(normalizeOptionalMarkdown('loaded markdown')).toBe('loaded markdown')
     expect(normalizeOptionalMarkdown(null)).toBe('')

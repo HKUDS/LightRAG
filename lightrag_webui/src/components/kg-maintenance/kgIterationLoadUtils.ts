@@ -27,18 +27,19 @@ export const runWorkspaceAction = async <T,>({
   requestWorkspace: string
   getCurrentWorkspace: () => string | null
   action: () => Promise<T>
-  onSuccess?: (value: T) => void | Promise<void>
-  onError?: (error: unknown) => void | Promise<void>
+  onSuccess?: (value: T, shouldApply: () => boolean) => void | Promise<void>
+  onError?: (error: unknown, shouldApply: () => boolean) => void | Promise<void>
   onComplete?: () => void
 }): Promise<void> => {
+  const shouldApply = () => shouldApplyWorkspaceResponse(requestWorkspace, getCurrentWorkspace)
   try {
     const value = await action()
-    if (shouldApplyWorkspaceResponse(requestWorkspace, getCurrentWorkspace)) {
-      await onSuccess?.(value)
+    if (shouldApply()) {
+      await onSuccess?.(value, shouldApply)
     }
   } catch (error) {
-    if (shouldApplyWorkspaceResponse(requestWorkspace, getCurrentWorkspace)) {
-      await onError?.(error)
+    if (shouldApply()) {
+      await onError?.(error, shouldApply)
     }
   } finally {
     onComplete?.()

@@ -278,9 +278,9 @@ export default function KGMaintenanceConsole() {
           generate_patch_candidates: false,
           require_human_for_mutation: true
         }),
-      onSuccess: async () => {
+      onSuccess: async (_result, shouldApply) => {
         await loadWorkspaceData()
-        setPatchText('')
+        if (shouldApply()) setPatchText('')
       },
       onError: (err) => {
         setError(errorMessage(err))
