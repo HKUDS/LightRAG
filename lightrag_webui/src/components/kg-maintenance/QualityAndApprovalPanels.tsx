@@ -10,6 +10,7 @@ import {
   canSubmitProposalDecision,
   countApprovalRequired,
   MEDICAL_REVIEW_CONFIRMATION,
+  parseProposalDecisionStates,
   parseProposalSummaries,
   proposalNeedsConfirmation,
   type ProposalDecisionReview,
@@ -25,6 +26,8 @@ interface QualityPanelProps {
 interface ApprovalPanelProps {
   approvalQueue: string
   improvementBacklog: string
+  acceptedChanges?: string
+  rejectedChanges?: string
   onOpenEvidence?: (evidenceId: string) => void
   onDecision?: (
     proposal: ProposalSummary,
@@ -50,6 +53,19 @@ const DECISION_LABELS: Record<KBIterationProposalDecision, string> = {
   accept: '接受',
   reject: '拒绝',
   defer: '延后'
+}
+
+const RECORDED_DECISION_LABELS: Record<KBIterationProposalDecision, string> = {
+  accept: '已接受',
+  reject: '已拒绝',
+  defer: '已延后'
+}
+
+const RECORDED_DECISION_CLASSES: Record<KBIterationProposalDecision, string> = {
+  accept:
+    'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200',
+  reject: 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-200',
+  defer: 'bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-200'
 }
 
 export function QualityPanel({ quality }: QualityPanelProps) {
@@ -135,10 +151,16 @@ export function QualityPanel({ quality }: QualityPanelProps) {
 export function ApprovalPanel({
   approvalQueue,
   improvementBacklog,
+  acceptedChanges = '',
+  rejectedChanges = '',
   onOpenEvidence,
   onDecision
 }: ApprovalPanelProps) {
   const proposals = parseProposalSummaries(approvalQueue)
+  const decisionStates = useMemo(
+    () => parseProposalDecisionStates({ acceptedChanges, rejectedChanges }),
+    [acceptedChanges, rejectedChanges]
+  )
   const [reasons, setReasons] = useState<Record<string, string>>({})
   const [impactScopes, setImpactScopes] = useState<Record<string, string>>({})
   const [verifications, setVerifications] = useState<Record<string, string>>({})
@@ -156,114 +178,138 @@ export function ApprovalPanel({
             暂无待审批 proposal。
           </div>
         ) : (
-          proposals.map((proposal) => (
-            <article key={proposal.id} className="border-border/70 rounded-lg border p-3">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold">{proposal.id}</div>
-                  <div className="text-muted-foreground mt-1 text-xs">
-                    {proposal.type || '未知类型'} / {proposal.target || '未指定目标'}
+          proposals.map((proposal) => {
+            const recordedDecision = decisionStates[proposal.id]
+            return (
+              <article key={proposal.id} className="border-border/70 rounded-lg border p-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold">{proposal.id}</div>
+                    <div className="text-muted-foreground mt-1 text-xs">
+                      {proposal.type || '未知类型'} / {proposal.target || '未指定目标'}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {recordedDecision && (
+                      <span
+                        className={`rounded-md px-2 py-1 text-xs font-medium ${RECORDED_DECISION_CLASSES[recordedDecision]}`}
+                      >
+                        {RECORDED_DECISION_LABELS[recordedDecision]}
+                      </span>
+                    )}
+                    <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                      {proposal.risk || '风险未知'}
+                    </span>
                   </div>
                 </div>
-                <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                  {proposal.risk || '风险未知'}
-                </span>
-              </div>
-              <div className="mt-3 grid gap-2 text-sm">
-                <ProposalField label="建议变更" value={proposal.proposedChange} />
-                <ProposalField label="原因" value={proposal.reason} />
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <ProposalField label="置信度" value={proposal.confidence || '未说明'} />
-                  <ProposalField
-                    label="预期指标变化"
-                    value={proposal.expectedMetricChange || '未说明'}
-                  />
+                <div className="mt-3 grid gap-2 text-sm">
+                  <ProposalField label="建议变更" value={proposal.proposedChange} />
+                  <ProposalField label="原因" value={proposal.reason} />
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <ProposalField label="置信度" value={proposal.confidence || '未说明'} />
+                    <ProposalField
+                      label="预期指标变化"
+                      value={proposal.expectedMetricChange || '未说明'}
+                    />
+                  </div>
                 </div>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {proposal.evidence.map((evidence) => (
-                  <Button
-                    key={evidence}
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onOpenEvidence?.(evidence)}
-                  >
-                    <ExternalLinkIcon className="size-4" />
-                    {evidence}
-                  </Button>
-                ))}
-              </div>
-              <div className="mt-3 grid gap-2">
-                <textarea
-                  value={reasons[proposal.id] || ''}
-                  onChange={(event) =>
-                    setReasons((draft) => ({ ...draft, [proposal.id]: event.target.value }))
-                  }
-                  className="border-input bg-background min-h-20 rounded-md border px-3 py-2 text-sm"
-                  placeholder="审批理由"
-                />
-                <textarea
-                  value={impactScopes[proposal.id] || ''}
-                  onChange={(event) =>
-                    setImpactScopes((draft) => ({
-                      ...draft,
-                      [proposal.id]: event.target.value
-                    }))
-                  }
-                  className="border-input bg-background min-h-16 rounded-md border px-3 py-2 text-sm"
-                  placeholder="影响范围"
-                />
-                <textarea
-                  value={verifications[proposal.id] || ''}
-                  onChange={(event) =>
-                    setVerifications((draft) => ({
-                      ...draft,
-                      [proposal.id]: event.target.value
-                    }))
-                  }
-                  className="border-input bg-background min-h-16 rounded-md border px-3 py-2 text-sm"
-                  placeholder="验证 / 回滚说明"
-                />
-                {proposalNeedsConfirmation(proposal) && (
-                  <div className="border-amber-300 bg-amber-50 text-amber-950 rounded-md border p-3 text-sm dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
-                    <p>{MEDICAL_REVIEW_CONFIRMATION}</p>
-                    <input
-                      value={confirmations[proposal.id] || ''}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {proposal.evidence.map((evidence) => (
+                    <Button
+                      key={evidence}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onOpenEvidence?.(evidence)}
+                    >
+                      <ExternalLinkIcon className="size-4" />
+                      {evidence}
+                    </Button>
+                  ))}
+                </div>
+                {recordedDecision ? (
+                  <RecordedDecisionNotice decision={recordedDecision} />
+                ) : (
+                  <div className="mt-3 grid gap-2">
+                    <textarea
+                      value={reasons[proposal.id] || ''}
                       onChange={(event) =>
-                        setConfirmations((draft) => ({
+                        setReasons((draft) => ({ ...draft, [proposal.id]: event.target.value }))
+                      }
+                      className="border-input bg-background min-h-20 rounded-md border px-3 py-2 text-sm"
+                      placeholder="审批理由"
+                    />
+                    <textarea
+                      value={impactScopes[proposal.id] || ''}
+                      onChange={(event) =>
+                        setImpactScopes((draft) => ({
                           ...draft,
                           [proposal.id]: event.target.value
                         }))
                       }
-                      className="border-input bg-background mt-2 h-9 w-full rounded-md border px-3 text-sm"
-                      placeholder={MEDICAL_REVIEW_CONFIRMATION}
+                      className="border-input bg-background min-h-16 rounded-md border px-3 py-2 text-sm"
+                      placeholder="影响范围"
                     />
+                    <textarea
+                      value={verifications[proposal.id] || ''}
+                      onChange={(event) =>
+                        setVerifications((draft) => ({
+                          ...draft,
+                          [proposal.id]: event.target.value
+                        }))
+                      }
+                      className="border-input bg-background min-h-16 rounded-md border px-3 py-2 text-sm"
+                      placeholder="验证 / 回滚说明"
+                    />
+                    {proposalNeedsConfirmation(proposal) && (
+                      <div className="border-amber-300 bg-amber-50 text-amber-950 rounded-md border p-3 text-sm dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+                        <p>{MEDICAL_REVIEW_CONFIRMATION}</p>
+                        <input
+                          value={confirmations[proposal.id] || ''}
+                          onChange={(event) =>
+                            setConfirmations((draft) => ({
+                              ...draft,
+                              [proposal.id]: event.target.value
+                            }))
+                          }
+                          className="border-input bg-background mt-2 h-9 w-full rounded-md border px-3 text-sm"
+                          placeholder={MEDICAL_REVIEW_CONFIRMATION}
+                        />
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      {(['accept', 'reject', 'defer'] as KBIterationProposalDecision[]).map(
+                        (decision) => (
+                          <DecisionButton
+                            key={decision}
+                            proposal={proposal}
+                            decision={decision}
+                            reason={reasons[proposal.id] || ''}
+                            impactScope={impactScopes[proposal.id] || ''}
+                            verification={verifications[proposal.id] || ''}
+                            confirmation={confirmations[proposal.id] || ''}
+                            onDecision={onDecision}
+                          />
+                        )
+                      )}
+                    </div>
                   </div>
                 )}
-                <div className="flex flex-wrap gap-2">
-                  {(['accept', 'reject', 'defer'] as KBIterationProposalDecision[]).map(
-                    (decision) => (
-                      <DecisionButton
-                        key={decision}
-                        proposal={proposal}
-                        decision={decision}
-                        reason={reasons[proposal.id] || ''}
-                        impactScope={impactScopes[proposal.id] || ''}
-                        verification={verifications[proposal.id] || ''}
-                        confirmation={confirmations[proposal.id] || ''}
-                        onDecision={onDecision}
-                      />
-                    )
-                  )}
-                </div>
-              </div>
-            </article>
-          ))
+              </article>
+            )
+          })
         )}
       </div>
       <MarkdownArtifact title="approval_queue.md" content={approvalQueue} />
       <MarkdownArtifact title="improvement_backlog.md" content={improvementBacklog} />
     </section>
+  )
+}
+
+function RecordedDecisionNotice({ decision }: { decision: KBIterationProposalDecision }) {
+  return (
+    <div className="border-border/70 bg-muted/20 mt-3 rounded-md border px-3 py-2 text-sm">
+      Proposal {RECORDED_DECISION_LABELS[decision]}，不会重复提交审批决定。
+    </div>
   )
 }
 

@@ -1,4 +1,8 @@
-import type { KBIterationGraphEdge, KBIterationGraphNode } from '@/api/lightrag'
+import type {
+  KBIterationGraphEdge,
+  KBIterationGraphNode,
+  KBIterationProposalDecision
+} from '@/api/lightrag'
 
 export type ProposalSummary = {
   id: string
@@ -19,6 +23,8 @@ export type ProposalDecisionReview = {
   verification: string
   confirmation: string
 }
+
+export type ProposalDecisionStates = Partial<Record<string, KBIterationProposalDecision>>
 
 export const MEDICAL_REVIEW_CONFIRMATION =
   '该操作会改变知识库行为或重建结果。请确认已检查来源证据、影响范围和回滚方式。'
@@ -118,6 +124,33 @@ export function parseProposalSummaries(markdown: string): ProposalSummary[] {
 
   if (current) proposals.push(current)
   return proposals
+}
+
+export function parseProposalDecisionStates({
+  acceptedChanges = '',
+  rejectedChanges = ''
+}: {
+  acceptedChanges?: string
+  rejectedChanges?: string
+}): ProposalDecisionStates {
+  return {
+    ...parseDecisionArtifact(acceptedChanges, 'accept'),
+    ...parseDecisionArtifact(rejectedChanges, 'reject')
+  }
+}
+
+function parseDecisionArtifact(
+  markdown: string,
+  decision: KBIterationProposalDecision
+): ProposalDecisionStates {
+  const states: ProposalDecisionStates = {}
+  const headingPattern = /^##\s+(.+?)\s*$/gm
+  let match: RegExpExecArray | null
+  while ((match = headingPattern.exec(markdown)) !== null) {
+    const proposalId = match[1]?.trim()
+    if (proposalId) states[proposalId] = decision
+  }
+  return states
 }
 
 export function findNodeById(nodes: KBIterationGraphNode[], id: string) {

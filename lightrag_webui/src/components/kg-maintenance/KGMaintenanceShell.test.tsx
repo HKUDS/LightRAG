@@ -60,7 +60,13 @@ const summary: KBIterationSummaryResponse = {
   }))
 }
 
-function renderMainPanel(activeSection: KGMaintenanceSection) {
+function renderMainPanel(
+  activeSection: KGMaintenanceSection,
+  options: {
+    acceptedChanges?: string
+    rejectedChanges?: string
+  } = {}
+) {
   return renderToStaticMarkup(
     <MainPanel
       activeSection={activeSection}
@@ -87,8 +93,8 @@ function renderMainPanel(activeSection: KGMaintenanceSection) {
         workspace: 'influenza_medical_v1',
         qualityRules: '',
         knownIssues: '',
-        acceptedChanges: 'accepted content marker',
-        rejectedChanges: 'rejected content marker'
+        acceptedChanges: options.acceptedChanges ?? 'accepted content marker',
+        rejectedChanges: options.rejectedChanges ?? 'rejected content marker'
       }}
       kbContext="# 当前 KB 摘要"
       kgSnapshot={{
@@ -868,6 +874,23 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('拒绝')
     expect(markup).toContain('延后')
     expect(markup).toContain('proposal-1')
+  })
+
+  test('approval marks proposals that already have accepted decisions', () => {
+    const markup = renderMainPanel('approval', {
+      acceptedChanges: `# Accepted Changes
+
+## proposal-1
+
+\`\`\`json
+{"proposal_id":"proposal-1","decision":"accept"}
+\`\`\`
+`
+    })
+
+    expect(markup).toContain('已接受')
+    expect(markup).not.toContain('拒绝</button>')
+    expect(markup).not.toContain('延后</button>')
   })
 
   test('backlog renders the improvement backlog artifact', () => {

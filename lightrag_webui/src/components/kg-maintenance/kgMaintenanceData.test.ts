@@ -6,6 +6,7 @@ import {
   findNodeByIdAcrossSources,
   formatRunSubtitle,
   getEvidenceCoveragePercent,
+  parseProposalDecisionStates,
   parseProposalSummaries,
   proposalNeedsConfirmation
 } from './kgMaintenanceData'
@@ -111,6 +112,32 @@ proposals:
     expect(proposal.reason).toBe('Reviewers need relation semantics')
     expect(proposal.confidence).toBe('0.75')
     expect(proposal.expectedMetricChange).toContain('web_readability')
+  })
+
+  test('parses recorded proposal decisions from decision memory artifacts', () => {
+    expect(
+      parseProposalDecisionStates({
+        acceptedChanges: `# Accepted Changes
+
+## proposal-1
+
+\`\`\`json
+{"proposal_id":"proposal-1","decision":"accept"}
+\`\`\`
+`,
+        rejectedChanges: `# Rejected Changes
+
+## proposal-2
+
+\`\`\`json
+{"proposal_id":"proposal-2","decision":"reject"}
+\`\`\`
+`
+      })
+    ).toEqual({
+      'proposal-1': 'accept',
+      'proposal-2': 'reject'
+    })
   })
 })
 

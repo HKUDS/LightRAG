@@ -451,6 +451,8 @@ export function MainPanel({
       <ApprovalPanel
         approvalQueue={approvalQueue}
         improvementBacklog={improvementBacklog}
+        acceptedChanges={rules?.acceptedChanges || ''}
+        rejectedChanges={rules?.rejectedChanges || ''}
         onDecision={onProposalDecision}
       />
     )
