@@ -42,11 +42,24 @@ describe('LLM review panels', () => {
       <LLMReviewPanel
         trace={{
           stages: [
-            { stage: 'explain', state: 'done' },
-            { stage: 'infer', state: 'done' },
-            { stage: 'evidence', state: 'done', artifact_keys: ['evidence_map'] },
+            { stage: 'explain', state: 'done', artifact_keys: ['llm_issue_analysis'] },
+            {
+              stage: 'infer_branches',
+              state: 'done',
+              artifact_keys: ['llm_missing_branch_inference']
+            },
+            {
+              stage: 'locate_evidence',
+              state: 'done',
+              artifact_keys: ['llm_evidence_map']
+            },
             { stage: 'propose', state: 'done', proposal_ids: ['p1', 'p2'] },
-            { stage: 'rank', state: 'done', proposal_ids: ['p2'] },
+            {
+              stage: 'rank_repairs',
+              state: 'done',
+              artifact_keys: ['llm_repair_plan'],
+              proposal_ids: ['p2']
+            },
             { stage: 'judge', state: 'needs_human' }
           ]
         }}
@@ -65,6 +78,9 @@ describe('LLM review panels', () => {
     for (const label of ['Explain', 'Infer', 'Evidence', 'Propose', 'Rank', 'Judge']) {
       expect(markup).toContain(label)
     }
+    expect(markup).toContain('llm_missing_branch_inference')
+    expect(markup).toContain('llm_evidence_map')
+    expect(markup).toContain('llm_repair_plan')
     expect(markup).toContain('p1')
     expect(markup).toContain('p2')
     expect(markup).toContain('## Issue')

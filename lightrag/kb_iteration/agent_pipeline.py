@@ -558,14 +558,6 @@ def _grounded_reference_tokens(
                         _add_reference_token(tokens, branch.get("key"))
                         _add_reference_token(tokens, branch.get("label"))
 
-    for evidence_item in _list_of_dicts(previous_outputs.get("evidence_map")):
-        for supporting in _list_of_dicts(evidence_item.get("supporting_items")):
-            if str(supporting.get("evidence_status", "")).casefold() != "grounded":
-                continue
-            _add_reference_token(tokens, supporting.get("item_id"))
-            _add_reference_token(tokens, supporting.get("source_id"))
-            _add_reference_token(tokens, supporting.get("file_path"))
-
     return tokens
 
 

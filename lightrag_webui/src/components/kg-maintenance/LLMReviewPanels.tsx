@@ -151,10 +151,10 @@ export function LLMReviewPanel({
 
 const TRACE_STAGE_LABELS = [
   { key: 'explain', label: 'Explain' },
-  { key: 'infer', label: 'Infer' },
-  { key: 'evidence', label: 'Evidence' },
+  { key: 'infer_branches', label: 'Infer' },
+  { key: 'locate_evidence', label: 'Evidence' },
   { key: 'propose', label: 'Propose' },
-  { key: 'rank', label: 'Rank' },
+  { key: 'rank_repairs', label: 'Rank' },
   { key: 'judge', label: 'Judge' }
 ]
 

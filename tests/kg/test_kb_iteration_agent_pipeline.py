@@ -267,6 +267,31 @@ class FabricatedEvidenceAgentClient(SequencedAgentClient):
         self.outputs[3]["proposals"][0]["evidence"] = ["made-up-source"]
 
 
+class FabricatedGroundedEvidenceAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.outputs[2] = {
+            "evidence_map": [
+                {
+                    "issue_id": "issue-hierarchy-symptom-001",
+                    "target": "hierarchy:symptom",
+                    "confidence": 0.99,
+                    "missing_evidence": [],
+                    "supporting_items": [
+                        {
+                            "item_type": "source",
+                            "item_id": "fake-source",
+                            "source_id": "fake-source",
+                            "file_path": "fake.md",
+                            "evidence_status": "grounded",
+                        }
+                    ],
+                }
+            ]
+        }
+        self.outputs[3]["proposals"][0]["evidence"] = ["fake-source"]
+
+
 class SubstringFabricatedEvidenceAgentClient(SequencedAgentClient):
     def __init__(self) -> None:
         super().__init__()
@@ -455,6 +480,37 @@ def test_pipeline_rejects_fabricated_proposal_evidence(tmp_path: Path):
     assert propose_trace["stage"] == "propose"
     assert "evidence" in propose_trace["error"]
     assert "ground" in propose_trace["error"]
+
+
+def test_pipeline_rejects_proposal_evidence_grounded_only_by_llm_evidence_map(
+    tmp_path: Path,
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = FabricatedGroundedEvidenceAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    assert result.proposal_ids == []
+    assert len(client.calls) == 4
+    approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
+    report = (package / "llm_review_report.md").read_text(encoding="utf-8")
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    assert "proposals: []" in approval_queue
+    assert "proposal-hierarchy-symptom-001" not in approval_queue
+    assert "evidence is not grounded in deterministic artifacts" in report
+    assert propose_trace["stage"] == "propose"
+    assert (
+        "evidence is not grounded in deterministic artifacts"
+        in propose_trace["error"]
+    )
 
 
 def test_pipeline_rejects_evidence_that_only_contains_reference_as_substring(
