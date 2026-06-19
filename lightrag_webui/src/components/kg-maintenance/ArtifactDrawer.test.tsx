@@ -9,7 +9,7 @@ const artifacts: DrawerArtifact[] = [
     sourceFile: 'kb_context.md',
     zhFile: 'kb_context.zh.md',
     step: 'check',
-    status: '已生成'
+    status: 'generated'
   },
   {
     key: 'approval_queue',
@@ -17,7 +17,7 @@ const artifacts: DrawerArtifact[] = [
     sourceFile: 'approval_queue.md',
     zhFile: 'approval_queue.zh.md',
     step: 'approval',
-    status: '缺失'
+    status: 'missing'
   },
   {
     key: 'llm_issue_analysis',
@@ -25,7 +25,7 @@ const artifacts: DrawerArtifact[] = [
     sourceFile: 'llm_issue_analysis.md',
     zhFile: 'llm_issue_analysis.zh.md',
     step: 'llm-review',
-    status: '已生成'
+    status: 'generated'
   }
 ]
 
@@ -49,6 +49,10 @@ describe('ArtifactDrawer', () => {
     expect(markup).toContain('kb_context.zh.md')
     expect(markup).toContain('approval_queue.zh.md')
     expect(markup).toContain('llm_issue_analysis.zh.md')
+    expect(markup.match(/已生成/g)?.length).toBeGreaterThanOrEqual(3)
+    expect(markup.match(/缺失/g)?.length).toBeGreaterThanOrEqual(2)
+    expect(markup).toContain('z-50')
+    expect(markup).not.toContain('z-40')
   })
 
   test('renders nothing when closed', () => {

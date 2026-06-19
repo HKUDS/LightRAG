@@ -128,7 +128,7 @@ export default function KGMaintenanceConsole() {
       sourceFile: artifact.sourceFile,
       zhFile: artifact.zhFile,
       step: artifact.step,
-      status: artifactExists.get(artifact.key) ? '已生成' : '缺失'
+      status: artifactExists.get(artifact.key) ? 'generated' : 'missing'
     }))
   }, [summary?.artifacts])
 
