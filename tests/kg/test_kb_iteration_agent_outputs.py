@@ -72,6 +72,37 @@ def test_parse_agent_stage_output_validates_proposals_with_existing_schema():
     ]
 
 
+def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
+    output = parse_agent_stage_output(
+        "propose",
+        json.dumps(
+            {
+                "proposals": [
+                    _proposal_payload(
+                        evidence=[
+                            {
+                                "source_id": "chunk-1",
+                                "file_path": "guide.md",
+                                "item_id": "edge-flu-fever",
+                                "reason": "supports hierarchy gap",
+                            },
+                            "quality:hierarchy_missing_branch_count=1",
+                        ]
+                    )
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    evidence = output.proposals[0].evidence
+    assert all(isinstance(item, str) for item in evidence)
+    assert evidence == [
+        "source_id: chunk-1; file_path: guide.md; item_id: edge-flu-fever; reason: supports hierarchy gap",
+        "quality:hierarchy_missing_branch_count=1",
+    ]
+
+
 def test_parse_agent_stage_output_rejects_mutation_proposals_with_empty_evidence():
     with pytest.raises(ValueError, match="evidence"):
         parse_agent_stage_output(

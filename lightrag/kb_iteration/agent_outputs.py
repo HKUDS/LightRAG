@@ -44,6 +44,15 @@ _STAGE_ARTIFACTS = {
         "llm_judge_report",
     ),
 }
+_EVIDENCE_FIELD_ORDER = (
+    "source_id",
+    "file_path",
+    "item_id",
+    "entity_id",
+    "relation_id",
+    "metric",
+    "reason",
+)
 
 
 def parse_agent_stage_output(stage: str, raw_text: str) -> AgentStageOutput:
@@ -60,7 +69,7 @@ def parse_agent_stage_output(stage: str, raw_text: str) -> AgentStageOutput:
 
     review_output = parse_llm_review_output(
         json.dumps(
-            {"proposals": payload.get("proposals", [])},
+            {"proposals": _normalize_agent_proposals(payload.get("proposals"))},
             ensure_ascii=False,
         )
     )
@@ -77,6 +86,70 @@ def parse_agent_stage_output(stage: str, raw_text: str) -> AgentStageOutput:
 
 def _has_evidence(proposal: ImprovementProposal) -> bool:
     return any(item.strip() for item in proposal.evidence)
+
+
+def _normalize_agent_proposals(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    proposals: list[dict[str, Any]] = []
+    for proposal in value:
+        if not isinstance(proposal, dict):
+            continue
+        normalized = dict(proposal)
+        normalized["evidence"] = _normalize_agent_proposal_evidence(
+            proposal.get("evidence")
+        )
+        proposals.append(normalized)
+    return proposals
+
+
+def _normalize_agent_proposal_evidence(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    evidence = []
+    for item in value:
+        normalized = _normalize_agent_evidence_item(item)
+        if normalized:
+            evidence.append(normalized)
+    return evidence
+
+
+def _normalize_agent_evidence_item(value: Any) -> str:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else value
+    if not isinstance(value, dict):
+        return ""
+
+    parts = []
+    ordered_keys = [
+        key
+        for key in _EVIDENCE_FIELD_ORDER
+        if key in value
+    ]
+    ordered_keys.extend(
+        key
+        for key in sorted(value)
+        if key not in _EVIDENCE_FIELD_ORDER
+    )
+    for key in ordered_keys:
+        rendered = _render_evidence_value(value.get(key))
+        if rendered:
+            parts.append(f"{key}: {rendered}")
+    return "; ".join(parts)
+
+
+def _render_evidence_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, list):
+        rendered = [_render_evidence_value(item) for item in value]
+        return ", ".join(item for item in rendered if item)
+    return ""
 
 
 def write_agent_stage_artifacts(
