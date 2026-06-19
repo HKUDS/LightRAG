@@ -6,6 +6,7 @@ import {
   findNodeByIdAcrossSources,
   formatRunSubtitle,
   getEvidenceCoveragePercent,
+  groupProposalVersions,
   parseProposalDecisionStates,
   parseProposalSummaries,
   proposalNeedsConfirmation
@@ -95,6 +96,7 @@ describe('KG maintenance proposal decision safety', () => {
     const [proposal] = parseProposalSummaries(`
 proposals:
 - id: p1
+  parent_proposal_id: p0
   type: web_display_change
   target: MedicalHierarchyGraph.tsx
   proposed_change: Add relation legend
@@ -109,9 +111,47 @@ proposals:
 `)
 
     expect(proposal.proposedChange).toBe('Add relation legend')
+    expect(proposal.parentId).toBe('p0')
     expect(proposal.reason).toBe('Reviewers need relation semantics')
     expect(proposal.confidence).toBe('0.75')
     expect(proposal.expectedMetricChange).toContain('web_readability')
+  })
+
+  test('groups proposal versions and exposes latest version', () => {
+    const proposals = [
+      {
+        id: 'prop-a',
+        type: 'rule_change',
+        target: 'x',
+        proposedChange: 'v1',
+        reason: '',
+        confidence: '',
+        risk: 'medium',
+        requiresApproval: true,
+        evidence: [],
+        expectedMetricChange: ''
+      },
+      {
+        id: 'prop-a-v2',
+        type: 'rule_change',
+        target: 'x',
+        proposedChange: 'v2',
+        reason: '',
+        confidence: '',
+        risk: 'low',
+        requiresApproval: true,
+        evidence: [],
+        expectedMetricChange: '',
+        parentId: 'prop-a'
+      }
+    ]
+
+    const grouped = groupProposalVersions(proposals)
+
+    expect(grouped).toHaveLength(1)
+    expect(grouped[0].baseId).toBe('prop-a')
+    expect(grouped[0].latest.id).toBe('prop-a-v2')
+    expect(grouped[0].versions.map((item) => item.id)).toEqual(['prop-a', 'prop-a-v2'])
   })
 
   test('parses recorded proposal decisions from decision memory artifacts', () => {

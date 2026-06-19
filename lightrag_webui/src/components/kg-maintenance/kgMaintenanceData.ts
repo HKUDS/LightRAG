@@ -6,6 +6,7 @@ import type {
 
 export type ProposalSummary = {
   id: string
+  parentId?: string
   type: string
   target: string
   proposedChange: string
@@ -25,6 +26,12 @@ export type ProposalDecisionReview = {
 }
 
 export type ProposalDecisionStates = Partial<Record<string, KBIterationProposalDecision>>
+
+export type ProposalVersionGroup = {
+  baseId: string
+  latest: ProposalSummary
+  versions: ProposalSummary[]
+}
 
 export const MEDICAL_REVIEW_CONFIRMATION =
   '该操作会改变知识库行为或重建结果。请确认已检查来源证据、影响范围和回滚方式。'
@@ -52,9 +59,7 @@ export function getEvidenceCoveragePercent(quality?: {
   metrics?: Record<string, number | undefined>
   subscores?: Record<string, number | undefined>
 }) {
-  return Number(
-    quality?.metrics?.evidence_coverage ?? quality?.subscores?.evidence_grounding ?? 0
-  )
+  return Number(quality?.metrics?.evidence_coverage ?? quality?.subscores?.evidence_grounding ?? 0)
 }
 
 export function formatRunSubtitle(profile: string | null | undefined, phase: string) {
@@ -113,6 +118,7 @@ export function parseProposalSummaries(markdown: string): ProposalSummary[] {
     const fieldMatch = trimmed.match(/^([a-zA-Z_]+):\s*(.*)$/)
     if (!fieldMatch) continue
     const [, key, value] = fieldMatch
+    if (key === 'parent_proposal_id') current.parentId = value
     if (key === 'type') current.type = value
     if (key === 'target') current.target = value
     if (key === 'proposed_change') current.proposedChange = value
@@ -124,6 +130,20 @@ export function parseProposalSummaries(markdown: string): ProposalSummary[] {
 
   if (current) proposals.push(current)
   return proposals
+}
+
+export function groupProposalVersions(proposals: ProposalSummary[]): ProposalVersionGroup[] {
+  const groups = new Map<string, ProposalSummary[]>()
+  for (const proposal of proposals) {
+    const baseId = proposal.parentId || proposal.id.replace(/-v\d+$/i, '')
+    groups.set(baseId, [...(groups.get(baseId) || []), proposal])
+  }
+
+  return Array.from(groups.entries()).map(([baseId, versions]) => ({
+    baseId,
+    versions,
+    latest: versions[versions.length - 1]
+  }))
 }
 
 export function parseProposalDecisionStates({

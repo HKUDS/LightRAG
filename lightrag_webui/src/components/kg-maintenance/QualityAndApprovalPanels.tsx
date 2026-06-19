@@ -7,12 +7,9 @@ import type {
 } from '@/api/lightrag'
 import type { KBIterationProposalDecision } from '@/api/lightrag'
 import {
-  canSubmitProposalDecision,
   countApprovalRequired,
-  MEDICAL_REVIEW_CONFIRMATION,
   parseProposalDecisionStates,
   parseProposalSummaries,
-  proposalNeedsConfirmation,
   type ProposalDecisionReview,
   type ProposalSummary
 } from './kgMaintenanceData'
@@ -34,6 +31,7 @@ interface ApprovalPanelProps {
     decision: KBIterationProposalDecision,
     review: ProposalDecisionReview
   ) => void | Promise<void>
+  onRequestRevision?: (proposal: ProposalSummary) => void | Promise<void>
 }
 
 interface DiffPanelProps {
@@ -62,8 +60,7 @@ const RECORDED_DECISION_LABELS: Record<KBIterationProposalDecision, string> = {
 }
 
 const RECORDED_DECISION_CLASSES: Record<KBIterationProposalDecision, string> = {
-  accept:
-    'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200',
+  accept: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200',
   reject: 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-200',
   defer: 'bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-200'
 }
@@ -125,7 +122,10 @@ export function QualityPanel({ quality }: QualityPanelProps) {
       ) : null}
       <div className="space-y-2">
         {findings.map((finding, index) => (
-          <article key={`${finding.category}-${index}`} className="border-border/70 rounded-lg border p-3">
+          <article
+            key={`${finding.category}-${index}`}
+            className="border-border/70 rounded-lg border p-3"
+          >
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
                 <div className="text-sm font-medium">{finding.message}</div>
@@ -154,17 +154,14 @@ export function ApprovalPanel({
   acceptedChanges = '',
   rejectedChanges = '',
   onOpenEvidence,
-  onDecision
+  onDecision,
+  onRequestRevision
 }: ApprovalPanelProps) {
   const proposals = parseProposalSummaries(approvalQueue)
   const decisionStates = useMemo(
     () => parseProposalDecisionStates({ acceptedChanges, rejectedChanges }),
     [acceptedChanges, rejectedChanges]
   )
-  const [reasons, setReasons] = useState<Record<string, string>>({})
-  const [impactScopes, setImpactScopes] = useState<Record<string, string>>({})
-  const [verifications, setVerifications] = useState<Record<string, string>>({})
-  const [confirmations, setConfirmations] = useState<Record<string, string>>({})
   const [collapsedProposals, setCollapsedProposals] = useState<Record<string, boolean>>({})
 
   return (
@@ -184,38 +181,73 @@ export function ApprovalPanel({
             const collapsed = Boolean(collapsedProposals[proposal.id])
             const detailsId = proposalDetailsId(proposal.id)
             const ToggleIcon = collapsed ? MaximizeIcon : MinimizeIcon
+            const decisionDisabled = !onDecision || Boolean(recordedDecision)
             return (
               <article
                 key={proposal.id}
-                className={`border-border/70 rounded-lg border transition-colors ${collapsed ? 'p-2' : 'p-3'}`}
+                className="border-border/70 rounded-lg border p-3 transition-colors"
               >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold">{proposal.id}</div>
-                    <div className="text-muted-foreground mt-1 text-xs">
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {recordedDecision && (
+                        <span
+                          className={`rounded-md px-2 py-1 text-xs font-medium ${RECORDED_DECISION_CLASSES[recordedDecision]}`}
+                        >
+                          {RECORDED_DECISION_LABELS[recordedDecision]}
+                        </span>
+                      )}
+                      <div className="min-w-0 text-sm font-semibold">
+                        <span className="mr-2">{proposal.id}</span>
+                        <span className="text-muted-foreground font-normal">
+                          {proposal.proposedChange || '未说明'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-muted-foreground mt-1 truncate text-xs">
                       {proposal.type || '未知类型'} / {proposal.target || '未指定目标'}
                     </div>
                   </div>
-                  <div className="flex flex-wrap justify-end gap-2">
-                    {recordedDecision && (
-                      <span
-                        className={`rounded-md px-2 py-1 text-xs font-medium ${RECORDED_DECISION_CLASSES[recordedDecision]}`}
-                      >
-                        {RECORDED_DECISION_LABELS[recordedDecision]}
-                      </span>
-                    )}
+                  <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                     <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200">
                       {proposal.risk || '风险未知'}
                     </span>
                     <Button
                       type="button"
+                      size="sm"
+                      disabled={decisionDisabled}
+                      onClick={() => void onDecision?.(proposal, 'accept', emptyProposalReview())}
+                    >
+                      {DECISION_LABELS.accept}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={decisionDisabled}
+                      onClick={() => void onDecision?.(proposal, 'reject', emptyProposalReview())}
+                    >
+                      {DECISION_LABELS.reject}
+                    </Button>
+                    {recordedDecision === 'reject' && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!onRequestRevision}
+                        onClick={() => void onRequestRevision?.(proposal)}
+                      >
+                        让 Agent 修改
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
                       variant="ghost"
-                      size="icon"
-                      className="size-7"
-                      aria-label={`${collapsed ? '展开' : '收起'} ${proposal.id}`}
+                      size="sm"
+                      aria-label={`展开/收起 ${proposal.id}`}
                       aria-controls={detailsId}
                       aria-expanded={!collapsed}
-                      tooltip={collapsed ? '展开审批详情' : '收起为一行'}
+                      tooltip={collapsed ? '展开审批详情' : '收起审批详情'}
                       onClick={() =>
                         setCollapsedProposals((draft) => ({
                           ...draft,
@@ -224,6 +256,7 @@ export function ApprovalPanel({
                       }
                     >
                       <ToggleIcon className="size-4" />
+                      {collapsed ? '展开' : '收起'}
                     </Button>
                   </div>
                 </div>
@@ -255,75 +288,7 @@ export function ApprovalPanel({
                     </div>
                     {recordedDecision ? (
                       <RecordedDecisionNotice decision={recordedDecision} />
-                    ) : (
-                      <div className="grid gap-2">
-                        <textarea
-                          value={reasons[proposal.id] || ''}
-                          onChange={(event) =>
-                            setReasons((draft) => ({
-                              ...draft,
-                              [proposal.id]: event.target.value
-                            }))
-                          }
-                          className="border-input bg-background min-h-20 rounded-md border px-3 py-2 text-sm"
-                          placeholder="审批理由"
-                        />
-                        <textarea
-                          value={impactScopes[proposal.id] || ''}
-                          onChange={(event) =>
-                            setImpactScopes((draft) => ({
-                              ...draft,
-                              [proposal.id]: event.target.value
-                            }))
-                          }
-                          className="border-input bg-background min-h-16 rounded-md border px-3 py-2 text-sm"
-                          placeholder="影响范围"
-                        />
-                        <textarea
-                          value={verifications[proposal.id] || ''}
-                          onChange={(event) =>
-                            setVerifications((draft) => ({
-                              ...draft,
-                              [proposal.id]: event.target.value
-                            }))
-                          }
-                          className="border-input bg-background min-h-16 rounded-md border px-3 py-2 text-sm"
-                          placeholder="验证 / 回滚说明"
-                        />
-                        {proposalNeedsConfirmation(proposal) && (
-                          <div className="border-amber-300 bg-amber-50 text-amber-950 rounded-md border p-3 text-sm dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
-                            <p>{MEDICAL_REVIEW_CONFIRMATION}</p>
-                            <input
-                              value={confirmations[proposal.id] || ''}
-                              onChange={(event) =>
-                                setConfirmations((draft) => ({
-                                  ...draft,
-                                  [proposal.id]: event.target.value
-                                }))
-                              }
-                              className="border-input bg-background mt-2 h-9 w-full rounded-md border px-3 text-sm"
-                              placeholder={MEDICAL_REVIEW_CONFIRMATION}
-                            />
-                          </div>
-                        )}
-                        <div className="flex flex-wrap gap-2">
-                          {(['accept', 'reject', 'defer'] as KBIterationProposalDecision[]).map(
-                            (decision) => (
-                              <DecisionButton
-                                key={decision}
-                                proposal={proposal}
-                                decision={decision}
-                                reason={reasons[proposal.id] || ''}
-                                impactScope={impactScopes[proposal.id] || ''}
-                                verification={verifications[proposal.id] || ''}
-                                confirmation={confirmations[proposal.id] || ''}
-                                onDecision={onDecision}
-                              />
-                            )
-                          )}
-                        </div>
-                      </div>
-                    )}
+                    ) : null}
                   </div>
                 )}
               </article>
@@ -349,45 +314,20 @@ function proposalDetailsId(proposalId: string) {
   return `proposal-details-${proposalId.replace(/[^a-zA-Z0-9_-]/g, '-')}`
 }
 
-function DecisionButton({
-  proposal,
-  decision,
-  reason,
-  impactScope,
-  verification,
-  confirmation,
-  onDecision
-}: {
-  proposal: ProposalSummary
-  decision: KBIterationProposalDecision
-  reason: string
-  impactScope: string
-  verification: string
-  confirmation: string
-  onDecision?: (
-    proposal: ProposalSummary,
-    decision: KBIterationProposalDecision,
-    review: ProposalDecisionReview
-  ) => void | Promise<void>
-}) {
-  const review = { reason, impactScope, verification, confirmation }
-  return (
-    <Button
-      variant={decision === 'accept' ? 'default' : 'outline'}
-      size="sm"
-      disabled={!onDecision || !canSubmitProposalDecision(proposal, review)}
-      onClick={() => void onDecision?.(proposal, decision, review)}
-    >
-      {DECISION_LABELS[decision]}
-    </Button>
-  )
+function emptyProposalReview(): ProposalDecisionReview {
+  return {
+    reason: '',
+    impactScope: '',
+    verification: '',
+    confirmation: ''
+  }
 }
 
 function ProposalField({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md bg-muted/30 p-2">
+    <div className="bg-muted/30 rounded-md p-2">
       <div className="text-muted-foreground text-xs">{label}</div>
-      <div className="mt-1 whitespace-pre-wrap break-words text-sm">{value || '未说明'}</div>
+      <div className="mt-1 text-sm break-words whitespace-pre-wrap">{value || '未说明'}</div>
     </div>
   )
 }
@@ -474,7 +414,7 @@ function MarkdownArtifact({ title, content }: { title: string; content: string }
   return (
     <details className="border-border/70 rounded-lg border p-3" open={false}>
       <summary className="cursor-pointer text-sm font-medium">{title}</summary>
-      <pre className="text-muted-foreground mt-3 max-h-80 overflow-auto whitespace-pre-wrap text-xs">
+      <pre className="text-muted-foreground mt-3 max-h-80 overflow-auto text-xs whitespace-pre-wrap">
         {content || '暂无产物内容'}
       </pre>
     </details>

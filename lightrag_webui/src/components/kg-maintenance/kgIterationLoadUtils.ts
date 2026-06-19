@@ -8,6 +8,7 @@ import {
   getKBIterationRules,
   getKBIterationSummary,
   recordKBIterationProposalDecision,
+  requestKBIterationProposalRevision,
   type KBIterationProposalDecision,
   type KBIterationQualityResponse,
   type KBIterationRulesResponse,
@@ -233,6 +234,15 @@ type ProposalDecisionActionArgs = {
   onError?: (error: unknown) => void
 }
 
+type ProposalRevisionActionArgs = {
+  requestWorkspace: string
+  getCurrentWorkspace: () => string | null
+  proposal: ProposalSummary
+  reloadWorkspaceData: () => Promise<void>
+  requestRevision?: typeof requestKBIterationProposalRevision
+  onError?: (error: unknown) => void
+}
+
 export async function submitProposalDecisionForWorkspace({
   requestWorkspace,
   getCurrentWorkspace,
@@ -254,6 +264,28 @@ export async function submitProposalDecisionForWorkspace({
         impact_scope: auditReview.impactScope,
         verification: auditReview.verification
       }),
+    onSuccess: async (_result, shouldApply) => {
+      if (!shouldApply()) return
+      await reloadWorkspaceData()
+    },
+    onError: (error) => {
+      onError?.(error)
+    }
+  })
+}
+
+export async function requestProposalRevisionForWorkspace({
+  requestWorkspace,
+  getCurrentWorkspace,
+  proposal,
+  reloadWorkspaceData,
+  requestRevision = requestKBIterationProposalRevision,
+  onError
+}: ProposalRevisionActionArgs): Promise<void> {
+  await runWorkspaceAction({
+    requestWorkspace,
+    getCurrentWorkspace,
+    action: () => requestRevision(requestWorkspace, proposal.id),
     onSuccess: async (_result, shouldApply) => {
       if (!shouldApply()) return
       await reloadWorkspaceData()

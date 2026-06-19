@@ -31,6 +31,7 @@ import {
   loadKGMaintenanceWorkspaceBundle,
   normalizeOptionalMarkdown,
   runWorkspaceAction,
+  requestProposalRevisionForWorkspace,
   submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse
 } from '@/components/kg-maintenance/kgIterationLoadUtils'
@@ -367,6 +368,25 @@ export default function KGMaintenanceConsole() {
     [loadWorkspaceData, selectedWorkspace]
   )
 
+  const handleRequestProposalRevision = useCallback(
+    async (proposal: ProposalSummary) => {
+      if (!selectedWorkspace) return
+      const requestWorkspace = selectedWorkspace
+      const getCurrentWorkspace = () => useKGMaintenanceStore.getState().selectedWorkspace
+      setError(null)
+      await requestProposalRevisionForWorkspace({
+        requestWorkspace,
+        getCurrentWorkspace,
+        proposal,
+        reloadWorkspaceData: loadWorkspaceData,
+        onError: (err) => {
+          setError(errorMessage(err))
+        }
+      })
+    },
+    [loadWorkspaceData, selectedWorkspace]
+  )
+
   const handleExecuteAcceptedChanges = useCallback(async () => {
     if (!selectedWorkspace || running || llmRunning || acceptedExecuting) return
     const requestWorkspace = selectedWorkspace
@@ -459,6 +479,7 @@ export default function KGMaintenanceConsole() {
           onOpenSection={handleOpenSection}
           onRunReview={handleRunReview}
           onProposalDecision={handleProposalDecision}
+          onRequestProposalRevision={handleRequestProposalRevision}
           onExecuteAcceptedChanges={handleExecuteAcceptedChanges}
           onRunLLMReview={handleRunLLMReview}
           onLoadPatch={handleLoadPatch}
@@ -507,6 +528,7 @@ interface MainPanelProps {
     decision: KBIterationProposalDecision,
     review: ProposalDecisionReview
   ) => void | Promise<void>
+  onRequestProposalRevision?: (proposal: ProposalSummary) => void | Promise<void>
   onExecuteAcceptedChanges: () => void
   onRunLLMReview: () => void
   onLoadPatch: (proposalId: string) => void
@@ -541,6 +563,7 @@ export function MainPanel({
   onOpenSection,
   onRunReview,
   onProposalDecision,
+  onRequestProposalRevision,
   onExecuteAcceptedChanges,
   onRunLLMReview,
   onLoadPatch
@@ -577,6 +600,7 @@ export function MainPanel({
         acceptedChanges={rules?.acceptedChanges || ''}
         rejectedChanges={rules?.rejectedChanges || ''}
         onDecision={onProposalDecision}
+        onRequestRevision={onRequestProposalRevision}
       />
     )
   }
