@@ -1592,12 +1592,15 @@ def _build_proposal_revision_request_record(
         reason = _default_revision_request_reason(
             proposal_id, proposal, existing_decision
         )
+    instruction = request.instruction.strip() or _default_revision_request_instruction(
+        proposal_id, proposal, reason
+    )
     return {
         "proposal_id": proposal_id,
         "requested_at": requested_at,
         "reviewer": request.reviewer,
         "reason": reason,
-        "instruction": request.instruction.strip(),
+        "instruction": instruction,
         "proposal_type": proposal.get("type", ""),
         "proposal_target": proposal.get("target", ""),
         "proposal_risk": proposal.get("risk", ""),
@@ -1626,6 +1629,19 @@ def _default_revision_request_reason(
     return (
         f"Queue a revision for rejected proposal {proposal_id} in the next agent iteration. "
         f"Use the parent proposal reason as context: {proposal_reason}."
+    )
+
+
+def _default_revision_request_instruction(
+    proposal_id: str, proposal: dict[str, Any], reason: str
+) -> str:
+    proposal_type = str(proposal.get("type", "")).strip() or "unknown"
+    proposal_target = str(proposal.get("target", "")).strip() or "unknown"
+    proposal_risk = str(proposal.get("risk", "")).strip() or "unknown"
+    return (
+        f"Agent should prepare a revised proposal for {proposal_id}, preserving the "
+        f"parent proposal scope: type {proposal_type}, target {proposal_target}, "
+        f"risk {proposal_risk}. Address this revision request: {reason}"
     )
 
 

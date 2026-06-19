@@ -647,6 +647,11 @@ def test_proposal_revision_request_accepts_empty_body_and_records_defaults(
     assert record["proposal_risk"] == "medium"
     assert "rejected" in record["reason"].lower()
     assert "revision" in record["reason"].lower()
+    assert record["instruction"]
+    instruction = record["instruction"].lower()
+    assert "revision" in instruction
+    assert "agent" in instruction
+    assert "proposal" in instruction
     assert record["requested_at"]
 
     revision_requests = (
@@ -655,6 +660,7 @@ def test_proposal_revision_request_accepts_empty_body_and_records_defaults(
     assert "p1" in revision_requests
     assert "hierarchy_rule_change" in revision_requests
     assert "kg_structure.md" in revision_requests
+    assert record["instruction"] in revision_requests
 
     iteration_log = (fixture.package / "iteration_log.md").read_text(encoding="utf-8")
     assert "- phase: proposal_revision_request" in iteration_log
