@@ -331,6 +331,12 @@ class StructuredUnknownKeyEvidenceAgentClient(SequencedAgentClient):
         ]
 
 
+class StructuredWrongKeyEvidenceAgentClient(SequencedAgentClient):
+    def __init__(self, evidence: str) -> None:
+        super().__init__()
+        self.outputs[3]["proposals"][0]["evidence"] = [evidence]
+
+
 class SubstringFabricatedEvidenceAgentClient(SequencedAgentClient):
     def __init__(self) -> None:
         super().__init__()
@@ -640,6 +646,40 @@ def test_pipeline_rejects_structured_evidence_with_unknown_key(tmp_path: Path):
     package = tmp_path / "package"
     _write_agent_package(package)
     client = StructuredUnknownKeyEvidenceAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    assert result.proposal_ids == []
+    assert len(client.calls) == 4
+    approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    assert "proposals: []" in approval_queue
+    assert "proposal-hierarchy-symptom-001" not in approval_queue
+    assert propose_trace["stage"] == "propose"
+    assert "evidence is not grounded in deterministic artifacts" in propose_trace["error"]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "source_id: guide.md",
+        "file_path: chunk-1",
+        "entity_id: guide.md",
+    ],
+)
+def test_pipeline_rejects_structured_evidence_with_wrong_key_type(
+    tmp_path: Path, evidence: str
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = StructuredWrongKeyEvidenceAgentClient(evidence)
 
     result = run_llm_agent_pipeline(
         workspace="demo",

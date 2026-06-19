@@ -100,6 +100,14 @@ _JUDGE_DECISIONS = {
 _JUDGE_HUMAN_DECISIONS = {"needs_human", "needs_more_evidence"}
 
 
+@dataclass
+class _EvidenceReferenceTokens:
+    all: set[str] = field(default_factory=set)
+    by_key: dict[str, set[str]] = field(
+        default_factory=lambda: {key: set() for key in _EVIDENCE_REFERENCE_KEYS}
+    )
+
+
 def run_llm_agent_pipeline(
     *,
     workspace: str,
@@ -528,31 +536,36 @@ def _validate_grounded_proposal_evidence(
 
 def _grounded_reference_tokens(
     output_dir: Path, previous_outputs: dict[str, Any]
-) -> set[str]:
-    tokens: set[str] = set()
+) -> _EvidenceReferenceTokens:
+    tokens = _EvidenceReferenceTokens()
     snapshot = _read_json(output_dir / "snapshots" / "kg_snapshot.json")
     quality = _read_json(output_dir / "snapshots" / "quality_score.json")
 
     if isinstance(snapshot, dict):
+        _add_typed_reference_values(tokens, "file_path", snapshot.get("source_files"))
         for node in _list_of_dicts(snapshot.get("nodes")):
-            _add_reference_token(tokens, node.get("id"))
-            _add_reference_token(tokens, node.get("source_id"))
-            _add_reference_token(tokens, node.get("file_path"))
+            _add_typed_reference_token(tokens, "entity_id", node.get("id"))
+            _add_typed_reference_token(tokens, "item_id", node.get("id"))
+            _add_typed_reference_token(tokens, "source_id", node.get("source_id"))
+            _add_typed_reference_token(tokens, "file_path", node.get("file_path"))
         for edge in _list_of_dicts(snapshot.get("edges")):
-            _add_reference_token(tokens, edge.get("id"))
-            _add_reference_token(tokens, edge.get("source"))
-            _add_reference_token(tokens, edge.get("target"))
-            _add_reference_token(tokens, edge.get("source_id"))
-            _add_reference_token(tokens, edge.get("file_path"))
+            _add_typed_reference_token(tokens, "relation_id", edge.get("id"))
+            _add_typed_reference_token(tokens, "item_id", edge.get("id"))
+            _add_typed_reference_token(tokens, "entity_id", edge.get("source"))
+            _add_typed_reference_token(tokens, "entity_id", edge.get("target"))
+            _add_typed_reference_token(tokens, "item_id", edge.get("source"))
+            _add_typed_reference_token(tokens, "item_id", edge.get("target"))
+            _add_typed_reference_token(tokens, "source_id", edge.get("source_id"))
+            _add_typed_reference_token(tokens, "file_path", edge.get("file_path"))
 
     if isinstance(quality, dict):
         subscores = quality.get("subscores")
         for key in _dict_keys(subscores):
-            _add_reference_token(tokens, key)
+            _add_typed_reference_token(tokens, "metric", key)
             _add_quality_reference_token(tokens, key, _dict_value(subscores, key))
         metrics = quality.get("metrics")
         for key in _dict_keys(metrics):
-            _add_reference_token(tokens, key)
+            _add_typed_reference_token(tokens, "metric", key)
             _add_quality_reference_token(tokens, key, _dict_value(metrics, key))
         for finding in _list_of_dicts(quality.get("findings")):
             _add_reference_values(tokens, finding.get("evidence"))
@@ -569,12 +582,12 @@ def _grounded_reference_tokens(
 
 
 def _evidence_references_known_artifact(
-    evidence: Any, reference_tokens: set[str]
+    evidence: Any, reference_tokens: _EvidenceReferenceTokens
 ) -> bool:
     if not isinstance(evidence, str) or not evidence.strip():
         return False
     evidence_text = _normalize_reference_part(evidence)
-    if evidence_text in reference_tokens:
+    if evidence_text in reference_tokens.all:
         return True
     if ":" not in evidence:
         return False
@@ -584,7 +597,7 @@ def _evidence_references_known_artifact(
 
 
 def _structured_evidence_references_known_artifacts(
-    evidence: str, reference_tokens: set[str]
+    evidence: str, reference_tokens: _EvidenceReferenceTokens
 ) -> bool:
     segments = [segment.strip() for segment in evidence.split(";")]
     if not segments or any(not segment for segment in segments):
@@ -601,15 +614,16 @@ def _structured_evidence_references_known_artifacts(
         non_empty_values = [part for part in value_parts if part]
         if not non_empty_values:
             return False
+        allowed_tokens = reference_tokens.by_key[normalized_key]
         for value_part in non_empty_values:
-            if _normalize_reference_part(value_part) not in reference_tokens:
+            if _normalize_reference_part(value_part) not in allowed_tokens:
                 return False
         has_value = True
 
     return has_value
 
 
-def _add_reference_values(tokens: set[str], value: Any) -> None:
+def _add_reference_values(tokens: _EvidenceReferenceTokens, value: Any) -> None:
     if isinstance(value, dict):
         for nested_value in value.values():
             _add_reference_values(tokens, nested_value)
@@ -621,20 +635,49 @@ def _add_reference_values(tokens: set[str], value: Any) -> None:
     _add_reference_token(tokens, value)
 
 
-def _add_reference_token(tokens: set[str], value: Any) -> None:
+def _add_reference_token(tokens: _EvidenceReferenceTokens, value: Any) -> None:
     if value is None:
         return
     normalized = str(value).replace(GRAPH_FIELD_SEP, "\n").replace("|", "\n")
     for part in normalized.splitlines():
         token = _normalize_reference_part(part)
         if len(token) >= 3:
-            tokens.add(token)
+            tokens.all.add(token)
 
 
-def _add_quality_reference_token(tokens: set[str], key: str, value: Any) -> None:
+def _add_typed_reference_values(
+    tokens: _EvidenceReferenceTokens, key: str, value: Any
+) -> None:
+    if isinstance(value, dict):
+        for nested_value in value.values():
+            _add_typed_reference_values(tokens, key, nested_value)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _add_typed_reference_values(tokens, key, item)
+        return
+    _add_typed_reference_token(tokens, key, value)
+
+
+def _add_typed_reference_token(
+    tokens: _EvidenceReferenceTokens, key: str, value: Any
+) -> None:
+    _add_reference_token(tokens, value)
+    if value is None:
+        return
+    normalized = str(value).replace(GRAPH_FIELD_SEP, "\n").replace("|", "\n")
+    for part in normalized.splitlines():
+        token = _normalize_reference_part(part)
+        if len(token) >= 3:
+            tokens.by_key[key].add(token)
+
+
+def _add_quality_reference_token(
+    tokens: _EvidenceReferenceTokens, key: str, value: Any
+) -> None:
     if isinstance(value, bool) or not isinstance(value, str | int | float):
         return
-    _add_reference_token(tokens, f"quality:{key}={value}")
+    _add_typed_reference_token(tokens, "metric", f"quality:{key}={value}")
 
 
 def _normalize_reference_part(value: Any) -> str:
