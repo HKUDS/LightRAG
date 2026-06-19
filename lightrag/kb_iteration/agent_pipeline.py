@@ -184,6 +184,7 @@ def run_llm_agent_pipeline(
             "model": _client_model(client),
             "input_token_estimate": input_token_estimate,
             "output_token_estimate": 0,
+            "attempt_logs": [],
             "proposal_ids": [],
             "artifact_keys": [],
             "error": "",
@@ -262,19 +263,28 @@ def run_llm_agent_pipeline(
                 if stage == "judge" and proposals:
                     _normalized_judge_results(parsed.payload, proposals)
             except ValueError as exc:
-                stage_trace["error"] = str(exc)
+                error = str(exc)
+                stage_trace["error"] = error
                 stage_trace["output_token_estimate"] = _estimate_tokens(raw_output)
+                _append_attempt_log(
+                    stage_trace,
+                    attempt=attempt,
+                    state="invalid_llm_output",
+                    error=error,
+                    raw_output=raw_output,
+                )
                 if attempt < max_attempts:
                     user_prompt = _retry_user_prompt(
                         base_user_prompt,
                         stage=stage,
-                        error=str(exc),
+                        error=error,
+                        previous_errors=_attempt_error_lines(stage_trace),
                     )
                     continue
                 if stage == "judge" and proposals:
                     return _finish_judge_unavailable(
                         output_dir=output_dir,
-                        error=str(exc),
+                        error=error,
                         proposals=proposals,
                         previous_outputs=previous_outputs,
                         artifact_paths=artifact_paths,
@@ -390,15 +400,70 @@ def _selected_stages(config: LLMAgentPipelineConfig) -> tuple[str, ...]:
     return tuple(stage for stage in _STAGES if stage != "judge")
 
 
-def _retry_user_prompt(base_user_prompt: str, *, stage: str, error: str) -> str:
+def _append_attempt_log(
+    stage_trace: dict[str, Any],
+    *,
+    attempt: int,
+    state: str,
+    error: str,
+    raw_output: str = "",
+) -> None:
+    attempt_logs = stage_trace.setdefault("attempt_logs", [])
+    if not isinstance(attempt_logs, list):
+        attempt_logs = []
+        stage_trace["attempt_logs"] = attempt_logs
+    attempt_logs.append(
+        {
+            "attempt": attempt,
+            "state": state,
+            "error": error,
+            "output_token_estimate": _estimate_tokens(raw_output) if raw_output else 0,
+        }
+    )
+
+
+def _attempt_error_lines(stage_trace: dict[str, Any]) -> list[str]:
+    lines = []
+    attempt_logs = stage_trace.get("attempt_logs")
+    if not isinstance(attempt_logs, list):
+        return lines
+    for item in attempt_logs:
+        if not isinstance(item, dict):
+            continue
+        attempt = item.get("attempt")
+        error = item.get("error")
+        if isinstance(attempt, int) and isinstance(error, str) and error:
+            lines.append(f"Attempt {attempt}: {error}")
+    return lines
+
+
+def _retry_user_prompt(
+    base_user_prompt: str,
+    *,
+    stage: str,
+    error: str,
+    previous_errors: list[str] | None = None,
+) -> str:
     guidance = [
         f"Previous output was rejected: {error}.",
         "Return corrected JSON only.",
     ]
+    if previous_errors:
+        guidance.extend(["Previous rejected attempts:", *previous_errors])
+    guidance.extend(
+        [
+            "Preserve deterministic evidence requirements.",
+            "Do not invent source_id, file_path, entity_id, relation_id, item_id, or metric references.",
+            "Do not claim LLM inference as medical evidence.",
+        ]
+    )
     if stage == "propose":
         guidance.append(
             'For "expected_metric_change", use finite JSON numbers only; '
             "use {} if no numeric estimate is available."
+        )
+        guidance.append(
+            "Every non-context proposal must keep requires_approval=true when it can mutate KG, rules, prompts, workspace, or WebUI behavior."
         )
         guidance.append("Do not change evidence/human-approval requirements.")
     return "\n\n".join([base_user_prompt, *guidance])

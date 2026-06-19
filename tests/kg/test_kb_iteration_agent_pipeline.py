@@ -408,6 +408,19 @@ class RetryProposeMetricAgentClient(SequencedAgentClient):
         self.outputs.insert(3, {"proposals": [invalid_proposal]})
 
 
+class RetryProposeTwiceAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        invalid_metric_proposal = dict(self.outputs[3]["proposals"][0])
+        invalid_metric_proposal["expected_metric_change"] = {
+            "hierarchy_completeness": "about 6"
+        }
+        invalid_evidence_proposal = dict(self.outputs[3]["proposals"][0])
+        invalid_evidence_proposal["evidence"] = ["not-grounded-source"]
+        self.outputs.insert(3, {"proposals": [invalid_metric_proposal]})
+        self.outputs.insert(4, {"proposals": [invalid_evidence_proposal]})
+
+
 def test_run_llm_agent_pipeline_writes_multistage_artifacts_and_queues_review(
     tmp_path: Path,
 ):
@@ -1189,6 +1202,58 @@ def test_pipeline_feeds_validation_errors_into_retry_prompt(tmp_path: Path):
     )
     assert "proposal-hierarchy-symptom-001" in approval_queue
     assert "proposal-hierarchy-symptom-001" in proposals_yaml
+
+
+def test_pipeline_retries_with_accumulated_rejection_history(tmp_path: Path):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = RetryProposeTwiceAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=2),
+    )
+
+    assert result.stop_reason == "pending_human_review"
+    assert result.proposal_ids == ["proposal-hierarchy-symptom-001"]
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][3]
+    assert propose_trace["stage"] == "propose"
+    assert propose_trace["attempts"] == 3
+    attempt_logs = propose_trace["attempt_logs"]
+    assert len(attempt_logs) == 2
+    assert attempt_logs[0]["attempt"] == 1
+    assert attempt_logs[0]["state"] == "invalid_llm_output"
+    assert (
+        attempt_logs[0]["error"]
+        == "proposal expected_metric_change values must be numbers"
+    )
+    assert isinstance(attempt_logs[0]["output_token_estimate"], int)
+    assert attempt_logs[0]["output_token_estimate"] > 0
+    assert attempt_logs[1]["attempt"] == 2
+    assert attempt_logs[1]["state"] == "invalid_llm_output"
+    assert (
+        attempt_logs[1]["error"]
+        == "proposal proposal-hierarchy-symptom-001 evidence is not grounded in deterministic artifacts"
+    )
+    assert isinstance(attempt_logs[1]["output_token_estimate"], int)
+    assert attempt_logs[1]["output_token_estimate"] > 0
+    third_propose_prompt = client.calls[5]["user_prompt"]
+    assert "Previous rejected attempts:" in third_propose_prompt
+    assert (
+        "Attempt 1: proposal expected_metric_change values must be numbers"
+        in third_propose_prompt
+    )
+    assert (
+        "Attempt 2: proposal proposal-hierarchy-symptom-001 evidence is not grounded in deterministic artifacts"
+        in third_propose_prompt
+    )
+    assert "Return corrected JSON only." in third_propose_prompt
+    assert (
+        "Do not change evidence/human-approval requirements." in third_propose_prompt
+    )
 
 
 def test_pipeline_writes_failure_artifacts_for_missing_required_package_artifact(
