@@ -514,6 +514,22 @@ export type KBIterationArtifactManifestItem = {
   key: string
   contentType: 'application/json' | 'text/markdown' | string
   exists: boolean
+  sourceFile?: string
+  display?: KBIterationDisplayMetadata
+}
+
+export type KBIterationDisplayMetadata = {
+  language: 'zh'
+  sourceFile?: string
+  zhFile: string
+  zhExists?: boolean
+  exists?: boolean
+  generated?: boolean
+  fallbackToSource?: boolean
+  generatedAt?: string
+  model?: string
+  error?: string
+  [key: string]: any
 }
 
 export type KBIterationQualityFinding = {
@@ -638,15 +654,29 @@ export type KBIterationRunsResponse = {
 
 export type KBIterationArtifactResponse =
   | {
-    artifactKey: string
-    contentType: 'application/json' | string
-    payload: any
-  }
+      artifactKey: string
+      contentType: 'application/json' | string
+      payload: any
+    }
   | {
-    artifactKey: string
-    contentType: 'text/markdown' | string
-    content: string
-  }
+      artifactKey: string
+      contentType: 'text/markdown' | string
+      content: string
+    }
+
+export type KBIterationDisplayArtifactResponse =
+  | {
+      artifactKey: string
+      contentType: 'application/json' | string
+      payload: any
+      display: KBIterationDisplayMetadata
+    }
+  | {
+      artifactKey: string
+      contentType: 'text/markdown' | 'text/plain' | string
+      content: string
+      display: KBIterationDisplayMetadata
+    }
 
 export type KBIterationProposalDecision = 'accept' | 'reject' | 'defer'
 
@@ -662,6 +692,20 @@ export type KBIterationProposalDecisionResponse = {
   proposalId: string
   decision: KBIterationProposalDecision
   record: Record<string, any>
+}
+
+export type KBIterationProposalRevisionRequest = {
+  reviewer?: string
+  reason?: string
+  instruction?: string
+}
+
+export type KBIterationProposalRevisionResponse = {
+  workspace: string
+  proposalId: string
+  artifactKey: string
+  record: Record<string, any>
+  status?: string
 }
 
 export type KBIterationRunRequest = {
@@ -1141,6 +1185,25 @@ export const getKBIterationArtifact = async (
   )
 }
 
+export const getKBIterationDisplayArtifact = async (
+  workspace: string,
+  artifactKey: string
+): Promise<KBIterationDisplayArtifactResponse> => {
+  return kbIterationGet(
+    `/kb-iteration/${encodePathSegment(workspace)}/artifacts/${encodePathSegment(artifactKey)}/display`
+  )
+}
+
+export const regenerateKBIterationDisplayArtifact = async (
+  workspace: string,
+  artifactKey: string
+): Promise<KBIterationDisplayArtifactResponse> => {
+  return kbIterationPost(
+    `/kb-iteration/${encodePathSegment(workspace)}/artifacts/${encodePathSegment(artifactKey)}/display/regenerate`,
+    {}
+  )
+}
+
 export const getKBIterationGraph = async (workspace: string): Promise<KBIterationGraphResponse> => {
   return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/graph`)
 }
@@ -1179,6 +1242,17 @@ export const recordKBIterationProposalDecision = async (
 ): Promise<KBIterationProposalDecisionResponse> => {
   return kbIterationPost(
     `/kb-iteration/${encodePathSegment(workspace)}/proposals/${encodePathSegment(proposalId)}/${decision}`,
+    request
+  )
+}
+
+export const requestKBIterationProposalRevision = async (
+  workspace: string,
+  proposalId: string,
+  request: KBIterationProposalRevisionRequest = {}
+): Promise<KBIterationProposalRevisionResponse> => {
+  return kbIterationPost(
+    `/kb-iteration/${encodePathSegment(workspace)}/proposals/${encodePathSegment(proposalId)}/revision-request`,
     request
   )
 }

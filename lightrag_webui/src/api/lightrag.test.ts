@@ -283,7 +283,6 @@ describe('graph api', () => {
 
   test('queries medical browse graph by default', async () => {
     let capturedPath: string | undefined
-
     ;(apiModule as any).__setGraphGetForTests(async (path: string) => {
       capturedPath = path
       return { nodes: [], edges: [] }
@@ -301,7 +300,6 @@ describe('graph api', () => {
 
   test('queries raw graph without medical browse flags when requested', async () => {
     let capturedPath: string | undefined
-
     ;(apiModule as any).__setGraphGetForTests(async (path: string) => {
       capturedPath = path
       return { nodes: [], edges: [] }
@@ -312,9 +310,7 @@ describe('graph api', () => {
       edges: []
     })
 
-    expect(capturedPath).toBe(
-      '/graphs?label=COVID-19%20%26%20fever&max_depth=2&max_nodes=150'
-    )
+    expect(capturedPath).toBe('/graphs?label=COVID-19%20%26%20fever&max_depth=2&max_nodes=150')
   })
 })
 
@@ -502,18 +498,100 @@ describe('kb iteration api', () => {
     )
 
     await expect(
-      (apiModule as any).recordKBIterationProposalDecision(
-        'influenza_medical_v1',
-        'p1',
-        'reject',
-        { reviewer: 'maintainer', reason: 'Needs source evidence' }
-      )
+      (apiModule as any).recordKBIterationProposalDecision('influenza_medical_v1', 'p1', 'reject', {
+        reviewer: 'maintainer',
+        reason: 'Needs source evidence'
+      })
     ).resolves.toEqual(response)
 
     expect(capturedPath).toBe('/kb-iteration/influenza_medical_v1/proposals/p1/reject')
     expect(capturedBody).toEqual({
       reviewer: 'maintainer',
       reason: 'Needs source evidence'
+    })
+  })
+
+  test('display artifact wrappers call expected task 3 paths', async () => {
+    const getCalls: string[] = []
+    const postCalls: Array<{ path: string; body: any }> = []
+
+    ;(apiModule as any).__setKBIterationGetForTests(async (path: string) => {
+      getCalls.push(path)
+      return {
+        artifactKey: 'quality_score',
+        contentType: 'application/json',
+        payload: { overall: 91 },
+        display: {
+          language: 'zh',
+          sourceFile: 'snapshots/quality_score.json',
+          zhFile: 'snapshots/quality_score.zh.json',
+          zhExists: true
+        }
+      }
+    })
+    ;(apiModule as any).__setKBIterationPostForTests(async (path: string, body?: any) => {
+      postCalls.push({ path, body })
+      return {
+        artifactKey: 'quality_score',
+        contentType: 'application/json',
+        payload: { overall: 91 },
+        display: {
+          language: 'zh',
+          sourceFile: 'snapshots/quality_score.json',
+          zhFile: 'snapshots/quality_score.zh.json',
+          generated: true
+        }
+      }
+    })
+
+    await expect(
+      (apiModule as any).getKBIterationDisplayArtifact('influenza medical', 'quality_score')
+    ).resolves.toMatchObject({ artifactKey: 'quality_score', payload: { overall: 91 } })
+    await expect(
+      (apiModule as any).regenerateKBIterationDisplayArtifact('influenza medical', 'quality_score')
+    ).resolves.toMatchObject({ artifactKey: 'quality_score', payload: { overall: 91 } })
+
+    expect(getCalls).toEqual(['/kb-iteration/influenza%20medical/artifacts/quality_score/display'])
+    expect(postCalls).toEqual([
+      {
+        path: '/kb-iteration/influenza%20medical/artifacts/quality_score/display/regenerate',
+        body: {}
+      }
+    ])
+  })
+
+  test('posts proposal revision requests to the revision-request endpoint', async () => {
+    let capturedPath: string | undefined
+    let capturedBody: Record<string, string> | undefined
+    const response = {
+      workspace: 'influenza_medical_v1',
+      proposalId: 'p1',
+      artifactKey: 'proposal_revision_requests',
+      record: { proposal_id: 'p1' },
+      status: 'recorded'
+    }
+
+    ;(apiModule as any).__setKBIterationPostForTests(
+      async (path: string, body?: Record<string, string>) => {
+        capturedPath = path
+        capturedBody = body
+        return response
+      }
+    )
+
+    await expect(
+      (apiModule as any).requestKBIterationProposalRevision('influenza medical', 'p1', {
+        reviewer: 'maintainer',
+        reason: 'Needs source evidence',
+        instruction: 'Revise with narrower scope'
+      })
+    ).resolves.toEqual(response)
+
+    expect(capturedPath).toBe('/kb-iteration/influenza%20medical/proposals/p1/revision-request')
+    expect(capturedBody).toEqual({
+      reviewer: 'maintainer',
+      reason: 'Needs source evidence',
+      instruction: 'Revise with narrower scope'
     })
   })
 })
