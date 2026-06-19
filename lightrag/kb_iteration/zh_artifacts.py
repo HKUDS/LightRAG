@@ -93,17 +93,17 @@ def ensure_zh_artifact(
     source_relative_path = _safe_relative_to(source, root)
     zh_relative_path = _safe_relative_to(zh_path, root)
 
-    if zh_path.exists() and not force:
-        return _existing_result(
-            zh_path=zh_path,
-            artifact_key=artifact_key,
-            source_relative_path=source_relative_path,
-            zh_relative_path=zh_relative_path,
-            content_type=content_type,
-            model=model,
-        )
-
     try:
+        if zh_path.exists() and not force:
+            return _existing_result(
+                zh_path=zh_path,
+                artifact_key=artifact_key,
+                source_relative_path=source_relative_path,
+                zh_relative_path=zh_relative_path,
+                content_type=content_type,
+                model=model,
+            )
+
         if content_type == "application/json":
             payload = json.loads(source.read_text(encoding="utf-8"))
             zh_payload = build_zh_json_payload(payload)
@@ -236,11 +236,18 @@ def _fallback_result(
     model: str | None,
     error: str,
 ) -> ZhArtifactResult:
-    content: str | None
-    try:
-        content = source.read_text(encoding="utf-8")
-    except Exception:
-        content = None
+    content: str | None = None
+    payload: Any | None = None
+    if content_type == "application/json":
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except Exception:
+            payload = None
+    else:
+        try:
+            content = source.read_text(encoding="utf-8")
+        except Exception:
+            content = None
 
     return _result(
         artifact_key=artifact_key,
@@ -251,6 +258,7 @@ def _fallback_result(
         fallback_to_source=True,
         model=model,
         error=error,
+        payload=payload,
         content=content,
     )
 

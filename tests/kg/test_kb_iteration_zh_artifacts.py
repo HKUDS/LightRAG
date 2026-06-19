@@ -255,6 +255,36 @@ def test_ensure_zh_artifact_falls_back_to_source_when_translation_fails(
     assert result.payload is None
 
 
+def test_ensure_zh_artifact_falls_back_when_existing_json_artifact_is_corrupt(
+    tmp_path: Path,
+):
+    source_path = tmp_path / "quality_score.json"
+    source_payload = {"overall": 91, "metrics": {"missing": []}}
+    source_path.write_text(
+        json.dumps(source_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (tmp_path / "quality_score.zh.json").write_text("{not valid json", encoding="utf-8")
+    client = FakeZhClient()
+
+    result = ensure_zh_artifact(
+        source_path,
+        artifact_key="quality_score.json",
+        content_type="application/json",
+        client=client,
+        model="unused-model",
+        force=False,
+    )
+
+    assert client.calls == []
+    assert result.artifact_key == "quality_score.json"
+    assert result.generated is False
+    assert result.fallback_to_source is True
+    assert "Expecting property name enclosed in double quotes" in result.error
+    assert result.payload == source_payload
+    assert result.content is None
+
+
 def test_ensure_zh_artifact_reads_existing_zh_without_client_when_force_false(
     tmp_path: Path,
 ):
