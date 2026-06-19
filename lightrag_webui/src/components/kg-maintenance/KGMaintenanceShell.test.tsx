@@ -22,7 +22,6 @@ if (!('localStorage' in globalThis)) {
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
 const { ArtifactsDrawerPlaceholder, MainPanel } = await import('@/features/KGMaintenanceConsole')
 const { useKGMaintenanceStore } = await import('@/stores/kgMaintenance')
-const { WORKFLOW_STEPS } = await import('./kgMaintenanceArtifacts')
 const {
   applyWorkspaceResponse,
   loadKGMaintenanceWorkspaceBundle,
@@ -308,7 +307,7 @@ describe('KGMaintenanceShell responsive layout', () => {
     const renderedStepIds = Array.from(markup.matchAll(/data-workflow-step="([^"]+)"/g)).map(
       ([, step]) => step
     )
-    expect(renderedStepIds).toEqual(WORKFLOW_STEPS)
+    expect(renderedStepIds).toEqual(['check', 'llm-review', 'approval', 'execute', 'validate'])
     expect(renderedStepIds).toHaveLength(5)
     expect(markup).toContain('data-workflow-step="check"')
     expect(markup).toContain('aria-current="step"')
