@@ -13,9 +13,10 @@ import {
   type KBIterationRulesResponse,
   type KBIterationSummaryResponse
 } from '@/api/lightrag'
-import type {
-  ProposalDecisionReview,
-  ProposalSummary
+import {
+  buildProposalDecisionReview,
+  type ProposalDecisionReview,
+  type ProposalSummary
 } from '@/components/kg-maintenance/kgMaintenanceData'
 
 export const normalizeOptionalMarkdown = (value: unknown): string =>
@@ -230,15 +231,16 @@ export async function submitProposalDecisionForWorkspace({
   recordDecision = recordKBIterationProposalDecision,
   onError
 }: ProposalDecisionActionArgs): Promise<void> {
+  const auditReview = buildProposalDecisionReview(proposal, decision, review)
   await runWorkspaceAction({
     requestWorkspace,
     getCurrentWorkspace,
     action: () =>
       recordDecision(requestWorkspace, proposal.id, decision, {
         reviewer: 'maintainer',
-        reason: review.reason,
-        impact_scope: review.impactScope,
-        verification: review.verification
+        reason: auditReview.reason,
+        impact_scope: auditReview.impactScope,
+        verification: auditReview.verification
       }),
     onSuccess: async (_result, shouldApply) => {
       if (!shouldApply()) return

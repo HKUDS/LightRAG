@@ -344,6 +344,30 @@ def test_accept_reject_and_defer_records_are_append_only(
     ).read_text(encoding="utf-8")
 
 
+def test_proposal_decision_accepts_empty_review_and_records_defaults(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p2/accept",
+        headers=HEADERS,
+        json={},
+    )
+
+    assert response.status_code == 200
+    record = response.json()["record"]
+    assert record["reviewer"] == "maintainer"
+    assert record["reason"]
+    assert record["impact_scope"]
+    assert record["verification"]
+    assert "p2" in record["reason"]
+    assert "web_display_change" in record["impact_scope"]
+    accepted = (fixture.package / "accepted_changes.md").read_text(encoding="utf-8")
+    assert "p2" in accepted
+    assert "web_display_change" in accepted
+
+
 def test_proposal_decision_rejects_unknown_proposal(tmp_path: Path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
 

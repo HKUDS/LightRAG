@@ -11,7 +11,7 @@ import {
 } from './kgMaintenanceData'
 
 describe('KG maintenance proposal decision safety', () => {
-  test('requires explicit confirmation for high-risk proposal decisions', () => {
+  test('does not require manual confirmation for high-risk proposal decisions', () => {
     const proposal = {
       id: 'p1',
       type: 'hierarchy_rule_change',
@@ -24,12 +24,12 @@ describe('KG maintenance proposal decision safety', () => {
     expect(proposalNeedsConfirmation(proposal)).toBe(true)
     expect(
       canSubmitProposalDecision(proposal, {
-        reason: 'Evidence checked',
-        impactScope: 'Hierarchy rules',
-        verification: 'Re-run quality report',
+        reason: '',
+        impactScope: '',
+        verification: '',
         confirmation: ''
       })
-    ).toBe(false)
+    ).toBe(true)
     expect(
       canSubmitProposalDecision(proposal, {
         reason: 'Evidence checked',
@@ -40,7 +40,7 @@ describe('KG maintenance proposal decision safety', () => {
     ).toBe(true)
   })
 
-  test('requires reason, impact scope, and verification for all proposal decisions', () => {
+  test('allows proposal decisions without manual review fields', () => {
     const proposal = {
       id: 'p2',
       type: 'quality_report_note',
@@ -58,7 +58,7 @@ describe('KG maintenance proposal decision safety', () => {
         verification: 'No mutation',
         confirmation: ''
       })
-    ).toBe(false)
+    ).toBe(true)
     expect(
       canSubmitProposalDecision(proposal, {
         reason: 'No mutation requested',
@@ -66,7 +66,7 @@ describe('KG maintenance proposal decision safety', () => {
         verification: 'No mutation',
         confirmation: ''
       })
-    ).toBe(false)
+    ).toBe(true)
     expect(
       canSubmitProposalDecision(proposal, {
         reason: 'No mutation requested',

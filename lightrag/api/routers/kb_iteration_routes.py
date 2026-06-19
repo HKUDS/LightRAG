@@ -79,7 +79,7 @@ _RUN_LOCKS_GUARD = Lock()
 
 class ProposalDecisionRequest(BaseModel):
     reviewer: str = Field(default="maintainer", min_length=1, max_length=120)
-    reason: str = Field(min_length=1, max_length=4000)
+    reason: str = Field(default="", max_length=4000)
     impact_scope: str = Field(default="", max_length=1000)
     verification: str = Field(default="", max_length=1000)
 
@@ -972,15 +972,16 @@ def _append_decision(
         )
 
     path = package_dir / DECISION_FILES[decision]
+    audit_review = _proposal_decision_audit_defaults(proposal_id, proposal, request)
     record = {
         "proposal_id": proposal_id,
         "proposal_type": proposal.get("type", ""),
         "proposal_target": proposal.get("target", ""),
         "decision": decision,
         "reviewer": request.reviewer,
-        "reason": request.reason,
-        "impact_scope": request.impact_scope,
-        "verification": request.verification,
+        "reason": audit_review["reason"],
+        "impact_scope": audit_review["impact_scope"],
+        "verification": audit_review["verification"],
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
     header = "" if path.exists() else f"# {decision.title()}ed Changes\n"
@@ -993,6 +994,40 @@ def _append_decision(
     with path.open("a", encoding="utf-8") as file:
         file.write(entry)
     return record
+
+
+def _proposal_decision_audit_defaults(
+    proposal_id: str, proposal: dict[str, Any], request: ProposalDecisionRequest
+) -> dict[str, str]:
+    proposal_type = str(proposal.get("type", "")).strip() or "unknown"
+    proposal_target = str(proposal.get("target", "")).strip() or "unknown"
+    proposal_reason = str(proposal.get("reason", "")).strip()
+    proposal_risk = str(proposal.get("risk", "")).strip() or "unknown"
+    evidence = proposal.get("evidence")
+    if isinstance(evidence, list) and evidence:
+        evidence_summary = "; ".join(
+            str(item).strip() for item in evidence if str(item).strip()
+        )
+    else:
+        evidence_summary = "no explicit evidence"
+
+    reason = request.reason.strip() or (
+        f"Maintainer selected a decision for proposal {proposal_id}. "
+        f"Proposal reason: {proposal_reason or 'not provided'}."
+    )
+    impact_scope = request.impact_scope.strip() or (
+        f"Scope is constrained to proposal type {proposal_type}, "
+        f"target {proposal_target}, and risk {proposal_risk}."
+    )
+    verification = request.verification.strip() or (
+        "Use the proposal evidence and LLM judge constraints for review. "
+        f"Evidence: {evidence_summary}."
+    )
+    return {
+        "reason": reason,
+        "impact_scope": impact_scope,
+        "verification": verification,
+    }
 
 
 def _run_lock_for_workspace(workspace: str) -> Lock:
