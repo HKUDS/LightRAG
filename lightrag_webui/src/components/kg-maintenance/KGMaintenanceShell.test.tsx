@@ -867,6 +867,8 @@ describe('MainPanel workflow routing', () => {
 
     expect(markup).toContain('待审批 proposal')
     expect(markup).toContain('1 个需要人工审批')
+    expect(markup).toContain('aria-label="收起 proposal-1"')
+    expect(markup).toContain('aria-expanded="true"')
     expect(markup).toContain('审批理由')
     expect(markup).toContain('影响范围')
     expect(markup).toContain('验证 / 回滚说明')
