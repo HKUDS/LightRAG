@@ -64,12 +64,39 @@ def test_build_zh_json_payload_labels_nested_dicts_without_replacing_keys():
     )
 
 
+def test_build_zh_json_payload_does_not_mutate_original_payload():
+    payload = {
+        "overall": 97,
+        "metrics": {"hierarchy_missing_branch_count": 0},
+    }
+
+    build_zh_json_payload(payload)
+
+    assert payload == {
+        "overall": 97,
+        "metrics": {"hierarchy_missing_branch_count": 0},
+    }
+
+
+def test_build_zh_json_payload_overwrites_reserved_zh_labels():
+    payload = {
+        "overall": 97,
+        "_zh_labels": {"overall": "stale label"},
+    }
+
+    zh_payload = build_zh_json_payload(payload)
+
+    assert zh_payload["_zh_labels"] == {"overall": "总分"}
+
+
 def test_machine_token_should_be_preserved_for_ids_paths_models_and_snake_case():
     preserved = [
         "prop-normalize-relation-keywords",
         "doc-b29c711f27db9ad51c2851d9db562957-chunk-006",
         "snapshots/quality_score.json",
         "deepseek-v4-pro",
+        "GPT-4o-mini",
+        "API_KEY",
         "hierarchy_missing_branch_count",
     ]
 

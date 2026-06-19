@@ -25,9 +25,13 @@ ZH_LABELS: dict[str, str] = {
 _DOC_CHUNK_ID_PATTERN = re.compile(
     r"^doc-[0-9a-f]{16,}(?:-chunk-\d+)?$", re.IGNORECASE
 )
-_MODEL_TOKEN_PATTERN = re.compile(r"^(?=.*\d)[a-z][a-z0-9]*(?:-[a-z0-9]+)+$")
-_PROPOSAL_ID_PATTERN = re.compile(r"^prop-[a-z0-9]+(?:-[a-z0-9]+)+$")
-_SNAKE_CASE_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+_MODEL_TOKEN_PATTERN = re.compile(
+    r"^(?=.*\d)[a-z][a-z0-9]*(?:-[a-z0-9]+)+$", re.IGNORECASE
+)
+_PROPOSAL_ID_PATTERN = re.compile(
+    r"^prop-[a-z0-9]+(?:-[a-z0-9]+)+$", re.IGNORECASE
+)
+_SNAKE_CASE_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$", re.IGNORECASE)
 
 
 def artifact_zh_relative_path(path: Path) -> Path:
@@ -39,7 +43,11 @@ def artifact_zh_relative_path(path: Path) -> Path:
 
 
 def build_zh_json_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Copy a JSON-like mapping and add `_zh_labels` maps for known keys."""
+    """Copy a JSON-like mapping and add `_zh_labels` maps for known keys.
+
+    `_zh_labels` is reserved for generated display labels; when known labels exist
+    at a mapping level, generated labels replace any existing `_zh_labels` value.
+    """
 
     return _label_json_value(payload)
 
