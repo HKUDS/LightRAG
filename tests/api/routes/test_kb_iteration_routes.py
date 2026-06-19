@@ -19,6 +19,23 @@ from lightrag.kb_iteration.apply import (
 HEADERS = {"X-API-Key": "test-key"}
 
 
+class FakeZhClient:
+    def __init__(self, response: str = "## 中文显示\n") -> None:
+        self.response = response
+        self.calls: list[dict[str, str]] = []
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append(
+            {"system_prompt": system_prompt, "user_prompt": user_prompt}
+        )
+        return self.response
+
+
+class FailingZhClient:
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        raise RuntimeError("translation failed")
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -313,6 +330,175 @@ def test_artifact_endpoint_reads_whitelisted_markdown(tmp_path: Path, monkeypatc
         "contentType": "text/markdown",
         "content": "# Quality\n",
     }
+
+
+def test_display_artifact_markdown_generation_writes_zh_file_and_metadata(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("KB_ITERATION_LLM_MODEL", "unit-test-model")
+    client, fixture = _client(tmp_path, monkeypatch)
+    from lightrag.api.routers import kb_iteration_routes
+
+    zh_client = FakeZhClient("## 质量报告\n\n保留 source_id。\n")
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda _rag: zh_client,
+    )
+
+    response = client.get(
+        "/kb-iteration/influenza_medical_v1/artifacts/quality_report/display",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["artifactKey"] == "quality_report"
+    assert payload["contentType"] == "text/markdown"
+    assert payload["content"] == "## 质量报告\n\n保留 source_id。\n"
+    assert payload["display"]["language"] == "zh"
+    assert payload["display"]["sourceFile"] == "quality_report.md"
+    assert payload["display"]["zhFile"] == "quality_report.zh.md"
+    assert payload["display"]["generated"] is True
+    assert payload["display"]["fallbackToSource"] is False
+    assert payload["display"]["generatedAt"]
+    assert payload["display"]["model"] == "unit-test-model"
+    assert payload["display"]["error"] is None
+    assert (fixture.package / "quality_report.zh.md").read_text(
+        encoding="utf-8"
+    ) == "## 质量报告\n\n保留 source_id。\n"
+    assert len(zh_client.calls) == 1
+
+
+def test_display_artifact_json_generation_writes_zh_file_with_labels(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+    from lightrag.api.routers import kb_iteration_routes
+
+    zh_client = FakeZhClient()
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda _rag: zh_client,
+    )
+
+    response = client.get(
+        "/kb-iteration/influenza_medical_v1/artifacts/quality_score/display",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["artifactKey"] == "quality_score"
+    assert payload["contentType"] == "application/json"
+    assert "content" not in payload
+    assert "overall" in payload["payload"]["_zh_labels"]
+    assert "metrics" in payload["payload"]["_zh_labels"]
+    assert payload["display"]["zhFile"] == "snapshots/quality_score.zh.json"
+    assert payload["display"]["generated"] is True
+    assert payload["display"]["fallbackToSource"] is False
+    assert (fixture.package / "snapshots" / "quality_score.zh.json").exists()
+    assert zh_client.calls == []
+
+
+def test_display_artifact_fallback_on_client_failure_returns_source_content(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+    from lightrag.api.routers import kb_iteration_routes
+
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda _rag: FailingZhClient(),
+    )
+
+    response = client.get(
+        "/kb-iteration/influenza_medical_v1/artifacts/quality_report/display",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["content"] == "# Quality\n"
+    assert payload["display"]["fallbackToSource"] is True
+    assert payload["display"]["generated"] is False
+    assert payload["display"]["error"] == "translation failed"
+    assert not (fixture.package / "quality_report.zh.md").exists()
+
+
+def test_artifact_manifest_includes_zh_display_metadata_and_exists_updates(
+    tmp_path: Path, monkeypatch
+):
+    client, _ = _client(tmp_path, monkeypatch)
+    from lightrag.api.routers import kb_iteration_routes
+
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda _rag: FakeZhClient("## 质量报告\n"),
+    )
+
+    before = client.get(
+        "/kb-iteration/influenza_medical_v1/runs/latest/artifacts",
+        headers=HEADERS,
+    )
+    assert before.status_code == 200
+    quality_report = next(
+        item for item in before.json()["artifacts"] if item["key"] == "quality_report"
+    )
+    assert quality_report["sourceFile"] == "quality_report.md"
+    assert quality_report["display"] == {
+        "language": "zh",
+        "zhFile": "quality_report.zh.md",
+        "zhExists": False,
+    }
+
+    display = client.get(
+        "/kb-iteration/influenza_medical_v1/artifacts/quality_report/display",
+        headers=HEADERS,
+    )
+    assert display.status_code == 200
+
+    after = client.get(
+        "/kb-iteration/influenza_medical_v1/runs/latest/artifacts",
+        headers=HEADERS,
+    )
+    quality_report = next(
+        item for item in after.json()["artifacts"] if item["key"] == "quality_report"
+    )
+    assert quality_report["display"]["zhExists"] is True
+
+
+def test_display_artifact_regenerate_overwrites_existing_markdown(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+    from lightrag.api.routers import kb_iteration_routes
+
+    zh_client = FakeZhClient("## New Chinese\n")
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda _rag: zh_client,
+    )
+    _write_text(fixture.package / "quality_report.zh.md", "## Old Chinese\n")
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/artifacts/quality_report/display/regenerate",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["content"] == "## New Chinese\n"
+    assert payload["display"]["generated"] is True
+    assert payload["display"]["fallbackToSource"] is False
+    assert (fixture.package / "quality_report.zh.md").read_text(
+        encoding="utf-8"
+    ) == "## New Chinese\n"
+    assert len(zh_client.calls) == 1
 
 
 def test_accept_reject_and_defer_records_are_append_only(tmp_path: Path, monkeypatch):

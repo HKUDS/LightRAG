@@ -25,6 +25,10 @@ from lightrag.kb_iteration.apply import (
     load_proposals_by_id,
     write_apply_result_artifacts,
 )
+from lightrag.kb_iteration.zh_artifacts import (
+    artifact_zh_relative_path,
+    ensure_zh_artifact,
+)
 from lightrag.kb_iteration.proposals import validate_proposal_id
 from lightrag.kb_iteration.review_loop import (
     LLMReviewLoopConfig,
@@ -485,6 +489,40 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
         return _read_artifact(args, workspace, artifact_key)
 
     @router.get(
+        "/{workspace}/artifacts/{artifact_key:path}/display",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_display_artifact(
+        workspace: str, artifact_key: str
+    ) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        return await asyncio.to_thread(
+            _display_artifact_response,
+            args,
+            rag,
+            workspace,
+            artifact_key,
+            force=False,
+        )
+
+    @router.post(
+        "/{workspace}/artifacts/{artifact_key:path}/display/regenerate",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def regenerate_display_artifact(
+        workspace: str, artifact_key: str
+    ) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        return await asyncio.to_thread(
+            _display_artifact_response,
+            args,
+            rag,
+            workspace,
+            artifact_key,
+            force=True,
+        )
+
+    @router.get(
         "/{workspace}/artifacts/{artifact_key:path}",
         dependencies=[Depends(combined_auth)],
     )
@@ -782,6 +820,61 @@ def _read_artifact(args, workspace: str, artifact_key: str) -> dict[str, Any]:
     }
 
 
+def _display_artifact_response(
+    args,
+    rag,
+    workspace: str,
+    artifact_key: str,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    source_path, content_type = _require_artifact_file(args, workspace, artifact_key)
+    result = ensure_zh_artifact(
+        source_path,
+        artifact_key=artifact_key,
+        content_type=content_type,
+        client=_default_llm_review_client(rag),
+        model=_zh_model_name(),
+        force=force,
+        artifact_root=_workspace_dir(args, workspace),
+    )
+    response = {
+        "artifactKey": artifact_key,
+        "contentType": content_type,
+        "display": {
+            "language": "zh",
+            "sourceFile": result.source_relative_path.as_posix(),
+            "zhFile": result.zh_relative_path.as_posix(),
+            "generated": result.generated,
+            "fallbackToSource": result.fallback_to_source,
+            "generatedAt": result.generated_at,
+            "model": result.model,
+            "error": _redact_display_error(result.error),
+        },
+    }
+    if content_type == "application/json":
+        response["payload"] = result.payload
+    else:
+        response["content"] = result.content
+    return response
+
+
+def _zh_model_name() -> str | None:
+    model = os.getenv("KB_ITERATION_LLM_MODEL", "").strip()
+    return model or None
+
+
+def _redact_display_error(error: str | None) -> str | None:
+    if not error:
+        return None
+    redacted = error
+    for env_name in ("KB_ITERATION_LLM_BINDING_API_KEY", "OPENAI_API_KEY"):
+        secret = os.getenv(env_name, "").strip()
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
 def _read_json_artifact(args, workspace: str, artifact_key: str) -> dict[str, Any]:
     path, _ = _require_artifact_file(args, workspace, artifact_key)
     return _load_json(path)
@@ -872,13 +965,21 @@ def _diff_response(args, workspace: str) -> dict[str, Any]:
 
 def _artifact_manifest(args, workspace: str) -> list[dict[str, Any]]:
     manifest = []
-    for key, (_relative_path, content_type) in ARTIFACTS.items():
+    for key, (relative_path, content_type) in ARTIFACTS.items():
         path, _ = _safe_artifact_path(args, workspace, key)
+        zh_relative_path = artifact_zh_relative_path(Path(relative_path))
+        zh_path = _safe_workspace_path(args, workspace, zh_relative_path)
         manifest.append(
             {
                 "key": key,
                 "contentType": content_type,
                 "exists": path.exists() and path.is_file(),
+                "sourceFile": relative_path,
+                "display": {
+                    "language": "zh",
+                    "zhFile": zh_relative_path.as_posix(),
+                    "zhExists": zh_path.exists() and zh_path.is_file(),
+                },
             }
         )
     return manifest
