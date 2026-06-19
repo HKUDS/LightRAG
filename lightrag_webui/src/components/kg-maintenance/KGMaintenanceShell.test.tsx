@@ -20,7 +20,7 @@ if (!('localStorage' in globalThis)) {
 }
 
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
-const { MainPanel } = await import('@/features/KGMaintenanceConsole')
+const { ArtifactsDrawerPlaceholder, MainPanel } = await import('@/features/KGMaintenanceConsole')
 const { useKGMaintenanceStore } = await import('@/stores/kgMaintenance')
 const { WORKFLOW_STEPS } = await import('./kgMaintenanceArtifacts')
 const {
@@ -310,6 +310,8 @@ describe('KGMaintenanceShell responsive layout', () => {
     )
     expect(renderedStepIds).toEqual(WORKFLOW_STEPS)
     expect(renderedStepIds).toHaveLength(5)
+    expect(markup).toContain('data-workflow-step="check"')
+    expect(markup).toContain('aria-current="step"')
   })
 
   test('uses left navigation and main content without a right inspector column', () => {
@@ -335,6 +337,16 @@ describe('KGMaintenanceShell responsive layout', () => {
     expect(markup).toContain('lg:grid-cols-[240px_minmax(0,1fr)]')
     expect(markup).not.toContain('Inspector')
     expect(markup).not.toContain('lg:grid-cols-[220px_minmax(0,1fr)_320px]')
+  })
+
+  test('renders the temporary artifacts dialog with a close action', () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactsDrawerPlaceholder open={true} onOpenChange={() => undefined} />
+    )
+
+    expect(markup).toContain('role="dialog"')
+    expect(markup).toContain('aria-label="全部产物"')
+    expect(markup).toContain('关闭')
   })
 })
 
@@ -864,6 +876,7 @@ describe('MainPanel workflow routing', () => {
   test('check renders the review package artifact list', () => {
     const markup = renderMainPanel('check')
 
+    expect(markup).toContain('运行检查')
     expect(markup).toContain('kb_context.md')
     expect(markup).toContain('quality_report.md')
     expect(markup).toContain('snapshots/kg_snapshot.json')

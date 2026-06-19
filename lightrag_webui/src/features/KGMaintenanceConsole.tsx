@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Button from '@/components/ui/Button'
 import {
   executeKBIterationAcceptedChanges,
@@ -57,6 +57,67 @@ function mapTransitionalSection(section: TransitionalSectionTarget): KGMaintenan
   if (section === 'decisions' || section === 'backlog' || section === 'memory') return 'execute'
   if (section === 'stage') return 'validate'
   return 'check'
+}
+
+export function ArtifactsDrawerPlaceholder({
+  open,
+  onOpenChange
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    closeButtonRef.current?.focus()
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onOpenChange(false)
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      previousFocusRef.current?.focus()
+      previousFocusRef.current = null
+    }
+  }, [onOpenChange, open])
+
+  if (!open) return null
+
+  return (
+    <div
+      role="dialog"
+      aria-label="全部产物"
+      tabIndex={-1}
+      className="bg-background border-border fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l p-4 shadow-lg"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold">全部产物</h2>
+          <p className="text-muted-foreground mt-2 text-sm">
+            产物抽屉将在后续任务中接入。当前占位用于保留工作流入口。
+          </p>
+        </div>
+        <Button
+          ref={closeButtonRef}
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onOpenChange(false)}
+        >
+          关闭
+        </Button>
+      </div>
+    </div>
+  )
 }
 
 export default function KGMaintenanceConsole() {
@@ -413,28 +474,7 @@ export default function KGMaintenanceConsole() {
           onLoadPatch={handleLoadPatch}
         />
       </KGMaintenanceShell>
-      {artifactDrawerOpen && (
-        <div
-          role="dialog"
-          aria-label="全部产物"
-          className="bg-background border-border fixed inset-y-0 right-0 z-40 w-full max-w-md border-l p-4 shadow-lg"
-        >
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold">全部产物</h2>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setArtifactDrawerOpen(false)}
-            >
-              关闭
-            </Button>
-          </div>
-          <p className="text-muted-foreground mt-3 text-sm">
-            产物抽屉将在后续任务中接入。当前占位用于保留工作流入口。
-          </p>
-        </div>
-      )}
+      <ArtifactsDrawerPlaceholder open={artifactDrawerOpen} onOpenChange={setArtifactDrawerOpen} />
     </>
   )
 }
@@ -514,12 +554,22 @@ export function MainPanel({
   void kbContext
   void kgSnapshot
   void qualityScore
-  void onRunReview
 
   if (activeSection === 'check') {
     return (
-      <section>
+      <section className="space-y-3">
         <h2 className="sr-only">审阅包概览</h2>
+        <div className="border-border/70 bg-muted/20 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold">检查知识库</h3>
+            <p className="text-muted-foreground mt-1 text-xs">
+              生成或刷新审阅包产物，进入后续 LLM 审阅与人工审批流程。
+            </p>
+          </div>
+          <Button type="button" size="sm" onClick={onRunReview} disabled={running || loading}>
+            {running ? '检查中' : '运行检查'}
+          </Button>
+        </div>
         <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
       </section>
     )

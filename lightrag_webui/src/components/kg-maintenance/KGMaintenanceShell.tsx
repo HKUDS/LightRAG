@@ -127,6 +127,7 @@ export default function KGMaintenanceShell({
                   key={item.id}
                   type="button"
                   data-workflow-step={item.id}
+                  aria-current={active ? 'step' : undefined}
                   onClick={() => onSectionChange(item.id)}
                   className={cn(
                     'flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors',
