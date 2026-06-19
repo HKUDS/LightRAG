@@ -72,6 +72,57 @@ def test_parse_agent_stage_output_validates_proposals_with_existing_schema():
     ]
 
 
+def test_parse_agent_stage_output_normalizes_numeric_string_metric_changes():
+    output = parse_agent_stage_output(
+        "propose",
+        json.dumps(
+            {
+                "proposals": [
+                    _proposal_payload(
+                        expected_metric_change={
+                            "hierarchy_completeness": "6",
+                            "precision_delta": "+0.25",
+                            "error_rate_delta": "1e-2",
+                        }
+                    )
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert output.proposals[0].expected_metric_change == {
+        "hierarchy_completeness": 6,
+        "precision_delta": 0.25,
+        "error_rate_delta": 0.01,
+    }
+
+
+@pytest.mark.parametrize(
+    "metric_value",
+    ["about 6", "10%", "", "   ", True, False, None, {}, []],
+)
+def test_parse_agent_stage_output_rejects_non_numeric_metric_change_strings(
+    metric_value,
+):
+    with pytest.raises(ValueError, match="expected_metric_change"):
+        parse_agent_stage_output(
+            "propose",
+            json.dumps(
+                {
+                    "proposals": [
+                        _proposal_payload(
+                            expected_metric_change={
+                                "hierarchy_completeness": metric_value,
+                            }
+                        )
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+
 def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
     output = parse_agent_stage_output(
         "propose",

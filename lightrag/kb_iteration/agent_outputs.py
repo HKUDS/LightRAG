@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -53,6 +55,9 @@ _EVIDENCE_FIELD_ORDER = (
     "metric",
 )
 _EVIDENCE_FIELD_NAMES = frozenset(_EVIDENCE_FIELD_ORDER)
+_NUMERIC_STRING_PATTERN = re.compile(
+    r"^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$"
+)
 
 
 def parse_agent_stage_output(stage: str, raw_text: str) -> AgentStageOutput:
@@ -100,8 +105,38 @@ def _normalize_agent_proposals(value: Any) -> list[dict[str, Any]]:
         normalized["evidence"] = _normalize_agent_proposal_evidence(
             proposal.get("evidence")
         )
+        normalized["expected_metric_change"] = _normalize_expected_metric_change(
+            proposal.get("expected_metric_change")
+        )
         proposals.append(normalized)
     return proposals
+
+
+def _normalize_expected_metric_change(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+
+    return {
+        key: _normalize_metric_change_value(metric_value)
+        for key, metric_value in value.items()
+    }
+
+
+def _normalize_metric_change_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    if not _NUMERIC_STRING_PATTERN.fullmatch(stripped):
+        return value
+
+    if "." not in stripped and "e" not in stripped.casefold():
+        return int(stripped)
+
+    numeric_value = float(stripped)
+    if not math.isfinite(numeric_value):
+        return value
+    return numeric_value
 
 
 def _normalize_agent_proposal_evidence(value: Any) -> list[str]:
