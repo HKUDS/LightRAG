@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,7 +56,14 @@ _PROMPT_FILES = {
     "judge": "judge_zh.md",
 }
 
-_REFERENCE_BOUNDARY_CHARS = r"A-Za-z0-9_.:/=+-"
+_EVIDENCE_REFERENCE_KEYS = {
+    "source_id",
+    "file_path",
+    "item_id",
+    "entity_id",
+    "relation_id",
+    "metric",
+}
 _FAILURE_STOP_REASONS = {
     "context_too_large",
     "invalid_config",
@@ -568,19 +574,39 @@ def _evidence_references_known_artifact(
     if not isinstance(evidence, str) or not evidence.strip():
         return False
     evidence_text = _normalize_reference_part(evidence)
-    return any(
-        _evidence_contains_exact_reference(evidence_text, token)
-        for token in reference_tokens
+    if evidence_text in reference_tokens:
+        return True
+    if ":" not in evidence:
+        return False
+    return _structured_evidence_references_known_artifacts(
+        evidence, reference_tokens
     )
 
 
-def _evidence_contains_exact_reference(evidence_text: str, reference: str) -> bool:
-    pattern = re.compile(
-        rf"(?<![{_REFERENCE_BOUNDARY_CHARS}])"
-        rf"{re.escape(reference)}"
-        rf"(?![{_REFERENCE_BOUNDARY_CHARS}])"
-    )
-    return bool(pattern.search(evidence_text))
+def _structured_evidence_references_known_artifacts(
+    evidence: str, reference_tokens: set[str]
+) -> bool:
+    segments = [segment.strip() for segment in evidence.split(";")]
+    if not segments or any(not segment for segment in segments):
+        return False
+
+    has_value = False
+    for segment in segments:
+        key, separator, value = segment.partition(":")
+        normalized_key = key.strip().casefold()
+        if not separator or normalized_key not in _EVIDENCE_REFERENCE_KEYS:
+            return False
+
+        value_parts = [part.strip() for part in value.split(",")]
+        non_empty_values = [part for part in value_parts if part]
+        if not non_empty_values:
+            return False
+        for value_part in non_empty_values:
+            if _normalize_reference_part(value_part) not in reference_tokens:
+                return False
+        has_value = True
+
+    return has_value
 
 
 def _add_reference_values(tokens: set[str], value: Any) -> None:

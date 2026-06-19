@@ -66,7 +66,9 @@ class SequencedAgentClient:
                         "target": "lightrag/medical_kg/hierarchy.py",
                         "proposed_change": "Add a controlled symptom hierarchy branch.",
                         "reason": "Fever has grounded evidence but no symptom branch.",
-                        "evidence": ["entity fever chunk-1 guide.md"],
+                        "evidence": [
+                            "source_id: chunk-1; file_path: guide.md; item_id: entity fever"
+                        ],
                         "confidence": 0.86,
                         "risk": "medium",
                         "requires_approval": True,
@@ -171,7 +173,9 @@ class JudgeNeedsHumanReportNoteClient(SequencedAgentClient):
                     "target": "quality_report.md",
                     "proposed_change": "Record hierarchy observation for reviewer visibility.",
                     "reason": "Fever is grounded but the hierarchy score needs review.",
-                    "evidence": ["entity fever chunk-1 guide.md"],
+                    "evidence": [
+                        "source_id: chunk-1; file_path: guide.md; item_id: entity fever"
+                    ],
                     "confidence": 0.78,
                     "risk": "low",
                     "requires_approval": False,
@@ -251,7 +255,9 @@ class InvalidJudgeResultsClient(JudgeNeedsHumanReportNoteClient):
                 "target": "quality_report.md",
                 "proposed_change": "Record source coverage observation.",
                 "reason": "The same grounded source should be reviewed for coverage.",
-                "evidence": ["entity fever chunk-1 guide.md"],
+                "evidence": [
+                    "source_id: chunk-1; file_path: guide.md; item_id: entity fever"
+                ],
                 "confidence": 0.73,
                 "risk": "low",
                 "requires_approval": False,
@@ -296,8 +302,32 @@ class MixedGroundedAndFabricatedEvidenceAgentClient(SequencedAgentClient):
     def __init__(self) -> None:
         super().__init__()
         self.outputs[3]["proposals"][0]["evidence"] = [
-            "entity fever chunk-1 guide.md",
+            "source_id: chunk-1; file_path: guide.md; item_id: entity fever",
             "fake-source",
+        ]
+
+
+class LaunderedFreeTextEvidenceAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.outputs[3]["proposals"][0]["evidence"] = [
+            "entity fever chunk-1 guide.md fake-source"
+        ]
+
+
+class StructuredFabricatedItemEvidenceAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.outputs[3]["proposals"][0]["evidence"] = [
+            "source_id: chunk-1; item_id: fake-source"
+        ]
+
+
+class StructuredUnknownKeyEvidenceAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.outputs[3]["proposals"][0]["evidence"] = [
+            "source_id: chunk-1; note: guide.md"
         ]
 
 
@@ -552,6 +582,82 @@ def test_pipeline_rejects_proposal_with_any_fabricated_evidence_item(
         "evidence is not grounded in deterministic artifacts"
         in propose_trace["error"]
     )
+
+
+def test_pipeline_rejects_laundered_fabricated_reference_in_single_evidence_item(
+    tmp_path: Path,
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = LaunderedFreeTextEvidenceAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    assert result.proposal_ids == []
+    assert len(client.calls) == 4
+    approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    assert "proposals: []" in approval_queue
+    assert "proposal-hierarchy-symptom-001" not in approval_queue
+    assert propose_trace["stage"] == "propose"
+    assert "evidence is not grounded in deterministic artifacts" in propose_trace["error"]
+
+
+def test_pipeline_rejects_structured_evidence_with_fabricated_item_id(
+    tmp_path: Path,
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = StructuredFabricatedItemEvidenceAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    assert result.proposal_ids == []
+    assert len(client.calls) == 4
+    approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    assert "proposals: []" in approval_queue
+    assert "proposal-hierarchy-symptom-001" not in approval_queue
+    assert propose_trace["stage"] == "propose"
+    assert "evidence is not grounded in deterministic artifacts" in propose_trace["error"]
+
+
+def test_pipeline_rejects_structured_evidence_with_unknown_key(tmp_path: Path):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = StructuredUnknownKeyEvidenceAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    assert result.proposal_ids == []
+    assert len(client.calls) == 4
+    approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    assert "proposals: []" in approval_queue
+    assert "proposal-hierarchy-symptom-001" not in approval_queue
+    assert propose_trace["stage"] == "propose"
+    assert "evidence is not grounded in deterministic artifacts" in propose_trace["error"]
 
 
 def test_pipeline_rejects_evidence_that_only_contains_reference_as_substring(

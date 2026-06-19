@@ -51,7 +51,6 @@ _EVIDENCE_FIELD_ORDER = (
     "entity_id",
     "relation_id",
     "metric",
-    "reason",
 )
 
 

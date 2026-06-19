@@ -99,9 +99,32 @@ def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
     evidence = output.proposals[0].evidence
     assert all(isinstance(item, str) for item in evidence)
     assert evidence == [
-        "source_id: chunk-1; file_path: guide.md; item_id: edge-flu-fever; reason: supports hierarchy gap",
+        "source_id: chunk-1; file_path: guide.md; item_id: edge-flu-fever",
         "quality:hierarchy_missing_branch_count=1",
     ]
+
+
+def test_parse_agent_stage_output_ignores_unknown_structured_evidence_fields():
+    output = parse_agent_stage_output(
+        "propose",
+        json.dumps(
+            {
+                "proposals": [
+                    _proposal_payload(
+                        evidence=[
+                            {
+                                "source_id": "chunk-1",
+                                "comment": "normalization ignores this field",
+                            }
+                        ]
+                    )
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert output.proposals[0].evidence == ["source_id: chunk-1"]
 
 
 def test_parse_agent_stage_output_rejects_unknown_only_structured_evidence():
