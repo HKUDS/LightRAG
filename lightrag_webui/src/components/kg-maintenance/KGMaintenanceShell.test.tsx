@@ -29,6 +29,7 @@ const {
   normalizeOptionalMarkdown,
   optionalMissingResponse,
   runWorkspaceAction,
+  requestProposalRevisionForWorkspace,
   submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse
 } = await import('./kgIterationLoadUtils')
@@ -72,6 +73,7 @@ function renderMainPanel(
   options: {
     acceptedChanges?: string
     rejectedChanges?: string
+    deferredChanges?: string
     acceptedApplyResult?: string
     acceptedExecution?: string
   } = {}
@@ -125,9 +127,10 @@ function renderMainPanel(
   confidence: 0.80
   risk: high
   requires_approval: true
-  expected_metric_change:
+      expected_metric_change:
     approval_latency: -1`}
       improvementBacklog="backlog content marker"
+      deferredChanges={options.deferredChanges ?? 'deferred content marker'}
       acceptedApplyResult={options.acceptedApplyResult ?? 'apply result content marker'}
       acceptedExecution={options.acceptedExecution ?? 'execution content marker'}
       iterationLog="iteration log marker"
@@ -169,6 +172,7 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       qualityScore={null}
       approvalQueue=""
       improvementBacklog=""
+      deferredChanges=""
       acceptedApplyResult=""
       acceptedExecution=""
       iterationLog=""
@@ -514,6 +518,7 @@ describe('MainPanel workflow routing', () => {
     expect(bundle.kbContextArtifact).toBe('')
     expect(bundle.llmTraceArtifact).toBeNull()
     expect(bundle.approvalArtifact).toBe('approval_queue content')
+    expect(bundle.deferredChangesArtifact).toBe('deferred_changes content')
     expect(bundle.acceptedApplyResultArtifact).toBe('accepted_changes_apply_result content')
   })
 
@@ -579,11 +584,13 @@ describe('MainPanel workflow routing', () => {
     expect(requestedArtifactKeys).toContain('llm_evidence_map')
     expect(requestedArtifactKeys).toContain('llm_repair_plan')
     expect(requestedArtifactKeys).toContain('accepted_changes_apply_result')
+    expect(requestedArtifactKeys).toContain('deferred_changes')
     expect(bundle.llmIssueAnalysisArtifact).toBe('# llm_issue_analysis')
     expect(bundle.llmMissingBranchInferenceArtifact).toBe('# llm_missing_branch_inference')
     expect(bundle.llmEvidenceMapArtifact).toBe('# llm_evidence_map')
     expect(bundle.llmRepairPlanArtifact).toBe('# llm_repair_plan')
     expect(bundle.acceptedApplyResultArtifact).toBe('# accepted_changes_apply_result')
+    expect(bundle.deferredChangesArtifact).toBe('# deferred_changes')
   })
 
   test('workspace response guard rejects stale workspace payloads', () => {
@@ -867,6 +874,73 @@ describe('MainPanel workflow routing', () => {
     expect(refreshCalls).toBe(1)
   })
 
+  test('proposal revision request calls backend helper and reloads current workspace', async () => {
+    const calls: string[] = []
+    let refreshCalls = 0
+
+    await requestProposalRevisionForWorkspace({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => 'workspace-a',
+      proposal: {
+        id: 'proposal-1',
+        type: 'prompt_edit',
+        target: 'workspace_profile.json',
+        proposedChange: 'Tighten approval policy',
+        reason: 'More evidence needed',
+        evidence: [],
+        confidence: '0.8',
+        risk: 'high',
+        requiresApproval: true,
+        expectedMetricChange: 'approval_latency: -1'
+      },
+      reloadWorkspaceData: async () => {
+        refreshCalls += 1
+      },
+      requestRevision: async (workspace, proposalId) => {
+        calls.push(`${workspace}:${proposalId}`)
+        return {
+          workspace,
+          proposalId,
+          artifactKey: 'proposal_revision_requests',
+          record: {}
+        }
+      }
+    })
+
+    expect(calls).toEqual(['workspace-a:proposal-1'])
+    expect(refreshCalls).toBe(1)
+  })
+
+  test('proposal revision request reports current workspace failures', async () => {
+    let bannerError = ''
+
+    await requestProposalRevisionForWorkspace({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => 'workspace-a',
+      proposal: {
+        id: 'proposal-1',
+        type: 'prompt_edit',
+        target: 'workspace_profile.json',
+        proposedChange: 'Tighten approval policy',
+        reason: 'More evidence needed',
+        evidence: [],
+        confidence: '0.8',
+        risk: 'high',
+        requiresApproval: true,
+        expectedMetricChange: 'approval_latency: -1'
+      },
+      reloadWorkspaceData: async () => undefined,
+      requestRevision: async () => {
+        throw new Error('revision failed')
+      },
+      onError: (error) => {
+        bannerError = error instanceof Error ? error.message : String(error)
+      }
+    })
+
+    expect(bannerError).toBe('revision failed')
+  })
+
   test('markdown normalization accepts pre-normalized optional strings', () => {
     expect(normalizeOptionalMarkdown('loaded markdown')).toBe('loaded markdown')
     expect(normalizeOptionalMarkdown(null)).toBe('')
@@ -909,6 +983,24 @@ describe('MainPanel workflow routing', () => {
 
     expect(markup).toContain('proposal-1')
     expect(markup).not.toContain('reject</button>')
+  })
+
+  test('approval marks proposals that already have deferred decisions', () => {
+    const markup = renderMainPanel('approval', {
+      deferredChanges: `# Deferred Changes
+
+## proposal-1
+
+\`\`\`json
+{"proposal_id":"proposal-1","decision":"defer"}
+\`\`\`
+`
+    })
+
+    expect(markup).toContain('proposal-1')
+    expect(markup).toContain('已延后')
+    expect(markup).not.toContain('bg-amber-100 text-amber-800')
+    expect(markup).not.toContain('>延后</button>')
   })
 
   test('execute combines backlog memory and accepted execution controls', () => {

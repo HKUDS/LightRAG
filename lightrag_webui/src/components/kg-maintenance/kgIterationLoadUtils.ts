@@ -113,6 +113,7 @@ type KGMaintenanceWorkspaceBundle = {
   qualityScoreArtifact: unknown
   approvalArtifact: string
   backlogArtifact: string
+  deferredChangesArtifact: string
   acceptedApplyResultArtifact: string
   acceptedExecutionArtifact: string
   logArtifact: string
@@ -161,6 +162,7 @@ export async function loadKGMaintenanceWorkspaceBundle(
     qualityScoreArtifact,
     approvalArtifact,
     backlogArtifact,
+    deferredChangesArtifact,
     acceptedApplyResultArtifact,
     acceptedExecutionArtifact,
     logArtifact,
@@ -181,6 +183,7 @@ export async function loadKGMaintenanceWorkspaceBundle(
     optionalArtifactPayload(() => loaders.getArtifact(requestWorkspace, 'quality_score')),
     optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'approval_queue')),
     optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'improvement_backlog')),
+    optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'deferred_changes')),
     optionalArtifactContent(() =>
       loaders.getArtifact(requestWorkspace, 'accepted_changes_apply_result')
     ),
@@ -209,6 +212,7 @@ export async function loadKGMaintenanceWorkspaceBundle(
     qualityScoreArtifact,
     approvalArtifact,
     backlogArtifact,
+    deferredChangesArtifact,
     acceptedApplyResultArtifact,
     acceptedExecutionArtifact,
     logArtifact,

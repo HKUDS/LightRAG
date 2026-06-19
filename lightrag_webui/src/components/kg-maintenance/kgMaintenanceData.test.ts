@@ -172,11 +172,20 @@ proposals:
 \`\`\`json
 {"proposal_id":"proposal-2","decision":"reject"}
 \`\`\`
+`,
+        deferredChanges: `# Deferred Changes
+
+## proposal-3
+
+\`\`\`json
+{"proposal_id":"proposal-3","decision":"defer"}
+\`\`\`
 `
       })
     ).toEqual({
       'proposal-1': 'accept',
-      'proposal-2': 'reject'
+      'proposal-2': 'reject',
+      'proposal-3': 'defer'
     })
   })
 })

@@ -99,6 +99,7 @@ export default function KGMaintenanceConsole() {
   const [qualityScore, setQualityScore] = useState<Record<string, any> | null>(null)
   const [approvalQueue, setApprovalQueue] = useState('')
   const [improvementBacklog, setImprovementBacklog] = useState('')
+  const [deferredChanges, setDeferredChanges] = useState('')
   const [acceptedApplyResult, setAcceptedApplyResult] = useState('')
   const [acceptedExecution, setAcceptedExecution] = useState('')
   const [iterationLog, setIterationLog] = useState('')
@@ -178,6 +179,7 @@ export default function KGMaintenanceConsole() {
         qualityScoreArtifact,
         approvalArtifact,
         backlogArtifact,
+        deferredChangesArtifact,
         acceptedApplyResultArtifact,
         acceptedExecutionArtifact,
         logArtifact,
@@ -211,6 +213,7 @@ export default function KGMaintenanceConsole() {
       )
       setApprovalQueue(normalizeOptionalMarkdown(approvalArtifact))
       setImprovementBacklog(normalizeOptionalMarkdown(backlogArtifact))
+      setDeferredChanges(normalizeOptionalMarkdown(deferredChangesArtifact))
       setAcceptedApplyResult(normalizeOptionalMarkdown(acceptedApplyResultArtifact))
       setAcceptedExecution(normalizeOptionalMarkdown(acceptedExecutionArtifact))
       setIterationLog(normalizeOptionalMarkdown(logArtifact))
@@ -460,6 +463,7 @@ export default function KGMaintenanceConsole() {
           qualityScore={qualityScore}
           approvalQueue={approvalQueue}
           improvementBacklog={improvementBacklog}
+          deferredChanges={deferredChanges}
           acceptedApplyResult={acceptedApplyResult}
           acceptedExecution={acceptedExecution}
           iterationLog={iterationLog}
@@ -505,6 +509,7 @@ interface MainPanelProps {
   qualityScore: Record<string, any> | null
   approvalQueue: string
   improvementBacklog: string
+  deferredChanges: string
   acceptedApplyResult: string
   acceptedExecution: string
   iterationLog: string
@@ -544,6 +549,7 @@ export function MainPanel({
   qualityScore,
   approvalQueue,
   improvementBacklog,
+  deferredChanges,
   acceptedApplyResult,
   acceptedExecution,
   iterationLog,
@@ -599,6 +605,7 @@ export function MainPanel({
         improvementBacklog={improvementBacklog}
         acceptedChanges={rules?.acceptedChanges || ''}
         rejectedChanges={rules?.rejectedChanges || ''}
+        deferredChanges={deferredChanges}
         onDecision={onProposalDecision}
         onRequestRevision={onRequestProposalRevision}
       />

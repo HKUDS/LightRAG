@@ -25,6 +25,7 @@ interface ApprovalPanelProps {
   improvementBacklog: string
   acceptedChanges?: string
   rejectedChanges?: string
+  deferredChanges?: string
   onOpenEvidence?: (evidenceId: string) => void
   onDecision?: (
     proposal: ProposalSummary,
@@ -158,14 +159,15 @@ export function ApprovalPanel({
   improvementBacklog,
   acceptedChanges = '',
   rejectedChanges = '',
+  deferredChanges = '',
   onOpenEvidence,
   onDecision,
   onRequestRevision
 }: ApprovalPanelProps) {
   const proposals = parseProposalSummaries(approvalQueue)
   const decisionStates = useMemo(
-    () => parseProposalDecisionStates({ acceptedChanges, rejectedChanges }),
-    [acceptedChanges, rejectedChanges]
+    () => parseProposalDecisionStates({ acceptedChanges, rejectedChanges, deferredChanges }),
+    [acceptedChanges, deferredChanges, rejectedChanges]
   )
   const [collapsedProposals, setCollapsedProposals] = useState<Record<string, boolean>>({})
 

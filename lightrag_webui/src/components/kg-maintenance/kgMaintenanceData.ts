@@ -148,14 +148,17 @@ export function groupProposalVersions(proposals: ProposalSummary[]): ProposalVer
 
 export function parseProposalDecisionStates({
   acceptedChanges = '',
-  rejectedChanges = ''
+  rejectedChanges = '',
+  deferredChanges = ''
 }: {
   acceptedChanges?: string
   rejectedChanges?: string
+  deferredChanges?: string
 }): ProposalDecisionStates {
   return {
     ...parseDecisionArtifact(acceptedChanges, 'accept'),
-    ...parseDecisionArtifact(rejectedChanges, 'reject')
+    ...parseDecisionArtifact(rejectedChanges, 'reject'),
+    ...parseDecisionArtifact(deferredChanges, 'defer')
   }
 }
 

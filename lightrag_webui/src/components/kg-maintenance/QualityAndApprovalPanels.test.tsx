@@ -61,6 +61,26 @@ describe('ApprovalPanel', () => {
     expect(revisionButton).not.toMatch(/\sdisabled(?:=|>|$)/)
   })
 
+  test('renders deferred records as already deferred without a default defer action', () => {
+    const markup = renderToStaticMarkup(
+      <ApprovalPanel
+        approvalQueue={approvalQueue}
+        improvementBacklog=""
+        acceptedChanges=""
+        rejectedChanges=""
+        deferredChanges="## prop-a"
+        onDecision={() => undefined}
+        onRequestRevision={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('已延后')
+    expect(markup).not.toContain('bg-amber-100 text-amber-800')
+    expect(markup).not.toContain('让 Agent 修改')
+    expect(markup).not.toContain('>延后</button>')
+    expect(markup).toContain('disabled=""')
+  })
+
   test('revision helper calls the provided handler with the proposal', async () => {
     const proposal: ProposalSummary = {
       id: 'prop-a',
