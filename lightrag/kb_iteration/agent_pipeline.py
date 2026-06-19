@@ -25,7 +25,7 @@ from .proposals import validate_proposal, write_approval_queue, write_improvemen
 @dataclass(frozen=True)
 class LLMAgentPipelineConfig:
     max_context_tokens_per_stage: int = 12000
-    max_stage_retries: int = 1
+    max_stage_retries: int = 5
     allow_llm_judge: bool = True
     generate_patch_candidates: bool = False
     require_human_for_mutation: bool = True

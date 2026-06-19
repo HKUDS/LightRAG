@@ -94,7 +94,7 @@ class RunLLMReviewRequest(BaseModel):
     max_review_rounds: int = Field(default=4, ge=1, le=10)
     max_focus_items_per_round: int = Field(default=3, ge=1, le=10)
     max_context_tokens_per_round: int = Field(default=12000, ge=1000, le=100000)
-    max_stage_retries: int = Field(default=1, ge=0, le=3)
+    max_stage_retries: int = Field(default=5, ge=0, le=8)
     allow_llm_judge: bool = True
     allow_llm_auto_accept: bool = False
     allow_low_risk_auto_reject: bool = True

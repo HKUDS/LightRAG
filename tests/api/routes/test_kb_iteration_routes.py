@@ -923,6 +923,93 @@ def test_llm_review_run_defaults_to_agent_pipeline(tmp_path: Path, monkeypatch):
     assert config.require_human_for_mutation is False
 
 
+def test_llm_review_run_defaults_to_five_agent_stage_retries(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.routers import kb_iteration_routes
+
+    client, fixture = _client(tmp_path, monkeypatch)
+    agent_calls = []
+
+    class FakeClient:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            return "{}"
+
+    def fake_run_llm_agent_pipeline(**kwargs):
+        agent_calls.append(kwargs)
+        return SimpleNamespace(
+            output_dir=fixture.package,
+            stop_reason="agent_done",
+            proposal_ids=[],
+            artifact_paths={},
+        )
+
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "run_llm_agent_pipeline",
+        fake_run_llm_agent_pipeline,
+    )
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda rag: FakeClient(),
+    )
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/llm-review/runs",
+        headers=HEADERS,
+        json={"profile": "clinical_guideline_zh"},
+    )
+
+    assert response.status_code == 200
+    assert len(agent_calls) == 1
+    assert agent_calls[0]["config"].max_stage_retries == 5
+
+
+def test_llm_review_run_accepts_agent_stage_retries_up_to_eight(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.routers import kb_iteration_routes
+
+    client, fixture = _client(tmp_path, monkeypatch)
+    agent_calls = []
+
+    class FakeClient:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            return "{}"
+
+    def fake_run_llm_agent_pipeline(**kwargs):
+        agent_calls.append(kwargs)
+        return SimpleNamespace(
+            output_dir=fixture.package,
+            stop_reason="agent_done",
+            proposal_ids=[],
+            artifact_paths={},
+        )
+
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "run_llm_agent_pipeline",
+        fake_run_llm_agent_pipeline,
+    )
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda rag: FakeClient(),
+    )
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/llm-review/runs",
+        headers=HEADERS,
+        json={"max_stage_retries": 8},
+    )
+
+    assert response.status_code == 200
+    assert agent_calls[0]["config"].max_stage_retries == 8
+
+
 def test_llm_review_run_loop_mode_uses_legacy_loop(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     from lightrag.api.routers import kb_iteration_routes
