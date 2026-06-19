@@ -5,6 +5,38 @@ export type EvidenceIssueRow = {
   issue: '缺少证据来源 ID' | '缺少来源文件'
 }
 
+export type QualityBeforeSnapshot = {
+  overall?: number
+  metrics?: Record<string, number>
+}
+
+export function extractQualityBefore(applyResult: string): QualityBeforeSnapshot {
+  const metrics: Record<string, number> = {}
+  const snapshot: QualityBeforeSnapshot = {}
+
+  applyResult.split(/\r?\n/).forEach((line) => {
+    const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*:\s*(-?\d+(?:\.\d+)?)\s*->\s*-?\d+(?:\.\d+)?\s*$/)
+    if (!match) return
+
+    const [, key, beforeValue] = match
+    const numericBefore = Number(beforeValue)
+    if (!Number.isFinite(numericBefore)) return
+
+    if (key === 'overall') {
+      snapshot.overall = numericBefore
+      return
+    }
+
+    metrics[key] = numericBefore
+  })
+
+  if (Object.keys(metrics).length > 0) {
+    snapshot.metrics = metrics
+  }
+
+  return snapshot
+}
+
 export function buildEvidenceIssueRows(
   snapshot: Record<string, any> | null | undefined
 ): EvidenceIssueRow[] {

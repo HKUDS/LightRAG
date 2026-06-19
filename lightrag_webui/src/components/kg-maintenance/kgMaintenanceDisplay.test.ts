@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { buildEvidenceIssueRows } from './kgMaintenanceDisplay'
+import { buildEvidenceIssueRows, extractQualityBefore } from './kgMaintenanceDisplay'
 
 describe('kgMaintenanceDisplay', () => {
   test('builds evidence issue rows for missing node and relation evidence fields', () => {
@@ -82,5 +82,18 @@ describe('kgMaintenanceDisplay', () => {
         issue: '缺少来源文件'
       }
     ])
+  })
+
+  test('extracts before quality metrics from apply result delta lines', () => {
+    expect(
+      extractQualityBefore(`Applied: 2
+overall: 88 -> 97
+hierarchy_missing_branch_count: 4 -> 0`)
+    ).toEqual({
+      overall: 88,
+      metrics: {
+        hierarchy_missing_branch_count: 4
+      }
+    })
   })
 })

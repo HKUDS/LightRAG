@@ -22,10 +22,13 @@ import {
   findArtifactDefinition
 } from '@/components/kg-maintenance/kgMaintenanceArtifacts'
 import {
-  DecisionExecutionPanel,
-  IterationOverviewPanel,
-  IterationStagePanel
+  IterationOverviewPanel
 } from '@/components/kg-maintenance/IterationWorkbenchPanels'
+import {
+  ExecutionPanel,
+  ValidationPanel
+} from '@/components/kg-maintenance/ExecutionAndValidationPanels'
+import { extractQualityBefore } from '@/components/kg-maintenance/kgMaintenanceDisplay'
 import {
   normalizeWorkspaceList,
   loadKGMaintenanceWorkspaceBundle,
@@ -577,7 +580,8 @@ export function MainPanel({
   void quality
   void kbContext
   void kgSnapshot
-  void qualityScore
+  void acceptedExecution
+  void iterationLog
 
   if (activeSection === 'check') {
     return (
@@ -613,19 +617,22 @@ export function MainPanel({
   }
   if (activeSection === 'execute') {
     return (
-      <DecisionExecutionPanel
-        improvementBacklog={improvementBacklog}
+      <ExecutionPanel
         acceptedChanges={rules?.acceptedChanges || ''}
-        rejectedChanges={rules?.rejectedChanges || ''}
-        acceptedApplyResult={acceptedApplyResult}
-        acceptedExecution={acceptedExecution}
+        applyResult={acceptedApplyResult}
         executing={acceptedExecuting}
-        onExecuteAcceptedChanges={onExecuteAcceptedChanges}
+        onExecute={onExecuteAcceptedChanges}
       />
     )
   }
   if (activeSection === 'validate') {
-    return <IterationStagePanel iterationLog={iterationLog} />
+    return (
+      <ValidationPanel
+        qualityBefore={extractQualityBefore(acceptedApplyResult)}
+        qualityAfter={qualityScore}
+        applyResult={acceptedApplyResult}
+      />
+    )
   }
   if (activeSection === 'llm-review') {
     return (

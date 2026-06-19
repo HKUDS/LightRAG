@@ -104,7 +104,11 @@ function renderMainPanel(
         workspace: 'influenza_medical_v1',
         qualityRules: '',
         knownIssues: '',
-        acceptedChanges: options.acceptedChanges ?? 'accepted content marker',
+        acceptedChanges: options.acceptedChanges ?? `# Accepted Changes
+
+## proposal-1
+
+accepted content marker`,
         rejectedChanges: options.rejectedChanges ?? 'rejected content marker'
       }}
       kbContext="# 当前 KB 摘要"
@@ -114,7 +118,13 @@ function renderMainPanel(
         nodes: [{ id: 'flu' }],
         edges: [{ source: 'flu', target: 'fever' }]
       }}
-      qualityScore={{ overall: 82, findings: [{ severity: 'medium' }] }}
+      qualityScore={{
+        overall: 97,
+        metrics: {
+          hierarchy_missing_branch_count: 0
+        },
+        findings: [{ severity: 'medium' }]
+      }}
       approvalQueue={`# 待审批 proposal
 
 - id: proposal-1
@@ -131,7 +141,12 @@ function renderMainPanel(
     approval_latency: -1`}
       improvementBacklog="backlog content marker"
       deferredChanges={options.deferredChanges ?? 'deferred content marker'}
-      acceptedApplyResult={options.acceptedApplyResult ?? 'apply result content marker'}
+      acceptedApplyResult={
+        options.acceptedApplyResult ??
+        `Applied: 2
+overall: 88 -> 97
+hierarchy_missing_branch_count: 4 -> 0`
+      }
       acceptedExecution={options.acceptedExecution ?? 'execution content marker'}
       iterationLog="iteration log marker"
       llmTrace={{
@@ -1003,19 +1018,16 @@ describe('MainPanel workflow routing', () => {
     expect(markup).not.toContain('>延后</button>')
   })
 
-  test('execute combines backlog memory and accepted execution controls', () => {
+  test('execute renders the focused accepted-change execution surface', () => {
     const markup = renderMainPanel('execute')
 
-    expect(markup).toContain('improvement_backlog.md')
-    expect(markup).toContain('accepted_changes.md')
-    expect(markup).toContain('rejected_changes.md')
-    expect(markup).toContain('accepted_changes_apply_result.md')
-    expect(markup).toContain('accepted_changes_execution.md')
-    expect(markup).toContain('backlog content marker')
-    expect(markup).toContain('apply result content marker')
+    expect(markup).toContain('执行已接受变更')
+    expect(markup).toContain('执行变更')
+    expect(markup).toContain('Applied: 2')
     expect(markup).toContain('accepted content marker')
-    expect(markup).toContain('rejected content marker')
-    expect(markup).toContain('execution content marker')
+    expect(markup).not.toContain('improvement_backlog.md')
+    expect(markup).not.toContain('backlog content marker')
+    expect(markup).not.toContain('rejected content marker')
   })
 
   test('llm-review renders auxiliary review materials without memory fallthrough', () => {
@@ -1026,10 +1038,13 @@ describe('MainPanel workflow routing', () => {
     expect(markup).not.toContain('accepted content marker')
   })
 
-  test('validate renders iteration status material during transition', () => {
+  test('validate renders quality deltas and apply result', () => {
     const markup = renderMainPanel('validate')
 
-    expect(markup).toContain('iteration_log.md')
-    expect(markup).toContain('iteration log marker')
+    expect(markup).toContain('验证结果')
+    expect(markup).toContain('88 → 97')
+    expect(markup).toContain('4 → 0')
+    expect(markup).toContain('Applied: 2')
+    expect(markup).not.toContain('iteration_log.md')
   })
 })
