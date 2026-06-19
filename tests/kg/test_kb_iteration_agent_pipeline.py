@@ -446,6 +446,73 @@ class AlwaysInvalidProposeAgentClient(SequencedAgentClient):
         return json.dumps(output, ensure_ascii=False)
 
 
+SECRET_BEARING_CLIENT_ERROR = (
+    "provider 401 while refreshing credentials: "
+    "api_key=sk-review-secret-123 token=raw-token-456 "
+    "Authorization: Bearer bearer-secret-789 secret=hunter2; retry later"
+)
+HEADER_STYLE_CLIENT_ERROR = (
+    "transport failed: X-API-Key: header-secret-321 "
+    "session_token=session-secret-654 while contacting provider"
+)
+SECRET_FRAGMENTS = (
+    "sk-review-secret-123",
+    "raw-token-456",
+    "bearer-secret-789",
+    "hunter2",
+    "header-secret-321",
+    "session-secret-654",
+)
+
+
+class ClientErrorOnceThenSuccessAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.output_index = 0
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+            }
+        )
+        if len(self.calls) == 1:
+            raise RuntimeError(SECRET_BEARING_CLIENT_ERROR)
+        output = self.outputs[self.output_index]
+        self.output_index += 1
+        return json.dumps(output, ensure_ascii=False)
+
+
+class JudgeClientErrorAgentClient(SequencedAgentClient):
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+            }
+        )
+        if len(self.calls) == 6:
+            raise RuntimeError(SECRET_BEARING_CLIENT_ERROR)
+        return json.dumps(self.outputs[len(self.calls) - 1], ensure_ascii=False)
+
+
+class AlwaysClientErrorAgentClient:
+    model = "agent-model"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+            }
+        )
+        raise RuntimeError(HEADER_STYLE_CLIENT_ERROR)
+
+
 def test_run_llm_agent_pipeline_writes_multistage_artifacts_and_queues_review(
     tmp_path: Path,
 ):
@@ -1075,6 +1142,55 @@ def test_pipeline_marks_incomplete_or_invalid_judge_results_unavailable(
     assert "judge_unavailable" in proposals_yaml
 
 
+def test_pipeline_sanitizes_judge_client_error_unavailable_reason(
+    tmp_path: Path,
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = JudgeClientErrorAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+    )
+
+    assert result.stop_reason == "pending_human_review"
+    assert result.proposal_ids == ["proposal-hierarchy-symptom-001"]
+    trace_text = (package / "llm_review_trace.json").read_text(encoding="utf-8")
+    trace = json.loads(trace_text)
+    judge_trace = trace["stages"][-1]
+    assert judge_trace["stage"] == "judge"
+    assert judge_trace["state"] == "judge_unavailable"
+    assert "provider 401 while refreshing credentials" in judge_trace["error"]
+    assert "[REDACTED]" in judge_trace["error"]
+    assert judge_trace["attempt_logs"] == [
+        {
+            "attempt": 1,
+            "state": "client_error",
+            "error": (
+                "provider 401 while refreshing credentials: "
+                "api_key=[REDACTED] token=[REDACTED] "
+                "Authorization: Bearer [REDACTED] secret=[REDACTED]; retry later"
+            ),
+            "output_token_estimate": 0,
+        }
+    ]
+
+    judge_report = (package / "llm_judge_report.md").read_text(encoding="utf-8")
+    proposals_yaml = (package / "proposals.generated.yaml").read_text(
+        encoding="utf-8"
+    )
+    approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
+    assert "provider 401 while refreshing credentials" in judge_report
+    assert "[REDACTED]" in judge_report
+    _assert_text_excludes_secrets(trace_text)
+    _assert_text_excludes_secrets(judge_report)
+    _assert_text_excludes_secrets(proposals_yaml)
+    _assert_text_excludes_secrets(approval_queue)
+
+
 def test_pipeline_marks_judge_unavailable_when_judge_disabled(tmp_path: Path):
     package = tmp_path / "package"
     _write_agent_package(package)
@@ -1308,6 +1424,86 @@ def test_pipeline_retries_with_accumulated_rejection_history(tmp_path: Path):
     )
 
 
+def test_pipeline_records_sanitized_client_error_attempt_logs_and_retry_prompt(
+    tmp_path: Path,
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = ClientErrorOnceThenSuccessAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=1),
+    )
+
+    assert result.stop_reason == "pending_human_review"
+    assert result.proposal_ids == ["proposal-hierarchy-symptom-001"]
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    explain_trace = trace["stages"][0]
+    assert explain_trace["stage"] == "explain"
+    assert explain_trace["state"] == "completed"
+    assert explain_trace["attempts"] == 2
+    assert explain_trace["attempt_logs"] == [
+        {
+            "attempt": 1,
+            "state": "client_error",
+            "error": (
+                "provider 401 while refreshing credentials: "
+                "api_key=[REDACTED] token=[REDACTED] "
+                "Authorization: Bearer [REDACTED] secret=[REDACTED]; retry later"
+            ),
+            "output_token_estimate": 0,
+        }
+    ]
+
+    retry_prompt = client.calls[1]["user_prompt"]
+    assert "Previous output was rejected" not in retry_prompt
+    assert "Return corrected JSON only." not in retry_prompt
+    assert "Previous LLM client call failed" in retry_prompt
+    assert "provider 401 while refreshing credentials" in retry_prompt
+    assert "[REDACTED]" in retry_prompt
+    _assert_text_excludes_secrets(retry_prompt)
+    _assert_text_excludes_secrets((package / "llm_review_trace.json").read_text())
+
+
+def test_pipeline_sanitizes_client_error_failure_report(tmp_path: Path):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = AlwaysClientErrorAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=1),
+    )
+
+    assert result.stop_reason == "llm_client_error"
+    assert result.proposal_ids == []
+    trace_text = (package / "llm_review_trace.json").read_text(encoding="utf-8")
+    trace = json.loads(trace_text)
+    explain_trace = trace["stages"][0]
+    assert explain_trace["stage"] == "explain"
+    assert explain_trace["state"] == "client_error"
+    assert explain_trace["attempts"] == 2
+    assert len(explain_trace["attempt_logs"]) == 2
+    assert all(
+        attempt["state"] == "client_error"
+        and attempt["output_token_estimate"] == 0
+        and "[REDACTED]" in attempt["error"]
+        for attempt in explain_trace["attempt_logs"]
+    )
+
+    report = (package / "llm_review_report.md").read_text(encoding="utf-8")
+    assert "transport failed" in report
+    assert "X-API-Key: [REDACTED]" in report
+    assert "session_token=[REDACTED]" in report
+    _assert_text_excludes_secrets(trace_text)
+    _assert_text_excludes_secrets(report)
+
+
 def test_pipeline_writes_failure_artifacts_for_missing_required_package_artifact(
     tmp_path: Path,
 ):
@@ -1398,6 +1594,24 @@ def test_pipeline_writes_failure_artifacts_for_invalid_config(tmp_path: Path):
     )
 
 
+def test_pipeline_preflight_trace_includes_empty_attempt_logs(tmp_path: Path):
+    package = tmp_path / "package"
+    package.mkdir()
+    client = SequencedAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_context_tokens_per_stage=0),
+    )
+
+    assert result.stop_reason == "invalid_config"
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    assert trace["stages"][0]["stage"] == "preflight"
+    assert trace["stages"][0]["attempt_logs"] == []
+
+
 def _write_agent_package(package: Path) -> None:
     snapshot_dir = package / "snapshots"
     snapshot_dir.mkdir(parents=True)
@@ -1480,6 +1694,11 @@ def _write_json(path: Path, payload: dict) -> None:
     with path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
         file.write("\n")
+
+
+def _assert_text_excludes_secrets(text: str) -> None:
+    for secret in SECRET_FRAGMENTS:
+        assert secret not in text
 
 
 def _assert_preflight_failure_artifacts(

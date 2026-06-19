@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -98,6 +99,17 @@ _JUDGE_DECISIONS = {
     "needs_more_evidence",
 }
 _JUDGE_HUMAN_DECISIONS = {"needs_human", "needs_more_evidence"}
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b("
+    r"x-api-key|api[_-]?key|"
+    r"token|access[_-]?token|refresh[_-]?token|[a-z0-9]+[_-]token|"
+    r"secret|client[_-]?secret|[a-z0-9]+[_-]secret|password"
+    r")(\s*[:=]\s*)([\"']?)([^\s,;\"']+)([\"']?)"
+)
+_BEARER_TOKEN_RE = re.compile(
+    r"(?i)\b(Authorization\s*:\s*Bearer\s+|Bearer\s+)([A-Za-z0-9._~+/=-]+)"
+)
+_OPENAI_KEY_RE = re.compile(r"\bsk-[^\s,;\"']+\b")
 
 
 @dataclass
@@ -226,13 +238,25 @@ def run_llm_agent_pipeline(
                     user_prompt=user_prompt,
                 )
             except Exception as exc:
-                stage_trace["error"] = str(exc)
+                error = _sanitize_error_text(exc)
+                stage_trace["error"] = error
+                _append_attempt_log(
+                    stage_trace,
+                    attempt=attempt,
+                    state="client_error",
+                    error=error,
+                )
                 if attempt < max_attempts:
+                    user_prompt = _client_error_retry_user_prompt(
+                        base_user_prompt,
+                        error=error,
+                        previous_errors=_attempt_error_lines(stage_trace),
+                    )
                     continue
                 if stage == "judge" and proposals:
                     return _finish_judge_unavailable(
                         output_dir=output_dir,
-                        error=str(exc),
+                        error=error,
                         proposals=proposals,
                         previous_outputs=previous_outputs,
                         artifact_paths=artifact_paths,
@@ -263,7 +287,7 @@ def run_llm_agent_pipeline(
                 if stage == "judge" and proposals:
                     _normalized_judge_results(parsed.payload, proposals)
             except ValueError as exc:
-                error = str(exc)
+                error = _sanitize_error_text(exc)
                 stage_trace["error"] = error
                 stage_trace["output_token_estimate"] = _estimate_tokens(raw_output)
                 _append_attempt_log(
@@ -400,6 +424,40 @@ def _selected_stages(config: LLMAgentPipelineConfig) -> tuple[str, ...]:
     return tuple(stage for stage in _STAGES if stage != "judge")
 
 
+def _sanitize_error_text(error: object) -> str:
+    text = str(error)
+    text = _SECRET_ASSIGNMENT_RE.sub(
+        lambda match: (
+            f"{match.group(1)}{match.group(2)}"
+            f"{match.group(3)}[REDACTED]{match.group(5)}"
+        ),
+        text,
+    )
+    text = _BEARER_TOKEN_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
+    return _OPENAI_KEY_RE.sub("[REDACTED]", text)
+
+
+def _sanitize_trace_errors(trace: dict[str, Any]) -> None:
+    stages = trace.get("stages")
+    if not isinstance(stages, list):
+        return
+    for stage_trace in stages:
+        if not isinstance(stage_trace, dict):
+            continue
+        error = stage_trace.get("error")
+        if isinstance(error, str):
+            stage_trace["error"] = _sanitize_error_text(error)
+        attempt_logs = stage_trace.get("attempt_logs")
+        if not isinstance(attempt_logs, list):
+            continue
+        for item in attempt_logs:
+            if not isinstance(item, dict):
+                continue
+            attempt_error = item.get("error")
+            if isinstance(attempt_error, str):
+                item["error"] = _sanitize_error_text(attempt_error)
+
+
 def _append_attempt_log(
     stage_trace: dict[str, Any],
     *,
@@ -416,7 +474,7 @@ def _append_attempt_log(
         {
             "attempt": attempt,
             "state": state,
-            "error": error,
+            "error": _sanitize_error_text(error),
             "output_token_estimate": _estimate_tokens(raw_output) if raw_output else 0,
         }
     )
@@ -433,7 +491,7 @@ def _attempt_error_lines(stage_trace: dict[str, Any]) -> list[str]:
         attempt = item.get("attempt")
         error = item.get("error")
         if isinstance(attempt, int) and isinstance(error, str) and error:
-            lines.append(f"Attempt {attempt}: {error}")
+            lines.append(f"Attempt {attempt}: {_sanitize_error_text(error)}")
     return lines
 
 
@@ -444,6 +502,7 @@ def _retry_user_prompt(
     error: str,
     previous_errors: list[str] | None = None,
 ) -> str:
+    error = _sanitize_error_text(error)
     guidance = [
         f"Previous output was rejected: {error}.",
         "Return corrected JSON only.",
@@ -469,7 +528,23 @@ def _retry_user_prompt(
     return "\n\n".join([base_user_prompt, *guidance])
 
 
+def _client_error_retry_user_prompt(
+    base_user_prompt: str,
+    *,
+    error: str,
+    previous_errors: list[str] | None = None,
+) -> str:
+    guidance = [
+        f"Previous LLM client call failed: {_sanitize_error_text(error)}.",
+        "Retry the same stage and return the stage JSON only.",
+    ]
+    if previous_errors:
+        guidance.extend(["Previous client errors:", *previous_errors])
+    return "\n\n".join([base_user_prompt, *guidance])
+
+
 def _synthetic_judge_stage_trace(reason: str) -> dict[str, Any]:
+    reason = _sanitize_error_text(reason)
     return {
         "stage": "judge",
         "started_at": _utc_timestamp(),
@@ -816,6 +891,7 @@ def _finish_run(
     trace["completed_at"] = _utc_timestamp()
     trace["stop_reason"] = stop_reason
     trace["proposal_ids"] = proposal_ids
+    _sanitize_trace_errors(trace)
     if stop_reason in _FAILURE_STOP_REASONS:
         artifact_paths.update(_write_failure_artifacts(output_dir, stop_reason, trace))
 
@@ -843,7 +919,7 @@ def _finish_judge_unavailable(
     stage_trace: dict[str, Any],
 ) -> LLMAgentPipelineResult:
     proposal_ids = [proposal.id for proposal in proposals]
-    reason = _single_line(error) or "judge stage failed"
+    reason = _single_line(_sanitize_error_text(error)) or "judge stage failed"
     proposals_with_judge = [
         replace(
             proposal,
@@ -859,6 +935,7 @@ def _finish_judge_unavailable(
     judge_artifacts = _write_judge_unavailable_artifact(output_dir, reason)
     artifact_paths.update(judge_artifacts)
     stage_trace["state"] = "judge_unavailable"
+    stage_trace["error"] = reason
     stage_trace["artifact_keys"] = list(judge_artifacts)
     stage_trace["completed_at"] = _utc_timestamp()
     trace["stages"].append(stage_trace)
@@ -906,6 +983,7 @@ def _finish_preflight_failure(
     trace: dict[str, Any],
 ) -> LLMAgentPipelineResult:
     timestamp = _utc_timestamp()
+    error = _sanitize_error_text(error)
     trace["stages"].append(
         {
             "stage": "preflight",
@@ -917,6 +995,7 @@ def _finish_preflight_failure(
             "model": "not_called",
             "input_token_estimate": 0,
             "output_token_estimate": 0,
+            "attempt_logs": [],
             "proposal_ids": [],
             "artifact_keys": [],
             "error": error,
@@ -938,7 +1017,7 @@ def _write_failure_artifacts(
     report_path = output_dir / "llm_review_report.md"
     proposals_path = output_dir / "proposals.generated.yaml"
     latest_stage = _latest_stage_trace(trace)
-    error = str(latest_stage.get("error", "")).strip()
+    error = _sanitize_error_text(latest_stage.get("error", "")).strip()
     state = str(latest_stage.get("state", "")).strip()
     stage = str(latest_stage.get("stage", "")).strip()
 
@@ -970,7 +1049,7 @@ def _write_failure_artifacts(
             attempt = item.get("attempt")
             attempt_error = item.get("error")
             if isinstance(attempt, int) and isinstance(attempt_error, str):
-                clean_error = _single_line(attempt_error)
+                clean_error = _single_line(_sanitize_error_text(attempt_error))
                 if clean_error:
                     report_lines.append(f"- Attempt {attempt}: {clean_error}")
     report_lines.extend(["", "## Generated Proposals", "", "- none", ""])
