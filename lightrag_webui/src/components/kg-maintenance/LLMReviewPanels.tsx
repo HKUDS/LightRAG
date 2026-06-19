@@ -9,10 +9,21 @@ export type TraceRound = {
   state?: string
 }
 
+export type TraceStage = {
+  stage?: string
+  state?: string
+  artifact_keys?: string[]
+  proposal_ids?: string[]
+}
+
 export type LLMReviewPanelProps = {
   trace: Record<string, any> | null
   report: string
   proposals: string
+  issueAnalysis: string
+  missingBranchInference: string
+  evidenceMap: string
+  repairPlan: string
   running: boolean
   onRun: () => void
 }
@@ -31,11 +42,16 @@ export function LLMReviewPanel({
   trace,
   report,
   proposals,
+  issueAnalysis,
+  missingBranchInference,
+  evidenceMap,
+  repairPlan,
   running,
   onRun
 }: LLMReviewPanelProps) {
   const stopReason = typeof trace?.stop_reason === 'string' ? trace.stop_reason : ''
   const rounds = Array.isArray(trace?.rounds) ? (trace.rounds as TraceRound[]) : []
+  const stages = Array.isArray(trace?.stages) ? (trace.stages as TraceStage[]) : []
   const subtitle = stopReason
     ? `停止原因：${stopReason}。辅助材料，不会自动修改 KG。`
     : '尚未生成 LLM 审阅 trace。辅助材料，不会自动修改 KG。'
@@ -58,6 +74,49 @@ export function LLMReviewPanel({
         <span className="text-muted-foreground mr-2">停止原因</span>
         <span className="font-medium">{stopReason || '暂无 stop_reason'}</span>
       </div>
+
+      <div className="border-border/70 bg-muted/20 rounded-lg border p-3 text-sm">
+        LLM Agent 只生成分析、proposal、证据位置和修复排序；任何会修改
+        KG、规则、prompt、workspace 或 WebUI 的操作都必须经过人工批准，不会自动修改 KG。
+      </div>
+
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">多阶段 LLM Agent</h3>
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {TRACE_STAGE_LABELS.map(({ key, label }) => {
+            const stage = stages.find((item) => normalizeTraceStage(item.stage) === key)
+            return (
+              <article key={key} className="border-border/70 rounded-lg border p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{label}</span>
+                  {stage?.state ? (
+                    <span className="bg-muted rounded-md px-2 py-1 text-xs">{stage.state}</span>
+                  ) : null}
+                </div>
+                <RoundField
+                  label="artifact key"
+                  values={stage?.artifact_keys}
+                  emptyText="暂无 artifact key。"
+                />
+                <RoundField
+                  label="proposal ID"
+                  values={stage?.proposal_ids}
+                  emptyText="暂无 proposal ID。"
+                />
+              </article>
+            )
+          })}
+        </div>
+      </div>
+
+      <ArtifactBlock title="问题解释" content={issueAnalysis} emptyText="暂无问题解释。" />
+      <ArtifactBlock
+        title="缺失分支推断"
+        content={missingBranchInference}
+        emptyText="暂无缺失分支推断。"
+      />
+      <ArtifactBlock title="证据定位" content={evidenceMap} emptyText="暂无证据定位。" />
+      <ArtifactBlock title="修复方案排序" content={repairPlan} emptyText="暂无修复方案排序。" />
 
       <div className="space-y-2">
         <h3 className="text-sm font-medium">审阅轮次</h3>
@@ -87,6 +146,15 @@ export function LLMReviewPanel({
     </section>
   )
 }
+
+const TRACE_STAGE_LABELS = [
+  { key: 'explain', label: 'Explain' },
+  { key: 'infer', label: 'Infer' },
+  { key: 'evidence', label: 'Evidence' },
+  { key: 'propose', label: 'Propose' },
+  { key: 'rank', label: 'Rank' },
+  { key: 'judge', label: 'Judge' }
+]
 
 export function PatchCandidatesPanel({
   proposals,
@@ -216,6 +284,10 @@ function EmptyBlock({ children }: { children: ReactNode }) {
       {children}
     </div>
   )
+}
+
+function normalizeTraceStage(stage?: string) {
+  return stage?.trim().toLowerCase() || ''
 }
 
 function parseProposalIds(proposals: string) {

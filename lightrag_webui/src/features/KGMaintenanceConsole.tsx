@@ -238,6 +238,8 @@ export default function KGMaintenanceConsole() {
       action: () =>
         runKBIterationLLMReview(requestWorkspace, {
           profile: activeProfile,
+          mode: 'agent_pipeline',
+          max_stage_retries: 1,
           max_review_rounds: 4,
           max_focus_items_per_round: 3,
           allow_llm_judge: true,
@@ -406,6 +408,10 @@ export function MainPanel({
   llmReport,
   llmProposals,
   llmJudgeReport,
+  llmIssueAnalysis,
+  llmMissingBranchInference,
+  llmEvidenceMap,
+  llmRepairPlan,
   patchText,
   llmRunning,
   running,
@@ -468,6 +474,10 @@ export function MainPanel({
           trace={llmTrace}
           report={llmReport}
           proposals={llmProposals}
+          issueAnalysis={llmIssueAnalysis}
+          missingBranchInference={llmMissingBranchInference}
+          evidenceMap={llmEvidenceMap}
+          repairPlan={llmRepairPlan}
           running={llmRunning || running}
           onRun={onRunLLMReview}
         />

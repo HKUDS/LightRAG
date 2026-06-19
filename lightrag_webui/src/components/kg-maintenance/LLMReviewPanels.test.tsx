@@ -19,18 +19,60 @@ describe('LLM review panels', () => {
         }}
         report="# LLM Review Report"
         proposals="id: p1"
+        issueAnalysis=""
+        missingBranchInference=""
+        evidenceMap=""
+        repairPlan=""
         running={false}
         onRun={() => undefined}
       />
     )
 
     expect(markup).toContain('LLM 审阅材料')
-    expect(markup).toContain('辅助材料，不会自动修改 KG')
+    expect(markup).toContain('不会自动修改 KG')
     expect(markup).toContain('停止原因')
     expect(markup).toContain('pending_human_review')
     expect(markup).toContain('generic_relation')
     expect(markup).toContain('生成的 proposal')
     expect(markup).toContain('# LLM Review Report')
+  })
+
+  test('renders multistage agent stages, artifacts, and safety notice', () => {
+    const markup = renderToStaticMarkup(
+      <LLMReviewPanel
+        trace={{
+          stages: [
+            { stage: 'explain', state: 'done' },
+            { stage: 'infer', state: 'done' },
+            { stage: 'evidence', state: 'done', artifact_keys: ['evidence_map'] },
+            { stage: 'propose', state: 'done', proposal_ids: ['p1', 'p2'] },
+            { stage: 'rank', state: 'done', proposal_ids: ['p2'] },
+            { stage: 'judge', state: 'needs_human' }
+          ]
+        }}
+        report=""
+        proposals=""
+        issueAnalysis="## Issue\nGeneric relation hides clinical specificity."
+        missingBranchInference="## Missing\nAdd influenza treatment branch."
+        evidenceMap="## Evidence\nsource: guideline.md"
+        repairPlan="## Ranking\n1. p2"
+        running={false}
+        onRun={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('多阶段 LLM Agent')
+    for (const label of ['Explain', 'Infer', 'Evidence', 'Propose', 'Rank', 'Judge']) {
+      expect(markup).toContain(label)
+    }
+    expect(markup).toContain('p1')
+    expect(markup).toContain('p2')
+    expect(markup).toContain('## Issue')
+    expect(markup).toContain('## Missing')
+    expect(markup).toContain('## Evidence')
+    expect(markup).toContain('## Ranking')
+    expect(markup).toContain('人工批准')
+    expect(markup).toContain('不会自动修改 KG')
   })
 
   test('renders patch candidates with proposal ids and selected patch', () => {
