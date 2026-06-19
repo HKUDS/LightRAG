@@ -59,11 +59,16 @@ const RECORDED_DECISION_LABELS: Record<KBIterationProposalDecision, string> = {
   defer: '已延后'
 }
 
+const PENDING_DECISION_LABEL = '待审批'
+
 const RECORDED_DECISION_CLASSES: Record<KBIterationProposalDecision, string> = {
   accept: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200',
   reject: 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-200',
   defer: 'bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-200'
 }
+
+const PENDING_DECISION_CLASS =
+  'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200'
 
 export function QualityPanel({ quality }: QualityPanelProps) {
   const [severityFilter, setSeverityFilter] = useState('all')
@@ -190,13 +195,17 @@ export function ApprovalPanel({
                 <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      {recordedDecision && (
-                        <span
-                          className={`rounded-md px-2 py-1 text-xs font-medium ${RECORDED_DECISION_CLASSES[recordedDecision]}`}
-                        >
-                          {RECORDED_DECISION_LABELS[recordedDecision]}
-                        </span>
-                      )}
+                      <span
+                        className={`rounded-md px-2 py-1 text-xs font-medium ${
+                          recordedDecision
+                            ? RECORDED_DECISION_CLASSES[recordedDecision]
+                            : PENDING_DECISION_CLASS
+                        }`}
+                      >
+                        {recordedDecision
+                          ? RECORDED_DECISION_LABELS[recordedDecision]
+                          : PENDING_DECISION_LABEL}
+                      </span>
                       <div className="min-w-0 text-sm font-semibold">
                         <span className="mr-2">{proposal.id}</span>
                         <span className="text-muted-foreground font-normal">
@@ -235,7 +244,9 @@ export function ApprovalPanel({
                         variant="outline"
                         size="sm"
                         disabled={!onRequestRevision}
-                        onClick={() => void onRequestRevision?.(proposal)}
+                        onClick={() =>
+                          void requestProposalRevisionFromPanel(proposal, onRequestRevision)
+                        }
                       >
                         让 Agent 修改
                       </Button>
@@ -312,6 +323,13 @@ function RecordedDecisionNotice({ decision }: { decision: KBIterationProposalDec
 
 function proposalDetailsId(proposalId: string) {
   return `proposal-details-${proposalId.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+}
+
+export function requestProposalRevisionFromPanel(
+  proposal: ProposalSummary,
+  onRequestRevision?: (proposal: ProposalSummary) => void | Promise<void>
+) {
+  return onRequestRevision?.(proposal)
 }
 
 function emptyProposalReview(): ProposalDecisionReview {
