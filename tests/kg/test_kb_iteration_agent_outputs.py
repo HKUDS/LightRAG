@@ -84,8 +84,6 @@ def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
                                 "source_id": "chunk-1",
                                 "file_path": "guide.md",
                                 "item_id": "edge-flu-fever",
-                                "comment": "do not render this free-form field",
-                                "reason": "supports hierarchy gap",
                             },
                             "quality:hierarchy_missing_branch_count=1",
                         ]
@@ -104,27 +102,29 @@ def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
     ]
 
 
-def test_parse_agent_stage_output_ignores_unknown_structured_evidence_fields():
-    output = parse_agent_stage_output(
-        "propose",
-        json.dumps(
-            {
-                "proposals": [
-                    _proposal_payload(
-                        evidence=[
-                            {
-                                "source_id": "chunk-1",
-                                "comment": "normalization ignores this field",
-                            }
-                        ]
-                    )
-                ]
-            },
-            ensure_ascii=False,
-        ),
-    )
-
-    assert output.proposals[0].evidence == ["source_id: chunk-1"]
+@pytest.mark.parametrize("unknown_key", ["comment", "reason"])
+def test_parse_agent_stage_output_rejects_unknown_structured_evidence_fields(
+    unknown_key,
+):
+    with pytest.raises(ValueError, match="evidence"):
+        parse_agent_stage_output(
+            "propose",
+            json.dumps(
+                {
+                    "proposals": [
+                        _proposal_payload(
+                            evidence=[
+                                {
+                                    "source_id": "chunk-1",
+                                    unknown_key: "free-form evidence laundering",
+                                }
+                            ]
+                        )
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        )
 
 
 def test_parse_agent_stage_output_rejects_unknown_only_structured_evidence():

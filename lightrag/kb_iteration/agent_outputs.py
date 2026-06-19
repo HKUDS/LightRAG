@@ -52,6 +52,7 @@ _EVIDENCE_FIELD_ORDER = (
     "relation_id",
     "metric",
 )
+_EVIDENCE_FIELD_NAMES = frozenset(_EVIDENCE_FIELD_ORDER)
 
 
 def parse_agent_stage_output(stage: str, raw_text: str) -> AgentStageOutput:
@@ -121,6 +122,14 @@ def _normalize_agent_evidence_item(value: Any) -> str:
         return stripped if stripped else value
     if not isinstance(value, dict):
         return ""
+
+    unknown_fields = [
+        key
+        for key, item_value in value.items()
+        if key not in _EVIDENCE_FIELD_NAMES and _render_evidence_value(item_value)
+    ]
+    if unknown_fields:
+        raise ValueError("proposal evidence contains unknown structured field")
 
     parts = []
     for key in _EVIDENCE_FIELD_ORDER:
