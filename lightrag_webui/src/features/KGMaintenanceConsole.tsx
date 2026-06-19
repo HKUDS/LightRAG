@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Button from '@/components/ui/Button'
 import {
   executeKBIterationAcceptedChanges,
@@ -15,7 +15,12 @@ import type {
   ProposalDecisionReview,
   ProposalSummary
 } from '@/components/kg-maintenance/kgMaintenanceData'
+import { ArtifactDrawer, type DrawerArtifact } from '@/components/kg-maintenance/ArtifactDrawer'
 import KGMaintenanceShell from '@/components/kg-maintenance/KGMaintenanceShell'
+import {
+  KG_MAINTENANCE_ARTIFACTS,
+  findArtifactDefinition
+} from '@/components/kg-maintenance/kgMaintenanceArtifacts'
 import {
   DecisionExecutionPanel,
   IterationOverviewPanel,
@@ -66,57 +71,13 @@ export function ArtifactsDrawerPlaceholder({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const closeButtonRef = useRef<HTMLButtonElement>(null)
-  const previousFocusRef = useRef<HTMLElement | null>(null)
-
-  useEffect(() => {
-    if (!open) return
-    previousFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null
-    closeButtonRef.current?.focus()
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        onOpenChange(false)
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      previousFocusRef.current?.focus()
-      previousFocusRef.current = null
-    }
-  }, [onOpenChange, open])
-
-  if (!open) return null
-
   return (
-    <div
-      role="dialog"
-      aria-label="全部产物"
-      tabIndex={-1}
-      className="bg-background border-border fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l p-4 shadow-lg"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold">全部产物</h2>
-          <p className="text-muted-foreground mt-2 text-sm">
-            产物抽屉将在后续任务中接入。当前占位用于保留工作流入口。
-          </p>
-        </div>
-        <Button
-          ref={closeButtonRef}
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => onOpenChange(false)}
-        >
-          关闭
-        </Button>
-      </div>
-    </div>
+    <ArtifactDrawer
+      open={open}
+      artifacts={[]}
+      onClose={() => onOpenChange(false)}
+      onOpenArtifact={() => undefined}
+    />
   )
 }
 
@@ -156,6 +117,20 @@ export default function KGMaintenanceConsole() {
   const [error, setError] = useState<string | null>(null)
   const [artifactDrawerOpen, setArtifactDrawerOpen] = useState(false)
   const activeProfile = summary?.profile || 'clinical_guideline_zh'
+  const drawerArtifacts = useMemo<DrawerArtifact[]>(() => {
+    const artifactExists = new Map(
+      (summary?.artifacts || []).map((artifact) => [artifact.key, artifact.exists])
+    )
+
+    return KG_MAINTENANCE_ARTIFACTS.map((artifact) => ({
+      key: artifact.key,
+      title: artifact.title,
+      sourceFile: artifact.sourceFile,
+      zhFile: artifact.zhFile,
+      step: artifact.step,
+      status: artifactExists.get(artifact.key) ? '已生成' : '缺失'
+    }))
+  }, [summary?.artifacts])
 
   const loadWorkspaces = useCallback(async () => {
     if (currentTab !== 'kg-maintenance') return
@@ -419,6 +394,21 @@ export default function KGMaintenanceConsole() {
     setArtifactDrawerOpen(true)
   }, [])
 
+  const handleCloseArtifacts = useCallback(() => {
+    setArtifactDrawerOpen(false)
+  }, [])
+
+  const handleOpenArtifact = useCallback(
+    (artifactKey: string) => {
+      const artifactDefinition = findArtifactDefinition(artifactKey)
+      if (!artifactDefinition) return
+
+      setActiveSection(artifactDefinition.step)
+      setArtifactDrawerOpen(false)
+    },
+    [setActiveSection]
+  )
+
   const handleOpenSection = useCallback(
     (section: TransitionalSectionTarget) => {
       setActiveSection(mapTransitionalSection(section))
@@ -474,7 +464,12 @@ export default function KGMaintenanceConsole() {
           onLoadPatch={handleLoadPatch}
         />
       </KGMaintenanceShell>
-      <ArtifactsDrawerPlaceholder open={artifactDrawerOpen} onOpenChange={setArtifactDrawerOpen} />
+      <ArtifactDrawer
+        open={artifactDrawerOpen}
+        artifacts={drawerArtifacts}
+        onClose={handleCloseArtifacts}
+        onOpenArtifact={handleOpenArtifact}
+      />
     </>
   )
 }
