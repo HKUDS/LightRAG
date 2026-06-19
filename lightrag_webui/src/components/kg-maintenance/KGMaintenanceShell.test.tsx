@@ -121,6 +121,10 @@ function renderMainPanel(activeSection: KGMaintenanceSection) {
       llmReport="# LLM Review Report"
       llmProposals="- id: proposal-1"
       llmJudgeReport="# Judge Report"
+      llmIssueAnalysis="# Issue Analysis"
+      llmMissingBranchInference="# Missing Branch Inference"
+      llmEvidenceMap="# Evidence Map"
+      llmRepairPlan="# Repair Plan"
       patchText="patch content marker"
       llmRunning={false}
       running={false}
@@ -150,6 +154,10 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       llmReport=""
       llmProposals=""
       llmJudgeReport=""
+      llmIssueAnalysis=""
+      llmMissingBranchInference=""
+      llmEvidenceMap=""
+      llmRepairPlan=""
       patchText=""
       llmRunning={false}
       running={false}
@@ -439,6 +447,69 @@ describe('MainPanel workflow routing', () => {
     expect(bundle.kbContextArtifact).toBe('')
     expect(bundle.llmTraceArtifact).toBeNull()
     expect(bundle.approvalArtifact).toBe('approval_queue content')
+  })
+
+  test('workspace bundle loads llm agent markdown artifacts', async () => {
+    const requestedArtifactKeys: string[] = []
+
+    const bundle = await loadKGMaintenanceWorkspaceBundle('workspace-a', {
+      getSummary: async () => ({
+        workspace: 'workspace-a',
+        latestRunId: 'run-1',
+        phase: 'pending_human_review',
+        counts: { nodes: 1, edges: 1, sources: 1 },
+        quality: { overall: 80, findings: [] },
+        pendingApprovalCount: 0,
+        highRiskFindingCount: 0,
+        artifacts: []
+      }),
+      getQuality: async () => ({
+        workspace: 'workspace-a',
+        runId: 'run-1',
+        quality: { overall: 80, findings: [] },
+        report: '# quality'
+      }),
+      getRules: async () => ({
+        workspace: 'workspace-a',
+        qualityRules: '',
+        knownIssues: '',
+        acceptedChanges: '',
+        rejectedChanges: ''
+      }),
+      getArtifact: async (_workspace, key) => {
+        requestedArtifactKeys.push(key)
+        return {
+          artifactKey: key,
+          contentType: 'text/markdown',
+          content: `# ${key}`
+        }
+      },
+      getTrace: async () => ({ artifactKey: 'trace', contentType: 'application/json', payload: {} }),
+      getReport: async () => ({
+        artifactKey: 'report',
+        contentType: 'text/markdown',
+        content: 'report'
+      }),
+      getProposals: async () => ({
+        artifactKey: 'proposals',
+        contentType: 'text/markdown',
+        content: 'proposals'
+      }),
+      getJudgeReport: async () => ({
+        artifactKey: 'judge',
+        contentType: 'text/markdown',
+        content: 'judge'
+      })
+    })
+
+    expect(requestedArtifactKeys).toContain('llm_issue_analysis')
+    expect(requestedArtifactKeys).toContain('llm_missing_branch_inference')
+    expect(requestedArtifactKeys).toContain('llm_evidence_map')
+    expect(requestedArtifactKeys).toContain('llm_repair_plan')
+    expect(bundle.llmIssueAnalysisArtifact).toBe('# llm_issue_analysis')
+    expect(bundle.llmMissingBranchInferenceArtifact).toBe('# llm_missing_branch_inference')
+    expect(bundle.llmEvidenceMapArtifact).toBe('# llm_evidence_map')
+    expect(bundle.llmRepairPlanArtifact).toBe('# llm_repair_plan')
   })
 
   test('workspace response guard rejects stale workspace payloads', () => {

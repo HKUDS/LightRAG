@@ -116,6 +116,10 @@ type KGMaintenanceWorkspaceBundle = {
   llmReportArtifact: string
   llmProposalsArtifact: string
   llmJudgeReportArtifact: string
+  llmIssueAnalysisArtifact: string
+  llmMissingBranchInferenceArtifact: string
+  llmEvidenceMapArtifact: string
+  llmRepairPlanArtifact: string
 }
 
 type KGMaintenanceWorkspaceLoaders = {
@@ -157,7 +161,11 @@ export async function loadKGMaintenanceWorkspaceBundle(
     llmTraceArtifact,
     llmReportArtifact,
     llmProposalsArtifact,
-    llmJudgeReportArtifact
+    llmJudgeReportArtifact,
+    llmIssueAnalysisArtifact,
+    llmMissingBranchInferenceArtifact,
+    llmEvidenceMapArtifact,
+    llmRepairPlanArtifact
   ] = await Promise.all([
     loaders.getSummary(requestWorkspace),
     loaders.getQuality(requestWorkspace),
@@ -171,7 +179,13 @@ export async function loadKGMaintenanceWorkspaceBundle(
     optionalArtifactPayload(() => loaders.getTrace(requestWorkspace)),
     optionalArtifactContent(() => loaders.getReport(requestWorkspace)),
     optionalArtifactContent(() => loaders.getProposals(requestWorkspace)),
-    optionalArtifactContent(() => loaders.getJudgeReport(requestWorkspace))
+    optionalArtifactContent(() => loaders.getJudgeReport(requestWorkspace)),
+    optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'llm_issue_analysis')),
+    optionalArtifactContent(() =>
+      loaders.getArtifact(requestWorkspace, 'llm_missing_branch_inference')
+    ),
+    optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'llm_evidence_map')),
+    optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'llm_repair_plan'))
   ])
 
   return {
@@ -187,7 +201,11 @@ export async function loadKGMaintenanceWorkspaceBundle(
     llmTraceArtifact,
     llmReportArtifact,
     llmProposalsArtifact,
-    llmJudgeReportArtifact
+    llmJudgeReportArtifact,
+    llmIssueAnalysisArtifact,
+    llmMissingBranchInferenceArtifact,
+    llmEvidenceMapArtifact,
+    llmRepairPlanArtifact
   }
 }
 

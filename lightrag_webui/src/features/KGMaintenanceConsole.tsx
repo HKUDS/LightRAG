@@ -66,6 +66,10 @@ export default function KGMaintenanceConsole() {
   const [llmReport, setLlmReport] = useState('')
   const [llmProposals, setLlmProposals] = useState('')
   const [llmJudgeReport, setLlmJudgeReport] = useState('')
+  const [llmIssueAnalysis, setLlmIssueAnalysis] = useState('')
+  const [llmMissingBranchInference, setLlmMissingBranchInference] = useState('')
+  const [llmEvidenceMap, setLlmEvidenceMap] = useState('')
+  const [llmRepairPlan, setLlmRepairPlan] = useState('')
   const [patchText, setPatchText] = useState('')
   const [llmRunning, setLlmRunning] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -122,7 +126,11 @@ export default function KGMaintenanceConsole() {
         llmTraceArtifact,
         llmReportArtifact,
         llmProposalsArtifact,
-        llmJudgeReportArtifact
+        llmJudgeReportArtifact,
+        llmIssueAnalysisArtifact,
+        llmMissingBranchInferenceArtifact,
+        llmEvidenceMapArtifact,
+        llmRepairPlanArtifact
       } = await loadKGMaintenanceWorkspaceBundle(requestWorkspace)
       if (!isCurrentWorkspace()) return
       setSummary(summaryPayload)
@@ -156,6 +164,10 @@ export default function KGMaintenanceConsole() {
       setLlmReport(typeof llmReportArtifact === 'string' ? llmReportArtifact : '')
       setLlmProposals(typeof llmProposalsArtifact === 'string' ? llmProposalsArtifact : '')
       setLlmJudgeReport(typeof llmJudgeReportArtifact === 'string' ? llmJudgeReportArtifact : '')
+      setLlmIssueAnalysis(normalizeOptionalMarkdown(llmIssueAnalysisArtifact))
+      setLlmMissingBranchInference(normalizeOptionalMarkdown(llmMissingBranchInferenceArtifact))
+      setLlmEvidenceMap(normalizeOptionalMarkdown(llmEvidenceMapArtifact))
+      setLlmRepairPlan(normalizeOptionalMarkdown(llmRepairPlanArtifact))
       if (summaryPayload) setLatestRunId(summaryPayload.latestRunId)
     } catch (err) {
       if (isCurrentWorkspace()) setError(errorMessage(err))
@@ -329,6 +341,10 @@ export default function KGMaintenanceConsole() {
         llmReport={llmReport}
         llmProposals={llmProposals}
         llmJudgeReport={llmJudgeReport}
+        llmIssueAnalysis={llmIssueAnalysis}
+        llmMissingBranchInference={llmMissingBranchInference}
+        llmEvidenceMap={llmEvidenceMap}
+        llmRepairPlan={llmRepairPlan}
         patchText={patchText}
         llmRunning={llmRunning}
         running={running}
@@ -357,6 +373,10 @@ interface MainPanelProps {
   llmReport: string
   llmProposals: string
   llmJudgeReport: string
+  llmIssueAnalysis: string
+  llmMissingBranchInference: string
+  llmEvidenceMap: string
+  llmRepairPlan: string
   patchText: string
   llmRunning: boolean
   running: boolean
