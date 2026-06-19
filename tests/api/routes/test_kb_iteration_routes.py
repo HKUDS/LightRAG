@@ -581,6 +581,48 @@ def test_llm_review_artifact_routes_read_whitelisted_outputs(
     assert "--- a/x" in patch.json()["content"]
 
 
+@pytest.mark.parametrize(
+    ("artifact_key", "filename", "expected_content"),
+    [
+        ("llm_issue_analysis", "llm_issue_analysis.md", "# Issue Analysis\n"),
+        (
+            "llm_missing_branch_inference",
+            "llm_missing_branch_inference.md",
+            "# Missing Branch Inference\n",
+        ),
+        ("llm_evidence_map", "llm_evidence_map.md", "# Evidence Map\n"),
+        ("llm_repair_plan", "llm_repair_plan.md", "# Repair Plan\n"),
+    ],
+)
+def test_llm_agent_artifact_keys_read_whitelisted_markdown(
+    tmp_path: Path,
+    monkeypatch,
+    artifact_key: str,
+    filename: str,
+    expected_content: str,
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+    _write_text(fixture.package / filename, expected_content)
+
+    response = client.get(
+        f"/kb-iteration/influenza_medical_v1/artifacts/{artifact_key}",
+        headers=HEADERS,
+    )
+    run_response = client.get(
+        f"/kb-iteration/influenza_medical_v1/runs/latest/artifacts/{artifact_key}",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "artifactKey": artifact_key,
+        "contentType": "text/markdown",
+        "content": expected_content,
+    }
+    assert run_response.status_code == 200
+    assert run_response.json()["content"] == expected_content
+
+
 def test_llm_review_context_rejects_invalid_round_id(tmp_path: Path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
 
@@ -663,6 +705,10 @@ def test_llm_review_patch_candidate_paths_are_confined_to_patch_dir(
 def test_llm_review_run_default_unavailable_client_returns_503(
     tmp_path: Path, monkeypatch
 ):
+    monkeypatch.delenv("KB_ITERATION_LLM_BINDING", raising=False)
+    monkeypatch.delenv("KB_ITERATION_LLM_BINDING_HOST", raising=False)
+    monkeypatch.delenv("KB_ITERATION_LLM_BINDING_API_KEY", raising=False)
+    monkeypatch.delenv("KB_ITERATION_LLM_MODEL", raising=False)
     client, _ = _client(tmp_path, monkeypatch)
 
     response = client.post(
@@ -673,6 +719,67 @@ def test_llm_review_run_default_unavailable_client_returns_503(
 
     assert response.status_code == 503
     assert response.json()["detail"] == "LLM review client is not configured"
+
+
+def test_default_llm_review_client_uses_kb_iteration_openai_compatible_env(
+    monkeypatch,
+):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("KB_ITERATION_LLM_BINDING", "openai")
+    monkeypatch.setenv("KB_ITERATION_LLM_BINDING_HOST", "https://api.deepseek.com")
+    monkeypatch.setenv("KB_ITERATION_LLM_BINDING_API_KEY", "test-secret")
+    monkeypatch.setenv("KB_ITERATION_LLM_MODEL", "deepseek-v4-pro")
+    monkeypatch.setenv("KB_ITERATION_LLM_TIMEOUT", "45")
+
+    from lightrag.api.routers import kb_iteration_routes
+
+    calls = []
+
+    async def fake_openai_complete_if_cache(
+        model: str,
+        prompt: str,
+        system_prompt: str | None = None,
+        history_messages: list[dict[str, str]] | None = None,
+        **kwargs,
+    ) -> str:
+        calls.append(
+            {
+                "model": model,
+                "prompt": prompt,
+                "system_prompt": system_prompt,
+                "history_messages": history_messages,
+                "base_url": kwargs.get("base_url"),
+                "api_key": kwargs.get("api_key"),
+                "response_format": kwargs.get("response_format"),
+                "timeout": kwargs.get("timeout"),
+            }
+        )
+        return '{"proposals":[]}'
+
+    monkeypatch.setattr(
+        "lightrag.llm.openai.openai_complete_if_cache",
+        fake_openai_complete_if_cache,
+    )
+
+    client = kb_iteration_routes._default_llm_review_client(SimpleNamespace())
+
+    assert not isinstance(client, kb_iteration_routes._UnavailableLLMReviewClient)
+    assert client.model == "deepseek-v4-pro"
+    assert client.complete(system_prompt="system", user_prompt="user") == (
+        '{"proposals":[]}'
+    )
+    assert calls == [
+        {
+            "model": "deepseek-v4-pro",
+            "prompt": "user",
+            "system_prompt": "system",
+            "history_messages": [],
+            "base_url": "https://api.deepseek.com",
+            "api_key": "test-secret",
+            "response_format": {"type": "json_object"},
+            "timeout": 45,
+        }
+    ]
 
 
 def test_llm_review_run_missing_workspace_does_not_create_phantom_package(
@@ -742,12 +849,13 @@ def test_llm_review_run_rejects_when_deterministic_file_lock_is_held(
     assert calls == []
 
 
-def test_llm_review_run_uses_lock_and_validated_paths(tmp_path: Path, monkeypatch):
+def test_llm_review_run_defaults_to_agent_pipeline(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     from lightrag.api.routers import kb_iteration_routes
 
     client, fixture = _client(tmp_path, monkeypatch)
-    calls = []
+    agent_calls = []
+    loop_calls = []
 
     class FakeClient:
         def complete(self, *, system_prompt: str, user_prompt: str) -> str:
@@ -761,14 +869,74 @@ def test_llm_review_run_uses_lock_and_validated_paths(tmp_path: Path, monkeypatc
                 }
             )
 
-    def fake_run_llm_review_loop(**kwargs):
-        calls.append(kwargs)
-        _write_json(
-            fixture.package / "llm_review_trace.json",
-            {"stop_reason": "all_proposals_invalid"},
+    def fake_run_llm_agent_pipeline(**kwargs):
+        agent_calls.append(kwargs)
+        return SimpleNamespace(
+            output_dir=fixture.package,
+            stop_reason="agent_done",
+            proposal_ids=["agent-proposal"],
+            artifact_paths={},
         )
-        _write_text(fixture.package / "llm_review_report.md", "# Review\n")
-        _write_text(fixture.package / "proposals.generated.yaml", "proposals: []\n")
+
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "run_llm_agent_pipeline",
+        fake_run_llm_agent_pipeline,
+    )
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "run_llm_review_loop",
+        lambda **kwargs: loop_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda rag: FakeClient(),
+    )
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/llm-review/runs",
+        headers=HEADERS,
+        json={
+            "profile": "clinical_guideline_zh",
+            "max_context_tokens_per_round": 9000,
+            "max_stage_retries": 2,
+            "allow_llm_judge": False,
+            "generate_patch_candidates": True,
+            "require_human_for_mutation": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["stopReason"] == "agent_done"
+    assert response.json()["proposalIds"] == ["agent-proposal"]
+    assert len(agent_calls) == 1
+    assert loop_calls == []
+    assert agent_calls[0]["workspace"] == "influenza_medical_v1"
+    assert agent_calls[0]["package_dir"] == fixture.package
+    assert agent_calls[0]["profile"] == "clinical_guideline_zh"
+    config = agent_calls[0]["config"]
+    assert config.max_context_tokens_per_stage == 9000
+    assert config.max_stage_retries == 2
+    assert config.allow_llm_judge is False
+    assert config.generate_patch_candidates is True
+    assert config.require_human_for_mutation is False
+
+
+def test_llm_review_run_loop_mode_uses_legacy_loop(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.routers import kb_iteration_routes
+
+    client, fixture = _client(tmp_path, monkeypatch)
+    agent_calls = []
+    loop_calls = []
+
+    class FakeClient:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            return "{}"
+
+    def fake_run_llm_review_loop(**kwargs):
+        loop_calls.append(kwargs)
         return SimpleNamespace(
             output_dir=fixture.package,
             stop_reason="all_proposals_invalid",
@@ -776,6 +944,11 @@ def test_llm_review_run_uses_lock_and_validated_paths(tmp_path: Path, monkeypatc
             artifact_paths={},
         )
 
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "run_llm_agent_pipeline",
+        lambda **kwargs: agent_calls.append(kwargs),
+    )
     monkeypatch.setattr(
         kb_iteration_routes,
         "run_llm_review_loop",
@@ -790,10 +963,33 @@ def test_llm_review_run_uses_lock_and_validated_paths(tmp_path: Path, monkeypatc
     response = client.post(
         "/kb-iteration/influenza_medical_v1/llm-review/runs",
         headers=HEADERS,
-        json={"profile": "clinical_guideline_zh", "max_review_rounds": 1},
+        json={
+            "mode": "loop",
+            "profile": "clinical_guideline_zh",
+            "max_review_rounds": 1,
+            "max_focus_items_per_round": 2,
+            "max_context_tokens_per_round": 9000,
+            "allow_llm_judge": False,
+            "allow_llm_auto_accept": True,
+            "allow_low_risk_auto_reject": False,
+            "generate_patch_candidates": True,
+            "require_human_for_mutation": False,
+        },
     )
 
     assert response.status_code == 200
     assert response.json()["stopReason"] == "all_proposals_invalid"
-    assert calls[0]["workspace"] == "influenza_medical_v1"
-    assert calls[0]["package_dir"] == fixture.package
+    assert agent_calls == []
+    assert len(loop_calls) == 1
+    assert loop_calls[0]["workspace"] == "influenza_medical_v1"
+    assert loop_calls[0]["package_dir"] == fixture.package
+    assert loop_calls[0]["profile"] == "clinical_guideline_zh"
+    config = loop_calls[0]["config"]
+    assert config.max_review_rounds == 1
+    assert config.max_focus_items_per_round == 2
+    assert config.max_context_tokens_per_round == 9000
+    assert config.allow_llm_judge is False
+    assert config.allow_llm_auto_accept is True
+    assert config.allow_low_risk_auto_reject is False
+    assert config.generate_patch_candidates is True
+    assert config.require_human_for_mutation is False

@@ -670,10 +670,11 @@ export type KBIterationRunRequest = {
 
 export type KBIterationLLMReviewRunRequest = {
   profile?: string | null
-  mode?: 'loop'
+  mode?: 'agent_pipeline' | 'loop'
   max_review_rounds?: number
   max_focus_items_per_round?: number
   max_context_tokens_per_round?: number
+  max_stage_retries?: number
   allow_llm_judge?: boolean
   allow_llm_auto_accept?: boolean
   allow_low_risk_auto_reject?: boolean

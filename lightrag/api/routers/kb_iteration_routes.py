@@ -14,13 +14,17 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from lightrag.kb_iteration.agent_pipeline import (
+    LLMAgentPipelineConfig,
+    run_llm_agent_pipeline,
+)
 from lightrag.kb_iteration.proposals import validate_proposal_id
 from lightrag.kb_iteration.review_loop import (
     LLMReviewLoopConfig,
     run_llm_review_loop,
 )
 from lightrag.kb_iteration.runner import PENDING_REVIEW_PHASE, run_iteration
-from lightrag.utils import validate_workspace
+from lightrag.utils import always_get_an_event_loop, validate_workspace
 
 from ..utils_api import get_combined_auth_dependency
 
@@ -54,6 +58,13 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
     "llm_review_trace": ("llm_review_trace.json", "application/json"),
     "llm_review_report": ("llm_review_report.md", "text/markdown"),
     "llm_judge_report": ("llm_judge_report.md", "text/markdown"),
+    "llm_issue_analysis": ("llm_issue_analysis.md", "text/markdown"),
+    "llm_missing_branch_inference": (
+        "llm_missing_branch_inference.md",
+        "text/markdown",
+    ),
+    "llm_evidence_map": ("llm_evidence_map.md", "text/markdown"),
+    "llm_repair_plan": ("llm_repair_plan.md", "text/markdown"),
     "proposals_generated": ("proposals.generated.yaml", "text/markdown"),
 }
 
@@ -79,10 +90,11 @@ class RunIterationRequest(BaseModel):
 
 class RunLLMReviewRequest(BaseModel):
     profile: Optional[str] = Field(default=None, max_length=200)
-    mode: Literal["loop"] = "loop"
+    mode: Literal["agent_pipeline", "loop"] = "agent_pipeline"
     max_review_rounds: int = Field(default=4, ge=1, le=10)
     max_focus_items_per_round: int = Field(default=3, ge=1, le=10)
     max_context_tokens_per_round: int = Field(default=12000, ge=1000, le=100000)
+    max_stage_retries: int = Field(default=1, ge=0, le=3)
     allow_llm_judge: bool = True
     allow_llm_auto_accept: bool = False
     allow_low_risk_auto_reject: bool = True
@@ -95,8 +107,69 @@ class _UnavailableLLMReviewClient:
         raise RuntimeError("LLM review client is not configured")
 
 
+class _OpenAICompatibleLLMReviewClient:
+    def __init__(
+        self,
+        *,
+        model: str,
+        base_url: str,
+        api_key: str,
+        timeout: int | None = None,
+    ) -> None:
+        self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        from lightrag.llm.openai import openai_complete_if_cache
+
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(
+            openai_complete_if_cache(
+                self.model,
+                user_prompt,
+                system_prompt=system_prompt,
+                history_messages=[],
+                base_url=self.base_url,
+                api_key=self.api_key,
+                response_format={"type": "json_object"},
+                timeout=self.timeout,
+            )
+        )
+
+
 def _default_llm_review_client(rag):
-    return _UnavailableLLMReviewClient()
+    _ = rag
+    binding = os.getenv("KB_ITERATION_LLM_BINDING", "").strip().lower()
+    model = os.getenv("KB_ITERATION_LLM_MODEL", "").strip()
+    base_url = os.getenv("KB_ITERATION_LLM_BINDING_HOST", "").strip()
+    api_key = os.getenv("KB_ITERATION_LLM_BINDING_API_KEY", "").strip()
+    if not any([binding, model, base_url, api_key]):
+        return _UnavailableLLMReviewClient()
+    if binding != "openai":
+        raise RuntimeError(
+            "KB iteration LLM review only supports "
+            "KB_ITERATION_LLM_BINDING=openai"
+        )
+    if not model or not base_url or not api_key:
+        return _UnavailableLLMReviewClient()
+    return _OpenAICompatibleLLMReviewClient(
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        timeout=_optional_int_env("KB_ITERATION_LLM_TIMEOUT"),
+    )
+
+
+def _optional_int_env(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
 
 
 def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
@@ -195,33 +268,55 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
                     client = _default_llm_review_client(rag)
                     if isinstance(client, _UnavailableLLMReviewClient):
                         raise RuntimeError("LLM review client is not configured")
-                    result = await asyncio.to_thread(
-                        run_llm_review_loop,
-                        workspace=workspace,
-                        package_dir=package_dir,
-                        client=client,
-                        config=LLMReviewLoopConfig(
-                            max_review_rounds=request.max_review_rounds,
-                            max_focus_items_per_round=(
-                                request.max_focus_items_per_round
+                    if request.mode == "agent_pipeline":
+                        result = await asyncio.to_thread(
+                            run_llm_agent_pipeline,
+                            workspace=workspace,
+                            package_dir=package_dir,
+                            client=client,
+                            config=LLMAgentPipelineConfig(
+                                max_context_tokens_per_stage=(
+                                    request.max_context_tokens_per_round
+                                ),
+                                max_stage_retries=request.max_stage_retries,
+                                allow_llm_judge=request.allow_llm_judge,
+                                generate_patch_candidates=(
+                                    request.generate_patch_candidates
+                                ),
+                                require_human_for_mutation=(
+                                    request.require_human_for_mutation
+                                ),
                             ),
-                            max_context_tokens_per_round=(
-                                request.max_context_tokens_per_round
+                            profile=request.profile,
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            run_llm_review_loop,
+                            workspace=workspace,
+                            package_dir=package_dir,
+                            client=client,
+                            config=LLMReviewLoopConfig(
+                                max_review_rounds=request.max_review_rounds,
+                                max_focus_items_per_round=(
+                                    request.max_focus_items_per_round
+                                ),
+                                max_context_tokens_per_round=(
+                                    request.max_context_tokens_per_round
+                                ),
+                                allow_llm_judge=request.allow_llm_judge,
+                                allow_llm_auto_accept=request.allow_llm_auto_accept,
+                                allow_low_risk_auto_reject=(
+                                    request.allow_low_risk_auto_reject
+                                ),
+                                generate_patch_candidates=(
+                                    request.generate_patch_candidates
+                                ),
+                                require_human_for_mutation=(
+                                    request.require_human_for_mutation
+                                ),
                             ),
-                            allow_llm_judge=request.allow_llm_judge,
-                            allow_llm_auto_accept=request.allow_llm_auto_accept,
-                            allow_low_risk_auto_reject=(
-                                request.allow_low_risk_auto_reject
-                            ),
-                            generate_patch_candidates=(
-                                request.generate_patch_candidates
-                            ),
-                            require_human_for_mutation=(
-                                request.require_human_for_mutation
-                            ),
-                        ),
-                        profile=request.profile,
-                    )
+                            profile=request.profile,
+                        )
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except FileNotFoundError as exc:
