@@ -38,7 +38,7 @@ _SNAKE_CASE_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$", re.IGNORECA
 
 
 class ZhArtifactClient(Protocol):
-    def complete(self, system_prompt: str, user_prompt: str) -> str:
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         """Return a synchronous completion for later OpenAI-compatible clients."""
 
 
@@ -78,6 +78,7 @@ def build_zh_json_payload(payload: Any) -> Any:
 def ensure_zh_artifact(
     source_path: Path | str,
     *,
+    artifact_key: str,
     content_type: str,
     client: ZhArtifactClient,
     model: str | None = None,
@@ -95,6 +96,7 @@ def ensure_zh_artifact(
     if zh_path.exists() and not force:
         return _existing_result(
             zh_path=zh_path,
+            artifact_key=artifact_key,
             source_relative_path=source_relative_path,
             zh_relative_path=zh_relative_path,
             content_type=content_type,
@@ -111,6 +113,7 @@ def ensure_zh_artifact(
                 encoding="utf-8",
             )
             return _result(
+                artifact_key=artifact_key,
                 source_relative_path=source_relative_path,
                 zh_relative_path=zh_relative_path,
                 content_type=content_type,
@@ -122,13 +125,16 @@ def ensure_zh_artifact(
 
         source_content = source.read_text(encoding="utf-8")
         translated = client.complete(
-            _build_markdown_system_prompt(),
-            _build_markdown_user_prompt(source_relative_path, source_content),
+            system_prompt=_build_markdown_system_prompt(),
+            user_prompt=_build_markdown_user_prompt(
+                source_relative_path, source_content
+            ),
         )
         content = _normalize_text_artifact(translated)
         zh_path.parent.mkdir(parents=True, exist_ok=True)
         zh_path.write_text(content, encoding="utf-8")
         return _result(
+            artifact_key=artifact_key,
             source_relative_path=source_relative_path,
             zh_relative_path=zh_relative_path,
             content_type=content_type,
@@ -140,6 +146,7 @@ def ensure_zh_artifact(
     except Exception as exc:
         return _fallback_result(
             source=source,
+            artifact_key=artifact_key,
             source_relative_path=source_relative_path,
             zh_relative_path=zh_relative_path,
             content_type=content_type,
@@ -188,6 +195,7 @@ def _build_markdown_user_prompt(source_relative_path: Path, source_content: str)
 def _existing_result(
     *,
     zh_path: Path,
+    artifact_key: str,
     source_relative_path: Path,
     zh_relative_path: Path,
     content_type: str,
@@ -196,6 +204,7 @@ def _existing_result(
     if content_type == "application/json":
         payload = json.loads(zh_path.read_text(encoding="utf-8"))
         return _result(
+            artifact_key=artifact_key,
             source_relative_path=source_relative_path,
             zh_relative_path=zh_relative_path,
             content_type=content_type,
@@ -206,6 +215,7 @@ def _existing_result(
         )
 
     return _result(
+        artifact_key=artifact_key,
         source_relative_path=source_relative_path,
         zh_relative_path=zh_relative_path,
         content_type=content_type,
@@ -219,6 +229,7 @@ def _existing_result(
 def _fallback_result(
     *,
     source: Path,
+    artifact_key: str,
     source_relative_path: Path,
     zh_relative_path: Path,
     content_type: str,
@@ -232,6 +243,7 @@ def _fallback_result(
         content = None
 
     return _result(
+        artifact_key=artifact_key,
         source_relative_path=source_relative_path,
         zh_relative_path=zh_relative_path,
         content_type=content_type,
@@ -265,6 +277,7 @@ def _normalize_text_artifact(content: str) -> str:
 
 def _result(
     *,
+    artifact_key: str,
     source_relative_path: Path,
     zh_relative_path: Path,
     content_type: str,
@@ -276,7 +289,7 @@ def _result(
     content: str | None = None,
 ) -> ZhArtifactResult:
     return ZhArtifactResult(
-        artifact_key=zh_relative_path.as_posix(),
+        artifact_key=artifact_key,
         source_relative_path=source_relative_path,
         zh_relative_path=zh_relative_path,
         content_type=content_type,
