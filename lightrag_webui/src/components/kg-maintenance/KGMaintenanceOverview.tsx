@@ -54,7 +54,7 @@ export default function KGMaintenanceOverview({
               {formatRunSubtitle(summary.profile, summary.phase)}
             </p>
           </div>
-          <div className="text-right text-xs text-muted-foreground">
+          <div className="text-muted-foreground text-right text-xs">
             <div>Run: {summary.latestRunId}</div>
             <div>{summary.generatedAt || 'No timestamp'}</div>
           </div>
@@ -62,19 +62,19 @@ export default function KGMaintenanceOverview({
       </div>
 
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <button type="button" className={metricClass} onClick={() => onOpenSection('entities')}>
+        <button type="button" className={metricClass} onClick={() => onOpenSection('check')}>
           <div className="text-muted-foreground text-xs">Nodes</div>
           <div className="mt-1 text-2xl font-semibold">{summary.counts.nodes}</div>
         </button>
-        <button type="button" className={metricClass} onClick={() => onOpenSection('relations')}>
+        <button type="button" className={metricClass} onClick={() => onOpenSection('check')}>
           <div className="text-muted-foreground text-xs">Relations</div>
           <div className="mt-1 text-2xl font-semibold">{summary.counts.edges}</div>
         </button>
-        <button type="button" className={metricClass} onClick={() => onOpenSection('evidence')}>
+        <button type="button" className={metricClass} onClick={() => onOpenSection('check')}>
           <div className="text-muted-foreground text-xs">Sources</div>
           <div className="mt-1 text-2xl font-semibold">{summary.counts.sources}</div>
         </button>
-        <button type="button" className={metricClass} onClick={() => onOpenSection('quality')}>
+        <button type="button" className={metricClass} onClick={() => onOpenSection('check')}>
           <div className="text-muted-foreground text-xs">Quality</div>
           <div className="mt-1 text-2xl font-semibold">{quality}</div>
         </button>
@@ -82,7 +82,7 @@ export default function KGMaintenanceOverview({
           <div className="text-muted-foreground text-xs">Pending</div>
           <div className="mt-1 text-2xl font-semibold">{summary.pendingApprovalCount}</div>
         </button>
-        <button type="button" className={metricClass} onClick={() => onOpenSection('quality')}>
+        <button type="button" className={metricClass} onClick={() => onOpenSection('check')}>
           <div className="text-muted-foreground text-xs">High Risk</div>
           <div className="mt-1 text-2xl font-semibold">{summary.highRiskFindingCount}</div>
         </button>
@@ -114,7 +114,7 @@ export default function KGMaintenanceOverview({
           <button
             type="button"
             className="text-muted-foreground hover:text-foreground mt-4 text-sm"
-            onClick={() => onOpenSection('evidence')}
+            onClick={() => onOpenSection('check')}
           >
             Open evidence review
           </button>

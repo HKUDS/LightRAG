@@ -55,28 +55,28 @@ const requiredArtifacts: Array<{
     key: 'kb_context',
     label: '当前 KB 摘要',
     fileName: 'kb_context.md',
-    section: 'kb-summary',
+    section: 'check',
     icon: <FileTextIcon className="size-4 text-sky-500" />
   },
   {
     key: 'quality_report',
     label: '质量报告',
     fileName: 'quality_report.md',
-    section: 'quality',
+    section: 'check',
     icon: <ShieldAlertIcon className="size-4 text-amber-500" />
   },
   {
     key: 'kg_snapshot',
     label: '图谱快照',
     fileName: 'snapshots/kg_snapshot.json',
-    section: 'snapshot',
+    section: 'check',
     icon: <ArchiveIcon className="size-4 text-indigo-500" />
   },
   {
     key: 'quality_score',
     label: '质量分数',
     fileName: 'snapshots/quality_score.json',
-    section: 'quality',
+    section: 'check',
     icon: <FileJsonIcon className="size-4 text-emerald-500" />
   },
   {
@@ -90,42 +90,42 @@ const requiredArtifacts: Array<{
     key: 'improvement_backlog',
     label: '改进 backlog',
     fileName: 'improvement_backlog.md',
-    section: 'decisions',
+    section: 'execute',
     icon: <ClipboardListIcon className="size-4 text-cyan-600" />
   },
   {
     key: 'accepted_changes',
     label: '已接受变更记忆',
     fileName: 'accepted_changes.md',
-    section: 'decisions',
+    section: 'execute',
     icon: <CheckCircle2Icon className="size-4 text-emerald-600" />
   },
   {
     key: 'rejected_changes',
     label: '已拒绝变更记忆',
     fileName: 'rejected_changes.md',
-    section: 'decisions',
+    section: 'execute',
     icon: <XCircleIcon className="size-4 text-rose-500" />
   },
   {
     key: 'accepted_changes_apply_result',
     label: '真实应用结果',
     fileName: 'accepted_changes_apply_result.md',
-    section: 'decisions',
+    section: 'execute',
     icon: <CheckCircle2Icon className="size-4 text-emerald-600" />
   },
   {
     key: 'accepted_changes_execution',
     label: '执行报告',
     fileName: 'accepted_changes_execution.md',
-    section: 'decisions',
+    section: 'execute',
     icon: <PlayCircleIcon className="size-4 text-indigo-600" />
   },
   {
     key: 'iteration_log',
     label: '当前阶段',
     fileName: 'iteration_log.md',
-    section: 'stage',
+    section: 'validate',
     icon: <TimerIcon className="size-4 text-slate-500" />
   }
 ]
