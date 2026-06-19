@@ -1627,7 +1627,7 @@ def _default_revision_request_reason(
 
     proposal_reason = str(proposal.get("reason", "")).strip() or "not provided"
     return (
-        f"Queue a revision for rejected proposal {proposal_id} in the next agent iteration. "
+        f"Queue a proposal revision request for {proposal_id} in the next agent iteration. "
         f"Use the parent proposal reason as context: {proposal_reason}."
     )
 
@@ -1639,7 +1639,7 @@ def _default_revision_request_instruction(
     proposal_target = str(proposal.get("target", "")).strip() or "unknown"
     proposal_risk = str(proposal.get("risk", "")).strip() or "unknown"
     return (
-        f"Agent should prepare a revised proposal for {proposal_id}, preserving the "
+        f"Agent should revise proposal {proposal_id}, preserving the "
         f"parent proposal scope: type {proposal_type}, target {proposal_target}, "
         f"risk {proposal_risk}. Address this revision request: {reason}"
     )

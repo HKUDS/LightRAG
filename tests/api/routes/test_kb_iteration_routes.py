@@ -645,7 +645,6 @@ def test_proposal_revision_request_accepts_empty_body_and_records_defaults(
     assert record["proposal_type"] == "hierarchy_rule_change"
     assert record["proposal_target"] == "kg_structure.md"
     assert record["proposal_risk"] == "medium"
-    assert "rejected" in record["reason"].lower()
     assert "revision" in record["reason"].lower()
     assert record["instruction"]
     instruction = record["instruction"].lower()
@@ -673,6 +672,27 @@ def test_proposal_revision_request_accepts_empty_body_and_records_defaults(
     )
     assert artifact.status_code == 200
     assert artifact.json()["content"] == revision_requests
+
+
+def test_proposal_revision_request_defaults_are_neutral_without_rejection(
+    tmp_path: Path, monkeypatch
+):
+    client, _ = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p1/revision-request",
+        headers=HEADERS,
+        json={},
+    )
+
+    assert response.status_code == 200
+    record = response.json()["record"]
+    reason = record["reason"].lower()
+    instruction = record["instruction"].lower()
+    assert "rejected proposal" not in reason
+    assert "rejected proposal" not in instruction
+    assert "proposal revision request" in reason
+    assert "revise proposal" in instruction
 
 
 def test_proposal_revision_request_preserves_reason(tmp_path: Path, monkeypatch):
