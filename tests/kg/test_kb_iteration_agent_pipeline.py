@@ -392,6 +392,16 @@ class RetryExplainAgentClient(SequencedAgentClient):
         return json.dumps(output, ensure_ascii=False)
 
 
+class RetryProposeMetricAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        invalid_proposal = dict(self.outputs[3]["proposals"][0])
+        invalid_proposal["expected_metric_change"] = {
+            "hierarchy_completeness": "about 6"
+        }
+        self.outputs.insert(3, {"proposals": [invalid_proposal]})
+
+
 def test_run_llm_agent_pipeline_writes_multistage_artifacts_and_queues_review(
     tmp_path: Path,
 ):
@@ -1111,6 +1121,41 @@ def test_pipeline_retries_invalid_stage_output(tmp_path: Path):
     explain_trace = trace["stages"][0]
     assert explain_trace["stage"] == "explain"
     assert explain_trace["attempts"] == 2
+
+
+def test_pipeline_feeds_validation_errors_into_retry_prompt(tmp_path: Path):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = RetryProposeMetricAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=1),
+    )
+
+    assert result.stop_reason == "pending_human_review"
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][3]
+    assert propose_trace["stage"] == "propose"
+    assert propose_trace["attempts"] == 2
+    second_propose_prompt = client.calls[4]["user_prompt"]
+    assert (
+        "Previous output was rejected: proposal expected_metric_change values must be numbers."
+        in second_propose_prompt
+    )
+    assert (
+        'For "expected_metric_change", use finite JSON numbers only; '
+        "use {} if no numeric estimate is available."
+        in second_propose_prompt
+    )
+    approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
+    proposals_yaml = (package / "proposals.generated.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "proposal-hierarchy-symptom-001" in approval_queue
+    assert "proposal-hierarchy-symptom-001" in proposals_yaml
 
 
 def test_pipeline_writes_failure_artifacts_for_missing_required_package_artifact(

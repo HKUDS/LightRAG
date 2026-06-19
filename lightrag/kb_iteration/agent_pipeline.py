@@ -172,6 +172,7 @@ def run_llm_agent_pipeline(
         context_path = write_agent_context(output_dir, stage, context)
         artifact_paths[f"{stage}_context"] = context_path
         user_prompt = json.dumps(context, ensure_ascii=False, sort_keys=True)
+        base_user_prompt = user_prompt
         input_token_estimate = _estimate_tokens(user_prompt)
         stage_trace: dict[str, Any] = {
             "stage": stage,
@@ -264,6 +265,11 @@ def run_llm_agent_pipeline(
                 stage_trace["error"] = str(exc)
                 stage_trace["output_token_estimate"] = _estimate_tokens(raw_output)
                 if attempt < max_attempts:
+                    user_prompt = _retry_user_prompt(
+                        base_user_prompt,
+                        stage=stage,
+                        error=str(exc),
+                    )
                     continue
                 if stage == "judge" and proposals:
                     return _finish_judge_unavailable(
@@ -382,6 +388,20 @@ def _selected_stages(config: LLMAgentPipelineConfig) -> tuple[str, ...]:
     if config.allow_llm_judge:
         return _STAGES
     return tuple(stage for stage in _STAGES if stage != "judge")
+
+
+def _retry_user_prompt(base_user_prompt: str, *, stage: str, error: str) -> str:
+    guidance = [
+        f"Previous output was rejected: {error}.",
+        "Return corrected JSON only.",
+    ]
+    if stage == "propose":
+        guidance.append(
+            'For "expected_metric_change", use finite JSON numbers only; '
+            "use {} if no numeric estimate is available."
+        )
+        guidance.append("Do not change evidence/human-approval requirements.")
+    return "\n\n".join([base_user_prompt, *guidance])
 
 
 def _synthetic_judge_stage_trace(reason: str) -> dict[str, Any]:
