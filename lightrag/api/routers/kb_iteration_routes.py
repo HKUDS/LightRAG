@@ -846,16 +846,35 @@ def _proposal_by_id(args, workspace: str, proposal_id: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail="Proposal is not in the approval queue")
 
 
-def _existing_decision(args, workspace: str, proposal_id: str) -> str | None:
+def _existing_decision(
+    args, workspace: str, proposal_id: str
+) -> tuple[str, dict[str, Any] | None] | None:
     for decision, file_name in DECISION_FILES.items():
         path = _workspace_dir(args, workspace) / file_name
         if not path.exists() or not path.is_file():
             continue
         decision_pattern = rf"^##\s+{re.escape(proposal_id)}\s*$"
         decision_text = path.read_text(encoding="utf-8")
-        if re.search(decision_pattern, decision_text, re.MULTILINE):
-            return decision
+        match = re.search(decision_pattern, decision_text, re.MULTILINE)
+        if match:
+            return decision, _parse_decision_record(decision_text, match.end())
     return None
+
+
+def _parse_decision_record(decision_text: str, section_start: int) -> dict[str, Any] | None:
+    next_section = re.search(r"^##\s+.+$", decision_text[section_start:], re.MULTILINE)
+    section_end = (
+        section_start + next_section.start() if next_section else len(decision_text)
+    )
+    section = decision_text[section_start:section_end]
+    json_block = re.search(r"```json\s*(.*?)\s*```", section, re.DOTALL)
+    if not json_block:
+        return None
+    try:
+        record = json.loads(json_block.group(1))
+    except json.JSONDecodeError:
+        return None
+    return record if isinstance(record, dict) else None
 
 
 def _count_high_risk_findings(quality: dict[str, Any]) -> int:
@@ -963,27 +982,24 @@ def _append_decision(
     proposal = _proposal_by_id(args, workspace, proposal_id)
     existing_decision = _existing_decision(args, workspace, proposal_id)
     if existing_decision:
+        recorded_decision, recorded_record = existing_decision
+        if recorded_decision == decision:
+            return recorded_record or _build_proposal_decision_record(
+                proposal_id,
+                decision,
+                proposal,
+                request,
+            )
         raise HTTPException(
             status_code=409,
             detail=(
                 "Proposal already has a recorded decision: "
-                f"{existing_decision}"
+                f"{recorded_decision}"
             ),
         )
 
     path = package_dir / DECISION_FILES[decision]
-    audit_review = _proposal_decision_audit_defaults(proposal_id, proposal, request)
-    record = {
-        "proposal_id": proposal_id,
-        "proposal_type": proposal.get("type", ""),
-        "proposal_target": proposal.get("target", ""),
-        "decision": decision,
-        "reviewer": request.reviewer,
-        "reason": audit_review["reason"],
-        "impact_scope": audit_review["impact_scope"],
-        "verification": audit_review["verification"],
-        "recorded_at": datetime.now(timezone.utc).isoformat(),
-    }
+    record = _build_proposal_decision_record(proposal_id, decision, proposal, request)
     header = "" if path.exists() else f"# {decision.title()}ed Changes\n"
     entry = (
         f"{header}\n## {proposal_id}\n\n"
@@ -994,6 +1010,26 @@ def _append_decision(
     with path.open("a", encoding="utf-8") as file:
         file.write(entry)
     return record
+
+
+def _build_proposal_decision_record(
+    proposal_id: str,
+    decision: Literal["accept", "reject", "defer"],
+    proposal: dict[str, Any],
+    request: ProposalDecisionRequest,
+) -> dict[str, Any]:
+    audit_review = _proposal_decision_audit_defaults(proposal_id, proposal, request)
+    return {
+        "proposal_id": proposal_id,
+        "proposal_type": proposal.get("type", ""),
+        "proposal_target": proposal.get("target", ""),
+        "decision": decision,
+        "reviewer": request.reviewer,
+        "reason": audit_review["reason"],
+        "impact_scope": audit_review["impact_scope"],
+        "verification": audit_review["verification"],
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _proposal_decision_audit_defaults(

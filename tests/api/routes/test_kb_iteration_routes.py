@@ -395,6 +395,31 @@ def test_proposal_decision_rejects_invalid_proposal_id(
     assert response.status_code == 400
 
 
+def test_proposal_decision_allows_repeating_same_decision(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    first = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p1/accept",
+        headers=HEADERS,
+        json={"reviewer": "maintainer", "reason": "Evidence checked"},
+    )
+    second = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p1/accept",
+        headers=HEADERS,
+        json={"reviewer": "another-reviewer", "reason": "Clicked again"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["record"] == first.json()["record"]
+
+    accepted = (fixture.package / "accepted_changes.md").read_text(encoding="utf-8")
+    assert accepted.count("\n## p1\n") == 1
+    assert "Clicked again" not in accepted
+
+
 def test_proposal_decision_rejects_conflicting_decision(
     tmp_path: Path, monkeypatch
 ):
