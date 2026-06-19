@@ -421,6 +421,31 @@ class RetryProposeTwiceAgentClient(SequencedAgentClient):
         self.outputs.insert(4, {"proposals": [invalid_evidence_proposal]})
 
 
+class AlwaysInvalidProposeAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        invalid_proposal = dict(self.outputs[3]["proposals"][0])
+        invalid_proposal["expected_metric_change"] = {
+            "hierarchy_completeness": "about 6"
+        }
+        self.outputs[3] = {"proposals": [invalid_proposal]}
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+            }
+        )
+        index = len(self.calls) - 1
+        if index >= 3:
+            index = 3
+        output = self.outputs[index]
+        if isinstance(output, str):
+            return output
+        return json.dumps(output, ensure_ascii=False)
+
+
 def test_run_llm_agent_pipeline_writes_multistage_artifacts_and_queues_review(
     tmp_path: Path,
 ):
@@ -526,6 +551,32 @@ def test_pipeline_removes_stale_downstream_artifacts_when_later_stage_fails(
     )
     assert "proposals: []" in approval_queue
     assert "proposals: []" in proposals_yaml
+
+
+def test_pipeline_failure_report_lists_rejected_attempts(tmp_path: Path):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = AlwaysInvalidProposeAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=2),
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    assert result.proposal_ids == []
+    report = (package / "llm_review_report.md").read_text(encoding="utf-8")
+    assert "## Rejected Attempts" in report
+    assert "- Attempt 1: proposal expected_metric_change values must be numbers" in report
+    assert "- Attempt 2: proposal expected_metric_change values must be numbers" in report
+    assert "- Attempt 3: proposal expected_metric_change values must be numbers" in report
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    assert propose_trace["stage"] == "propose"
+    assert propose_trace["attempts"] == 3
+    assert len(propose_trace["attempt_logs"]) == 3
 
 
 def test_pipeline_rejects_fabricated_proposal_evidence(tmp_path: Path):

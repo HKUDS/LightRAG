@@ -961,6 +961,18 @@ def _write_failure_artifacts(
         report_lines.append(f"- Error: {_single_line(error)}")
     if not any(line.startswith("- ") for line in report_lines[-3:]):
         report_lines.append("- Error: unknown")
+    attempt_logs = latest_stage.get("attempt_logs")
+    if isinstance(attempt_logs, list) and attempt_logs:
+        report_lines.extend(["", "## Rejected Attempts", ""])
+        for item in attempt_logs:
+            if not isinstance(item, dict):
+                continue
+            attempt = item.get("attempt")
+            attempt_error = item.get("error")
+            if isinstance(attempt, int) and isinstance(attempt_error, str):
+                clean_error = _single_line(attempt_error)
+                if clean_error:
+                    report_lines.append(f"- Attempt {attempt}: {clean_error}")
     report_lines.extend(["", "## Generated Proposals", "", "- none", ""])
 
     report_path.write_text("\n".join(report_lines), encoding="utf-8")
