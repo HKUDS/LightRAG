@@ -50,6 +50,10 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
     "approval_queue": ("approval_queue.md", "text/markdown"),
     "improvement_backlog": ("improvement_backlog.md", "text/markdown"),
     "accepted_changes": ("accepted_changes.md", "text/markdown"),
+    "accepted_changes_execution": (
+        "accepted_changes_execution.md",
+        "text/markdown",
+    ),
     "rejected_changes": ("rejected_changes.md", "text/markdown"),
     "deferred_changes": ("deferred_changes.md", "text/markdown"),
     "diff_report": ("diff_report.md", "text/markdown"),
@@ -149,8 +153,7 @@ def _default_llm_review_client(rag):
         return _UnavailableLLMReviewClient()
     if binding != "openai":
         raise RuntimeError(
-            "KB iteration LLM review only supports "
-            "KB_ITERATION_LLM_BINDING=openai"
+            "KB iteration LLM review only supports KB_ITERATION_LLM_BINDING=openai"
         )
     if not model or not base_url or not api_key:
         return _UnavailableLLMReviewClient()
@@ -362,9 +365,7 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
         "/{workspace}/llm-review/context/{round_id}",
         dependencies=[Depends(combined_auth)],
     )
-    async def get_llm_review_context(
-        workspace: str, round_id: str
-    ) -> dict[str, Any]:
+    async def get_llm_review_context(workspace: str, round_id: str) -> dict[str, Any]:
         workspace = _validate_workspace_or_400(workspace)
         if not re.fullmatch(r"round-\d{3}", round_id):
             raise HTTPException(status_code=400, detail="Invalid LLM review round id")
@@ -384,9 +385,7 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
         "/{workspace}/llm-review/patches/{proposal_id}",
         dependencies=[Depends(combined_auth)],
     )
-    async def get_llm_review_patch(
-        workspace: str, proposal_id: str
-    ) -> dict[str, Any]:
+    async def get_llm_review_patch(workspace: str, proposal_id: str) -> dict[str, Any]:
         workspace = _validate_workspace_or_400(workspace)
         proposal_id = _validate_proposal_id_or_400(proposal_id)
         path = _safe_patch_candidate_path(args, workspace, proposal_id)
@@ -495,16 +494,12 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
         workspace = _validate_workspace_or_400(workspace)
         return _quality_response(args, workspace)
 
-    @router.get(
-        "/{workspace}/catalog/entities", dependencies=[Depends(combined_auth)]
-    )
+    @router.get("/{workspace}/catalog/entities", dependencies=[Depends(combined_auth)])
     async def get_entity_catalog(workspace: str) -> dict[str, Any]:
         workspace = _validate_workspace_or_400(workspace)
         return _entity_catalog_response(args, workspace)
 
-    @router.get(
-        "/{workspace}/catalog/relations", dependencies=[Depends(combined_auth)]
-    )
+    @router.get("/{workspace}/catalog/relations", dependencies=[Depends(combined_auth)])
     async def get_relation_catalog(workspace: str) -> dict[str, Any]:
         workspace = _validate_workspace_or_400(workspace)
         return _relation_catalog_response(args, workspace)
@@ -535,6 +530,64 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
                 args, workspace, "rejected_changes", ""
             ),
         }
+
+    @router.post(
+        "/{workspace}/accepted-changes/execute",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def execute_accepted_changes(workspace: str) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        package_dir = _workspace_dir(args, workspace)
+        if not package_dir.is_dir():
+            raise HTTPException(
+                status_code=404, detail="KB iteration workspace package not found"
+            )
+
+        run_lock = _run_lock_for_workspace(workspace)
+        execution_lock = _run_lock_for_workspace(f"{workspace}:accepted-execution")
+        acquired_locks: list[Lock] = []
+        try:
+            if not run_lock.acquire(blocking=False):
+                raise HTTPException(
+                    status_code=409, detail="KB iteration run is already in progress"
+                )
+            acquired_locks.append(run_lock)
+            if not execution_lock.acquire(blocking=False):
+                raise HTTPException(
+                    status_code=409,
+                    detail="KB accepted changes execution is already in progress",
+                )
+            acquired_locks.append(execution_lock)
+            with _exclusive_workspace_file_lock(
+                _output_root(args), workspace, ".kb_iteration_accepted_execution.lock"
+            ):
+                records = _accepted_decision_records(args, workspace)
+                if not records:
+                    return {
+                        "workspace": workspace,
+                        "status": "no_accepted_changes",
+                        "proposalIds": [],
+                        "executedCount": 0,
+                        "artifactKey": "accepted_changes_execution",
+                    }
+
+                client = _default_llm_review_client(rag)
+                if isinstance(client, _UnavailableLLMReviewClient):
+                    raise RuntimeError("LLM review client is not configured")
+                result = await asyncio.to_thread(
+                    _record_accepted_changes_execution,
+                    args,
+                    workspace,
+                    records,
+                    client,
+                )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        finally:
+            for acquired_lock in reversed(acquired_locks):
+                acquired_lock.release()
+
+        return result
 
     @router.get(
         "/{workspace}/evidence/{source_id:path}", dependencies=[Depends(combined_auth)]
@@ -861,7 +914,9 @@ def _existing_decision(
     return None
 
 
-def _parse_decision_record(decision_text: str, section_start: int) -> dict[str, Any] | None:
+def _parse_decision_record(
+    decision_text: str, section_start: int
+) -> dict[str, Any] | None:
     next_section = re.search(r"^##\s+.+$", decision_text[section_start:], re.MULTILINE)
     section_end = (
         section_start + next_section.start() if next_section else len(decision_text)
@@ -877,13 +932,215 @@ def _parse_decision_record(decision_text: str, section_start: int) -> dict[str, 
     return record if isinstance(record, dict) else None
 
 
+def _accepted_decision_records(args, workspace: str) -> list[dict[str, Any]]:
+    decision_text = _optional_text_artifact(args, workspace, "accepted_changes", "")
+    records: list[dict[str, Any]] = []
+    for match in re.finditer(
+        r"^##\s+([A-Za-z0-9_.-]+)\s*$", decision_text, re.MULTILINE
+    ):
+        proposal_id = _validate_proposal_id_or_400(match.group(1))
+        record = _parse_decision_record(decision_text, match.end())
+        if not record:
+            record = {
+                "proposal_id": proposal_id,
+                "decision": "accept",
+            }
+        record["proposal_id"] = str(record.get("proposal_id") or proposal_id)
+        records.append(record)
+    return records
+
+
+def _record_accepted_changes_execution(
+    args,
+    workspace: str,
+    records: list[dict[str, Any]],
+    client,
+) -> dict[str, Any]:
+    package_dir = _workspace_dir(args, workspace)
+    proposal_ids = [str(record["proposal_id"]) for record in records]
+    prompt_payload = _accepted_execution_prompt_payload(args, workspace, records)
+    raw_response = client.complete(
+        system_prompt=_accepted_execution_system_prompt(),
+        user_prompt=json.dumps(prompt_payload, ensure_ascii=False, indent=2),
+    )
+    execution_payload = _parse_accepted_execution_response(raw_response)
+    execution_payload["workspace"] = workspace
+    execution_payload["proposal_ids"] = proposal_ids
+    execution_payload["executed_at"] = datetime.now(timezone.utc).isoformat()
+    execution_payload["source_artifact"] = "accepted_changes.md"
+
+    json_path = package_dir / "accepted_changes_execution.json"
+    json_path.write_text(
+        json.dumps(execution_payload, ensure_ascii=False, indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    markdown_path = package_dir / "accepted_changes_execution.md"
+    markdown_path.write_text(
+        _accepted_execution_markdown(execution_payload),
+        encoding="utf-8",
+    )
+    _append_accepted_execution_log(args, workspace, proposal_ids, execution_payload)
+
+    return {
+        "workspace": workspace,
+        "status": "execution_recorded",
+        "proposalIds": proposal_ids,
+        "executedCount": _count_execution_items(
+            execution_payload.get("executed_changes")
+        ),
+        "artifactKey": "accepted_changes_execution",
+    }
+
+
+def _accepted_execution_prompt_payload(
+    args, workspace: str, records: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "workspace": workspace,
+        "accepted_decision_records": records,
+        "accepted_changes": _optional_text_artifact(
+            args, workspace, "accepted_changes", ""
+        ),
+        "improvement_backlog": _optional_text_artifact(
+            args, workspace, "improvement_backlog", ""
+        ),
+        "quality_report": _optional_text_artifact(
+            args, workspace, "quality_report", ""
+        ),
+        "kb_context": _optional_text_artifact(args, workspace, "kb_context", ""),
+        "llm_repair_plan": _optional_text_artifact(
+            args, workspace, "llm_repair_plan", ""
+        ),
+        "patch_candidates": _patch_candidate_names(args, workspace),
+    }
+
+
+def _accepted_execution_system_prompt() -> str:
+    return "\n".join(
+        [
+            "You are the KB iteration accepted-change execution agent.",
+            "Return only JSON.",
+            "Use only accepted_decision_records and supplied artifacts.",
+            "Do not claim direct KG mutation unless the supplied artifacts prove it.",
+            "Constrain every action to the proposal scope, target, evidence, and risk.",
+            "Use this schema: summary, executed_changes, blocked_changes, next_steps.",
+            "Each executed_changes item must include proposal_id, status, and action.",
+        ]
+    )
+
+
+def _patch_candidate_names(args, workspace: str) -> list[str]:
+    patch_dir = _workspace_dir(args, workspace) / "patch_candidates"
+    if not patch_dir.is_dir():
+        return []
+    return sorted(path.name for path in patch_dir.glob("*.patch") if path.is_file())
+
+
+def _parse_accepted_execution_response(raw_response: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw_response)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Accepted changes execution returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Accepted changes execution must return a JSON object")
+    return {
+        "summary": str(payload.get("summary") or "").strip(),
+        "executed_changes": _list_of_records(payload.get("executed_changes")),
+        "blocked_changes": _list_of_records(payload.get("blocked_changes")),
+        "next_steps": _list_of_strings(payload.get("next_steps")),
+    }
+
+
+def _list_of_records(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _list_of_strings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _count_execution_items(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _accepted_execution_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Accepted Changes Execution",
+        "",
+        f"- Workspace: {_markdown_inline(payload.get('workspace'))}",
+        f"- Executed at: {_markdown_inline(payload.get('executed_at'))}",
+        f"- Source: {_markdown_inline(payload.get('source_artifact'))}",
+        f"- Proposal IDs: {_markdown_inline(', '.join(payload.get('proposal_ids', [])))}",
+        "",
+        "## Summary",
+        "",
+        _markdown_inline(payload.get("summary") or "No summary returned."),
+        "",
+        "## Executed Changes",
+        "",
+    ]
+    lines.extend(_render_execution_items(payload.get("executed_changes")))
+    lines.extend(["", "## Blocked Changes", ""])
+    lines.extend(_render_execution_items(payload.get("blocked_changes")))
+    lines.extend(["", "## Next Steps", ""])
+    next_steps = _list_of_strings(payload.get("next_steps"))
+    lines.extend(f"- {_markdown_inline(step)}" for step in next_steps)
+    if not next_steps:
+        lines.append("- none")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_execution_items(value: Any) -> list[str]:
+    items = _list_of_records(value)
+    if not items:
+        return ["- none"]
+    rendered = []
+    for item in items:
+        proposal_id = _markdown_inline(item.get("proposal_id") or "unknown")
+        status = _markdown_inline(item.get("status") or "unknown")
+        action = _markdown_inline(
+            item.get("action") or json.dumps(item, ensure_ascii=False)
+        )
+        rendered.append(f"- {proposal_id} [{status}]: {action}")
+    return rendered
+
+
+def _markdown_inline(value: Any) -> str:
+    return str(value or "").replace("\n", " ").replace("|", "\\|")
+
+
+def _append_accepted_execution_log(
+    args, workspace: str, proposal_ids: list[str], payload: dict[str, Any]
+) -> None:
+    log_path = _workspace_dir(args, workspace) / "iteration_log.md"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = [
+        "",
+        "## Accepted Changes Execution",
+        "",
+        "- phase: accepted_changes_execution",
+        f"- accepted_proposal_ids: {', '.join(proposal_ids)}",
+        "- artifact: accepted_changes_execution.md",
+    ]
+    summary = str(payload.get("summary") or "").strip()
+    if summary:
+        entry.append(f"- summary: {_markdown_inline(summary)}")
+    entry.append("")
+    with log_path.open("a", encoding="utf-8") as file:
+        file.write("\n".join(entry))
+
+
 def _count_high_risk_findings(quality: dict[str, Any]) -> int:
     findings = quality.get("findings", []) if isinstance(quality, dict) else []
     return sum(
         1
         for finding in findings
-        if isinstance(finding, dict)
-        and finding.get("severity") in {"critical", "high"}
+        if isinstance(finding, dict) and finding.get("severity") in {"critical", "high"}
     )
 
 
@@ -910,8 +1167,12 @@ def _build_graph_response(args, workspace: str) -> dict[str, Any]:
                 **edge,
                 "label": label,
                 "direction": "outgoing",
-                "sourceLabel": labels.get(edge.get("source", ""), edge.get("source", "")),
-                "targetLabel": labels.get(edge.get("target", ""), edge.get("target", "")),
+                "sourceLabel": labels.get(
+                    edge.get("source", ""), edge.get("source", "")
+                ),
+                "targetLabel": labels.get(
+                    edge.get("target", ""), edge.get("target", "")
+                ),
                 "evidenceStatus": _evidence_status(edge),
                 "qualityFlags": _edge_quality_flags(edge),
             }
@@ -992,10 +1253,7 @@ def _append_decision(
             )
         raise HTTPException(
             status_code=409,
-            detail=(
-                "Proposal already has a recorded decision: "
-                f"{recorded_decision}"
-            ),
+            detail=(f"Proposal already has a recorded decision: {recorded_decision}"),
         )
 
     path = package_dir / DECISION_FILES[decision]

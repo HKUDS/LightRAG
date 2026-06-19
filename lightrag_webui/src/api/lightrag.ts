@@ -688,6 +688,14 @@ export type KBIterationLLMReviewRunResponse = {
   proposalIds: string[]
 }
 
+export type KBIterationAcceptedChangesExecutionResponse = {
+  workspace: string
+  status: 'execution_recorded' | 'no_accepted_changes' | string
+  proposalIds: string[]
+  executedCount: number
+  artifactKey: string
+}
+
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
@@ -1056,9 +1064,7 @@ export const getKBIterationSummary = async (
   return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/summary`)
 }
 
-export const getKBIterationRuns = async (
-  workspace: string
-): Promise<KBIterationRunsResponse> => {
+export const getKBIterationRuns = async (workspace: string): Promise<KBIterationRunsResponse> => {
   return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/runs`)
 }
 
@@ -1073,9 +1079,15 @@ export const runKBIterationLLMReview = async (
   workspace: string,
   request: KBIterationLLMReviewRunRequest = {}
 ): Promise<KBIterationLLMReviewRunResponse> => {
+  return kbIterationPost(`/kb-iteration/${encodePathSegment(workspace)}/llm-review/runs`, request)
+}
+
+export const executeKBIterationAcceptedChanges = async (
+  workspace: string
+): Promise<KBIterationAcceptedChangesExecutionResponse> => {
   return kbIterationPost(
-    `/kb-iteration/${encodePathSegment(workspace)}/llm-review/runs`,
-    request
+    `/kb-iteration/${encodePathSegment(workspace)}/accepted-changes/execute`,
+    {}
   )
 }
 
@@ -1100,9 +1112,7 @@ export const getKBIterationLLMReviewProposals = async (
 export const getKBIterationLLMJudgeReport = async (
   workspace: string
 ): Promise<KBIterationArtifactResponse> => {
-  return kbIterationGet(
-    `/kb-iteration/${encodePathSegment(workspace)}/llm-review/judge-report`
-  )
+  return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/llm-review/judge-report`)
 }
 
 export const getKBIterationLLMReviewPatch = async (
@@ -1124,9 +1134,7 @@ export const getKBIterationArtifact = async (
   )
 }
 
-export const getKBIterationGraph = async (
-  workspace: string
-): Promise<KBIterationGraphResponse> => {
+export const getKBIterationGraph = async (workspace: string): Promise<KBIterationGraphResponse> => {
   return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/graph`)
 }
 
@@ -1148,15 +1156,11 @@ export const getKBIterationRelationCatalog = async (
   return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/catalog/relations`)
 }
 
-export const getKBIterationDiff = async (
-  workspace: string
-): Promise<KBIterationDiffResponse> => {
+export const getKBIterationDiff = async (workspace: string): Promise<KBIterationDiffResponse> => {
   return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/diff`)
 }
 
-export const getKBIterationRules = async (
-  workspace: string
-): Promise<KBIterationRulesResponse> => {
+export const getKBIterationRules = async (workspace: string): Promise<KBIterationRulesResponse> => {
   return kbIterationGet(`/kb-iteration/${encodePathSegment(workspace)}/rules`)
 }
 

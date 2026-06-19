@@ -51,6 +51,7 @@ const summary: KBIterationSummaryResponse = {
     'improvement_backlog',
     'accepted_changes',
     'rejected_changes',
+    'accepted_changes_execution',
     'iteration_log'
   ].map((key) => ({
     key,
@@ -65,6 +66,7 @@ function renderMainPanel(
   options: {
     acceptedChanges?: string
     rejectedChanges?: string
+    acceptedExecution?: string
   } = {}
 ) {
   return renderToStaticMarkup(
@@ -119,6 +121,7 @@ function renderMainPanel(
   expected_metric_change:
     approval_latency: -1`}
       improvementBacklog="backlog content marker"
+      acceptedExecution={options.acceptedExecution ?? 'execution content marker'}
       iterationLog="iteration log marker"
       llmTrace={{
         stop_reason: 'pending_human_review',
@@ -137,6 +140,7 @@ function renderMainPanel(
       loading={false}
       onOpenSection={() => undefined}
       onProposalDecision={() => undefined}
+      onExecuteAcceptedChanges={() => undefined}
       onRunLLMReview={() => undefined}
       onLoadPatch={() => undefined}
     />
@@ -155,6 +159,7 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       qualityScore={null}
       approvalQueue=""
       improvementBacklog=""
+      acceptedExecution=""
       iterationLog=""
       llmTrace={null}
       llmReport=""
@@ -170,6 +175,7 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       loading={false}
       onOpenSection={() => undefined}
       onProposalDecision={() => undefined}
+      onExecuteAcceptedChanges={() => undefined}
       onRunLLMReview={() => undefined}
       onLoadPatch={() => undefined}
     />
@@ -263,8 +269,9 @@ describe('KGMaintenanceShell responsive layout', () => {
     expect(markup).toContain('快照审阅')
     expect(markup).toContain('人工审阅')
     expect(markup).toContain('Proposal 审批')
-    expect(markup).toContain('改进 backlog')
-    expect(markup).toContain('决策记忆')
+    expect(markup).toContain('决策与执行')
+    expect(markup).not.toContain('改进 backlog')
+    expect(markup).not.toContain('决策记忆')
     expect(markup).toContain('辅助材料')
     expect(markup).toContain('LLM 审阅材料')
     expect(markup).not.toContain('Medical Graph')
@@ -332,7 +339,9 @@ describe('MainPanel workflow routing', () => {
   test('optional response helper rethrows wrapper-style 500 with not-found body text', async () => {
     await expect(
       optionalMissingResponse(async () => {
-        throw new Error('500 Internal Server Error\n{"detail":"not found"}\n/kb-iteration/workspace/summary')
+        throw new Error(
+          '500 Internal Server Error\n{"detail":"not found"}\n/kb-iteration/workspace/summary'
+        )
       }, null)
     ).rejects.toThrow('500 Internal Server Error')
   })
@@ -375,7 +384,11 @@ describe('MainPanel workflow routing', () => {
           contentType: 'text/markdown',
           content: 'artifact'
         }),
-        getTrace: async () => ({ artifactKey: 'trace', contentType: 'application/json', payload: {} }),
+        getTrace: async () => ({
+          artifactKey: 'trace',
+          contentType: 'application/json',
+          payload: {}
+        }),
         getReport: async () => ({
           artifactKey: 'report',
           contentType: 'text/markdown',
@@ -490,7 +503,11 @@ describe('MainPanel workflow routing', () => {
           content: `# ${key}`
         }
       },
-      getTrace: async () => ({ artifactKey: 'trace', contentType: 'application/json', payload: {} }),
+      getTrace: async () => ({
+        artifactKey: 'trace',
+        contentType: 'application/json',
+        payload: {}
+      }),
       getReport: async () => ({
         artifactKey: 'report',
         contentType: 'text/markdown',
@@ -527,16 +544,24 @@ describe('MainPanel workflow routing', () => {
     let applied = ''
 
     expect(
-      applyWorkspaceResponse('workspace-a', () => 'workspace-b', () => {
-        applied = 'stale summary'
-      })
+      applyWorkspaceResponse(
+        'workspace-a',
+        () => 'workspace-b',
+        () => {
+          applied = 'stale summary'
+        }
+      )
     ).toBe(false)
     expect(applied).toBe('')
 
     expect(
-      applyWorkspaceResponse('workspace-a', () => 'workspace-a', () => {
-        applied = 'fresh summary'
-      })
+      applyWorkspaceResponse(
+        'workspace-a',
+        () => 'workspace-a',
+        () => {
+          applied = 'fresh summary'
+        }
+      )
     ).toBe(true)
     expect(applied).toBe('fresh summary')
   })
@@ -910,6 +935,21 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('accepted content marker')
     expect(markup).toContain('已拒绝变更记忆')
     expect(markup).toContain('rejected content marker')
+  })
+
+  test('decisions combines backlog memory and accepted execution controls', () => {
+    const markup = renderMainPanel('decisions' as KGMaintenanceSection)
+
+    expect(markup).toContain('决策与执行')
+    expect(markup).toContain('Agent 执行已接受变更')
+    expect(markup).toContain('improvement_backlog.md')
+    expect(markup).toContain('accepted_changes.md')
+    expect(markup).toContain('rejected_changes.md')
+    expect(markup).toContain('accepted_changes_execution.md')
+    expect(markup).toContain('backlog content marker')
+    expect(markup).toContain('accepted content marker')
+    expect(markup).toContain('rejected content marker')
+    expect(markup).toContain('execution content marker')
   })
 
   test('llm-review renders auxiliary review materials without memory fallthrough', () => {

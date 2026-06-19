@@ -8,6 +8,7 @@ export type KGMaintenanceSection =
   | 'quality'
   | 'snapshot'
   | 'approval'
+  | 'decisions'
   | 'backlog'
   | 'memory'
   | 'llm-review'

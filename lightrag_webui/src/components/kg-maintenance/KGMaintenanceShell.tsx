@@ -7,7 +7,7 @@ import {
   FileSearchIcon,
   HistoryIcon,
   LayoutDashboardIcon,
-  ListTreeIcon,
+  ListChecksIcon,
   RefreshCwIcon,
   ShieldCheckIcon
 } from 'lucide-react'
@@ -28,8 +28,7 @@ const sections: SectionItem[] = [
   { id: 'quality', label: '质量检查', group: '质量与快照', icon: ShieldCheckIcon },
   { id: 'snapshot', label: '快照审阅', group: '质量与快照', icon: FileSearchIcon },
   { id: 'approval', label: 'Proposal 审批', group: '人工审阅', icon: ClipboardCheckIcon },
-  { id: 'backlog', label: '改进 backlog', group: '人工审阅', icon: ListTreeIcon },
-  { id: 'memory', label: '决策记忆', group: '人工审阅', icon: BookOpenIcon },
+  { id: 'decisions', label: '决策与执行', group: '人工审阅', icon: ListChecksIcon },
   { id: 'llm-review', label: 'LLM 审阅材料', group: '辅助材料', icon: FileSearchIcon }
 ]
 
@@ -127,6 +126,10 @@ export default function KGMaintenanceShell({
               <div className="space-y-1">
                 {items.map((item) => {
                   const Icon = item.icon
+                  const active =
+                    activeSection === item.id ||
+                    (item.id === 'decisions' &&
+                      (activeSection === 'backlog' || activeSection === 'memory'))
                   return (
                     <button
                       key={item.id}
@@ -134,9 +137,7 @@ export default function KGMaintenanceShell({
                       onClick={() => onSectionChange(item.id)}
                       className={cn(
                         'flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors',
-                        activeSection === item.id
-                          ? 'bg-emerald-500 text-white'
-                          : 'hover:bg-accent text-foreground'
+                        active ? 'bg-emerald-500 text-white' : 'hover:bg-accent text-foreground'
                       )}
                     >
                       <Icon className="size-4 shrink-0" />

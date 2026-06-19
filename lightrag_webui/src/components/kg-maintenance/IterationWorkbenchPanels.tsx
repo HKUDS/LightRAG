@@ -1,3 +1,4 @@
+import Button from '@/components/ui/Button'
 import type { KBIterationSummaryResponse } from '@/api/lightrag'
 import type { KGMaintenanceSection } from '@/stores/kgMaintenance'
 import {
@@ -8,6 +9,7 @@ import {
   FileTextIcon,
   GitPullRequestIcon,
   ListChecksIcon,
+  PlayCircleIcon,
   ShieldAlertIcon,
   TimerIcon,
   XCircleIcon
@@ -88,22 +90,29 @@ const requiredArtifacts: Array<{
     key: 'improvement_backlog',
     label: '改进 backlog',
     fileName: 'improvement_backlog.md',
-    section: 'backlog',
+    section: 'decisions',
     icon: <ClipboardListIcon className="size-4 text-cyan-600" />
   },
   {
     key: 'accepted_changes',
     label: '已接受变更记忆',
     fileName: 'accepted_changes.md',
-    section: 'memory',
+    section: 'decisions',
     icon: <CheckCircle2Icon className="size-4 text-emerald-600" />
   },
   {
     key: 'rejected_changes',
     label: '已拒绝变更记忆',
     fileName: 'rejected_changes.md',
-    section: 'memory',
+    section: 'decisions',
     icon: <XCircleIcon className="size-4 text-rose-500" />
+  },
+  {
+    key: 'accepted_changes_execution',
+    label: '已接受变更执行结果',
+    fileName: 'accepted_changes_execution.md',
+    section: 'decisions',
+    icon: <PlayCircleIcon className="size-4 text-indigo-600" />
   },
   {
     key: 'iteration_log',
@@ -157,7 +166,9 @@ export function IterationOverviewPanel({
     )
   }
 
-  const artifactExists = new Map(summary.artifacts.map((artifact) => [artifact.key, artifact.exists]))
+  const artifactExists = new Map(
+    summary.artifacts.map((artifact) => [artifact.key, artifact.exists])
+  )
 
   return (
     <section className="space-y-4">
@@ -193,7 +204,7 @@ export function IterationOverviewPanel({
                   {artifact.icon}
                   <div className="min-w-0">
                     <div className="text-sm font-medium">{artifact.label}</div>
-                    <div className="text-muted-foreground mt-1 break-words text-xs">
+                    <div className="text-muted-foreground mt-1 text-xs break-words">
                       {artifact.fileName}
                     </div>
                   </div>
@@ -201,7 +212,7 @@ export function IterationOverviewPanel({
                 <span
                   className={
                     exists
-                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200 rounded-md px-2 py-1 text-xs'
+                      ? 'rounded-md bg-emerald-50 px-2 py-1 text-xs text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200'
                       : 'bg-muted text-muted-foreground rounded-md px-2 py-1 text-xs'
                   }
                 >
@@ -279,11 +290,84 @@ export function DecisionMemoryPanel({
   )
 }
 
+export function DecisionExecutionPanel({
+  improvementBacklog,
+  acceptedChanges,
+  rejectedChanges,
+  acceptedExecution,
+  executing,
+  onExecuteAcceptedChanges
+}: {
+  improvementBacklog: string
+  acceptedChanges: string
+  rejectedChanges: string
+  acceptedExecution: string
+  executing: boolean
+  onExecuteAcceptedChanges: () => void
+}) {
+  const acceptedCount = countDecisionSections(acceptedChanges)
+
+  return (
+    <section className="space-y-3">
+      <div className="border-border/70 bg-muted/20 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold">决策与执行</h2>
+          <p className="text-muted-foreground mt-1 text-xs">
+            {acceptedCount > 0 ? `${acceptedCount} 条已接受变更等待 Agent 执行` : '暂无已接受变更'}
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          onClick={onExecuteAcceptedChanges}
+          disabled={executing || acceptedCount === 0}
+        >
+          <PlayCircleIcon className="size-4" />
+          {executing ? 'Agent 执行中' : 'Agent 执行已接受变更'}
+        </Button>
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-2">
+        <MarkdownArtifactPanel
+          icon={<ClipboardListIcon className="size-4 text-cyan-600" />}
+          title="改进 backlog"
+          fileName="improvement_backlog.md"
+          content={improvementBacklog}
+          emptyText="暂无改进 backlog。"
+        />
+        <MarkdownArtifactPanel
+          icon={<PlayCircleIcon className="size-4 text-indigo-600" />}
+          title="已接受变更执行结果"
+          fileName="accepted_changes_execution.md"
+          content={acceptedExecution}
+          emptyText="暂无已接受变更执行结果。"
+        />
+        <MarkdownArtifactPanel
+          icon={<CheckCircle2Icon className="size-4 text-emerald-600" />}
+          title="已接受变更记忆"
+          fileName="accepted_changes.md"
+          content={acceptedChanges}
+          emptyText="暂无已接受变更记忆。"
+        />
+        <MarkdownArtifactPanel
+          icon={<XCircleIcon className="size-4 text-rose-500" />}
+          title="已拒绝变更记忆"
+          fileName="rejected_changes.md"
+          content={rejectedChanges}
+          emptyText="暂无已拒绝变更记忆。"
+        />
+      </div>
+    </section>
+  )
+}
+
 export function SnapshotReviewPanel({ snapshot }: { snapshot: unknown }) {
   const record = asRecord(snapshot)
   const nodeCount = countCollection(record?.nodes) ?? countCollection(record?.entities)
   const relationCount =
-    countCollection(record?.edges) ?? countCollection(record?.relations) ?? countCollection(record?.links)
+    countCollection(record?.edges) ??
+    countCollection(record?.relations) ??
+    countCollection(record?.links)
 
   return (
     <JsonArtifactPanel
@@ -335,11 +419,11 @@ export function JsonArtifactPanel({
         {summaryRows.map(([label, value]) => (
           <div key={label} className="bg-muted/30 rounded-md p-2">
             <dt className="text-muted-foreground text-xs">{label}</dt>
-            <dd className="mt-1 break-words text-sm font-medium">{value}</dd>
+            <dd className="mt-1 text-sm font-medium break-words">{value}</dd>
           </div>
         ))}
       </dl>
-      <pre className="border-border/70 bg-muted/20 text-muted-foreground mt-3 max-h-96 overflow-auto rounded-md border p-3 text-xs whitespace-pre-wrap break-words">
+      <pre className="border-border/70 bg-muted/20 text-muted-foreground mt-3 max-h-96 overflow-auto rounded-md border p-3 text-xs break-words whitespace-pre-wrap">
         {hasPayload ? JSON.stringify(payload, null, 2) : emptyText}
       </pre>
     </section>
@@ -362,7 +446,7 @@ export function MarkdownArtifactPanel({
         title={title}
         fileName={fileName}
       />
-      <pre className="text-muted-foreground mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs">
+      <pre className="text-muted-foreground mt-3 max-h-96 overflow-auto text-xs break-words whitespace-pre-wrap">
         {hasContent ? content : emptyText}
       </pre>
     </section>
@@ -406,7 +490,7 @@ function ArtifactHeader({
       {icon ? icon : null}
       <div className="min-w-0">
         <h2 className="text-sm font-semibold">{title}</h2>
-        <p className="text-muted-foreground mt-1 break-words text-xs">{fileName}</p>
+        <p className="text-muted-foreground mt-1 text-xs break-words">{fileName}</p>
       </div>
     </div>
   )
@@ -416,7 +500,7 @@ function MetricTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="border-border/70 rounded-lg border p-3">
       <div className="text-muted-foreground text-xs">{label}</div>
-      <div className="mt-1 break-words text-lg font-semibold">{value}</div>
+      <div className="mt-1 text-lg font-semibold break-words">{value}</div>
     </div>
   )
 }
@@ -441,6 +525,10 @@ function countCollection(value: unknown): number | undefined {
   if (value && typeof value === 'object') return Object.keys(value).length
   if (typeof value === 'number') return value
   return undefined
+}
+
+function countDecisionSections(content: string): number {
+  return Array.from(content.matchAll(/^##\s+\S+/gm)).length
 }
 
 function formatUnknown(value: unknown): string {

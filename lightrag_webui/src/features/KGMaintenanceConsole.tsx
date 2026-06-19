@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  executeKBIterationAcceptedChanges,
   getKBIterationLLMReviewPatch,
   getKBIterationWorkspaces,
   runKBIteration,
@@ -15,8 +16,7 @@ import type {
 } from '@/components/kg-maintenance/kgMaintenanceData'
 import KGMaintenanceShell from '@/components/kg-maintenance/KGMaintenanceShell'
 import {
-  BacklogPanel,
-  DecisionMemoryPanel,
+  DecisionExecutionPanel,
   IterationOverviewPanel,
   IterationReviewAside,
   IterationStagePanel,
@@ -61,6 +61,7 @@ export default function KGMaintenanceConsole() {
   const [qualityScore, setQualityScore] = useState<Record<string, any> | null>(null)
   const [approvalQueue, setApprovalQueue] = useState('')
   const [improvementBacklog, setImprovementBacklog] = useState('')
+  const [acceptedExecution, setAcceptedExecution] = useState('')
   const [iterationLog, setIterationLog] = useState('')
   const [llmTrace, setLlmTrace] = useState<Record<string, any> | null>(null)
   const [llmReport, setLlmReport] = useState('')
@@ -71,6 +72,7 @@ export default function KGMaintenanceConsole() {
   const [llmEvidenceMap, setLlmEvidenceMap] = useState('')
   const [llmRepairPlan, setLlmRepairPlan] = useState('')
   const [patchText, setPatchText] = useState('')
+  const [acceptedExecuting, setAcceptedExecuting] = useState(false)
   const [llmRunning, setLlmRunning] = useState(false)
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
@@ -122,6 +124,7 @@ export default function KGMaintenanceConsole() {
         qualityScoreArtifact,
         approvalArtifact,
         backlogArtifact,
+        acceptedExecutionArtifact,
         logArtifact,
         llmTraceArtifact,
         llmReportArtifact,
@@ -153,6 +156,7 @@ export default function KGMaintenanceConsole() {
       )
       setApprovalQueue(normalizeOptionalMarkdown(approvalArtifact))
       setImprovementBacklog(normalizeOptionalMarkdown(backlogArtifact))
+      setAcceptedExecution(normalizeOptionalMarkdown(acceptedExecutionArtifact))
       setIterationLog(normalizeOptionalMarkdown(logArtifact))
       setLlmTrace(
         typeof llmTraceArtifact === 'object' &&
@@ -308,6 +312,29 @@ export default function KGMaintenanceConsole() {
     [loadWorkspaceData, selectedWorkspace]
   )
 
+  const handleExecuteAcceptedChanges = useCallback(async () => {
+    if (!selectedWorkspace || running || llmRunning || acceptedExecuting) return
+    const requestWorkspace = selectedWorkspace
+    const getCurrentWorkspace = () => useKGMaintenanceStore.getState().selectedWorkspace
+    setAcceptedExecuting(true)
+    setError(null)
+    setPatchText('')
+    await runWorkspaceAction({
+      requestWorkspace,
+      getCurrentWorkspace,
+      action: () => executeKBIterationAcceptedChanges(requestWorkspace),
+      onSuccess: async () => {
+        await loadWorkspaceData()
+      },
+      onError: (err) => {
+        setError(errorMessage(err))
+      },
+      onComplete: () => {
+        setAcceptedExecuting(false)
+      }
+    })
+  }, [acceptedExecuting, llmRunning, loadWorkspaceData, running, selectedWorkspace])
+
   return (
     <KGMaintenanceShell
       activeSection={activeSection}
@@ -318,7 +345,7 @@ export default function KGMaintenanceConsole() {
       onRefresh={loadWorkspaceData}
       onRunReview={handleRunReview}
       loading={loading}
-      running={running || llmRunning}
+      running={running || llmRunning || acceptedExecuting}
       error={error}
       inspector={
         <IterationReviewAside
@@ -338,6 +365,7 @@ export default function KGMaintenanceConsole() {
         qualityScore={qualityScore}
         approvalQueue={approvalQueue}
         improvementBacklog={improvementBacklog}
+        acceptedExecution={acceptedExecution}
         iterationLog={iterationLog}
         llmTrace={llmTrace}
         llmReport={llmReport}
@@ -348,11 +376,13 @@ export default function KGMaintenanceConsole() {
         llmEvidenceMap={llmEvidenceMap}
         llmRepairPlan={llmRepairPlan}
         patchText={patchText}
+        acceptedExecuting={acceptedExecuting}
         llmRunning={llmRunning}
         running={running}
         loading={loading}
         onOpenSection={setActiveSection}
         onProposalDecision={handleProposalDecision}
+        onExecuteAcceptedChanges={handleExecuteAcceptedChanges}
         onRunLLMReview={handleRunLLMReview}
         onLoadPatch={handleLoadPatch}
       />
@@ -370,6 +400,7 @@ interface MainPanelProps {
   qualityScore: Record<string, any> | null
   approvalQueue: string
   improvementBacklog: string
+  acceptedExecution: string
   iterationLog: string
   llmTrace: Record<string, any> | null
   llmReport: string
@@ -380,6 +411,7 @@ interface MainPanelProps {
   llmEvidenceMap: string
   llmRepairPlan: string
   patchText: string
+  acceptedExecuting: boolean
   llmRunning: boolean
   running: boolean
   loading: boolean
@@ -389,6 +421,7 @@ interface MainPanelProps {
     decision: KBIterationProposalDecision,
     review: ProposalDecisionReview
   ) => void | Promise<void>
+  onExecuteAcceptedChanges: () => void
   onRunLLMReview: () => void
   onLoadPatch: (proposalId: string) => void
 }
@@ -403,6 +436,7 @@ export function MainPanel({
   qualityScore,
   approvalQueue,
   improvementBacklog,
+  acceptedExecution,
   iterationLog,
   llmTrace,
   llmReport,
@@ -413,11 +447,13 @@ export function MainPanel({
   llmEvidenceMap,
   llmRepairPlan,
   patchText,
+  acceptedExecuting,
   llmRunning,
   running,
   loading,
   onOpenSection,
   onProposalDecision,
+  onExecuteAcceptedChanges,
   onRunLLMReview,
   onLoadPatch
 }: MainPanelProps) {
@@ -457,14 +493,15 @@ export function MainPanel({
       />
     )
   }
-  if (activeSection === 'backlog') {
-    return <BacklogPanel improvementBacklog={improvementBacklog} />
-  }
-  if (activeSection === 'memory') {
+  if (activeSection === 'decisions' || activeSection === 'backlog' || activeSection === 'memory') {
     return (
-      <DecisionMemoryPanel
+      <DecisionExecutionPanel
+        improvementBacklog={improvementBacklog}
         acceptedChanges={rules?.acceptedChanges || ''}
         rejectedChanges={rules?.rejectedChanges || ''}
+        acceptedExecution={acceptedExecution}
+        executing={acceptedExecuting}
+        onExecuteAcceptedChanges={onExecuteAcceptedChanges}
       />
     )
   }
@@ -492,5 +529,7 @@ export function MainPanel({
       </section>
     )
   }
-  return <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
+  return (
+    <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
+  )
 }

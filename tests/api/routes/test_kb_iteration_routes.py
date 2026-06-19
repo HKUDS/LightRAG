@@ -309,9 +309,7 @@ def test_artifact_endpoint_reads_whitelisted_markdown(tmp_path: Path, monkeypatc
     }
 
 
-def test_accept_reject_and_defer_records_are_append_only(
-    tmp_path: Path, monkeypatch
-):
+def test_accept_reject_and_defer_records_are_append_only(tmp_path: Path, monkeypatch):
     client, fixture = _client(tmp_path, monkeypatch)
 
     reject = client.post(
@@ -336,9 +334,9 @@ def test_accept_reject_and_defer_records_are_append_only(
     assert "Needs stronger evidence" in (
         fixture.package / "rejected_changes.md"
     ).read_text(encoding="utf-8")
-    assert "Evidence checked" in (
-        fixture.package / "accepted_changes.md"
-    ).read_text(encoding="utf-8")
+    assert "Evidence checked" in (fixture.package / "accepted_changes.md").read_text(
+        encoding="utf-8"
+    )
     assert "Wait for another run" in (
         fixture.package / "deferred_changes.md"
     ).read_text(encoding="utf-8")
@@ -368,6 +366,70 @@ def test_proposal_decision_accepts_empty_review_and_records_defaults(
     assert "web_display_change" in accepted
 
 
+def test_execute_accepted_changes_records_agent_execution_artifact(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    accept = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p2/accept",
+        headers=HEADERS,
+        json={},
+    )
+    assert accept.status_code == 200
+
+    class FakeExecutionClient:
+        def __init__(self) -> None:
+            self.user_prompt = ""
+
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            self.user_prompt = user_prompt
+            return json.dumps(
+                {
+                    "summary": "Accepted change p2 was converted into an execution record.",
+                    "executed_changes": [
+                        {
+                            "proposal_id": "p2",
+                            "status": "recorded",
+                            "action": "Prepare a bounded WebUI follow-up change.",
+                        }
+                    ],
+                    "blocked_changes": [],
+                    "next_steps": ["Run the KB iteration review again."],
+                }
+            )
+
+    fake_client = FakeExecutionClient()
+    import lightrag.api.routers.kb_iteration_routes as routes
+
+    monkeypatch.setattr(routes, "_default_llm_review_client", lambda _rag: fake_client)
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/accepted-changes/execute",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workspace"] == "influenza_medical_v1"
+    assert payload["status"] == "execution_recorded"
+    assert payload["proposalIds"] == ["p2"]
+    assert payload["executedCount"] == 1
+    assert payload["artifactKey"] == "accepted_changes_execution"
+    assert "p2" in fake_client.user_prompt
+
+    execution = (fixture.package / "accepted_changes_execution.md").read_text(
+        encoding="utf-8"
+    )
+    assert "# Accepted Changes Execution" in execution
+    assert "p2" in execution
+    assert "Prepare a bounded WebUI follow-up change." in execution
+
+    iteration_log = (fixture.package / "iteration_log.md").read_text(encoding="utf-8")
+    assert "- phase: accepted_changes_execution" in iteration_log
+    assert "- accepted_proposal_ids: p2" in iteration_log
+
+
 def test_proposal_decision_rejects_unknown_proposal(tmp_path: Path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
 
@@ -395,9 +457,7 @@ def test_proposal_decision_rejects_invalid_proposal_id(
     assert response.status_code == 400
 
 
-def test_proposal_decision_allows_repeating_same_decision(
-    tmp_path: Path, monkeypatch
-):
+def test_proposal_decision_allows_repeating_same_decision(tmp_path: Path, monkeypatch):
     client, fixture = _client(tmp_path, monkeypatch)
 
     first = client.post(
@@ -420,9 +480,7 @@ def test_proposal_decision_allows_repeating_same_decision(
     assert "Clicked again" not in accepted
 
 
-def test_proposal_decision_rejects_conflicting_decision(
-    tmp_path: Path, monkeypatch
-):
+def test_proposal_decision_rejects_conflicting_decision(tmp_path: Path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
 
     first = client.post(
@@ -739,9 +797,10 @@ def test_llm_review_patch_candidate_paths_are_confined_to_patch_dir(
     valid_path = kb_iteration_routes._safe_patch_candidate_path(
         args, fixture.workspace, "proposal-1"
     )
-    assert valid_path == (
-        fixture.package / "patch_candidates" / "proposal-1.patch"
-    ).resolve()
+    assert (
+        valid_path
+        == (fixture.package / "patch_candidates" / "proposal-1.patch").resolve()
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         kb_iteration_routes._safe_patch_candidate_path(

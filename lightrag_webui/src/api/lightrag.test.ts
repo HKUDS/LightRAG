@@ -445,6 +445,7 @@ describe('kb iteration api', () => {
     })
 
     await apiModule.runKBIterationLLMReview('demo workspace', { max_review_rounds: 1 })
+    await apiModule.executeKBIterationAcceptedChanges('demo workspace')
     await apiModule.getKBIterationLLMReviewTrace('demo workspace')
     await apiModule.getKBIterationLLMReviewReport('demo workspace')
     await apiModule.getKBIterationLLMReviewProposals('demo workspace')
@@ -454,6 +455,10 @@ describe('kb iteration api', () => {
     expect(postCalls[0]).toEqual({
       path: '/kb-iteration/demo%20workspace/llm-review/runs',
       body: { max_review_rounds: 1 }
+    })
+    expect(postCalls[1]).toEqual({
+      path: '/kb-iteration/demo%20workspace/accepted-changes/execute',
+      body: {}
     })
     expect(getCalls).toEqual([
       '/kb-iteration/demo%20workspace/llm-review/trace',

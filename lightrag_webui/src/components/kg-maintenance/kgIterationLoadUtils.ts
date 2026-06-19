@@ -40,7 +40,7 @@ export const applyWorkspaceResponse = (
   return true
 }
 
-export const runWorkspaceAction = async <T,>({
+export const runWorkspaceAction = async <T>({
   requestWorkspace,
   getCurrentWorkspace,
   action,
@@ -70,7 +70,7 @@ export const runWorkspaceAction = async <T,>({
   }
 }
 
-export const optionalMissingResponse = async <T,>(
+export const optionalMissingResponse = async <T>(
   loader: () => Promise<T>,
   fallback: T
 ): Promise<T> => {
@@ -88,18 +88,18 @@ const artifactPayload = (artifact: Awaited<ReturnType<typeof getKBIterationArtif
 const optionalArtifactContent = async (
   loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
 ) => {
-  const artifact = await optionalMissingResponse<
-    Awaited<ReturnType<typeof getKBIterationArtifact>> | null
-  >(loader, null)
+  const artifact = await optionalMissingResponse<Awaited<
+    ReturnType<typeof getKBIterationArtifact>
+  > | null>(loader, null)
   return artifact && 'content' in artifact ? artifact.content : ''
 }
 
 const optionalArtifactPayload = async (
   loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
 ) => {
-  const artifact = await optionalMissingResponse<
-    Awaited<ReturnType<typeof getKBIterationArtifact>> | null
-  >(loader, null)
+  const artifact = await optionalMissingResponse<Awaited<
+    ReturnType<typeof getKBIterationArtifact>
+  > | null>(loader, null)
   return artifact ? artifactPayload(artifact) : null
 }
 
@@ -112,6 +112,7 @@ type KGMaintenanceWorkspaceBundle = {
   qualityScoreArtifact: unknown
   approvalArtifact: string
   backlogArtifact: string
+  acceptedExecutionArtifact: string
   logArtifact: string
   llmTraceArtifact: unknown
   llmReportArtifact: string
@@ -158,6 +159,7 @@ export async function loadKGMaintenanceWorkspaceBundle(
     qualityScoreArtifact,
     approvalArtifact,
     backlogArtifact,
+    acceptedExecutionArtifact,
     logArtifact,
     llmTraceArtifact,
     llmReportArtifact,
@@ -176,6 +178,9 @@ export async function loadKGMaintenanceWorkspaceBundle(
     optionalArtifactPayload(() => loaders.getArtifact(requestWorkspace, 'quality_score')),
     optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'approval_queue')),
     optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'improvement_backlog')),
+    optionalArtifactContent(() =>
+      loaders.getArtifact(requestWorkspace, 'accepted_changes_execution')
+    ),
     optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'iteration_log')),
     optionalArtifactPayload(() => loaders.getTrace(requestWorkspace)),
     optionalArtifactContent(() => loaders.getReport(requestWorkspace)),
@@ -198,6 +203,7 @@ export async function loadKGMaintenanceWorkspaceBundle(
     qualityScoreArtifact,
     approvalArtifact,
     backlogArtifact,
+    acceptedExecutionArtifact,
     logArtifact,
     llmTraceArtifact,
     llmReportArtifact,
