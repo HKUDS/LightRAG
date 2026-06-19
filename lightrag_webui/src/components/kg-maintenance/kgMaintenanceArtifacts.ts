@@ -56,6 +56,38 @@ export const KG_MAINTENANCE_ARTIFACTS: KGMaintenanceArtifactDefinition[] = [
     contentType: 'application/json'
   },
   {
+    key: 'entity_catalog',
+    title: '实体目录',
+    sourceFile: 'entity_catalog.md',
+    zhFile: 'entity_catalog.zh.md',
+    step: 'check',
+    contentType: 'text/markdown'
+  },
+  {
+    key: 'relation_catalog',
+    title: '关系目录',
+    sourceFile: 'relation_catalog.md',
+    zhFile: 'relation_catalog.zh.md',
+    step: 'check',
+    contentType: 'text/markdown'
+  },
+  {
+    key: 'kg_structure',
+    title: '图谱结构',
+    sourceFile: 'kg_structure.md',
+    zhFile: 'kg_structure.zh.md',
+    step: 'check',
+    contentType: 'text/markdown'
+  },
+  {
+    key: 'source_coverage',
+    title: '来源覆盖',
+    sourceFile: 'snapshots/source_coverage.json',
+    zhFile: 'snapshots/source_coverage.zh.json',
+    step: 'check',
+    contentType: 'application/json'
+  },
+  {
     key: 'llm_issue_analysis',
     title: 'LLM 问题分析',
     sourceFile: 'llm_issue_analysis.md',
@@ -172,6 +204,22 @@ export const KG_MAINTENANCE_ARTIFACTS: KGMaintenanceArtifactDefinition[] = [
     title: '改进 Backlog',
     sourceFile: 'improvement_backlog.md',
     zhFile: 'improvement_backlog.zh.md',
+    step: 'validate',
+    contentType: 'text/markdown'
+  },
+  {
+    key: 'quality_rules',
+    title: '质量规则',
+    sourceFile: 'quality_rules.md',
+    zhFile: 'quality_rules.zh.md',
+    step: 'validate',
+    contentType: 'text/markdown'
+  },
+  {
+    key: 'known_issues',
+    title: '已知问题',
+    sourceFile: 'known_issues.md',
+    zhFile: 'known_issues.zh.md',
     step: 'validate',
     contentType: 'text/markdown'
   }

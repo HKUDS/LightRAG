@@ -62,6 +62,51 @@ describe('kg maintenance artifact catalog', () => {
     )
   })
 
+  test('includes backend-supported catalog, structure, rules, and coverage artifacts', () => {
+    expect(findArtifactDefinition('entity_catalog')).toMatchObject({
+      key: 'entity_catalog',
+      title: '实体目录',
+      sourceFile: 'entity_catalog.md',
+      zhFile: 'entity_catalog.zh.md',
+      step: 'check'
+    })
+    expect(findArtifactDefinition('relation_catalog')).toMatchObject({
+      key: 'relation_catalog',
+      title: '关系目录',
+      sourceFile: 'relation_catalog.md',
+      zhFile: 'relation_catalog.zh.md',
+      step: 'check'
+    })
+    expect(findArtifactDefinition('kg_structure')).toMatchObject({
+      key: 'kg_structure',
+      title: '图谱结构',
+      sourceFile: 'kg_structure.md',
+      zhFile: 'kg_structure.zh.md',
+      step: 'check'
+    })
+    expect(findArtifactDefinition('quality_rules')).toMatchObject({
+      key: 'quality_rules',
+      title: '质量规则',
+      sourceFile: 'quality_rules.md',
+      zhFile: 'quality_rules.zh.md',
+      step: 'validate'
+    })
+    expect(findArtifactDefinition('known_issues')).toMatchObject({
+      key: 'known_issues',
+      title: '已知问题',
+      sourceFile: 'known_issues.md',
+      zhFile: 'known_issues.zh.md',
+      step: 'validate'
+    })
+    expect(findArtifactDefinition('source_coverage')).toMatchObject({
+      key: 'source_coverage',
+      title: '来源覆盖',
+      sourceFile: 'snapshots/source_coverage.json',
+      zhFile: 'snapshots/source_coverage.zh.json',
+      step: 'check'
+    })
+  })
+
   test('returns LLM artifacts for the llm-review step', () => {
     expect(artifactsForStep('llm-review').map((artifact) => artifact.key)).toEqual(
       expect.arrayContaining([
