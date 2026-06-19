@@ -22,6 +22,7 @@ if (!('localStorage' in globalThis)) {
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
 const { MainPanel } = await import('@/features/KGMaintenanceConsole')
 const { useKGMaintenanceStore } = await import('@/stores/kgMaintenance')
+const { WORKFLOW_STEPS } = await import('./kgMaintenanceArtifacts')
 const {
   applyWorkspaceResponse,
   loadKGMaintenanceWorkspaceBundle,
@@ -303,6 +304,12 @@ describe('KGMaintenanceShell responsive layout', () => {
     expect(markup).not.toContain('快照审阅')
     expect(markup).not.toContain('决策与执行')
     expect(markup).not.toContain('Medical Graph')
+
+    const renderedStepIds = Array.from(markup.matchAll(/data-workflow-step="([^"]+)"/g)).map(
+      ([, step]) => step
+    )
+    expect(renderedStepIds).toEqual(WORKFLOW_STEPS)
+    expect(renderedStepIds).toHaveLength(5)
   })
 
   test('uses left navigation and main content without a right inspector column', () => {

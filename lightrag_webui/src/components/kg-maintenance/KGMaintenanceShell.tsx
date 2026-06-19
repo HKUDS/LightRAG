@@ -1,5 +1,6 @@
 import Button from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
+import { WORKFLOW_STEPS } from './kgMaintenanceArtifacts'
 import type { KGMaintenanceSection } from '@/stores/kgMaintenance'
 import {
   ArchiveIcon,
@@ -19,13 +20,18 @@ type SectionItem = {
   icon: LucideIcon
 }
 
-const sections: SectionItem[] = [
-  { id: 'check', label: '检查知识库', icon: SearchCheckIcon },
-  { id: 'llm-review', label: 'LLM 审阅', icon: SparklesIcon },
-  { id: 'approval', label: 'Proposal 审批', icon: ClipboardCheckIcon },
-  { id: 'execute', label: '执行变更', icon: ListChecksIcon },
-  { id: 'validate', label: '验证结果', icon: ArchiveIcon }
-]
+const sectionPresentation: Record<KGMaintenanceSection, Omit<SectionItem, 'id'>> = {
+  check: { label: '检查知识库', icon: SearchCheckIcon },
+  'llm-review': { label: 'LLM 审阅', icon: SparklesIcon },
+  approval: { label: 'Proposal 审批', icon: ClipboardCheckIcon },
+  execute: { label: '执行变更', icon: ListChecksIcon },
+  validate: { label: '验证结果', icon: ArchiveIcon }
+}
+
+const sections: SectionItem[] = WORKFLOW_STEPS.map((id) => ({
+  id,
+  ...sectionPresentation[id]
+}))
 
 interface KGMaintenanceShellProps {
   activeSection: KGMaintenanceSection
@@ -120,6 +126,7 @@ export default function KGMaintenanceShell({
                 <button
                   key={item.id}
                   type="button"
+                  data-workflow-step={item.id}
                   onClick={() => onSectionChange(item.id)}
                   className={cn(
                     'flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors',

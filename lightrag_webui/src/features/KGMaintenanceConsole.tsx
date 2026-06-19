@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import Button from '@/components/ui/Button'
 import {
   executeKBIterationAcceptedChanges,
   getKBIterationLLMReviewPatch,
@@ -92,6 +93,7 @@ export default function KGMaintenanceConsole() {
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [artifactDrawerOpen, setArtifactDrawerOpen] = useState(false)
   const activeProfile = summary?.profile || 'clinical_guideline_zh'
 
   const loadWorkspaces = useCallback(async () => {
@@ -353,7 +355,7 @@ export default function KGMaintenanceConsole() {
   }, [acceptedExecuting, llmRunning, loadWorkspaceData, running, selectedWorkspace])
 
   const handleOpenArtifacts = useCallback(() => {
-    // Task 8 will replace this placeholder with the artifact drawer.
+    setArtifactDrawerOpen(true)
   }, [])
 
   const handleOpenSection = useCallback(
@@ -364,52 +366,76 @@ export default function KGMaintenanceConsole() {
   )
 
   return (
-    <KGMaintenanceShell
-      activeSection={activeSection}
-      onSectionChange={setActiveSection}
-      workspaces={workspaces}
-      selectedWorkspace={selectedWorkspace}
-      onWorkspaceChange={handleWorkspaceChange}
-      onRefresh={loadWorkspaceData}
-      onOpenArtifacts={handleOpenArtifacts}
-      loading={loading}
-      running={running || llmRunning || acceptedExecuting}
-      error={error}
-    >
-      <MainPanel
+    <>
+      <KGMaintenanceShell
         activeSection={activeSection}
-        summary={summary}
-        quality={quality}
-        rules={rules}
-        kbContext={kbContext}
-        kgSnapshot={kgSnapshot}
-        qualityScore={qualityScore}
-        approvalQueue={approvalQueue}
-        improvementBacklog={improvementBacklog}
-        acceptedApplyResult={acceptedApplyResult}
-        acceptedExecution={acceptedExecution}
-        iterationLog={iterationLog}
-        llmTrace={llmTrace}
-        llmReport={llmReport}
-        llmProposals={llmProposals}
-        llmJudgeReport={llmJudgeReport}
-        llmIssueAnalysis={llmIssueAnalysis}
-        llmMissingBranchInference={llmMissingBranchInference}
-        llmEvidenceMap={llmEvidenceMap}
-        llmRepairPlan={llmRepairPlan}
-        patchText={patchText}
-        acceptedExecuting={acceptedExecuting}
-        llmRunning={llmRunning}
-        running={running}
+        onSectionChange={setActiveSection}
+        workspaces={workspaces}
+        selectedWorkspace={selectedWorkspace}
+        onWorkspaceChange={handleWorkspaceChange}
+        onRefresh={loadWorkspaceData}
+        onOpenArtifacts={handleOpenArtifacts}
         loading={loading}
-        onOpenSection={handleOpenSection}
-        onRunReview={handleRunReview}
-        onProposalDecision={handleProposalDecision}
-        onExecuteAcceptedChanges={handleExecuteAcceptedChanges}
-        onRunLLMReview={handleRunLLMReview}
-        onLoadPatch={handleLoadPatch}
-      />
-    </KGMaintenanceShell>
+        running={running || llmRunning || acceptedExecuting}
+        error={error}
+      >
+        <MainPanel
+          activeSection={activeSection}
+          summary={summary}
+          quality={quality}
+          rules={rules}
+          kbContext={kbContext}
+          kgSnapshot={kgSnapshot}
+          qualityScore={qualityScore}
+          approvalQueue={approvalQueue}
+          improvementBacklog={improvementBacklog}
+          acceptedApplyResult={acceptedApplyResult}
+          acceptedExecution={acceptedExecution}
+          iterationLog={iterationLog}
+          llmTrace={llmTrace}
+          llmReport={llmReport}
+          llmProposals={llmProposals}
+          llmJudgeReport={llmJudgeReport}
+          llmIssueAnalysis={llmIssueAnalysis}
+          llmMissingBranchInference={llmMissingBranchInference}
+          llmEvidenceMap={llmEvidenceMap}
+          llmRepairPlan={llmRepairPlan}
+          patchText={patchText}
+          acceptedExecuting={acceptedExecuting}
+          llmRunning={llmRunning}
+          running={running}
+          loading={loading}
+          onOpenSection={handleOpenSection}
+          onRunReview={handleRunReview}
+          onProposalDecision={handleProposalDecision}
+          onExecuteAcceptedChanges={handleExecuteAcceptedChanges}
+          onRunLLMReview={handleRunLLMReview}
+          onLoadPatch={handleLoadPatch}
+        />
+      </KGMaintenanceShell>
+      {artifactDrawerOpen && (
+        <div
+          role="dialog"
+          aria-label="全部产物"
+          className="bg-background border-border fixed inset-y-0 right-0 z-40 w-full max-w-md border-l p-4 shadow-lg"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold">全部产物</h2>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setArtifactDrawerOpen(false)}
+            >
+              关闭
+            </Button>
+          </div>
+          <p className="text-muted-foreground mt-3 text-sm">
+            产物抽屉将在后续任务中接入。当前占位用于保留工作流入口。
+          </p>
+        </div>
+      )}
+    </>
   )
 }
 
