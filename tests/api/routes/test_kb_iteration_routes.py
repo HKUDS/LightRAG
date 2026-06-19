@@ -9,6 +9,12 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from lightrag.kb_iteration.apply import (
+    AcceptedApplyResult,
+    ApplyChange,
+    ApplyChangeStatus,
+)
+
 
 HEADERS = {"X-API-Key": "test-key"}
 
@@ -366,17 +372,233 @@ def test_proposal_decision_accepts_empty_review_and_records_defaults(
     assert "web_display_change" in accepted
 
 
-def test_execute_accepted_changes_records_agent_execution_artifact(
+def test_execute_accepted_changes_applies_kg_changes_without_llm_client(
     tmp_path: Path, monkeypatch
 ):
     client, fixture = _client(tmp_path, monkeypatch)
 
     accept = client.post(
-        "/kb-iteration/influenza_medical_v1/proposals/p2/accept",
+        "/kb-iteration/influenza_medical_v1/proposals/p1/accept",
         headers=HEADERS,
         json={},
     )
     assert accept.status_code == 200
+
+    import lightrag.api.routers.kb_iteration_routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "_default_llm_review_client",
+        lambda _rag: pytest.fail("LLM client must not be required"),
+    )
+    monkeypatch.setattr(
+        routes,
+        "load_proposals_by_id",
+        lambda package_dir: {
+            "p1": {
+                "id": "p1",
+                "type": "add_hierarchy_branch",
+                "target": "kg_structure.md",
+            }
+        },
+        raising=False,
+    )
+
+    async def fake_apply_accepted_changes_to_graph(
+        *, rag, workspace, records, proposals_by_id
+    ):
+        assert workspace == "influenza_medical_v1"
+        assert [record["proposal_id"] for record in records] == ["p1"]
+        assert proposals_by_id["p1"]["type"] == "add_hierarchy_branch"
+        return AcceptedApplyResult(
+            workspace=workspace,
+            applied_at="2026-06-19T00:00:00+00:00",
+            source_artifact="accepted_changes.md",
+            proposal_ids=["p1"],
+            changes=[
+                ApplyChange(
+                    proposal_id="p1",
+                    proposal_type="add_hierarchy_branch",
+                    target="kg_structure.md",
+                    status=ApplyChangeStatus.APPLIED,
+                    action="add_hierarchy_branch",
+                    branch_key="clinical_manifestation",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        routes,
+        "apply_accepted_changes_to_graph",
+        fake_apply_accepted_changes_to_graph,
+        raising=False,
+    )
+
+    run_calls = []
+
+    def fake_run_iteration(**kwargs):
+        run_calls.append(kwargs)
+        assert kwargs["workspace"] == "influenza_medical_v1"
+        assert kwargs["profile"] == "clinical_guideline_zh"
+        _write_json(
+            fixture.package / "snapshots" / "quality_score.json",
+            {"overall": 88, "metrics": {"hierarchy_missing_branch_count": 0}},
+        )
+
+    monkeypatch.setattr(routes, "run_iteration", fake_run_iteration)
+
+    written_results = []
+
+    def fake_write_apply_result_artifacts(result, package_dir):
+        written_results.append(result)
+        target_dir = Path(package_dir)
+        json_path = target_dir / "accepted_changes_apply_result.json"
+        markdown_path = target_dir / "accepted_changes_apply_result.md"
+        _write_json(
+            json_path,
+            {
+                "proposal_ids": result.proposal_ids,
+                "applied_count": result.applied_count,
+                "blocked_count": result.blocked_count,
+                "quality_before": result.quality_before,
+                "quality_after": result.quality_after,
+            },
+        )
+        _write_text(markdown_path, "# Apply Result\n")
+        return json_path, markdown_path
+
+    monkeypatch.setattr(
+        routes,
+        "write_apply_result_artifacts",
+        fake_write_apply_result_artifacts,
+        raising=False,
+    )
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/accepted-changes/execute",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workspace"] == "influenza_medical_v1"
+    assert payload["status"] == "applied_changes"
+    assert payload["proposalIds"] == ["p1"]
+    assert payload["appliedCount"] == 1
+    assert payload["blockedCount"] == 0
+    assert payload["artifactKey"] == "accepted_changes_apply_result"
+    assert len(run_calls) == 1
+    assert written_results[0].quality_before["overall"] == 82
+    assert written_results[0].quality_after["overall"] == 88
+
+    apply_result = (fixture.package / "accepted_changes_apply_result.md").read_text(
+        encoding="utf-8"
+    )
+    assert "# Apply Result" in apply_result
+
+    iteration_log = (fixture.package / "iteration_log.md").read_text(encoding="utf-8")
+    assert "- phase: accepted_changes_apply" in iteration_log
+    assert "- accepted_proposal_ids: p1" in iteration_log
+
+    artifact = client.get(
+        "/kb-iteration/influenza_medical_v1/artifacts/accepted_changes_apply_result",
+        headers=HEADERS,
+    )
+    assert artifact.status_code == 200
+    assert artifact.json()["content"] == "# Apply Result\n"
+
+
+def test_execute_accepted_changes_skips_iteration_when_nothing_applies(
+    tmp_path: Path, monkeypatch
+):
+    client, _ = _client(tmp_path, monkeypatch)
+
+    accept = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p1/accept",
+        headers=HEADERS,
+        json={},
+    )
+    assert accept.status_code == 200
+
+    import lightrag.api.routers.kb_iteration_routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "_default_llm_review_client",
+        lambda _rag: pytest.fail("LLM client must not be required"),
+    )
+    monkeypatch.setattr(
+        routes,
+        "load_proposals_by_id",
+        lambda package_dir: {"p1": {}},
+        raising=False,
+    )
+
+    async def fake_apply_accepted_changes_to_graph(
+        *, rag, workspace, records, proposals_by_id
+    ):
+        return AcceptedApplyResult(
+            workspace=workspace,
+            applied_at="2026-06-19T00:00:00+00:00",
+            source_artifact="accepted_changes.md",
+            proposal_ids=["p1"],
+            changes=[
+                ApplyChange(
+                    proposal_id="p1",
+                    proposal_type="add_hierarchy_branch",
+                    target="kg_structure.md",
+                    status=ApplyChangeStatus.BLOCKED,
+                    action="add_hierarchy_branch",
+                    reason="Graph storage is not available.",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        routes,
+        "apply_accepted_changes_to_graph",
+        fake_apply_accepted_changes_to_graph,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routes,
+        "run_iteration",
+        lambda **kwargs: pytest.fail("Iteration should only rerun after applied changes"),
+    )
+
+    def fake_write_apply_result_artifacts(result, package_dir):
+        target_dir = Path(package_dir)
+        json_path = target_dir / "accepted_changes_apply_result.json"
+        markdown_path = target_dir / "accepted_changes_apply_result.md"
+        _write_json(json_path, result.to_dict())
+        _write_text(markdown_path, "# Apply Result\n")
+        return json_path, markdown_path
+
+    monkeypatch.setattr(
+        routes,
+        "write_apply_result_artifacts",
+        fake_write_apply_result_artifacts,
+        raising=False,
+    )
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/accepted-changes/execute",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "no_applicable_changes"
+    assert payload["proposalIds"] == ["p1"]
+    assert payload["appliedCount"] == 0
+    assert payload["blockedCount"] == 1
+    assert payload["artifactKey"] == "accepted_changes_apply_result"
+
+
+def test_record_accepted_changes_execution_writes_legacy_agent_artifact(
+    tmp_path: Path,
+):
+    fixture = _create_artifact_package(tmp_path)
 
     class FakeExecutionClient:
         def __init__(self) -> None:
@@ -399,23 +621,22 @@ def test_execute_accepted_changes_records_agent_execution_artifact(
                 }
             )
 
-    fake_client = FakeExecutionClient()
     import lightrag.api.routers.kb_iteration_routes as routes
 
-    monkeypatch.setattr(routes, "_default_llm_review_client", lambda _rag: fake_client)
-
-    response = client.post(
-        "/kb-iteration/influenza_medical_v1/accepted-changes/execute",
-        headers=HEADERS,
+    args = SimpleNamespace(kb_iteration_output_dir=str(fixture.output_root))
+    fake_client = FakeExecutionClient()
+    result = routes._record_accepted_changes_execution(
+        args,
+        fixture.workspace,
+        [{"proposal_id": "p2", "decision": "accept"}],
+        fake_client,
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["workspace"] == "influenza_medical_v1"
-    assert payload["status"] == "execution_recorded"
-    assert payload["proposalIds"] == ["p2"]
-    assert payload["executedCount"] == 1
-    assert payload["artifactKey"] == "accepted_changes_execution"
+    assert result["workspace"] == "influenza_medical_v1"
+    assert result["status"] == "execution_recorded"
+    assert result["proposalIds"] == ["p2"]
+    assert result["executedCount"] == 1
+    assert result["artifactKey"] == "accepted_changes_execution"
     assert "p2" in fake_client.user_prompt
 
     execution = (fixture.package / "accepted_changes_execution.md").read_text(

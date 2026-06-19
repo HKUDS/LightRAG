@@ -18,6 +18,13 @@ from lightrag.kb_iteration.agent_pipeline import (
     LLMAgentPipelineConfig,
     run_llm_agent_pipeline,
 )
+from lightrag.kb_iteration.apply import (
+    APPLY_RESULT_MARKDOWN,
+    AcceptedApplyResult,
+    apply_accepted_changes_to_graph,
+    load_proposals_by_id,
+    write_apply_result_artifacts,
+)
 from lightrag.kb_iteration.proposals import validate_proposal_id
 from lightrag.kb_iteration.review_loop import (
     LLMReviewLoopConfig,
@@ -56,6 +63,7 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
     ),
     "rejected_changes": ("rejected_changes.md", "text/markdown"),
     "deferred_changes": ("deferred_changes.md", "text/markdown"),
+    "accepted_changes_apply_result": (APPLY_RESULT_MARKDOWN, "text/markdown"),
     "diff_report": ("diff_report.md", "text/markdown"),
     "quality_rules": ("quality_rules.md", "text/markdown"),
     "known_issues": ("known_issues.md", "text/markdown"),
@@ -567,27 +575,56 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
                         "workspace": workspace,
                         "status": "no_accepted_changes",
                         "proposalIds": [],
-                        "executedCount": 0,
-                        "artifactKey": "accepted_changes_execution",
+                        "appliedCount": 0,
+                        "blockedCount": 0,
+                        "artifactKey": "accepted_changes_apply_result",
                     }
 
-                client = _default_llm_review_client(rag)
-                if isinstance(client, _UnavailableLLMReviewClient):
-                    raise RuntimeError("LLM review client is not configured")
-                result = await asyncio.to_thread(
-                    _record_accepted_changes_execution,
-                    args,
-                    workspace,
-                    records,
-                    client,
+                proposals_by_id = load_proposals_by_id(package_dir)
+                quality_before = _optional_json_artifact(
+                    args, workspace, "quality_score", {}
                 )
+                result = await apply_accepted_changes_to_graph(
+                    rag=rag,
+                    workspace=workspace,
+                    records=records,
+                    proposals_by_id=proposals_by_id,
+                )
+                if result.applied_count > 0:
+                    await asyncio.to_thread(
+                        run_iteration,
+                        workspace=workspace,
+                        storage_root=_storage_root(args),
+                        input_root=_input_root(args),
+                        output_root=_output_root(args),
+                        profile=_current_snapshot_profile(args, workspace),
+                    )
+                quality_after = _optional_json_artifact(
+                    args, workspace, "quality_score", {}
+                )
+                result = _accepted_apply_result_with_quality(
+                    result, quality_before, quality_after
+                )
+                write_apply_result_artifacts(result, package_dir)
+                _append_accepted_apply_log(args, workspace, result)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         finally:
             for acquired_lock in reversed(acquired_locks):
                 acquired_lock.release()
 
-        return result
+        return {
+            "workspace": workspace,
+            "status": (
+                "applied_changes"
+                if result.applied_count > 0
+                else "no_applicable_changes"
+            ),
+            "proposalIds": result.proposal_ids,
+            "appliedCount": result.applied_count,
+            "blockedCount": result.blocked_count,
+            "artifactKey": "accepted_changes_apply_result",
+        }
 
     @router.get(
         "/{workspace}/evidence/{source_id:path}", dependencies=[Depends(combined_auth)]
@@ -739,6 +776,17 @@ def _optional_json_artifact(
     if not path.exists() or not path.is_file():
         return default
     return _load_json(path)
+
+
+def _current_snapshot_profile(args, workspace: str) -> str | None:
+    snapshot = _optional_json_artifact(args, workspace, "kg_snapshot", {})
+    if not isinstance(snapshot, dict):
+        return None
+    metadata = snapshot.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return None
+    profile = str(metadata.get("profile") or "").strip()
+    return profile or None
 
 
 def _load_json(path: Path) -> Any:
@@ -950,6 +998,22 @@ def _accepted_decision_records(args, workspace: str) -> list[dict[str, Any]]:
     return records
 
 
+def _accepted_apply_result_with_quality(
+    result: AcceptedApplyResult,
+    quality_before: Any,
+    quality_after: Any,
+) -> AcceptedApplyResult:
+    return AcceptedApplyResult(
+        workspace=result.workspace,
+        applied_at=result.applied_at,
+        source_artifact=result.source_artifact,
+        proposal_ids=result.proposal_ids,
+        changes=result.changes,
+        quality_before=quality_before if isinstance(quality_before, dict) else {},
+        quality_after=quality_after if isinstance(quality_after, dict) else {},
+    )
+
+
 def _record_accepted_changes_execution(
     args,
     workspace: str,
@@ -1131,6 +1195,26 @@ def _append_accepted_execution_log(
     if summary:
         entry.append(f"- summary: {_markdown_inline(summary)}")
     entry.append("")
+    with log_path.open("a", encoding="utf-8") as file:
+        file.write("\n".join(entry))
+
+
+def _append_accepted_apply_log(
+    args, workspace: str, result: AcceptedApplyResult
+) -> None:
+    log_path = _workspace_dir(args, workspace) / "iteration_log.md"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = [
+        "",
+        "## Accepted Changes Apply",
+        "",
+        "- phase: accepted_changes_apply",
+        f"- accepted_proposal_ids: {', '.join(result.proposal_ids)}",
+        f"- applied_count: {result.applied_count}",
+        f"- blocked_count: {result.blocked_count}",
+        f"- artifact: {APPLY_RESULT_MARKDOWN}",
+        "",
+    ]
     with log_path.open("a", encoding="utf-8") as file:
         file.write("\n".join(entry))
 
