@@ -9,7 +9,7 @@
 - 涉及 prompt、rule、KG、workspace、WebUI、层级规则、关系规则、事实修正的 proposal 都属于 mutation proposal。
 - 没有证据时不要生成 mutation proposal。
 - 如果需要更多上下文，可以生成 `type="review_context_request"` 的 proposal。
-- evidence 必须引用前序证据定位阶段中已有的 source_id、file_path、entity、relation 或 quality evidence。
+- evidence 中的每一项都必须直接引用确定性的 snapshot、quality、source_id、file_path、chunk、entity 或 relation 证据；不要只引用前序 LLM evidence_map 的判断或声明。
 - 不要生成输入中没有医学证据支持的新医学事实。
 
 输出 schema：

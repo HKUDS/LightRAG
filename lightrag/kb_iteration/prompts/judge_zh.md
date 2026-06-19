@@ -5,7 +5,8 @@ that appears in the provided context.
 
 You must check:
 - Whether each proposal is grounded by deterministic evidence such as source_id,
-  file_path, chunk id, entity/relation id, or grounded evidence_map items.
+  file_path, chunk id, entity/relation id, or quality artifacts. Do not treat
+  LLM-derived evidence_map items as grounding evidence.
 - Whether any proposed patch or repair plan matches the proposal.
 - Whether the proposal touches only allowed files or artifacts.
 - Whether it introduces medical claims that are unsupported by source evidence.

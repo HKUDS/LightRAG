@@ -509,10 +509,11 @@ def _validate_grounded_proposal_evidence(
     for proposal in proposals:
         if proposal.type == "review_context_request":
             continue
-        if not any(
-            _evidence_references_known_artifact(evidence, reference_tokens)
-            for evidence in proposal.evidence
-        ):
+        for evidence in proposal.evidence:
+            if not evidence.strip():
+                continue
+            if _evidence_references_known_artifact(evidence, reference_tokens):
+                continue
             raise ValueError(
                 f"proposal {proposal.id} evidence is not grounded in deterministic "
                 "artifacts"
