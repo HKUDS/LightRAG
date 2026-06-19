@@ -65,4 +65,22 @@ describe('kgMaintenanceDisplay', () => {
       }
     ])
   })
+
+  test('uses a safe fallback for unusual item ids', () => {
+    const circularId: Record<string, unknown> = { id: 'circular-edge' }
+    circularId.self = circularId
+
+    const rows = buildEvidenceIssueRows({
+      edges: [{ id: circularId, source: '疾病A', target: '症状B', source_id: 'src-1', file_path: '' }]
+    })
+
+    expect(rows).toEqual([
+      {
+        id: 'edge:无法序列化:file_path',
+        itemType: '关系',
+        itemId: '无法序列化',
+        issue: '缺少来源文件'
+      }
+    ])
+  })
 })

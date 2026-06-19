@@ -87,7 +87,22 @@ function itemIdForEdge(edge: Record<string, any>, index: number): string {
 function stringifyId(value: unknown): string {
   if (typeof value === 'string') return value
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  return JSON.stringify(value)
+  return safeStringify(value)
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    const result = JSON.stringify(value)
+    if (result) return result
+  } catch {
+    return '无法序列化'
+  }
+
+  try {
+    return String(value)
+  } catch {
+    return '无法序列化'
+  }
 }
 
 function isMissing(value: unknown): boolean {
