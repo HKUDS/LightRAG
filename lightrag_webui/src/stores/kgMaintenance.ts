@@ -1,17 +1,7 @@
 import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 
-export type KGMaintenanceSection =
-  | 'overview'
-  | 'stage'
-  | 'kb-summary'
-  | 'quality'
-  | 'snapshot'
-  | 'approval'
-  | 'decisions'
-  | 'backlog'
-  | 'memory'
-  | 'llm-review'
+export type KGMaintenanceSection = 'check' | 'llm-review' | 'approval' | 'execute' | 'validate'
 
 export type KGMaintenanceSelectedItem =
   | { kind: 'node'; id: string }
@@ -30,7 +20,7 @@ interface KGMaintenanceState {
 }
 
 const useKGMaintenanceStoreBase = create<KGMaintenanceState>()((set) => ({
-  activeSection: 'overview',
+  activeSection: 'check',
   selectedItem: null,
   selectedWorkspace: null,
   latestRunId: 'latest',

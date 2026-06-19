@@ -2,14 +2,13 @@ import Button from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 import type { KGMaintenanceSection } from '@/stores/kgMaintenance'
 import {
-  BookOpenIcon,
+  ArchiveIcon,
   ClipboardCheckIcon,
-  FileSearchIcon,
-  HistoryIcon,
-  LayoutDashboardIcon,
+  FileStackIcon,
   ListChecksIcon,
   RefreshCwIcon,
-  ShieldCheckIcon
+  SearchCheckIcon,
+  SparklesIcon
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -17,19 +16,15 @@ import type { ReactNode } from 'react'
 type SectionItem = {
   id: KGMaintenanceSection
   label: string
-  group: string
   icon: LucideIcon
 }
 
 const sections: SectionItem[] = [
-  { id: 'overview', label: '审阅包概览', group: '知识库迭代', icon: LayoutDashboardIcon },
-  { id: 'stage', label: '当前阶段', group: '知识库迭代', icon: HistoryIcon },
-  { id: 'kb-summary', label: '当前 KB 摘要', group: '知识库迭代', icon: BookOpenIcon },
-  { id: 'quality', label: '质量检查', group: '质量与快照', icon: ShieldCheckIcon },
-  { id: 'snapshot', label: '快照审阅', group: '质量与快照', icon: FileSearchIcon },
-  { id: 'approval', label: 'Proposal 审批', group: '人工审阅', icon: ClipboardCheckIcon },
-  { id: 'decisions', label: '决策与执行', group: '人工审阅', icon: ListChecksIcon },
-  { id: 'llm-review', label: 'LLM 审阅材料', group: '辅助材料', icon: FileSearchIcon }
+  { id: 'check', label: '检查知识库', icon: SearchCheckIcon },
+  { id: 'llm-review', label: 'LLM 审阅', icon: SparklesIcon },
+  { id: 'approval', label: 'Proposal 审批', icon: ClipboardCheckIcon },
+  { id: 'execute', label: '执行变更', icon: ListChecksIcon },
+  { id: 'validate', label: '验证结果', icon: ArchiveIcon }
 ]
 
 interface KGMaintenanceShellProps {
@@ -39,12 +34,11 @@ interface KGMaintenanceShellProps {
   selectedWorkspace: string | null
   onWorkspaceChange: (workspace: string) => void
   onRefresh: () => void
-  onRunReview: () => void
+  onOpenArtifacts?: () => void
   loading: boolean
   running: boolean
   error: string | null
   children: ReactNode
-  inspector: ReactNode
 }
 
 export default function KGMaintenanceShell({
@@ -54,18 +48,13 @@ export default function KGMaintenanceShell({
   selectedWorkspace,
   onWorkspaceChange,
   onRefresh,
-  onRunReview,
+  onOpenArtifacts,
   loading,
   running,
   error,
-  children,
-  inspector
+  children
 }: KGMaintenanceShellProps) {
   const workspaceOptions = Array.isArray(workspaces) ? workspaces : []
-  const grouped = sections.reduce<Record<string, SectionItem[]>>((acc, section) => {
-    acc[section.group] = [...(acc[section.group] || []), section]
-    return acc
-  }, {})
 
   return (
     <section className="bg-background flex h-full min-h-0 flex-col">
@@ -94,9 +83,14 @@ export default function KGMaintenanceShell({
             <RefreshCwIcon className={cn('size-4', loading && 'animate-spin')} />
             刷新
           </Button>
-          <Button size="sm" onClick={onRunReview} disabled={!selectedWorkspace || running}>
-            <ShieldCheckIcon className={cn('size-4', running && 'animate-pulse')} />
-            {running ? '运行中' : '运行审阅包'}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onOpenArtifacts}
+            disabled={!selectedWorkspace}
+          >
+            <FileStackIcon className="size-4" />
+            全部产物
           </Button>
         </div>
       </div>
@@ -112,49 +106,43 @@ export default function KGMaintenanceShell({
 
       {(running || loading) && !error && (
         <div className="border-border/70 bg-muted/30 mx-4 mt-3 rounded-md border px-3 py-2 text-sm">
-          {running
-            ? '正在生成 KB 审阅包。产物会进入人工审阅，不会自动修改 KG。'
-            : '正在加载审阅包产物...'}
+          {running ? '正在处理知识库维护任务。' : '正在加载维护产物...'}
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[220px_minmax(0,1fr)_320px]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[240px_minmax(0,1fr)]">
         <aside className="border-border/70 bg-muted/20 min-h-0 overflow-auto border-b p-3 lg:border-r lg:border-b-0">
-          {Object.entries(grouped).map(([group, items]) => (
-            <div key={group} className="mb-4">
-              <div className="text-muted-foreground mb-2 px-2 text-xs font-medium">{group}</div>
-              <div className="space-y-1">
-                {items.map((item) => {
-                  const Icon = item.icon
-                  const active =
-                    activeSection === item.id ||
-                    (item.id === 'decisions' &&
-                      (activeSection === 'backlog' || activeSection === 'memory'))
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => onSectionChange(item.id)}
-                      className={cn(
-                        'flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors',
-                        active ? 'bg-emerald-500 text-white' : 'hover:bg-accent text-foreground'
-                      )}
-                    >
-                      <Icon className="size-4 shrink-0" />
-                      <span className="truncate">{item.label}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
+          <div className="space-y-1">
+            {sections.map((item, index) => {
+              const Icon = item.icon
+              const active = activeSection === item.id
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onSectionChange(item.id)}
+                  className={cn(
+                    'flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors',
+                    active ? 'bg-emerald-500 text-white' : 'hover:bg-accent text-foreground'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'flex size-5 shrink-0 items-center justify-center rounded text-[11px] font-medium',
+                      active ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground'
+                    )}
+                  >
+                    {index + 1}
+                  </span>
+                  <Icon className="size-4 shrink-0" />
+                  <span className="truncate">{item.label}</span>
+                </button>
+              )
+            })}
+          </div>
         </aside>
 
         <main className="min-h-0 overflow-auto p-4">{children}</main>
-
-        <aside className="border-border/70 bg-muted/10 min-h-0 overflow-auto border-t p-4 lg:border-t-0 lg:border-l">
-          {inspector}
-        </aside>
       </div>
     </section>
   )

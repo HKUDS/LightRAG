@@ -18,11 +18,7 @@ import KGMaintenanceShell from '@/components/kg-maintenance/KGMaintenanceShell'
 import {
   DecisionExecutionPanel,
   IterationOverviewPanel,
-  IterationReviewAside,
-  IterationStagePanel,
-  KBSummaryPanel,
-  QualityScoreJsonPanel,
-  SnapshotReviewPanel
+  IterationStagePanel
 } from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import {
   normalizeWorkspaceList,
@@ -37,12 +33,30 @@ import {
   LLMReviewPanel,
   PatchCandidatesPanel
 } from '@/components/kg-maintenance/LLMReviewPanels'
-import { ApprovalPanel, QualityPanel } from '@/components/kg-maintenance/QualityAndApprovalPanels'
+import { ApprovalPanel } from '@/components/kg-maintenance/QualityAndApprovalPanels'
 import { errorMessage } from '@/lib/utils'
 import { useKGMaintenanceStore, type KGMaintenanceSection } from '@/stores/kgMaintenance'
 import { useSettingsStore } from '@/stores/settings'
 
 const PREFERRED_WORKSPACE = 'influenza_medical_v1'
+
+type TransitionalSectionTarget =
+  | KGMaintenanceSection
+  | 'overview'
+  | 'stage'
+  | 'kb-summary'
+  | 'quality'
+  | 'snapshot'
+  | 'decisions'
+  | 'backlog'
+  | 'memory'
+
+function mapTransitionalSection(section: TransitionalSectionTarget): KGMaintenanceSection {
+  if (section === 'llm-review' || section === 'approval') return section
+  if (section === 'decisions' || section === 'backlog' || section === 'memory') return 'execute'
+  if (section === 'stage') return 'validate'
+  return 'check'
+}
 
 export default function KGMaintenanceConsole() {
   const currentTab = useSettingsStore.use.currentTab()
@@ -338,6 +352,17 @@ export default function KGMaintenanceConsole() {
     })
   }, [acceptedExecuting, llmRunning, loadWorkspaceData, running, selectedWorkspace])
 
+  const handleOpenArtifacts = useCallback(() => {
+    // Task 8 will replace this placeholder with the artifact drawer.
+  }, [])
+
+  const handleOpenSection = useCallback(
+    (section: TransitionalSectionTarget) => {
+      setActiveSection(mapTransitionalSection(section))
+    },
+    [setActiveSection]
+  )
+
   return (
     <KGMaintenanceShell
       activeSection={activeSection}
@@ -346,17 +371,10 @@ export default function KGMaintenanceConsole() {
       selectedWorkspace={selectedWorkspace}
       onWorkspaceChange={handleWorkspaceChange}
       onRefresh={loadWorkspaceData}
-      onRunReview={handleRunReview}
+      onOpenArtifacts={handleOpenArtifacts}
       loading={loading}
       running={running || llmRunning || acceptedExecuting}
       error={error}
-      inspector={
-        <IterationReviewAside
-          phase={summary?.phase}
-          pendingApprovalCount={summary?.pendingApprovalCount}
-          highRiskFindingCount={summary?.highRiskFindingCount}
-        />
-      }
     >
       <MainPanel
         activeSection={activeSection}
@@ -384,7 +402,8 @@ export default function KGMaintenanceConsole() {
         llmRunning={llmRunning}
         running={running}
         loading={loading}
-        onOpenSection={setActiveSection}
+        onOpenSection={handleOpenSection}
+        onRunReview={handleRunReview}
         onProposalDecision={handleProposalDecision}
         onExecuteAcceptedChanges={handleExecuteAcceptedChanges}
         onRunLLMReview={handleRunLLMReview}
@@ -420,7 +439,8 @@ interface MainPanelProps {
   llmRunning: boolean
   running: boolean
   loading: boolean
-  onOpenSection: (section: KGMaintenanceSection) => void
+  onOpenSection: (section: TransitionalSectionTarget) => void
+  onRunReview: () => void
   onProposalDecision: (
     proposal: ProposalSummary,
     decision: KBIterationProposalDecision,
@@ -458,35 +478,25 @@ export function MainPanel({
   running,
   loading,
   onOpenSection,
+  onRunReview,
   onProposalDecision,
   onExecuteAcceptedChanges,
   onRunLLMReview,
   onLoadPatch
 }: MainPanelProps) {
-  if (activeSection === 'overview') {
+  void quality
+  void kbContext
+  void kgSnapshot
+  void qualityScore
+  void onRunReview
+
+  if (activeSection === 'check') {
     return (
       <section>
         <h2 className="sr-only">审阅包概览</h2>
         <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
       </section>
     )
-  }
-  if (activeSection === 'stage') {
-    return <IterationStagePanel iterationLog={iterationLog} />
-  }
-  if (activeSection === 'kb-summary') {
-    return <KBSummaryPanel kbContext={kbContext} />
-  }
-  if (activeSection === 'quality') {
-    return (
-      <section className="space-y-4">
-        <QualityPanel quality={quality} />
-        <QualityScoreJsonPanel qualityScore={qualityScore} />
-      </section>
-    )
-  }
-  if (activeSection === 'snapshot') {
-    return <SnapshotReviewPanel snapshot={kgSnapshot} />
   }
   if (activeSection === 'approval') {
     return (
@@ -499,7 +509,7 @@ export function MainPanel({
       />
     )
   }
-  if (activeSection === 'decisions' || activeSection === 'backlog' || activeSection === 'memory') {
+  if (activeSection === 'execute') {
     return (
       <DecisionExecutionPanel
         improvementBacklog={improvementBacklog}
@@ -511,6 +521,9 @@ export function MainPanel({
         onExecuteAcceptedChanges={onExecuteAcceptedChanges}
       />
     )
+  }
+  if (activeSection === 'validate') {
+    return <IterationStagePanel iterationLog={iterationLog} />
   }
   if (activeSection === 'llm-review') {
     return (

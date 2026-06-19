@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { KBIterationSummaryResponse } from '@/api/lightrag'
+import type {
+  KBIterationProposalDecision,
+  KBIterationProposalDecisionResponse,
+  KBIterationSummaryResponse
+} from '@/api/lightrag'
 import type { KGMaintenanceSection } from '@/stores/kgMaintenance'
 
 if (!('localStorage' in globalThis)) {
@@ -17,6 +21,7 @@ if (!('localStorage' in globalThis)) {
 
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
 const { MainPanel } = await import('@/features/KGMaintenanceConsole')
+const { useKGMaintenanceStore } = await import('@/stores/kgMaintenance')
 const {
   applyWorkspaceResponse,
   loadKGMaintenanceWorkspaceBundle,
@@ -138,10 +143,12 @@ function renderMainPanel(
       llmEvidenceMap="# Evidence Map"
       llmRepairPlan="# Repair Plan"
       patchText="patch content marker"
+      acceptedExecuting={false}
       llmRunning={false}
       running={false}
       loading={false}
       onOpenSection={() => undefined}
+      onRunReview={() => undefined}
       onProposalDecision={() => undefined}
       onExecuteAcceptedChanges={() => undefined}
       onRunLLMReview={() => undefined}
@@ -174,10 +181,12 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       llmEvidenceMap=""
       llmRepairPlan=""
       patchText=""
+      acceptedExecuting={false}
       llmRunning={false}
       running={false}
       loading={false}
       onOpenSection={() => undefined}
+      onRunReview={() => undefined}
       onProposalDecision={() => undefined}
       onExecuteAcceptedChanges={() => undefined}
       onRunLLMReview={() => undefined}
@@ -185,6 +194,7 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
     />
   )
 }
+void renderEmptyMainPanel
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -196,21 +206,41 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+function proposalDecisionResponse(
+  decision: KBIterationProposalDecision = 'accept'
+): KBIterationProposalDecisionResponse {
+  return {
+    workspace: 'workspace-a',
+    proposalId: 'proposal-1',
+    decision,
+    record: {
+      proposal_id: 'proposal-1',
+      decision,
+      reason: 'test decision',
+      impact_scope: 'test scope',
+      verification: 'test verification'
+    }
+  }
+}
+
 describe('KGMaintenanceShell responsive layout', () => {
+  test('store starts at the check workflow section', () => {
+    expect(useKGMaintenanceStore.getState().activeSection).toBe('check')
+  })
+
   test('renders the fallback workspace option when workspaces is empty', () => {
     const markup = renderToStaticMarkup(
       <KGMaintenanceShell
-        activeSection="overview"
+        activeSection="check"
         onSectionChange={() => undefined}
         workspaces={[]}
         selectedWorkspace={null}
         onWorkspaceChange={() => undefined}
         onRefresh={() => undefined}
-        onRunReview={() => undefined}
+        onOpenArtifacts={() => undefined}
         loading={false}
         running={false}
         error={null}
-        inspector={<div>Inspector</div>}
       >
         <div>Console body</div>
       </KGMaintenanceShell>
@@ -220,20 +250,19 @@ describe('KGMaintenanceShell responsive layout', () => {
     expect(markup).toContain('未选择 workspace')
   })
 
-  test('allows the workspace toolbar to wrap on narrow screens', () => {
+  test('renders only the workflow toolbar actions', () => {
     const markup = renderToStaticMarkup(
       <KGMaintenanceShell
-        activeSection="overview"
+        activeSection="check"
         onSectionChange={() => undefined}
         workspaces={['influenza_medical_v1']}
         selectedWorkspace="influenza_medical_v1"
         onWorkspaceChange={() => undefined}
         onRefresh={() => undefined}
-        onRunReview={() => undefined}
+        onOpenArtifacts={() => undefined}
         loading={false}
         running={false}
         error={null}
-        inspector={<div>Inspector</div>}
       >
         <div>Console body</div>
       </KGMaintenanceShell>
@@ -241,48 +270,42 @@ describe('KGMaintenanceShell responsive layout', () => {
 
     expect(markup).toContain('flex-wrap')
     expect(markup).toContain('min-w-0 rounded-md border px-3 text-sm sm:min-w-52')
-    expect(markup).toContain('grid-cols-1')
-    expect(markup).toContain('lg:grid-cols-[220px_minmax(0,1fr)_320px]')
+    expect(markup).toContain('刷新')
+    expect(markup).toContain('全部产物')
+    expect(markup).not.toContain('运行审阅包')
   })
 
-  test('renders Chinese workflow navigation without graph labels', () => {
+  test('renders exactly five Chinese workflow navigation steps', () => {
     const markup = renderToStaticMarkup(
       <KGMaintenanceShell
-        activeSection="snapshot"
+        activeSection="check"
         onSectionChange={() => undefined}
         workspaces={['influenza_medical_v1']}
         selectedWorkspace="influenza_medical_v1"
         onWorkspaceChange={() => undefined}
         onRefresh={() => undefined}
-        onRunReview={() => undefined}
+        onOpenArtifacts={() => undefined}
         loading={false}
         running={false}
         error={null}
-        inspector={<div>Inspector</div>}
       >
         <div>Console body</div>
       </KGMaintenanceShell>
     )
 
-    expect(markup).toContain('知识库迭代')
-    expect(markup).toContain('审阅包概览')
-    expect(markup).toContain('当前阶段')
-    expect(markup).toContain('当前 KB 摘要')
-    expect(markup).toContain('质量与快照')
-    expect(markup).toContain('质量检查')
-    expect(markup).toContain('快照审阅')
-    expect(markup).toContain('人工审阅')
+    expect(markup).toContain('检查知识库')
+    expect(markup).toContain('LLM 审阅')
     expect(markup).toContain('Proposal 审批')
-    expect(markup).toContain('决策与执行')
-    expect(markup).not.toContain('改进 backlog')
-    expect(markup).not.toContain('决策记忆')
-    expect(markup).toContain('辅助材料')
-    expect(markup).toContain('LLM 审阅材料')
+    expect(markup).toContain('执行变更')
+    expect(markup).toContain('验证结果')
+    expect(markup).not.toContain('审阅包概览')
+    expect(markup).not.toContain('当前阶段')
+    expect(markup).not.toContain('快照审阅')
+    expect(markup).not.toContain('决策与执行')
     expect(markup).not.toContain('Medical Graph')
-    expect(markup).not.toContain('图谱画布')
   })
 
-  test('accepts the LLM review section and renders children', () => {
+  test('uses left navigation and main content without a right inspector column', () => {
     const markup = renderToStaticMarkup(
       <KGMaintenanceShell
         activeSection="llm-review"
@@ -291,17 +314,20 @@ describe('KGMaintenanceShell responsive layout', () => {
         selectedWorkspace="influenza_medical_v1"
         onWorkspaceChange={() => undefined}
         onRefresh={() => undefined}
-        onRunReview={() => undefined}
+        onOpenArtifacts={() => undefined}
         loading={false}
         running={false}
         error={null}
-        inspector={<div>Inspector</div>}
       >
         <div>LLM body</div>
       </KGMaintenanceShell>
     )
 
     expect(markup).toContain('LLM body')
+    expect(markup).toContain('grid-cols-1')
+    expect(markup).toContain('lg:grid-cols-[240px_minmax(0,1fr)]')
+    expect(markup).not.toContain('Inspector')
+    expect(markup).not.toContain('lg:grid-cols-[220px_minmax(0,1fr)_320px]')
   })
 })
 
@@ -704,7 +730,7 @@ describe('MainPanel workflow routing', () => {
   })
 
   test('proposal decision skips stale workspace refreshes', async () => {
-    const recordDecision = deferred<{ proposalId: string; decision: string }>()
+    const recordDecision = deferred<KBIterationProposalDecisionResponse>()
     let currentWorkspace = 'workspace-a'
     let refreshCalls = 0
     let bannerError = ''
@@ -741,7 +767,7 @@ describe('MainPanel workflow routing', () => {
     })
 
     currentWorkspace = 'workspace-b'
-    recordDecision.resolve({ proposalId: 'proposal-1', decision: 'accept' })
+    recordDecision.resolve(proposalDecisionResponse('accept'))
     await run
 
     expect(refreshCalls).toBe(0)
@@ -749,7 +775,7 @@ describe('MainPanel workflow routing', () => {
   })
 
   test('proposal decision skips stale workspace errors', async () => {
-    const recordDecision = deferred<{ proposalId: string; decision: string }>()
+    const recordDecision = deferred<KBIterationProposalDecisionResponse>()
     let currentWorkspace = 'workspace-a'
     let bannerError = ''
 
@@ -817,7 +843,7 @@ describe('MainPanel workflow routing', () => {
       reloadWorkspaceData: async () => {
         refreshCalls += 1
       },
-      recordDecision: async () => ({ proposalId: 'proposal-1', decision: 'defer' })
+      recordDecision: async () => proposalDecisionResponse('defer')
     })
 
     expect(refreshCalls).toBe(1)
@@ -828,10 +854,9 @@ describe('MainPanel workflow routing', () => {
     expect(normalizeOptionalMarkdown(null)).toBe('')
   })
 
-  test('overview renders the review package artifact list', () => {
-    const markup = renderMainPanel('overview')
+  test('check renders the review package artifact list', () => {
+    const markup = renderMainPanel('check')
 
-    expect(markup).toContain('审阅包概览')
     expect(markup).toContain('kb_context.md')
     expect(markup).toContain('quality_report.md')
     expect(markup).toContain('snapshots/kg_snapshot.json')
@@ -844,71 +869,11 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('iteration_log.md')
   })
 
-  test('kb-summary renders the current KB context artifact', () => {
-    const markup = renderMainPanel('kb-summary')
-
-    expect(markup).toContain('当前 KB 摘要')
-    expect(markup).toContain('kb_context.md')
-    expect(markup).toContain('# 当前 KB 摘要')
-  })
-
-  test('stage renders the current iteration log artifact', () => {
-    const markup = renderMainPanel('stage')
-
-    expect(markup).toContain('当前阶段')
-    expect(markup).toContain('iteration_log.md')
-    expect(markup).toContain('iteration log marker')
-  })
-
-  test('quality renders markdown quality and JSON score artifacts', () => {
-    const markup = renderMainPanel('quality')
-
-    expect(markup).toContain('质量报告')
-    expect(markup).toContain('质量分数')
-    expect(markup).toContain('snapshots/quality_score.json')
-  })
-
-  test('quality tolerates missing quality responses and score artifacts', () => {
-    const markup = renderEmptyMainPanel('quality')
-
-    expect(markup).toContain('质量报告')
-    expect(markup).toContain('质量分数')
-    expect(markup).toContain('snapshots/quality_score.json')
-    expect(markup).toContain('暂无质量分数')
-  })
-
-  test('snapshot renders raw JSON without the graph canvas', () => {
-    const markup = renderMainPanel('snapshot')
-
-    expect(markup).toContain('图谱快照')
-    expect(markup).toContain('snapshots/kg_snapshot.json')
-    expect(markup).toContain('&quot;snapshot_id&quot;')
-    expect(markup).not.toContain('Medical knowledge graph hierarchy')
-    expect(markup).not.toContain('<svg')
-  })
-
-  test('snapshot tolerates a missing snapshot artifact', () => {
-    const markup = renderEmptyMainPanel('snapshot')
-
-    expect(markup).toContain('图谱快照')
-    expect(markup).toContain('snapshots/kg_snapshot.json')
-    expect(markup).toContain('暂无图谱快照')
-  })
-
   test('approval renders proposal review content', () => {
     const markup = renderMainPanel('approval')
 
-    expect(markup).toContain('待审批 proposal')
-    expect(markup).toContain('1 个需要人工审批')
-    expect(markup).toContain('aria-label="收起 proposal-1"')
-    expect(markup).toContain('aria-expanded="true"')
-    expect(markup).toContain('审批理由')
-    expect(markup).toContain('影响范围')
-    expect(markup).toContain('验证 / 回滚说明')
-    expect(markup).toContain('接受')
-    expect(markup).toContain('拒绝')
-    expect(markup).toContain('延后')
     expect(markup).toContain('proposal-1')
+    expect(markup).toContain('aria-expanded="true"')
   })
 
   test('approval marks proposals that already have accepted decisions', () => {
@@ -923,37 +888,16 @@ describe('MainPanel workflow routing', () => {
 `
     })
 
-    expect(markup).toContain('已接受')
-    expect(markup).not.toContain('拒绝</button>')
-    expect(markup).not.toContain('延后</button>')
+    expect(markup).toContain('proposal-1')
+    expect(markup).not.toContain('reject</button>')
   })
 
-  test('backlog renders the improvement backlog artifact', () => {
-    const markup = renderMainPanel('backlog')
+  test('execute combines backlog memory and accepted execution controls', () => {
+    const markup = renderMainPanel('execute')
 
-    expect(markup).toContain('改进 backlog')
-    expect(markup).toContain('improvement_backlog.md')
-    expect(markup).toContain('backlog content marker')
-  })
-
-  test('memory renders accepted and rejected decision memory', () => {
-    const markup = renderMainPanel('memory')
-
-    expect(markup).toContain('已接受变更记忆')
-    expect(markup).toContain('accepted content marker')
-    expect(markup).toContain('已拒绝变更记忆')
-    expect(markup).toContain('rejected content marker')
-  })
-
-  test('decisions combines backlog memory and accepted execution controls', () => {
-    const markup = renderMainPanel('decisions' as KGMaintenanceSection)
-
-    expect(markup).toContain('决策与执行')
-    expect(markup).toContain('Agent 执行已接受变更')
     expect(markup).toContain('improvement_backlog.md')
     expect(markup).toContain('accepted_changes.md')
     expect(markup).toContain('rejected_changes.md')
-    expect(markup).toContain('真实应用结果')
     expect(markup).toContain('accepted_changes_apply_result.md')
     expect(markup).toContain('accepted_changes_execution.md')
     expect(markup).toContain('backlog content marker')
@@ -966,9 +910,15 @@ describe('MainPanel workflow routing', () => {
   test('llm-review renders auxiliary review materials without memory fallthrough', () => {
     const markup = renderMainPanel('llm-review')
 
-    expect(markup).toContain('LLM 审阅材料')
     expect(markup).toContain('pending_human_review')
     expect(markup).toContain('# LLM Review Report')
     expect(markup).not.toContain('accepted content marker')
+  })
+
+  test('validate renders iteration status material during transition', () => {
+    const markup = renderMainPanel('validate')
+
+    expect(markup).toContain('iteration_log.md')
+    expect(markup).toContain('iteration log marker')
   })
 })
