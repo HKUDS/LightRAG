@@ -15,6 +15,7 @@ import {
   XCircleIcon
 } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { SnapshotTables } from './SnapshotTables'
 
 type IterationOverviewPanelProps = {
   summary: KBIterationSummaryResponse | null
@@ -386,18 +387,25 @@ export function SnapshotReviewPanel({ snapshot }: { snapshot: unknown }) {
     countCollection(record?.links)
 
   return (
-    <JsonArtifactPanel
-      title="图谱快照"
-      fileName="snapshots/kg_snapshot.json"
-      payload={snapshot}
-      summaryRows={[
-        ['节点数', formatMaybeNumber(nodeCount)],
-        ['关系数', formatMaybeNumber(relationCount)],
-        ['Workspace', formatUnknown(record?.workspace)],
-        ['Snapshot ID', formatUnknown(record?.snapshot_id ?? record?.snapshotId ?? record?.id)]
-      ]}
-      emptyText="暂无图谱快照。"
-    />
+    <section className="border-border/70 rounded-lg border p-3">
+      <ArtifactHeader title="图谱快照" fileName="snapshots/kg_snapshot.json" />
+      <dl className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        {[
+          ['节点数', formatMaybeNumber(nodeCount)],
+          ['关系数', formatMaybeNumber(relationCount)],
+          ['Workspace', formatUnknown(record?.workspace)],
+          ['Snapshot ID', formatUnknown(record?.snapshot_id ?? record?.snapshotId ?? record?.id)]
+        ].map(([label, value]) => (
+          <div key={label} className="bg-muted/30 rounded-md p-2">
+            <dt className="text-muted-foreground text-xs">{label}</dt>
+            <dd className="mt-1 text-sm font-medium break-words">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-3">
+        <SnapshotTables snapshot={record} />
+      </div>
+    </section>
   )
 }
 

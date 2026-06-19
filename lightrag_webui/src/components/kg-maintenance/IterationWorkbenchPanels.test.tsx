@@ -122,14 +122,17 @@ describe('iteration workbench panels', () => {
     expect(markup).not.toContain('&quot;&quot;')
   })
 
-  test('snapshot review summarizes snapshot counts and identity without graph markup', () => {
+  test('snapshot review summarizes snapshot counts and renders searchable tables without graph markup', () => {
     const markup = renderToStaticMarkup(
       <SnapshotReviewPanel
         snapshot={{
           workspace: 'medical-kb',
           snapshot_id: 'snap-2',
-          nodes: [{ id: 'n1' }, { id: 'n2' }],
-          edges: [{ id: 'e1' }]
+          nodes: [
+            { id: 'n1', label: '高血压', entity_type: '疾病', source_id: '', file_path: 'a.md' },
+            { id: 'n2', label: '头痛', entity_type: '症状', source_id: 'src-1', file_path: 'b.md' }
+          ],
+          edges: [{ id: 'e1', source: 'n1', target: 'n2', keywords: '症状', file_path: '' }]
         }}
       />
     )
@@ -139,7 +142,12 @@ describe('iteration workbench panels', () => {
     expect(markup).toContain('关系数')
     expect(markup).toContain('medical-kb')
     expect(markup).toContain('snap-2')
-    expect(markup).toContain('&quot;snapshot_id&quot;: &quot;snap-2&quot;')
+    expect(markup).toContain('节点')
+    expect(markup).toContain('关系')
+    expect(markup).toContain('证据问题')
+    expect(markup).toContain('placeholder="搜索"')
+    expect(markup).toContain('高血压')
+    expect(markup).not.toContain('&quot;snapshot_id&quot;: &quot;snap-2&quot;')
     expect(markup).not.toContain('<svg')
     expect(markup).not.toContain('Medical knowledge graph hierarchy')
   })
