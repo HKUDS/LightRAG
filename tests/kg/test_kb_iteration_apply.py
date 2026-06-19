@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kb_iteration.apply import (
     APPLY_SOURCE,
     APPLY_RESULT_JSON,
@@ -11,6 +13,7 @@ from lightrag.kb_iteration.apply import (
     ApplyChangeStatus,
     AcceptedApplyResult,
     ApplyChange,
+    apply_accepted_changes_to_graph,
     branch_key_from_proposal,
     category_for_branch_key,
     load_proposals_by_id,
@@ -18,11 +21,87 @@ from lightrag.kb_iteration.apply import (
     write_apply_result_artifacts,
 )
 from lightrag.kb_iteration.models import ImprovementProposal
+from lightrag.kb_iteration.models import KGSnapshot, SnapshotNode
 from lightrag.kb_iteration.proposals import (
     validate_proposal,
     write_approval_queue,
     write_improvement_backlog,
 )
+from lightrag.kb_iteration.quality import evaluate_snapshot_quality
+from lightrag.medical_kg.ontology import TOP_LEVEL_MEDICAL_CATEGORIES
+
+
+class FakeGraph:
+    def __init__(self, existing_nodes: set[str] | None = None) -> None:
+        self.nodes = {node_id: {} for node_id in existing_nodes or set()}
+        self.edges: dict[tuple[str, str], dict] = {}
+        self.upserted_nodes: list[tuple[str, dict]] = []
+        self.upserted_edges: list[tuple[str, str, dict]] = []
+        self.index_done_calls = 0
+
+    async def has_node(self, node_id: str) -> bool:
+        return node_id in self.nodes
+
+    async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
+        return (source_node_id, target_node_id) in self.edges
+
+    async def upsert_nodes_batch(self, nodes: list[tuple[str, dict]]) -> None:
+        self.upserted_nodes.extend(nodes)
+        for node_id, node_data in nodes:
+            self.nodes[node_id] = node_data
+
+    async def upsert_edges_batch(self, edges: list[tuple[str, str, dict]]) -> None:
+        self.upserted_edges.extend(edges)
+        for source_node_id, target_node_id, edge_data in edges:
+            self.edges[(source_node_id, target_node_id)] = edge_data
+
+    async def index_done_callback(self) -> None:
+        self.index_done_calls += 1
+
+
+class FakeRAG:
+    def __init__(self, graph: FakeGraph | None = None) -> None:
+        if graph is not None:
+            self.chunk_entity_relation_graph = graph
+
+
+class RecordingLock:
+    def __init__(self, calls: list[dict[str, Any]]) -> None:
+        self.calls = calls
+
+    async def __aenter__(self) -> None:
+        self.calls[-1]["entered"] = True
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.calls[-1]["exited"] = True
+
+
+def install_recording_keyed_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, Any]]:
+    lock_calls: list[dict[str, Any]] = []
+
+    def fake_keyed_lock(
+        keys: str | list[str],
+        namespace: str = "default",
+        enable_logging: bool = False,
+    ) -> RecordingLock:
+        lock_calls.append(
+            {
+                "keys": keys,
+                "namespace": namespace,
+                "enable_logging": enable_logging,
+                "entered": False,
+                "exited": False,
+            }
+        )
+        return RecordingLock(lock_calls)
+
+    monkeypatch.setattr(
+        "lightrag.kb_iteration.apply.get_storage_keyed_lock",
+        fake_keyed_lock,
+    )
+    return lock_calls
 
 
 def test_add_hierarchy_branch_is_a_known_mutation_type() -> None:
@@ -513,3 +592,215 @@ def test_apply_result_artifacts_use_spec_filenames_and_metric_transition(
     assert "hierarchy_missing_branch_count: 2 -> 1" in markdown
     assert "## Changes" in markdown
     assert "proposal-diagnosis-branch: blocked (diagnosis_testing)" in markdown
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_upserts_branch_without_evidence_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"influenza", "skipped->edge"})
+    lock_calls = install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-diagnosis-branch",
+        "type": "add_hierarchy_branch",
+        "target": "hierarchy",
+        "proposed_change": "Create branch diagnosis_testing.",
+        "reason": "Missing required branch diagnosis_testing.",
+        "evidence": [
+            "item_id: influenza; source_id: chunk-1",
+            "item_id: missing; source_id: chunk-2",
+            "item_id: skipped->edge; source_id: chunk-3",
+        ],
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-diagnosis-branch"}],
+        proposals_by_id={"proposal-diagnosis-branch": proposal},
+    )
+
+    category = next(
+        category
+        for category in TOP_LEVEL_MEDICAL_CATEGORIES
+        if category.key == "diagnosis_testing"
+    )
+    assert result.workspace == "influenza_medical_v1"
+    assert result.source_artifact == "accepted_changes.md"
+    assert result.proposal_ids == ["proposal-diagnosis-branch"]
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert result.changes[0].branch_key == "diagnosis_testing"
+    assert result.changes[0].branch_label == category.label
+    assert result.changes[0].evidence == proposal["evidence"]
+    assert result.applied_at.endswith("+00:00")
+    assert graph.index_done_calls == 1
+    assert graph.upserted_nodes == [
+        (
+            "diagnosis_testing",
+            {
+                "entity_id": "diagnosis_testing",
+                "label": category.label,
+                "entity_type": "MedicalGroup",
+                "description": f"Top-level medical hierarchy branch: {category.label}",
+                "source_id": APPLY_SOURCE,
+                "file_path": "accepted_changes.md",
+                "medical_group": "diagnosis_testing",
+                "aliases": GRAPH_FIELD_SEP.join(category.aliases),
+                "generated_by": APPLY_SOURCE,
+                "accepted_proposal_ids": "proposal-diagnosis-branch",
+            },
+        )
+    ]
+    assert graph.upserted_edges == []
+    assert all(
+        not isinstance(value, (list, dict))
+        for _, node_data in graph.upserted_nodes
+        for value in node_data.values()
+    )
+    assert lock_calls == [
+        {
+            "keys": "diagnosis_testing",
+            "namespace": "influenza_medical_v1:GraphDB",
+            "enable_logging": False,
+            "entered": True,
+            "exited": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_is_idempotent_for_existing_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"influenza"})
+    install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-diagnosis-branch",
+        "type": "add_hierarchy_branch",
+        "target": "hierarchy",
+        "proposed_change": "Create branch diagnosis_testing.",
+        "reason": "Missing required branch diagnosis_testing.",
+        "evidence": ["item_id: influenza; source_id: chunk-1"],
+    }
+    first = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-diagnosis-branch"}],
+        proposals_by_id={"proposal-diagnosis-branch": proposal},
+    )
+
+    second = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-diagnosis-branch"}],
+        proposals_by_id={"proposal-diagnosis-branch": proposal},
+    )
+
+    assert first.changes[0].status == ApplyChangeStatus.APPLIED
+    assert second.changes[0].status == ApplyChangeStatus.ALREADY_PRESENT
+    assert len(graph.upserted_nodes) == 1
+    assert len(graph.upserted_edges) == 0
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_unsupported_type_writes_nothing() -> None:
+    graph = FakeGraph()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-note", "proposal_type": "quality_report_note"}],
+        proposals_by_id={"proposal-note": {"id": "proposal-note"}},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.UNSUPPORTED
+    assert graph.upserted_nodes == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_unknown_branch_key_is_blocked() -> None:
+    graph = FakeGraph()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-unknown"}],
+        proposals_by_id={
+            "proposal-unknown": {
+                "id": "proposal-unknown",
+                "type": "add_hierarchy_branch",
+                "target": "hierarchy",
+                "proposed_change": "Create branch administrative_notes.",
+                "reason": "Missing branch administrative_notes.",
+                "evidence": [],
+            }
+        },
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert result.changes[0].reason == "Missing or unsupported branch key."
+    assert graph.upserted_nodes == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_without_graph_storage_is_blocked() -> None:
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(),
+        workspace="influenza_medical_v1",
+        records=[
+            {
+                "proposal_id": "proposal-diagnosis-branch",
+                "proposal_type": "add_hierarchy_branch",
+                "proposal_target": "hierarchy",
+            }
+        ],
+        proposals_by_id={
+            "proposal-diagnosis-branch": {
+                "id": "proposal-diagnosis-branch",
+                "proposed_change": "Create branch diagnosis_testing.",
+                "reason": "Missing required branch diagnosis_testing.",
+                "evidence": [],
+            }
+        },
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert result.changes[0].reason == "Graph storage is not available."
+
+
+def test_quality_missing_branch_count_decreases_for_medical_group_property() -> None:
+    sparse = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-19T00:00:00+00:00",
+        source_files=[],
+        nodes=[],
+        edges=[],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+    with_branch = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-19T00:00:00+00:00",
+        source_files=[],
+        nodes=[
+            SnapshotNode(
+                "branch-diagnosis",
+                "Diagnosis branch",
+                "MedicalGroup",
+                properties={"medical_group": "diagnosis_testing"},
+            )
+        ],
+        edges=[],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    sparse_score = evaluate_snapshot_quality(sparse)
+    with_branch_score = evaluate_snapshot_quality(with_branch)
+
+    assert with_branch_score.metrics["hierarchy_missing_branch_count"] == (
+        sparse_score.metrics["hierarchy_missing_branch_count"] - 1
+    )

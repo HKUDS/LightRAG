@@ -3,18 +3,22 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field, fields
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.kg.shared_storage import get_storage_keyed_lock
 from lightrag.medical_kg.ontology import MedicalCategory, TOP_LEVEL_MEDICAL_CATEGORIES
 
 from .models import ImprovementProposal
 from .proposals import validate_proposal
 
 APPLY_SOURCE = "kb_iteration_apply"
+ACCEPTED_CHANGES_SOURCE_ARTIFACT = "accepted_changes.md"
 APPLY_RESULT_JSON = "accepted_changes_apply_result.json"
 APPLY_RESULT_MARKDOWN = "accepted_changes_apply_result.md"
 _PROPOSAL_FIELD_NAMES = {field_info.name for field_info in fields(ImprovementProposal)}
@@ -133,6 +137,137 @@ def category_for_branch_key(branch_key: str) -> MedicalCategory | None:
     return None
 
 
+async def apply_accepted_changes_to_graph(
+    *,
+    rag: Any,
+    workspace: str,
+    records: list[dict[str, Any]],
+    proposals_by_id: dict[str, dict[str, Any]],
+) -> AcceptedApplyResult:
+    changes: list[ApplyChange] = []
+    proposal_ids: list[str] = []
+    graph = getattr(rag, "chunk_entity_relation_graph", None)
+    graph_writes_happened = False
+
+    for record in records:
+        proposal_id = str(record.get("proposal_id", "")).strip()
+        proposal_ids.append(proposal_id)
+        proposal = proposals_by_id.get(proposal_id, {})
+        proposal_type = str(
+            proposal.get("type") or record.get("proposal_type") or ""
+        ).strip()
+        target = str(proposal.get("target") or record.get("proposal_target") or "").strip()
+        evidence = [
+            str(item)
+            for item in proposal.get("evidence", [])
+            if isinstance(item, str)
+        ]
+
+        if proposal_type != "add_hierarchy_branch":
+            changes.append(
+                ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type=proposal_type,
+                    target=target,
+                    status=ApplyChangeStatus.UNSUPPORTED,
+                    action=proposal_type,
+                    evidence=evidence,
+                    reason="Unsupported proposal type.",
+                )
+            )
+            continue
+
+        branch_key = branch_key_from_proposal({**record, **proposal})
+        category = category_for_branch_key(branch_key)
+        if category is None:
+            changes.append(
+                ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type=proposal_type,
+                    target=target,
+                    status=ApplyChangeStatus.BLOCKED,
+                    action="add_hierarchy_branch",
+                    branch_key=branch_key,
+                    evidence=evidence,
+                    reason="Missing or unsupported branch key.",
+                )
+            )
+            continue
+
+        if graph is None:
+            changes.append(
+                ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type=proposal_type,
+                    target=target,
+                    status=ApplyChangeStatus.BLOCKED,
+                    action="add_hierarchy_branch",
+                    branch_key=branch_key,
+                    branch_label=category.label,
+                    evidence=evidence,
+                    reason="Graph storage is not available.",
+                )
+            )
+            continue
+
+        branch_exists = False
+        branch_was_upserted = False
+        async with get_storage_keyed_lock(
+            branch_key,
+            namespace=f"{workspace}:GraphDB",
+            enable_logging=False,
+        ):
+            if await graph.has_node(branch_key):
+                branch_exists = True
+            else:
+                await graph.upsert_nodes_batch(
+                    [(branch_key, _branch_node_data(category, proposal_id))]
+                )
+                graph_writes_happened = True
+                branch_was_upserted = True
+
+        if branch_exists:
+            changes.append(
+                ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type=proposal_type,
+                    target=target,
+                    status=ApplyChangeStatus.ALREADY_PRESENT,
+                    action="add_hierarchy_branch",
+                    branch_key=branch_key,
+                    branch_label=category.label,
+                    evidence=evidence,
+                    reason="Branch node already exists.",
+                )
+            )
+            continue
+
+        if branch_was_upserted:
+            changes.append(
+                ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type=proposal_type,
+                    target=target,
+                    status=ApplyChangeStatus.APPLIED,
+                    action="add_hierarchy_branch",
+                    branch_key=branch_key,
+                    branch_label=category.label,
+                    evidence=evidence,
+                )
+            )
+
+    if graph_writes_happened:
+        await graph.index_done_callback()
+
+    return AcceptedApplyResult(
+        workspace=workspace,
+        applied_at=datetime.now(UTC).isoformat(),
+        source_artifact=ACCEPTED_CHANGES_SOURCE_ARTIFACT,
+        proposal_ids=proposal_ids,
+        changes=changes,
+    )
+
+
 def write_apply_result_artifacts(
     result: AcceptedApplyResult, package_dir: str | Path
 ) -> tuple[Path, Path]:
@@ -147,6 +282,23 @@ def write_apply_result_artifacts(
     )
     markdown_path.write_text(render_apply_result_markdown(result), encoding="utf-8")
     return json_path, markdown_path
+
+
+def _branch_node_data(
+    category: MedicalCategory, proposal_id: str
+) -> dict[str, Any]:
+    return {
+        "entity_id": category.key,
+        "label": category.label,
+        "entity_type": "MedicalGroup",
+        "description": f"Top-level medical hierarchy branch: {category.label}",
+        "source_id": APPLY_SOURCE,
+        "file_path": ACCEPTED_CHANGES_SOURCE_ARTIFACT,
+        "medical_group": category.key,
+        "aliases": GRAPH_FIELD_SEP.join(category.aliases),
+        "generated_by": APPLY_SOURCE,
+        "accepted_proposal_ids": proposal_id,
+    }
 
 
 def render_apply_result_markdown(result: AcceptedApplyResult) -> str:
