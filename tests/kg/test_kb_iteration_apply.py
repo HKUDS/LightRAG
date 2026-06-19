@@ -740,6 +740,40 @@ async def test_apply_accepted_changes_unsupported_type_writes_nothing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_missing_proposal_definition_even_if_record_contains_mutation_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph()
+    install_recording_keyed_lock(monkeypatch)
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[
+            {
+                "proposal_id": "proposal-missing",
+                "proposal_type": "add_hierarchy_branch",
+                "proposal_target": "hierarchy",
+                "proposed_change": "Create branch diagnosis_testing.",
+            }
+        ],
+        proposals_by_id={},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert result.changes[0].proposal_type == ""
+    assert result.changes[0].target == ""
+    assert result.changes[0].action == "resolve_proposal_definition"
+    assert (
+        result.changes[0].reason
+        == "Accepted proposal definition was not found."
+    )
+    assert graph.upserted_nodes == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_apply_accepted_changes_unknown_branch_key_is_blocked() -> None:
     graph = FakeGraph()
 

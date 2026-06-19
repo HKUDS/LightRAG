@@ -153,7 +153,20 @@ async def apply_accepted_changes_to_graph(
     for record in records:
         proposal_id = str(record.get("proposal_id", "")).strip()
         proposal_ids.append(proposal_id)
-        proposal = proposals_by_id.get(proposal_id, {})
+        if proposal_id not in proposals_by_id:
+            changes.append(
+                ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type="",
+                    target="",
+                    status=ApplyChangeStatus.BLOCKED,
+                    action="resolve_proposal_definition",
+                    reason="Accepted proposal definition was not found.",
+                )
+            )
+            continue
+
+        proposal = proposals_by_id[proposal_id]
         proposal_type = str(
             proposal.get("type") or record.get("proposal_type") or ""
         ).strip()
