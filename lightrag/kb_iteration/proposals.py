@@ -12,6 +12,7 @@ MUTATION_PROPOSAL_TYPES = {
     "prompt_edit",
     "ontology_rule_change",
     "hierarchy_rule_change",
+    "add_hierarchy_branch",
     "relation_rule_change",
     "workspace_rebuild",
     "kg_fact_correction",
