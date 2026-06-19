@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { KBIterationSummaryResponse } from '@/api/lightrag'
 import {
+  DecisionExecutionPanel,
   DecisionMemoryPanel,
   IterationOverviewPanel,
   JsonArtifactPanel,
@@ -36,6 +37,8 @@ describe('iteration workbench panels', () => {
         { key: 'improvement_backlog', contentType: 'text/markdown', exists: true },
         { key: 'accepted_changes', contentType: 'text/markdown', exists: true },
         { key: 'rejected_changes', contentType: 'text/markdown', exists: true },
+        { key: 'accepted_changes_apply_result', contentType: 'text/markdown', exists: true },
+        { key: 'accepted_changes_execution', contentType: 'text/markdown', exists: true },
         { key: 'iteration_log', contentType: 'text/markdown', exists: true }
       ]
     }
@@ -64,6 +67,9 @@ describe('iteration workbench panels', () => {
     expect(markup).toContain('accepted_changes.md')
     expect(markup).toContain('已拒绝变更记忆')
     expect(markup).toContain('rejected_changes.md')
+    expect(markup).toContain('真实应用结果')
+    expect(markup).toContain('accepted_changes_apply_result.md')
+    expect(markup).toContain('accepted_changes_execution.md')
     expect(markup).toContain('当前阶段')
     expect(markup).toContain('iteration_log.md')
     expect(markup).toContain('已生成')
@@ -178,5 +184,29 @@ describe('iteration workbench panels', () => {
     expect(markup).toContain('已拒绝变更记忆')
     expect(markup).toContain('rejected_changes.md')
     expect(markup).toContain('拒绝未溯源的关系改写')
+  })
+
+  test('decision execution renders real apply result before historical execution report', () => {
+    const markup = renderToStaticMarkup(
+      <DecisionExecutionPanel
+        improvementBacklog="backlog content marker"
+        acceptedChanges="## proposal-1"
+        rejectedChanges="rejected content marker"
+        acceptedApplyResult="apply result content marker"
+        acceptedExecution="execution report content marker"
+        executing={false}
+        onExecuteAcceptedChanges={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('真实应用结果')
+    expect(markup).toContain('accepted_changes_apply_result.md')
+    expect(markup).toContain('apply result content marker')
+    expect(markup).toContain('执行报告')
+    expect(markup).toContain('accepted_changes_execution.md')
+    expect(markup).toContain('execution report content marker')
+    expect(markup.indexOf('accepted_changes_apply_result.md')).toBeLessThan(
+      markup.indexOf('accepted_changes_execution.md')
+    )
   })
 })

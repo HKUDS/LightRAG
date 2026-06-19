@@ -690,9 +690,16 @@ export type KBIterationLLMReviewRunResponse = {
 
 export type KBIterationAcceptedChangesExecutionResponse = {
   workspace: string
-  status: 'execution_recorded' | 'no_accepted_changes' | string
+  status:
+    | 'applied_changes'
+    | 'no_applicable_changes'
+    | 'no_accepted_changes'
+    | 'execution_recorded'
+    | string
   proposalIds: string[]
-  executedCount: number
+  executedCount?: number
+  appliedCount?: number
+  blockedCount?: number
   artifactKey: string
 }
 

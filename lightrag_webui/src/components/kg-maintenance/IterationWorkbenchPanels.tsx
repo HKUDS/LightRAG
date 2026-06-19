@@ -108,8 +108,15 @@ const requiredArtifacts: Array<{
     icon: <XCircleIcon className="size-4 text-rose-500" />
   },
   {
+    key: 'accepted_changes_apply_result',
+    label: '真实应用结果',
+    fileName: 'accepted_changes_apply_result.md',
+    section: 'decisions',
+    icon: <CheckCircle2Icon className="size-4 text-emerald-600" />
+  },
+  {
     key: 'accepted_changes_execution',
-    label: '已接受变更执行结果',
+    label: '执行报告',
     fileName: 'accepted_changes_execution.md',
     section: 'decisions',
     icon: <PlayCircleIcon className="size-4 text-indigo-600" />
@@ -294,6 +301,7 @@ export function DecisionExecutionPanel({
   improvementBacklog,
   acceptedChanges,
   rejectedChanges,
+  acceptedApplyResult,
   acceptedExecution,
   executing,
   onExecuteAcceptedChanges
@@ -301,6 +309,7 @@ export function DecisionExecutionPanel({
   improvementBacklog: string
   acceptedChanges: string
   rejectedChanges: string
+  acceptedApplyResult: string
   acceptedExecution: string
   executing: boolean
   onExecuteAcceptedChanges: () => void
@@ -336,11 +345,18 @@ export function DecisionExecutionPanel({
           emptyText="暂无改进 backlog。"
         />
         <MarkdownArtifactPanel
+          icon={<CheckCircle2Icon className="size-4 text-emerald-600" />}
+          title="真实应用结果"
+          fileName="accepted_changes_apply_result.md"
+          content={acceptedApplyResult}
+          emptyText="暂无真实应用结果。"
+        />
+        <MarkdownArtifactPanel
           icon={<PlayCircleIcon className="size-4 text-indigo-600" />}
-          title="已接受变更执行结果"
+          title="执行报告"
           fileName="accepted_changes_execution.md"
           content={acceptedExecution}
-          emptyText="暂无已接受变更执行结果。"
+          emptyText="暂无执行报告。"
         />
         <MarkdownArtifactPanel
           icon={<CheckCircle2Icon className="size-4 text-emerald-600" />}

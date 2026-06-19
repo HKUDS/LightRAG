@@ -61,6 +61,7 @@ export default function KGMaintenanceConsole() {
   const [qualityScore, setQualityScore] = useState<Record<string, any> | null>(null)
   const [approvalQueue, setApprovalQueue] = useState('')
   const [improvementBacklog, setImprovementBacklog] = useState('')
+  const [acceptedApplyResult, setAcceptedApplyResult] = useState('')
   const [acceptedExecution, setAcceptedExecution] = useState('')
   const [iterationLog, setIterationLog] = useState('')
   const [llmTrace, setLlmTrace] = useState<Record<string, any> | null>(null)
@@ -124,6 +125,7 @@ export default function KGMaintenanceConsole() {
         qualityScoreArtifact,
         approvalArtifact,
         backlogArtifact,
+        acceptedApplyResultArtifact,
         acceptedExecutionArtifact,
         logArtifact,
         llmTraceArtifact,
@@ -156,6 +158,7 @@ export default function KGMaintenanceConsole() {
       )
       setApprovalQueue(normalizeOptionalMarkdown(approvalArtifact))
       setImprovementBacklog(normalizeOptionalMarkdown(backlogArtifact))
+      setAcceptedApplyResult(normalizeOptionalMarkdown(acceptedApplyResultArtifact))
       setAcceptedExecution(normalizeOptionalMarkdown(acceptedExecutionArtifact))
       setIterationLog(normalizeOptionalMarkdown(logArtifact))
       setLlmTrace(
@@ -365,6 +368,7 @@ export default function KGMaintenanceConsole() {
         qualityScore={qualityScore}
         approvalQueue={approvalQueue}
         improvementBacklog={improvementBacklog}
+        acceptedApplyResult={acceptedApplyResult}
         acceptedExecution={acceptedExecution}
         iterationLog={iterationLog}
         llmTrace={llmTrace}
@@ -400,6 +404,7 @@ interface MainPanelProps {
   qualityScore: Record<string, any> | null
   approvalQueue: string
   improvementBacklog: string
+  acceptedApplyResult: string
   acceptedExecution: string
   iterationLog: string
   llmTrace: Record<string, any> | null
@@ -436,6 +441,7 @@ export function MainPanel({
   qualityScore,
   approvalQueue,
   improvementBacklog,
+  acceptedApplyResult,
   acceptedExecution,
   iterationLog,
   llmTrace,
@@ -499,6 +505,7 @@ export function MainPanel({
         improvementBacklog={improvementBacklog}
         acceptedChanges={rules?.acceptedChanges || ''}
         rejectedChanges={rules?.rejectedChanges || ''}
+        acceptedApplyResult={acceptedApplyResult}
         acceptedExecution={acceptedExecution}
         executing={acceptedExecuting}
         onExecuteAcceptedChanges={onExecuteAcceptedChanges}

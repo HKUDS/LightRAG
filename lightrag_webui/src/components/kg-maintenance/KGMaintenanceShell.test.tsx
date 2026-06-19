@@ -51,6 +51,7 @@ const summary: KBIterationSummaryResponse = {
     'improvement_backlog',
     'accepted_changes',
     'rejected_changes',
+    'accepted_changes_apply_result',
     'accepted_changes_execution',
     'iteration_log'
   ].map((key) => ({
@@ -66,6 +67,7 @@ function renderMainPanel(
   options: {
     acceptedChanges?: string
     rejectedChanges?: string
+    acceptedApplyResult?: string
     acceptedExecution?: string
   } = {}
 ) {
@@ -121,6 +123,7 @@ function renderMainPanel(
   expected_metric_change:
     approval_latency: -1`}
       improvementBacklog="backlog content marker"
+      acceptedApplyResult={options.acceptedApplyResult ?? 'apply result content marker'}
       acceptedExecution={options.acceptedExecution ?? 'execution content marker'}
       iterationLog="iteration log marker"
       llmTrace={{
@@ -159,6 +162,7 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       qualityScore={null}
       approvalQueue=""
       improvementBacklog=""
+      acceptedApplyResult=""
       acceptedExecution=""
       iterationLog=""
       llmTrace={null}
@@ -466,6 +470,7 @@ describe('MainPanel workflow routing', () => {
     expect(bundle.kbContextArtifact).toBe('')
     expect(bundle.llmTraceArtifact).toBeNull()
     expect(bundle.approvalArtifact).toBe('approval_queue content')
+    expect(bundle.acceptedApplyResultArtifact).toBe('accepted_changes_apply_result content')
   })
 
   test('workspace bundle loads llm agent markdown artifacts', async () => {
@@ -529,10 +534,12 @@ describe('MainPanel workflow routing', () => {
     expect(requestedArtifactKeys).toContain('llm_missing_branch_inference')
     expect(requestedArtifactKeys).toContain('llm_evidence_map')
     expect(requestedArtifactKeys).toContain('llm_repair_plan')
+    expect(requestedArtifactKeys).toContain('accepted_changes_apply_result')
     expect(bundle.llmIssueAnalysisArtifact).toBe('# llm_issue_analysis')
     expect(bundle.llmMissingBranchInferenceArtifact).toBe('# llm_missing_branch_inference')
     expect(bundle.llmEvidenceMapArtifact).toBe('# llm_evidence_map')
     expect(bundle.llmRepairPlanArtifact).toBe('# llm_repair_plan')
+    expect(bundle.acceptedApplyResultArtifact).toBe('# accepted_changes_apply_result')
   })
 
   test('workspace response guard rejects stale workspace payloads', () => {
@@ -833,6 +840,7 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('improvement_backlog.md')
     expect(markup).toContain('accepted_changes.md')
     expect(markup).toContain('rejected_changes.md')
+    expect(markup).toContain('accepted_changes_apply_result.md')
     expect(markup).toContain('iteration_log.md')
   })
 
@@ -945,8 +953,11 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('improvement_backlog.md')
     expect(markup).toContain('accepted_changes.md')
     expect(markup).toContain('rejected_changes.md')
+    expect(markup).toContain('真实应用结果')
+    expect(markup).toContain('accepted_changes_apply_result.md')
     expect(markup).toContain('accepted_changes_execution.md')
     expect(markup).toContain('backlog content marker')
+    expect(markup).toContain('apply result content marker')
     expect(markup).toContain('accepted content marker')
     expect(markup).toContain('rejected content marker')
     expect(markup).toContain('execution content marker')
