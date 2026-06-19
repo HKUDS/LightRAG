@@ -71,8 +71,43 @@ describe('LLM review panels', () => {
     expect(markup).toContain('## Missing')
     expect(markup).toContain('## Evidence')
     expect(markup).toContain('## Ranking')
+    expect(markup).toContain('问题解释')
+    expect(markup).toContain('缺失分支推断')
+    expect(markup).toContain('证据定位')
+    expect(markup).toContain('修复方案排序')
     expect(markup).toContain('人工批准')
     expect(markup).toContain('不会自动修改 KG')
+  })
+
+  test('renders malformed multistage traces without object garbage', () => {
+    const markup = renderToStaticMarkup(
+      <LLMReviewPanel
+        trace={{
+          stages: [
+            null,
+            { stage: 42 },
+            {
+              stage: 'explain',
+              state: { bad: true },
+              artifact_keys: [1, 'llm_issue_analysis'],
+              proposal_ids: ['p1', { bad: true }]
+            }
+          ]
+        }}
+        report=""
+        proposals=""
+        issueAnalysis=""
+        missingBranchInference=""
+        evidenceMap=""
+        repairPlan=""
+        running={false}
+        onRun={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('llm_issue_analysis')
+    expect(markup).toContain('p1')
+    expect(markup).not.toContain('[object Object]')
   })
 
   test('renders patch candidates with proposal ids and selected patch', () => {

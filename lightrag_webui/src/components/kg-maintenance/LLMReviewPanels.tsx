@@ -51,7 +51,9 @@ export function LLMReviewPanel({
 }: LLMReviewPanelProps) {
   const stopReason = typeof trace?.stop_reason === 'string' ? trace.stop_reason : ''
   const rounds = Array.isArray(trace?.rounds) ? (trace.rounds as TraceRound[]) : []
-  const stages = Array.isArray(trace?.stages) ? (trace.stages as TraceStage[]) : []
+  const stages = Array.isArray(trace?.stages)
+    ? trace.stages.map(normalizeTraceStageEntry).filter(isTraceStage)
+    : []
   const subtitle = stopReason
     ? `停止原因：${stopReason}。辅助材料，不会自动修改 KG。`
     : '尚未生成 LLM 审阅 trace。辅助材料，不会自动修改 KG。'
@@ -286,8 +288,38 @@ function EmptyBlock({ children }: { children: ReactNode }) {
   )
 }
 
+function isTraceStage(stage: TraceStage | null): stage is TraceStage {
+  return stage !== null
+}
+
+function normalizeTraceStageEntry(stage: unknown): TraceStage | null {
+  if (!isRecord(stage)) {
+    return null
+  }
+
+  return {
+    stage: typeof stage.stage === 'string' ? stage.stage : undefined,
+    state: typeof stage.state === 'string' ? stage.state : undefined,
+    artifact_keys: stringArray(stage.artifact_keys),
+    proposal_ids: stringArray(stage.proposal_ids)
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function stringArray(value: unknown) {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+
+  const strings = value.filter((item): item is string => typeof item === 'string')
+  return strings.length ? strings : undefined
+}
+
 function normalizeTraceStage(stage?: string) {
-  return stage?.trim().toLowerCase() || ''
+  return typeof stage === 'string' ? stage.trim().toLowerCase() : ''
 }
 
 function parseProposalIds(proposals: string) {
