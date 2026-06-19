@@ -123,6 +123,15 @@ class _UnavailableLLMReviewClient:
         raise RuntimeError("LLM review client is not configured")
 
 
+class _DisplayArtifactFallbackClient:
+    def __init__(self, error: str) -> None:
+        self.error = error
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        _ = system_prompt, user_prompt
+        raise RuntimeError(self.error)
+
+
 class _OpenAICompatibleLLMReviewClient:
     def __init__(
         self,
@@ -833,7 +842,7 @@ def _display_artifact_response(
         source_path,
         artifact_key=artifact_key,
         content_type=content_type,
-        client=_default_llm_review_client(rag),
+        client=_display_artifact_client(rag, content_type),
         model=_zh_model_name(),
         force=force,
         artifact_root=_workspace_dir(args, workspace),
@@ -857,6 +866,15 @@ def _display_artifact_response(
     else:
         response["content"] = result.content
     return response
+
+
+def _display_artifact_client(rag, content_type: str):
+    if content_type == "application/json":
+        return _UnavailableLLMReviewClient()
+    try:
+        return _default_llm_review_client(rag)
+    except Exception as exc:
+        return _DisplayArtifactFallbackClient(_redact_display_error(str(exc)) or "")
 
 
 def _zh_model_name() -> str | None:

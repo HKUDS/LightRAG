@@ -428,6 +428,71 @@ def test_display_artifact_fallback_on_client_failure_returns_source_content(
     assert not (fixture.package / "quality_report.zh.md").exists()
 
 
+def test_display_artifact_markdown_falls_back_when_llm_env_is_misconfigured(
+    tmp_path: Path, monkeypatch
+):
+    secret = "sk-test-display-secret"
+    monkeypatch.setenv("KB_ITERATION_LLM_BINDING", "anthropic")
+    monkeypatch.setenv("KB_ITERATION_LLM_BINDING_HOST", "https://llm.example.invalid")
+    monkeypatch.setenv("KB_ITERATION_LLM_BINDING_API_KEY", secret)
+    monkeypatch.setenv("KB_ITERATION_LLM_MODEL", "claude-test")
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/kb-iteration/influenza_medical_v1/artifacts/quality_report/display",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["content"] == "# Quality\n"
+    assert payload["display"]["fallbackToSource"] is True
+    assert payload["display"]["generated"] is False
+    assert payload["display"]["error"]
+    assert secret not in payload["display"]["error"]
+    assert not (fixture.package / "quality_report.zh.md").exists()
+
+
+def test_display_artifact_json_ignores_misconfigured_llm_env(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("KB_ITERATION_LLM_BINDING", "anthropic")
+    monkeypatch.setenv("KB_ITERATION_LLM_BINDING_HOST", "https://llm.example.invalid")
+    monkeypatch.setenv("KB_ITERATION_LLM_BINDING_API_KEY", "sk-json-secret")
+    monkeypatch.setenv("KB_ITERATION_LLM_MODEL", "claude-test")
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/kb-iteration/influenza_medical_v1/artifacts/quality_score/display",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "overall" in payload["payload"]["_zh_labels"]
+    assert payload["display"]["generated"] is True
+    assert payload["display"]["fallbackToSource"] is False
+    assert payload["display"]["error"] is None
+    assert (fixture.package / "snapshots" / "quality_score.zh.json").exists()
+
+
+@pytest.mark.parametrize(
+    "artifact_key",
+    ["unknown", "%2E%2E%2F.env", "quality_report.zh"],
+)
+def test_display_artifact_rejects_unknown_path_like_and_zh_source_keys(
+    tmp_path: Path, monkeypatch, artifact_key: str
+):
+    client, _ = _client(tmp_path, monkeypatch)
+
+    response = client.get(
+        f"/kb-iteration/influenza_medical_v1/artifacts/{artifact_key}/display",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 400
+
+
 def test_artifact_manifest_includes_zh_display_metadata_and_exists_updates(
     tmp_path: Path, monkeypatch
 ):
