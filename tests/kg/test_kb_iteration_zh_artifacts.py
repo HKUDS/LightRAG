@@ -1,10 +1,27 @@
+import json
 from pathlib import Path
 
 from lightrag.kb_iteration.zh_artifacts import (
     artifact_zh_relative_path,
     build_zh_json_payload,
+    ensure_zh_artifact,
     machine_token_should_be_preserved,
 )
+
+
+class FakeZhClient:
+    def __init__(self, response: str = "## 摘要\n\n已生成中文展示稿。"):
+        self.response = response
+        self.calls: list[tuple[str, str]] = []
+
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append((system_prompt, user_prompt))
+        return self.response
+
+
+class FailingZhClient:
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        raise RuntimeError("translation service unavailable")
 
 
 def test_artifact_zh_relative_path_inserts_zh_before_final_suffix():
@@ -106,3 +123,118 @@ def test_machine_token_should_be_preserved_for_ids_paths_models_and_snake_case()
 
 def test_machine_token_should_not_be_preserved_for_natural_language_text():
     assert not machine_token_should_be_preserved("Improve hierarchy readability")
+
+
+def test_ensure_zh_artifact_writes_markdown_translation(tmp_path: Path):
+    source_path = tmp_path / "snapshots" / "quality_report.md"
+    source_path.parent.mkdir()
+    source_path.write_text(
+        "# Quality Report\n\nsource_id: chunk-1\n\nImprove hierarchy readability.\n",
+        encoding="utf-8",
+    )
+    client = FakeZhClient("## 质量报告\n\n保留 source_id 和 chunk-1。")
+
+    result = ensure_zh_artifact(
+        source_path,
+        content_type="text/markdown",
+        client=client,
+        model="gpt-4o-mini",
+    )
+
+    zh_path = tmp_path / "snapshots" / "quality_report.zh.md"
+    assert zh_path.read_text(encoding="utf-8") == (
+        "## 质量报告\n\n保留 source_id 和 chunk-1。\n"
+    )
+    assert result.artifact_key == "quality_report.zh.md"
+    assert result.source_relative_path == Path("quality_report.md")
+    assert result.zh_relative_path == Path("quality_report.zh.md")
+    assert result.content_type == "text/markdown"
+    assert result.generated is True
+    assert result.fallback_to_source is False
+    assert result.model == "gpt-4o-mini"
+    assert result.error is None
+    assert result.content == "## 质量报告\n\n保留 source_id 和 chunk-1。\n"
+    assert len(client.calls) == 1
+    system_prompt, user_prompt = client.calls[0]
+    assert "source_id" in system_prompt
+    assert "proposal_id" in system_prompt
+    assert "简洁中文" in system_prompt
+    assert "Improve hierarchy readability" in user_prompt
+
+
+def test_ensure_zh_artifact_writes_json_with_labels_without_llm(tmp_path: Path):
+    source_path = tmp_path / "snapshots" / "quality_score.json"
+    source_path.parent.mkdir()
+    source_path.write_text(
+        json.dumps({"overall": 97, "metrics": {"missing": []}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    client = FakeZhClient()
+
+    result = ensure_zh_artifact(
+        source_path,
+        content_type="application/json",
+        client=client,
+        model="unused-model",
+    )
+
+    zh_payload = json.loads(
+        (tmp_path / "snapshots" / "quality_score.zh.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert zh_payload["_zh_labels"]["overall"] == "总分"
+    assert zh_payload["metrics"]["_zh_labels"]["missing"] == "缺失项"
+    assert client.calls == []
+    assert result.generated is True
+    assert result.fallback_to_source is False
+    assert result.payload == zh_payload
+    assert result.content is None
+
+
+def test_ensure_zh_artifact_falls_back_to_source_when_translation_fails(
+    tmp_path: Path,
+):
+    source_path = tmp_path / "quality_report.md"
+    source_path.write_text(
+        "# Quality Report\n\nKeep source_id unchanged.\n",
+        encoding="utf-8",
+    )
+
+    result = ensure_zh_artifact(
+        source_path,
+        content_type="text/markdown",
+        client=FailingZhClient(),
+        model="gpt-4o-mini",
+    )
+
+    assert not (tmp_path / "quality_report.zh.md").exists()
+    assert result.generated is False
+    assert result.fallback_to_source is True
+    assert result.error == "translation service unavailable"
+    assert result.content == "# Quality Report\n\nKeep source_id unchanged.\n"
+    assert result.payload is None
+
+
+def test_ensure_zh_artifact_reads_existing_zh_without_client_when_force_false(
+    tmp_path: Path,
+):
+    source_path = tmp_path / "quality_report.md"
+    source_path.write_text("# Quality Report\n", encoding="utf-8")
+    zh_path = tmp_path / "quality_report.zh.md"
+    zh_path.write_text("## 已有中文\n", encoding="utf-8")
+    client = FakeZhClient("## 新中文")
+
+    result = ensure_zh_artifact(
+        source_path,
+        content_type="text/markdown",
+        client=client,
+        model="gpt-4o-mini",
+        force=False,
+    )
+
+    assert client.calls == []
+    assert result.generated is False
+    assert result.fallback_to_source is False
+    assert result.content == "## 已有中文\n"
+    assert result.zh_relative_path == Path("quality_report.zh.md")
