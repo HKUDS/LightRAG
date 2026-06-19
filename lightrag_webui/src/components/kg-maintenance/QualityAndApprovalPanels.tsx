@@ -7,7 +7,6 @@ import type {
 } from '@/api/lightrag'
 import type { KBIterationProposalDecision } from '@/api/lightrag'
 import {
-  countApprovalRequired,
   parseProposalDecisionStates,
   parseProposalSummaries,
   type ProposalDecisionReview,
@@ -169,14 +168,14 @@ export function ApprovalPanel({
     () => parseProposalDecisionStates({ acceptedChanges, rejectedChanges, deferredChanges }),
     [acceptedChanges, deferredChanges, rejectedChanges]
   )
+  const pendingApprovalCount = proposals.filter(
+    (proposal) => proposal.requiresApproval && !decisionStates[proposal.id]
+  ).length
   const [collapsedProposals, setCollapsedProposals] = useState<Record<string, boolean>>({})
 
   return (
     <section className="space-y-4">
-      <PanelHeader
-        title="待审批 proposal"
-        subtitle={`${countApprovalRequired(proposals)} 个需要人工审批`}
-      />
+      <PanelHeader title="待审批 proposal" subtitle={`${pendingApprovalCount} 个需要人工审批`} />
       <div className="space-y-2">
         {proposals.length === 0 ? (
           <div className="border-border/70 bg-muted/20 rounded-lg border p-4 text-sm">

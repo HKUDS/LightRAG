@@ -133,17 +133,38 @@ export function parseProposalSummaries(markdown: string): ProposalSummary[] {
 }
 
 export function groupProposalVersions(proposals: ProposalSummary[]): ProposalVersionGroup[] {
-  const groups = new Map<string, ProposalSummary[]>()
-  for (const proposal of proposals) {
+  const groups = new Map<string, Array<{ proposal: ProposalSummary; index: number }>>()
+  proposals.forEach((proposal, index) => {
     const baseId = proposal.parentId || proposal.id.replace(/-v\d+$/i, '')
-    groups.set(baseId, [...(groups.get(baseId) || []), proposal])
-  }
+    groups.set(baseId, [...(groups.get(baseId) || []), { proposal, index }])
+  })
 
-  return Array.from(groups.entries()).map(([baseId, versions]) => ({
-    baseId,
-    versions,
-    latest: versions[versions.length - 1]
-  }))
+  return Array.from(groups.entries()).map(([baseId, entries]) => {
+    const versions = [...entries].sort(compareProposalVersionEntries).map((entry) => entry.proposal)
+    return {
+      baseId,
+      versions,
+      latest: versions[versions.length - 1]
+    }
+  })
+}
+
+function compareProposalVersionEntries(
+  left: { proposal: ProposalSummary; index: number },
+  right: { proposal: ProposalSummary; index: number }
+) {
+  const leftVersion = getProposalVersionNumber(left.proposal.id)
+  const rightVersion = getProposalVersionNumber(right.proposal.id)
+  if (leftVersion !== null || rightVersion !== null) {
+    const versionDifference = (leftVersion ?? 1) - (rightVersion ?? 1)
+    if (versionDifference !== 0) return versionDifference
+  }
+  return left.index - right.index
+}
+
+function getProposalVersionNumber(proposalId: string) {
+  const match = proposalId.match(/-v(\d+)$/i)
+  return match ? Number(match[1]) : null
 }
 
 export function parseProposalDecisionStates({

@@ -154,6 +154,54 @@ proposals:
     expect(grouped[0].versions.map((item) => item.id)).toEqual(['prop-a', 'prop-a-v2'])
   })
 
+  test('sorts proposal versions by numeric suffix before selecting latest', () => {
+    const proposals = [
+      {
+        id: 'prop-a-v10',
+        type: 'rule_change',
+        target: 'x',
+        proposedChange: 'v10',
+        reason: '',
+        confidence: '',
+        risk: 'low',
+        requiresApproval: true,
+        evidence: [],
+        expectedMetricChange: '',
+        parentId: 'prop-a'
+      },
+      {
+        id: 'prop-a-v2',
+        type: 'rule_change',
+        target: 'x',
+        proposedChange: 'v2',
+        reason: '',
+        confidence: '',
+        risk: 'low',
+        requiresApproval: true,
+        evidence: [],
+        expectedMetricChange: '',
+        parentId: 'prop-a'
+      },
+      {
+        id: 'prop-a',
+        type: 'rule_change',
+        target: 'x',
+        proposedChange: 'v1',
+        reason: '',
+        confidence: '',
+        risk: 'medium',
+        requiresApproval: true,
+        evidence: [],
+        expectedMetricChange: ''
+      }
+    ]
+
+    const [group] = groupProposalVersions(proposals)
+
+    expect(group.latest.id).toBe('prop-a-v10')
+    expect(group.versions.map((item) => item.id)).toEqual(['prop-a', 'prop-a-v2', 'prop-a-v10'])
+  })
+
   test('parses recorded proposal decisions from decision memory artifacts', () => {
     expect(
       parseProposalDecisionStates({
