@@ -10,6 +10,7 @@ RULE_MEMORY_FILES = {
     "known_issues.md",
     "accepted_changes.md",
     "rejected_changes.md",
+    "proposal_revision_requests.md",
     "approval_queue.md",
     "improvement_backlog.md",
     "iteration_log.md",

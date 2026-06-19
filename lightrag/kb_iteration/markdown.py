@@ -25,6 +25,10 @@ RULE_MEMORY_TEMPLATES = {
     "known_issues.md": "# Known Issues\n\n- Track unresolved KB issues here.\n",
     "accepted_changes.md": "# Accepted Changes\n\n- Record approved KB changes here.\n",
     "rejected_changes.md": "# Rejected Changes\n\n- Record rejected KB changes here.\n",
+    "proposal_revision_requests.md": (
+        "# Proposal Revision Requests\n\n"
+        "- Queue maintainer feedback for proposals that need revision here.\n"
+    ),
     "approval_queue.md": "# Approval Queue\n\n- Queue proposed KB changes for human review here.\n",
     "improvement_backlog.md": "# Improvement Backlog\n\n- Track future KB improvements here.\n",
     "iteration_log.md": "# Iteration Log\n\n- Record KB iteration runs here.\n",

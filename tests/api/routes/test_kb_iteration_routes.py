@@ -623,6 +623,98 @@ def test_proposal_decision_accepts_empty_review_and_records_defaults(
     assert "web_display_change" in accepted
 
 
+def test_proposal_revision_request_accepts_empty_body_and_records_defaults(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p1/revision-request",
+        headers=HEADERS,
+        json={},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workspace"] == "influenza_medical_v1"
+    assert payload["proposalId"] == "p1"
+    assert payload["artifactKey"] == "proposal_revision_requests"
+    record = payload["record"]
+    assert record["proposal_id"] == "p1"
+    assert record["reviewer"] == "maintainer"
+    assert record["proposal_type"] == "hierarchy_rule_change"
+    assert record["proposal_target"] == "kg_structure.md"
+    assert record["proposal_risk"] == "medium"
+    assert "rejected" in record["reason"].lower()
+    assert "revision" in record["reason"].lower()
+    assert record["requested_at"]
+
+    revision_requests = (
+        fixture.package / "proposal_revision_requests.md"
+    ).read_text(encoding="utf-8")
+    assert "p1" in revision_requests
+    assert "hierarchy_rule_change" in revision_requests
+    assert "kg_structure.md" in revision_requests
+
+    iteration_log = (fixture.package / "iteration_log.md").read_text(encoding="utf-8")
+    assert "- phase: proposal_revision_request" in iteration_log
+    assert "- event: revision_request_queued" in iteration_log
+    assert "- proposal_id: p1" in iteration_log
+
+    artifact = client.get(
+        "/kb-iteration/influenza_medical_v1/artifacts/proposal_revision_requests",
+        headers=HEADERS,
+    )
+    assert artifact.status_code == 200
+    assert artifact.json()["content"] == revision_requests
+
+
+def test_proposal_revision_request_preserves_reason(tmp_path: Path, monkeypatch):
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p1/revision-request",
+        headers=HEADERS,
+        json={"reason": "Evidence missing source_id"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["record"]["reason"] == "Evidence missing source_id"
+    revision_requests = (
+        fixture.package / "proposal_revision_requests.md"
+    ).read_text(encoding="utf-8")
+    assert "Evidence missing source_id" in revision_requests
+
+
+def test_proposal_revision_request_rejects_unknown_proposal(
+    tmp_path: Path, monkeypatch
+):
+    client, _ = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/not-in-queue/revision-request",
+        headers=HEADERS,
+        json={},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("proposal_id", ["bad%20id", "bad%0Aid", "bad:id", "bad%5Cid"])
+def test_proposal_revision_request_rejects_invalid_proposal_id(
+    tmp_path: Path, monkeypatch, proposal_id: str
+):
+    client, _ = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        f"/kb-iteration/influenza_medical_v1/proposals/{proposal_id}/revision-request",
+        headers=HEADERS,
+        json={},
+    )
+
+    assert response.status_code == 400
+
+
 def test_execute_accepted_changes_without_records_writes_empty_apply_result_artifact(
     tmp_path: Path, monkeypatch
 ):

@@ -29,6 +29,32 @@ def test_build_agent_observation_includes_package_artifacts(tmp_path: Path):
     assert "Rejected rule" in observation["rules_memory"]["rejected_changes"]
 
 
+def test_revision_request_memory_is_visible_to_agent_context(tmp_path: Path):
+    package = _make_agent_package(tmp_path)
+    (package / "proposal_revision_requests.md").write_text(
+        "# Proposal Revision Requests\n\n"
+        "## p1\n\n"
+        "```json\n"
+        '{"proposal_id": "p1", "reason": "Evidence missing source_id"}\n'
+        "```\n",
+        encoding="utf-8",
+    )
+
+    observation = build_agent_observation(package, workspace="influenza_medical_v1")
+    stage_context = build_stage_context(
+        package,
+        workspace="influenza_medical_v1",
+        stage="propose_changes",
+    )
+
+    assert "Evidence missing source_id" in observation["rules_memory"][
+        "proposal_revision_requests"
+    ]
+    assert "Evidence missing source_id" in stage_context["rules_memory"][
+        "proposal_revision_requests"
+    ]
+
+
 def test_build_stage_context_selects_missing_branch_candidates(
     tmp_path: Path,
 ):

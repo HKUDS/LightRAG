@@ -59,6 +59,10 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
     "quality_report": ("quality_report.md", "text/markdown"),
     "iteration_log": ("iteration_log.md", "text/markdown"),
     "approval_queue": ("approval_queue.md", "text/markdown"),
+    "proposal_revision_requests": (
+        "proposal_revision_requests.md",
+        "text/markdown",
+    ),
     "improvement_backlog": ("improvement_backlog.md", "text/markdown"),
     "accepted_changes": ("accepted_changes.md", "text/markdown"),
     "accepted_changes_execution": (
@@ -98,6 +102,12 @@ class ProposalDecisionRequest(BaseModel):
     reason: str = Field(default="", max_length=4000)
     impact_scope: str = Field(default="", max_length=1000)
     verification: str = Field(default="", max_length=1000)
+
+
+class ProposalRevisionRequest(BaseModel):
+    reviewer: str = Field(default="maintainer", min_length=1, max_length=120)
+    reason: str = Field(default="", max_length=4000)
+    instruction: str = Field(default="", max_length=4000)
 
 
 class RunIterationRequest(BaseModel):
@@ -712,6 +722,33 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
             "sourceId": source_id,
             "nodes": nodes,
             "edges": edges,
+        }
+
+    @router.post(
+        "/{workspace}/proposals/{proposal_id}/revision-request",
+        dependencies=[Depends(combined_auth)],
+    )
+    async def record_proposal_revision_request(
+        workspace: str,
+        proposal_id: str,
+        request: ProposalRevisionRequest | None = None,
+    ) -> dict[str, Any]:
+        workspace = _validate_workspace_or_400(workspace)
+        proposal_id = _validate_proposal_id_or_400(proposal_id)
+        with _exclusive_workspace_file_lock(
+            _output_root(args), workspace, ".kb_iteration_decisions.lock"
+        ):
+            record = _append_proposal_revision_request(
+                args,
+                workspace,
+                proposal_id,
+                request or ProposalRevisionRequest(),
+            )
+        return {
+            "workspace": workspace,
+            "proposalId": proposal_id,
+            "artifactKey": "proposal_revision_requests",
+            "record": record,
         }
 
     @router.post(
@@ -1514,6 +1551,105 @@ def _append_decision(
     with path.open("a", encoding="utf-8") as file:
         file.write(entry)
     return record
+
+
+def _append_proposal_revision_request(
+    args,
+    workspace: str,
+    proposal_id: str,
+    request: ProposalRevisionRequest,
+) -> dict[str, Any]:
+    package_dir = _workspace_dir(args, workspace)
+    package_dir.mkdir(parents=True, exist_ok=True)
+    proposal = _proposal_by_id(args, workspace, proposal_id)
+    record = _build_proposal_revision_request_record(
+        proposal_id, proposal, request, _existing_decision(args, workspace, proposal_id)
+    )
+
+    path = package_dir / "proposal_revision_requests.md"
+    header = "" if path.exists() else "# Proposal Revision Requests\n"
+    entry = (
+        f"{header}\n## {proposal_id}\n\n"
+        "```json\n"
+        f"{json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True)}\n"
+        "```\n"
+    )
+    with path.open("a", encoding="utf-8") as file:
+        file.write(entry)
+    _append_proposal_revision_request_log(args, workspace, record)
+    return record
+
+
+def _build_proposal_revision_request_record(
+    proposal_id: str,
+    proposal: dict[str, Any],
+    request: ProposalRevisionRequest,
+    existing_decision: tuple[str, dict[str, Any] | None] | None,
+) -> dict[str, Any]:
+    requested_at = datetime.now(timezone.utc).isoformat()
+    reason = request.reason.strip() or request.instruction.strip()
+    if not reason:
+        reason = _default_revision_request_reason(
+            proposal_id, proposal, existing_decision
+        )
+    return {
+        "proposal_id": proposal_id,
+        "requested_at": requested_at,
+        "reviewer": request.reviewer,
+        "reason": reason,
+        "instruction": request.instruction.strip(),
+        "proposal_type": proposal.get("type", ""),
+        "proposal_target": proposal.get("target", ""),
+        "proposal_risk": proposal.get("risk", ""),
+        "proposal_confidence": proposal.get("confidence", ""),
+        "proposal_reason": proposal.get("reason", ""),
+        "proposal_evidence": proposal.get("evidence", []),
+    }
+
+
+def _default_revision_request_reason(
+    proposal_id: str,
+    proposal: dict[str, Any],
+    existing_decision: tuple[str, dict[str, Any] | None] | None,
+) -> str:
+    if existing_decision:
+        decision, record = existing_decision
+        if decision == "reject" and record:
+            rejected_reason = str(record.get("reason", "")).strip()
+            if rejected_reason:
+                return (
+                    f"Revise rejected proposal {proposal_id}. "
+                    f"Maintainer rejection reason: {rejected_reason}"
+                )
+
+    proposal_reason = str(proposal.get("reason", "")).strip() or "not provided"
+    return (
+        f"Queue a revision for rejected proposal {proposal_id} in the next agent iteration. "
+        f"Use the parent proposal reason as context: {proposal_reason}."
+    )
+
+
+def _append_proposal_revision_request_log(
+    args, workspace: str, record: dict[str, Any]
+) -> None:
+    log_path = _workspace_dir(args, workspace) / "iteration_log.md"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = [
+        "",
+        "## Proposal Revision Request",
+        "",
+        "- phase: proposal_revision_request",
+        "- event: revision_request_queued",
+        f"- proposal_id: {_markdown_inline(record.get('proposal_id'))}",
+        f"- reviewer: {_markdown_inline(record.get('reviewer'))}",
+        "- artifact: proposal_revision_requests.md",
+    ]
+    reason = str(record.get("reason") or "").strip()
+    if reason:
+        entry.append(f"- reason: {_markdown_inline(reason)}")
+    entry.append("")
+    with log_path.open("a", encoding="utf-8") as file:
+        file.write("\n".join(entry))
 
 
 def _build_proposal_decision_record(

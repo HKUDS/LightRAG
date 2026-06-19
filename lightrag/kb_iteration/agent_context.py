@@ -169,6 +169,9 @@ def _rules_memory(package_path: Path) -> dict[str, str]:
     return {
         "accepted_changes": _read_text(package_path / "accepted_changes.md"),
         "rejected_changes": _read_text(package_path / "rejected_changes.md"),
+        "proposal_revision_requests": _read_text(
+            package_path / "proposal_revision_requests.md"
+        ),
     }
 
 
