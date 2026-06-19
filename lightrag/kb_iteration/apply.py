@@ -116,17 +116,18 @@ def load_proposals_by_id(package_dir: str | Path) -> dict[str, dict[str, Any]]:
 
 
 def branch_key_from_proposal(proposal: dict[str, Any]) -> str:
-    text = "\n".join(
-        str(proposal.get(field_name, ""))
-        for field_name in ("target", "proposed_change", "reason")
-    )
-    for category in TOP_LEVEL_MEDICAL_CATEGORIES:
-        pattern = (
-            rf"(?<![A-Za-z0-9_.-]){re.escape(category.key)}"
-            rf"(?!(?:[A-Za-z0-9_]|[.-][A-Za-z0-9_]))"
-        )
-        if re.search(pattern, text):
-            return category.key
+    for field_name in ("proposed_change", "target", "reason"):
+        text = str(proposal.get(field_name, ""))
+        matches: list[tuple[int, str]] = []
+        for category in TOP_LEVEL_MEDICAL_CATEGORIES:
+            pattern = (
+                rf"(?<![A-Za-z0-9_.-]){re.escape(category.key)}"
+                rf"(?!(?:[A-Za-z0-9_]|[.-][A-Za-z0-9_]))"
+            )
+            if match := re.search(pattern, text):
+                matches.append((match.start(), category.key))
+        if matches:
+            return min(matches, key=lambda item: item[0])[1]
     return ""
 
 

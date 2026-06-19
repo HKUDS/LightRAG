@@ -443,6 +443,25 @@ def test_branch_key_from_proposal_extracts_known_ontology_key() -> None:
     assert branch_key_from_proposal(proposal) == "diagnosis_testing"
 
 
+def test_branch_key_from_proposal_prefers_explicit_key_over_later_ontology_keyword() -> None:
+    proposal = {
+        "id": "prop-add-branch-high-risk",
+        "type": "add_hierarchy_branch",
+        "target": "hierarchy",
+        "proposed_change": (
+            "Create a new first-level branch with key 'high_risk_population' "
+            "and label '高危人群'."
+        ),
+        "reason": (
+            "The graph is missing high risk groups, a key component of clinical "
+            "prevention and treatment guidance."
+        ),
+        "evidence": ["item_id: 6月龄以上人群; source_id: chunk-1"],
+    }
+
+    assert branch_key_from_proposal(proposal) == "high_risk_population"
+
+
 @pytest.mark.parametrize(
     "branch_reference",
     ["diagnosis_testing.child", "diagnosis_testing-v2"],
