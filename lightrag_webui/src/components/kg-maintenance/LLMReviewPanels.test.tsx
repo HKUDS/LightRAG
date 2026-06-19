@@ -95,6 +95,49 @@ describe('LLM review panels', () => {
     expect(markup).toContain('不会自动修改 KG')
   })
 
+  test('renders multistage self-repair attempt history', () => {
+    const markup = renderToStaticMarkup(
+      <LLMReviewPanel
+        trace={{
+          stop_reason: 'invalid_llm_output',
+          stages: [
+            {
+              stage: 'propose',
+              state: 'invalid_llm_output',
+              attempts: 3,
+              attempt_logs: [
+                {
+                  attempt: 1,
+                  state: 'invalid_llm_output',
+                  error: 'proposal expected_metric_change values must be numbers'
+                },
+                {
+                  attempt: 2,
+                  state: 'invalid_llm_output',
+                  error: 'proposal evidence is not grounded in deterministic artifacts'
+                }
+              ]
+            }
+          ]
+        }}
+        report="# LLM Review Report"
+        proposals=""
+        issueAnalysis=""
+        missingBranchInference=""
+        evidenceMap=""
+        repairPlan=""
+        running={false}
+        onRun={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('attempt')
+    expect(markup).toContain('3')
+    expect(markup).toContain('proposal expected_metric_change values must be numbers')
+    expect(markup).toContain('proposal evidence is not grounded in deterministic artifacts')
+    expect(markup).not.toContain('[object Object]')
+  })
+
   test('renders malformed multistage traces without object garbage', () => {
     const markup = renderToStaticMarkup(
       <LLMReviewPanel

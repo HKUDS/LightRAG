@@ -9,11 +9,19 @@ export type TraceRound = {
   state?: string
 }
 
+export type TraceAttemptLog = {
+  attempt?: number
+  state?: string
+  error?: string
+}
+
 export type TraceStage = {
   stage?: string
   state?: string
+  attempts?: number
   artifact_keys?: string[]
   proposal_ids?: string[]
+  attempt_logs?: TraceAttemptLog[]
 }
 
 export type LLMReviewPanelProps = {
@@ -95,6 +103,12 @@ export function LLMReviewPanel({
                     <span className="bg-muted rounded-md px-2 py-1 text-xs">{stage.state}</span>
                   ) : null}
                 </div>
+                {typeof stage?.attempts === 'number' ? (
+                  <div className="text-muted-foreground mt-2 text-xs">
+                    attempt: <span className="font-medium">{stage.attempts}</span>
+                  </div>
+                ) : null}
+                <AttemptLogList logs={stage?.attempt_logs} />
                 <RoundField
                   label="artifact key"
                   values={stage?.artifact_keys}
@@ -260,6 +274,28 @@ function RoundField({
   )
 }
 
+function AttemptLogList({ logs }: { logs?: TraceAttemptLog[] }) {
+  if (!Array.isArray(logs) || logs.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="mt-3 space-y-1">
+      <div className="text-muted-foreground text-xs">rejected attempts</div>
+      {logs.map((log, index) => (
+        <div
+          key={`${log.attempt || index}-${log.error || ''}`}
+          className="bg-muted rounded-md px-2 py-1 text-xs"
+        >
+          <span className="font-medium">Attempt {log.attempt || index + 1}</span>
+          {log.state ? <span className="text-muted-foreground"> - {log.state}</span> : null}
+          {log.error ? <div className="mt-1 break-words">{log.error}</div> : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ArtifactBlock({
   title,
   content,
@@ -300,8 +336,13 @@ function normalizeTraceStageEntry(stage: unknown): TraceStage | null {
   return {
     stage: typeof stage.stage === 'string' ? stage.stage : undefined,
     state: typeof stage.state === 'string' ? stage.state : undefined,
+    attempts:
+      typeof stage.attempts === 'number' && Number.isFinite(stage.attempts)
+        ? stage.attempts
+        : undefined,
     artifact_keys: stringArray(stage.artifact_keys),
-    proposal_ids: stringArray(stage.proposal_ids)
+    proposal_ids: stringArray(stage.proposal_ids),
+    attempt_logs: attemptLogArray(stage.attempt_logs)
   }
 }
 
@@ -316,6 +357,32 @@ function stringArray(value: unknown) {
 
   const strings = value.filter((item): item is string => typeof item === 'string')
   return strings.length ? strings : undefined
+}
+
+function attemptLogArray(value: unknown) {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+
+  const logs = value
+    .map((item): TraceAttemptLog | null => {
+      if (!isRecord(item)) {
+        return null
+      }
+      const attempt =
+        typeof item.attempt === 'number' && Number.isFinite(item.attempt)
+          ? item.attempt
+          : undefined
+      const state = typeof item.state === 'string' ? item.state : undefined
+      const error = typeof item.error === 'string' ? item.error : undefined
+      if (attempt === undefined && !state && !error) {
+        return null
+      }
+      return { attempt, state, error }
+    })
+    .filter((item): item is TraceAttemptLog => item !== null)
+
+  return logs.length ? logs : undefined
 }
 
 function normalizeTraceStage(stage?: string) {

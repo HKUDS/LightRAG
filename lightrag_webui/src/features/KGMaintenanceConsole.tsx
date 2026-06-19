@@ -239,7 +239,7 @@ export default function KGMaintenanceConsole() {
         runKBIterationLLMReview(requestWorkspace, {
           profile: activeProfile,
           mode: 'agent_pipeline',
-          max_stage_retries: 1,
+          max_stage_retries: 5,
           max_review_rounds: 4,
           max_focus_items_per_round: 3,
           allow_llm_judge: true,
