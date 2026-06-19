@@ -374,6 +374,12 @@ class InferOnlyEvidenceAgentClient(SequencedAgentClient):
         self.outputs[3]["proposals"][0]["evidence"] = ["Invented Branch Alpha"]
 
 
+class BranchKeyOrLabelOnlyEvidenceAgentClient(SequencedAgentClient):
+    def __init__(self, evidence: str) -> None:
+        super().__init__()
+        self.outputs[3]["proposals"][0]["evidence"] = [evidence]
+
+
 class RetryExplainAgentClient(SequencedAgentClient):
     def __init__(self) -> None:
         super().__init__()
@@ -752,6 +758,33 @@ def test_pipeline_rejects_evidence_grounded_only_by_llm_branch_inference(
     approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
     assert "proposals: []" in approval_queue
     assert "proposal-hierarchy-symptom-001" not in approval_queue
+
+
+@pytest.mark.parametrize("evidence", ["symptom", "Symptom"])
+def test_pipeline_rejects_evidence_grounded_only_by_quality_branch_key_or_label(
+    tmp_path: Path, evidence: str
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = BranchKeyOrLabelOnlyEvidenceAgentClient(evidence)
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    assert result.proposal_ids == []
+    assert len(client.calls) == 4
+    approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    assert "proposals: []" in approval_queue
+    assert "proposal-hierarchy-symptom-001" not in approval_queue
+    assert propose_trace["stage"] == "propose"
+    assert "evidence is not grounded in deterministic artifacts" in propose_trace["error"]
 
 
 def test_pipeline_queues_proposals_when_judge_is_unavailable(tmp_path: Path):

@@ -589,14 +589,6 @@ def _grounded_reference_tokens(
             _add_quality_reference_token(tokens, key, _dict_value(metrics, key))
         for finding in _list_of_dicts(quality.get("findings")):
             _add_reference_values(tokens, finding.get("evidence"))
-        details = quality.get("details", {})
-        if isinstance(details, dict):
-            branches = details.get("hierarchy_branches", {})
-            if isinstance(branches, dict):
-                for branch_list in branches.values():
-                    for branch in _list_of_dicts(branch_list):
-                        _add_reference_token(tokens, branch.get("key"))
-                        _add_reference_token(tokens, branch.get("label"))
 
     return tokens
 
