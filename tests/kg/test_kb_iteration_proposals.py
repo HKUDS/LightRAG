@@ -495,6 +495,9 @@ def test_validate_proposal_rejects_invalid_risk():
         {"": 5},
         {"overall": "5"},
         {"overall": True},
+        {"overall": float("nan")},
+        {"overall": float("inf")},
+        {"overall": float("-inf")},
     ],
 )
 def test_validate_proposal_rejects_invalid_expected_metric_changes(

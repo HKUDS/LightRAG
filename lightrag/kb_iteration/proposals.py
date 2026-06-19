@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -101,6 +102,7 @@ def validate_proposal(proposal: ImprovementProposal) -> None:
         if (
             not isinstance(value, int | float)
             or isinstance(value, bool)
+            or not math.isfinite(value)
         ):
             raise ValueError("proposal expected_metric_change values must be numbers")
 

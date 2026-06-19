@@ -105,6 +105,14 @@ def test_parse_llm_review_output_validates_proposal_requires_approval_type():
         parse_llm_review_output(json.dumps(payload))
 
 
+def test_parse_llm_review_output_keeps_expected_metric_change_numeric_strings_invalid():
+    payload = _review_payload()
+    payload["proposals"][0]["expected_metric_change"] = {"relation_semantics": "8"}
+
+    with pytest.raises(ValueError, match="expected_metric_change"):
+        parse_llm_review_output(json.dumps(payload))
+
+
 def test_parse_llm_review_output_rejects_malformed_proposal_payload():
     payload = _review_payload()
     del payload["proposals"][0]["target"]

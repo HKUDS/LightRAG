@@ -123,6 +123,31 @@ def test_parse_agent_stage_output_rejects_non_numeric_metric_change_strings(
         )
 
 
+@pytest.mark.parametrize(
+    "metric_value",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_parse_agent_stage_output_rejects_non_finite_numeric_metric_changes(
+    metric_value,
+):
+    with pytest.raises(ValueError, match="expected_metric_change"):
+        parse_agent_stage_output(
+            "propose",
+            json.dumps(
+                {
+                    "proposals": [
+                        _proposal_payload(
+                            expected_metric_change={
+                                "hierarchy_completeness": metric_value,
+                            }
+                        )
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+
 def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
     output = parse_agent_stage_output(
         "propose",
