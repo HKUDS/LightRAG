@@ -124,17 +124,7 @@ def _normalize_agent_evidence_item(value: Any) -> str:
         return ""
 
     parts = []
-    ordered_keys = [
-        key
-        for key in _EVIDENCE_FIELD_ORDER
-        if key in value
-    ]
-    ordered_keys.extend(
-        key
-        for key in sorted(value)
-        if key not in _EVIDENCE_FIELD_ORDER
-    )
-    for key in ordered_keys:
+    for key in _EVIDENCE_FIELD_ORDER:
         rendered = _render_evidence_value(value.get(key))
         if rendered:
             parts.append(f"{key}: {rendered}")

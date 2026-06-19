@@ -84,6 +84,7 @@ def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
                                 "source_id": "chunk-1",
                                 "file_path": "guide.md",
                                 "item_id": "edge-flu-fever",
+                                "comment": "do not render this free-form field",
                                 "reason": "supports hierarchy gap",
                             },
                             "quality:hierarchy_missing_branch_count=1",
@@ -101,6 +102,17 @@ def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
         "source_id: chunk-1; file_path: guide.md; item_id: edge-flu-fever; reason: supports hierarchy gap",
         "quality:hierarchy_missing_branch_count=1",
     ]
+
+
+def test_parse_agent_stage_output_rejects_unknown_only_structured_evidence():
+    with pytest.raises(ValueError, match="evidence"):
+        parse_agent_stage_output(
+            "propose",
+            json.dumps(
+                {"proposals": [_proposal_payload(evidence=[{"comment": "chunk-1"}])]},
+                ensure_ascii=False,
+            ),
+        )
 
 
 def test_parse_agent_stage_output_rejects_mutation_proposals_with_empty_evidence():
