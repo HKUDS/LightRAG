@@ -566,11 +566,24 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
                     detail="KB accepted changes execution is already in progress",
                 )
             acquired_locks.append(execution_lock)
-            with _exclusive_workspace_file_lock(
-                _output_root(args), workspace, ".kb_iteration_accepted_execution.lock"
-            ):
+            with _exclusive_workspace_file_lock(_output_root(args), workspace):
                 records = _accepted_decision_records(args, workspace)
+                quality_before = _optional_json_artifact(
+                    args, workspace, "quality_score", {}
+                )
                 if not records:
+                    result = _accepted_apply_result_with_quality(
+                        AcceptedApplyResult(
+                            workspace=workspace,
+                            applied_at=datetime.now(timezone.utc).isoformat(),
+                            source_artifact="accepted_changes.md",
+                            proposal_ids=[],
+                        ),
+                        quality_before,
+                        quality_before,
+                    )
+                    write_apply_result_artifacts(result, package_dir)
+                    _append_accepted_apply_log(args, workspace, result)
                     return {
                         "workspace": workspace,
                         "status": "no_accepted_changes",
@@ -581,24 +594,25 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
                     }
 
                 proposals_by_id = load_proposals_by_id(package_dir)
-                quality_before = _optional_json_artifact(
-                    args, workspace, "quality_score", {}
-                )
                 result = await apply_accepted_changes_to_graph(
                     rag=rag,
                     workspace=workspace,
                     records=records,
                     proposals_by_id=proposals_by_id,
                 )
+                rerun_error: FileNotFoundError | ValueError | None = None
                 if result.applied_count > 0:
-                    await asyncio.to_thread(
-                        run_iteration,
-                        workspace=workspace,
-                        storage_root=_storage_root(args),
-                        input_root=_input_root(args),
-                        output_root=_output_root(args),
-                        profile=_current_snapshot_profile(args, workspace),
-                    )
+                    try:
+                        await asyncio.to_thread(
+                            run_iteration,
+                            workspace=workspace,
+                            storage_root=_storage_root(args),
+                            input_root=_input_root(args),
+                            output_root=_output_root(args),
+                            profile=_current_snapshot_profile(args, workspace),
+                        )
+                    except (FileNotFoundError, ValueError) as exc:
+                        rerun_error = exc
                 quality_after = _optional_json_artifact(
                     args, workspace, "quality_score", {}
                 )
@@ -606,7 +620,11 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
                     result, quality_before, quality_after
                 )
                 write_apply_result_artifacts(result, package_dir)
-                _append_accepted_apply_log(args, workspace, result)
+                _append_accepted_apply_log(
+                    args, workspace, result, rerun_error=rerun_error
+                )
+                if rerun_error is not None:
+                    _raise_accepted_apply_rerun_error(rerun_error)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         finally:
@@ -1014,6 +1032,12 @@ def _accepted_apply_result_with_quality(
     )
 
 
+def _raise_accepted_apply_rerun_error(exc: FileNotFoundError | ValueError) -> None:
+    if isinstance(exc, FileNotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _record_accepted_changes_execution(
     args,
     workspace: str,
@@ -1200,21 +1224,40 @@ def _append_accepted_execution_log(
 
 
 def _append_accepted_apply_log(
-    args, workspace: str, result: AcceptedApplyResult
+    args,
+    workspace: str,
+    result: AcceptedApplyResult,
+    *,
+    rerun_error: FileNotFoundError | ValueError | None = None,
 ) -> None:
     log_path = _workspace_dir(args, workspace) / "iteration_log.md"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    proposal_ids = ", ".join(result.proposal_ids) or "none"
     entry = [
         "",
         "## Accepted Changes Apply",
         "",
         "- phase: accepted_changes_apply",
-        f"- accepted_proposal_ids: {', '.join(result.proposal_ids)}",
+        f"- accepted_proposal_ids: {proposal_ids}",
         f"- applied_count: {result.applied_count}",
         f"- blocked_count: {result.blocked_count}",
         f"- artifact: {APPLY_RESULT_MARKDOWN}",
-        "",
     ]
+    if rerun_error is not None:
+        entry.extend(
+            [
+                "- rerun_status: failed",
+                (
+                    "- rerun_error: "
+                    f"{rerun_error.__class__.__name__}: {_markdown_inline(rerun_error)}"
+                ),
+            ]
+        )
+    elif result.applied_count > 0:
+        entry.append("- rerun_status: completed")
+    else:
+        entry.append("- rerun_status: not_run")
+    entry.append("")
     with log_path.open("a", encoding="utf-8") as file:
         file.write("\n".join(entry))
 
