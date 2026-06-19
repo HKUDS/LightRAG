@@ -63,6 +63,83 @@ describe('resolveKGMaintenanceNextAction', () => {
     expect(action.reason).toBe('accepted_changes.md 中已有已接受决策，尚未生成执行结果。')
   })
 
+  test('ignores non-proposal accepted changes headings', () => {
+    const action = resolveKGMaintenanceNextAction({
+      summary,
+      qualityFindings: [],
+      llmTrace: { rounds: [] },
+      acceptedChanges: `# Accepted Changes
+
+## Summary
+
+人工审批摘要，不是 proposal 决策记录。
+`,
+      acceptedApplyResult: ''
+    })
+
+    expect(action.id).toBe('start-next-iteration')
+    expect(action.section).toBe('llm-review')
+  })
+
+  test('returns execute-accepted when apply result is stale and missing accepted proposal ids', () => {
+    const action = resolveKGMaintenanceNextAction({
+      summary,
+      qualityFindings: [],
+      llmTrace: { rounds: [] },
+      acceptedChanges: `# Accepted Changes
+
+## p1
+
+已接受。
+
+## p2
+
+已接受。
+`,
+      acceptedApplyResult: `# Apply Result
+
+- Applied: 1
+- Blocked: 0
+
+## Changes
+- p1: applied (clinical_manifestation)
+`
+    })
+
+    expect(action.id).toBe('execute-accepted')
+    expect(action.section).toBe('execute')
+  })
+
+  test('falls through when every accepted proposal id is reflected in apply result changes', () => {
+    const action = resolveKGMaintenanceNextAction({
+      summary,
+      qualityFindings: [],
+      llmTrace: { rounds: [] },
+      acceptedChanges: `# Accepted Changes
+
+## p1
+
+已接受。
+
+## p2
+
+已接受。
+`,
+      acceptedApplyResult: `# Apply Result
+
+- Applied: 1
+- Blocked: 1
+
+## Changes
+- p1: applied (clinical_manifestation)
+- p2: blocked: missing source evidence
+`
+    })
+
+    expect(action.id).toBe('start-next-iteration')
+    expect(action.section).toBe('llm-review')
+  })
+
   test('returns validate-result immediately after execution', () => {
     const action = resolveKGMaintenanceNextAction({
       summary,

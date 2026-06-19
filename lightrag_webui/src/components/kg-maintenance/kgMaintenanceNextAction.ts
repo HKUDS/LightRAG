@@ -34,7 +34,58 @@ export type ResolveKGMaintenanceNextActionArgs = {
   justExecuted?: boolean
 }
 
-const acceptedDecisionSectionPattern = /^##\s+/m
+const proposalIdHeadingPattern = /^##\s+([A-Za-z0-9_.-]+)\s*$/gm
+const applyResultChangesHeadingPattern = /^##\s+Changes\s*$/im
+const applyResultChangeLinePattern = /^-\s+([A-Za-z0-9_.-]+):\s+/gm
+const metaDecisionHeadings = new Set(['summary'])
+
+function extractAcceptedProposalIds(markdown: string | null | undefined): string[] {
+  const proposalIds = new Set<string>()
+  let match: RegExpExecArray | null
+  const text = markdown ?? ''
+
+  proposalIdHeadingPattern.lastIndex = 0
+  while ((match = proposalIdHeadingPattern.exec(text)) !== null) {
+    const proposalId = match[1]?.trim()
+    if (proposalId && !metaDecisionHeadings.has(proposalId.toLowerCase())) {
+      proposalIds.add(proposalId)
+    }
+  }
+
+  return [...proposalIds]
+}
+
+function extractApplyResultProposalIds(markdown: string | null | undefined): Set<string> {
+  const proposalIds = new Set<string>()
+  const text = markdown ?? ''
+  const changesHeading = text.match(applyResultChangesHeadingPattern)
+  if (!changesHeading || changesHeading.index === undefined) {
+    return proposalIds
+  }
+
+  const changesSection = text.slice(changesHeading.index + changesHeading[0].length)
+  applyResultChangeLinePattern.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = applyResultChangeLinePattern.exec(changesSection)) !== null) {
+    const proposalId = match[1]?.trim()
+    if (proposalId) {
+      proposalIds.add(proposalId)
+    }
+  }
+
+  return proposalIds
+}
+
+function allAcceptedProposalsReflectedInApplyResult({
+  acceptedProposalIds,
+  acceptedApplyResult
+}: {
+  acceptedProposalIds: string[]
+  acceptedApplyResult?: string | null
+}): boolean {
+  const applyResultProposalIds = extractApplyResultProposalIds(acceptedApplyResult)
+  return acceptedProposalIds.every((proposalId) => applyResultProposalIds.has(proposalId))
+}
 
 export function resolveKGMaintenanceNextAction({
   summary,
@@ -74,9 +125,14 @@ export function resolveKGMaintenanceNextAction({
     }
   }
 
-  const hasAcceptedDecisionSections = acceptedDecisionSectionPattern.test(acceptedChanges ?? '')
-  const hasApplyResult = Boolean(acceptedApplyResult?.trim())
-  if (hasAcceptedDecisionSections && !hasApplyResult) {
+  const acceptedProposalIds = extractAcceptedProposalIds(acceptedChanges)
+  const hasUnappliedAcceptedProposals =
+    acceptedProposalIds.length > 0 &&
+    !allAcceptedProposalsReflectedInApplyResult({
+      acceptedProposalIds,
+      acceptedApplyResult
+    })
+  if (hasUnappliedAcceptedProposals) {
     return {
       id: 'execute-accepted',
       label: '执行已接受变更',

@@ -1,17 +1,21 @@
 import Button from '@/components/ui/Button'
 import { ArrowRightIcon } from 'lucide-react'
-import type { ReactNode } from 'react'
 import type { KGMaintenanceNextAction } from './kgMaintenanceNextAction'
 
-interface AgentStepHeaderProps {
+export type AgentStepHeaderBadge = {
+  label: string
+  value: string
+}
+
+export interface AgentStepHeaderProps {
   title: string
   description: string
   action: KGMaintenanceNextAction
-  badges?: ReactNode[]
+  badges?: AgentStepHeaderBadge[]
   onAction: (action: KGMaintenanceNextAction) => void
 }
 
-export default function AgentStepHeader({
+export function AgentStepHeader({
   title,
   description,
   action,
@@ -33,7 +37,7 @@ export default function AgentStepHeader({
                 key={index}
                 className="border-border bg-muted/40 text-muted-foreground inline-flex h-7 items-center rounded-md border px-2 text-xs font-medium"
               >
-                {badge}
+                {badge.label} {badge.value}
               </span>
             ))}
           </div>
@@ -52,3 +56,5 @@ export default function AgentStepHeader({
     </header>
   )
 }
+
+export default AgentStepHeader
