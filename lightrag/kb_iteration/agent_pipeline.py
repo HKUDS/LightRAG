@@ -476,6 +476,7 @@ def _synthetic_judge_stage_trace(reason: str) -> dict[str, Any]:
         "completed_at": "",
         "state": "running",
         "attempts": 0,
+        "attempt_logs": [],
         "context_files": [],
         "model": "not_called",
         "input_token_estimate": 0,

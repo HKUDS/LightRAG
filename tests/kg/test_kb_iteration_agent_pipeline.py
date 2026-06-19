@@ -1044,6 +1044,7 @@ def test_pipeline_marks_judge_unavailable_when_judge_disabled(tmp_path: Path):
     judge_trace = trace["stages"][-1]
     assert judge_trace["stage"] == "judge"
     assert judge_trace["state"] == "judge_unavailable"
+    assert judge_trace["attempt_logs"] == []
     assert "judge stage disabled by configuration" in judge_trace["error"]
 
     approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
