@@ -29,6 +29,7 @@ const {
   normalizeOptionalMarkdown,
   optionalMissingResponse,
   runWorkspaceAction,
+  isGeneratedDisplayArtifact,
   requestProposalRevisionForWorkspace,
   submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse
@@ -75,6 +76,9 @@ function renderMainPanel(
     rejectedChanges?: string
     deferredChanges?: string
     acceptedApplyResult?: string
+    acceptedApplyResultSource?: string
+    llmProposals?: string
+    llmProposalsSource?: string
   } = {}
 ) {
   return renderToStaticMarkup(
@@ -148,12 +152,14 @@ accepted content marker`,
 overall: 88 -> 97
 hierarchy_missing_branch_count: 4 -> 0`
       }
+      acceptedApplyResultSource={options.acceptedApplyResultSource}
       llmTrace={{
         stop_reason: 'pending_human_review',
         rounds: [{ round_id: 'round-1', state: 'pending_human_review' }]
       }}
       llmReport="# LLM Review Report"
-      llmProposals="- id: proposal-1"
+      llmProposals={options.llmProposals ?? '- id: proposal-1'}
+      llmProposalsSource={options.llmProposalsSource}
       llmJudgeReport="# Judge Report"
       llmIssueAnalysis="# Issue Analysis"
       llmMissingBranchInference="# Missing Branch Inference"
@@ -431,6 +437,36 @@ describe('KGMaintenanceShell responsive layout', () => {
     expect(markup).toContain('aria-label="全部产物"')
     expect(markup).toContain('关闭')
   })
+
+  test('drawer status treats real generated display metadata as generated', () => {
+    expect(
+      isGeneratedDisplayArtifact({
+        artifactKey: 'kb_context',
+        contentType: 'text/markdown',
+        content: 'zh context',
+        display: {
+          language: 'zh',
+          zhFile: 'kb_context.zh.md',
+          generated: true,
+          fallbackToSource: false
+        }
+      })
+    ).toBe(true)
+
+    expect(
+      isGeneratedDisplayArtifact({
+        artifactKey: 'kb_context',
+        contentType: 'text/markdown',
+        content: 'source context',
+        display: {
+          language: 'zh',
+          zhFile: 'kb_context.zh.md',
+          generated: true,
+          fallbackToSource: true
+        }
+      })
+    ).toBe(false)
+  })
 })
 
 describe('MainPanel workflow routing', () => {
@@ -616,6 +652,8 @@ describe('MainPanel workflow routing', () => {
 
     expect(bundle.kbContextArtifact).toBe('zh:kb_context')
     expect(bundle.displayArtifacts.kb_context.content).toBe('zh:kb_context')
+    expect(bundle.acceptedApplyResultArtifact).toBe('zh:accepted_changes_apply_result')
+    expect(bundle.acceptedApplyResultSourceArtifact).toBe('source:accepted_changes_apply_result')
   })
 
   test('workspace bundle prefers display artifacts for LLM review artifacts', async () => {
@@ -678,6 +716,7 @@ describe('MainPanel workflow routing', () => {
     })
     expect(bundle.llmReportArtifact).toBe('zh:llm_review_report')
     expect(bundle.llmProposalsArtifact).toBe('zh:proposals_generated')
+    expect(bundle.llmProposalsSourceArtifact).toBe('source proposals')
     expect(bundle.llmJudgeReportArtifact).toBe('zh:llm_judge_report')
     expect(bundle.displayArtifacts.llm_review_trace.payload).toEqual({
       stop_reason: 'zh-trace',
@@ -1288,12 +1327,36 @@ describe('MainPanel workflow routing', () => {
     expect(markup).not.toContain('rejected content marker')
   })
 
+  test('execute parses source apply result while rendering display apply result', () => {
+    const markup = renderMainPanel('execute', {
+      acceptedApplyResult: 'translated apply block without applied count',
+      acceptedApplyResultSource: `Applied: 2
+overall: 88 -> 97
+hierarchy_missing_branch_count: 4 -> 0`
+    })
+
+    expect(markup).toContain('translated apply block without applied count')
+    expect(markup).toContain('Applied: 2')
+  })
+
   test('llm-review renders auxiliary review materials without memory fallthrough', () => {
     const markup = renderMainPanel('llm-review')
 
     expect(markup).toContain('pending_human_review')
     expect(markup).toContain('# LLM Review Report')
     expect(markup).not.toContain('accepted content marker')
+  })
+
+  test('llm-review parses patch proposal ids from source proposals while rendering display proposals', () => {
+    const markup = renderMainPanel('llm-review', {
+      llmProposals: 'translated proposal display without parseable ids',
+      llmProposalsSource: `proposals:
+  - id: proposal-source-1
+    title: source proposal`
+    })
+
+    expect(markup).toContain('translated proposal display without parseable ids')
+    expect(markup).toContain('proposal-source-1')
   })
 
   test('validate renders quality deltas and apply result', () => {
@@ -1304,5 +1367,20 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('4 → 0')
     expect(markup).toContain('Applied: 2')
     expect(markup).not.toContain('iteration_log.md')
+  })
+
+  test('validate parses source apply result while rendering display apply result', () => {
+    const markup = renderMainPanel('validate', {
+      acceptedApplyResult: 'translated validation block without backend metrics',
+      acceptedApplyResultSource: `Applied: 0
+overall: 88 -> 97
+hierarchy_missing_branch_count: 4 -> 0`
+    })
+
+    expect(markup).toContain('translated validation block without backend metrics')
+    expect(markup).toContain('88')
+    expect(markup).toContain('97')
+    expect(markup).toContain('4')
+    expect(markup).toContain('bg-emerald-50/70')
   })
 })

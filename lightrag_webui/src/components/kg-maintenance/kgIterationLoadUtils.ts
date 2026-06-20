@@ -17,6 +17,7 @@ import {
   type KBIterationRulesResponse,
   type KBIterationSummaryResponse
 } from '@/api/lightrag'
+import { findArtifactDefinition } from '@/components/kg-maintenance/kgMaintenanceArtifacts'
 import {
   buildProposalDecisionReview,
   type ProposalDecisionReview,
@@ -104,39 +105,56 @@ const artifactTextOrEmpty = (
 type LoadedDisplayArtifact = {
   key: string
   artifact: KBIterationArtifactResponse | KBIterationDisplayArtifactResponse | null
+  sourceArtifact: KBIterationArtifactResponse | null
   displayArtifact: KBIterationDisplayArtifactResponse
 }
 
 export type KGMaintenanceDisplayArtifacts = Record<string, KBIterationDisplayArtifactResponse>
 
+export function isGeneratedDisplayArtifact(
+  artifact: KBIterationDisplayArtifactResponse | undefined
+): boolean {
+  const display = artifact?.display
+  if (!display) return false
+  if (display.fallbackToSource) return false
+  return display.generated === true || display.zhExists === true
+}
+
+type OptionalDisplayArtifactOptions = {
+  fallbackContentType?: string
+  fallbackLoader?: () => Promise<KBIterationArtifactResponse>
+  loadSource?: boolean
+}
+
 const optionalDisplayArtifact = async (
   requestWorkspace: string,
   artifactKey: string,
   loaders: KGMaintenanceWorkspaceLoaders,
-  fallbackContentType: string = 'text/markdown',
-  fallbackLoader: () => Promise<KBIterationArtifactResponse> = () =>
-    loaders.getArtifact(requestWorkspace, artifactKey)
+  {
+    fallbackContentType = 'text/markdown',
+    fallbackLoader = () => loaders.getArtifact(requestWorkspace, artifactKey),
+    loadSource = false
+  }: OptionalDisplayArtifactOptions = {}
 ): Promise<LoadedDisplayArtifact> => {
+  let displayArtifact: KBIterationDisplayArtifactResponse | null = null
   try {
-    const displayArtifact = await loaders.getDisplayArtifact(requestWorkspace, artifactKey)
-    return {
-      key: artifactKey,
-      artifact: displayArtifact,
-      displayArtifact
-    }
+    displayArtifact = await loaders.getDisplayArtifact(requestWorkspace, artifactKey)
   } catch {
     // Display artifacts are optional; source loaders preserve the existing fallback behavior.
   }
 
-  const artifact = await optionalMissingResponse<KBIterationArtifactResponse | null>(
-    fallbackLoader,
-    null
-  )
+  const sourceArtifact =
+    loadSource || !displayArtifact
+      ? await optionalMissingResponse<KBIterationArtifactResponse | null>(fallbackLoader, null)
+      : null
+  const artifact = displayArtifact ?? sourceArtifact
 
   return {
     key: artifactKey,
     artifact,
-    displayArtifact: fallbackDisplayArtifact(artifactKey, artifact, fallbackContentType)
+    sourceArtifact,
+    displayArtifact:
+      displayArtifact ?? fallbackDisplayArtifact(artifactKey, sourceArtifact, fallbackContentType)
   }
 }
 
@@ -146,9 +164,13 @@ const fallbackDisplayArtifact = (
   fallbackContentType: string
 ): KBIterationDisplayArtifactResponse => {
   const contentType = artifact?.contentType ?? fallbackContentType
+  const artifactDefinition = findArtifactDefinition(artifactKey)
   const display = {
     language: 'zh' as const,
-    zhFile: `${artifactKey}.zh${contentType === 'application/json' ? '.json' : '.md'}`,
+    sourceFile: artifactDefinition?.sourceFile,
+    zhFile:
+      artifactDefinition?.zhFile ??
+      `${artifactKey}.zh${contentType === 'application/json' ? '.json' : '.md'}`,
     exists: false,
     zhExists: false,
     generated: false,
@@ -184,9 +206,12 @@ type KGMaintenanceWorkspaceBundle = {
   backlogArtifact: string
   deferredChangesArtifact: string
   acceptedApplyResultArtifact: string
+  acceptedApplyResultSourceArtifact: string
   llmTraceArtifact: unknown
+  llmTraceSourceArtifact: unknown
   llmReportArtifact: string
   llmProposalsArtifact: string
+  llmProposalsSourceArtifact: string
   llmJudgeReportArtifact: string
   llmIssueAnalysisArtifact: string
   llmMissingBranchInferenceArtifact: string
@@ -247,40 +272,33 @@ export async function loadKGMaintenanceWorkspaceBundle(
     resolvedLoaders.getQuality(requestWorkspace),
     resolvedLoaders.getRules(requestWorkspace),
     optionalDisplayArtifact(requestWorkspace, 'kb_context', resolvedLoaders),
-    optionalDisplayArtifact(requestWorkspace, 'kg_snapshot', resolvedLoaders, 'application/json'),
-    optionalDisplayArtifact(requestWorkspace, 'quality_score', resolvedLoaders, 'application/json'),
+    optionalDisplayArtifact(requestWorkspace, 'kg_snapshot', resolvedLoaders, {
+      fallbackContentType: 'application/json'
+    }),
+    optionalDisplayArtifact(requestWorkspace, 'quality_score', resolvedLoaders, {
+      fallbackContentType: 'application/json'
+    }),
     optionalDisplayArtifact(requestWorkspace, 'approval_queue', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'improvement_backlog', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'deferred_changes', resolvedLoaders),
-    optionalDisplayArtifact(requestWorkspace, 'accepted_changes_apply_result', resolvedLoaders),
-    optionalDisplayArtifact(
-      requestWorkspace,
-      'llm_review_trace',
-      resolvedLoaders,
-      'application/json',
-      () => resolvedLoaders.getTrace(requestWorkspace)
-    ),
-    optionalDisplayArtifact(
-      requestWorkspace,
-      'llm_review_report',
-      resolvedLoaders,
-      'text/markdown',
-      () => resolvedLoaders.getReport(requestWorkspace)
-    ),
-    optionalDisplayArtifact(
-      requestWorkspace,
-      'proposals_generated',
-      resolvedLoaders,
-      'text/markdown',
-      () => resolvedLoaders.getProposals(requestWorkspace)
-    ),
-    optionalDisplayArtifact(
-      requestWorkspace,
-      'llm_judge_report',
-      resolvedLoaders,
-      'text/markdown',
-      () => resolvedLoaders.getJudgeReport(requestWorkspace)
-    ),
+    optionalDisplayArtifact(requestWorkspace, 'accepted_changes_apply_result', resolvedLoaders, {
+      loadSource: true
+    }),
+    optionalDisplayArtifact(requestWorkspace, 'llm_review_trace', resolvedLoaders, {
+      fallbackContentType: 'application/json',
+      fallbackLoader: () => resolvedLoaders.getTrace(requestWorkspace),
+      loadSource: true
+    }),
+    optionalDisplayArtifact(requestWorkspace, 'llm_review_report', resolvedLoaders, {
+      fallbackLoader: () => resolvedLoaders.getReport(requestWorkspace)
+    }),
+    optionalDisplayArtifact(requestWorkspace, 'proposals_generated', resolvedLoaders, {
+      fallbackLoader: () => resolvedLoaders.getProposals(requestWorkspace),
+      loadSource: true
+    }),
+    optionalDisplayArtifact(requestWorkspace, 'llm_judge_report', resolvedLoaders, {
+      fallbackLoader: () => resolvedLoaders.getJudgeReport(requestWorkspace)
+    }),
     optionalDisplayArtifact(requestWorkspace, 'llm_issue_analysis', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'llm_missing_branch_inference', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'llm_evidence_map', resolvedLoaders),
@@ -319,9 +337,12 @@ export async function loadKGMaintenanceWorkspaceBundle(
     backlogArtifact: artifactTextOrEmpty(backlogResult.artifact),
     deferredChangesArtifact: artifactTextOrEmpty(deferredChangesResult.artifact),
     acceptedApplyResultArtifact: artifactTextOrEmpty(acceptedApplyResult.artifact),
+    acceptedApplyResultSourceArtifact: artifactTextOrEmpty(acceptedApplyResult.sourceArtifact),
     llmTraceArtifact: artifactContentOrPayload(llmTraceResult.artifact),
+    llmTraceSourceArtifact: artifactContentOrPayload(llmTraceResult.sourceArtifact),
     llmReportArtifact: artifactTextOrEmpty(llmReportResult.artifact),
     llmProposalsArtifact: artifactTextOrEmpty(llmProposalsResult.artifact),
+    llmProposalsSourceArtifact: artifactTextOrEmpty(llmProposalsResult.sourceArtifact),
     llmJudgeReportArtifact: artifactTextOrEmpty(llmJudgeReportResult.artifact),
     llmIssueAnalysisArtifact: artifactTextOrEmpty(llmIssueAnalysisResult.artifact),
     llmMissingBranchInferenceArtifact: artifactTextOrEmpty(

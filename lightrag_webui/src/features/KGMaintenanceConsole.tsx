@@ -35,6 +35,7 @@ import {
   requestProposalRevisionForWorkspace,
   submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse,
+  isGeneratedDisplayArtifact,
   type KGMaintenanceDisplayArtifacts
 } from '@/components/kg-maintenance/kgIterationLoadUtils'
 import {
@@ -103,9 +104,11 @@ export default function KGMaintenanceConsole() {
   const [improvementBacklog, setImprovementBacklog] = useState('')
   const [deferredChanges, setDeferredChanges] = useState('')
   const [acceptedApplyResult, setAcceptedApplyResult] = useState('')
+  const [acceptedApplyResultSource, setAcceptedApplyResultSource] = useState('')
   const [llmTrace, setLlmTrace] = useState<Record<string, any> | null>(null)
   const [llmReport, setLlmReport] = useState('')
   const [llmProposals, setLlmProposals] = useState('')
+  const [llmProposalsSource, setLlmProposalsSource] = useState('')
   const [llmJudgeReport, setLlmJudgeReport] = useState('')
   const [llmIssueAnalysis, setLlmIssueAnalysis] = useState('')
   const [llmMissingBranchInference, setLlmMissingBranchInference] = useState('')
@@ -132,7 +135,8 @@ export default function KGMaintenanceConsole() {
       zhFile: artifact.zhFile,
       step: artifact.step,
       status:
-        artifactExists.get(artifact.key) || Boolean(displayArtifacts[artifact.key]?.display.exists)
+        artifactExists.get(artifact.key) ||
+        isGeneratedDisplayArtifact(displayArtifacts[artifact.key])
           ? 'generated'
           : 'missing'
     }))
@@ -186,9 +190,11 @@ export default function KGMaintenanceConsole() {
         backlogArtifact,
         deferredChangesArtifact,
         acceptedApplyResultArtifact,
+        acceptedApplyResultSourceArtifact,
         llmTraceArtifact,
         llmReportArtifact,
         llmProposalsArtifact,
+        llmProposalsSourceArtifact,
         llmJudgeReportArtifact,
         llmIssueAnalysisArtifact,
         llmMissingBranchInferenceArtifact,
@@ -219,6 +225,7 @@ export default function KGMaintenanceConsole() {
       setImprovementBacklog(normalizeOptionalMarkdown(backlogArtifact))
       setDeferredChanges(normalizeOptionalMarkdown(deferredChangesArtifact))
       setAcceptedApplyResult(normalizeOptionalMarkdown(acceptedApplyResultArtifact))
+      setAcceptedApplyResultSource(normalizeOptionalMarkdown(acceptedApplyResultSourceArtifact))
       setLlmTrace(
         typeof llmTraceArtifact === 'object' &&
           llmTraceArtifact !== null &&
@@ -228,6 +235,7 @@ export default function KGMaintenanceConsole() {
       )
       setLlmReport(typeof llmReportArtifact === 'string' ? llmReportArtifact : '')
       setLlmProposals(typeof llmProposalsArtifact === 'string' ? llmProposalsArtifact : '')
+      setLlmProposalsSource(normalizeOptionalMarkdown(llmProposalsSourceArtifact))
       setLlmJudgeReport(typeof llmJudgeReportArtifact === 'string' ? llmJudgeReportArtifact : '')
       setLlmIssueAnalysis(normalizeOptionalMarkdown(llmIssueAnalysisArtifact))
       setLlmMissingBranchInference(normalizeOptionalMarkdown(llmMissingBranchInferenceArtifact))
@@ -259,6 +267,8 @@ export default function KGMaintenanceConsole() {
     (workspace: string) => {
       setPatchText('')
       setDisplayArtifacts({})
+      setAcceptedApplyResultSource('')
+      setLlmProposalsSource('')
       setSelectedWorkspace(workspace || null)
     },
     [setSelectedWorkspace]
@@ -468,9 +478,11 @@ export default function KGMaintenanceConsole() {
           improvementBacklog={improvementBacklog}
           deferredChanges={deferredChanges}
           acceptedApplyResult={acceptedApplyResult}
+          acceptedApplyResultSource={acceptedApplyResultSource}
           llmTrace={llmTrace}
           llmReport={llmReport}
           llmProposals={llmProposals}
+          llmProposalsSource={llmProposalsSource}
           llmJudgeReport={llmJudgeReport}
           llmIssueAnalysis={llmIssueAnalysis}
           llmMissingBranchInference={llmMissingBranchInference}
@@ -512,9 +524,11 @@ interface MainPanelProps {
   improvementBacklog: string
   deferredChanges: string
   acceptedApplyResult: string
+  acceptedApplyResultSource?: string
   llmTrace: Record<string, any> | null
   llmReport: string
   llmProposals: string
+  llmProposalsSource?: string
   llmJudgeReport: string
   llmIssueAnalysis: string
   llmMissingBranchInference: string
@@ -550,9 +564,11 @@ export function MainPanel({
   improvementBacklog,
   deferredChanges,
   acceptedApplyResult,
+  acceptedApplyResultSource,
   llmTrace,
   llmReport,
   llmProposals,
+  llmProposalsSource,
   llmJudgeReport,
   llmIssueAnalysis,
   llmMissingBranchInference,
@@ -612,6 +628,7 @@ export function MainPanel({
       <ExecutionPanel
         acceptedChanges={rules?.acceptedChanges || ''}
         applyResult={acceptedApplyResult}
+        applyResultSource={acceptedApplyResultSource}
         executing={acceptedExecuting}
         onExecute={onExecuteAcceptedChanges}
       />
@@ -620,9 +637,10 @@ export function MainPanel({
   if (activeSection === 'validate') {
     return (
       <ValidationPanel
-        qualityBefore={extractQualityBefore(acceptedApplyResult)}
+        qualityBefore={extractQualityBefore(acceptedApplyResultSource || acceptedApplyResult)}
         qualityAfter={qualityScore}
         applyResult={acceptedApplyResult}
+        applyResultSource={acceptedApplyResultSource}
       />
     )
   }
@@ -643,6 +661,7 @@ export function MainPanel({
         />
         <PatchCandidatesPanel
           proposals={llmProposals}
+          proposalIdSource={llmProposalsSource}
           patchText={patchText}
           onLoadPatch={onLoadPatch}
         />

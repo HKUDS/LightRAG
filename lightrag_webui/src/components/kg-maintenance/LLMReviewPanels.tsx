@@ -38,6 +38,7 @@ export type LLMReviewPanelProps = {
 
 type PatchCandidatesPanelProps = {
   proposals: string
+  proposalIdSource?: string
   patchText: string
   onLoadPatch: (proposalId: string) => void
 }
@@ -178,10 +179,11 @@ const TRACE_STAGE_LABELS = [
 
 export function PatchCandidatesPanel({
   proposals,
+  proposalIdSource,
   patchText,
   onLoadPatch
 }: PatchCandidatesPanelProps) {
-  const proposalIds = parseProposalIds(proposals)
+  const proposalIds = parseProposalIds(proposalIdSource ?? proposals)
 
   return (
     <section className="space-y-4">

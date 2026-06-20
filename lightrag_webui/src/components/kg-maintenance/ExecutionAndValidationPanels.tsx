@@ -5,6 +5,7 @@ import type { QualityBeforeSnapshot } from './kgMaintenanceDisplay'
 type ExecutionPanelProps = {
   acceptedChanges: string
   applyResult: string
+  applyResultSource?: string
   executing: boolean
   onExecute: () => void
 }
@@ -13,16 +14,19 @@ type ValidationPanelProps = {
   qualityBefore: QualityBeforeSnapshot | null | undefined
   qualityAfter: Record<string, any> | null | undefined
   applyResult: string
+  applyResultSource?: string
 }
 
 export function ExecutionPanel({
   acceptedChanges,
   applyResult,
+  applyResultSource,
   executing,
   onExecute
 }: ExecutionPanelProps) {
   const acceptedCount = countAcceptedChangeHeadings(acceptedChanges)
   const canExecute = acceptedCount > 0 && !executing
+  const applyResultForLogic = applyResultSource ?? applyResult
 
   return (
     <section className="space-y-3">
@@ -30,9 +34,7 @@ export function ExecutionPanel({
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">执行已接受变更</h2>
           <p className="text-muted-foreground mt-1 text-xs">
-            {acceptedCount > 0
-              ? `${acceptedCount} 条已接受变更等待写入`
-              : '暂无可执行的已接受变更'}
+            {acceptedCount > 0 ? `${acceptedCount} 条已接受变更等待写入` : '暂无可执行的已接受变更'}
           </p>
         </div>
         <Button type="button" size="sm" onClick={onExecute} disabled={!canExecute}>
@@ -47,7 +49,7 @@ export function ExecutionPanel({
           <div className="min-w-0">
             <h3 className="text-sm font-semibold">应用结果</h3>
             <p className="text-muted-foreground mt-1 text-xs">
-              {formatAppliedLine(applyResult) || '尚未执行写入'}
+              {formatAppliedLine(applyResultForLogic) || '尚未执行写入'}
             </p>
           </div>
         </div>
@@ -69,13 +71,14 @@ export function ExecutionPanel({
 export function ValidationPanel({
   qualityBefore,
   qualityAfter,
-  applyResult
+  applyResult,
+  applyResultSource
 }: ValidationPanelProps) {
   const overallBefore = qualityBefore?.overall
   const overallAfter = readQualityValue(qualityAfter, 'overall')
   const missingBefore = qualityBefore?.metrics?.hierarchy_missing_branch_count
   const missingAfter = readQualityValue(qualityAfter, 'hierarchy_missing_branch_count')
-  const alreadyMeetsTarget = isAppliedZero(applyResult) && missingAfter === 0
+  const alreadyMeetsTarget = isAppliedZero(applyResultSource ?? applyResult) && missingAfter === 0
 
   return (
     <section className="space-y-3">
@@ -92,7 +95,7 @@ export function ValidationPanel({
       </div>
 
       {alreadyMeetsTarget ? (
-        <div className="border-border/70 bg-emerald-50/70 rounded-lg border p-3 text-sm text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">
+        <div className="border-border/70 rounded-lg border bg-emerald-50/70 p-3 text-sm text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">
           没有新增写入，但当前质量已达标
         </div>
       ) : null}
@@ -112,15 +115,7 @@ export function ValidationPanel({
   )
 }
 
-function DeltaRow({
-  label,
-  before,
-  after
-}: {
-  label: string
-  before: unknown
-  after: unknown
-}) {
+function DeltaRow({ label, before, after }: { label: string; before: unknown; after: unknown }) {
   return (
     <div className="border-border/70 rounded-lg border p-3">
       <dt className="text-muted-foreground text-xs">{label}</dt>
@@ -136,11 +131,13 @@ function countAcceptedChangeHeadings(content: string): number {
 }
 
 function formatAppliedLine(applyResult: string): string {
-  return applyResult
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .map((line) => line.match(/^(?:-\s*)?(Applied:\s*\d+)/i)?.[1] ?? '')
-    .find(Boolean) ?? ''
+  return (
+    applyResult
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .map((line) => line.match(/^(?:-\s*)?(Applied:\s*\d+)/i)?.[1] ?? '')
+      .find(Boolean) ?? ''
+  )
 }
 
 function isAppliedZero(applyResult: string): boolean {
