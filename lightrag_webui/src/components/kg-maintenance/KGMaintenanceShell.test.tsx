@@ -78,9 +78,13 @@ function renderMainPanel(
     deferredChanges?: string
     acceptedApplyResult?: string
     acceptedApplyResultSource?: string
+    qualityScore?: Record<string, any> | null
+    qualityScoreSource?: Record<string, any> | null
     llmTrace?: Record<string, any> | null
     llmProposals?: string
     llmProposalsSource?: string
+    approvalQueue?: string
+    approvalQueueSource?: string
   } = {}
 ) {
   return renderToStaticMarkup(
@@ -125,14 +129,19 @@ accepted content marker`,
         nodes: [{ id: 'flu' }],
         edges: [{ source: 'flu', target: 'fever' }]
       }}
-      qualityScore={{
-        overall: 97,
-        metrics: {
-          hierarchy_missing_branch_count: 0
-        },
-        findings: [{ severity: 'medium' }]
-      }}
-      approvalQueue={`# 待审批 proposal
+      qualityScore={
+        options.qualityScore ?? {
+          overall: 97,
+          metrics: {
+            hierarchy_missing_branch_count: 0
+          },
+          findings: [{ severity: 'medium' }]
+        }
+      }
+      qualityScoreSource={options.qualityScoreSource}
+      approvalQueue={
+        options.approvalQueue ??
+        `# 待审批 proposal
 
 - id: proposal-1
   type: prompt_edit
@@ -145,7 +154,9 @@ accepted content marker`,
   risk: high
   requires_approval: true
       expected_metric_change:
-    approval_latency: -1`}
+    approval_latency: -1`
+      }
+      approvalQueueSource={options.approvalQueueSource}
       improvementBacklog="backlog content marker"
       deferredChanges={options.deferredChanges ?? 'deferred content marker'}
       acceptedApplyResult={
@@ -194,7 +205,9 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       kbContext=""
       kgSnapshot={null}
       qualityScore={null}
+      qualityScoreSource={null}
       approvalQueue=""
+      approvalQueueSource=""
       improvementBacklog=""
       deferredChanges=""
       acceptedApplyResult=""
@@ -660,6 +673,68 @@ describe('MainPanel workflow routing', () => {
     expect(bundle.acceptedApplyResultSourceArtifact).toBe('source:accepted_changes_apply_result')
   })
 
+  test('workspace bundle preserves source approval and quality artifacts for logic', async () => {
+    const bundle = await loadKGMaintenanceWorkspaceBundle(
+      'workspace-a',
+      createWorkspaceBundleLoaders({
+        getArtifact: async (_workspace: string, key: string) => ({
+          artifactKey: key,
+          contentType:
+            key === 'quality_score' || key === 'kg_snapshot'
+              ? 'application/json'
+              : 'text/markdown',
+          ...(key === 'quality_score'
+            ? { payload: { overall: 97, metrics: { hierarchy_missing_branch_count: 0 } } }
+            : { content: `source:${key}` })
+        }),
+        getDisplayArtifact: async (_workspace: string, key: string) => {
+          if (key === 'quality_score') {
+            return {
+              artifactKey: key,
+              contentType: 'application/json',
+              payload: {
+                overall: 'display-score',
+                metrics: { hierarchy_missing_branch_count: 99 }
+              },
+              display: {
+                language: 'zh',
+                zhFile: 'quality_score.zh.json',
+                generated: true,
+                fallbackToSource: false
+              }
+            }
+          }
+
+          return {
+            artifactKey: key,
+            contentType: 'text/markdown',
+            content:
+              key === 'approval_queue'
+                ? 'translated approval queue without parseable ids'
+                : `zh:${key}`,
+            display: {
+              language: 'zh',
+              zhFile: `${key}.zh.md`,
+              generated: true,
+              fallbackToSource: false
+            }
+          }
+        }
+      })
+    )
+
+    expect(bundle.approvalArtifact).toBe('translated approval queue without parseable ids')
+    expect(bundle.approvalArtifactSource).toBe('source:approval_queue')
+    expect(bundle.qualityScoreArtifact).toEqual({
+      overall: 'display-score',
+      metrics: { hierarchy_missing_branch_count: 99 }
+    })
+    expect(bundle.qualityScoreSourceArtifact).toEqual({
+      overall: 97,
+      metrics: { hierarchy_missing_branch_count: 0 }
+    })
+  })
+
   test('workspace bundle prefers display artifacts for LLM review artifacts', async () => {
     const bundle = await loadKGMaintenanceWorkspaceBundle(
       'workspace-a',
@@ -793,6 +868,15 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('source-round-1')
     expect(markup).not.toContain('zh_stop_reason_label')
     expect(markup).not.toContain('zh-round-label')
+  })
+
+  test('trace normalization returns null when source artifact is missing', () => {
+    expect(
+      normalizeTraceArtifactForLogic(null, {
+        stop_reason: 'display-only-trace',
+        rounds: [{ round_id: 'display-round' }]
+      })
+    ).toBeNull()
   })
 
   test('workspace bundle falls back to original artifact content when display is missing', async () => {
@@ -1450,5 +1534,34 @@ hierarchy_missing_branch_count: 4 -> 0`
     expect(markup).toContain('97')
     expect(markup).toContain('4')
     expect(markup).toContain('bg-emerald-50/70')
+  })
+
+  test('validate parses source quality score while display score remains display-only', () => {
+    const markup = renderMainPanel('validate', {
+      acceptedApplyResult: 'translated validation block without backend metrics',
+      acceptedApplyResultSource: `Applied: 0
+overall: 88 -> 97
+hierarchy_missing_branch_count: 4 -> 0`,
+      qualityScore: {
+        overall: 'display-score',
+        metrics: {
+          hierarchy_missing_branch_count: 99
+        }
+      },
+      qualityScoreSource: {
+        overall: 97,
+        metrics: {
+          hierarchy_missing_branch_count: 0
+        }
+      }
+    })
+
+    expect(markup).toContain('88')
+    expect(markup).toContain('97')
+    expect(markup).toContain('4')
+    expect(markup).toContain('0')
+    expect(markup).toContain('bg-emerald-50/70')
+    expect(markup).not.toContain('display-score')
+    expect(markup).not.toContain('99')
   })
 })

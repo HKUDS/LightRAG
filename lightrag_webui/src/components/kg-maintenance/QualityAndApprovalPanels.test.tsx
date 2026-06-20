@@ -67,6 +67,26 @@ proposals:
   expected_metric_change: {}`
 
 describe('ApprovalPanel', () => {
+  test('parses proposals from source while rendering translated approval markdown', () => {
+    const markup = renderToStaticMarkup(
+      <ApprovalPanel
+        approvalQueue="# translated approval queue without proposal ids"
+        approvalQueueSource={approvalQueue}
+        improvementBacklog=""
+        acceptedChanges=""
+        rejectedChanges=""
+        onDecision={() => undefined}
+        onRequestRevision={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('prop-a')
+    expect(markup).toContain('Normalize relation keywords')
+    expect(markup).toContain('# translated approval queue without proposal ids')
+    expect(markup).toContain('接受')
+    expect(markup).toContain('拒绝')
+  })
+
   test('renders compact rows with accept reject expand and no required textareas', () => {
     const markup = renderToStaticMarkup(
       <ApprovalPanel

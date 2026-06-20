@@ -109,9 +109,8 @@ const normalizeRecordArtifact = (value: unknown): Record<string, any> | null =>
 
 export const normalizeTraceArtifactForLogic = (
   sourceTraceArtifact: unknown,
-  displayTraceArtifact: unknown
-): Record<string, any> | null =>
-  normalizeRecordArtifact(sourceTraceArtifact) ?? normalizeRecordArtifact(displayTraceArtifact)
+  _displayTraceArtifact: unknown
+): Record<string, any> | null => normalizeRecordArtifact(sourceTraceArtifact)
 
 type LoadedDisplayArtifact = {
   key: string
@@ -213,7 +212,9 @@ type KGMaintenanceWorkspaceBundle = {
   kbContextArtifact: string
   kgSnapshotArtifact: unknown
   qualityScoreArtifact: unknown
+  qualityScoreSourceArtifact: unknown
   approvalArtifact: string
+  approvalArtifactSource: string
   backlogArtifact: string
   deferredChangesArtifact: string
   acceptedApplyResultArtifact: string
@@ -287,9 +288,12 @@ export async function loadKGMaintenanceWorkspaceBundle(
       fallbackContentType: 'application/json'
     }),
     optionalDisplayArtifact(requestWorkspace, 'quality_score', resolvedLoaders, {
-      fallbackContentType: 'application/json'
+      fallbackContentType: 'application/json',
+      loadSource: true
     }),
-    optionalDisplayArtifact(requestWorkspace, 'approval_queue', resolvedLoaders),
+    optionalDisplayArtifact(requestWorkspace, 'approval_queue', resolvedLoaders, {
+      loadSource: true
+    }),
     optionalDisplayArtifact(requestWorkspace, 'improvement_backlog', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'deferred_changes', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'accepted_changes_apply_result', resolvedLoaders, {
@@ -344,7 +348,9 @@ export async function loadKGMaintenanceWorkspaceBundle(
     kbContextArtifact: artifactTextOrEmpty(kbContextResult.artifact),
     kgSnapshotArtifact: artifactContentOrPayload(kgSnapshotResult.artifact),
     qualityScoreArtifact: artifactContentOrPayload(qualityScoreResult.artifact),
+    qualityScoreSourceArtifact: artifactContentOrPayload(qualityScoreResult.sourceArtifact),
     approvalArtifact: artifactTextOrEmpty(approvalResult.artifact),
+    approvalArtifactSource: artifactTextOrEmpty(approvalResult.sourceArtifact),
     backlogArtifact: artifactTextOrEmpty(backlogResult.artifact),
     deferredChangesArtifact: artifactTextOrEmpty(deferredChangesResult.artifact),
     acceptedApplyResultArtifact: artifactTextOrEmpty(acceptedApplyResult.artifact),

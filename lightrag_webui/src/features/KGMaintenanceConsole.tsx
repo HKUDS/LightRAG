@@ -101,7 +101,9 @@ export default function KGMaintenanceConsole() {
   const [kbContext, setKbContext] = useState('')
   const [kgSnapshot, setKgSnapshot] = useState<Record<string, any> | null>(null)
   const [qualityScore, setQualityScore] = useState<Record<string, any> | null>(null)
+  const [qualityScoreSource, setQualityScoreSource] = useState<Record<string, any> | null>(null)
   const [approvalQueue, setApprovalQueue] = useState('')
+  const [approvalQueueSource, setApprovalQueueSource] = useState('')
   const [improvementBacklog, setImprovementBacklog] = useState('')
   const [deferredChanges, setDeferredChanges] = useState('')
   const [acceptedApplyResult, setAcceptedApplyResult] = useState('')
@@ -187,7 +189,9 @@ export default function KGMaintenanceConsole() {
         kbContextArtifact,
         kgSnapshotArtifact,
         qualityScoreArtifact,
+        qualityScoreSourceArtifact,
         approvalArtifact,
+        approvalArtifactSource,
         backlogArtifact,
         deferredChangesArtifact,
         acceptedApplyResultArtifact,
@@ -223,7 +227,15 @@ export default function KGMaintenanceConsole() {
           ? qualityScoreArtifact
           : null
       )
+      setQualityScoreSource(
+        qualityScoreSourceArtifact &&
+          typeof qualityScoreSourceArtifact === 'object' &&
+          !Array.isArray(qualityScoreSourceArtifact)
+          ? qualityScoreSourceArtifact
+          : null
+      )
       setApprovalQueue(normalizeOptionalMarkdown(approvalArtifact))
+      setApprovalQueueSource(normalizeOptionalMarkdown(approvalArtifactSource))
       setImprovementBacklog(normalizeOptionalMarkdown(backlogArtifact))
       setDeferredChanges(normalizeOptionalMarkdown(deferredChangesArtifact))
       setAcceptedApplyResult(normalizeOptionalMarkdown(acceptedApplyResultArtifact))
@@ -263,6 +275,8 @@ export default function KGMaintenanceConsole() {
     (workspace: string) => {
       setPatchText('')
       setDisplayArtifacts({})
+      setQualityScoreSource(null)
+      setApprovalQueueSource('')
       setAcceptedApplyResultSource('')
       setLlmProposalsSource('')
       setSelectedWorkspace(workspace || null)
@@ -470,7 +484,9 @@ export default function KGMaintenanceConsole() {
           kbContext={kbContext}
           kgSnapshot={kgSnapshot}
           qualityScore={qualityScore}
+          qualityScoreSource={qualityScoreSource}
           approvalQueue={approvalQueue}
+          approvalQueueSource={approvalQueueSource}
           improvementBacklog={improvementBacklog}
           deferredChanges={deferredChanges}
           acceptedApplyResult={acceptedApplyResult}
@@ -516,7 +532,9 @@ interface MainPanelProps {
   kbContext: string
   kgSnapshot: Record<string, any> | null
   qualityScore: Record<string, any> | null
+  qualityScoreSource?: Record<string, any> | null
   approvalQueue: string
+  approvalQueueSource?: string
   improvementBacklog: string
   deferredChanges: string
   acceptedApplyResult: string
@@ -556,7 +574,9 @@ export function MainPanel({
   kbContext,
   kgSnapshot,
   qualityScore,
+  qualityScoreSource,
   approvalQueue,
+  approvalQueueSource,
   improvementBacklog,
   deferredChanges,
   acceptedApplyResult,
@@ -610,6 +630,7 @@ export function MainPanel({
     return (
       <ApprovalPanel
         approvalQueue={approvalQueue}
+        approvalQueueSource={approvalQueueSource}
         improvementBacklog={improvementBacklog}
         acceptedChanges={rules?.acceptedChanges || ''}
         rejectedChanges={rules?.rejectedChanges || ''}
@@ -634,7 +655,7 @@ export function MainPanel({
     return (
       <ValidationPanel
         qualityBefore={extractQualityBefore(acceptedApplyResultSource || acceptedApplyResult)}
-        qualityAfter={qualityScore}
+        qualityAfter={qualityScoreSource === undefined ? qualityScore : qualityScoreSource}
         applyResult={acceptedApplyResult}
         applyResultSource={acceptedApplyResultSource}
       />
