@@ -1,4 +1,5 @@
 import Button from '@/components/ui/Button'
+import type { KGMaintenanceDisplayArtifacts } from './kgIterationLoadUtils'
 import { BrainCircuitIcon, FileDiffIcon, ShieldCheckIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 
@@ -32,6 +33,7 @@ export type LLMReviewPanelProps = {
   missingBranchInference: string
   evidenceMap: string
   repairPlan: string
+  displayArtifacts?: KGMaintenanceDisplayArtifacts
   running: boolean
   onRun: () => void
 }
@@ -54,9 +56,11 @@ export function LLMReviewPanel({
   missingBranchInference,
   evidenceMap,
   repairPlan,
+  displayArtifacts,
   running,
   onRun
 }: LLMReviewPanelProps) {
+  void displayArtifacts
   const stopReason = typeof trace?.stop_reason === 'string' ? trace.stop_reason : ''
   const rounds = Array.isArray(trace?.rounds) ? (trace.rounds as TraceRound[]) : []
   const stages = Array.isArray(trace?.stages)
@@ -86,8 +90,8 @@ export function LLMReviewPanel({
       </div>
 
       <div className="border-border/70 bg-muted/20 rounded-lg border p-3 text-sm">
-        LLM Agent 只生成分析、proposal、证据位置和修复排序；任何会修改
-        KG、规则、prompt、workspace 或 WebUI 的操作都必须经过人工批准，不会自动修改 KG。
+        LLM Agent 只生成分析、proposal、证据位置和修复排序；任何会修改 KG、规则、prompt、workspace
+        或 WebUI 的操作都必须经过人工批准，不会自动修改 KG。
       </div>
 
       <div className="space-y-2">
@@ -149,7 +153,11 @@ export function LLMReviewPanel({
                 ) : null}
               </div>
               <RoundField label="关注项" values={round.focus} emptyText="暂无关注项。" />
-              <RoundField label="proposal ID" values={round.proposal_ids} emptyText="暂无 proposal ID。" />
+              <RoundField
+                label="proposal ID"
+                values={round.proposal_ids}
+                emptyText="暂无 proposal ID。"
+              />
             </article>
           ))
         ) : (
@@ -309,7 +317,7 @@ function ArtifactBlock({
   return (
     <div className="border-border/70 rounded-lg border p-3">
       <h3 className="text-sm font-medium">{title}</h3>
-      <pre className="text-muted-foreground mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs">
+      <pre className="text-muted-foreground mt-3 max-h-80 overflow-auto text-xs break-words whitespace-pre-wrap">
         {hasContent ? content : emptyText}
       </pre>
     </div>
@@ -370,9 +378,7 @@ function attemptLogArray(value: unknown) {
         return null
       }
       const attempt =
-        typeof item.attempt === 'number' && Number.isFinite(item.attempt)
-          ? item.attempt
-          : undefined
+        typeof item.attempt === 'number' && Number.isFinite(item.attempt) ? item.attempt : undefined
       const state = typeof item.state === 'string' ? item.state : undefined
       const error = typeof item.error === 'string' ? item.error : undefined
       if (attempt === undefined && !state && !error) {

@@ -21,9 +21,7 @@ import {
   KG_MAINTENANCE_ARTIFACTS,
   findArtifactDefinition
 } from '@/components/kg-maintenance/kgMaintenanceArtifacts'
-import {
-  IterationOverviewPanel
-} from '@/components/kg-maintenance/IterationWorkbenchPanels'
+import { IterationOverviewPanel } from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import {
   ExecutionPanel,
   ValidationPanel
@@ -36,7 +34,8 @@ import {
   runWorkspaceAction,
   requestProposalRevisionForWorkspace,
   submitProposalDecisionForWorkspace,
-  shouldApplyWorkspaceResponse
+  shouldApplyWorkspaceResponse,
+  type KGMaintenanceDisplayArtifacts
 } from '@/components/kg-maintenance/kgIterationLoadUtils'
 import {
   LLMJudgePanel,
@@ -112,6 +111,7 @@ export default function KGMaintenanceConsole() {
   const [llmMissingBranchInference, setLlmMissingBranchInference] = useState('')
   const [llmEvidenceMap, setLlmEvidenceMap] = useState('')
   const [llmRepairPlan, setLlmRepairPlan] = useState('')
+  const [displayArtifacts, setDisplayArtifacts] = useState<KGMaintenanceDisplayArtifacts>({})
   const [patchText, setPatchText] = useState('')
   const [acceptedExecuting, setAcceptedExecuting] = useState(false)
   const [llmRunning, setLlmRunning] = useState(false)
@@ -131,9 +131,12 @@ export default function KGMaintenanceConsole() {
       sourceFile: artifact.sourceFile,
       zhFile: artifact.zhFile,
       step: artifact.step,
-      status: artifactExists.get(artifact.key) ? 'generated' : 'missing'
+      status:
+        artifactExists.get(artifact.key) || Boolean(displayArtifacts[artifact.key]?.display.exists)
+          ? 'generated'
+          : 'missing'
     }))
-  }, [summary?.artifacts])
+  }, [displayArtifacts, summary?.artifacts])
 
   const loadWorkspaces = useCallback(async () => {
     if (currentTab !== 'kg-maintenance') return
@@ -175,6 +178,7 @@ export default function KGMaintenanceConsole() {
         summaryPayload,
         qualityPayload,
         rulesPayload,
+        displayArtifacts: loadedDisplayArtifacts,
         kbContextArtifact,
         kgSnapshotArtifact,
         qualityScoreArtifact,
@@ -195,6 +199,7 @@ export default function KGMaintenanceConsole() {
       setSummary(summaryPayload)
       setQuality(qualityPayload)
       setRules(rulesPayload)
+      setDisplayArtifacts(loadedDisplayArtifacts)
       setKbContext(normalizeOptionalMarkdown(kbContextArtifact))
       setKgSnapshot(
         kgSnapshotArtifact &&
@@ -253,6 +258,7 @@ export default function KGMaintenanceConsole() {
   const handleWorkspaceChange = useCallback(
     (workspace: string) => {
       setPatchText('')
+      setDisplayArtifacts({})
       setSelectedWorkspace(workspace || null)
     },
     [setSelectedWorkspace]
@@ -458,6 +464,7 @@ export default function KGMaintenanceConsole() {
           kbContext={kbContext}
           kgSnapshot={kgSnapshot}
           qualityScore={qualityScore}
+          displayArtifacts={displayArtifacts}
           approvalQueue={approvalQueue}
           improvementBacklog={improvementBacklog}
           deferredChanges={deferredChanges}
@@ -502,6 +509,7 @@ interface MainPanelProps {
   kbContext: string
   kgSnapshot: Record<string, any> | null
   qualityScore: Record<string, any> | null
+  displayArtifacts?: KGMaintenanceDisplayArtifacts
   approvalQueue: string
   improvementBacklog: string
   deferredChanges: string
@@ -540,6 +548,7 @@ export function MainPanel({
   kbContext,
   kgSnapshot,
   qualityScore,
+  displayArtifacts = {},
   approvalQueue,
   improvementBacklog,
   deferredChanges,
@@ -584,7 +593,12 @@ export function MainPanel({
             {running ? '检查中' : '运行检查'}
           </Button>
         </div>
-        <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
+        <IterationOverviewPanel
+          summary={summary}
+          loading={loading}
+          displayArtifacts={displayArtifacts}
+          onOpenSection={onOpenSection}
+        />
       </section>
     )
   }
@@ -632,6 +646,7 @@ export function MainPanel({
           missingBranchInference={llmMissingBranchInference}
           evidenceMap={llmEvidenceMap}
           repairPlan={llmRepairPlan}
+          displayArtifacts={displayArtifacts}
           running={llmRunning || running}
           onRun={onRunLLMReview}
         />
@@ -645,6 +660,11 @@ export function MainPanel({
     )
   }
   return (
-    <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
+    <IterationOverviewPanel
+      summary={summary}
+      loading={loading}
+      displayArtifacts={displayArtifacts}
+      onOpenSection={onOpenSection}
+    />
   )
 }

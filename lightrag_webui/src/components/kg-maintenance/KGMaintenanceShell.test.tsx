@@ -103,7 +103,9 @@ function renderMainPanel(
         workspace: 'influenza_medical_v1',
         qualityRules: '',
         knownIssues: '',
-        acceptedChanges: options.acceptedChanges ?? `# Accepted Changes
+        acceptedChanges:
+          options.acceptedChanges ??
+          `# Accepted Changes
 
 ## proposal-1
 
@@ -234,6 +236,74 @@ function proposalDecisionResponse(
       impact_scope: 'test scope',
       verification: 'test verification'
     }
+  }
+}
+
+function createWorkspaceBundleLoaders(overrides: Record<string, any> = {}) {
+  return {
+    getSummary: async () => ({
+      workspace: 'workspace-a',
+      latestRunId: 'run-1',
+      phase: 'pending_human_review',
+      counts: { nodes: 1, edges: 1, sources: 1 },
+      quality: { overall: 80, findings: [] },
+      pendingApprovalCount: 0,
+      highRiskFindingCount: 0,
+      artifacts: []
+    }),
+    getQuality: async () => ({
+      workspace: 'workspace-a',
+      runId: 'run-1',
+      quality: { overall: 80, findings: [] },
+      report: '# quality'
+    }),
+    getRules: async () => ({
+      workspace: 'workspace-a',
+      qualityRules: '',
+      knownIssues: '',
+      acceptedChanges: '',
+      rejectedChanges: ''
+    }),
+    getArtifact: async (_workspace: string, key: string) => ({
+      artifactKey: key,
+      contentType:
+        key === 'kg_snapshot' || key === 'quality_score' ? 'application/json' : 'text/markdown',
+      ...(key === 'kg_snapshot' || key === 'quality_score'
+        ? { payload: { source: key } }
+        : { content: `source:${key}` })
+    }),
+    getTrace: async () => ({
+      artifactKey: 'trace',
+      contentType: 'application/json',
+      payload: {}
+    }),
+    getReport: async () => ({
+      artifactKey: 'report',
+      contentType: 'text/markdown',
+      content: 'report'
+    }),
+    getProposals: async () => ({
+      artifactKey: 'proposals',
+      contentType: 'text/markdown',
+      content: 'proposals'
+    }),
+    getJudgeReport: async () => ({
+      artifactKey: 'judge',
+      contentType: 'text/markdown',
+      content: 'judge'
+    }),
+    getDisplayArtifact: async (_workspace: string, key: string) => ({
+      artifactKey: key,
+      contentType: 'text/markdown',
+      content: `zh:${key}`,
+      display: {
+        language: 'zh',
+        zhFile: `${key}.zh.md`,
+        exists: true,
+        generated: true
+      }
+    }),
+    ...overrides
   }
 }
 
@@ -446,6 +516,9 @@ describe('MainPanel workflow routing', () => {
           contentType: 'text/markdown',
           content: 'artifact'
         }),
+        getDisplayArtifact: async () => {
+          throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
+        },
         getTrace: async () => ({
           artifactKey: 'trace',
           contentType: 'application/json',
@@ -505,6 +578,9 @@ describe('MainPanel workflow routing', () => {
           content: `${key} content`
         }
       },
+      getDisplayArtifact: async () => {
+        throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
+      },
       getTrace: async () => {
         throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
       },
@@ -530,6 +606,73 @@ describe('MainPanel workflow routing', () => {
     expect(bundle.approvalArtifact).toBe('approval_queue content')
     expect(bundle.deferredChangesArtifact).toBe('deferred_changes content')
     expect(bundle.acceptedApplyResultArtifact).toBe('accepted_changes_apply_result content')
+  })
+
+  test('workspace bundle loads zh display artifacts when available', async () => {
+    const bundle = await loadKGMaintenanceWorkspaceBundle(
+      'workspace-a',
+      createWorkspaceBundleLoaders()
+    )
+
+    expect(bundle.kbContextArtifact).toBe('zh:kb_context')
+    expect(bundle.displayArtifacts.kb_context.content).toBe('zh:kb_context')
+  })
+
+  test('workspace bundle falls back to original artifact content when display is missing', async () => {
+    const bundle = await loadKGMaintenanceWorkspaceBundle(
+      'workspace-a',
+      createWorkspaceBundleLoaders({
+        getDisplayArtifact: async (_workspace: string, key: string) => {
+          if (key === 'kb_context') {
+            throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
+          }
+          return {
+            artifactKey: key,
+            contentType: 'text/markdown',
+            content: `zh:${key}`,
+            display: {
+              language: 'zh',
+              zhFile: `${key}.zh.md`,
+              exists: true,
+              generated: true
+            }
+          }
+        }
+      })
+    )
+
+    expect(bundle.kbContextArtifact).toBe('source:kb_context')
+    expect(bundle.displayArtifacts.kb_context.content).toBe('source:kb_context')
+    expect(bundle.displayArtifacts.kb_context.display.fallbackToSource).toBe(true)
+  })
+
+  test('workspace bundle display loading skips stale removed artifacts', async () => {
+    const requestedDisplayKeys: string[] = []
+
+    await loadKGMaintenanceWorkspaceBundle(
+      'workspace-a',
+      createWorkspaceBundleLoaders({
+        getDisplayArtifact: async (_workspace: string, key: string) => {
+          requestedDisplayKeys.push(key)
+          return {
+            artifactKey: key,
+            contentType: 'text/markdown',
+            content: `zh:${key}`,
+            display: {
+              language: 'zh',
+              zhFile: `${key}.zh.md`,
+              exists: true,
+              generated: true
+            }
+          }
+        }
+      })
+    )
+
+    expect(requestedDisplayKeys).toContain('accepted_changes_apply_result')
+    expect(requestedDisplayKeys).toContain('deferred_changes')
+    expect(requestedDisplayKeys).not.toContain('accepted_changes_execution')
+    expect(requestedDisplayKeys).not.toContain('iteration_log')
   })
 
   test('workspace bundle loads llm agent markdown artifacts', async () => {
@@ -566,6 +709,9 @@ describe('MainPanel workflow routing', () => {
           contentType: 'text/markdown',
           content: `# ${key}`
         }
+      },
+      getDisplayArtifact: async () => {
+        throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
       },
       getTrace: async () => ({
         artifactKey: 'trace',
