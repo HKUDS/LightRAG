@@ -29,13 +29,17 @@ from lightrag.kb_iteration.zh_artifacts import (
     artifact_zh_relative_path,
     ensure_zh_artifact,
 )
+from lightrag.kb_iteration.memory import (
+    AGENT_MEMORY_SUMMARY_FILE,
+    refresh_agent_memory_summary,
+)
 from lightrag.kb_iteration.proposals import validate_proposal_id
 from lightrag.kb_iteration.review_loop import (
     LLMReviewLoopConfig,
     run_llm_review_loop,
 )
 from lightrag.kb_iteration.runner import PENDING_REVIEW_PHASE, run_iteration
-from lightrag.utils import always_get_an_event_loop, validate_workspace
+from lightrag.utils import always_get_an_event_loop, logger, validate_workspace
 
 from ..utils_api import get_combined_auth_dependency
 
@@ -63,6 +67,7 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
         "proposal_revision_requests.md",
         "text/markdown",
     ),
+    "agent_memory_summary": (AGENT_MEMORY_SUMMARY_FILE, "text/markdown"),
     "improvement_backlog": ("improvement_backlog.md", "text/markdown"),
     "accepted_changes": ("accepted_changes.md", "text/markdown"),
     "accepted_changes_execution": (
@@ -641,6 +646,7 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
                     )
                     write_apply_result_artifacts(result, package_dir)
                     _append_accepted_apply_log(args, workspace, result)
+                    _refresh_agent_memory_summary_best_effort(package_dir)
                     return {
                         "workspace": workspace,
                         "status": "no_accepted_changes",
@@ -680,6 +686,7 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
                 _append_accepted_apply_log(
                     args, workspace, result, rerun_error=rerun_error
                 )
+                _refresh_agent_memory_summary_best_effort(package_dir)
                 if rerun_error is not None:
                     _raise_accepted_apply_rerun_error(rerun_error)
         except RuntimeError as exc:
@@ -1194,6 +1201,13 @@ def _raise_accepted_apply_rerun_error(exc: FileNotFoundError | ValueError) -> No
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _refresh_agent_memory_summary_best_effort(package_dir: Path) -> None:
+    try:
+        refresh_agent_memory_summary(package_dir)
+    except Exception as exc:
+        logger.warning(f"Failed to refresh KB iteration agent memory summary: {exc}")
+
+
 def _record_accepted_changes_execution(
     args,
     workspace: str,
@@ -1528,12 +1542,14 @@ def _append_decision(
     if existing_decision:
         recorded_decision, recorded_record = existing_decision
         if recorded_decision == decision:
-            return recorded_record or _build_proposal_decision_record(
+            record = recorded_record or _build_proposal_decision_record(
                 proposal_id,
                 decision,
                 proposal,
                 request,
             )
+            refresh_agent_memory_summary(package_dir)
+            return record
         raise HTTPException(
             status_code=409,
             detail=(f"Proposal already has a recorded decision: {recorded_decision}"),
@@ -1550,6 +1566,7 @@ def _append_decision(
     )
     with path.open("a", encoding="utf-8") as file:
         file.write(entry)
+    refresh_agent_memory_summary(package_dir)
     return record
 
 
@@ -1577,6 +1594,7 @@ def _append_proposal_revision_request(
     with path.open("a", encoding="utf-8") as file:
         file.write(entry)
     _append_proposal_revision_request_log(args, workspace, record)
+    refresh_agent_memory_summary(package_dir)
     return record
 
 

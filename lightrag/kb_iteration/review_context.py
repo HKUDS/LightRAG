@@ -6,16 +6,24 @@ from typing import Any
 
 from lightrag.constants import GRAPH_FIELD_SEP
 
+from .memory import refresh_agent_memory_summary
+
 GENERIC_RELATION_KEYWORDS = {"", "相关", "邻接", "related", "neighbor", "adjacent"}
 FOCUS_ALIASES = {
     "generic_relation": {
         "generic",
         "generic relation",
         "relation",
+        "relation direction",
+        "relation taxonomy",
         "relation semantics",
         "relation_semantics",
+        "normalize relation direction",
+        "normalize_relation_direction",
         "replace relation keyword",
         "replace_relation_keyword",
+        "replace taxonomy relation keyword",
+        "replace_taxonomy_relation_keyword",
     },
     "hierarchy_missing_branch": {
         "hierarchy",
@@ -58,13 +66,17 @@ def build_review_context(
         "focus": focus,
         "quality_findings": findings,
         "hierarchy_branches": _hierarchy_branches(quality),
+        "medical_schema_issues": _quality_detail_items(
+            quality, "medical_schema_issues"
+        ),
+        "entity_cleanup_issues": _quality_detail_items(
+            quality, "entity_cleanup_issues"
+        ),
+        "proposal_revision_requests": _proposal_revision_requests(package_path),
         "entities": selected_nodes,
         "relations": selected_edges,
         "evidence_windows": _evidence_windows(selected_nodes, selected_edges),
-        "rules_memory": {
-            "accepted_changes": _read_text(package_path / "accepted_changes.md"),
-            "rejected_changes": _read_text(package_path / "rejected_changes.md"),
-        },
+        "rules_memory": _rules_memory(package_path),
     }
 
 
@@ -239,6 +251,18 @@ def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _rules_memory(package_path: Path) -> dict[str, str]:
+    summary_path = refresh_agent_memory_summary(package_path)
+    return {
+        "accepted_changes": _read_text(package_path / "accepted_changes.md"),
+        "rejected_changes": _read_text(package_path / "rejected_changes.md"),
+        "proposal_revision_requests": _read_text(
+            package_path / "proposal_revision_requests.md"
+        ),
+        "agent_memory_summary": _read_text(summary_path),
+    }
+
+
 def _hierarchy_branches(quality: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     details = quality.get("details", {})
     if not isinstance(details, dict):
@@ -250,6 +274,20 @@ def _hierarchy_branches(quality: dict[str, Any]) -> dict[str, list[dict[str, Any
         key: _dict_items(branches.get(key))
         for key in ("required", "present", "missing")
     }
+
+
+def _quality_detail_items(quality: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    details = quality.get("details", {})
+    if not isinstance(details, dict):
+        return []
+    return _dict_items(details.get(key))
+
+
+def _proposal_revision_requests(package_path: Path) -> list[str]:
+    text = _read_text(package_path / "proposal_revision_requests.md")
+    if not text.strip():
+        return []
+    return [line.strip() for line in text.splitlines() if line.strip()][:60]
 
 
 def _dict_items(value: Any) -> list[dict[str, Any]]:

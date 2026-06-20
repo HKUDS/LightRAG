@@ -302,6 +302,55 @@ def test_improvement_proposal_exposes_required_fields():
     }
 
 
+def test_improvement_proposal_preserves_patch_candidate_positional_order():
+    proposal = ImprovementProposal(
+        "proposal-20260620-positional",
+        "relation_keyword_mapping",
+        "lightrag/medical_kg/ontology.py",
+        "Map generic relation keywords to controlled relation labels.",
+        "Generic relation labels reduce KG readability.",
+        ["edge:e1"],
+        0.82,
+        "medium",
+        True,
+        {"relation_semantics": 8},
+        "patch_candidates/proposal-20260620-positional.patch",
+        {"decision": "needs_human"},
+    )
+
+    assert proposal.patch_candidate == (
+        "patch_candidates/proposal-20260620-positional.patch"
+    )
+    assert proposal.judge == {"decision": "needs_human"}
+    assert proposal.action_payload == {}
+
+
+def test_improvement_proposal_to_dict_includes_non_empty_action_payload():
+    proposal = ImprovementProposal(
+        id="proposal-20260620-action-payload",
+        type="medical_relation_schema_migration",
+        target="edge:e1",
+        proposed_change="Normalize relation.",
+        reason="Relation direction is invalid.",
+        evidence=["relation_id:e1"],
+        confidence=0.8,
+        risk="medium",
+        requires_approval=True,
+        expected_metric_change={},
+        action_payload={
+            "action": "replace_relation",
+            "edge_id": "e1",
+            "expected_source": "dry-cough",
+            "expected_target": "flu",
+            "new_source": "flu",
+            "new_target": "dry-cough",
+            "new_keywords": "has_manifestation",
+        },
+    )
+
+    assert proposal.to_dict()["action_payload"]["action"] == "replace_relation"
+
+
 def test_improvement_proposal_renders_patch_candidate_and_judge(tmp_path: Path):
     proposal = ImprovementProposal(
         id="proposal-20260618-001",
@@ -365,6 +414,79 @@ def test_validate_proposal_rejects_invalid_judge_type():
     )
 
     with pytest.raises(ValueError, match="judge"):
+        validate_proposal(proposal)
+
+
+@pytest.mark.parametrize(
+    "action_payload",
+    [
+        {},
+        {"action": "replace_relation"},
+        {
+            "action": "replace_relation",
+            "edge_id": "e1",
+            "expected_source": "dry-cough",
+            "expected_target": "flu",
+            "new_source": "flu",
+            "new_target": "dry-cough",
+            "new_keywords": "",
+        },
+        {
+            "action": "merge_relation",
+            "edge_id": "e1",
+            "expected_source": "dry-cough",
+            "expected_target": "flu",
+            "new_source": "flu",
+            "new_target": "dry-cough",
+            "new_keywords": "has_manifestation",
+        },
+    ],
+)
+def test_medical_relation_schema_migration_rejects_malformed_action_payload(
+    action_payload: dict,
+):
+    proposal = ImprovementProposal(
+        id="proposal-20260620-malformed-action",
+        type="medical_relation_schema_migration",
+        target="edge:e1",
+        proposed_change="Normalize relation.",
+        reason="Relation direction is invalid.",
+        evidence=["relation_id:e1"],
+        confidence=0.8,
+        risk="medium",
+        requires_approval=True,
+        expected_metric_change={},
+        action_payload=action_payload,
+    )
+
+    with pytest.raises(ValueError, match="action_payload"):
+        validate_proposal(proposal)
+
+
+def test_medical_relation_schema_migration_rejects_non_canonical_new_keywords():
+    proposal = ImprovementProposal(
+        id="proposal-20260620-noncanonical-keyword",
+        type="medical_relation_schema_migration",
+        target="edge:e1",
+        proposed_change="Normalize relation.",
+        reason="Relation direction is invalid.",
+        evidence=["relation_id:e1"],
+        confidence=0.8,
+        risk="medium",
+        requires_approval=True,
+        expected_metric_change={},
+        action_payload={
+            "action": "replace_relation",
+            "edge_id": "e1",
+            "expected_source": "dry-cough",
+            "expected_target": "flu",
+            "new_source": "flu",
+            "new_target": "dry-cough",
+            "new_keywords": "not_a_canonical_relation",
+        },
+    )
+
+    with pytest.raises(ValueError, match="new_keywords|canonical relation"):
         validate_proposal(proposal)
 
 

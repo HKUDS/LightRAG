@@ -40,6 +40,44 @@ describe('SnapshotTables', () => {
     expect(markup).not.toContain('Medical knowledge graph hierarchy')
   })
 
+  test('renders medical schema issues from quality score details without graph markup', () => {
+    const markup = renderToStaticMarkup(
+      <SnapshotTables
+        snapshot={{
+          nodes: [],
+          edges: []
+        }}
+        qualityScore={{
+          details: {
+            medical_schema_issues: [
+              {
+                issue_kind: 'disease_symptom_taxonomy_misuse',
+                edge_id: 'edge-dry-cough-flu',
+                keywords: '属于',
+                candidate_predicates: ['has_manifestation'],
+                source_id: 'chunk-1',
+                file_path: 'guide.md'
+              }
+            ]
+          }
+        }}
+      />
+    )
+
+    expect(markup).toContain('Schema 问题')
+    expect(markup).toContain('问题类型')
+    expect(markup).toContain('边 ID')
+    expect(markup).toContain('当前关系')
+    expect(markup).toContain('建议谓词')
+    expect(markup).toContain('来源')
+    expect(markup).toContain('>disease_symptom_taxonomy_misuse</td>')
+    expect(markup).toContain('>edge-dry-cough-flu</td>')
+    expect(markup).toContain('>属于</td>')
+    expect(markup).toContain('>has_manifestation</td>')
+    expect(markup).toContain('>chunk-1 / guide.md</td>')
+    expect(markup).not.toContain('<svg')
+  })
+
   test('renders an empty row message when the active table has no rows', () => {
     const markup = renderToStaticMarkup(<SnapshotTables snapshot={null} />)
 

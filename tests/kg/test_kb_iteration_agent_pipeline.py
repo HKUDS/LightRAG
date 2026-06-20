@@ -5,6 +5,7 @@ import pytest
 
 from lightrag.kb_iteration.agent_pipeline import (
     LLMAgentPipelineConfig,
+    _stage_prompt,
     run_llm_agent_pipeline,
 )
 
@@ -307,6 +308,99 @@ class MixedGroundedAndFabricatedEvidenceAgentClient(SequencedAgentClient):
         ]
 
 
+class FabricatedActionPayloadAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.outputs[3] = {
+            "proposals": [
+                {
+                    "id": "proposal-medical-schema-001",
+                    "type": "medical_relation_schema_migration",
+                    "target": "kg:relation:flu-fever",
+                    "proposed_change": "Normalize the relation direction.",
+                    "reason": "The relation should use a canonical medical predicate.",
+                    "evidence": [
+                        "source_id: chunk-1; file_path: guide.md; relation_id: flu-fever"
+                    ],
+                    "confidence": 0.82,
+                    "risk": "medium",
+                    "requires_approval": True,
+                    "expected_metric_change": {"medical_relation_schema_score": 4},
+                    "action_payload": {
+                        "action": "replace_relation",
+                        "edge_id": "flu-fever",
+                        "expected_source": "flu",
+                        "expected_target": "entity fever",
+                        "current_keywords": "clinical_manifestation",
+                        "new_source": "invented-disease",
+                        "new_target": "entity fever",
+                        "new_keywords": "has_manifestation",
+                        "qualifiers": {},
+                    },
+                }
+            ]
+        }
+
+
+class MismatchedActionPayloadTypeAgentClient(SequencedAgentClient):
+    def __init__(self, *, field_name: str, field_value: str) -> None:
+        super().__init__()
+        action_payload = {
+            "action": "replace_relation",
+            "edge_id": "flu-fever",
+            "expected_source": "flu",
+            "expected_target": "entity fever",
+            "current_keywords": "clinical_manifestation",
+            "new_source": "flu",
+            "new_target": "entity fever",
+            "new_keywords": "has_manifestation",
+            "qualifiers": {},
+        }
+        action_payload[field_name] = field_value
+        self.outputs[3] = {
+            "proposals": [
+                {
+                    "id": "proposal-medical-schema-typed-001",
+                    "type": "medical_relation_schema_migration",
+                    "target": "kg:relation:flu-fever",
+                    "proposed_change": "Normalize the relation direction.",
+                    "reason": "The relation should use a canonical medical predicate.",
+                    "evidence": [
+                        "source_id: chunk-1; file_path: guide.md; relation_id: flu-fever"
+                    ],
+                    "confidence": 0.82,
+                    "risk": "medium",
+                    "requires_approval": True,
+                    "expected_metric_change": {"medical_relation_schema_score": 4},
+                    "action_payload": action_payload,
+                }
+            ]
+        }
+
+
+class MissingExecutableMedicalActionPayloadAgentClient(SequencedAgentClient):
+    def __init__(self, proposal_type: str) -> None:
+        super().__init__()
+        self.outputs[3] = {
+            "proposals": [
+                {
+                    "id": f"proposal-{proposal_type}-001",
+                    "type": proposal_type,
+                    "target": "kg:medical-action",
+                    "proposed_change": "Prepare a deterministic medical KG action.",
+                    "reason": "Executable medical changes need deterministic payloads.",
+                    "evidence": [
+                        "source_id: chunk-1; file_path: guide.md; item_id: entity fever"
+                    ],
+                    "confidence": 0.78,
+                    "risk": "medium",
+                    "requires_approval": True,
+                    "expected_metric_change": {"medical_relation_schema_score": 1},
+                }
+            ]
+        }
+
+
 class LaunderedFreeTextEvidenceAgentClient(SequencedAgentClient):
     def __init__(self) -> None:
         super().__init__()
@@ -511,6 +605,15 @@ class AlwaysClientErrorAgentClient:
             }
         )
         raise RuntimeError(HEADER_STYLE_CLIENT_ERROR)
+
+
+def test_propose_prompt_requires_action_payload_for_medical_migrations():
+    prompt = _stage_prompt("propose", "clinical_guideline_zh")
+
+    assert "action_payload" in prompt
+    assert "medical_relation_schema_migration" in prompt
+    assert "replace_relation" in prompt
+    assert "Do not invent medical facts" in prompt
 
 
 def test_run_llm_agent_pipeline_writes_multistage_artifacts_and_queues_review(
@@ -733,6 +836,102 @@ def test_pipeline_rejects_proposal_with_any_fabricated_evidence_item(
     assert propose_trace["stage"] == "propose"
     assert (
         "evidence is not grounded in deterministic artifacts"
+        in propose_trace["error"]
+    )
+
+
+def test_pipeline_rejects_fabricated_action_payload_ids(tmp_path: Path):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = FabricatedActionPayloadAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+        profile="medical_kg",
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    assert (
+        "action_payload new_source is not grounded in deterministic artifacts"
+        in propose_trace["error"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("edge_id", "flu"),
+        ("expected_source", "flu-fever"),
+        ("expected_target", "flu-fever"),
+        ("new_source", "flu-fever"),
+        ("new_target", "flu-fever"),
+    ],
+)
+def test_pipeline_rejects_action_payload_ids_with_wrong_artifact_type(
+    tmp_path: Path,
+    field_name: str,
+    field_value: str,
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = MismatchedActionPayloadTypeAgentClient(
+        field_name=field_name,
+        field_value=field_value,
+    )
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+        profile="medical_kg",
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    assert (
+        f"action_payload {field_name} is not grounded in deterministic artifacts"
+        in propose_trace["error"]
+    )
+
+
+@pytest.mark.parametrize(
+    "proposal_type",
+    [
+        "value_node_to_qualifier",
+        "entity_alias_merge",
+        "medical_fact_role_split",
+    ],
+)
+def test_pipeline_requires_action_payload_for_executable_medical_proposal_types(
+    tmp_path: Path,
+    proposal_type: str,
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = MissingExecutableMedicalActionPayloadAgentClient(proposal_type)
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0),
+        profile="medical_kg",
+    )
+
+    assert result.stop_reason == "invalid_llm_output"
+    trace = json.loads((package / "llm_review_trace.json").read_text(encoding="utf-8"))
+    propose_trace = trace["stages"][-1]
+    proposal_id = f"proposal-{proposal_type}-001"
+    assert (
+        f"proposal {proposal_id} action_payload is required for executable "
+        "medical proposal type"
         in propose_trace["error"]
     )
 
@@ -1235,7 +1434,7 @@ def test_pipeline_marks_judge_unavailable_when_judge_context_too_large(
         workspace="demo",
         package_dir=package,
         client=client,
-        config=LLMAgentPipelineConfig(max_context_tokens_per_stage=680),
+        config=LLMAgentPipelineConfig(max_context_tokens_per_stage=800),
     )
 
     assert result.stop_reason == "pending_human_review"

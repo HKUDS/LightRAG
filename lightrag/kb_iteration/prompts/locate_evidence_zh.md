@@ -7,6 +7,7 @@
 - 不得把 LLM 输出、常识、医学背景知识或推测当成医学证据。
 - 只能使用输入中提供的 entity、relation、source_id、file_path、quality evidence。
 - 支持 mutation proposal 的证据必须至少包含可追踪的 source_id 和 file_path。
+- 当 quality finding 指向关系方向或 `属于` 误用时，优先定位对应 relation_id、source_id、file_path 和两端 entity。
 - 如果没有足够证据，请把 supporting_items 设为空数组，并在 missing_evidence 中说明缺口。
 
 输出 schema：
@@ -32,3 +33,5 @@
   ]
 }
 ```
+
+医学 KG 修改只能引用确定性 artifact 中已有的 node id、edge id、source_id、file_path、metric。LLM 推断不是医学证据。

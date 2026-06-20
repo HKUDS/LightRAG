@@ -98,7 +98,9 @@ def test_build_review_context_focuses_generic_relation_package(tmp_path: Path):
             "requires_approval": True,
         }
     ]
-    assert "Do not merge flu and fever" in context["rules_memory"]["rejected_changes"]
+    assert "Do not merge flu and fever" in context["rules_memory"][
+        "agent_memory_summary"
+    ]
 
 
 def test_build_review_context_selects_edges_with_generic_relation_token(
@@ -444,7 +446,7 @@ def test_write_review_context_writes_round_context_json(tmp_path: Path):
         "entities": [],
         "relations": [],
         "evidence_windows": [],
-        "rules_memory": {"accepted_changes": "保留相关证据", "rejected_changes": ""},
+        "rules_memory": {"agent_memory_summary": "保留相关证据"},
     }
 
     written = write_review_context(package, "round-001", context)

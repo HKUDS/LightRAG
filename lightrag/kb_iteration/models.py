@@ -94,6 +94,10 @@ class ImprovementProposal:
     expected_metric_change: dict[str, int | float] = field(default_factory=dict)
     patch_candidate: str = ""
     judge: dict[str, Any] = field(default_factory=dict)
+    action_payload: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        if not payload["action_payload"]:
+            payload.pop("action_payload")
+        return payload

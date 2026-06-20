@@ -25,3 +25,5 @@
   ]
 }
 ```
+
+医学 KG 修改只能引用确定性 artifact 中已有的 node id、edge id、source_id、file_path、metric。LLM 推断不是医学证据。

@@ -37,6 +37,7 @@ describe('iteration workbench panels', () => {
         { key: 'improvement_backlog', contentType: 'text/markdown', exists: true },
         { key: 'accepted_changes', contentType: 'text/markdown', exists: true },
         { key: 'rejected_changes', contentType: 'text/markdown', exists: true },
+        { key: 'agent_memory_summary', contentType: 'text/markdown', exists: true },
         { key: 'accepted_changes_apply_result', contentType: 'text/markdown', exists: true },
         { key: 'accepted_changes_execution', contentType: 'text/markdown', exists: true },
         { key: 'iteration_log', contentType: 'text/markdown', exists: true }
@@ -59,7 +60,7 @@ describe('iteration workbench panels', () => {
     expect(markup).toContain('snapshots/kg_snapshot.json')
     expect(markup).toContain('质量分数')
     expect(markup).toContain('snapshots/quality_score.json')
-    expect(markup).toContain('待审批 proposal')
+    expect(markup).toContain('待审批 Proposal')
     expect(markup).toContain('approval_queue.md')
     expect(markup).toContain('改进 backlog')
     expect(markup).toContain('improvement_backlog.md')
@@ -67,6 +68,8 @@ describe('iteration workbench panels', () => {
     expect(markup).toContain('accepted_changes.md')
     expect(markup).toContain('已拒绝变更记忆')
     expect(markup).toContain('rejected_changes.md')
+    expect(markup).toContain('Agent 压缩记忆')
+    expect(markup).toContain('agent_memory_summary.md')
     expect(markup).toContain('真实应用结果')
     expect(markup).toContain('accepted_changes_apply_result.md')
     expect(markup).toContain('accepted_changes_execution.md')

@@ -19,6 +19,7 @@ from .agent_context import (
 )
 from .agent_outputs import parse_agent_stage_output, write_agent_stage_artifacts
 from .llm_review import LLMReviewClient, LLMReviewOutput, write_llm_review_artifacts
+from .medical_schema import render_medical_relation_schema_prompt
 from .models import ImprovementProposal
 from .proposals import validate_proposal, write_approval_queue, write_improvement_backlog
 
@@ -99,6 +100,19 @@ _JUDGE_DECISIONS = {
     "needs_more_evidence",
 }
 _JUDGE_HUMAN_DECISIONS = {"needs_human", "needs_more_evidence"}
+_EXECUTABLE_MEDICAL_PROPOSAL_TYPES = {
+    "medical_relation_schema_migration",
+    "value_node_to_qualifier",
+    "entity_alias_merge",
+    "medical_fact_role_split",
+}
+_ACTION_PAYLOAD_TYPED_REFERENCE_KEYS = {
+    "edge_id": "relation_id",
+    "expected_source": "entity_id",
+    "expected_target": "entity_id",
+    "new_source": "entity_id",
+    "new_target": "entity_id",
+}
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b("
     r"x-api-key|api[_-]?key|"
@@ -276,6 +290,8 @@ def run_llm_agent_pipeline(
 
             try:
                 parsed = parse_agent_stage_output(stage, raw_output)
+                if stage == "propose":
+                    _validate_executable_medical_action_payloads(parsed.proposals)
                 for proposal in parsed.proposals:
                     validate_proposal(proposal)
                 if stage == "propose":
@@ -684,6 +700,7 @@ def _validate_grounded_proposal_evidence(
     for proposal in proposals:
         if proposal.type == "review_context_request":
             continue
+        _validate_action_payload_grounding(proposal, reference_tokens)
         for evidence in proposal.evidence:
             if not evidence.strip():
                 continue
@@ -692,6 +709,39 @@ def _validate_grounded_proposal_evidence(
             raise ValueError(
                 f"proposal {proposal.id} evidence is not grounded in deterministic "
                 "artifacts"
+            )
+
+
+def _validate_executable_medical_action_payloads(
+    proposals: list[ImprovementProposal],
+) -> None:
+    for proposal in proposals:
+        if (
+            proposal.type in _EXECUTABLE_MEDICAL_PROPOSAL_TYPES
+            and not proposal.action_payload
+        ):
+            raise ValueError(
+                f"proposal {proposal.id} action_payload is required for "
+                "executable medical proposal type"
+            )
+
+
+def _validate_action_payload_grounding(
+    proposal: ImprovementProposal,
+    reference_tokens: _EvidenceReferenceTokens,
+) -> None:
+    payload = proposal.action_payload
+    if not payload:
+        return
+    for key, token_key in _ACTION_PAYLOAD_TYPED_REFERENCE_KEYS.items():
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        normalized = _normalize_reference_part(value)
+        if normalized not in reference_tokens.by_key[token_key]:
+            raise ValueError(
+                f"proposal {proposal.id} action_payload {key} is not grounded "
+                "in deterministic artifacts"
             )
 
 
@@ -730,6 +780,7 @@ def _grounded_reference_tokens(
             _add_quality_reference_token(tokens, key, _dict_value(metrics, key))
         for finding in _list_of_dicts(quality.get("findings")):
             _add_reference_values(tokens, finding.get("evidence"))
+        _add_quality_issue_reference_tokens(tokens, quality.get("details"))
 
     return tokens
 
@@ -831,6 +882,31 @@ def _add_quality_reference_token(
     if isinstance(value, bool) or not isinstance(value, str | int | float):
         return
     _add_typed_reference_token(tokens, "metric", f"quality:{key}={value}")
+
+
+def _add_quality_issue_reference_tokens(
+    tokens: _EvidenceReferenceTokens, details: Any
+) -> None:
+    if not isinstance(details, dict):
+        return
+    for issue_key in ("medical_schema_issues", "entity_cleanup_issues"):
+        for issue in _list_of_dicts(details.get(issue_key)):
+            _add_issue_id_reference_tokens(tokens, issue)
+
+
+def _add_issue_id_reference_tokens(
+    tokens: _EvidenceReferenceTokens, value: Any
+) -> None:
+    if isinstance(value, dict):
+        for key, nested_value in value.items():
+            if str(key).endswith("_id"):
+                _add_reference_values(tokens, nested_value)
+            else:
+                _add_issue_id_reference_tokens(tokens, nested_value)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _add_issue_id_reference_tokens(tokens, item)
 
 
 def _normalize_reference_part(value: Any) -> str:
@@ -1072,14 +1148,16 @@ def _write_failure_artifacts(
 def _stage_prompt(stage: str, profile: str | None) -> str:
     prompt_path = Path(__file__).parent / "prompts" / _PROMPT_FILES[stage]
     prompt = prompt_path.read_text(encoding="utf-8")
-    return "\n".join(
-        [
-            prompt.strip(),
-            "",
-            f"profile: {profile or 'default'}",
-            "Return only JSON.",
-        ]
-    )
+    parts = [
+        prompt.strip(),
+        "",
+        f"profile: {profile or 'default'}",
+    ]
+    schema_prompt = render_medical_relation_schema_prompt(profile)
+    if schema_prompt:
+        parts.extend(["", schema_prompt.strip()])
+    parts.append("Return only JSON.")
+    return "\n".join(parts)
 
 
 def _client_model(client: LLMReviewClient) -> str:

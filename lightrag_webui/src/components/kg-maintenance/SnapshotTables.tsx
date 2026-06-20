@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
+import { useMemo, useState, type ChangeEvent } from 'react'
 import { cn } from '@/lib/utils'
 import { buildEvidenceIssueRows } from './kgMaintenanceDisplay'
 
 type SnapshotTablesProps = {
   snapshot: Record<string, any> | null
+  qualityScore?: unknown
 }
 
-type TableKey = 'nodes' | 'relations' | 'evidence'
+type TableKey = 'nodes' | 'relations' | 'evidence' | 'schemaIssues'
 
 type TableColumn = {
   key: string
@@ -16,7 +17,8 @@ type TableColumn = {
 const tabs: Array<{ key: TableKey; label: string }> = [
   { key: 'nodes', label: '节点' },
   { key: 'relations', label: '关系' },
-  { key: 'evidence', label: '证据问题' }
+  { key: 'evidence', label: '证据问题' },
+  { key: 'schemaIssues', label: 'Schema 问题' }
 ]
 
 const nodeColumns: TableColumn[] = [
@@ -42,12 +44,36 @@ const evidenceColumns: TableColumn[] = [
   { key: 'issue', label: '问题' }
 ]
 
+const schemaIssueColumns: TableColumn[] = [
+  { key: 'issueType', label: '问题类型' },
+  { key: 'edgeId', label: '边 ID' },
+  { key: 'currentRelation', label: '当前关系' },
+  { key: 'suggestedPredicate', label: '建议谓词' },
+  { key: 'source', label: '来源' }
+]
+
 const DEFAULT_VISIBLE_LIMIT = 100
 
-export function SnapshotTables({ snapshot }: SnapshotTablesProps) {
-  const [activeTab, setActiveTab] = useState<TableKey>('nodes')
+type VisibleWindowState = {
+  activeTab: TableKey
+  query: string
+  snapshot: Record<string, any> | null
+  qualityScore: unknown
+  limit: number
+}
+
+export function SnapshotTables({ snapshot, qualityScore }: SnapshotTablesProps) {
+  const [activeTab, setActiveTab] = useState<TableKey>(() =>
+    shouldShowSchemaIssuesInitially(snapshot, qualityScore) ? 'schemaIssues' : 'nodes'
+  )
   const [query, setQuery] = useState('')
-  const [visibleLimit, setVisibleLimit] = useState(DEFAULT_VISIBLE_LIMIT)
+  const [visibleWindow, setVisibleWindow] = useState<VisibleWindowState>({
+    activeTab: shouldShowSchemaIssuesInitially(snapshot, qualityScore) ? 'schemaIssues' : 'nodes',
+    query: '',
+    snapshot,
+    qualityScore,
+    limit: DEFAULT_VISIBLE_LIMIT
+  })
 
   const nodes = useMemo(() => normalizeCollection(snapshot?.nodes ?? snapshot?.entities), [snapshot])
   const relations = useMemo(
@@ -61,16 +87,28 @@ export function SnapshotTables({ snapshot }: SnapshotTablesProps) {
     [snapshot]
   )
   const evidenceRows = useMemo(() => buildEvidenceIssueRows(snapshot), [snapshot])
+  const schemaIssueRows = useMemo(() => buildSchemaIssueRows(qualityScore), [qualityScore])
+  const effectiveActiveTab =
+    activeTab === 'nodes' &&
+    nodes.length === 0 &&
+    relations.length === 0 &&
+    evidenceRows.length === 0 &&
+    schemaIssueRows.length > 0
+      ? 'schemaIssues'
+      : activeTab
 
-  const table = useMemo(() => {
-    if (activeTab === 'relations') {
+  const table = useMemo<{ columns: TableColumn[]; rows: Array<Record<string, any>> }>(() => {
+    if (effectiveActiveTab === 'relations') {
       return { columns: relationColumns, rows: relations }
     }
-    if (activeTab === 'evidence') {
+    if (effectiveActiveTab === 'evidence') {
       return { columns: evidenceColumns, rows: evidenceRows }
     }
+    if (effectiveActiveTab === 'schemaIssues') {
+      return { columns: schemaIssueColumns, rows: schemaIssueRows }
+    }
     return { columns: nodeColumns, rows: nodes }
-  }, [activeTab, evidenceRows, nodes, relations])
+  }, [effectiveActiveTab, evidenceRows, nodes, relations, schemaIssueRows])
 
   const filteredRows = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -82,22 +120,23 @@ export function SnapshotTables({ snapshot }: SnapshotTablesProps) {
       ) || safePrettyJson(row).toLowerCase().includes(normalizedQuery)
     )
   }, [query, table])
+  const visibleLimit =
+    visibleWindow.activeTab === effectiveActiveTab &&
+    visibleWindow.query === query &&
+    visibleWindow.snapshot === snapshot &&
+    visibleWindow.qualityScore === qualityScore
+      ? visibleWindow.limit
+      : DEFAULT_VISIBLE_LIMIT
   const visibleRows = filteredRows.slice(0, visibleLimit)
   const hasMoreRows = visibleRows.length < filteredRows.length
   const emptyMessage = table.rows.length === 0 ? '暂无数据' : '没有匹配结果'
 
-  useEffect(() => {
-    setVisibleLimit(DEFAULT_VISIBLE_LIMIT)
-  }, [activeTab, query, snapshot])
-
   const handleTabClick = (tab: TableKey) => {
     setActiveTab(tab)
-    setVisibleLimit(DEFAULT_VISIBLE_LIMIT)
   }
 
   const handleQueryChange = (event: ChangeEvent<HTMLInputElement>) => {
     setQuery(event.target.value)
-    setVisibleLimit(DEFAULT_VISIBLE_LIMIT)
   }
 
   return (
@@ -111,7 +150,7 @@ export function SnapshotTables({ snapshot }: SnapshotTablesProps) {
               onClick={() => handleTabClick(tab.key)}
               className={cn(
                 'rounded-sm px-3 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
-                activeTab === tab.key
+                effectiveActiveTab === tab.key
                   ? 'bg-background text-foreground shadow-sm'
                   : 'text-muted-foreground hover:text-foreground'
               )}
@@ -137,7 +176,15 @@ export function SnapshotTables({ snapshot }: SnapshotTablesProps) {
         {hasMoreRows ? (
           <button
             type="button"
-            onClick={() => setVisibleLimit((current) => current + DEFAULT_VISIBLE_LIMIT)}
+            onClick={() =>
+              setVisibleWindow({
+                activeTab: effectiveActiveTab,
+                query,
+                snapshot,
+                qualityScore,
+                limit: visibleLimit + DEFAULT_VISIBLE_LIMIT
+              })
+            }
             className="border-border bg-background hover:bg-muted/40 focus-visible:ring-ring rounded-md border px-2.5 py-1 text-xs text-foreground transition-colors focus-visible:ring-2 focus-visible:outline-none"
           >
             显示更多
@@ -172,7 +219,7 @@ export function SnapshotTables({ snapshot }: SnapshotTablesProps) {
             {visibleRows.length > 0 ? (
               visibleRows.map((row, rowIndex) => (
                 <tr
-                  key={rowKey(activeTab, row, rowIndex)}
+                  key={rowKey(effectiveActiveTab, row, rowIndex)}
                   className="border-border/60 border-b"
                 >
                   {table.columns.map((column) => (
@@ -249,6 +296,10 @@ function rowKey(tableKey: TableKey, row: Record<string, any>, index: number): st
     return `${tableKey}:${formatCellValue(row.id ?? row.itemId ?? index)}`
   }
 
+  if (tableKey === 'schemaIssues') {
+    return `${tableKey}:${formatCellValue(row.id ?? row.edgeId ?? index)}`
+  }
+
   if (tableKey === 'relations') {
     return `${tableKey}:${relationId(row, index)}`
   }
@@ -273,6 +324,73 @@ function safeStringify(value: unknown, space?: number): string {
   } catch {
     return '无法序列化'
   }
+}
+
+function buildSchemaIssueRows(qualityScore: unknown): Array<Record<string, any>> {
+  const record = isRecord(qualityScore) ? qualityScore : null
+  const details = isRecord(record?.details) ? record.details : null
+  const issues = Array.isArray(details?.medical_schema_issues)
+    ? details.medical_schema_issues
+    : []
+
+  return issues.filter(isRecord).map((issue, index) => ({
+    ...issue,
+    id: issue.id ?? issue.edge_id ?? issue.edgeId ?? `schema-issue-${index + 1}`,
+    issueType: issue.issue_kind ?? issue.issue_type ?? issue.issueType ?? issue.type,
+    edgeId: issue.edge_id ?? issue.edgeId ?? issue.edge,
+    currentRelation:
+      issue.keywords ??
+      issue.current_relation ??
+      issue.currentRelation ??
+      issue.relation ??
+      issue.predicate,
+    suggestedPredicate: schemaIssueSuggestedPredicate(issue),
+    source: schemaIssueSource(issue)
+  }))
+}
+
+function schemaIssueSuggestedPredicate(issue: Record<string, any>): unknown {
+  const candidates = issue.candidate_predicates ?? issue.candidatePredicates
+  if (Array.isArray(candidates) && candidates.length > 0) return candidates
+  return (
+    issue.suggested_predicate ??
+    issue.suggested_predicates ??
+    issue.suggestedPredicate ??
+    issue.suggestedPredicates ??
+    issue.suggestion
+  )
+}
+
+function schemaIssueSource(issue: Record<string, any>): unknown {
+  const sourceId = formatOptionalCellValue(issue.source_id ?? issue.sourceId)
+  const filePath = formatOptionalCellValue(issue.file_path ?? issue.filePath)
+  if (sourceId && filePath) return `${sourceId} / ${filePath}`
+  return sourceId ?? filePath ?? issue.source
+}
+
+function formatOptionalCellValue(value: unknown): string | undefined {
+  if (value === null || value === undefined || value === '') return undefined
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return safeStringify(value)
+}
+
+function shouldShowSchemaIssuesInitially(
+  snapshot: Record<string, any> | null,
+  qualityScore: unknown
+): boolean {
+  const nodes = normalizeCollection(snapshot?.nodes ?? snapshot?.entities)
+  const relations = normalizeCollection(snapshot?.edges ?? snapshot?.relations ?? snapshot?.links)
+  const evidenceRows = buildEvidenceIssueRows(snapshot)
+  return (
+    nodes.length === 0 &&
+    relations.length === 0 &&
+    evidenceRows.length === 0 &&
+    buildSchemaIssueRows(qualityScore).length > 0
+  )
 }
 
 function isEmpty(value: unknown): boolean {

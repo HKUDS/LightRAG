@@ -27,6 +27,7 @@ import {
   ExecutionPanel,
   ValidationPanel
 } from '@/components/kg-maintenance/ExecutionAndValidationPanels'
+import { SnapshotReviewPanel } from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import { extractQualityBefore } from '@/components/kg-maintenance/kgMaintenanceDisplay'
 import {
   buildDisplayArtifactItems,
@@ -144,6 +145,7 @@ export default function KGMaintenanceConsole() {
   const [summary, setSummary] = useState<KBIterationSummaryResponse | null>(null)
   const [quality, setQuality] = useState<KBIterationQualityResponse | null>(null)
   const [rules, setRules] = useState<KBIterationRulesResponse | null>(null)
+  const [kgSnapshotSource, setKgSnapshotSource] = useState<Record<string, any> | null>(null)
   const [qualityScoreSource, setQualityScoreSource] = useState<Record<string, any> | null>(null)
   const [approvalQueue, setApprovalQueue] = useState('')
   const [approvalQueueSource, setApprovalQueueSource] = useState('')
@@ -230,6 +232,7 @@ export default function KGMaintenanceConsole() {
         qualityPayload,
         rulesPayload,
         displayArtifacts: loadedDisplayArtifacts,
+        kgSnapshotArtifact,
         qualityScoreSourceArtifact,
         approvalArtifact,
         approvalArtifactSource,
@@ -254,6 +257,13 @@ export default function KGMaintenanceConsole() {
       setQuality(qualityPayload)
       setRules(rulesPayload)
       setDisplayArtifacts(loadedDisplayArtifacts)
+      setKgSnapshotSource(
+        kgSnapshotArtifact &&
+          typeof kgSnapshotArtifact === 'object' &&
+          !Array.isArray(kgSnapshotArtifact)
+          ? kgSnapshotArtifact
+          : null
+      )
       setQualityScoreSource(
         qualityScoreSourceArtifact &&
           typeof qualityScoreSourceArtifact === 'object' &&
@@ -303,6 +313,7 @@ export default function KGMaintenanceConsole() {
     (workspace: string) => {
       setPatchText('')
       setDisplayArtifacts({})
+      setKgSnapshotSource(null)
       setQualityScoreSource(null)
       setApprovalQueueSource('')
       setDeferredChangesSource('')
@@ -510,6 +521,7 @@ export default function KGMaintenanceConsole() {
           summary={summary}
           quality={quality}
           rules={rules}
+          kgSnapshotSource={kgSnapshotSource}
           qualityScoreSource={qualityScoreSource}
           approvalQueue={approvalQueue}
           approvalQueueSource={approvalQueueSource}
@@ -557,6 +569,7 @@ interface MainPanelProps {
   summary: KBIterationSummaryResponse | null
   quality: KBIterationQualityResponse | null
   rules: KBIterationRulesResponse | null
+  kgSnapshotSource?: Record<string, any> | null
   qualityScoreSource?: Record<string, any> | null
   approvalQueue: string
   approvalQueueSource: string
@@ -598,6 +611,7 @@ export function MainPanel({
   summary,
   quality,
   rules,
+  kgSnapshotSource,
   qualityScoreSource,
   approvalQueue,
   approvalQueueSource,
@@ -695,7 +709,15 @@ export function MainPanel({
   let content
   switch (activeSection) {
     case 'check':
-      content = <CheckSummaryPanel summary={summary} loading={loading} />
+      content = (
+        <div className="space-y-4">
+          <CheckSummaryPanel summary={summary} loading={loading} />
+          <SnapshotReviewPanel
+            snapshot={kgSnapshotSource ?? null}
+            qualityScore={qualityScoreSource ?? null}
+          />
+        </div>
+      )
       break
     case 'llm-review':
       content = (
@@ -813,7 +835,7 @@ function CheckSummaryPanel({
   const metrics = [
     ['当前阶段', summary.phase || '未开始'],
     ['质量分数', formatMaybeNumber(summary.quality?.overall)],
-    ['待审批 proposal', String(summary.pendingApprovalCount ?? 0)],
+    ['待审批 Proposal', String(summary.pendingApprovalCount ?? 0)],
     [
       '节点 / 关系 / 来源',
       `${summary.counts?.nodes ?? 0} / ${summary.counts?.edges ?? 0} / ${summary.counts?.sources ?? 0}`

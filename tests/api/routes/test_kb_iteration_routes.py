@@ -19,6 +19,20 @@ from lightrag.kb_iteration.apply import (
 HEADERS = {"X-API-Key": "test-key"}
 
 
+def test_kb_iteration_artifacts_include_schema_and_memory_outputs():
+    original_argv = sys.argv
+    sys.argv = ["lightrag-server"]
+    try:
+        from lightrag.api.routers.kb_iteration_routes import ARTIFACTS
+    finally:
+        sys.argv = original_argv
+
+    assert "agent_memory_summary" in ARTIFACTS
+    assert "approval_queue" in ARTIFACTS
+    assert "accepted_changes_apply_result" in ARTIFACTS
+    assert ARTIFACTS["quality_score"][0] == "snapshots/quality_score.json"
+
+
 class FakeZhClient:
     def __init__(self, response: str = "## 中文显示\n") -> None:
         self.response = response
@@ -597,6 +611,12 @@ def test_accept_reject_and_defer_records_are_append_only(tmp_path: Path, monkeyp
     assert "Wait for another run" in (
         fixture.package / "deferred_changes.md"
     ).read_text(encoding="utf-8")
+    memory_summary = (fixture.package / "agent_memory_summary.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Evidence checked" in memory_summary
+    assert "Needs stronger evidence" in memory_summary
+    assert "Wait for another run" not in memory_summary
 
 
 def test_proposal_decision_accepts_empty_review_and_records_defaults(
@@ -665,6 +685,11 @@ def test_proposal_revision_request_accepts_empty_body_and_records_defaults(
     assert "- phase: proposal_revision_request" in iteration_log
     assert "- event: revision_request_queued" in iteration_log
     assert "- proposal_id: p1" in iteration_log
+    memory_summary = (fixture.package / "agent_memory_summary.md").read_text(
+        encoding="utf-8"
+    )
+    assert "p1" in memory_summary
+    assert record["instruction"] in memory_summary
 
     artifact = client.get(
         "/kb-iteration/influenza_medical_v1/artifacts/proposal_revision_requests",
@@ -770,6 +795,9 @@ def test_execute_accepted_changes_without_records_writes_empty_apply_result_arti
     assert apply_payload["blocked_count"] == 0
     assert apply_payload["quality_before"]["overall"] == 82
     assert apply_payload["quality_after"]["overall"] == 82
+    memory_summary = fixture.package / "agent_memory_summary.md"
+    assert memory_summary.exists()
+    assert "Agent Memory Summary" in memory_summary.read_text(encoding="utf-8")
 
     artifact = client.get(
         "/kb-iteration/influenza_medical_v1/artifacts/accepted_changes_apply_result",
@@ -974,6 +1002,79 @@ def test_execute_accepted_changes_writes_apply_result_when_rerun_fails(
     assert "- phase: accepted_changes_apply" in iteration_log
     assert "- rerun_status: failed" in iteration_log
     assert "bad profile" in iteration_log
+
+
+def test_execute_accepted_changes_rerun_failure_takes_precedence_over_memory_refresh(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    accept = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p1/accept",
+        headers=HEADERS,
+        json={},
+    )
+    assert accept.status_code == 200
+
+    import lightrag.api.routers.kb_iteration_routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "_default_llm_review_client",
+        lambda _rag: pytest.fail("LLM client must not be required"),
+    )
+    monkeypatch.setattr(routes, "load_proposals_by_id", lambda package_dir: {"p1": {}})
+
+    async def fake_apply_accepted_changes_to_graph(
+        *, rag, workspace, records, proposals_by_id
+    ):
+        return AcceptedApplyResult(
+            workspace=workspace,
+            applied_at="2026-06-19T00:00:00+00:00",
+            source_artifact="accepted_changes.md",
+            proposal_ids=["p1"],
+            changes=[
+                ApplyChange(
+                    proposal_id="p1",
+                    proposal_type="add_hierarchy_branch",
+                    target="kg_structure.md",
+                    status=ApplyChangeStatus.APPLIED,
+                    action="add_hierarchy_branch",
+                    branch_key="clinical_manifestation",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        routes,
+        "apply_accepted_changes_to_graph",
+        fake_apply_accepted_changes_to_graph,
+    )
+    monkeypatch.setattr(
+        routes,
+        "run_iteration",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("bad profile")),
+    )
+    monkeypatch.setattr(
+        routes,
+        "refresh_agent_memory_summary",
+        lambda package_dir: (_ for _ in ()).throw(RuntimeError("refresh failed")),
+    )
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/accepted-changes/execute",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "bad profile"
+    assert (fixture.package / "accepted_changes_apply_result.json").exists()
+
+    iteration_log = (fixture.package / "iteration_log.md").read_text(encoding="utf-8")
+    assert "- phase: accepted_changes_apply" in iteration_log
+    assert "- rerun_status: failed" in iteration_log
+    assert "bad profile" in iteration_log
+    assert "refresh failed" not in response.json()["detail"]
 
 
 def test_execute_accepted_changes_rejects_when_workspace_run_file_lock_is_held(

@@ -33,6 +33,20 @@ describe('kg maintenance artifact catalog', () => {
       zhFile: 'approval_queue.zh.md',
       step: 'approval'
     })
+    expect(findArtifactDefinition('agent_memory_summary')).toMatchObject({
+      key: 'agent_memory_summary',
+      title: 'Agent 压缩记忆',
+      sourceFile: 'agent_memory_summary.md',
+      zhFile: 'agent_memory_summary.zh.md',
+      step: 'approval'
+    })
+  })
+
+  test('uses Chinese labels for schema migration workflow artifacts', () => {
+    expect(findArtifactDefinition('quality_score')?.title).toBe('质量分数')
+    expect(findArtifactDefinition('approval_queue')?.title).toBe('待审批 Proposal')
+    expect(findArtifactDefinition('agent_memory_summary')?.title).toBe('Agent 压缩记忆')
+    expect(findArtifactDefinition('accepted_changes_apply_result')?.title).toBe('真实应用结果')
   })
 
   test('maps every visible artifact to one workflow step', () => {
@@ -59,6 +73,9 @@ describe('kg maintenance artifact catalog', () => {
     })
     expect(artifactsForStep('approval').map((artifact) => artifact.key)).toContain(
       'proposal_revision_requests'
+    )
+    expect(artifactsForStep('approval').map((artifact) => artifact.key)).toContain(
+      'agent_memory_summary'
     )
   })
 

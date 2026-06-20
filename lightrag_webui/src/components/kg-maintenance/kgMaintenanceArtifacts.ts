@@ -160,6 +160,14 @@ export const KG_MAINTENANCE_ARTIFACTS: KGMaintenanceArtifactDefinition[] = [
     contentType: 'text/markdown'
   },
   {
+    key: 'agent_memory_summary',
+    title: 'Agent 压缩记忆',
+    sourceFile: 'agent_memory_summary.md',
+    zhFile: 'agent_memory_summary.zh.md',
+    step: 'approval',
+    contentType: 'text/markdown'
+  },
+  {
     key: 'accepted_changes',
     title: '已接受变更',
     sourceFile: 'accepted_changes.md',

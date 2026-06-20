@@ -9,6 +9,7 @@ from typing import Any
 from lightrag.utils import validate_workspace
 
 from .llm_review import LLMReviewClient, parse_llm_review_output, write_llm_review_artifacts
+from .medical_schema import render_medical_relation_schema_prompt
 from .proposals import validate_proposal, write_approval_queue, write_improvement_backlog
 from .review_context import build_review_context, write_review_context
 
@@ -355,19 +356,21 @@ def _single_line(value: str) -> str:
 
 
 def _system_prompt(config: LLMReviewLoopConfig, profile: str | None) -> str:
-    return "\n".join(
-        [
-            "You are reviewing a LightRAG KB iteration package.",
-            "Return only JSON accepted by parse_llm_review_output.",
-            f"profile: {profile or 'default'}",
-            f"allow_llm_judge: {config.allow_llm_judge}",
-            f"allow_llm_auto_accept: {config.allow_llm_auto_accept}",
-            f"allow_low_risk_auto_reject: {config.allow_low_risk_auto_reject}",
-            f"generate_patch_candidates: {config.generate_patch_candidates}",
-            f"require_human_for_mutation: {config.require_human_for_mutation}",
-            f"max_context_tokens_per_round: {config.max_context_tokens_per_round}",
-        ]
-    )
+    parts = [
+        "You are reviewing a LightRAG KB iteration package.",
+        "Return only JSON accepted by parse_llm_review_output.",
+        f"profile: {profile or 'default'}",
+        f"allow_llm_judge: {config.allow_llm_judge}",
+        f"allow_llm_auto_accept: {config.allow_llm_auto_accept}",
+        f"allow_low_risk_auto_reject: {config.allow_low_risk_auto_reject}",
+        f"generate_patch_candidates: {config.generate_patch_candidates}",
+        f"require_human_for_mutation: {config.require_human_for_mutation}",
+        f"max_context_tokens_per_round: {config.max_context_tokens_per_round}",
+    ]
+    schema_prompt = render_medical_relation_schema_prompt(profile)
+    if schema_prompt:
+        parts.extend(["", schema_prompt.strip()])
+    return "\n".join(parts)
 
 
 def _finding_text(finding: Any) -> str:

@@ -11,6 +11,7 @@ RULE_MEMORY_FILES = {
     "accepted_changes.md",
     "rejected_changes.md",
     "proposal_revision_requests.md",
+    "agent_memory_summary.md",
     "approval_queue.md",
     "improvement_backlog.md",
     "iteration_log.md",
@@ -80,6 +81,7 @@ def test_write_markdown_memory_creates_llm_entrypoint_and_catalogs(
     assert (tmp_path / "entity_catalog.md").exists()
     assert (tmp_path / "relation_catalog.md").exists()
     assert (tmp_path / "kg_structure.md").exists()
+    assert (tmp_path / "agent_memory_summary.md").exists()
     assert "influenza_medical_v1" in (
         tmp_path / "kb_context.md"
     ).read_text(encoding="utf-8")
@@ -90,6 +92,7 @@ def test_write_markdown_memory_creates_llm_entrypoint_and_catalogs(
         encoding="utf-8"
     )
     assert paths["kb_context"].name == "kb_context.md"
+    assert paths["agent_memory_summary"].name == "agent_memory_summary.md"
 
 
 def test_kb_context_summarizes_snapshot_and_links_detail_files(tmp_path: Path):

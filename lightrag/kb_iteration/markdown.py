@@ -7,6 +7,7 @@ from typing import Any
 
 from lightrag.constants import GRAPH_FIELD_SEP
 
+from .memory import AGENT_MEMORY_SUMMARY_FILE, refresh_agent_memory_summary
 from .models import KGSnapshot, SnapshotEdge, SnapshotNode
 
 HIERARCHY_KEYWORDS = {
@@ -28,6 +29,10 @@ RULE_MEMORY_TEMPLATES = {
     "proposal_revision_requests.md": (
         "# Proposal Revision Requests\n\n"
         "- Queue maintainer feedback for proposals that need revision here.\n"
+    ),
+    AGENT_MEMORY_SUMMARY_FILE: (
+        "# Agent Memory Summary\n\n"
+        "- Compact memory is generated from accepted/rejected/revision records.\n"
     ),
     "approval_queue.md": "# Approval Queue\n\n- Queue proposed KB changes for human review here.\n",
     "improvement_backlog.md": "# Improvement Backlog\n\n- Track future KB improvements here.\n",
@@ -55,6 +60,7 @@ def write_markdown_memory(
     _write_text(paths["relation_catalog"], _render_relation_catalog(snapshot))
     _write_text(paths["kg_structure"], _render_kg_structure(snapshot))
     _initialize_rule_memory_files(output_path)
+    paths["agent_memory_summary"] = refresh_agent_memory_summary(output_path)
 
     return paths
 

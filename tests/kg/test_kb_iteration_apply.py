@@ -37,6 +37,9 @@ class FakeGraph:
         self.edges: dict[tuple[str, str], dict] = {}
         self.upserted_nodes: list[tuple[str, dict]] = []
         self.upserted_edges: list[tuple[str, str, dict]] = []
+        self.removed_edges: list[tuple[str, str]] = []
+        self.removed_nodes: list[str] = []
+        self.upsert_edge_failures: set[tuple[str, str]] = set()
         self.index_done_calls = 0
 
     async def has_node(self, node_id: str) -> bool:
@@ -45,18 +48,77 @@ class FakeGraph:
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         return (source_node_id, target_node_id) in self.edges
 
+    async def get_node(self, node_id: str) -> dict | None:
+        return self.nodes.get(node_id)
+
+    async def node_degree(self, node_id: str) -> int:
+        if node_id not in self.nodes:
+            return 0
+        return sum(1 for source, target in self.edges if node_id in {source, target})
+
+    async def get_edge(self, source_node_id: str, target_node_id: str) -> dict | None:
+        edge = self.edges.get((source_node_id, target_node_id))
+        return dict(edge) if edge is not None else None
+
+    async def get_node_edges(self, node_id: str) -> list[tuple[str, str]] | None:
+        if node_id not in self.nodes:
+            return None
+        return [
+            (source_node_id, target_node_id)
+            for source_node_id, target_node_id in self.edges
+            if node_id in {source_node_id, target_node_id}
+        ]
+
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict]]) -> None:
         self.upserted_nodes.extend(nodes)
         for node_id, node_data in nodes:
             self.nodes[node_id] = node_data
+
+    async def upsert_edge(
+        self, source_node_id: str, target_node_id: str, edge_data: dict
+    ) -> None:
+        if (source_node_id, target_node_id) in self.upsert_edge_failures:
+            raise RuntimeError("upsert failed")
+        self.upserted_edges.append((source_node_id, target_node_id, edge_data))
+        self.edges[(source_node_id, target_node_id)] = edge_data
 
     async def upsert_edges_batch(self, edges: list[tuple[str, str, dict]]) -> None:
         self.upserted_edges.extend(edges)
         for source_node_id, target_node_id, edge_data in edges:
             self.edges[(source_node_id, target_node_id)] = edge_data
 
+    async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
+        self.removed_edges.extend(edges)
+        for source_node_id, target_node_id in edges:
+            self.edges.pop((source_node_id, target_node_id), None)
+
+    async def remove_nodes(self, nodes: list[str]) -> None:
+        self.removed_nodes.extend(nodes)
+        for node_id in nodes:
+            self.nodes.pop(node_id, None)
+        for edge_key in list(self.edges):
+            if any(node_id in edge_key for node_id in nodes):
+                self.edges.pop(edge_key, None)
+
     async def index_done_callback(self) -> None:
         self.index_done_calls += 1
+
+
+class UndirectedFakeGraph(FakeGraph):
+    def _edge_key(self, source_node_id: str, target_node_id: str) -> tuple[str, str]:
+        if (source_node_id, target_node_id) in self.edges:
+            return (source_node_id, target_node_id)
+        reverse_key = (target_node_id, source_node_id)
+        if reverse_key in self.edges:
+            return reverse_key
+        return (source_node_id, target_node_id)
+
+    async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
+        return self._edge_key(source_node_id, target_node_id) in self.edges
+
+    async def get_edge(self, source_node_id: str, target_node_id: str) -> dict | None:
+        edge = self.edges.get(self._edge_key(source_node_id, target_node_id))
+        return dict(edge) if edge is not None else None
 
 
 class FakeRAG:
@@ -104,6 +166,32 @@ def install_recording_keyed_lock(
     return lock_calls
 
 
+def _replace_relation_proposal(
+    proposal_id: str = "proposal-replace-dry-cough-flu",
+    **payload_overrides: object,
+) -> dict[str, Any]:
+    payload: dict[str, object] = {
+        "action": "replace_relation",
+        "edge_id": "edge-dry-cough-flu",
+        "expected_source": "dry-cough",
+        "expected_target": "flu",
+        "new_source": "flu",
+        "new_target": "dry-cough",
+        "new_keywords": "has_manifestation",
+        "current_keywords": "\u4e34\u5e8a\u8868\u73b0",
+    }
+    payload.update(payload_overrides)
+    return {
+        "id": proposal_id,
+        "type": "medical_relation_schema_migration",
+        "target": "edge:edge-dry-cough-flu",
+        "proposed_change": "Reverse dry cough manifestation relation.",
+        "reason": "Clinical manifestation edges should point disease to symptom.",
+        "evidence": ["relation_id:edge-dry-cough-flu; source_id:chunk-1"],
+        "action_payload": payload,
+    }
+
+
 def test_add_hierarchy_branch_is_a_known_mutation_type() -> None:
     proposal = ImprovementProposal(
         id="prop-add-branch-diagnosis",
@@ -138,6 +226,63 @@ def test_add_hierarchy_branch_without_approval_requires_known_mutation_type() ->
     with pytest.raises(
         ValueError, match="^proposal type add_hierarchy_branch requires approval$"
     ):
+        validate_proposal(proposal)
+
+
+def test_medical_schema_migration_proposal_requires_approval_and_action_payload(
+    tmp_path: Path,
+) -> None:
+    proposal = ImprovementProposal(
+        id="prop-normalize-dry-cough-flu",
+        type="medical_relation_schema_migration",
+        target="edge:edge-dry-cough-flu",
+        proposed_change=(
+            "Reverse manifestation edge and set canonical predicate has_manifestation."
+        ),
+        reason="Symptom-to-disease clinical manifestation direction is invalid.",
+        evidence=[
+            "relation_id:edge-dry-cough-flu; item_id:dry-cough,flu; source_id:chunk-1"
+        ],
+        confidence=0.86,
+        risk="medium",
+        requires_approval=True,
+        expected_metric_change={"relation_semantic_issue_count": -1},
+        action_payload={
+            "action": "replace_relation",
+            "edge_id": "edge-dry-cough-flu",
+            "expected_source": "dry-cough",
+            "expected_target": "flu",
+            "new_source": "flu",
+            "new_target": "dry-cough",
+            "new_keywords": "has_manifestation",
+            "current_keywords": "临床表现",
+        },
+    )
+
+    validate_proposal(proposal)
+    write_approval_queue([proposal], tmp_path)
+
+    text = (tmp_path / "approval_queue.md").read_text(encoding="utf-8")
+    assert "action_payload:" in text
+    assert "replace_relation" in text
+
+
+def test_medical_schema_migration_without_human_approval_is_rejected() -> None:
+    proposal = ImprovementProposal(
+        id="prop-normalize-unsafe",
+        type="medical_relation_schema_migration",
+        target="edge:e1",
+        proposed_change="Normalize relation.",
+        reason="Mutation must be approved.",
+        evidence=["relation_id:e1"],
+        confidence=0.5,
+        risk="medium",
+        requires_approval=False,
+        expected_metric_change={},
+        action_payload={"action": "replace_relation", "edge_id": "e1"},
+    )
+
+    with pytest.raises(ValueError, match="requires approval"):
         validate_proposal(proposal)
 
 
@@ -720,6 +865,782 @@ async def test_apply_accepted_changes_is_idempotent_for_existing_branch(
     assert len(graph.upserted_nodes) == 1
     assert len(graph.upserted_edges) == 0
     assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_replaces_medical_relation_preserving_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {
+        "keywords": "\u4e34\u5e8a\u8868\u73b0",
+        "source_id": "chunk-1",
+        "file_path": "guideline.md",
+        "description": "Dry cough is a clinical manifestation of flu.",
+        "accepted_proposal_ids": "proposal-existing",
+    }
+    lock_calls = install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal(
+        qualifiers={"certainty": "guideline_supported"}
+    )
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert result.changes[0].action == "replace_relation"
+    assert ("dry-cough", "flu") not in graph.edges
+    assert graph.removed_edges == [("dry-cough", "flu")]
+    assert graph.upserted_edges == [
+        (
+            "flu",
+            "dry-cough",
+            {
+                "keywords": "has_manifestation",
+                "source_id": "chunk-1",
+                "file_path": "guideline.md",
+                "description": "Dry cough is a clinical manifestation of flu.",
+                "accepted_proposal_ids": (
+                    f"proposal-existing{GRAPH_FIELD_SEP}"
+                    "proposal-replace-dry-cough-flu"
+                ),
+                "normalized_by": APPLY_SOURCE,
+                "qualifiers": '{"certainty":"guideline_supported"}',
+            },
+        )
+    ]
+    assert graph.index_done_calls == 1
+    assert lock_calls == [
+        {
+            "keys": ["dry-cough", "flu"],
+            "namespace": "influenza_medical_v1:GraphDB",
+            "enable_logging": False,
+            "entered": True,
+            "exited": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_medical_relation_when_expected_edge_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "Expected edge was not found" in result.changes[0].reason
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_medical_relation_keyword_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {"keywords": "related_to"}
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "keyword" in result.changes[0].reason
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_medical_relation_noncanonical_keyword(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {"keywords": "\u4e34\u5e8a\u8868\u73b0"}
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal(new_keywords="manifestation")
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "canonical" in result.changes[0].reason
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_medical_relation_incomplete_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {"keywords": "\u4e34\u5e8a\u8868\u73b0"}
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal(new_target="")
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "Incomplete" in result.changes[0].reason
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing_node",
+    ["flu", "dry-cough"],
+)
+async def test_apply_accepted_changes_blocks_medical_relation_missing_new_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    missing_node: str,
+) -> None:
+    existing_nodes = {"dry-cough", "flu"} - {missing_node}
+    graph = FakeGraph(existing_nodes=existing_nodes)
+    graph.edges[("dry-cough", "flu")] = {
+        "keywords": "\u4e34\u5e8a\u8868\u73b0",
+        "source_id": "chunk-1",
+        "file_path": "guideline.md",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "endpoint" in result.changes[0].reason
+    assert ("dry-cough", "flu") in graph.edges
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity_field", ["id", "edge_id", "relation_id"])
+async def test_apply_accepted_changes_blocks_medical_relation_identity_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    identity_field: str,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {
+        "keywords": "\u4e34\u5e8a\u8868\u73b0",
+        identity_field: "different-edge",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "identity" in result.changes[0].reason
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "orientation_fields",
+    [
+        {"source_node_id": "flu", "target_node_id": "dry-cough"},
+        {"source": "flu", "target": "dry-cough"},
+    ],
+)
+async def test_apply_accepted_changes_blocks_medical_relation_orientation_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    orientation_fields: dict[str, str],
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {
+        "keywords": "\u4e34\u5e8a\u8868\u73b0",
+        **orientation_fields,
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "orientation" in result.changes[0].reason
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_relation_replacement_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {
+        "keywords": "\u4e34\u5e8a\u8868\u73b0",
+        "source_id": "chunk-1",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    first = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+    second = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert first.changes[0].status == ApplyChangeStatus.APPLIED
+    assert second.changes[0].status == ApplyChangeStatus.ALREADY_PRESENT
+    assert graph.edges[("flu", "dry-cough")]["keywords"] == "has_manifestation"
+    assert (
+        graph.edges[("flu", "dry-cough")]["accepted_proposal_ids"]
+        == "proposal-replace-dry-cough-flu"
+    )
+    assert graph.removed_edges == [("dry-cough", "flu")]
+    assert len(graph.upserted_edges) == 1
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_cleans_old_relation_when_target_already_applied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {
+        "keywords": "\u4e34\u5e8a\u8868\u73b0",
+        "source_id": "chunk-1",
+    }
+    graph.edges[("flu", "dry-cough")] = {
+        "keywords": "has_manifestation",
+        "accepted_proposal_ids": "proposal-replace-dry-cough-flu",
+        "source_id": "chunk-1",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert graph.removed_edges == [("dry-cough", "flu")]
+    assert ("dry-cough", "flu") not in graph.edges
+    assert graph.edges[("flu", "dry-cough")]["keywords"] == "has_manifestation"
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_keeps_old_relation_when_replacement_upsert_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {
+        "keywords": "\u4e34\u5e8a\u8868\u73b0",
+        "source_id": "chunk-1",
+    }
+    graph.upsert_edge_failures.add(("flu", "dry-cough"))
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    with pytest.raises(RuntimeError, match="upsert failed"):
+        await apply_accepted_changes_to_graph(
+            rag=FakeRAG(graph),
+            workspace="influenza_medical_v1",
+            records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+            proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+        )
+
+    assert ("dry-cough", "flu") in graph.edges
+    assert graph.edges[("dry-cough", "flu")]["keywords"] == "\u4e34\u5e8a\u8868\u73b0"
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_relation_replacement_is_idempotent_for_undirected_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = UndirectedFakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("flu", "dry-cough")] = {
+        "keywords": "has_manifestation",
+        "accepted_proposal_ids": "proposal-replace-dry-cough-flu",
+        "source_id": "chunk-1",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.ALREADY_PRESENT
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload_overrides",
+    [
+        {"current_keywords": None},
+        {"current_keywords": ""},
+    ],
+)
+async def test_apply_accepted_changes_blocks_medical_relation_without_current_keywords(
+    monkeypatch: pytest.MonkeyPatch,
+    payload_overrides: dict[str, object],
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {"keywords": "\u4e34\u5e8a\u8868\u73b0"}
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal(**payload_overrides)
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "Incomplete" in result.changes[0].reason
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_edge_id", [True, False])
+async def test_apply_accepted_changes_blocks_medical_relation_without_edge_id(
+    monkeypatch: pytest.MonkeyPatch,
+    missing_edge_id: bool,
+) -> None:
+    graph = FakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("dry-cough", "flu")] = {"keywords": "\u4e34\u5e8a\u8868\u73b0"}
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal(edge_id="")
+    if missing_edge_id:
+        proposal["action_payload"].pop("edge_id")
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "Incomplete" in result.changes[0].reason
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_moves_single_value_node_to_carrier_qualifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"oseltamivir", "flu", "dose-75mg"})
+    graph.edges[("oseltamivir", "dose-75mg")] = {"keywords": "has_value"}
+    graph.edges[("oseltamivir", "flu")] = {
+        "keywords": "has_indication",
+        "source_id": "chunk-2",
+    }
+    lock_calls = install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-dose-qualifier",
+        "type": "value_node_to_qualifier",
+        "target": "node:dose-75mg",
+        "proposed_change": "Move dose value node to treatment edge qualifier.",
+        "reason": "Dose values should qualify treatment facts.",
+        "evidence": ["node:dose-75mg"],
+        "action_payload": {
+            "value_node_id": "dose-75mg",
+            "carrier_edge_source": "oseltamivir",
+            "carrier_edge_target": "flu",
+            "qualifier_key": "dose",
+            "qualifier_value": "75 mg",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-dose-qualifier"}],
+        proposals_by_id={"proposal-dose-qualifier": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert result.changes[0].action == "value_node_to_qualifier"
+    assert graph.removed_nodes == ["dose-75mg"]
+    assert graph.edges[("oseltamivir", "flu")]["qualifier_dose"] == "75 mg"
+    assert (
+        graph.edges[("oseltamivir", "flu")]["accepted_proposal_ids"]
+        == "proposal-dose-qualifier"
+    )
+    assert graph.index_done_calls == 1
+    assert lock_calls == [
+        {
+            "keys": ["dose-75mg", "flu", "oseltamivir"],
+            "namespace": "influenza_medical_v1:GraphDB",
+            "enable_logging": False,
+            "entered": True,
+            "exited": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value_node_id", ["oseltamivir", "flu"])
+async def test_apply_accepted_changes_blocks_value_node_carrier_endpoint_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+    value_node_id: str,
+) -> None:
+    graph = FakeGraph(existing_nodes={"oseltamivir", "flu"})
+    graph.edges[("oseltamivir", "flu")] = {"keywords": "has_indication"}
+    lock_calls = install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-overlap-qualifier",
+        "type": "value_node_to_qualifier",
+        "target": f"node:{value_node_id}",
+        "action_payload": {
+            "value_node_id": value_node_id,
+            "carrier_edge_source": "oseltamivir",
+            "carrier_edge_target": "flu",
+            "qualifier_key": "dose",
+            "qualifier_value": "75 mg",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-overlap-qualifier"}],
+        proposals_by_id={"proposal-overlap-qualifier": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "overlap" in result.changes[0].reason
+    assert graph.removed_nodes == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+    assert lock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_value_node_unrelated_sole_incident_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"oseltamivir", "flu", "dose-75mg", "adult"})
+    graph.edges[("adult", "dose-75mg")] = {"keywords": "has_value"}
+    graph.edges[("oseltamivir", "flu")] = {"keywords": "has_indication"}
+    install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-dose-qualifier",
+        "type": "value_node_to_qualifier",
+        "target": "node:dose-75mg",
+        "action_payload": {
+            "value_node_id": "dose-75mg",
+            "carrier_edge_source": "oseltamivir",
+            "carrier_edge_target": "flu",
+            "qualifier_key": "dose",
+            "qualifier_value": "75 mg",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-dose-qualifier"}],
+        proposals_by_id={"proposal-dose-qualifier": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "incident edge" in result.changes[0].reason
+    assert graph.removed_nodes == []
+    assert "qualifier_dose" not in graph.edges[("oseltamivir", "flu")]
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_value_node_non_value_like_incident_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"oseltamivir", "flu", "dose-75mg"})
+    graph.edges[("oseltamivir", "dose-75mg")] = {"keywords": "contraindicated_for"}
+    graph.edges[("oseltamivir", "flu")] = {"keywords": "has_indication"}
+    install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-dose-qualifier",
+        "type": "value_node_to_qualifier",
+        "target": "node:dose-75mg",
+        "action_payload": {
+            "value_node_id": "dose-75mg",
+            "carrier_edge_source": "oseltamivir",
+            "carrier_edge_target": "flu",
+            "qualifier_key": "dose",
+            "qualifier_value": "75 mg",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-dose-qualifier"}],
+        proposals_by_id={"proposal-dose-qualifier": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "value-like" in result.changes[0].reason
+    assert graph.removed_nodes == []
+    assert "qualifier_dose" not in graph.edges[("oseltamivir", "flu")]
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_value_node_when_incident_edges_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"oseltamivir", "flu", "dose-75mg"})
+    graph.edges[("oseltamivir", "dose-75mg")] = {"keywords": "has_value"}
+    graph.edges[("oseltamivir", "flu")] = {"keywords": "has_indication"}
+
+    async def get_node_edges_returns_none(node_id: str) -> None:
+        return None
+
+    graph.get_node_edges = get_node_edges_returns_none
+    install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-dose-qualifier",
+        "type": "value_node_to_qualifier",
+        "target": "node:dose-75mg",
+        "action_payload": {
+            "value_node_id": "dose-75mg",
+            "carrier_edge_source": "oseltamivir",
+            "carrier_edge_target": "flu",
+            "qualifier_key": "dose",
+            "qualifier_value": "75 mg",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-dose-qualifier"}],
+        proposals_by_id={"proposal-dose-qualifier": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "incident edge" in result.changes[0].reason
+    assert graph.removed_nodes == []
+    assert "qualifier_dose" not in graph.edges[("oseltamivir", "flu")]
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_cleans_partial_value_node_qualifier_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"oseltamivir", "flu", "dose-75mg"})
+    graph.edges[("oseltamivir", "dose-75mg")] = {"keywords": "has_value"}
+    graph.edges[("oseltamivir", "flu")] = {
+        "keywords": "has_indication",
+        "qualifier_dose": "75 mg",
+        "accepted_proposal_ids": "proposal-dose-qualifier",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-dose-qualifier",
+        "type": "value_node_to_qualifier",
+        "target": "node:dose-75mg",
+        "action_payload": {
+            "value_node_id": "dose-75mg",
+            "carrier_edge_source": "oseltamivir",
+            "carrier_edge_target": "flu",
+            "qualifier_key": "dose",
+            "qualifier_value": "75 mg",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-dose-qualifier"}],
+        proposals_by_id={"proposal-dose-qualifier": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert graph.removed_nodes == ["dose-75mg"]
+    assert graph.edges[("oseltamivir", "flu")]["qualifier_dose"] == "75 mg"
+    assert (
+        graph.edges[("oseltamivir", "flu")]["accepted_proposal_ids"]
+        == "proposal-dose-qualifier"
+    )
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_value_node_to_qualifier_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"oseltamivir", "flu"})
+    graph.edges[("oseltamivir", "flu")] = {
+        "keywords": "has_indication",
+        "qualifier_dose": "75 mg",
+        "accepted_proposal_ids": "proposal-dose-qualifier",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-dose-qualifier",
+        "type": "value_node_to_qualifier",
+        "target": "node:dose-75mg",
+        "action_payload": {
+            "value_node_id": "dose-75mg",
+            "carrier_edge_source": "oseltamivir",
+            "carrier_edge_target": "flu",
+            "qualifier_key": "dose",
+            "qualifier_value": "75 mg",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-dose-qualifier"}],
+        proposals_by_id={"proposal-dose-qualifier": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.ALREADY_PRESENT
+    assert graph.removed_nodes == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_value_node_when_degree_is_not_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"oseltamivir", "flu", "dose-75mg", "adult"})
+    graph.edges[("oseltamivir", "dose-75mg")] = {"keywords": "has_value"}
+    graph.edges[("adult", "dose-75mg")] = {"keywords": "has_value"}
+    graph.edges[("oseltamivir", "flu")] = {"keywords": "has_indication"}
+    install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-dose-qualifier",
+        "type": "value_node_to_qualifier",
+        "target": "node:dose-75mg",
+        "action_payload": {
+            "value_node_id": "dose-75mg",
+            "carrier_edge_source": "oseltamivir",
+            "carrier_edge_target": "flu",
+            "qualifier_key": "dose",
+            "qualifier_value": "75 mg",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-dose-qualifier"}],
+        proposals_by_id={"proposal-dose-qualifier": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "degree" in result.changes[0].reason
+    assert graph.removed_nodes == []
+    assert "qualifier_dose" not in graph.edges[("oseltamivir", "flu")]
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_value_node_when_carrier_edge_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"oseltamivir", "flu", "dose-75mg"})
+    graph.edges[("oseltamivir", "dose-75mg")] = {"keywords": "has_value"}
+    install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "proposal-dose-qualifier",
+        "type": "value_node_to_qualifier",
+        "target": "node:dose-75mg",
+        "action_payload": {
+            "value_node_id": "dose-75mg",
+            "carrier_edge_source": "oseltamivir",
+            "carrier_edge_target": "flu",
+            "qualifier_key": "dose",
+            "qualifier_value": "75 mg",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-dose-qualifier"}],
+        proposals_by_id={"proposal-dose-qualifier": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert "Carrier edge was not found" in result.changes[0].reason
+    assert graph.removed_nodes == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
 
 
 @pytest.mark.asyncio

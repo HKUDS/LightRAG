@@ -34,6 +34,7 @@ The current deterministic implementation lives in `lightrag/kb_iteration/`:
 - `snapshot.py`: builds `KGSnapshot` objects from GraphML and writes snapshot JSON through `write_snapshot_artifacts`.
 - `markdown.py`: writes `kb_context.md`, `entity_catalog.md`, `relation_catalog.md`, `kg_structure.md`, and initializes memory files through `write_markdown_memory`.
 - `quality.py`: evaluates deterministic quality metrics through `evaluate_snapshot_quality` and writes `quality_report.md` plus `snapshots/quality_score.json` through `write_quality_artifacts`.
+- `medical_schema.py`: provides the built-in hospital-facing Medical Relationship Schema v1 used by medical LLM review prompts and deterministic legacy-relation migration checks.
 - `proposals.py`: validates structured `ImprovementProposal` records and writes `approval_queue.md` and `improvement_backlog.md`.
 - `diff.py`: compares snapshots through `compare_snapshots` and writes `diff_report.md` plus `snapshots/diff_summary.json` through `write_diff_report`.
 - `runner.py`: orchestrates the first deterministic run through `run_iteration`.
@@ -112,6 +113,34 @@ The first runner appends `phase: pending_user_review` to `iteration_log.md`. Tha
 After deterministic artifacts exist and an `LLMReviewClient` is configured or injected, maintainers can run the optional LLM review loop. The loop reads `snapshots/kg_snapshot.json`, `snapshots/quality_score.json`, `accepted_changes.md`, and `rejected_changes.md`. It builds focused context packages under `review_context/`, writes `llm_review_trace.json`, writes `llm_review_report.md`, writes `proposals.generated.yaml`, and updates the approval queue through the existing proposal validator.
 
 The LLM review loop does not apply patches, mutate KG facts, edit prompts or rules, or rebuild a workspace. LLM output is analysis and proposal material only. Mutation proposals still require approval.
+
+## Medical Relationship Schema
+
+When the review profile is medical, such as `clinical_guideline_zh` or `medical_kg`, the LLM agent prompts include Medical Relationship Schema v1 from `lightrag/kb_iteration/medical_schema.py`.
+
+The schema is hospital-facing and separates:
+
+- Knowledge-level facts from patient-instance facts.
+- Medical concepts from terminology aliases.
+- Diagnostic methods, specimens, observations, reports, and diagnostic conclusions.
+- Drug indications, recommendations, dose regimens, contraindications, precautions, and adverse reactions.
+- Vaccine or prevention product knowledge from recommendation rules and actual immunization events.
+- Medical facts from guideline evidence and hospital organization/service routing.
+
+Deterministic quality scoring also flags overloaded legacy relation keywords through `medical_schema_legacy_relation_count`. Examples include `推荐治疗`, `诊断依据`, `检测方法`, `适用于`, `预防措施`, `并发风险`, `剂量用法`, `病原分型`, and `指南建议`. These findings ask the LLM to generate reviewable proposals that migrate old edges toward canonical predicates such as `has_manifestation`, `has_diagnostic_criterion`, `criterion_requires`, `has_evidence`, `supports_or_refutes`, `has_indication`, `recommends`, `recommended_for`, `contraindicated_for`, `has_dosing_regimen`, `targets_disease`, and `reduces_risk_of`.
+
+The schema does not make the agent an automatic clinical editor. It constrains explanation, evidence location, proposal generation, repair ranking, and judging. Any mutation to KG facts, prompts, relation rules, workspace data, or WebUI behavior still requires human approval.
+
+### Medical KG Schema Migration
+
+The iteration Agent can detect medical relationship schema defects, ask the LLM to explain and propose repairs, queue human approval, and apply only allowlisted deterministic changes. LLM output is never treated as medical evidence or proof of mutation. The proof of mutation is the refreshed KG snapshot and `snapshots/quality_score.json`.
+
+Current executable medical mutation proposals must include an `action_payload`. The deterministic apply layer currently supports safe subsets of:
+
+- `medical_relation_schema_migration`, for verified relation replacement and direction migration.
+- `value_node_to_qualifier`, for conservative conversion of isolated value nodes into edge qualifiers.
+
+The Agent context is budgeted separately from the full artifacts. `snapshots/quality_score.json` may keep the complete `medical_schema_issues` table for WebUI review, while LLM stage context receives compact, grounded samples plus total/visible/omitted summaries. This keeps large medical workspaces below the per-stage context gate without hiding the full audit data from the operator.
 
 ## Source Grounding
 

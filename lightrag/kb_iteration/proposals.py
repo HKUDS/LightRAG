@@ -6,6 +6,7 @@ from pathlib import Path
 
 import yaml
 
+from .medical_schema import CANONICAL_MEDICAL_RELATION_IDS
 from .models import ImprovementProposal
 
 MUTATION_PROPOSAL_TYPES = {
@@ -20,6 +21,10 @@ MUTATION_PROPOSAL_TYPES = {
     "source_evidence_repair",
     "synonym_merge_rule",
     "relation_keyword_mapping",
+    "medical_relation_schema_migration",
+    "entity_alias_merge",
+    "value_node_to_qualifier",
+    "medical_fact_role_split",
 }
 
 NO_APPROVAL_PROPOSAL_TYPES = {"quality_report_note"}
@@ -110,6 +115,9 @@ def validate_proposal(proposal: ImprovementProposal) -> None:
     if not isinstance(proposal.patch_candidate, str):
         raise ValueError("proposal patch_candidate must be a string")
 
+    if not isinstance(proposal.action_payload, dict):
+        raise ValueError("proposal action_payload must be a dict")
+
     if not isinstance(proposal.judge, dict):
         raise ValueError("proposal judge must be a dict")
 
@@ -136,6 +144,8 @@ def validate_proposal(proposal: ImprovementProposal) -> None:
         raise ValueError(f"unknown proposal type {proposal.type} requires approval")
     if proposal.type in REVIEW_ONLY_PROPOSAL_TYPES and proposal.requires_approval is not True:
         raise ValueError(f"proposal type {proposal.type} requires approval")
+    if proposal.type == "medical_relation_schema_migration":
+        _validate_medical_relation_schema_migration_payload(proposal.action_payload)
 
 
 def write_approval_queue(
@@ -206,6 +216,8 @@ def _proposal_to_render_dict(proposal: ImprovementProposal) -> dict[str, object]
     }
     if proposal.patch_candidate:
         rendered["patch_candidate"] = proposal.patch_candidate
+    if proposal.action_payload:
+        rendered["action_payload"] = proposal.action_payload
     if proposal.judge:
         rendered["judge"] = proposal.judge
     return rendered
@@ -213,6 +225,38 @@ def _proposal_to_render_dict(proposal: ImprovementProposal) -> dict[str, object]
 
 def _is_canonical_type(value: str) -> bool:
     return value == value.strip().casefold() and bool(_TYPE_PATTERN.fullmatch(value))
+
+
+def _validate_medical_relation_schema_migration_payload(
+    action_payload: dict[str, object],
+) -> None:
+    if action_payload.get("action") != "replace_relation":
+        raise ValueError(
+            "proposal action_payload action must be replace_relation "
+            "for medical_relation_schema_migration"
+        )
+
+    required_string_fields = (
+        "edge_id",
+        "expected_source",
+        "expected_target",
+        "new_source",
+        "new_target",
+        "new_keywords",
+    )
+    for field_name in required_string_fields:
+        value = action_payload.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                "proposal action_payload must include non-empty string "
+                f"{field_name}"
+            )
+
+    new_keywords = action_payload["new_keywords"]
+    if new_keywords not in CANONICAL_MEDICAL_RELATION_IDS:
+        raise ValueError(
+            "proposal action_payload new_keywords must be a canonical relation id"
+        )
 
 
 def _validate_no_approval_report_note(proposal: ImprovementProposal) -> None:

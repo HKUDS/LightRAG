@@ -82,7 +82,7 @@ const requiredArtifacts: Array<{
   },
   {
     key: 'approval_queue',
-    label: '待审批 proposal',
+    label: '待审批 Proposal',
     fileName: 'approval_queue.md',
     section: 'approval',
     icon: <GitPullRequestIcon className="size-4 text-violet-500" />
@@ -107,6 +107,13 @@ const requiredArtifacts: Array<{
     fileName: 'rejected_changes.md',
     section: 'execute',
     icon: <XCircleIcon className="size-4 text-rose-500" />
+  },
+  {
+    key: 'agent_memory_summary',
+    label: 'Agent 压缩记忆',
+    fileName: 'agent_memory_summary.md',
+    section: 'approval',
+    icon: <FileTextIcon className="size-4 text-teal-600" />
   },
   {
     key: 'accepted_changes_apply_result',
@@ -190,7 +197,7 @@ export function IterationOverviewPanel({
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricTile label="当前阶段" value={summary.phase || '未开始'} />
         <MetricTile label="质量分数" value={formatMaybeNumber(summary.quality.overall)} />
-        <MetricTile label="待审批 proposal" value={String(summary.pendingApprovalCount ?? 0)} />
+        <MetricTile label="待审批 Proposal" value={String(summary.pendingApprovalCount ?? 0)} />
         <MetricTile
           label="节点 / 关系"
           value={`${summary.counts.nodes ?? 0} / ${summary.counts.edges ?? 0}`}
@@ -378,7 +385,13 @@ export function DecisionExecutionPanel({
   )
 }
 
-export function SnapshotReviewPanel({ snapshot }: { snapshot: unknown }) {
+export function SnapshotReviewPanel({
+  snapshot,
+  qualityScore
+}: {
+  snapshot: unknown
+  qualityScore?: unknown
+}) {
   const record = asRecord(snapshot)
   const nodeCount = countCollection(record?.nodes) ?? countCollection(record?.entities)
   const relationCount =
@@ -403,7 +416,7 @@ export function SnapshotReviewPanel({ snapshot }: { snapshot: unknown }) {
         ))}
       </dl>
       <div className="mt-3">
-        <SnapshotTables snapshot={record} />
+        <SnapshotTables snapshot={record} qualityScore={qualityScore} />
       </div>
     </section>
   )
@@ -490,7 +503,7 @@ export function IterationReviewAside({
       </div>
       <dl className="mt-3 space-y-2 text-sm">
         <AsideRow label="当前阶段" value={phase || '未开始'} />
-        <AsideRow label="待审批 proposal" value={String(pendingApprovalCount)} />
+        <AsideRow label="待审批 Proposal" value={String(pendingApprovalCount)} />
         <AsideRow label="高风险发现" value={String(highRiskFindingCount)} />
       </dl>
       <div className="border-border/70 bg-muted/20 text-muted-foreground mt-3 rounded-md border p-3 text-xs leading-5">

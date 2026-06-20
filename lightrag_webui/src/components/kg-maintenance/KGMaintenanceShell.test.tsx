@@ -1621,6 +1621,7 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('influenza_medical_v1 / snapshot-1')
     expect(markup).toContain('pending_human_review')
     expect(markup).toContain('82')
+    expect(markup).toContain('待审批 Proposal')
     expect(markup).toContain('1 / 1 / 1')
     expect(relatedFilesMarkup).toContain('kb_context.md')
     expect(relatedFilesMarkup).toContain('quality_report.md')
@@ -1636,6 +1637,32 @@ describe('MainPanel workflow routing', () => {
     expect(markup).not.toContain('accepted_changes_apply_result.md')
     expect(markup).not.toContain('iteration_log.md')
     expect(markup).not.toContain('improvement_backlog.md')
+  })
+
+  test('check renders production schema issue table from quality score source without graph canvas', () => {
+    const markup = renderMainPanel('check', {
+      qualityScoreSource: {
+        details: {
+          medical_schema_issues: [
+            {
+              issue_kind: 'disease_symptom_taxonomy_misuse',
+              edge_id: 'edge-dry-cough-flu',
+              keywords: '属于',
+              candidate_predicates: ['has_manifestation'],
+              source_id: 'chunk-1',
+              file_path: 'guide.md'
+            }
+          ]
+        }
+      }
+    })
+
+    expect(markup).toContain('Schema 问题')
+    expect(markup).toContain('disease_symptom_taxonomy_misuse')
+    expect(markup).toContain('edge-dry-cough-flu')
+    expect(markup).toContain('has_manifestation')
+    expect(markup).not.toContain('<canvas')
+    expect(markup).not.toContain('Medical knowledge graph hierarchy')
   })
 
   test('does not export the legacy main panel', () => {
