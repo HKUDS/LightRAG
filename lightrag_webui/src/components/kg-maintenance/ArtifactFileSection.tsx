@@ -21,7 +21,7 @@ type ArtifactViewMode = 'zh' | 'source'
 interface ArtifactFileSectionProps {
   title: string
   artifacts: DisplayArtifactItem[]
-  onRegenerate: (artifactKey: string) => void
+  onRegenerate?: (artifactKey: string) => void
 }
 
 export function ArtifactFileSection({
@@ -70,15 +70,17 @@ export function ArtifactFileSection({
                       <span>{artifact.contentType}</span>
                     </div>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onRegenerate(artifact.key)}
-                  >
-                    <RefreshCwIcon className="size-4" />
-                    重新生成
-                  </Button>
+                  {onRegenerate && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onRegenerate(artifact.key)}
+                    >
+                      <RefreshCwIcon className="size-4" />
+                      重新生成
+                    </Button>
+                  )}
                 </div>
 
                 {(artifact.generatedAt || artifact.model) && (

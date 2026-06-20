@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type {
+  KBIterationDisplayArtifactResponse,
   KBIterationProposalDecision,
   KBIterationProposalDecisionResponse,
   KBIterationSummaryResponse
@@ -68,6 +69,64 @@ const summary: KBIterationSummaryResponse = {
       key === 'kg_snapshot' || key === 'quality_score' ? 'application/json' : 'text/markdown',
     exists: true
   }))
+}
+
+const displayArtifacts: Record<string, KBIterationDisplayArtifactResponse> = {
+  kb_context: {
+    artifactKey: 'kb_context',
+    contentType: 'text/markdown',
+    content: '# 中文 KB 摘要',
+    display: {
+      language: 'zh',
+      zhFile: 'kb_context.zh.md',
+      generated: true,
+      fallbackToSource: false
+    }
+  },
+  llm_issue_analysis: {
+    artifactKey: 'llm_issue_analysis',
+    contentType: 'text/markdown',
+    content: '# 中文 LLM 问题分析',
+    display: {
+      language: 'zh',
+      zhFile: 'llm_issue_analysis.zh.md',
+      generated: true,
+      fallbackToSource: false
+    }
+  },
+  approval_queue: {
+    artifactKey: 'approval_queue',
+    contentType: 'text/markdown',
+    content: '# 中文审批队列',
+    display: {
+      language: 'zh',
+      zhFile: 'approval_queue.zh.md',
+      generated: true,
+      fallbackToSource: false
+    }
+  },
+  accepted_changes_apply_result: {
+    artifactKey: 'accepted_changes_apply_result',
+    contentType: 'text/markdown',
+    content: '# 中文执行结果',
+    display: {
+      language: 'zh',
+      zhFile: 'accepted_changes_apply_result.zh.md',
+      generated: true,
+      fallbackToSource: false
+    }
+  },
+  improvement_backlog: {
+    artifactKey: 'improvement_backlog',
+    contentType: 'text/markdown',
+    content: '# 中文改进 Backlog',
+    display: {
+      language: 'zh',
+      zhFile: 'improvement_backlog.zh.md',
+      generated: true,
+      fallbackToSource: false
+    }
+  }
 }
 
 function renderMainPanel(
@@ -200,6 +259,7 @@ hierarchy_missing_branch_count: 4 -> 0`
       llmEvidenceMap="# Evidence Map"
       llmRepairPlan="# Repair Plan"
       patchText="patch content marker"
+      displayArtifacts={displayArtifacts}
       acceptedExecuting={false}
       llmRunning={false}
       running={false}
@@ -239,6 +299,7 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       llmEvidenceMap=""
       llmRepairPlan=""
       patchText=""
+      displayArtifacts={{}}
       acceptedExecuting={false}
       llmRunning={false}
       running={false}
@@ -506,6 +567,65 @@ describe('KGMaintenanceShell responsive layout', () => {
 })
 
 describe('MainPanel workflow routing', () => {
+  test('main panel maps each workflow section to the correct Chinese work surface', () => {
+    const expectations: Array<{
+      section: KGMaintenanceSection
+      heading: string
+      action: string
+      artifactFile: string
+    }> = [
+      {
+        section: 'check',
+        heading: '检查知识库',
+        action: '运行检查',
+        artifactFile: 'kb_context.md'
+      },
+      {
+        section: 'llm-review',
+        heading: 'LLM 审阅',
+        action: '运行 LLM 审阅',
+        artifactFile: 'llm_issue_analysis.md'
+      },
+      {
+        section: 'approval',
+        heading: 'Proposal 审批',
+        action: '查看待审批',
+        artifactFile: 'approval_queue.md'
+      },
+      {
+        section: 'execute',
+        heading: '执行变更',
+        action: '执行已接受变更',
+        artifactFile: 'accepted_changes_apply_result.md'
+      },
+      {
+        section: 'validate',
+        heading: '验证结果',
+        action: '开始下一轮复核',
+        artifactFile: 'improvement_backlog.md'
+      }
+    ]
+
+    for (const expectation of expectations) {
+      const markup = renderMainPanel(expectation.section)
+
+      expect(markup).toContain(`<h2 class="text-foreground text-base font-semibold">${expectation.heading}</h2>`)
+      expect(markup).toContain(expectation.action)
+      expect(markup).toContain(expectation.artifactFile)
+      expect(markup).toContain('相关产物')
+    }
+  })
+
+  test('main panel production routing excludes transitional workflow section labels', () => {
+    const markup = (['check', 'llm-review', 'approval', 'execute', 'validate'] as const)
+      .map((section) => renderMainPanel(section))
+      .join('\n')
+
+    expect(markup).not.toContain('审阅包概览')
+    expect(markup).not.toContain('快照审阅')
+    expect(markup).not.toContain('决策与执行')
+  })
+
   test('workspace normalization preserves valid workspace arrays', () => {
     expect(normalizeWorkspaceList(['influenza_medical_v1'])).toEqual(['influenza_medical_v1'])
   })

@@ -19,8 +19,15 @@ import { ArtifactDrawer, type DrawerArtifact } from '@/components/kg-maintenance
 import KGMaintenanceShell from '@/components/kg-maintenance/KGMaintenanceShell'
 import {
   KG_MAINTENANCE_ARTIFACTS,
+  artifactsForStep,
   findArtifactDefinition
 } from '@/components/kg-maintenance/kgMaintenanceArtifacts'
+import AgentStepHeader from '@/components/kg-maintenance/AgentStepHeader'
+import {
+  ArtifactFileSection,
+  type DisplayArtifactItem
+} from '@/components/kg-maintenance/ArtifactFileSection'
+import type { KGMaintenanceNextAction } from '@/components/kg-maintenance/kgMaintenanceNextAction'
 import { IterationOverviewPanel } from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import {
   ExecutionPanel,
@@ -51,22 +58,63 @@ import { useSettingsStore } from '@/stores/settings'
 
 const PREFERRED_WORKSPACE = 'influenza_medical_v1'
 
-type TransitionalSectionTarget =
-  | KGMaintenanceSection
-  | 'overview'
-  | 'stage'
-  | 'kb-summary'
-  | 'quality'
-  | 'snapshot'
-  | 'decisions'
-  | 'backlog'
-  | 'memory'
+type StepPresentation = {
+  title: string
+  description: string
+  action: KGMaintenanceNextAction
+}
 
-function mapTransitionalSection(section: TransitionalSectionTarget): KGMaintenanceSection {
-  if (section === 'llm-review' || section === 'approval') return section
-  if (section === 'decisions' || section === 'backlog' || section === 'memory') return 'execute'
-  if (section === 'stage') return 'validate'
-  return 'check'
+const STEP_PRESENTATION: Record<KGMaintenanceSection, StepPresentation> = {
+  check: {
+    title: '检查知识库',
+    description: '生成或刷新知识库检查包，确认当前图谱、质量与来源覆盖情况。',
+    action: {
+      id: 'run-check',
+      label: '运行检查',
+      section: 'check',
+      reason: '先生成检查包，再进入 LLM 审阅与人工审批流程。'
+    }
+  },
+  'llm-review': {
+    title: 'LLM 审阅',
+    description: '让 LLM Agent 基于检查包生成问题分析、证据定位与候选 proposal。',
+    action: {
+      id: 'run-llm-review',
+      label: '运行 LLM 审阅',
+      section: 'llm-review',
+      reason: '只生成审阅材料和候选 proposal，不会自动修改 KG。'
+    }
+  },
+  approval: {
+    title: 'Proposal 审批',
+    description: '逐条检查 proposal 的证据、风险与预期影响，保留人工审批门禁。',
+    action: {
+      id: 'open-approval',
+      label: '查看待审批',
+      section: 'approval',
+      reason: '需要人工确认后，accepted changes 才能进入执行步骤。'
+    }
+  },
+  execute: {
+    title: '执行变更',
+    description: '执行已接受的变更，并查看写入结果与执行记录。',
+    action: {
+      id: 'execute-accepted',
+      label: '执行已接受变更',
+      section: 'execute',
+      reason: '只会执行已经人工接受的 proposal。'
+    }
+  },
+  validate: {
+    title: '验证结果',
+    description: '对比执行前后的质量指标和写入结果，决定是否进入下一轮复核。',
+    action: {
+      id: 'start-next-iteration',
+      label: '开始下一轮复核',
+      section: 'llm-review',
+      reason: '验证完成后可重新运行 LLM 审阅，继续迭代维护。'
+    }
+  }
 }
 
 export function ArtifactsDrawerPlaceholder({
@@ -451,8 +499,8 @@ export default function KGMaintenanceConsole() {
   )
 
   const handleOpenSection = useCallback(
-    (section: TransitionalSectionTarget) => {
-      setActiveSection(mapTransitionalSection(section))
+    (section: KGMaintenanceSection) => {
+      setActiveSection(section)
     },
     [setActiveSection]
   )
@@ -496,6 +544,7 @@ export default function KGMaintenanceConsole() {
           llmEvidenceMap={llmEvidenceMap}
           llmRepairPlan={llmRepairPlan}
           patchText={patchText}
+          displayArtifacts={displayArtifacts}
           acceptedExecuting={acceptedExecuting}
           llmRunning={llmRunning}
           running={running}
@@ -544,11 +593,12 @@ interface MainPanelProps {
   llmEvidenceMap: string
   llmRepairPlan: string
   patchText: string
+  displayArtifacts: KGMaintenanceDisplayArtifacts
   acceptedExecuting: boolean
   llmRunning: boolean
   running: boolean
   loading: boolean
-  onOpenSection: (section: TransitionalSectionTarget) => void
+  onOpenSection: (section: KGMaintenanceSection) => void
   onRunReview: () => void
   onProposalDecision: (
     proposal: ProposalSummary,
@@ -561,7 +611,7 @@ interface MainPanelProps {
   onLoadPatch: (proposalId: string) => void
 }
 
-export function MainPanel({
+export function LegacyMainPanel({
   activeSection,
   summary,
   quality,
@@ -586,6 +636,7 @@ export function MainPanel({
   llmEvidenceMap,
   llmRepairPlan,
   patchText,
+  displayArtifacts,
   acceptedExecuting,
   llmRunning,
   running,
@@ -601,6 +652,7 @@ export function MainPanel({
   void quality
   void kbContext
   void kgSnapshot
+  void displayArtifacts
 
   if (activeSection === 'check') {
     return (
@@ -685,4 +737,259 @@ export function MainPanel({
   return (
     <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
   )
+}
+
+export function MainPanel({
+  activeSection,
+  summary,
+  quality,
+  rules,
+  kbContext,
+  kgSnapshot,
+  qualityScoreSource,
+  approvalQueue,
+  approvalQueueSource,
+  improvementBacklog,
+  deferredChanges,
+  deferredChangesSource,
+  acceptedApplyResult,
+  acceptedApplyResultSource,
+  llmTrace,
+  llmReport,
+  llmProposals,
+  llmProposalsSource,
+  llmJudgeReport,
+  llmIssueAnalysis,
+  llmMissingBranchInference,
+  llmEvidenceMap,
+  llmRepairPlan,
+  patchText,
+  displayArtifacts,
+  acceptedExecuting,
+  llmRunning,
+  running,
+  loading,
+  onOpenSection,
+  onRunReview,
+  onProposalDecision,
+  onRequestProposalRevision,
+  onExecuteAcceptedChanges,
+  onRunLLMReview,
+  onLoadPatch
+}: MainPanelProps) {
+  void quality
+
+  const sourceArtifacts = useMemo(
+    () => ({
+      kb_context: kbContext,
+      kg_snapshot: stringifyArtifactContent(kgSnapshot),
+      quality_score: stringifyArtifactContent(qualityScoreSource),
+      approval_queue: approvalQueueSource,
+      improvement_backlog: improvementBacklog,
+      deferred_changes: deferredChangesSource,
+      accepted_changes: rules?.acceptedChanges || '',
+      rejected_changes: rules?.rejectedChanges || '',
+      accepted_changes_apply_result: acceptedApplyResultSource,
+      llm_review_trace: stringifyArtifactContent(llmTrace),
+      llm_review_report: llmReport,
+      proposals_generated: llmProposalsSource,
+      llm_judge_report: llmJudgeReport,
+      llm_issue_analysis: llmIssueAnalysis,
+      llm_missing_branch_inference: llmMissingBranchInference,
+      llm_evidence_map: llmEvidenceMap,
+      llm_repair_plan: llmRepairPlan,
+      quality_rules: rules?.qualityRules || '',
+      known_issues: rules?.knownIssues || ''
+    }),
+    [
+      acceptedApplyResultSource,
+      approvalQueueSource,
+      deferredChangesSource,
+      improvementBacklog,
+      kbContext,
+      kgSnapshot,
+      llmEvidenceMap,
+      llmIssueAnalysis,
+      llmJudgeReport,
+      llmMissingBranchInference,
+      llmProposalsSource,
+      llmRepairPlan,
+      llmReport,
+      llmTrace,
+      qualityScoreSource,
+      rules?.acceptedChanges,
+      rules?.knownIssues,
+      rules?.qualityRules,
+      rules?.rejectedChanges
+    ]
+  )
+  const artifactExists = useMemo(
+    () => new Map((summary?.artifacts || []).map((artifact) => [artifact.key, artifact.exists])),
+    [summary?.artifacts]
+  )
+  const relatedArtifacts = useMemo(
+    () =>
+      buildDisplayArtifactItems({
+        step: activeSection,
+        displayArtifacts,
+        sourceArtifacts,
+        artifactExists
+      }),
+    [activeSection, artifactExists, displayArtifacts, sourceArtifacts]
+  )
+  const step = STEP_PRESENTATION[activeSection]
+
+  const handleAction = (action: KGMaintenanceNextAction) => {
+    if (action.id === 'run-check') {
+      onRunReview()
+      return
+    }
+    if (action.id === 'run-llm-review' || action.id === 'start-next-iteration') {
+      onRunLLMReview()
+      return
+    }
+    if (action.id === 'execute-accepted') {
+      onExecuteAcceptedChanges()
+      return
+    }
+    onOpenSection(action.section)
+  }
+
+  let content
+  switch (activeSection) {
+    case 'check':
+      content = (
+        <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
+      )
+      break
+    case 'llm-review':
+      content = (
+        <div className="space-y-4">
+          <LLMReviewPanel
+            trace={llmTrace}
+            report={llmReport}
+            proposals={llmProposals}
+            issueAnalysis={llmIssueAnalysis}
+            missingBranchInference={llmMissingBranchInference}
+            evidenceMap={llmEvidenceMap}
+            repairPlan={llmRepairPlan}
+            running={llmRunning || running}
+            onRun={onRunLLMReview}
+          />
+          <PatchCandidatesPanel
+            proposals={llmProposals}
+            proposalIdSource={llmProposalsSource}
+            patchText={patchText}
+            onLoadPatch={onLoadPatch}
+          />
+          <LLMJudgePanel report={llmJudgeReport} />
+        </div>
+      )
+      break
+    case 'approval':
+      content = (
+        <ApprovalPanel
+          approvalQueue={approvalQueue}
+          approvalQueueSource={approvalQueueSource}
+          improvementBacklog={improvementBacklog}
+          acceptedChanges={rules?.acceptedChanges || ''}
+          rejectedChanges={rules?.rejectedChanges || ''}
+          deferredChanges={deferredChanges}
+          deferredChangesSource={deferredChangesSource}
+          onDecision={onProposalDecision}
+          onRequestRevision={onRequestProposalRevision}
+        />
+      )
+      break
+    case 'execute':
+      content = (
+        <ExecutionPanel
+          acceptedChanges={rules?.acceptedChanges || ''}
+          applyResult={acceptedApplyResult}
+          applyResultSource={acceptedApplyResultSource}
+          executing={acceptedExecuting}
+          onExecute={onExecuteAcceptedChanges}
+        />
+      )
+      break
+    case 'validate':
+      content = (
+        <ValidationPanel
+          qualityBefore={extractQualityBefore(acceptedApplyResultSource || acceptedApplyResult)}
+          qualityAfter={qualityScoreSource ?? null}
+          applyResult={acceptedApplyResult}
+          applyResultSource={acceptedApplyResultSource}
+        />
+      )
+      break
+  }
+
+  return (
+    <section className="space-y-4">
+      <AgentStepHeader
+        title={step.title}
+        description={step.description}
+        action={step.action}
+        onAction={handleAction}
+      />
+      {content}
+      <ArtifactFileSection title="相关产物" artifacts={relatedArtifacts} />
+    </section>
+  )
+}
+
+function buildDisplayArtifactItems({
+  step,
+  displayArtifacts,
+  sourceArtifacts,
+  artifactExists
+}: {
+  step: KGMaintenanceSection
+  displayArtifacts: KGMaintenanceDisplayArtifacts
+  sourceArtifacts: Record<string, string | undefined>
+  artifactExists: Map<string, boolean>
+}): DisplayArtifactItem[] {
+  return artifactsForStep(step).map((artifact) => {
+    const displayArtifact = displayArtifacts[artifact.key]
+    const sourceContent = sourceArtifacts[artifact.key]
+    return {
+      key: artifact.key,
+      title: artifact.title,
+      sourceFile: artifact.sourceFile,
+      zhFile: displayArtifact?.display?.zhFile ?? artifact.zhFile,
+      contentType: displayArtifact?.contentType ?? artifact.contentType,
+      displayStatus: displayArtifactStatus({
+        displayArtifact,
+        hasSource: Boolean(sourceContent || artifactExists.get(artifact.key))
+      }),
+      generatedAt: displayArtifact?.display?.generatedAt,
+      model: displayArtifact?.display?.model,
+      content: stringifyArtifactContent(artifactContent(displayArtifact)),
+      originalContent: sourceContent
+    }
+  })
+}
+
+function displayArtifactStatus({
+  displayArtifact,
+  hasSource
+}: {
+  displayArtifact: KGMaintenanceDisplayArtifacts[string] | undefined
+  hasSource: boolean
+}): string {
+  if (isGeneratedDisplayArtifact(displayArtifact)) return '中文已生成'
+  if (displayArtifact?.display?.fallbackToSource || hasSource) return '原始文件'
+  return '缺失'
+}
+
+function artifactContent(artifact: KGMaintenanceDisplayArtifacts[string] | undefined): unknown {
+  if (!artifact) return ''
+  if ('payload' in artifact) return artifact.payload
+  return artifact.content
+}
+
+function stringifyArtifactContent(value: unknown): string | undefined {
+  if (value === null || value === undefined || value === '') return undefined
+  if (typeof value === 'string') return value
+  return JSON.stringify(value, null, 2)
 }
