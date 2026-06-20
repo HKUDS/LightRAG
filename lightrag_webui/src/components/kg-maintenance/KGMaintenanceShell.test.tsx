@@ -21,7 +21,8 @@ if (!('localStorage' in globalThis)) {
 }
 
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
-const { ArtifactsDrawerPlaceholder, MainPanel } = await import('@/features/KGMaintenanceConsole')
+const kgMaintenanceConsoleModule = await import('@/features/KGMaintenanceConsole')
+const { ArtifactsDrawerPlaceholder, MainPanel } = kgMaintenanceConsoleModule
 const { useKGMaintenanceStore } = await import('@/stores/kgMaintenance')
 const {
   applyWorkspaceResponse,
@@ -1558,20 +1559,33 @@ describe('MainPanel workflow routing', () => {
     expect(normalizeOptionalMarkdown(null)).toBe('')
   })
 
-  test('check renders the review package artifact list', () => {
+  test('check renders focused summary metrics and only check-step related files', () => {
     const markup = renderMainPanel('check')
+    const relatedFilesMarkup = markup.slice(markup.indexOf('相关产物'))
 
     expect(markup).toContain('运行检查')
-    expect(markup).toContain('kb_context.md')
-    expect(markup).toContain('quality_report.md')
-    expect(markup).toContain('snapshots/kg_snapshot.json')
-    expect(markup).toContain('snapshots/quality_score.json')
-    expect(markup).toContain('approval_queue.md')
-    expect(markup).toContain('improvement_backlog.md')
-    expect(markup).toContain('accepted_changes.md')
-    expect(markup).toContain('rejected_changes.md')
-    expect(markup).toContain('accepted_changes_apply_result.md')
-    expect(markup).toContain('iteration_log.md')
+    expect(markup).toContain('influenza_medical_v1 / snapshot-1')
+    expect(markup).toContain('pending_human_review')
+    expect(markup).toContain('82')
+    expect(markup).toContain('1 / 1 / 1')
+    expect(relatedFilesMarkup).toContain('kb_context.md')
+    expect(relatedFilesMarkup).toContain('quality_report.md')
+    expect(relatedFilesMarkup).toContain('snapshots/kg_snapshot.json')
+    expect(relatedFilesMarkup).toContain('snapshots/quality_score.json')
+    expect(relatedFilesMarkup).toContain('entity_catalog.md')
+    expect(relatedFilesMarkup).toContain('relation_catalog.md')
+    expect(relatedFilesMarkup).toContain('kg_structure.md')
+    expect(relatedFilesMarkup).toContain('snapshots/source_coverage.json')
+    expect(markup).not.toContain('approval_queue.md')
+    expect(markup).not.toContain('accepted_changes.md')
+    expect(markup).not.toContain('rejected_changes.md')
+    expect(markup).not.toContain('accepted_changes_apply_result.md')
+    expect(markup).not.toContain('iteration_log.md')
+    expect(markup).not.toContain('improvement_backlog.md')
+  })
+
+  test('does not export the legacy main panel', () => {
+    expect('LegacyMainPanel' in kgMaintenanceConsoleModule).toBe(false)
   })
 
   test('approval renders proposal review content', () => {

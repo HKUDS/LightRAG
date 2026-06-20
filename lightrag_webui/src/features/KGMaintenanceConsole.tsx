@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import Button from '@/components/ui/Button'
 import {
   executeKBIterationAcceptedChanges,
   getKBIterationLLMReviewPatch,
@@ -28,7 +27,6 @@ import {
   type DisplayArtifactItem
 } from '@/components/kg-maintenance/ArtifactFileSection'
 import type { KGMaintenanceNextAction } from '@/components/kg-maintenance/kgMaintenanceNextAction'
-import { IterationOverviewPanel } from '@/components/kg-maintenance/IterationWorkbenchPanels'
 import {
   ExecutionPanel,
   ValidationPanel
@@ -611,134 +609,6 @@ interface MainPanelProps {
   onLoadPatch: (proposalId: string) => void
 }
 
-export function LegacyMainPanel({
-  activeSection,
-  summary,
-  quality,
-  rules,
-  kbContext,
-  kgSnapshot,
-  qualityScoreSource,
-  approvalQueue,
-  approvalQueueSource,
-  improvementBacklog,
-  deferredChanges,
-  deferredChangesSource,
-  acceptedApplyResult,
-  acceptedApplyResultSource,
-  llmTrace,
-  llmReport,
-  llmProposals,
-  llmProposalsSource,
-  llmJudgeReport,
-  llmIssueAnalysis,
-  llmMissingBranchInference,
-  llmEvidenceMap,
-  llmRepairPlan,
-  patchText,
-  displayArtifacts,
-  acceptedExecuting,
-  llmRunning,
-  running,
-  loading,
-  onOpenSection,
-  onRunReview,
-  onProposalDecision,
-  onRequestProposalRevision,
-  onExecuteAcceptedChanges,
-  onRunLLMReview,
-  onLoadPatch
-}: MainPanelProps) {
-  void quality
-  void kbContext
-  void kgSnapshot
-  void displayArtifacts
-
-  if (activeSection === 'check') {
-    return (
-      <section className="space-y-3">
-        <h2 className="sr-only">审阅包概览</h2>
-        <div className="border-border/70 bg-muted/20 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
-          <div className="min-w-0">
-            <h3 className="text-sm font-semibold">检查知识库</h3>
-            <p className="text-muted-foreground mt-1 text-xs">
-              生成或刷新审阅包产物，进入后续 LLM 审阅与人工审批流程。
-            </p>
-          </div>
-          <Button type="button" size="sm" onClick={onRunReview} disabled={running || loading}>
-            {running ? '检查中' : '运行检查'}
-          </Button>
-        </div>
-        <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
-      </section>
-    )
-  }
-  if (activeSection === 'approval') {
-    return (
-      <ApprovalPanel
-        approvalQueue={approvalQueue}
-        approvalQueueSource={approvalQueueSource}
-        improvementBacklog={improvementBacklog}
-        acceptedChanges={rules?.acceptedChanges || ''}
-        rejectedChanges={rules?.rejectedChanges || ''}
-        deferredChanges={deferredChanges}
-        deferredChangesSource={deferredChangesSource}
-        onDecision={onProposalDecision}
-        onRequestRevision={onRequestProposalRevision}
-      />
-    )
-  }
-  if (activeSection === 'execute') {
-    return (
-      <ExecutionPanel
-        acceptedChanges={rules?.acceptedChanges || ''}
-        applyResult={acceptedApplyResult}
-        applyResultSource={acceptedApplyResultSource}
-        executing={acceptedExecuting}
-        onExecute={onExecuteAcceptedChanges}
-      />
-    )
-  }
-  if (activeSection === 'validate') {
-    return (
-      <ValidationPanel
-        qualityBefore={extractQualityBefore(acceptedApplyResultSource || acceptedApplyResult)}
-        qualityAfter={qualityScoreSource ?? null}
-        applyResult={acceptedApplyResult}
-        applyResultSource={acceptedApplyResultSource}
-      />
-    )
-  }
-  if (activeSection === 'llm-review') {
-    return (
-      <section className="space-y-4">
-        <h2 className="sr-only">LLM 审阅材料</h2>
-        <LLMReviewPanel
-          trace={llmTrace}
-          report={llmReport}
-          proposals={llmProposals}
-          issueAnalysis={llmIssueAnalysis}
-          missingBranchInference={llmMissingBranchInference}
-          evidenceMap={llmEvidenceMap}
-          repairPlan={llmRepairPlan}
-          running={llmRunning || running}
-          onRun={onRunLLMReview}
-        />
-        <PatchCandidatesPanel
-          proposals={llmProposals}
-          proposalIdSource={llmProposalsSource}
-          patchText={patchText}
-          onLoadPatch={onLoadPatch}
-        />
-        <LLMJudgePanel report={llmJudgeReport} />
-      </section>
-    )
-  }
-  return (
-    <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
-  )
-}
-
 export function MainPanel({
   activeSection,
   summary,
@@ -858,9 +728,7 @@ export function MainPanel({
   let content
   switch (activeSection) {
     case 'check':
-      content = (
-        <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
-      )
+      content = <CheckSummaryPanel summary={summary} loading={loading} />
       break
     case 'llm-review':
       content = (
@@ -938,6 +806,70 @@ export function MainPanel({
   )
 }
 
+function CheckSummaryPanel({
+  summary,
+  loading
+}: {
+  summary: KBIterationSummaryResponse | null
+  loading: boolean
+}) {
+  if (loading && !summary) {
+    return (
+      <section className="space-y-3" aria-label="检查摘要">
+        <div className="bg-muted h-4 w-40 rounded" />
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="border-border/70 rounded-md border p-3">
+              <div className="bg-muted h-3 w-20 rounded" />
+              <div className="bg-muted mt-3 h-5 w-28 rounded" />
+            </div>
+          ))}
+        </div>
+      </section>
+    )
+  }
+
+  if (!summary) {
+    return (
+      <section className="border-border/70 bg-muted/20 rounded-md border p-4" aria-label="检查摘要">
+        <h2 className="text-sm font-semibold">暂无检查摘要</h2>
+        <p className="text-muted-foreground mt-2 text-sm">
+          请选择 workspace 并运行检查，生成当前知识库的质量与规模指标。
+        </p>
+      </section>
+    )
+  }
+
+  const metrics = [
+    ['当前阶段', summary.phase || '未开始'],
+    ['质量分数', formatMaybeNumber(summary.quality?.overall)],
+    ['待审批 proposal', String(summary.pendingApprovalCount ?? 0)],
+    [
+      '节点 / 关系 / 来源',
+      `${summary.counts?.nodes ?? 0} / ${summary.counts?.edges ?? 0} / ${summary.counts?.sources ?? 0}`
+    ]
+  ]
+
+  return (
+    <section className="space-y-3" aria-label="检查摘要">
+      <div>
+        <h2 className="text-sm font-semibold">检查摘要</h2>
+        <p className="text-muted-foreground mt-1 text-sm">
+          {summary.workspace} / {summary.latestRunId}
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {metrics.map(([label, value]) => (
+          <div key={label} className="border-border/70 rounded-md border p-3">
+            <div className="text-muted-foreground text-xs">{label}</div>
+            <div className="mt-1 text-lg font-semibold break-words">{value}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function buildDisplayArtifactItems({
   step,
   displayArtifacts,
@@ -992,4 +924,8 @@ function stringifyArtifactContent(value: unknown): string | undefined {
   if (value === null || value === undefined || value === '') return undefined
   if (typeof value === 'string') return value
   return JSON.stringify(value, null, 2)
+}
+
+function formatMaybeNumber(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '—'
 }
