@@ -106,6 +106,7 @@ export default function KGMaintenanceConsole() {
   const [approvalQueueSource, setApprovalQueueSource] = useState('')
   const [improvementBacklog, setImprovementBacklog] = useState('')
   const [deferredChanges, setDeferredChanges] = useState('')
+  const [deferredChangesSource, setDeferredChangesSource] = useState('')
   const [acceptedApplyResult, setAcceptedApplyResult] = useState('')
   const [acceptedApplyResultSource, setAcceptedApplyResultSource] = useState('')
   const [llmTrace, setLlmTrace] = useState<Record<string, any> | null>(null)
@@ -194,6 +195,7 @@ export default function KGMaintenanceConsole() {
         approvalArtifactSource,
         backlogArtifact,
         deferredChangesArtifact,
+        deferredChangesSourceArtifact,
         acceptedApplyResultArtifact,
         acceptedApplyResultSourceArtifact,
         llmTraceArtifact,
@@ -238,6 +240,7 @@ export default function KGMaintenanceConsole() {
       setApprovalQueueSource(normalizeOptionalMarkdown(approvalArtifactSource))
       setImprovementBacklog(normalizeOptionalMarkdown(backlogArtifact))
       setDeferredChanges(normalizeOptionalMarkdown(deferredChangesArtifact))
+      setDeferredChangesSource(normalizeOptionalMarkdown(deferredChangesSourceArtifact))
       setAcceptedApplyResult(normalizeOptionalMarkdown(acceptedApplyResultArtifact))
       setAcceptedApplyResultSource(normalizeOptionalMarkdown(acceptedApplyResultSourceArtifact))
       setLlmTrace(normalizeTraceArtifactForLogic(llmTraceSourceArtifact, llmTraceArtifact))
@@ -277,6 +280,7 @@ export default function KGMaintenanceConsole() {
       setDisplayArtifacts({})
       setQualityScoreSource(null)
       setApprovalQueueSource('')
+      setDeferredChangesSource('')
       setAcceptedApplyResultSource('')
       setLlmProposalsSource('')
       setSelectedWorkspace(workspace || null)
@@ -489,6 +493,7 @@ export default function KGMaintenanceConsole() {
           approvalQueueSource={approvalQueueSource}
           improvementBacklog={improvementBacklog}
           deferredChanges={deferredChanges}
+          deferredChangesSource={deferredChangesSource}
           acceptedApplyResult={acceptedApplyResult}
           acceptedApplyResultSource={acceptedApplyResultSource}
           llmTrace={llmTrace}
@@ -537,6 +542,7 @@ interface MainPanelProps {
   approvalQueueSource?: string
   improvementBacklog: string
   deferredChanges: string
+  deferredChangesSource?: string
   acceptedApplyResult: string
   acceptedApplyResultSource?: string
   llmTrace: Record<string, any> | null
@@ -579,6 +585,7 @@ export function MainPanel({
   approvalQueueSource,
   improvementBacklog,
   deferredChanges,
+  deferredChangesSource,
   acceptedApplyResult,
   acceptedApplyResultSource,
   llmTrace,
@@ -635,6 +642,7 @@ export function MainPanel({
         acceptedChanges={rules?.acceptedChanges || ''}
         rejectedChanges={rules?.rejectedChanges || ''}
         deferredChanges={deferredChanges}
+        deferredChangesSource={deferredChangesSource}
         onDecision={onProposalDecision}
         onRequestRevision={onRequestProposalRevision}
       />
@@ -655,7 +663,7 @@ export function MainPanel({
     return (
       <ValidationPanel
         qualityBefore={extractQualityBefore(acceptedApplyResultSource || acceptedApplyResult)}
-        qualityAfter={qualityScoreSource === undefined ? qualityScore : qualityScoreSource}
+        qualityAfter={qualityScoreSource ?? null}
         applyResult={acceptedApplyResult}
         applyResultSource={acceptedApplyResultSource}
       />

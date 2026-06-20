@@ -87,10 +87,56 @@ describe('ApprovalPanel', () => {
     expect(markup).toContain('拒绝')
   })
 
+  test('does not parse proposals from display approval markdown when source is absent', () => {
+    const markup = renderToStaticMarkup(
+      <ApprovalPanel
+        approvalQueue={approvalQueue}
+        improvementBacklog=""
+        acceptedChanges=""
+        rejectedChanges=""
+        onDecision={() => undefined}
+        onRequestRevision={() => undefined}
+      />
+    )
+
+    expect(markup).not.toContain('proposal-details-prop-a')
+    expect(markup).not.toContain('Normalize relation keywords</span>')
+    expect(markup).toContain('暂无待审批 proposal')
+    expect(markup).toContain('id: prop-a')
+  })
+
+  test('parses deferred decisions from source while rendering display memories inertly', () => {
+    const displayDeferredChanges = `# Deferred Changes
+
+## prop-a
+
+display-only deferred decision`
+
+    const markup = renderToStaticMarkup(
+      <ApprovalPanel
+        approvalQueue="# translated approval queue without proposal ids"
+        approvalQueueSource={approvalQueue}
+        improvementBacklog=""
+        acceptedChanges=""
+        rejectedChanges=""
+        deferredChanges={displayDeferredChanges}
+        deferredChangesSource=""
+        onDecision={() => undefined}
+        onRequestRevision={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('prop-a')
+    expect(markup).toContain('待审批')
+    expect(markup).not.toContain('已延期')
+    expect(markup).not.toContain('disabled=""')
+  })
+
   test('renders compact rows with accept reject expand and no required textareas', () => {
     const markup = renderToStaticMarkup(
       <ApprovalPanel
         approvalQueue={approvalQueue}
+        approvalQueueSource={approvalQueue}
         improvementBacklog=""
         acceptedChanges=""
         rejectedChanges=""
@@ -115,10 +161,12 @@ describe('ApprovalPanel', () => {
     const markup = renderToStaticMarkup(
       <ApprovalPanel
         approvalQueue={approvalQueueWithRecordedRows}
+        approvalQueueSource={approvalQueueWithRecordedRows}
         improvementBacklog=""
         acceptedChanges="## prop-a"
         rejectedChanges="## prop-b"
         deferredChanges="## prop-c"
+        deferredChangesSource="## prop-c"
         onDecision={() => undefined}
         onRequestRevision={() => undefined}
       />
@@ -136,6 +184,7 @@ describe('ApprovalPanel', () => {
     const markup = renderToStaticMarkup(
       <ApprovalPanel
         approvalQueue={approvalQueue}
+        approvalQueueSource={approvalQueue}
         improvementBacklog=""
         acceptedChanges=""
         rejectedChanges="## prop-a"
@@ -154,10 +203,12 @@ describe('ApprovalPanel', () => {
     const markup = renderToStaticMarkup(
       <ApprovalPanel
         approvalQueue={approvalQueue}
+        approvalQueueSource={approvalQueue}
         improvementBacklog=""
         acceptedChanges=""
         rejectedChanges=""
         deferredChanges="## prop-a"
+        deferredChangesSource="## prop-a"
         onDecision={() => undefined}
         onRequestRevision={() => undefined}
       />

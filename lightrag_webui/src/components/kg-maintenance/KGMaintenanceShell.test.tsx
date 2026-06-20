@@ -76,17 +76,44 @@ function renderMainPanel(
     acceptedChanges?: string
     rejectedChanges?: string
     deferredChanges?: string
+    deferredChangesSource?: string
     acceptedApplyResult?: string
     acceptedApplyResultSource?: string
     qualityScore?: Record<string, any> | null
     qualityScoreSource?: Record<string, any> | null
+    omitQualityScoreSource?: boolean
     llmTrace?: Record<string, any> | null
     llmProposals?: string
     llmProposalsSource?: string
     approvalQueue?: string
     approvalQueueSource?: string
+    omitApprovalQueueSource?: boolean
   } = {}
 ) {
+  const defaultQualityScore = {
+    overall: 97,
+    metrics: {
+      hierarchy_missing_branch_count: 0
+    },
+    findings: [{ severity: 'medium' }]
+  }
+  const qualityScoreForPanel = options.qualityScore ?? defaultQualityScore
+  const defaultApprovalQueue = `# 寰呭鎵?proposal
+
+- id: proposal-1
+  type: prompt_edit
+  target: workspace_profile.json
+  proposed_change: 璋冩暣 workspace 瀹￠槄 profile
+  reason: 闇€瑕佹洿绮剧‘鐨?proposal 瀹℃壒绛栫暐
+  evidence:
+  - rule:r1
+  confidence: 0.80
+  risk: high
+  requires_approval: true
+      expected_metric_change:
+    approval_latency: -1`
+  const approvalQueueForPanel = options.approvalQueue ?? defaultApprovalQueue
+
   return renderToStaticMarkup(
     <MainPanel
       activeSection={activeSection}
@@ -129,16 +156,12 @@ accepted content marker`,
         nodes: [{ id: 'flu' }],
         edges: [{ source: 'flu', target: 'fever' }]
       }}
-      qualityScore={
-        options.qualityScore ?? {
-          overall: 97,
-          metrics: {
-            hierarchy_missing_branch_count: 0
-          },
-          findings: [{ severity: 'medium' }]
-        }
+      qualityScore={qualityScoreForPanel}
+      qualityScoreSource={
+        options.omitQualityScoreSource
+          ? undefined
+          : (options.qualityScoreSource ?? qualityScoreForPanel)
       }
-      qualityScoreSource={options.qualityScoreSource}
       approvalQueue={
         options.approvalQueue ??
         `# 待审批 proposal
@@ -156,9 +179,14 @@ accepted content marker`,
       expected_metric_change:
     approval_latency: -1`
       }
-      approvalQueueSource={options.approvalQueueSource}
+      approvalQueueSource={
+        options.omitApprovalQueueSource
+          ? undefined
+          : (options.approvalQueueSource ?? approvalQueueForPanel)
+      }
       improvementBacklog="backlog content marker"
       deferredChanges={options.deferredChanges ?? 'deferred content marker'}
+      deferredChangesSource={options.deferredChangesSource ?? options.deferredChanges ?? ''}
       acceptedApplyResult={
         options.acceptedApplyResult ??
         `Applied: 2
@@ -210,6 +238,7 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       approvalQueueSource=""
       improvementBacklog=""
       deferredChanges=""
+      deferredChangesSource=""
       acceptedApplyResult=""
       llmTrace={null}
       llmReport=""
@@ -711,6 +740,8 @@ describe('MainPanel workflow routing', () => {
             content:
               key === 'approval_queue'
                 ? 'translated approval queue without parseable ids'
+                : key === 'deferred_changes'
+                  ? 'translated deferred decisions with display-only ids'
                 : `zh:${key}`,
             display: {
               language: 'zh',
@@ -725,6 +756,10 @@ describe('MainPanel workflow routing', () => {
 
     expect(bundle.approvalArtifact).toBe('translated approval queue without parseable ids')
     expect(bundle.approvalArtifactSource).toBe('source:approval_queue')
+    expect(bundle.deferredChangesArtifact).toBe(
+      'translated deferred decisions with display-only ids'
+    )
+    expect(bundle.deferredChangesSourceArtifact).toBe('source:deferred_changes')
     expect(bundle.qualityScoreArtifact).toEqual({
       overall: 'display-score',
       metrics: { hierarchy_missing_branch_count: 99 }
@@ -1458,6 +1493,14 @@ describe('MainPanel workflow routing', () => {
 \`\`\`json
 {"proposal_id":"proposal-1","decision":"defer"}
 \`\`\`
+`,
+      deferredChangesSource: `# Deferred Changes
+
+## proposal-1
+
+\`\`\`json
+{"proposal_id":"proposal-1","decision":"defer"}
+\`\`\`
 `
     })
 
@@ -1465,6 +1508,27 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('已延后')
     expect(markup).not.toContain('bg-amber-100 text-amber-800')
     expect(markup).not.toContain('>延后</button>')
+  })
+
+  test('approval ignores display deferred decisions when source memory is empty', () => {
+    const markup = renderMainPanel('approval', {
+      acceptedChanges: '',
+      rejectedChanges: '',
+      deferredChanges: `# Deferred Changes
+
+## proposal-1
+
+\`\`\`json
+{"proposal_id":"proposal-1","decision":"defer"}
+\`\`\`
+`,
+      deferredChangesSource: ''
+    })
+
+    expect(markup).toContain('proposal-1')
+    expect(markup).toContain('bg-amber-100 text-amber-800')
+    expect(markup).not.toContain('bg-sky-100 text-sky-800')
+    expect(markup).not.toContain('disabled=""')
   })
 
   test('execute renders the focused accepted-change execution surface', () => {
@@ -1561,6 +1625,27 @@ hierarchy_missing_branch_count: 4 -> 0`,
     expect(markup).toContain('4')
     expect(markup).toContain('0')
     expect(markup).toContain('bg-emerald-50/70')
+    expect(markup).not.toContain('display-score')
+    expect(markup).not.toContain('99')
+  })
+
+  test('validate does not parse display quality score when source is omitted', () => {
+    const markup = renderMainPanel('validate', {
+      acceptedApplyResult: 'translated validation block without backend metrics',
+      acceptedApplyResultSource: `Applied: 0
+overall: 88 -> 97
+hierarchy_missing_branch_count: 4 -> 0`,
+      qualityScore: {
+        overall: 'display-score',
+        metrics: {
+          hierarchy_missing_branch_count: 99
+        }
+      },
+      omitQualityScoreSource: true
+    })
+
+    expect(markup).toContain('88')
+    expect(markup).toContain('4')
     expect(markup).not.toContain('display-score')
     expect(markup).not.toContain('99')
   })

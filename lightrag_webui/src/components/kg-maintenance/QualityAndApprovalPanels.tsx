@@ -26,6 +26,7 @@ interface ApprovalPanelProps {
   acceptedChanges?: string
   rejectedChanges?: string
   deferredChanges?: string
+  deferredChangesSource?: string
   onOpenEvidence?: (evidenceId: string) => void
   onDecision?: (
     proposal: ProposalSummary,
@@ -161,14 +162,20 @@ export function ApprovalPanel({
   acceptedChanges = '',
   rejectedChanges = '',
   deferredChanges = '',
+  deferredChangesSource = '',
   onOpenEvidence,
   onDecision,
   onRequestRevision
 }: ApprovalPanelProps) {
-  const proposals = parseProposalSummaries(approvalQueueSource ?? approvalQueue)
+  const proposals = parseProposalSummaries(approvalQueueSource ?? '')
   const decisionStates = useMemo(
-    () => parseProposalDecisionStates({ acceptedChanges, rejectedChanges, deferredChanges }),
-    [acceptedChanges, deferredChanges, rejectedChanges]
+    () =>
+      parseProposalDecisionStates({
+        acceptedChanges,
+        rejectedChanges,
+        deferredChanges: deferredChangesSource
+      }),
+    [acceptedChanges, deferredChangesSource, rejectedChanges]
   )
   const pendingApprovalCount = proposals.filter(
     (proposal) => proposal.requiresApproval && !decisionStates[proposal.id]
@@ -312,6 +319,7 @@ export function ApprovalPanel({
       </div>
       <MarkdownArtifact title="approval_queue.md" content={approvalQueue} />
       <MarkdownArtifact title="improvement_backlog.md" content={improvementBacklog} />
+      <MarkdownArtifact title="deferred_changes.md" content={deferredChanges} />
     </section>
   )
 }
