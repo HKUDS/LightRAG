@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 from dataclasses import dataclass, field
@@ -58,6 +59,8 @@ _EVIDENCE_FIELD_NAMES = frozenset(_EVIDENCE_FIELD_ORDER)
 _NUMERIC_STRING_PATTERN = re.compile(
     r"^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$"
 )
+_PROPOSAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+_PROPOSAL_ID_PART_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 def parse_agent_stage_output(stage: str, raw_text: str) -> AgentStageOutput:
@@ -102,6 +105,7 @@ def _normalize_agent_proposals(value: Any) -> list[dict[str, Any]]:
         if not isinstance(proposal, dict):
             continue
         normalized = dict(proposal)
+        normalized["id"] = _normalize_agent_proposal_id(proposal)
         normalized["evidence"] = _normalize_agent_proposal_evidence(
             proposal.get("evidence")
         )
@@ -110,6 +114,34 @@ def _normalize_agent_proposals(value: Any) -> list[dict[str, Any]]:
         )
         proposals.append(normalized)
     return proposals
+
+
+def _normalize_agent_proposal_id(proposal: dict[str, Any]) -> Any:
+    raw_id = proposal.get("id")
+    if not isinstance(raw_id, str):
+        return raw_id
+
+    stripped = raw_id.strip()
+    if not stripped or _PROPOSAL_ID_PATTERN.fullmatch(stripped):
+        return stripped
+
+    proposal_type = str(proposal.get("type") or "proposal").strip().casefold()
+    slug = _PROPOSAL_ID_PART_PATTERN.sub("-", proposal_type).strip(".-_")
+    if not slug:
+        slug = "proposal"
+    digest_source = json.dumps(
+        {
+            "id": stripped,
+            "type": proposal.get("type"),
+            "target": proposal.get("target"),
+            "proposed_change": proposal.get("proposed_change"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:12]
+    return f"prop-{slug}-{digest}"
 
 
 def _normalize_expected_metric_change(value: Any) -> Any:

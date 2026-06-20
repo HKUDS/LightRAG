@@ -127,6 +127,12 @@ class NoEvidenceAgentClient(SequencedAgentClient):
         self.outputs[3] = {"proposals": []}
 
 
+class NonAsciiProposalIdAgentClient(SequencedAgentClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.outputs[3]["proposals"][0]["id"] = "修复-临床表现-高热不退"
+
+
 class FailingRankAgentClient(SequencedAgentClient):
     def __init__(self) -> None:
         super().__init__()
@@ -1421,6 +1427,34 @@ def test_pipeline_marks_judge_unavailable_when_judge_disabled(tmp_path: Path):
     assert "judge_unavailable" in approval_queue
     assert "judge_unavailable" in proposals_yaml
     assert "judge_unavailable" in judge_report
+
+
+def test_pipeline_normalizes_non_ascii_proposal_ids_before_validation(
+    tmp_path: Path,
+):
+    package = tmp_path / "package"
+    _write_agent_package(package)
+    client = NonAsciiProposalIdAgentClient()
+
+    result = run_llm_agent_pipeline(
+        workspace="demo",
+        package_dir=package,
+        client=client,
+        config=LLMAgentPipelineConfig(max_stage_retries=0, allow_llm_judge=False),
+    )
+
+    assert result.stop_reason == "pending_human_review"
+    assert len(result.proposal_ids) == 1
+    normalized_id = result.proposal_ids[0]
+    assert normalized_id.startswith("prop-hierarchy_rule_change-")
+    assert "修复" not in normalized_id
+
+    approval_queue = (package / "approval_queue.md").read_text(encoding="utf-8")
+    proposals_yaml = (package / "proposals.generated.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert normalized_id in approval_queue
+    assert normalized_id in proposals_yaml
 
 
 def test_pipeline_marks_judge_unavailable_when_judge_context_too_large(
