@@ -102,6 +102,17 @@ const artifactTextOrEmpty = (
   return artifact.content
 }
 
+const normalizeRecordArtifact = (value: unknown): Record<string, any> | null =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, any>)
+    : null
+
+export const normalizeTraceArtifactForLogic = (
+  sourceTraceArtifact: unknown,
+  displayTraceArtifact: unknown
+): Record<string, any> | null =>
+  normalizeRecordArtifact(sourceTraceArtifact) ?? normalizeRecordArtifact(displayTraceArtifact)
+
 type LoadedDisplayArtifact = {
   key: string
   artifact: KBIterationArtifactResponse | KBIterationDisplayArtifactResponse | null

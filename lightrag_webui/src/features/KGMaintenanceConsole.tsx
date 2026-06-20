@@ -36,6 +36,7 @@ import {
   submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse,
   isGeneratedDisplayArtifact,
+  normalizeTraceArtifactForLogic,
   type KGMaintenanceDisplayArtifacts
 } from '@/components/kg-maintenance/kgIterationLoadUtils'
 import {
@@ -192,6 +193,7 @@ export default function KGMaintenanceConsole() {
         acceptedApplyResultArtifact,
         acceptedApplyResultSourceArtifact,
         llmTraceArtifact,
+        llmTraceSourceArtifact,
         llmReportArtifact,
         llmProposalsArtifact,
         llmProposalsSourceArtifact,
@@ -226,13 +228,7 @@ export default function KGMaintenanceConsole() {
       setDeferredChanges(normalizeOptionalMarkdown(deferredChangesArtifact))
       setAcceptedApplyResult(normalizeOptionalMarkdown(acceptedApplyResultArtifact))
       setAcceptedApplyResultSource(normalizeOptionalMarkdown(acceptedApplyResultSourceArtifact))
-      setLlmTrace(
-        typeof llmTraceArtifact === 'object' &&
-          llmTraceArtifact !== null &&
-          !Array.isArray(llmTraceArtifact)
-          ? llmTraceArtifact
-          : null
-      )
+      setLlmTrace(normalizeTraceArtifactForLogic(llmTraceSourceArtifact, llmTraceArtifact))
       setLlmReport(typeof llmReportArtifact === 'string' ? llmReportArtifact : '')
       setLlmProposals(typeof llmProposalsArtifact === 'string' ? llmProposalsArtifact : '')
       setLlmProposalsSource(normalizeOptionalMarkdown(llmProposalsSourceArtifact))

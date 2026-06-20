@@ -30,6 +30,7 @@ const {
   optionalMissingResponse,
   runWorkspaceAction,
   isGeneratedDisplayArtifact,
+  normalizeTraceArtifactForLogic,
   requestProposalRevisionForWorkspace,
   submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse
@@ -77,6 +78,7 @@ function renderMainPanel(
     deferredChanges?: string
     acceptedApplyResult?: string
     acceptedApplyResultSource?: string
+    llmTrace?: Record<string, any> | null
     llmProposals?: string
     llmProposalsSource?: string
   } = {}
@@ -153,10 +155,12 @@ overall: 88 -> 97
 hierarchy_missing_branch_count: 4 -> 0`
       }
       acceptedApplyResultSource={options.acceptedApplyResultSource}
-      llmTrace={{
-        stop_reason: 'pending_human_review',
-        rounds: [{ round_id: 'round-1', state: 'pending_human_review' }]
-      }}
+      llmTrace={
+        options.llmTrace ?? {
+          stop_reason: 'pending_human_review',
+          rounds: [{ round_id: 'round-1', state: 'pending_human_review' }]
+        }
+      }
       llmReport="# LLM Review Report"
       llmProposals={options.llmProposals ?? '- id: proposal-1'}
       llmProposalsSource={options.llmProposalsSource}
@@ -725,6 +729,70 @@ describe('MainPanel workflow routing', () => {
     expect(bundle.displayArtifacts.llm_review_report.content).toBe('zh:llm_review_report')
     expect(bundle.displayArtifacts.proposals_generated.content).toBe('zh:proposals_generated')
     expect(bundle.displayArtifacts.llm_judge_report.content).toBe('zh:llm_judge_report')
+  })
+
+  test('llm review renders source trace while keeping display trace artifact available', async () => {
+    const displayTrace = {
+      stop_reason: 'zh_stop_reason_label',
+      rounds: [{ round_id: 'zh-round-label' }]
+    }
+    const sourceTrace = {
+      stop_reason: 'pending_human_review',
+      rounds: [{ round_id: 'source-round-1', state: 'pending_human_review' }]
+    }
+
+    const bundle = await loadKGMaintenanceWorkspaceBundle(
+      'workspace-a',
+      createWorkspaceBundleLoaders({
+        getDisplayArtifact: async (_workspace: string, key: string) => {
+          if (key === 'llm_review_trace') {
+            return {
+              artifactKey: key,
+              contentType: 'application/json',
+              payload: displayTrace,
+              display: {
+                language: 'zh',
+                zhFile: 'llm_review_trace.zh.json',
+                generated: true,
+                fallbackToSource: false
+              }
+            }
+          }
+
+          return {
+            artifactKey: key,
+            contentType: 'text/markdown',
+            content: `zh:${key}`,
+            display: {
+              language: 'zh',
+              zhFile: `${key}.zh.md`,
+              generated: true,
+              fallbackToSource: false
+            }
+          }
+        },
+        getTrace: async () => ({
+          artifactKey: 'llm_review_trace',
+          contentType: 'application/json',
+          payload: sourceTrace
+        })
+      })
+    )
+
+    const markup = renderMainPanel('llm-review', {
+      llmTrace: normalizeTraceArtifactForLogic(
+        bundle.llmTraceSourceArtifact,
+        bundle.llmTraceArtifact
+      )
+    })
+
+    expect(bundle.displayArtifacts.llm_review_trace.payload).toEqual(displayTrace)
+    expect(bundle.llmTraceArtifact).toEqual(displayTrace)
+    expect(bundle.llmTraceSourceArtifact).toEqual(sourceTrace)
+    expect(markup).toContain('pending_human_review')
+    expect(markup).toContain('source-round-1')
+    expect(markup).not.toContain('zh_stop_reason_label')
+    expect(markup).not.toContain('zh-round-label')
   })
 
   test('workspace bundle falls back to original artifact content when display is missing', async () => {
