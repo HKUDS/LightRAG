@@ -1,6 +1,5 @@
 import Button from '@/components/ui/Button'
 import type { KBIterationSummaryResponse } from '@/api/lightrag'
-import type { KGMaintenanceDisplayArtifacts } from './kgIterationLoadUtils'
 import type { KGMaintenanceSection } from '@/stores/kgMaintenance'
 import {
   ArchiveIcon,
@@ -21,7 +20,6 @@ import { SnapshotTables } from './SnapshotTables'
 type IterationOverviewPanelProps = {
   summary: KBIterationSummaryResponse | null
   loading: boolean
-  displayArtifacts?: KGMaintenanceDisplayArtifacts
   onOpenSection: (section: KGMaintenanceSection) => void
 }
 
@@ -136,10 +134,8 @@ const requiredArtifacts: Array<{
 export function IterationOverviewPanel({
   summary,
   loading,
-  displayArtifacts,
   onOpenSection
 }: IterationOverviewPanelProps) {
-  void displayArtifacts
   if (loading && !summary) {
     return (
       <section className="space-y-4">

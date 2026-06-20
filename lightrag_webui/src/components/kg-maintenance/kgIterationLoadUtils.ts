@@ -86,10 +86,6 @@ export const optionalMissingResponse = async <T>(
   }
 }
 
-const artifactPayload = (
-  artifact: KBIterationArtifactResponse | KBIterationDisplayArtifactResponse
-) => ('payload' in artifact ? artifact.payload : null)
-
 const artifactContentOrPayload = (
   artifact: KBIterationArtifactResponse | KBIterationDisplayArtifactResponse | null
 ) => {
@@ -105,24 +101,6 @@ const artifactTextOrEmpty = (
   return artifact.content
 }
 
-const optionalArtifactContent = async (
-  loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
-) => {
-  const artifact = await optionalMissingResponse<Awaited<
-    ReturnType<typeof getKBIterationArtifact>
-  > | null>(loader, null)
-  return artifact && 'content' in artifact ? artifact.content : ''
-}
-
-const optionalArtifactPayload = async (
-  loader: () => Promise<Awaited<ReturnType<typeof getKBIterationArtifact>>>
-) => {
-  const artifact = await optionalMissingResponse<Awaited<
-    ReturnType<typeof getKBIterationArtifact>
-  > | null>(loader, null)
-  return artifact ? artifactPayload(artifact) : null
-}
-
 type LoadedDisplayArtifact = {
   key: string
   artifact: KBIterationArtifactResponse | KBIterationDisplayArtifactResponse | null
@@ -135,22 +113,23 @@ const optionalDisplayArtifact = async (
   requestWorkspace: string,
   artifactKey: string,
   loaders: KGMaintenanceWorkspaceLoaders,
-  fallbackContentType: string = 'text/markdown'
+  fallbackContentType: string = 'text/markdown',
+  fallbackLoader: () => Promise<KBIterationArtifactResponse> = () =>
+    loaders.getArtifact(requestWorkspace, artifactKey)
 ): Promise<LoadedDisplayArtifact> => {
-  const displayArtifact = await optionalMissingResponse<KBIterationDisplayArtifactResponse | null>(
-    () => loaders.getDisplayArtifact(requestWorkspace, artifactKey),
-    null
-  )
-  if (displayArtifact) {
+  try {
+    const displayArtifact = await loaders.getDisplayArtifact(requestWorkspace, artifactKey)
     return {
       key: artifactKey,
       artifact: displayArtifact,
       displayArtifact
     }
+  } catch {
+    // Display artifacts are optional; source loaders preserve the existing fallback behavior.
   }
 
   const artifact = await optionalMissingResponse<KBIterationArtifactResponse | null>(
-    () => loaders.getArtifact(requestWorkspace, artifactKey),
+    fallbackLoader,
     null
   )
 
@@ -255,10 +234,10 @@ export async function loadKGMaintenanceWorkspaceBundle(
     backlogResult,
     deferredChangesResult,
     acceptedApplyResult,
-    llmTraceArtifact,
-    llmReportArtifact,
-    llmProposalsArtifact,
-    llmJudgeReportArtifact,
+    llmTraceResult,
+    llmReportResult,
+    llmProposalsResult,
+    llmJudgeReportResult,
     llmIssueAnalysisResult,
     llmMissingBranchInferenceResult,
     llmEvidenceMapResult,
@@ -274,10 +253,34 @@ export async function loadKGMaintenanceWorkspaceBundle(
     optionalDisplayArtifact(requestWorkspace, 'improvement_backlog', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'deferred_changes', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'accepted_changes_apply_result', resolvedLoaders),
-    optionalArtifactPayload(() => resolvedLoaders.getTrace(requestWorkspace)),
-    optionalArtifactContent(() => resolvedLoaders.getReport(requestWorkspace)),
-    optionalArtifactContent(() => resolvedLoaders.getProposals(requestWorkspace)),
-    optionalArtifactContent(() => resolvedLoaders.getJudgeReport(requestWorkspace)),
+    optionalDisplayArtifact(
+      requestWorkspace,
+      'llm_review_trace',
+      resolvedLoaders,
+      'application/json',
+      () => resolvedLoaders.getTrace(requestWorkspace)
+    ),
+    optionalDisplayArtifact(
+      requestWorkspace,
+      'llm_review_report',
+      resolvedLoaders,
+      'text/markdown',
+      () => resolvedLoaders.getReport(requestWorkspace)
+    ),
+    optionalDisplayArtifact(
+      requestWorkspace,
+      'proposals_generated',
+      resolvedLoaders,
+      'text/markdown',
+      () => resolvedLoaders.getProposals(requestWorkspace)
+    ),
+    optionalDisplayArtifact(
+      requestWorkspace,
+      'llm_judge_report',
+      resolvedLoaders,
+      'text/markdown',
+      () => resolvedLoaders.getJudgeReport(requestWorkspace)
+    ),
     optionalDisplayArtifact(requestWorkspace, 'llm_issue_analysis', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'llm_missing_branch_inference', resolvedLoaders),
     optionalDisplayArtifact(requestWorkspace, 'llm_evidence_map', resolvedLoaders),
@@ -291,6 +294,10 @@ export async function loadKGMaintenanceWorkspaceBundle(
     backlogResult,
     deferredChangesResult,
     acceptedApplyResult,
+    llmTraceResult,
+    llmReportResult,
+    llmProposalsResult,
+    llmJudgeReportResult,
     llmIssueAnalysisResult,
     llmMissingBranchInferenceResult,
     llmEvidenceMapResult,
@@ -312,10 +319,10 @@ export async function loadKGMaintenanceWorkspaceBundle(
     backlogArtifact: artifactTextOrEmpty(backlogResult.artifact),
     deferredChangesArtifact: artifactTextOrEmpty(deferredChangesResult.artifact),
     acceptedApplyResultArtifact: artifactTextOrEmpty(acceptedApplyResult.artifact),
-    llmTraceArtifact,
-    llmReportArtifact,
-    llmProposalsArtifact,
-    llmJudgeReportArtifact,
+    llmTraceArtifact: artifactContentOrPayload(llmTraceResult.artifact),
+    llmReportArtifact: artifactTextOrEmpty(llmReportResult.artifact),
+    llmProposalsArtifact: artifactTextOrEmpty(llmProposalsResult.artifact),
+    llmJudgeReportArtifact: artifactTextOrEmpty(llmJudgeReportResult.artifact),
     llmIssueAnalysisArtifact: artifactTextOrEmpty(llmIssueAnalysisResult.artifact),
     llmMissingBranchInferenceArtifact: artifactTextOrEmpty(
       llmMissingBranchInferenceResult.artifact

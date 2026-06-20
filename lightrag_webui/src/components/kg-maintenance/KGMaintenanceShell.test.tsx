@@ -618,6 +618,76 @@ describe('MainPanel workflow routing', () => {
     expect(bundle.displayArtifacts.kb_context.content).toBe('zh:kb_context')
   })
 
+  test('workspace bundle prefers display artifacts for LLM review artifacts', async () => {
+    const bundle = await loadKGMaintenanceWorkspaceBundle(
+      'workspace-a',
+      createWorkspaceBundleLoaders({
+        getDisplayArtifact: async (_workspace: string, key: string) => {
+          if (key === 'llm_review_trace') {
+            return {
+              artifactKey: key,
+              contentType: 'application/json',
+              payload: { stop_reason: 'zh-trace', rounds: [{ round_id: 'zh-round' }] },
+              display: {
+                language: 'zh',
+                zhFile: 'llm_review_trace.zh.json',
+                exists: true,
+                generated: true
+              }
+            }
+          }
+
+          return {
+            artifactKey: key,
+            contentType: 'text/markdown',
+            content: `zh:${key}`,
+            display: {
+              language: 'zh',
+              zhFile: `${key}.zh.md`,
+              exists: true,
+              generated: true
+            }
+          }
+        },
+        getTrace: async () => ({
+          artifactKey: 'trace',
+          contentType: 'application/json',
+          payload: { stop_reason: 'source-trace' }
+        }),
+        getReport: async () => ({
+          artifactKey: 'report',
+          contentType: 'text/markdown',
+          content: 'source report'
+        }),
+        getProposals: async () => ({
+          artifactKey: 'proposals',
+          contentType: 'text/markdown',
+          content: 'source proposals'
+        }),
+        getJudgeReport: async () => ({
+          artifactKey: 'judge',
+          contentType: 'text/markdown',
+          content: 'source judge'
+        })
+      })
+    )
+
+    expect(bundle.llmTraceArtifact).toEqual({
+      stop_reason: 'zh-trace',
+      rounds: [{ round_id: 'zh-round' }]
+    })
+    expect(bundle.llmReportArtifact).toBe('zh:llm_review_report')
+    expect(bundle.llmProposalsArtifact).toBe('zh:proposals_generated')
+    expect(bundle.llmJudgeReportArtifact).toBe('zh:llm_judge_report')
+    expect(bundle.displayArtifacts.llm_review_trace.payload).toEqual({
+      stop_reason: 'zh-trace',
+      rounds: [{ round_id: 'zh-round' }]
+    })
+    expect(bundle.displayArtifacts.llm_review_report.content).toBe('zh:llm_review_report')
+    expect(bundle.displayArtifacts.proposals_generated.content).toBe('zh:proposals_generated')
+    expect(bundle.displayArtifacts.llm_judge_report.content).toBe('zh:llm_judge_report')
+  })
+
   test('workspace bundle falls back to original artifact content when display is missing', async () => {
     const bundle = await loadKGMaintenanceWorkspaceBundle(
       'workspace-a',
@@ -644,6 +714,51 @@ describe('MainPanel workflow routing', () => {
     expect(bundle.kbContextArtifact).toBe('source:kb_context')
     expect(bundle.displayArtifacts.kb_context.content).toBe('source:kb_context')
     expect(bundle.displayArtifacts.kb_context.display.fallbackToSource).toBe(true)
+  })
+
+  test('workspace bundle falls back to source artifacts when display loading fails', async () => {
+    const bundle = await loadKGMaintenanceWorkspaceBundle(
+      'workspace-a',
+      createWorkspaceBundleLoaders({
+        getDisplayArtifact: async () => {
+          throw Object.assign(new Error('500 Internal Server Error'), {
+            response: { status: 500 }
+          })
+        },
+        getTrace: async () => ({
+          artifactKey: 'llm_review_trace',
+          contentType: 'application/json',
+          payload: { stop_reason: 'source-trace' }
+        }),
+        getReport: async () => ({
+          artifactKey: 'llm_review_report',
+          contentType: 'text/markdown',
+          content: 'source report'
+        }),
+        getProposals: async () => ({
+          artifactKey: 'proposals_generated',
+          contentType: 'text/markdown',
+          content: 'source proposals'
+        }),
+        getJudgeReport: async () => ({
+          artifactKey: 'llm_judge_report',
+          contentType: 'text/markdown',
+          content: 'source judge'
+        })
+      })
+    )
+
+    expect(bundle.summaryPayload.workspace).toBe('workspace-a')
+    expect(bundle.kbContextArtifact).toBe('source:kb_context')
+    expect(bundle.llmTraceArtifact).toEqual({ stop_reason: 'source-trace' })
+    expect(bundle.llmReportArtifact).toBe('source report')
+    expect(bundle.llmProposalsArtifact).toBe('source proposals')
+    expect(bundle.llmJudgeReportArtifact).toBe('source judge')
+    expect(bundle.displayArtifacts.kb_context.display.fallbackToSource).toBe(true)
+    expect(bundle.displayArtifacts.llm_review_trace.display.fallbackToSource).toBe(true)
+    expect(bundle.displayArtifacts.llm_review_report.content).toBe('source report')
+    expect(bundle.displayArtifacts.proposals_generated.content).toBe('source proposals')
+    expect(bundle.displayArtifacts.llm_judge_report.content).toBe('source judge')
   })
 
   test('workspace bundle display loading skips stale removed artifacts', async () => {

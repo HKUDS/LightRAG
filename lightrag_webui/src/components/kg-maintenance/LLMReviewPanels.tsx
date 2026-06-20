@@ -1,5 +1,4 @@
 import Button from '@/components/ui/Button'
-import type { KGMaintenanceDisplayArtifacts } from './kgIterationLoadUtils'
 import { BrainCircuitIcon, FileDiffIcon, ShieldCheckIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 
@@ -33,7 +32,6 @@ export type LLMReviewPanelProps = {
   missingBranchInference: string
   evidenceMap: string
   repairPlan: string
-  displayArtifacts?: KGMaintenanceDisplayArtifacts
   running: boolean
   onRun: () => void
 }
@@ -56,11 +54,9 @@ export function LLMReviewPanel({
   missingBranchInference,
   evidenceMap,
   repairPlan,
-  displayArtifacts,
   running,
   onRun
 }: LLMReviewPanelProps) {
-  void displayArtifacts
   const stopReason = typeof trace?.stop_reason === 'string' ? trace.stop_reason : ''
   const rounds = Array.isArray(trace?.rounds) ? (trace.rounds as TraceRound[]) : []
   const stages = Array.isArray(trace?.stages)

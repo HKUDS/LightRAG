@@ -464,7 +464,6 @@ export default function KGMaintenanceConsole() {
           kbContext={kbContext}
           kgSnapshot={kgSnapshot}
           qualityScore={qualityScore}
-          displayArtifacts={displayArtifacts}
           approvalQueue={approvalQueue}
           improvementBacklog={improvementBacklog}
           deferredChanges={deferredChanges}
@@ -509,7 +508,6 @@ interface MainPanelProps {
   kbContext: string
   kgSnapshot: Record<string, any> | null
   qualityScore: Record<string, any> | null
-  displayArtifacts?: KGMaintenanceDisplayArtifacts
   approvalQueue: string
   improvementBacklog: string
   deferredChanges: string
@@ -548,7 +546,6 @@ export function MainPanel({
   kbContext,
   kgSnapshot,
   qualityScore,
-  displayArtifacts = {},
   approvalQueue,
   improvementBacklog,
   deferredChanges,
@@ -593,12 +590,7 @@ export function MainPanel({
             {running ? '检查中' : '运行检查'}
           </Button>
         </div>
-        <IterationOverviewPanel
-          summary={summary}
-          loading={loading}
-          displayArtifacts={displayArtifacts}
-          onOpenSection={onOpenSection}
-        />
+        <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
       </section>
     )
   }
@@ -646,7 +638,6 @@ export function MainPanel({
           missingBranchInference={llmMissingBranchInference}
           evidenceMap={llmEvidenceMap}
           repairPlan={llmRepairPlan}
-          displayArtifacts={displayArtifacts}
           running={llmRunning || running}
           onRun={onRunLLMReview}
         />
@@ -660,11 +651,6 @@ export function MainPanel({
     )
   }
   return (
-    <IterationOverviewPanel
-      summary={summary}
-      loading={loading}
-      displayArtifacts={displayArtifacts}
-      onOpenSection={onOpenSection}
-    />
+    <IterationOverviewPanel summary={summary} loading={loading} onOpenSection={onOpenSection} />
   )
 }
