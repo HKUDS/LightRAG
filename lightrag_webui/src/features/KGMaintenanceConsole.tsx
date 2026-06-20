@@ -708,8 +708,11 @@ export function MainPanel({
     [activeSection, artifactExists, displayArtifacts, sourceArtifacts]
   )
   const step = STEP_PRESENTATION[activeSection]
+  const stepActionBusy = loading || running || llmRunning || acceptedExecuting
 
   const handleAction = (action: KGMaintenanceNextAction) => {
+    if (stepActionBusy) return
+
     if (action.id === 'run-check') {
       onRunReview()
       return
@@ -799,6 +802,9 @@ export function MainPanel({
         description={step.description}
         action={step.action}
         onAction={handleAction}
+        disabled={stepActionBusy}
+        loading={stepActionBusy}
+        busyLabel={loading ? '加载中' : '处理中'}
       />
       {content}
       <ArtifactFileSection title="相关产物" artifacts={relatedArtifacts} />

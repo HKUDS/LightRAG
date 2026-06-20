@@ -12,6 +12,9 @@ export interface AgentStepHeaderProps {
   description: string
   action: KGMaintenanceNextAction
   badges?: AgentStepHeaderBadge[]
+  disabled?: boolean
+  loading?: boolean
+  busyLabel?: string
   onAction: (action: KGMaintenanceNextAction) => void
 }
 
@@ -20,8 +23,14 @@ export function AgentStepHeader({
   description,
   action,
   badges = [],
+  disabled = false,
+  loading = false,
+  busyLabel,
   onAction
 }: AgentStepHeaderProps) {
+  const actionDisabled = disabled || loading
+  const actionLabel = actionDisabled && busyLabel ? busyLabel : action.label
+
   return (
     <header className="border-border/70 flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0 space-y-2">
@@ -48,9 +57,13 @@ export function AgentStepHeader({
         type="button"
         size="sm"
         className="shrink-0 self-start"
-        onClick={() => onAction(action)}
+        disabled={actionDisabled}
+        onClick={() => {
+          if (actionDisabled) return
+          onAction(action)
+        }}
       >
-        {action.label}
+        {actionLabel}
         <ArrowRightIcon className="size-4" />
       </Button>
     </header>

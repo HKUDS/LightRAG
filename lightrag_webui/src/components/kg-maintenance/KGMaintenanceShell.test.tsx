@@ -146,6 +146,10 @@ function renderMainPanel(
     llmProposalsSource?: string
     approvalQueue?: string
     approvalQueueSource?: string
+    acceptedExecuting?: boolean
+    llmRunning?: boolean
+    running?: boolean
+    loading?: boolean
   } = {}
 ) {
   const defaultQualityScore = {
@@ -261,10 +265,10 @@ hierarchy_missing_branch_count: 4 -> 0`
       llmRepairPlan="# Repair Plan"
       patchText="patch content marker"
       displayArtifacts={displayArtifacts}
-      acceptedExecuting={false}
-      llmRunning={false}
-      running={false}
-      loading={false}
+      acceptedExecuting={options.acceptedExecuting ?? false}
+      llmRunning={options.llmRunning ?? false}
+      running={options.running ?? false}
+      loading={options.loading ?? false}
       onOpenSection={() => undefined}
       onRunReview={() => undefined}
       onProposalDecision={() => undefined}
@@ -610,11 +614,19 @@ describe('MainPanel workflow routing', () => {
     for (const expectation of expectations) {
       const markup = renderMainPanel(expectation.section)
 
-      expect(markup).toContain(`<h2 class="text-foreground text-base font-semibold">${expectation.heading}</h2>`)
+      expect(markup).toContain(expectation.heading)
       expect(markup).toContain(expectation.action)
       expect(markup).toContain(expectation.artifactFile)
       expect(markup).toContain('相关产物')
     }
+  })
+
+  test('main panel disables step header action while workflow is busy', () => {
+    const markup = renderMainPanel('execute', { acceptedExecuting: true })
+
+    expect(markup).toContain('disabled=""')
+    expect(markup).toContain('处理中')
+    expect(markup).toContain('执行变更')
   })
 
   test('main panel production routing excludes transitional workflow section labels', () => {

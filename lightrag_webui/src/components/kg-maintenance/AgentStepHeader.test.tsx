@@ -37,4 +37,20 @@ describe('AgentStepHeader', () => {
   test('keeps default export available', () => {
     expect(AgentStepHeader).toBe(NamedAgentStepHeader)
   })
+
+  test('renders disabled busy action state', () => {
+    const markup = renderToStaticMarkup(
+      <NamedAgentStepHeader
+        title="审批队列"
+        description="复核高风险 proposal，再决定是否进入执行阶段。"
+        action={action}
+        disabled
+        busyLabel="处理中"
+        onAction={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('disabled=""')
+    expect(markup).toContain('处理中')
+  })
 })

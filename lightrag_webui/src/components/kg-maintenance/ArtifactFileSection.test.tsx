@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { ArtifactFileSection, type DisplayArtifactItem } from './ArtifactFileSection'
+import { resolveArtifactViewState } from './artifactViewState'
 
 const artifacts: DisplayArtifactItem[] = [
   {
@@ -38,5 +39,19 @@ describe('ArtifactFileSection', () => {
     expect(markup).toContain('重新生成')
     expect(markup).toContain('2026-06-19 12:30')
     expect(markup).toContain('gpt-4.1')
+  })
+
+  test('keeps source view empty when original content was not loaded', () => {
+    const artifact: DisplayArtifactItem = {
+      ...artifacts[0],
+      content: '# 生成的中文展示内容',
+      originalContent: undefined
+    }
+
+    const view = resolveArtifactViewState(artifact, 'source')
+
+    expect(view.selectedFile).toBe('kb_context.md')
+    expect(view.selectedContent).toBeUndefined()
+    expect(view.emptyMessage).toBe('暂无原始文件内容。')
   })
 })

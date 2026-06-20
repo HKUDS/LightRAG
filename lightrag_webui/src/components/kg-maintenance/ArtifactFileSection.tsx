@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { RefreshCwIcon } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
+import { resolveArtifactViewState, type ArtifactViewMode } from './artifactViewState'
 
 export type DisplayArtifactItem = {
   key: string
@@ -15,8 +16,6 @@ export type DisplayArtifactItem = {
   content?: string
   originalContent?: string
 }
-
-type ArtifactViewMode = 'zh' | 'source'
 
 interface ArtifactFileSectionProps {
   title: string
@@ -47,9 +46,10 @@ export function ArtifactFileSection({
         ) : (
           artifacts.map((artifact) => {
             const viewMode = viewModes[artifact.key] ?? 'zh'
-            const selectedFile = viewMode === 'zh' ? artifact.zhFile : artifact.sourceFile
-            const selectedContent =
-              viewMode === 'zh' ? artifact.content : artifact.originalContent ?? artifact.content
+            const { selectedFile, selectedContent, emptyMessage } = resolveArtifactViewState(
+              artifact,
+              viewMode
+            )
 
             return (
               <div
@@ -122,11 +122,15 @@ export function ArtifactFileSection({
                   <span className="text-muted-foreground truncate text-xs">{selectedFile}</span>
                 </div>
 
-                {selectedContent && (
+                {selectedContent ? (
                   <pre className="bg-background text-foreground mt-2 max-h-40 overflow-auto rounded border p-2 text-xs whitespace-pre-wrap">
                     {selectedContent}
                   </pre>
-                )}
+                ) : emptyMessage ? (
+                  <p className="text-muted-foreground mt-2 rounded border border-dashed px-3 py-2 text-xs">
+                    {emptyMessage}
+                  </p>
+                ) : null}
               </div>
             )
           })
