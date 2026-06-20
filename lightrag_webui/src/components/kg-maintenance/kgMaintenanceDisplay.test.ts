@@ -96,4 +96,16 @@ hierarchy_missing_branch_count: 4 -> 0`)
       }
     })
   })
+
+  test('extracts before quality metrics from real bullet-form apply result lines', () => {
+    expect(
+      extractQualityBefore(`- Applied: 2
+- Blocked: 0
+- hierarchy_missing_branch_count: 4 -> 0`)
+    ).toEqual({
+      metrics: {
+        hierarchy_missing_branch_count: 4
+      }
+    })
+  })
 })

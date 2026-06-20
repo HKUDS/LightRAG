@@ -15,7 +15,9 @@ export function extractQualityBefore(applyResult: string): QualityBeforeSnapshot
   const snapshot: QualityBeforeSnapshot = {}
 
   applyResult.split(/\r?\n/).forEach((line) => {
-    const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*:\s*(-?\d+(?:\.\d+)?)\s*->\s*-?\d+(?:\.\d+)?\s*$/)
+    const match = line.match(
+      /^\s*(?:-\s*)?([A-Za-z0-9_.-]+)\s*:\s*(-?\d+(?:\.\d+)?)\s*->\s*-?\d+(?:\.\d+)?\s*$/
+    )
     if (!match) return
 
     const [, key, beforeValue] = match

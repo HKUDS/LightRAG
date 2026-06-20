@@ -139,11 +139,12 @@ function formatAppliedLine(applyResult: string): string {
   return applyResult
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find((line) => /^Applied:\s*\d+/i.test(line)) ?? ''
+    .map((line) => line.match(/^(?:-\s*)?(Applied:\s*\d+)/i)?.[1] ?? '')
+    .find(Boolean) ?? ''
 }
 
 function isAppliedZero(applyResult: string): boolean {
-  return /^Applied:\s*0\b/im.test(applyResult)
+  return /^\s*(?:-\s*)?Applied:\s*0\b/im.test(applyResult)
 }
 
 function readQualityValue(quality: Record<string, any> | null | undefined, key: string): unknown {

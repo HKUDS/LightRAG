@@ -25,6 +25,26 @@ hierarchy_missing_branch_count: 4 -> 0`}
     expect(markup).not.toContain('improvement_backlog.md')
   })
 
+  test('execution panel summarizes real bullet-form apply results', () => {
+    const markup = renderToStaticMarkup(
+      <ExecutionPanel
+        acceptedChanges={`# Accepted Changes
+
+## proposal-1
+
+- 写入证据字段`}
+        applyResult={`- Applied: 2
+- Blocked: 0
+- hierarchy_missing_branch_count: 4 -> 0`}
+        executing={false}
+        onExecute={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('Applied: 2')
+    expect(markup).not.toContain('尚未执行写入')
+  })
+
   test('execution panel disables action when accepted changes have no headings', () => {
     const markup = renderToStaticMarkup(
       <ExecutionPanel
@@ -63,10 +83,43 @@ hierarchy_missing_branch_count: 4 -> 0`
     expect(markup).toContain('没有新增写入，但当前质量已达标')
   })
 
+  test('validation panel handles real bullet-form zero-apply results', () => {
+    const applyResult = `- Applied: 0
+- Blocked: 0
+- hierarchy_missing_branch_count: 0 -> 0`
+
+    const markup = renderToStaticMarkup(
+      <ValidationPanel
+        qualityBefore={extractQualityBefore(applyResult)}
+        qualityAfter={{
+          metrics: {
+            hierarchy_missing_branch_count: 0
+          }
+        }}
+        applyResult={applyResult}
+      />
+    )
+
+    expect(markup).toContain('0 → 0')
+    expect(markup).toContain('没有新增写入，但当前质量已达标')
+  })
+
   test('extractQualityBefore parses metric before-values from apply result deltas', () => {
     expect(
       extractQualityBefore(`Applied: 2
 hierarchy_missing_branch_count: 4 -> 0`)
+    ).toEqual({
+      metrics: {
+        hierarchy_missing_branch_count: 4
+      }
+    })
+  })
+
+  test('extractQualityBefore parses real bullet-form metric before-values', () => {
+    expect(
+      extractQualityBefore(`- Applied: 2
+- Blocked: 0
+- hierarchy_missing_branch_count: 4 -> 0`)
     ).toEqual({
       metrics: {
         hierarchy_missing_branch_count: 4
