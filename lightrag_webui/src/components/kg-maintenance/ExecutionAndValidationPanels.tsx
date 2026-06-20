@@ -132,7 +132,7 @@ function DeltaRow({
 }
 
 function countAcceptedChangeHeadings(content: string): number {
-  return Array.from(content.matchAll(/^##\s+[A-Za-z0-9][A-Za-z0-9_.-]*\s*$/gm)).length
+  return Array.from(content.matchAll(/^##\s+[A-Za-z0-9_.-]+\s*$/gm)).length
 }
 
 function formatAppliedLine(applyResult: string): string {

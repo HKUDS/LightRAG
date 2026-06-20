@@ -81,7 +81,13 @@ hierarchy_missing_branch_count: 4 -> 0`}
 
 ## prop-a
 
-## prop.a-1`}
+## prop.a-1
+
+## _p1
+
+## .p1
+
+## -p1`}
         applyResult=""
         executing={false}
         onExecute={() => undefined}
@@ -90,7 +96,7 @@ hierarchy_missing_branch_count: 4 -> 0`}
 
     expect(invalidMarkup).toContain('暂无可执行的已接受变更')
     expect(invalidMarkup).toContain('disabled=""')
-    expect(validMarkup).toContain('3 条已接受变更等待写入')
+    expect(validMarkup).toContain('6 条已接受变更等待写入')
     expect(validMarkup).not.toContain('disabled=""')
   })
 
