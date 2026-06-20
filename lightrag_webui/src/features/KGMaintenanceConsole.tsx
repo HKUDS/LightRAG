@@ -18,20 +18,20 @@ import { ArtifactDrawer, type DrawerArtifact } from '@/components/kg-maintenance
 import KGMaintenanceShell from '@/components/kg-maintenance/KGMaintenanceShell'
 import {
   KG_MAINTENANCE_ARTIFACTS,
-  artifactsForStep,
   findArtifactDefinition
 } from '@/components/kg-maintenance/kgMaintenanceArtifacts'
 import AgentStepHeader from '@/components/kg-maintenance/AgentStepHeader'
-import {
-  ArtifactFileSection,
-  type DisplayArtifactItem
-} from '@/components/kg-maintenance/ArtifactFileSection'
+import { ArtifactFileSection } from '@/components/kg-maintenance/ArtifactFileSection'
 import type { KGMaintenanceNextAction } from '@/components/kg-maintenance/kgMaintenanceNextAction'
 import {
   ExecutionPanel,
   ValidationPanel
 } from '@/components/kg-maintenance/ExecutionAndValidationPanels'
 import { extractQualityBefore } from '@/components/kg-maintenance/kgMaintenanceDisplay'
+import {
+  buildDisplayArtifactItems,
+  stringifyArtifactContent
+} from '@/components/kg-maintenance/kgMaintenanceArtifactItems'
 import {
   normalizeWorkspaceList,
   loadKGMaintenanceWorkspaceBundle,
@@ -40,8 +40,8 @@ import {
   requestProposalRevisionForWorkspace,
   submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse,
-  isGeneratedDisplayArtifact,
   normalizeTraceArtifactForLogic,
+  isGeneratedDisplayArtifact,
   type KGMaintenanceDisplayArtifacts
 } from '@/components/kg-maintenance/kgIterationLoadUtils'
 import {
@@ -144,8 +144,6 @@ export default function KGMaintenanceConsole() {
   const [summary, setSummary] = useState<KBIterationSummaryResponse | null>(null)
   const [quality, setQuality] = useState<KBIterationQualityResponse | null>(null)
   const [rules, setRules] = useState<KBIterationRulesResponse | null>(null)
-  const [kbContext, setKbContext] = useState('')
-  const [kgSnapshot, setKgSnapshot] = useState<Record<string, any> | null>(null)
   const [qualityScoreSource, setQualityScoreSource] = useState<Record<string, any> | null>(null)
   const [approvalQueue, setApprovalQueue] = useState('')
   const [approvalQueueSource, setApprovalQueueSource] = useState('')
@@ -232,8 +230,6 @@ export default function KGMaintenanceConsole() {
         qualityPayload,
         rulesPayload,
         displayArtifacts: loadedDisplayArtifacts,
-        kbContextArtifact,
-        kgSnapshotArtifact,
         qualityScoreSourceArtifact,
         approvalArtifact,
         approvalArtifactSource,
@@ -258,14 +254,6 @@ export default function KGMaintenanceConsole() {
       setQuality(qualityPayload)
       setRules(rulesPayload)
       setDisplayArtifacts(loadedDisplayArtifacts)
-      setKbContext(normalizeOptionalMarkdown(kbContextArtifact))
-      setKgSnapshot(
-        kgSnapshotArtifact &&
-          typeof kgSnapshotArtifact === 'object' &&
-          !Array.isArray(kgSnapshotArtifact)
-          ? kgSnapshotArtifact
-          : null
-      )
       setQualityScoreSource(
         qualityScoreSourceArtifact &&
           typeof qualityScoreSourceArtifact === 'object' &&
@@ -522,8 +510,6 @@ export default function KGMaintenanceConsole() {
           summary={summary}
           quality={quality}
           rules={rules}
-          kbContext={kbContext}
-          kgSnapshot={kgSnapshot}
           qualityScoreSource={qualityScoreSource}
           approvalQueue={approvalQueue}
           approvalQueueSource={approvalQueueSource}
@@ -571,8 +557,6 @@ interface MainPanelProps {
   summary: KBIterationSummaryResponse | null
   quality: KBIterationQualityResponse | null
   rules: KBIterationRulesResponse | null
-  kbContext: string
-  kgSnapshot: Record<string, any> | null
   qualityScoreSource?: Record<string, any> | null
   approvalQueue: string
   approvalQueueSource: string
@@ -614,8 +598,6 @@ export function MainPanel({
   summary,
   quality,
   rules,
-  kbContext,
-  kgSnapshot,
   qualityScoreSource,
   approvalQueue,
   approvalQueueSource,
@@ -651,23 +633,14 @@ export function MainPanel({
 
   const sourceArtifacts = useMemo(
     () => ({
-      kb_context: kbContext,
-      kg_snapshot: stringifyArtifactContent(kgSnapshot),
       quality_score: stringifyArtifactContent(qualityScoreSource),
       approval_queue: approvalQueueSource,
-      improvement_backlog: improvementBacklog,
       deferred_changes: deferredChangesSource,
       accepted_changes: rules?.acceptedChanges || '',
       rejected_changes: rules?.rejectedChanges || '',
       accepted_changes_apply_result: acceptedApplyResultSource,
       llm_review_trace: stringifyArtifactContent(llmTrace),
-      llm_review_report: llmReport,
       proposals_generated: llmProposalsSource,
-      llm_judge_report: llmJudgeReport,
-      llm_issue_analysis: llmIssueAnalysis,
-      llm_missing_branch_inference: llmMissingBranchInference,
-      llm_evidence_map: llmEvidenceMap,
-      llm_repair_plan: llmRepairPlan,
       quality_rules: rules?.qualityRules || '',
       known_issues: rules?.knownIssues || ''
     }),
@@ -675,16 +648,7 @@ export function MainPanel({
       acceptedApplyResultSource,
       approvalQueueSource,
       deferredChangesSource,
-      improvementBacklog,
-      kbContext,
-      kgSnapshot,
-      llmEvidenceMap,
-      llmIssueAnalysis,
-      llmJudgeReport,
-      llmMissingBranchInference,
       llmProposalsSource,
-      llmRepairPlan,
-      llmReport,
       llmTrace,
       qualityScoreSource,
       rules?.acceptedChanges,
@@ -874,62 +838,6 @@ function CheckSummaryPanel({
       </div>
     </section>
   )
-}
-
-function buildDisplayArtifactItems({
-  step,
-  displayArtifacts,
-  sourceArtifacts,
-  artifactExists
-}: {
-  step: KGMaintenanceSection
-  displayArtifacts: KGMaintenanceDisplayArtifacts
-  sourceArtifacts: Record<string, string | undefined>
-  artifactExists: Map<string, boolean>
-}): DisplayArtifactItem[] {
-  return artifactsForStep(step).map((artifact) => {
-    const displayArtifact = displayArtifacts[artifact.key]
-    const sourceContent = sourceArtifacts[artifact.key]
-    return {
-      key: artifact.key,
-      title: artifact.title,
-      sourceFile: artifact.sourceFile,
-      zhFile: displayArtifact?.display?.zhFile ?? artifact.zhFile,
-      contentType: displayArtifact?.contentType ?? artifact.contentType,
-      displayStatus: displayArtifactStatus({
-        displayArtifact,
-        hasSource: Boolean(sourceContent || artifactExists.get(artifact.key))
-      }),
-      generatedAt: displayArtifact?.display?.generatedAt,
-      model: displayArtifact?.display?.model,
-      content: stringifyArtifactContent(artifactContent(displayArtifact)),
-      originalContent: sourceContent
-    }
-  })
-}
-
-function displayArtifactStatus({
-  displayArtifact,
-  hasSource
-}: {
-  displayArtifact: KGMaintenanceDisplayArtifacts[string] | undefined
-  hasSource: boolean
-}): string {
-  if (isGeneratedDisplayArtifact(displayArtifact)) return '中文已生成'
-  if (displayArtifact?.display?.fallbackToSource || hasSource) return '原始文件'
-  return '缺失'
-}
-
-function artifactContent(artifact: KGMaintenanceDisplayArtifacts[string] | undefined): unknown {
-  if (!artifact) return ''
-  if ('payload' in artifact) return artifact.payload
-  return artifact.content
-}
-
-function stringifyArtifactContent(value: unknown): string | undefined {
-  if (value === null || value === undefined || value === '') return undefined
-  if (typeof value === 'string') return value
-  return JSON.stringify(value, null, 2)
 }
 
 function formatMaybeNumber(value: unknown): string {

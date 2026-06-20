@@ -23,6 +23,7 @@ if (!('localStorage' in globalThis)) {
 const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
 const kgMaintenanceConsoleModule = await import('@/features/KGMaintenanceConsole')
 const { ArtifactsDrawerPlaceholder, MainPanel } = kgMaintenanceConsoleModule
+const { buildDisplayArtifactItems } = await import('./kgMaintenanceArtifactItems')
 const { useKGMaintenanceStore } = await import('@/stores/kgMaintenance')
 const {
   applyWorkspaceResponse,
@@ -213,13 +214,6 @@ function renderMainPanel(
 accepted content marker`,
         rejectedChanges: options.rejectedChanges ?? 'rejected content marker'
       }}
-      kbContext="# 当前 KB 摘要"
-      kgSnapshot={{
-        workspace: 'influenza_medical_v1',
-        snapshot_id: 'snapshot-1',
-        nodes: [{ id: 'flu' }],
-        edges: [{ source: 'flu', target: 'fever' }]
-      }}
       qualityScoreSource={qualityScoreSourceForPanel}
       approvalQueue={
         options.approvalQueue ??
@@ -286,8 +280,6 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       summary={null}
       quality={null}
       rules={null}
-      kbContext=""
-      kgSnapshot={null}
       qualityScoreSource={null}
       approvalQueue=""
       approvalQueueSource=""
@@ -627,6 +619,56 @@ describe('MainPanel workflow routing', () => {
     expect(markup).toContain('disabled=""')
     expect(markup).toContain('处理中')
     expect(markup).toContain('执行变更')
+  })
+
+  test('main panel keeps generated display artifacts out of source content', () => {
+    const items = buildDisplayArtifactItems({
+      step: 'check',
+      displayArtifacts: {
+        kb_context: {
+          artifactKey: 'kb_context',
+          contentType: 'text/markdown',
+          content: 'generated zh display content',
+          display: {
+            language: 'zh',
+            zhFile: 'kb_context.zh.md',
+            generated: true,
+            fallbackToSource: false
+          }
+        }
+      },
+      sourceArtifacts: {
+        kb_context: 'display-state kbContext content'
+      },
+      artifactExists: new Map([['kb_context', true]])
+    })
+
+    const kbContext = items.find((artifact) => artifact.key === 'kb_context')
+
+    expect(kbContext?.content).toBe('generated zh display content')
+    expect(kbContext?.originalContent).toBeUndefined()
+
+    const fallbackItems = buildDisplayArtifactItems({
+      step: 'check',
+      displayArtifacts: {
+        kb_context: {
+          artifactKey: 'kb_context',
+          contentType: 'text/markdown',
+          content: 'source fallback content',
+          display: {
+            language: 'zh',
+            zhFile: 'kb_context.zh.md',
+            generated: true,
+            fallbackToSource: true
+          }
+        }
+      },
+      sourceArtifacts: {},
+      artifactExists: new Map([['kb_context', true]])
+    })
+    const fallbackKbContext = fallbackItems.find((artifact) => artifact.key === 'kb_context')
+
+    expect(fallbackKbContext?.originalContent).toBe('source fallback content')
   })
 
   test('main panel production routing excludes transitional workflow section labels', () => {
