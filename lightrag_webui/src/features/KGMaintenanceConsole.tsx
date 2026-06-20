@@ -100,7 +100,6 @@ export default function KGMaintenanceConsole() {
   const [rules, setRules] = useState<KBIterationRulesResponse | null>(null)
   const [kbContext, setKbContext] = useState('')
   const [kgSnapshot, setKgSnapshot] = useState<Record<string, any> | null>(null)
-  const [qualityScore, setQualityScore] = useState<Record<string, any> | null>(null)
   const [qualityScoreSource, setQualityScoreSource] = useState<Record<string, any> | null>(null)
   const [approvalQueue, setApprovalQueue] = useState('')
   const [approvalQueueSource, setApprovalQueueSource] = useState('')
@@ -189,7 +188,6 @@ export default function KGMaintenanceConsole() {
         displayArtifacts: loadedDisplayArtifacts,
         kbContextArtifact,
         kgSnapshotArtifact,
-        qualityScoreArtifact,
         qualityScoreSourceArtifact,
         approvalArtifact,
         approvalArtifactSource,
@@ -220,13 +218,6 @@ export default function KGMaintenanceConsole() {
           typeof kgSnapshotArtifact === 'object' &&
           !Array.isArray(kgSnapshotArtifact)
           ? kgSnapshotArtifact
-          : null
-      )
-      setQualityScore(
-        qualityScoreArtifact &&
-          typeof qualityScoreArtifact === 'object' &&
-          !Array.isArray(qualityScoreArtifact)
-          ? qualityScoreArtifact
           : null
       )
       setQualityScoreSource(
@@ -487,7 +478,6 @@ export default function KGMaintenanceConsole() {
           rules={rules}
           kbContext={kbContext}
           kgSnapshot={kgSnapshot}
-          qualityScore={qualityScore}
           qualityScoreSource={qualityScoreSource}
           approvalQueue={approvalQueue}
           approvalQueueSource={approvalQueueSource}
@@ -536,10 +526,9 @@ interface MainPanelProps {
   rules: KBIterationRulesResponse | null
   kbContext: string
   kgSnapshot: Record<string, any> | null
-  qualityScore: Record<string, any> | null
   qualityScoreSource?: Record<string, any> | null
   approvalQueue: string
-  approvalQueueSource?: string
+  approvalQueueSource: string
   improvementBacklog: string
   deferredChanges: string
   deferredChangesSource?: string
@@ -579,7 +568,6 @@ export function MainPanel({
   rules,
   kbContext,
   kgSnapshot,
-  qualityScore,
   qualityScoreSource,
   approvalQueue,
   approvalQueueSource,

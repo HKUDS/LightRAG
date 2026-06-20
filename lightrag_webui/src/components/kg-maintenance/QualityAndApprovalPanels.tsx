@@ -21,7 +21,7 @@ interface QualityPanelProps {
 
 interface ApprovalPanelProps {
   approvalQueue: string
-  approvalQueueSource?: string
+  approvalQueueSource: string
   improvementBacklog: string
   acceptedChanges?: string
   rejectedChanges?: string
@@ -167,7 +167,7 @@ export function ApprovalPanel({
   onDecision,
   onRequestRevision
 }: ApprovalPanelProps) {
-  const proposals = parseProposalSummaries(approvalQueueSource ?? '')
+  const proposals = parseProposalSummaries(approvalQueueSource)
   const decisionStates = useMemo(
     () =>
       parseProposalDecisionStates({

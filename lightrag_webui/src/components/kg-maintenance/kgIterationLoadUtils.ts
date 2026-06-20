@@ -109,8 +109,11 @@ const normalizeRecordArtifact = (value: unknown): Record<string, any> | null =>
 
 export const normalizeTraceArtifactForLogic = (
   sourceTraceArtifact: unknown,
-  _displayTraceArtifact: unknown
-): Record<string, any> | null => normalizeRecordArtifact(sourceTraceArtifact)
+  displayTraceArtifact: unknown
+): Record<string, any> | null => {
+  void displayTraceArtifact
+  return normalizeRecordArtifact(sourceTraceArtifact)
+}
 
 type LoadedDisplayArtifact = {
   key: string

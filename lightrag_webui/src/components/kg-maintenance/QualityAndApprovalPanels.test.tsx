@@ -91,6 +91,7 @@ describe('ApprovalPanel', () => {
     const markup = renderToStaticMarkup(
       <ApprovalPanel
         approvalQueue={approvalQueue}
+        approvalQueueSource=""
         improvementBacklog=""
         acceptedChanges=""
         rejectedChanges=""

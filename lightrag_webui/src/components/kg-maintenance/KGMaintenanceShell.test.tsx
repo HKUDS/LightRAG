@@ -79,7 +79,6 @@ function renderMainPanel(
     deferredChangesSource?: string
     acceptedApplyResult?: string
     acceptedApplyResultSource?: string
-    qualityScore?: Record<string, any> | null
     qualityScoreSource?: Record<string, any> | null
     omitQualityScoreSource?: boolean
     llmTrace?: Record<string, any> | null
@@ -87,7 +86,6 @@ function renderMainPanel(
     llmProposalsSource?: string
     approvalQueue?: string
     approvalQueueSource?: string
-    omitApprovalQueueSource?: boolean
   } = {}
 ) {
   const defaultQualityScore = {
@@ -97,7 +95,6 @@ function renderMainPanel(
     },
     findings: [{ severity: 'medium' }]
   }
-  const qualityScoreForPanel = options.qualityScore ?? defaultQualityScore
   const defaultApprovalQueue = `# 寰呭鎵?proposal
 
 - id: proposal-1
@@ -113,6 +110,9 @@ function renderMainPanel(
       expected_metric_change:
     approval_latency: -1`
   const approvalQueueForPanel = options.approvalQueue ?? defaultApprovalQueue
+  const qualityScoreSourceForPanel = options.omitQualityScoreSource
+    ? undefined
+    : (options.qualityScoreSource ?? defaultQualityScore)
 
   return renderToStaticMarkup(
     <MainPanel
@@ -156,12 +156,7 @@ accepted content marker`,
         nodes: [{ id: 'flu' }],
         edges: [{ source: 'flu', target: 'fever' }]
       }}
-      qualityScore={qualityScoreForPanel}
-      qualityScoreSource={
-        options.omitQualityScoreSource
-          ? undefined
-          : (options.qualityScoreSource ?? qualityScoreForPanel)
-      }
+      qualityScoreSource={qualityScoreSourceForPanel}
       approvalQueue={
         options.approvalQueue ??
         `# 待审批 proposal
@@ -179,11 +174,7 @@ accepted content marker`,
       expected_metric_change:
     approval_latency: -1`
       }
-      approvalQueueSource={
-        options.omitApprovalQueueSource
-          ? undefined
-          : (options.approvalQueueSource ?? approvalQueueForPanel)
-      }
+      approvalQueueSource={options.approvalQueueSource ?? approvalQueueForPanel}
       improvementBacklog="backlog content marker"
       deferredChanges={options.deferredChanges ?? 'deferred content marker'}
       deferredChangesSource={options.deferredChangesSource ?? options.deferredChanges ?? ''}
@@ -232,7 +223,6 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       rules={null}
       kbContext=""
       kgSnapshot={null}
-      qualityScore={null}
       qualityScoreSource={null}
       approvalQueue=""
       approvalQueueSource=""
@@ -717,6 +707,14 @@ describe('MainPanel workflow routing', () => {
             : { content: `source:${key}` })
         }),
         getDisplayArtifact: async (_workspace: string, key: string) => {
+          let content = `zh:${key}`
+          if (key === 'approval_queue') {
+            content = 'translated approval queue without parseable ids'
+          }
+          if (key === 'deferred_changes') {
+            content = 'translated deferred decisions with display-only ids'
+          }
+
           if (key === 'quality_score') {
             return {
               artifactKey: key,
@@ -737,12 +735,7 @@ describe('MainPanel workflow routing', () => {
           return {
             artifactKey: key,
             contentType: 'text/markdown',
-            content:
-              key === 'approval_queue'
-                ? 'translated approval queue without parseable ids'
-                : key === 'deferred_changes'
-                  ? 'translated deferred decisions with display-only ids'
-                : `zh:${key}`,
+            content,
             display: {
               language: 'zh',
               zhFile: `${key}.zh.md`,
@@ -1606,12 +1599,6 @@ hierarchy_missing_branch_count: 4 -> 0`
       acceptedApplyResultSource: `Applied: 0
 overall: 88 -> 97
 hierarchy_missing_branch_count: 4 -> 0`,
-      qualityScore: {
-        overall: 'display-score',
-        metrics: {
-          hierarchy_missing_branch_count: 99
-        }
-      },
       qualityScoreSource: {
         overall: 97,
         metrics: {
@@ -1635,12 +1622,6 @@ hierarchy_missing_branch_count: 4 -> 0`,
       acceptedApplyResultSource: `Applied: 0
 overall: 88 -> 97
 hierarchy_missing_branch_count: 4 -> 0`,
-      qualityScore: {
-        overall: 'display-score',
-        metrics: {
-          hierarchy_missing_branch_count: 99
-        }
-      },
       omitQualityScoreSource: true
     })
 
