@@ -104,8 +104,6 @@ export default function KGMaintenanceConsole() {
   const [improvementBacklog, setImprovementBacklog] = useState('')
   const [deferredChanges, setDeferredChanges] = useState('')
   const [acceptedApplyResult, setAcceptedApplyResult] = useState('')
-  const [acceptedExecution, setAcceptedExecution] = useState('')
-  const [iterationLog, setIterationLog] = useState('')
   const [llmTrace, setLlmTrace] = useState<Record<string, any> | null>(null)
   const [llmReport, setLlmReport] = useState('')
   const [llmProposals, setLlmProposals] = useState('')
@@ -184,8 +182,6 @@ export default function KGMaintenanceConsole() {
         backlogArtifact,
         deferredChangesArtifact,
         acceptedApplyResultArtifact,
-        acceptedExecutionArtifact,
-        logArtifact,
         llmTraceArtifact,
         llmReportArtifact,
         llmProposalsArtifact,
@@ -218,8 +214,6 @@ export default function KGMaintenanceConsole() {
       setImprovementBacklog(normalizeOptionalMarkdown(backlogArtifact))
       setDeferredChanges(normalizeOptionalMarkdown(deferredChangesArtifact))
       setAcceptedApplyResult(normalizeOptionalMarkdown(acceptedApplyResultArtifact))
-      setAcceptedExecution(normalizeOptionalMarkdown(acceptedExecutionArtifact))
-      setIterationLog(normalizeOptionalMarkdown(logArtifact))
       setLlmTrace(
         typeof llmTraceArtifact === 'object' &&
           llmTraceArtifact !== null &&
@@ -468,8 +462,6 @@ export default function KGMaintenanceConsole() {
           improvementBacklog={improvementBacklog}
           deferredChanges={deferredChanges}
           acceptedApplyResult={acceptedApplyResult}
-          acceptedExecution={acceptedExecution}
-          iterationLog={iterationLog}
           llmTrace={llmTrace}
           llmReport={llmReport}
           llmProposals={llmProposals}
@@ -514,8 +506,6 @@ interface MainPanelProps {
   improvementBacklog: string
   deferredChanges: string
   acceptedApplyResult: string
-  acceptedExecution: string
-  iterationLog: string
   llmTrace: Record<string, any> | null
   llmReport: string
   llmProposals: string
@@ -554,8 +544,6 @@ export function MainPanel({
   improvementBacklog,
   deferredChanges,
   acceptedApplyResult,
-  acceptedExecution,
-  iterationLog,
   llmTrace,
   llmReport,
   llmProposals,
@@ -580,8 +568,6 @@ export function MainPanel({
   void quality
   void kbContext
   void kgSnapshot
-  void acceptedExecution
-  void iterationLog
 
   if (activeSection === 'check') {
     return (

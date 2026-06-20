@@ -108,4 +108,13 @@ hierarchy_missing_branch_count: 4 -> 0`)
       }
     })
   })
+
+  test('ignores prose and non-delta lines when extracting quality before values', () => {
+    expect(
+      extractQualityBefore(`The metric hierarchy_missing_branch_count: 4 -> 0 appears in prose.
+- hierarchy_missing_branch_count changed: 4 -> 0
+- Blocked: 0
+No metric delta here.`)
+    ).toEqual({})
+  })
 })

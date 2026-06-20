@@ -75,7 +75,6 @@ function renderMainPanel(
     rejectedChanges?: string
     deferredChanges?: string
     acceptedApplyResult?: string
-    acceptedExecution?: string
   } = {}
 ) {
   return renderToStaticMarkup(
@@ -147,8 +146,6 @@ accepted content marker`,
 overall: 88 -> 97
 hierarchy_missing_branch_count: 4 -> 0`
       }
-      acceptedExecution={options.acceptedExecution ?? 'execution content marker'}
-      iterationLog="iteration log marker"
       llmTrace={{
         stop_reason: 'pending_human_review',
         rounds: [{ round_id: 'round-1', state: 'pending_human_review' }]
@@ -189,8 +186,6 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       improvementBacklog=""
       deferredChanges=""
       acceptedApplyResult=""
-      acceptedExecution=""
-      iterationLog=""
       llmTrace={null}
       llmReport=""
       llmProposals=""
@@ -600,6 +595,8 @@ describe('MainPanel workflow routing', () => {
     expect(requestedArtifactKeys).toContain('llm_repair_plan')
     expect(requestedArtifactKeys).toContain('accepted_changes_apply_result')
     expect(requestedArtifactKeys).toContain('deferred_changes')
+    expect(requestedArtifactKeys).not.toContain('accepted_changes_execution')
+    expect(requestedArtifactKeys).not.toContain('iteration_log')
     expect(bundle.llmIssueAnalysisArtifact).toBe('# llm_issue_analysis')
     expect(bundle.llmMissingBranchInferenceArtifact).toBe('# llm_missing_branch_inference')
     expect(bundle.llmEvidenceMapArtifact).toBe('# llm_evidence_map')

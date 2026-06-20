@@ -115,8 +115,6 @@ type KGMaintenanceWorkspaceBundle = {
   backlogArtifact: string
   deferredChangesArtifact: string
   acceptedApplyResultArtifact: string
-  acceptedExecutionArtifact: string
-  logArtifact: string
   llmTraceArtifact: unknown
   llmReportArtifact: string
   llmProposalsArtifact: string
@@ -164,8 +162,6 @@ export async function loadKGMaintenanceWorkspaceBundle(
     backlogArtifact,
     deferredChangesArtifact,
     acceptedApplyResultArtifact,
-    acceptedExecutionArtifact,
-    logArtifact,
     llmTraceArtifact,
     llmReportArtifact,
     llmProposalsArtifact,
@@ -187,10 +183,6 @@ export async function loadKGMaintenanceWorkspaceBundle(
     optionalArtifactContent(() =>
       loaders.getArtifact(requestWorkspace, 'accepted_changes_apply_result')
     ),
-    optionalArtifactContent(() =>
-      loaders.getArtifact(requestWorkspace, 'accepted_changes_execution')
-    ),
-    optionalArtifactContent(() => loaders.getArtifact(requestWorkspace, 'iteration_log')),
     optionalArtifactPayload(() => loaders.getTrace(requestWorkspace)),
     optionalArtifactContent(() => loaders.getReport(requestWorkspace)),
     optionalArtifactContent(() => loaders.getProposals(requestWorkspace)),
@@ -214,8 +206,6 @@ export async function loadKGMaintenanceWorkspaceBundle(
     backlogArtifact,
     deferredChangesArtifact,
     acceptedApplyResultArtifact,
-    acceptedExecutionArtifact,
-    logArtifact,
     llmTraceArtifact,
     llmReportArtifact,
     llmProposalsArtifact,

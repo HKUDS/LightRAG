@@ -59,6 +59,41 @@ hierarchy_missing_branch_count: 4 -> 0`}
     expect(markup).toContain('disabled=""')
   })
 
+  test('execution panel ignores accepted headings with extra title text', () => {
+    const invalidMarkup = renderToStaticMarkup(
+      <ExecutionPanel
+        acceptedChanges={`# Accepted Changes
+
+## p1 accepted
+
+- 这不是后端可执行的 proposal ID 标题`}
+        applyResult=""
+        executing={false}
+        onExecute={() => undefined}
+      />
+    )
+
+    const validMarkup = renderToStaticMarkup(
+      <ExecutionPanel
+        acceptedChanges={`# Accepted Changes
+
+## p1
+
+## prop-a
+
+## prop.a-1`}
+        applyResult=""
+        executing={false}
+        onExecute={() => undefined}
+      />
+    )
+
+    expect(invalidMarkup).toContain('暂无可执行的已接受变更')
+    expect(invalidMarkup).toContain('disabled=""')
+    expect(validMarkup).toContain('3 条已接受变更等待写入')
+    expect(validMarkup).not.toContain('disabled=""')
+  })
+
   test('validation panel renders quality deltas and already achieved result', () => {
     const applyResult = `Applied: 0
 overall: 88 -> 97
@@ -102,6 +137,28 @@ hierarchy_missing_branch_count: 4 -> 0`
 
     expect(markup).toContain('0 → 0')
     expect(markup).toContain('没有新增写入，但当前质量已达标')
+  })
+
+  test('validation panel renders total placeholder when backend result has no overall delta', () => {
+    const applyResult = `- Applied: 2
+- Blocked: 0
+- hierarchy_missing_branch_count: 4 -> 0`
+
+    const markup = renderToStaticMarkup(
+      <ValidationPanel
+        qualityBefore={extractQualityBefore(applyResult)}
+        qualityAfter={{
+          overall: 97,
+          metrics: {
+            hierarchy_missing_branch_count: 0
+          }
+        }}
+        applyResult={applyResult}
+      />
+    )
+
+    expect(markup).toContain('— → 97')
+    expect(markup).toContain('4 → 0')
   })
 
   test('extractQualityBefore parses metric before-values from apply result deltas', () => {
