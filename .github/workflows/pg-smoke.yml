@@ -9,13 +9,13 @@ on:
 
 jobs:
   pg-smoke:
-    name: PgRcte Smoke Tests (PostgreSQL ${{ matrix.pg }})
+    name: PGTable Smoke Tests (PostgreSQL ${{ matrix.pg }})
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        pg: ['15', '16', '17']
+        pg: ['18']
       fail-fast: false
 
     services:
@@ -60,4 +60,4 @@ jobs:
 
       - name: Run pg_smoke tests
         run: |
-          pytest tests/kg/pg_rcte/test_pg_rcte_smoke.py -m pg_smoke --run-integration -v --tb=short
+          pytest tests/kg/pgtable_impl/test_pgtable_smoke.py -m pg_smoke --run-integration -v --tb=short
