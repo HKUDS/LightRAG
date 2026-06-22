@@ -1,4 +1,4 @@
-"""Real-PostgreSQL smoke tests for PgRcteGraphStorage.
+"""Real-PostgreSQL smoke tests for PGTableGraphStorage.
 
 These tests exercise the actual DB glue that all offline unit tests mock:
   - _execute  → PostgreSQLDB.execute(data={str(i): v})   positional binding
@@ -36,7 +36,7 @@ if not PG_PASSWORD:
 
 
 # ---------------------------------------------------------------------------
-# Fixture: isolated PgRcteGraphStorage with a unique workspace per test
+# Fixture: isolated PGTableGraphStorage with a unique workspace per test
 # ---------------------------------------------------------------------------
 
 
@@ -49,11 +49,11 @@ def init_shared_storage():
 
 @pytest.fixture
 async def store():
-    """Yield an initialized PgRcteGraphStorage and clean up after the test."""
-    from lightrag.kg.pg_rcte_impl import PgRcteGraphStorage
+    """Yield an initialized PGTableGraphStorage and clean up after the test."""
+    from lightrag.kg.pgtable_impl import PGTableGraphStorage
 
     workspace = f"smoke_{uuid.uuid4().hex[:8]}"
-    storage = PgRcteGraphStorage(
+    storage = PGTableGraphStorage(
         namespace="graph",
         workspace=workspace,
         global_config={"max_graph_nodes": 1000},
@@ -151,8 +151,8 @@ async def test_upsert_and_get_edge(store):
 
 
 @pytest.mark.asyncio
-async def test_upsert_edge_skips_missing_endpoint(store):
-    """Missing endpoint edges should not create dangling edges or raise FK errors."""
+async def test_upsert_edge_creates_missing_endpoint_nodes(store):
+    """Missing endpoint edges follow NetworkX add_edge semantics."""
     await store.upsert_node("OnlyA", _node("OnlyA"))
 
     await store.upsert_edge("OnlyA", "MissingB", _edge())
@@ -163,9 +163,12 @@ async def test_upsert_edge_skips_missing_endpoint(store):
         ]
     )
 
-    assert await store.has_edge("OnlyA", "MissingB") is False
-    assert await store.has_edge("OnlyA", "MissingC") is False
-    assert await store.has_edge("MissingD", "OnlyA") is False
+    assert await store.has_edge("OnlyA", "MissingB") is True
+    assert await store.has_edge("OnlyA", "MissingC") is True
+    assert await store.has_edge("MissingD", "OnlyA") is True
+    assert await store.get_node("MissingB") == {"entity_id": "MissingB"}
+    assert await store.get_node("MissingC") == {"entity_id": "MissingC"}
+    assert await store.get_node("MissingD") == {"entity_id": "MissingD"}
 
 
 @pytest.mark.asyncio
@@ -241,6 +244,15 @@ async def test_node_degree(store):
 
 
 @pytest.mark.asyncio
+async def test_self_loop_degree_matches_networkx(store):
+    await store.upsert_edge("Loop", "Loop", _edge())
+
+    assert await store.node_degree("Loop") == 2
+    assert (await store.node_degrees_batch(["Loop"]))["Loop"] == 2
+    assert await store.get_popular_labels(limit=1) == ["Loop"]
+
+
+@pytest.mark.asyncio
 async def test_get_knowledge_graph_bfs(store):
     """Exercise the WITH RECURSIVE BFS path against a real PostgreSQL instance.
 
@@ -261,6 +273,10 @@ async def test_get_knowledge_graph_bfs(store):
     assert "C" in node_ids
     assert "D" not in node_ids, "D is 3 hops from A; must not appear at max_depth=2"
     assert kg.is_truncated is False
+
+    edge = next(e for e in kg.edges if {e.source, e.target} == {"A", "B"})
+    assert edge.id == "A-B"
+    assert edge.type == "DIRECTED"
 
 
 @pytest.mark.asyncio
@@ -301,3 +317,114 @@ async def test_jsonb_unicode_and_special_chars(store):
     row = await store.get_node("Special")
     assert row is not None
     assert row["description"] == "O'Brien's café — 日本語 <script>"
+
+
+# ---------------------------------------------------------------------------
+# get_knowledge_graph — frontier-capped BFS traversal (algorithm change)
+#
+# Exercise the iterative frontier BFS that replaced the UNION ALL recursive CTE:
+# per-depth correctness, cyclic-graph termination, bounded blast radius on dense
+# graphs (regression for the CTE's path explosion), and truncation boundary.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_depth_levels(store):
+    """Frontier BFS returns exactly the nodes reachable within max_depth hops."""
+    chain = ["n0", "n1", "n2", "n3", "n4"]
+    for x in chain:
+        await store.upsert_node(x, _node(x))
+    for i in range(len(chain) - 1):
+        await store.upsert_edge(chain[i], chain[i + 1], _edge())
+
+    for depth, expected in [
+        (1, {"n0", "n1"}),
+        (2, {"n0", "n1", "n2"}),
+        (3, {"n0", "n1", "n2", "n3"}),
+    ]:
+        kg = await store.get_knowledge_graph("n0", max_depth=depth, max_nodes=100)
+        assert {n.id for n in kg.nodes} == expected, f"depth={depth}"
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_cyclic_terminates(store):
+    """A cycle must not loop forever; each node is visited exactly once."""
+    ring = ["c0", "c1", "c2", "c3", "c4"]
+    for x in ring:
+        await store.upsert_node(x, _node(x))
+    for i in range(len(ring)):
+        await store.upsert_edge(ring[i], ring[(i + 1) % len(ring)], _edge())
+
+    kg = await store.get_knowledge_graph("c0", max_depth=10, max_nodes=100)
+    ids = [n.id for n in kg.nodes]
+    assert set(ids) == set(ring)
+    assert len(ids) == len(ring)  # no duplicates despite cyclic paths
+    assert kg.is_truncated is False
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_dense_blast_radius_bounded(store):
+    """On a complete graph, frontier BFS stays bounded by max_nodes and finishes
+    fast. The prior UNION ALL recursive CTE re-materialized shared nodes once per
+    simple path and would explode here — regression guard for the traversal
+    change."""
+    n = 60
+    ks = [f"k{i}" for i in range(n)]
+    await store.upsert_nodes_batch([(x, _node(x)) for x in ks])
+    await store.upsert_edges_batch(
+        [(ks[i], ks[j], _edge()) for i in range(n) for j in range(i + 1, n)]
+    )
+
+    started = time.perf_counter()
+    kg = await store.get_knowledge_graph("k0", max_depth=3, max_nodes=10)
+    elapsed = time.perf_counter() - started
+
+    assert len(kg.nodes) == 10
+    assert kg.is_truncated is True
+    # A path-exploding traversal would not finish quickly on K60 (1770 edges).
+    assert elapsed < 5.0, f"frontier BFS too slow on dense graph: {elapsed:.2f}s"
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_truncation_boundary(store):
+    """is_truncated reflects whether reachable nodes exceed max_nodes, and the
+    seed is always retained at position 0."""
+    star = [f"s{i}" for i in range(6)]
+    for x in star:
+        await store.upsert_node(x, _node(x))
+    for x in star[1:]:
+        await store.upsert_edge("s0", x, _edge())  # hub s0 + 5 spokes = 6 nodes
+
+    kg_full = await store.get_knowledge_graph("s0", max_depth=1, max_nodes=100)
+    assert len(kg_full.nodes) == 6
+    assert kg_full.is_truncated is False
+
+    kg_trunc = await store.get_knowledge_graph("s0", max_depth=1, max_nodes=3)
+    assert len(kg_trunc.nodes) == 3
+    assert kg_trunc.is_truncated is True
+    assert kg_trunc.nodes[0].id == "s0"  # seed pinned even under truncation
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_truncation_prefers_high_degree(store):
+    """When a depth level overflows max_nodes, frontier BFS must keep the
+    highest-degree neighbours (degree-priority), not whatever order the DB
+    returned. Matches NetworkX's degree-ordered BFS and the prior recursive CTE
+    that degree-sorted the full reachable set before cutting."""
+    for x in ("S", "hi", "mid", "lo"):
+        await store.upsert_node(x, _node(x))
+    # depth-1 spokes off the seed
+    await store.upsert_edge("S", "hi", _edge())
+    await store.upsert_edge("S", "mid", _edge())
+    await store.upsert_edge("S", "lo", _edge())
+    # boost degrees: hi -> 6, mid -> 3, lo -> 1 (extra endpoints are depth 2)
+    for i in range(5):
+        await store.upsert_edge("hi", f"hx{i}", _edge())
+    for i in range(2):
+        await store.upsert_edge("mid", f"mx{i}", _edge())
+
+    # budget = seed + 2 neighbours: must retain hi (6) and mid (3), drop lo (1).
+    kg = await store.get_knowledge_graph("S", max_depth=1, max_nodes=3)
+    ids = {n.id for n in kg.nodes}
+    assert ids == {"S", "hi", "mid"}, f"degree-priority truncation failed: {ids}"
+    assert kg.is_truncated is True

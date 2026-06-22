@@ -1,22 +1,26 @@
-"""Offline unit tests for PgRcteGraphStorage.
+"""Offline unit tests for PGTableGraphStorage.
 
 Uses AsyncMock to patch _fetch/_fetchrow/_execute so no real PostgreSQL
 connection is required. Marked @offline so these run in CI.
 """
 
 import json
+from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 pytestmark = pytest.mark.offline
 
+GRAPH_NAMESPACE = "chunk_entity_relation"
 
-def make_storage(global_config=None):
-    """Build a PgRcteGraphStorage with a mocked db."""
-    from lightrag.kg.pg_rcte_impl import PgRcteGraphStorage
 
-    storage = object.__new__(PgRcteGraphStorage)
+def make_storage(global_config=None, namespace=GRAPH_NAMESPACE):
+    """Build a PGTableGraphStorage with a mocked db."""
+    from lightrag.kg.pgtable_impl import PGTableGraphStorage
+
+    storage = object.__new__(PGTableGraphStorage)
     storage.workspace = "test"
+    storage.namespace = namespace
     storage.global_config = global_config or {}
     mock_db = MagicMock()
     storage.db = mock_db
@@ -109,31 +113,152 @@ def test_jsonb_roundtrip():
 
 def test_ddl_adds_cascading_edge_foreign_keys():
     """Edges must not survive after endpoint nodes are deleted."""
-    from lightrag.kg.pg_rcte_impl import _DDL
+    from lightrag.kg.pgtable_impl import _DDL
 
+    assert "PRIMARY KEY (workspace, namespace, id)" in _DDL
+    assert "PRIMARY KEY (workspace, namespace, src_id, tgt_id)" in _DDL
     assert "fk_lightrag_graph_edges_src" in _DDL
     assert "fk_lightrag_graph_edges_tgt" in _DDL
+    assert "FOREIGN KEY (workspace, namespace, src_id)" in _DDL
+    assert "REFERENCES lightrag_graph_nodes (workspace, namespace, id)" in _DDL
     assert "ON DELETE CASCADE" in _DDL
     assert "DELETE FROM lightrag_graph_edges e" in _DDL
+    assert "n.namespace = e.namespace" in _DDL
+
+
+def test_postgres_impl_loads_pgvector_lazily_for_vector_connections():
+    """PGTable imports postgres_impl but must not trigger pgvector installation."""
+    src = (
+        Path(__file__).parents[3] / "lightrag" / "kg" / "postgres_impl.py"
+    ).read_text()
+    module_preamble = src.split("class PostgreSQLDB", 1)[0]
+
+    assert "pgvector.asyncpg" not in module_preamble
+    assert 'pm.install("pgvector")' not in module_preamble
+    assert "if self.enable_vector:" in src
+    assert 'pm.install("pgvector")' in src
+    assert "from pgvector.asyncpg import register_vector" in src
 
 
 # ---------------------------------------------------------------------------
-# entity_id validation
+# entity_id normalization
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_upsert_node_raises_without_entity_id():
+    """Match PGGraphStorage: a node payload missing entity_id is rejected, not
+    silently patched, so malformed callers surface immediately."""
     storage = make_storage()
     with pytest.raises(ValueError, match="entity_id"):
-        await storage.upsert_node("node1", {"name": "Alice"})  # missing entity_id
+        await storage.upsert_node("node1", {"name": "Alice"})
 
 
 @pytest.mark.asyncio
-async def test_upsert_node_succeeds_with_entity_id():
+async def test_upsert_node_overwrites_mismatched_entity_id():
     storage = make_storage()
-    with patch.object(storage, "_execute", new=AsyncMock()):
-        await storage.upsert_node("node1", {"entity_id": "node1", "name": "Alice"})
+    execute = AsyncMock()
+
+    with patch.object(storage, "_execute", new=execute):
+        await storage.upsert_node("node1", {"entity_id": "wrong", "name": "Alice"})
+
+    *_, props = execute.call_args.args
+    assert json.loads(props)["entity_id"] == "node1"
+
+
+# ---------------------------------------------------------------------------
+# node upsert — merge (not replace) semantics
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_node_merges_properties():
+    """Node upsert must MERGE properties (jsonb ||), not replace, matching
+    NetworkXStorage.add_node and PGGraphStorage SET n += so omitted keys
+    survive a partial update."""
+    storage = make_storage()
+    execute = AsyncMock()
+
+    with patch.object(storage, "_execute", new=execute):
+        await storage.upsert_node("n1", {"entity_id": "n1", "entity_type": "person"})
+
+    sql, *_, props = execute.call_args.args
+    assert "lightrag_graph_nodes.properties || EXCLUDED.properties" in sql
+    assert "= EXCLUDED.properties," not in sql  # not wholesale replace
+    assert json.loads(props)["entity_id"] == "n1"
+
+
+@pytest.mark.asyncio
+async def test_upsert_nodes_batch_merges_properties():
+    storage = make_storage()
+    execute = AsyncMock()
+
+    with patch.object(storage, "_execute", new=execute):
+        await storage.upsert_nodes_batch(
+            [("n1", {"entity_id": "n1", "entity_type": "person"})]
+        )
+
+    sql, *_ = execute.call_args.args
+    assert "lightrag_graph_nodes.properties || EXCLUDED.properties" in sql
+    assert "= EXCLUDED.properties," not in sql
+
+
+@pytest.mark.asyncio
+async def test_upsert_nodes_batch_last_write_wins_on_duplicate():
+    """A node_id appearing twice in one batch keeps only the LAST payload (not a
+    merge of both), matching PGGraphStorage.upsert_nodes_batch and the shared
+    batch-ordering tests. The surviving payload is still jsonb-merged with any
+    pre-existing DB row by ON CONFLICT — but the discarded earlier batch payload
+    does not contribute."""
+    storage = make_storage()
+    execute = AsyncMock()
+
+    with patch.object(storage, "_execute", new=execute):
+        await storage.upsert_nodes_batch(
+            [
+                ("n", {"entity_id": "n", "a": "1"}),
+                ("n", {"entity_id": "n", "b": "2"}),
+            ]
+        )
+
+    *_, ids, props = execute.call_args.args
+    assert ids == ["n"]
+    last = json.loads(props[0])
+    assert "a" not in last  # earlier batch payload discarded (last-write-wins)
+    assert last["b"] == "2"
+    assert last["entity_id"] == "n"
+
+
+# ---------------------------------------------------------------------------
+# _execute — transient write-error retry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_retries_transient_write_error():
+    """deadlock/serialization/lock/cancel are query-level transient errors that
+    PostgreSQLDB._run_with_retry does not cover; _execute must retry them."""
+    import asyncpg
+
+    storage = make_storage()
+    storage.db.execute = AsyncMock(
+        side_effect=[
+            asyncpg.exceptions.DeadlockDetectedError("deadlock"),
+            asyncpg.exceptions.SerializationError("serialize"),
+            None,
+        ]
+    )
+    await storage._execute("INSERT ...", "a")
+    assert storage.db.execute.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_does_not_retry_non_transient_error():
+    storage = make_storage()
+    storage.db.execute = AsyncMock(side_effect=ValueError("boom"))
+    with pytest.raises(ValueError):
+        await storage._execute("INSERT ...", "a")
+    assert storage.db.execute.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -142,22 +267,24 @@ async def test_upsert_node_succeeds_with_entity_id():
 
 
 @pytest.mark.asyncio
-async def test_upsert_edge_skips_missing_endpoints_in_sql():
-    """Missing endpoint edges should be skipped instead of violating FK constraints."""
+async def test_upsert_edge_creates_missing_endpoints_in_sql():
+    """Missing endpoint edges follow NetworkX add_edge semantics."""
     storage = make_storage()
     execute = AsyncMock()
 
     with patch.object(storage, "_execute", new=execute):
         await storage.upsert_edge("A", "B", {"weight": 1.0})
 
-    sql, workspace, src, tgt, props = execute.call_args.args
+    sql, workspace, namespace, src, tgt, props, endpoint_ids = execute.call_args.args
     assert workspace == "test"
+    assert namespace == GRAPH_NAMESPACE
     assert src == "A"
     assert tgt == "B"
     assert json.loads(props)["weight"] == 1.0
-    assert "WHERE EXISTS" in sql
-    assert "workspace = $1 AND id = $2" in sql
-    assert "workspace = $1 AND id = $3" in sql
+    assert endpoint_ids == ["A", "B"]
+    assert "jsonb_build_object('entity_id', u.id)" in sql
+    assert "DO NOTHING" in sql
+    assert "WHERE EXISTS" not in sql
 
 
 # ---------------------------------------------------------------------------
@@ -175,18 +302,18 @@ async def test_get_knowledge_graph_uses_global_config_when_max_nodes_none():
 
 @pytest.mark.asyncio
 async def test_get_knowledge_graph_wildcard_uses_flat_limited_query():
-    """Wildcard should bound DB work instead of running recursive traversal."""
+    """Wildcard should avoid recursive traversal."""
     storage = make_storage(global_config={"max_graph_nodes": 100})
     fetch = AsyncMock(return_value=[])
 
     with patch.object(storage, "_fetch", new=fetch):
         await storage.get_knowledge_graph("*", max_nodes=7)
 
-    sql, workspace, fetch_limit = fetch.call_args.args
+    sql, workspace, namespace = fetch.call_args.args
     assert workspace == "test"
-    assert fetch_limit == 8
+    assert namespace == GRAPH_NAMESPACE
     assert "WITH RECURSIVE" not in sql
-    assert "LIMIT $2" in sql
+    assert "LIMIT $3" not in sql
 
 
 @pytest.mark.asyncio
@@ -245,15 +372,28 @@ async def test_get_knowledge_graph_seed_never_dropped_on_truncation():
     """
     storage = make_storage(global_config={"max_graph_nodes": 100})
     # BFS returns seed "low_seed" (degree 1) + two high-degree neighbors.
-    rows = [
-        {"id": "low_seed", "properties": json.dumps({"entity_id": "low_seed"})},
-        {"id": "big_hub_1", "properties": json.dumps({"entity_id": "big_hub_1"})},
-        {"id": "big_hub_2", "properties": json.dumps({"entity_id": "big_hub_2"})},
+    bfs_rows = [
+        {
+            "id": "low_seed",
+            "properties": json.dumps({"entity_id": "low_seed"}),
+            "depth": 0,
+        },
+        {
+            "id": "big_hub_1",
+            "properties": json.dumps({"entity_id": "big_hub_1"}),
+            "depth": 1,
+        },
+        {
+            "id": "big_hub_2",
+            "properties": json.dumps({"entity_id": "big_hub_2"}),
+            "depth": 1,
+        },
     ]
     degrees = {"low_seed": 1, "big_hub_1": 99, "big_hub_2": 97}
 
     with (
-        patch.object(storage, "_fetch", new=AsyncMock(side_effect=[rows, []])),
+        patch.object(storage, "_bfs_frontier", new=AsyncMock(return_value=bfs_rows)),
+        patch.object(storage, "_fetch", new=AsyncMock(return_value=[])),  # edge fetch
         patch.object(
             storage, "node_degrees_batch", new=AsyncMock(return_value=degrees)
         ),
@@ -308,7 +448,8 @@ async def test_get_knowledge_graph_bfs_depth_beats_degree_on_truncation():
     ]
 
     with (
-        patch.object(storage, "_fetch", new=AsyncMock(side_effect=[rows, edge_rows])),
+        patch.object(storage, "_bfs_frontier", new=AsyncMock(return_value=rows)),
+        patch.object(storage, "_fetch", new=AsyncMock(return_value=edge_rows)),
         patch.object(
             storage, "node_degrees_batch", new=AsyncMock(return_value=degrees)
         ),
@@ -342,24 +483,11 @@ async def test_search_labels_strips_and_relevance_orders():
         assert await storage.search_labels("   ") == []
         await storage.search_labels(" Foo ", limit=7)
 
-    (
-        sql,
-        workspace,
-        contains,
-        exact,
-        prefix,
-        space_boundary,
-        underscore_boundary,
-        limit,
-    ) = fetch.call_args.args
+    sql, workspace, namespace, contains = fetch.call_args.args
     assert workspace == "test"
+    assert namespace == GRAPH_NAMESPACE
     assert contains == "%foo%"
-    assert exact == "foo"
-    assert prefix == "foo%"
-    assert space_boundary == "% foo%"
-    assert underscore_boundary == "%\\_foo%"
-    assert limit == 7
-    assert "ORDER BY" in sql
+    assert "ORDER BY" not in sql
     assert "ESCAPE '\\'" in sql
 
 
@@ -371,21 +499,29 @@ async def test_search_labels_escapes_like_wildcards():
     with patch.object(storage, "_fetch", new=fetch):
         await storage.search_labels(r"a_%\b")
 
-    (
-        _sql,
-        _workspace,
-        contains,
-        exact,
-        prefix,
-        space_boundary,
-        underscore_boundary,
-        _limit,
-    ) = fetch.call_args.args
+    _sql, _workspace, namespace, contains = fetch.call_args.args
+    assert namespace == GRAPH_NAMESPACE
     assert contains == r"%a\_\%\\b%"
-    assert exact == r"a_%\b"
-    assert prefix == r"a\_\%\\b%"
-    assert space_boundary == r"% a\_\%\\b%"
-    assert underscore_boundary == r"%\_a\_\%\\b%"
+
+
+@pytest.mark.asyncio
+async def test_search_labels_relevance_sorted_in_python():
+    storage = make_storage()
+    with patch.object(
+        storage,
+        "_fetch",
+        new=AsyncMock(
+            return_value=[
+                {"id": "xx_foo"},
+                {"id": "foo"},
+                {"id": "bar foo"},
+                {"id": "foobar"},
+            ]
+        ),
+    ):
+        result = await storage.search_labels("foo", limit=3)
+
+    assert result == ["foo", "foobar", "xx_foo"]
 
 
 # ---------------------------------------------------------------------------
@@ -395,38 +531,111 @@ async def test_search_labels_escapes_like_wildcards():
 
 @pytest.mark.asyncio
 async def test_self_loop_degree_consistency():
-    """node_degree and node_degrees_batch must agree for self-loop nodes."""
+    """node_degree SQL must count self-loops like NetworkX degree: two."""
     storage = make_storage()
+    fetchval = AsyncMock(return_value=2)
 
-    async def fake_node_degree(node_id):
-        # Self-loop: src_id == tgt_id == node_id, count = 1
-        return 1
+    with patch.object(storage, "_fetchval", new=fetchval):
+        assert await storage.node_degree("A") == 2
 
-    async def fake_node_degrees_batch(node_ids):
-        return {nid: 1 for nid in node_ids}
-
-    with (
-        patch.object(storage, "node_degree", new=fake_node_degree),
-        patch.object(storage, "node_degrees_batch", new=fake_node_degrees_batch),
-    ):
-        single = await storage.node_degree("A")
-        batch = await storage.node_degrees_batch(["A"])
-    assert single == batch["A"]
+    sql, workspace, namespace, node_id = fetchval.call_args.args
+    assert workspace == "test"
+    assert namespace == GRAPH_NAMESPACE
+    assert node_id == "A"
+    assert "CASE WHEN src_id = $3 THEN 1 ELSE 0 END" in sql
+    assert "CASE WHEN tgt_id = $3 THEN 1 ELSE 0 END" in sql
 
 
 @pytest.mark.asyncio
-async def test_get_popular_labels_counts_self_loop_once():
+async def test_get_popular_labels_counts_self_loop_twice():
     storage = make_storage()
-    fetch = AsyncMock(return_value=[])
+    fetch = AsyncMock(return_value=[{"id": "A", "degree": 2}])
 
     with patch.object(storage, "_fetch", new=fetch):
-        await storage.get_popular_labels(limit=5)
+        labels = await storage.get_popular_labels(limit=5)
 
-    sql, workspace, limit = fetch.call_args.args
+    sql, workspace, namespace = fetch.call_args.args
     assert workspace == "test"
-    assert limit == 5
-    assert "src_id <> tgt_id" in sql
-    assert "ORDER BY degree DESC, id ASC" in sql
+    assert namespace == GRAPH_NAMESPACE
+    assert labels == ["A"]
+    assert "src_id <> tgt_id" not in sql
+    assert "ORDER BY" not in sql
+
+
+@pytest.mark.asyncio
+async def test_get_popular_labels_includes_isolated_nodes():
+    """Isolated (degree 0) nodes must rank too, matching NetworkX which counts
+    every node via dict(graph.degree()). Ranking from the edge table alone
+    would silently drop them."""
+    storage = make_storage()
+    fetch = AsyncMock(
+        return_value=[{"id": "hub", "degree": 3}, {"id": "iso", "degree": 0}]
+    )
+
+    with patch.object(storage, "_fetch", new=fetch):
+        labels = await storage.get_popular_labels(limit=5)
+
+    sql, *_ = fetch.call_args.args
+    assert "lightrag_graph_nodes" in sql  # ranks from node table, not edges alone
+    assert "LEFT JOIN" in sql
+    assert labels == ["hub", "iso"]  # degree-0 node retained, ranked last
+
+
+def test_search_score_bonus_only_on_contains_branch():
+    """_search_score must mirror NetworkXStorage.search_labels: the
+    word-boundary +50 bonus applies ONLY to the contains branch, never to
+    exact or prefix matches."""
+    score = make_storage()._search_score
+    assert score("foo", "foo") == 1000  # exact
+    assert score("foobar", "foo") == 500  # prefix, no bonus
+    # Regression: prefix match that ALSO contains a boundary occurrence must
+    # stay 500 (the bonus previously leaked into the prefix branch -> 550).
+    assert score("foo foo", "foo") == 500
+    # Contains branch keeps the boundary bonus.
+    assert score("x_foo", "foo") == 100 - len("x_foo") + 50
+    assert score("xxfoo", "foo") == 100 - len("xxfoo")
+
+
+# ---------------------------------------------------------------------------
+# legacy edge normalization — idempotency guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_normalize_legacy_edges_skips_when_already_canonical():
+    """Once all edges are canonical (no src_id > tgt_id row), the migration must
+    short-circuit on a cheap EXISTS guard without scanning/regrouping the whole
+    edge table on every initialize(). The guard compares with COLLATE "C" to
+    match the Python min/max canonical order."""
+    storage = make_storage()
+    fetchval = AsyncMock(return_value=False)
+    fetch = AsyncMock()
+
+    with (
+        patch.object(storage, "_fetchval", new=fetchval),
+        patch.object(storage, "_fetch", new=fetch),
+    ):
+        await storage._normalize_legacy_edges()
+
+    guard_sql, *_ = fetchval.call_args.args
+    assert 'src_id COLLATE "C" > tgt_id COLLATE "C"' in guard_sql
+    fetch.assert_not_called()  # no full scan / Python regroup on the fast path
+
+
+@pytest.mark.asyncio
+async def test_normalize_legacy_edges_scans_when_denormalized_present():
+    """When a non-canonical row exists, the migration proceeds to the full
+    scan-and-rewrite path."""
+    storage = make_storage()
+    fetchval = AsyncMock(return_value=True)
+    run_retry = AsyncMock()
+    storage.db._run_with_retry = run_retry
+
+    with patch.object(storage, "_fetchval", new=fetchval):
+        await storage._normalize_legacy_edges()
+
+    # guard True -> migration runs inside a single advisory-locked transaction
+    run_retry.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
