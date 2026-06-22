@@ -58,7 +58,12 @@ ollama_server_infos = OllamaServerInfos()
 DEFAULT_TOKEN_SECRET = "lightrag-jwt-default-secret-key!"
 NO_PREFIX_SENTINEL = "NO_PREFIX"
 PROVIDER_ASYMMETRIC_EMBEDDING_BINDINGS = {"gemini", "jina", "voyageai"}
-PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS = {"azure_openai", "ollama", "openai"}
+PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS = {
+    "azure_openai",
+    "lmstudio",
+    "ollama",
+    "openai",
+}
 
 
 class DefaultRAGStorageConfig:
@@ -80,6 +85,7 @@ def get_default_host(binding_type: str) -> str:
         # Let google-genai pick the correct default endpoint/version unless the
         # user explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
         "gemini": os.getenv("LLM_BINDING_HOST", "DEFAULT_GEMINI_ENDPOINT"),
+        "lmstudio": os.getenv("LLM_BINDING_HOST", "http://localhost:1234/v1"),
     }
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
@@ -403,6 +409,7 @@ def parse_args() -> argparse.Namespace:
             "ollama",
             "openai",
             "openai-ollama",
+            "lmstudio",
             "azure_openai",
             "bedrock",
             "gemini",
@@ -417,6 +424,7 @@ def parse_args() -> argparse.Namespace:
             "lollms",
             "ollama",
             "openai",
+            "lmstudio",
             "azure_openai",
             "bedrock",
             "jina",
@@ -454,7 +462,7 @@ def parse_args() -> argparse.Namespace:
     # Add LLM binding options based on determined value
     if llm_binding_value == "ollama":
         OllamaLLMOptions.add_args(parser)
-    elif llm_binding_value in ["openai", "azure_openai"]:
+    elif llm_binding_value in ["openai", "azure_openai", "lmstudio"]:
         OpenAILLMOptions.add_args(parser)
     elif llm_binding_value == "gemini":
         GeminiLLMOptions.add_args(parser)
@@ -531,10 +539,20 @@ def parse_args() -> argparse.Namespace:
     args.aws_session_token = get_env_value("AWS_SESSION_TOKEN", None, special_none=True)
 
     # Inject model configuration
-    args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
+    default_llm_model = (
+        "any-available"
+        if args.llm_binding == "lmstudio"
+        else "mistral-nemo:latest"
+    )
+    args.llm_model = get_env_value("LLM_MODEL", default_llm_model)
+    default_embedding_model = (
+        "any-available" if args.embedding_binding == "lmstudio" else None
+    )
     # EMBEDDING_MODEL defaults to None - each binding will use its own default model
     # e.g., OpenAI uses "text-embedding-3-small", Jina uses "jina-embeddings-v4"
-    args.embedding_model = get_env_value("EMBEDDING_MODEL", None, special_none=True)
+    args.embedding_model = get_env_value(
+        "EMBEDDING_MODEL", default_embedding_model, special_none=True
+    )
     # EMBEDDING_DIM defaults to None - each binding will use its own default dimension
     # Value is inherited from provider defaults via wrap_embedding_func_with_attrs decorator
     args.embedding_dim = get_env_value("EMBEDDING_DIM", None, int, special_none=True)
@@ -632,7 +650,7 @@ def parse_args() -> argparse.Namespace:
                 f"VLM_PROCESS_ENABLE=true but the effective VLM binding "
                 f"'{effective_vlm_binding}' does not support image inputs. "
                 "Configure VLM_LLM_BINDING (or LLM_BINDING) to one of: "
-                "openai, azure_openai, gemini, bedrock, ollama."
+                "openai, lmstudio, azure_openai, gemini, bedrock, ollama."
             )
 
     # Add environment variables that were previously read directly

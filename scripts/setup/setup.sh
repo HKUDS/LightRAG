@@ -1799,6 +1799,36 @@ provider_default_or_existing() {
   printf '%s' "$default_value"
 }
 
+is_lmstudio_auto_model_value() {
+  local value="${1:-}"
+  value="${value// }"
+  case "${value,,}" in
+    ""|local-model|local_model|any-available|any_available|auto|any|\*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+model_default_for_binding() {
+  local binding="$1"
+  local existing_binding="${2:-}"
+  local existing_value="${3:-}"
+  local default_value="${4:-}"
+
+  if [[ "$binding" == "lmstudio" ]]; then
+    if [[ "$binding" == "$existing_binding" && -n "$existing_value" ]] \
+      && ! is_lmstudio_auto_model_value "$existing_value"; then
+      printf '%s' "$existing_value"
+      return 0
+    fi
+    printf '%s' "$default_value"
+    return 0
+  fi
+
+  provider_default_or_existing "$binding" "$existing_binding" "$existing_value" "$default_value"
+}
+
 default_llm_model_for_binding() {
   local binding="$1"
 
@@ -1808,6 +1838,9 @@ default_llm_model_for_binding() {
       ;;
     ollama|lollms|openai-ollama)
       printf 'mistral-nemo:latest'
+      ;;
+    lmstudio)
+      printf 'any-available'
       ;;
     gemini)
       printf 'gemini-flash-latest'
@@ -1828,8 +1861,8 @@ default_embedding_model_for_binding() {
     openai|azure_openai)
       printf 'text-embedding-3-large'
       ;;
-    ollama)
-      printf 'bge-m3:latest'
+    ollama|lmstudio)
+      printf 'any-available'
       ;;
     jina)
       printf 'jina-embeddings-v4'
@@ -1859,6 +1892,9 @@ default_embedding_dim_for_binding() {
     ollama|bedrock|lollms)
       printf '1024'
       ;;
+    lmstudio)
+      printf ''
+      ;;
     jina)
       printf '2048'
       ;;
@@ -1872,13 +1908,16 @@ default_embedding_dim_for_binding() {
 }
 
 collect_llm_config() {
-  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lollms" "gemini" "bedrock")
+  local options=("openai" "azure_openai" "ollama" "openai-ollama" "lmstudio" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
   local binding model model_default host host_default api_key
 
   binding="$(prompt_choice "LLM provider" "$current_binding" "${options[@]}")"
-  model_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_MODEL]:-}" "$(default_llm_model_for_binding "$binding")")"
-  model="$(prompt_with_default "LLM model" "$model_default")"
+  model_default="$(model_default_for_binding "$binding" "$current_binding" "${ENV_VALUES[LLM_MODEL]:-}" "$(default_llm_model_for_binding "$binding")")"
+  model="$(prompt_with_default "LLM model (blank = any-available)" "$model_default")"
+  if [[ "$binding" == "lmstudio" && -z "${model// }" ]]; then
+    model="any-available"
+  fi
 
   case "$binding" in
     ollama)
@@ -1890,6 +1929,11 @@ collect_llm_config() {
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "$(default_loopback_url 11434 "/v1")")"
       host="$(prompt_with_default "OpenAI-compatible Ollama endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "LLM API key: " "${ENV_VALUES[LLM_BINDING_API_KEY]:-}" validate_api_key openai)"
+      ;;
+    lmstudio)
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "$(default_loopback_url 1234 "/v1")")"
+      host="$(prompt_with_default "LM Studio endpoint" "$host_default")"
+      api_key="$(prompt_with_default "LM Studio API key" "${ENV_VALUES[LLM_BINDING_API_KEY]:-lm-studio}")"
       ;;
     lollms)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "http://localhost:9600")"
@@ -1934,7 +1978,7 @@ collect_llm_config() {
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "bedrock")
+  local options=("openai" "azure_openai" "ollama" "lmstudio" "jina" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 
@@ -1943,13 +1987,23 @@ collect_embedding_config() {
     if [[ "$current_binding" != "ollama" ]]; then
       log_info "openai-ollama uses Ollama embeddings. Forcing embedding provider to ollama."
     fi
+  elif [[ "${ENV_VALUES[LLM_BINDING]:-}" == "lmstudio" && "$current_binding" != "lmstudio" ]]; then
+    binding="lmstudio"
+    log_info "LM Studio LLM selected. Defaulting embedding provider to lmstudio."
   else
     binding="$(prompt_choice "Embedding provider" "$current_binding" "${options[@]}")"
   fi
-  model_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_MODEL]:-}" "$(default_embedding_model_for_binding "$binding")")"
+  model_default="$(model_default_for_binding "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_MODEL]:-}" "$(default_embedding_model_for_binding "$binding")")"
   dim_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_DIM]:-}" "$(default_embedding_dim_for_binding "$binding")")"
-  model="$(prompt_with_default "Embedding model" "$model_default")"
-  dim="$(prompt_with_default "Embedding dimension" "$dim_default")"
+  model="$(prompt_with_default "Embedding model (blank = any-available)" "$model_default")"
+  if [[ "$binding" == "lmstudio" && -z "${model// }" ]]; then
+    model="any-available"
+  fi
+  if [[ "$binding" == "lmstudio" ]]; then
+    dim="$(prompt_with_default "Embedding dimension (blank = auto-probe)" "$dim_default")"
+  else
+    dim="$(prompt_with_default "Embedding dimension" "$dim_default")"
+  fi
 
   local llm_host_fallback="" llm_api_key_default=""
   if [[ "$binding" == "${ENV_VALUES[LLM_BINDING]:-}" ]]; then
@@ -1967,6 +2021,11 @@ collect_embedding_config() {
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-http://localhost:9600}")"
       host="$(prompt_with_default "LoLLMs embedding host" "$host_default")"
       api_key=""
+      ;;
+    lmstudio)
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-$(default_loopback_url 1234 "/v1")}")"
+      host="$(prompt_with_default "LM Studio embedding endpoint" "$host_default")"
+      api_key="$(prompt_with_default "LM Studio API key" "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-${llm_api_key_default:-lm-studio}}")"
       ;;
     azure_openai)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://example.openai.azure.com/}")"
@@ -1997,7 +2056,11 @@ collect_embedding_config() {
 
   ENV_VALUES["EMBEDDING_BINDING"]="$binding"
   ENV_VALUES["EMBEDDING_MODEL"]="$model"
-  ENV_VALUES["EMBEDDING_DIM"]="$dim"
+  if [[ "$binding" == "lmstudio" && -z "${dim// }" ]]; then
+    unset 'ENV_VALUES[EMBEDDING_DIM]'
+  else
+    ENV_VALUES["EMBEDDING_DIM"]="$dim"
+  fi
   ENV_VALUES["EMBEDDING_BINDING_HOST"]="$host"
   store_optional_env_value "EMBEDDING_BINDING_API_KEY" "$api_key"
   # User chose a remote provider — clear the Docker deployment marker.

@@ -552,7 +552,7 @@ class LLMConfigCache:
         self.bedrock_llm_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
-        if args.llm_binding in ["openai", "azure_openai"]:
+        if args.llm_binding in ["openai", "azure_openai", "lmstudio"]:
             from lightrag.llm.binding_options import OpenAILLMOptions
 
             self.openai_llm_options = OpenAILLMOptions.options_dict(args)
@@ -622,6 +622,7 @@ _PROVIDER_LOG_LABELS = {
     "azure_openai": "Azure OpenAI",
     "bedrock": "Bedrock",
     "gemini": "Gemini",
+    "lmstudio": "LM Studio",
     "lollms": "Lollms",
     "ollama": "Ollama",
     "openai": "OpenAI",
@@ -653,6 +654,8 @@ def create_optimized_embedding_function(
       (e.g., jina-embeddings-v4 with 2048 dims, text-embedding-3-small with 1536 dims)
     - When EMBEDDING_MODEL is set to a custom model: User MUST also set EMBEDDING_DIM
       to match the custom model's dimension (e.g., for jina-embeddings-v3, set EMBEDDING_DIM=1024)
+    - When EMBEDDING_BINDING=lmstudio and EMBEDDING_DIM is unset, dimension is probed once
+      at startup via a test embedding against the resolved LM Studio model.
 
     Note: The embedding_dim parameter is automatically injected by EmbeddingFunc wrapper
     when send_dimensions=True (enabled for Jina and Gemini bindings). This wrapper calls
@@ -671,6 +674,10 @@ def create_optimized_embedding_function(
             from lightrag.llm.openai import openai_embed
 
             provider_func = openai_embed
+        elif binding == "lmstudio":
+            from lightrag.llm.lmstudio import lmstudio_embed
+
+            provider_func = lmstudio_embed
         elif binding == "ollama":
             from lightrag.llm.ollama import ollama_embed
 
@@ -712,6 +719,25 @@ def create_optimized_embedding_function(
             )
     except ImportError as e:
         logger.warning(f"Could not import provider function for {binding}: {e}")
+
+    if binding == "lmstudio":
+        from lightrag.llm.lmstudio import (
+            is_auto_embedding_dim,
+            probe_lmstudio_embedding_dim,
+        )
+
+        if is_auto_embedding_dim(args.embedding_dim):
+            import asyncio
+
+            probed_dim = asyncio.run(
+                probe_lmstudio_embedding_dim(
+                    model=model,
+                    base_url=host,
+                    api_key=api_key,
+                )
+            )
+            args.embedding_dim = probed_dim
+            provider_embedding_dim = probed_dim
 
     # Step 2: Apply priority (user config > provider default)
     # For max_token_size: explicit env var > provider default > None
@@ -900,6 +926,29 @@ def create_optimized_embedding_function(
                     kwargs["model"] = model
                 if provider_supports_asymmetric and asymmetric_opt_in:
                     kwargs["context"] = context
+                return await actual_func(**kwargs)
+            elif binding == "lmstudio":
+                from lightrag.llm.lmstudio import lmstudio_embed
+
+                actual_func = (
+                    lmstudio_embed.func
+                    if isinstance(lmstudio_embed, EmbeddingFunc)
+                    else lmstudio_embed
+                )
+                kwargs = {
+                    "texts": texts,
+                    "base_url": host,
+                    "api_key": api_key,
+                    "embedding_dim": embedding_dim,
+                }
+                if model:
+                    kwargs["model"] = model
+                if provider_supports_asymmetric and asymmetric_opt_in:
+                    kwargs["context"] = context
+                    if query_prefix:
+                        kwargs["query_prefix"] = query_prefix
+                    if document_prefix:
+                        kwargs["document_prefix"] = document_prefix
                 return await actual_func(**kwargs)
             else:  # openai and compatible
                 from lightrag.llm.openai import openai_embed
@@ -1222,6 +1271,7 @@ def create_app(args):
         "lollms",
         "ollama",
         "openai",
+        "lmstudio",
         "azure_openai",
         "bedrock",
         "gemini",
@@ -1232,6 +1282,7 @@ def create_app(args):
         "lollms",
         "ollama",
         "openai",
+        "lmstudio",
         "azure_openai",
         "bedrock",
         "jina",
@@ -1531,6 +1582,38 @@ def create_app(args):
 
         return optimized_gemini_model_complete
 
+    def create_optimized_lmstudio_llm_func(
+        config_cache: LLMConfigCache, args, llm_timeout: int
+    ):
+        """Create optimized LM Studio LLM function with pre-processed configuration."""
+
+        async def optimized_lmstudio_model_complete(
+            prompt,
+            system_prompt=None,
+            history_messages=None,
+            **kwargs,
+        ) -> str:
+            from lightrag.llm.lmstudio import lmstudio_complete_if_cache
+
+            if history_messages is None:
+                history_messages = []
+
+            kwargs["timeout"] = llm_timeout
+            if config_cache.openai_llm_options:
+                kwargs.update(config_cache.openai_llm_options)
+
+            return await lmstudio_complete_if_cache(
+                args.llm_model,
+                prompt,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
+                base_url=args.llm_binding_host,
+                api_key=args.llm_binding_api_key,
+                **kwargs,
+            )
+
+        return optimized_lmstudio_model_complete
+
     def create_llm_model_func(binding: str):
         """
         Create LLM model function based on binding type.
@@ -1554,6 +1637,10 @@ def create_app(args):
                 )
             elif binding == "gemini":
                 return create_optimized_gemini_llm_func(config_cache, args, llm_timeout)
+            elif binding == "lmstudio":
+                return create_optimized_lmstudio_llm_func(
+                    config_cache, args, llm_timeout
+                )
             else:  # openai and compatible
                 # Use optimized function with pre-processed configuration
                 return create_optimized_openai_llm_func(config_cache, args, llm_timeout)
@@ -1625,7 +1712,7 @@ def create_app(args):
 
         role_provider_options = override_meta.get("provider_options")
         if role_provider_options is None:
-            if role_binding in ["openai", "azure_openai"]:
+            if role_binding in ["openai", "azure_openai", "lmstudio"]:
                 from lightrag.llm.binding_options import OpenAILLMOptions
 
                 role_provider_options = OpenAILLMOptions.options_dict_for_role(
@@ -1835,6 +1922,32 @@ def create_app(args):
                     )
 
                 return role_gemini_complete
+
+            if role_binding == "lmstudio":
+                from lightrag.llm.lmstudio import lmstudio_complete_if_cache
+
+                async def role_lmstudio_complete(
+                    prompt,
+                    system_prompt=None,
+                    history_messages=None,
+                    **kwargs,
+                ) -> str:
+                    if history_messages is None:
+                        history_messages = []
+                    kwargs["timeout"] = role_timeout
+                    if role_provider_options:
+                        kwargs.update(role_provider_options)
+                    return await lmstudio_complete_if_cache(
+                        role_model,
+                        prompt,
+                        system_prompt=system_prompt,
+                        history_messages=history_messages,
+                        base_url=role_host,
+                        api_key=role_apikey,
+                        **kwargs,
+                    )
+
+                return role_lmstudio_complete
 
             from lightrag.llm.openai import openai_complete_if_cache
 

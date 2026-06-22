@@ -907,6 +907,35 @@ printf 'QUERY_LLM_MODEL=%s\\n' "${{ENV_VALUES[QUERY_LLM_MODEL]}}\"
     assert values["QUERY_LLM_MODEL"] == "custom-query-model"
 
 
+def test_collect_llm_config_lmstudio_defaults_any_available_over_legacy_local_model(
+    tmp_path: Path,
+) -> None:
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=lmstudio",
+            "LLM_MODEL=local-model",
+            "LLM_BINDING_HOST=http://localhost:1234/v1",
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{ printf 'lmstudio'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+
+collect_llm_config
+
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+""")
+    values = parse_lines(output)
+    assert values["LLM_MODEL"] == "any-available"
+
+
 def test_collect_rerank_config_preserves_api_key_when_disabled(tmp_path: Path) -> None:
     """Disabling reranking should preserve credentials so they survive re-enable."""
     write_text_lines(
