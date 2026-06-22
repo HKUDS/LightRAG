@@ -48,12 +48,9 @@ import pipmaster as pm
 
 if not pm.is_installed("asyncpg"):
     pm.install("asyncpg")
-if not pm.is_installed("pgvector"):
-    pm.install("pgvector")
 
 import asyncpg  # type: ignore
 from asyncpg import Pool  # type: ignore
-from pgvector.asyncpg import register_vector  # type: ignore
 
 from dotenv import load_dotenv
 
@@ -359,6 +356,10 @@ class PostgreSQLDB:
             _reset_connection after each pool release.
             """
             if self.enable_vector:
+                if not pm.is_installed("pgvector"):
+                    pm.install("pgvector")
+                from pgvector.asyncpg import register_vector  # type: ignore
+
                 await register_vector(connection)
             if self.enable_vector and self.vector_index_type == "VCHORDRQ":
                 await self.configure_vchordrq(connection)
