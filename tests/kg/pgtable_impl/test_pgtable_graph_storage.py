@@ -51,9 +51,18 @@ def test_constructor_validates_workspace_like_other_backends():
         )
 
 
+@pytest.mark.parametrize(
+    ("global_config", "expected_vector_storage"),
+    [
+        ({}, "PGTableGraphStorage"),
+        ({"vector_storage": "NanoVectorDBStorage"}, "NanoVectorDBStorage"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_initialize_passes_raw_vector_storage_to_client_manager():
-    storage = make_uninitialized_storage(global_config={})
+async def test_initialize_passes_pgtable_safe_vector_storage_to_client_manager(
+    global_config, expected_vector_storage
+):
+    storage = make_uninitialized_storage(global_config=global_config)
     db = MagicMock()
     db.workspace = None
     db.execute = AsyncMock()
@@ -71,7 +80,7 @@ async def test_initialize_passes_raw_vector_storage_to_client_manager():
     ):
         await storage.initialize()
 
-    get_client.assert_awaited_once_with(vector_storage=None)
+    get_client.assert_awaited_once_with(vector_storage=expected_vector_storage)
 
 
 # ---------------------------------------------------------------------------

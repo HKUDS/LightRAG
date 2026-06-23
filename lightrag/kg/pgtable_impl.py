@@ -328,8 +328,11 @@ class PGTableGraphStorage(BaseGraphStorage):
             if self.db is None:
                 from .postgres_impl import ClientManager
 
+                vector_storage = (
+                    self.global_config.get("vector_storage") or "PGTableGraphStorage"
+                )
                 self.db = await ClientManager.get_client(
-                    vector_storage=self.global_config.get("vector_storage"),
+                    vector_storage=vector_storage,
                 )
                 # Workspace priority: POSTGRES_WORKSPACE env > self.workspace > "default"
                 if self.db.workspace:
