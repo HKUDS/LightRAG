@@ -491,12 +491,12 @@ class TestAinsertCustomKgBatchPath:
             await rag.ainsert_custom_kg(custom_kg)
 
             graph = rag.chunk_entity_relation_graph
-            assert await graph.has_node("ImplicitNode"), (
-                "Implicit node should be created"
-            )
-            assert await graph.has_node("AnotherImplicit"), (
-                "Implicit node should be created"
-            )
+            assert await graph.has_node(
+                "ImplicitNode"
+            ), "Implicit node should be created"
+            assert await graph.has_node(
+                "AnotherImplicit"
+            ), "Implicit node should be created"
 
             await rag.finalize_storages()
 
@@ -1055,7 +1055,9 @@ class TestPGTablePipelineIntegration:
             patch.object(PGTableGraphStorage, "_execute", spy_execute),
             # Make all reads return empty so the pipeline treats everything as new
             patch.object(PGTableGraphStorage, "_fetch", AsyncMock(return_value=[])),
-            patch.object(PGTableGraphStorage, "_fetchrow", AsyncMock(return_value=None)),
+            patch.object(
+                PGTableGraphStorage, "_fetchrow", AsyncMock(return_value=None)
+            ),
             patch.object(PGTableGraphStorage, "_fetchval", AsyncMock(return_value=0)),
         ):
             # Satisfy env-var checks in LightRAG.__post_init__ without a real DB

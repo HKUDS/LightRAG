@@ -392,6 +392,7 @@ class PGTableGraphStorage(BaseGraphStorage):
                     SELECT src_id, tgt_id, properties, updated_at
                     FROM lightrag_graph_edges
                     WHERE workspace = $1 AND namespace = $2
+                    FOR UPDATE
                     """,
                     self.workspace,
                     self.namespace,
@@ -860,28 +861,15 @@ class PGTableGraphStorage(BaseGraphStorage):
         node_budget: int = cap if max_nodes is None else min(max_nodes, cap)
 
         if node_label == "*":
-            # Wildcard has no traversal semantics. Fetch all candidates so the
-            # NetworkX-compatible Python ordering, not DB collation, decides
-            # the truncation boundary.
+            # Wildcard has no traversal semantics. Fetch all candidate nodes;
+            # degree-based ranking and the NetworkX-compatible truncation order
+            # are applied in Python below (node_degrees_batch), so no degree
+            # aggregation is needed here.
             node_rows = await self._fetch(
                 """
-                WITH degrees AS (
-                    SELECT id, COUNT(*) AS degree
-                    FROM (
-                        SELECT src_id AS id
-                        FROM lightrag_graph_edges
-                        WHERE workspace = $1 AND namespace = $2
-                      UNION ALL
-                        SELECT tgt_id AS id
-                        FROM lightrag_graph_edges
-                        WHERE workspace = $1 AND namespace = $2
-                    ) edge_ids
-                    GROUP BY id
-                )
-                SELECT n.id, n.properties
-                FROM lightrag_graph_nodes n
-                LEFT JOIN degrees d ON d.id = n.id
-                WHERE n.workspace = $1 AND n.namespace = $2
+                SELECT id, properties
+                FROM lightrag_graph_nodes
+                WHERE workspace = $1 AND namespace = $2
                 """,
                 self.workspace,
                 self.namespace,
@@ -910,7 +898,10 @@ class PGTableGraphStorage(BaseGraphStorage):
         degrees = await self.node_degrees_batch(node_ids_all)
         node_rows.sort(
             key=lambda r: (
-                r["id"] != node_label,  # False (0) for seed → always first
+                # Pin the seed first — exact-label only. Under wildcard there is
+                # no seed, so this term must stay constant (otherwise a real
+                # entity whose id is literally "*" would be pinned).
+                node_label != "*" and r["id"] != node_label,
                 r.get("depth", 0),  # shallower BFS level first
                 -degrees.get(r["id"], 0),  # higher degree first within a level
                 r["id"],
@@ -1055,7 +1046,9 @@ class PGTableGraphStorage(BaseGraphStorage):
             src, tgt = r["src_id"], r["tgt_id"]
             if src in result:
                 result[src].append((src, tgt))
-            if tgt in result:
+            if tgt in result and tgt != src:
+                # self-loop (src == tgt) is one edge, not two — match
+                # get_node_edges() and NetworkX.
                 result[tgt].append((tgt, src))
         for edges in result.values():
             edges.sort(key=lambda edge: edge[1])

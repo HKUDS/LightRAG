@@ -92,6 +92,18 @@ async def test_get_nodes_edges_batch_queried_node_first():
     assert ("Z", "A") in result["Z"]  # Z is queried node, must be first
 
 
+@pytest.mark.asyncio
+async def test_get_nodes_edges_batch_self_loop_counted_once():
+    """A self-loop (A, A) is one edge — it must appear once, not twice
+    (matches get_node_edges() and NetworkX)."""
+    storage = make_storage()
+    with patch.object(
+        storage, "_fetch", new=AsyncMock(return_value=[{"src_id": "A", "tgt_id": "A"}])
+    ):
+        result = await storage.get_nodes_edges_batch(["A"])
+    assert result["A"] == [("A", "A")]
+
+
 # ---------------------------------------------------------------------------
 # JSONB round-trip
 # ---------------------------------------------------------------------------
@@ -410,6 +422,29 @@ async def test_get_knowledge_graph_seed_never_dropped_on_truncation():
     # Seed is at position 0 (pinned), then the highest-degree neighbor.
     assert node_ids[0] == "low_seed"
     assert node_ids[1] == "big_hub_1"
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_wildcard_does_not_pin_literal_star():
+    """Wildcard has no seed: a node whose id is literally '*' must rank by
+    degree, not be pinned first."""
+    storage = make_storage()
+    node_rows = [
+        {"id": "*", "properties": json.dumps({"entity_id": "*"})},
+        {"id": "hub", "properties": json.dumps({"entity_id": "hub"})},
+    ]
+    degrees = {"*": 1, "hub": 99}
+    with (
+        patch.object(storage, "_fetch", new=AsyncMock(side_effect=[node_rows, []])),
+        patch.object(
+            storage, "node_degrees_batch", new=AsyncMock(return_value=degrees)
+        ),
+    ):
+        kg = await storage.get_knowledge_graph("*", max_nodes=10)
+    node_ids = [n.id for n in kg.nodes]
+    # hub (degree 99) outranks the literal '*' (degree 1); '*' is NOT pinned.
+    assert node_ids[0] == "hub"
+    assert "*" in node_ids
 
 
 @pytest.mark.asyncio
