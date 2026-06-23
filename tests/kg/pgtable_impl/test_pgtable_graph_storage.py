@@ -502,11 +502,12 @@ async def test_get_knowledge_graph_seed_never_dropped_on_truncation():
     degrees = {"low_seed": 1, "big_hub_1": 99, "big_hub_2": 97}
 
     with (
-        patch.object(storage, "_bfs_frontier", new=AsyncMock(return_value=bfs_rows)),
-        patch.object(storage, "_fetch", new=AsyncMock(return_value=[])),  # edge fetch
+        # _bfs_frontier returns (rows, degrees); the caller reuses those degrees
+        # for ordering instead of a second node_degrees_batch.
         patch.object(
-            storage, "node_degrees_batch", new=AsyncMock(return_value=degrees)
+            storage, "_bfs_frontier", new=AsyncMock(return_value=(bfs_rows, degrees))
         ),
+        patch.object(storage, "_fetch", new=AsyncMock(return_value=[])),  # edge fetch
     ):
         # max_nodes=2 forces truncation; without the seed-pin fix, low_seed drops out.
         kg = await storage.get_knowledge_graph("low_seed", max_nodes=2)
@@ -558,7 +559,7 @@ async def test_get_knowledge_graph_bfs_depth_beats_degree_on_truncation():
     """
     storage = make_storage(global_config={"max_graph_nodes": 100})
     # Topology:  seed --- near (depth 1, low degree) --- far_hub (depth 2, huge degree)
-    # The recursive CTE returns rows carrying their shortest-hop depth.
+    # _bfs_frontier returns rows carrying their shortest-hop depth.
     rows = [
         {"id": "seed", "properties": json.dumps({"entity_id": "seed"}), "depth": 0},
         {"id": "near", "properties": json.dumps({"entity_id": "near"}), "depth": 1},
@@ -581,11 +582,10 @@ async def test_get_knowledge_graph_bfs_depth_beats_degree_on_truncation():
     ]
 
     with (
-        patch.object(storage, "_bfs_frontier", new=AsyncMock(return_value=rows)),
-        patch.object(storage, "_fetch", new=AsyncMock(return_value=edge_rows)),
         patch.object(
-            storage, "node_degrees_batch", new=AsyncMock(return_value=degrees)
+            storage, "_bfs_frontier", new=AsyncMock(return_value=(rows, degrees))
         ),
+        patch.object(storage, "_fetch", new=AsyncMock(return_value=edge_rows)),
     ):
         # max_nodes=2: budget covers depth 0 + depth 1; depth 2 must be excluded.
         kg = await storage.get_knowledge_graph("seed", max_nodes=2)

@@ -453,13 +453,22 @@ class PGTableGraphStorage(BaseGraphStorage):
 
     async def drop(self) -> dict[str, str]:
         try:
+            # Atomic drop: a single data-modifying CTE deletes edges and nodes in
+            # one statement (hence one implicit transaction), so a mid-drop
+            # failure can never leave nodes stripped of their edges or vice versa
+            # — the two-statement version committed the edge delete independently.
+            # Edges are deleted explicitly rather than relying solely on FK
+            # CASCADE so the drop stays correct even on a legacy table whose FK
+            # was never (re)created.
             await self._execute(
-                "DELETE FROM lightrag_graph_edges WHERE workspace = $1 AND namespace = $2",
-                self.workspace,
-                self.namespace,
-            )
-            await self._execute(
-                "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND namespace = $2",
+                """
+                WITH deleted_edges AS (
+                    DELETE FROM lightrag_graph_edges
+                    WHERE workspace = $1 AND namespace = $2
+                )
+                DELETE FROM lightrag_graph_nodes
+                WHERE workspace = $1 AND namespace = $2
+                """,
                 self.workspace,
                 self.namespace,
             )
@@ -763,24 +772,31 @@ class PGTableGraphStorage(BaseGraphStorage):
 
     async def _bfs_frontier(
         self, seed: str, max_depth: int, node_budget: int
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """Frontier-capped breadth-first traversal from ``seed``.
 
         Expands one depth level per round, querying only the current frontier's
         neighbours and deduping against a process-side visited set so each node
-        is fetched at most once no matter how many paths reach it. Traversal
-        stops once ``node_budget`` is exceeded, so cost is bounded by the budget
-        rather than the number of simple paths — unlike a UNION ALL recursive CTE
-        with a path-local visited array, which re-materializes shared nodes per
-        path and explodes on dense/cyclic graphs.
+        is fetched at most once no matter how many paths reach it. The *result*
+        size is bounded by ``node_budget`` (traversal stops once it is exceeded),
+        and the collected node count never explodes the way a UNION ALL recursive
+        CTE with a path-local visited array does — that re-materializes shared
+        nodes per path and blows up on dense/cyclic graphs.
+
+        NOTE on cost: the per-hop *work* is bounded by the size of the frontier's
+        neighbourhood, NOT by ``node_budget``. A single very high-degree node
+        still pulls (and degree-ranks) its entire neighbour set on the hop that
+        expands it, before the budget truncates the result. Pushing the
+        degree-rank + cap down into SQL is tracked as a follow-up optimization.
 
         Within each depth level the highest-degree unvisited neighbours are
         admitted first, so when the budget cuts a level the retained nodes are
         the high-degree ones — matching NetworkX's degree-ordered BFS and the
         prior recursive CTE (which degree-sorted the full reachable set before
-        truncating). Returns rows shaped like the wildcard path ({"id",
-        "properties", "depth"}); the final seed-pinned ordering and budget cut
-        happen in the caller.
+        truncating). Returns ``(rows, degrees)``: rows are shaped like the
+        wildcard path ({"id", "properties", "depth"}) and degrees maps every
+        collected node id to its full-graph degree, so the caller reuses them for
+        the final seed-pinned ordering instead of recomputing node_degrees_batch.
         """
         seed_row = await self._fetchrow(
             "SELECT id, properties FROM lightrag_graph_nodes "
@@ -790,10 +806,14 @@ class PGTableGraphStorage(BaseGraphStorage):
             seed,
         )
         if seed_row is None:
-            return []
+            return [], {}
         collected: dict[str, dict[str, Any]] = {
             seed: {"id": seed, "properties": seed_row["properties"], "depth": 0}
         }
+        # Accumulate degrees as the BFS visits each level so the caller can reuse
+        # them for the final ordering instead of issuing a second full
+        # node_degrees_batch over the whole collected set.
+        degrees: dict[str, int] = {}
         frontier = [seed]
         depth = 0
         while frontier and depth < max_depth and len(collected) <= node_budget:
@@ -832,6 +852,7 @@ class PGTableGraphStorage(BaseGraphStorage):
             if not candidates:
                 break
             level_degrees = await self.node_degrees_batch(list(candidates))
+            degrees.update(level_degrees)
             ordered = sorted(
                 candidates, key=lambda nid: (-level_degrees.get(nid, 0), nid)
             )
@@ -846,7 +867,12 @@ class PGTableGraphStorage(BaseGraphStorage):
                 if len(collected) > node_budget:
                     break
             frontier = next_frontier
-        return list(collected.values())
+        # The seed is never a candidate (it seeds the frontier), so its degree
+        # was never gathered in the loop — fetch it once for the ordering
+        # tie-break. Isolated seeds (no neighbours) also land here.
+        if seed not in degrees:
+            degrees[seed] = (await self.node_degrees_batch([seed])).get(seed, 0)
+        return list(collected.values()), degrees
 
     async def get_knowledge_graph(
         self,
@@ -886,13 +912,19 @@ class PGTableGraphStorage(BaseGraphStorage):
                 self.namespace,
                 node_budget + 1,
             )
+            # Wildcard degree comes straight from the SQL aggregate above.
+            degrees = {r["id"]: int(r.get("degree", 0)) for r in node_rows}
         else:
             # Exact-match seed traversal via frontier-capped iterative BFS. The
             # blast radius is bounded by node_budget rather than by the number of
             # simple paths in the reachable subgraph (see _bfs_frontier). depth is
             # the shortest-hop distance from the seed (BFS visits each node once),
             # which the degree-aware truncation below orders on.
-            node_rows = await self._bfs_frontier(node_label, max_depth, node_budget)
+            # Degrees were gathered during the BFS (see _bfs_frontier) — reused
+            # below instead of a second full node_degrees_batch over the set.
+            node_rows, degrees = await self._bfs_frontier(
+                node_label, max_depth, node_budget
+            )
 
         if not node_rows:
             return KnowledgeGraph(nodes=[], edges=[], is_truncated=False)
@@ -906,11 +938,6 @@ class PGTableGraphStorage(BaseGraphStorage):
         #   4. stable id order as the final tie-breaker.
         # Wildcard rows carry no "depth" key (all default to 0), so the depth term is
         # inert there and selection collapses to the SQL's degree-desc ordering.
-        node_ids_all = [r["id"] for r in node_rows]
-        if node_label == "*":
-            degrees = {r["id"]: int(r.get("degree", 0)) for r in node_rows}
-        else:
-            degrees = await self.node_degrees_batch(node_ids_all)
         node_rows.sort(
             key=lambda r: (
                 # Pin the seed first — exact-label only. Under wildcard there is
