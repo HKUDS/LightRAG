@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.setup._helpers import (
+    BASH_BIN,
     REPO_ROOT,
     parse_lines,
     run_bash,
@@ -39,7 +40,7 @@ def test_validate_env_file_rejects_missing_ssl_files(tmp_path: Path) -> None:
     )
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "-lc",
             f"""
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -56,6 +57,20 @@ validate_env_file
     assert result.returncode == 1
     assert "Invalid SSL_CERTFILE" in result.stderr
     assert "Invalid SSL_KEYFILE" in result.stderr
+
+
+def test_pgtable_graph_storage_is_setup_registered() -> None:
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+printf 'OPTIONS=%s\\n' "${{GRAPH_STORAGE_OPTIONS[*]}}"
+printf 'REQ=%s\\n' "${{STORAGE_ENV_REQUIREMENTS[PGTableGraphStorage]:-}}"
+printf 'DB=%s\\n' "${{STORAGE_DB_TYPES[PGTableGraphStorage]:-}}"
+""")
+    values = parse_lines(output)
+    assert "PGTableGraphStorage" in values["OPTIONS"].split()
+    assert values["REQ"] == "POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DATABASE"
+    assert values["DB"] == "postgresql"
 
 
 def test_validate_env_file_rejects_container_ssl_paths_for_host_target(
@@ -84,7 +99,7 @@ def test_validate_env_file_rejects_container_ssl_paths_for_host_target(
     )
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "-lc",
             f"""
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -128,7 +143,7 @@ def test_validate_env_file_rejects_container_ssl_paths_for_default_host_target(
     )
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "-lc",
             f"""
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -173,7 +188,7 @@ def test_validate_env_file_accepts_container_ssl_paths_for_compose_target(
     )
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "-lc",
             f"""
 source "{REPO_ROOT}/scripts/setup/setup.sh"
@@ -229,7 +244,7 @@ def test_validate_env_file_allows_predictable_auth_passwords_and_leaves_them_to_
     write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -253,7 +268,7 @@ fi
     assert values["VALID"] == "yes"
     audit_result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -382,7 +397,7 @@ def test_validate_env_file_handles_supported_and_unsupported_uri_schemes(
         write_text_lines(case_dir / "env.example", ["LLM_BINDING=openai"])
         result = subprocess.run(
             [
-                "bash",
+                BASH_BIN,
                 "--norc",
                 "--noprofile",
                 "-c",
@@ -423,7 +438,7 @@ def test_validate_env_file_rejects_invalid_runtime_target(tmp_path: Path) -> Non
     write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -490,7 +505,7 @@ def test_validate_env_file_rejects_invalid_opensearch_index_settings(
     write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -535,7 +550,7 @@ def test_validate_env_file_rejects_blank_opensearch_index_settings(
     write_text_lines(tmp_path / "env.example", ["LLM_BINDING=openai"])
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -580,7 +595,7 @@ def test_validate_env_file_rejects_mongo_vector_storage_without_atlas_capable_ur
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -628,7 +643,7 @@ def test_validate_env_file_allows_mongo_vector_storage_with_wizard_managed_atlas
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -674,7 +689,7 @@ def test_validate_env_file_allows_external_atlas_local_for_mongo_vector_storage(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -721,7 +736,7 @@ def test_validate_env_file_rejects_remote_mongo_uri_with_docker_marker(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -772,7 +787,7 @@ def test_validate_env_file_rejects_stale_local_mongo_uri_without_direct_connecti
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -823,7 +838,7 @@ def test_validate_env_file_rejects_wrong_local_mongo_port_with_docker_marker(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -870,7 +885,7 @@ def test_validate_env_file_rejects_empty_opensearch_hosts(tmp_path: Path) -> Non
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -918,7 +933,7 @@ def test_validate_env_file_rejects_whitespace_only_opensearch_hosts(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -966,7 +981,7 @@ def test_validate_env_file_rejects_docker_opensearch_without_password(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -1018,7 +1033,7 @@ def test_validate_env_file_rejects_weak_docker_opensearch_password(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -1066,7 +1081,7 @@ def test_validate_env_file_rejects_weak_host_opensearch_password(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -1112,7 +1127,7 @@ def test_validate_env_file_rejects_unauthenticated_host_opensearch(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -1158,7 +1173,7 @@ def test_validate_env_file_rejects_partial_host_opensearch_auth(tmp_path: Path) 
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -1206,7 +1221,7 @@ def test_validate_env_file_rejects_opensearch_hosts_with_uri_scheme(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -1260,7 +1275,7 @@ def test_validate_env_file_ignores_invalid_unused_storage_settings(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",
@@ -1312,7 +1327,7 @@ def test_validate_env_file_allows_empty_opensearch_hosts_when_unused(
     (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
     result = subprocess.run(
         [
-            "bash",
+            BASH_BIN,
             "--norc",
             "--noprofile",
             "-c",

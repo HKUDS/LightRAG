@@ -37,7 +37,7 @@ from tenacity import (
 from ..base import BaseGraphStorage
 from ..kg.shared_storage import get_data_init_lock
 from ..types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
-from ..utils import logger
+from ..utils import logger, validate_workspace
 
 
 def _is_transient_write_error(exc: BaseException) -> bool:
@@ -239,6 +239,9 @@ class PGTableGraphStorage(BaseGraphStorage):
 
     db: Any | None = field(default=None, init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        validate_workspace(self.workspace)
+
     @property
     def _db(self) -> Any:
         if self.db is None:
@@ -325,14 +328,8 @@ class PGTableGraphStorage(BaseGraphStorage):
             if self.db is None:
                 from .postgres_impl import ClientManager
 
-                # PGTableGraphStorage never needs pgvector.  Pass the
-                # vector_storage value from global_config only if another
-                # PG storage in this process uses it; otherwise fall back
-                # to a non-PGVectorStorage sentinel so ClientManager does
-                # not try to load the vector extension on plain PG instances.
                 self.db = await ClientManager.get_client(
-                    vector_storage=self.global_config.get("vector_storage")
-                    or "PGTableGraphStorage"
+                    vector_storage=self.global_config.get("vector_storage"),
                 )
                 # Workspace priority: POSTGRES_WORKSPACE env > self.workspace > "default"
                 if self.db.workspace:
@@ -861,18 +858,30 @@ class PGTableGraphStorage(BaseGraphStorage):
         node_budget: int = cap if max_nodes is None else min(max_nodes, cap)
 
         if node_label == "*":
-            # Wildcard has no traversal semantics. Fetch all candidate nodes;
-            # degree-based ranking and the NetworkX-compatible truncation order
-            # are applied in Python below (node_degrees_batch), so no degree
-            # aggregation is needed here.
             node_rows = await self._fetch(
                 """
-                SELECT id, properties
-                FROM lightrag_graph_nodes
-                WHERE workspace = $1 AND namespace = $2
+                SELECT n.id AS id,
+                       n.properties AS properties,
+                       COALESCE(d.degree, 0) AS degree
+                FROM lightrag_graph_nodes n
+                LEFT JOIN (
+                    SELECT id, COUNT(*) AS degree
+                    FROM (
+                        SELECT src_id AS id FROM lightrag_graph_edges
+                        WHERE workspace = $1 AND namespace = $2
+                        UNION ALL
+                        SELECT tgt_id AS id FROM lightrag_graph_edges
+                        WHERE workspace = $1 AND namespace = $2
+                    ) sub
+                    GROUP BY id
+                ) d ON d.id = n.id
+                WHERE n.workspace = $1 AND n.namespace = $2
+                ORDER BY degree DESC, n.id ASC
+                LIMIT $3
                 """,
                 self.workspace,
                 self.namespace,
+                node_budget + 1,
             )
         else:
             # Exact-match seed traversal via frontier-capped iterative BFS. The
@@ -895,7 +904,10 @@ class PGTableGraphStorage(BaseGraphStorage):
         # Wildcard rows carry no "depth" key (all default to 0), so the depth term is
         # inert there and selection collapses to the SQL's degree-desc ordering.
         node_ids_all = [r["id"] for r in node_rows]
-        degrees = await self.node_degrees_batch(node_ids_all)
+        if node_label == "*":
+            degrees = {r["id"]: int(r.get("degree", 0)) for r in node_rows}
+        else:
+            degrees = await self.node_degrees_batch(node_ids_all)
         node_rows.sort(
             key=lambda r: (
                 # Pin the seed first — exact-label only. Under wildcard there is
@@ -1035,7 +1047,10 @@ class PGTableGraphStorage(BaseGraphStorage):
         rows = await self._fetch(
             """
             SELECT src_id, tgt_id FROM lightrag_graph_edges
-            WHERE workspace=$1 AND namespace=$2 AND (src_id=ANY($3) OR tgt_id=ANY($3))
+            WHERE workspace=$1 AND namespace=$2 AND src_id=ANY($3)
+            UNION
+            SELECT src_id, tgt_id FROM lightrag_graph_edges
+            WHERE workspace=$1 AND namespace=$2 AND tgt_id=ANY($3)
             """,
             self.workspace,
             self.namespace,

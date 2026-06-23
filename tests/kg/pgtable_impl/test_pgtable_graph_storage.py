@@ -5,6 +5,7 @@ connection is required. Marked @offline so these run in CI.
 """
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,52 @@ def make_storage(global_config=None, namespace=GRAPH_NAMESPACE):
     mock_db = MagicMock()
     storage.db = mock_db
     return storage
+
+
+def make_uninitialized_storage(global_config=None, namespace=GRAPH_NAMESPACE):
+    storage = make_storage(global_config=global_config, namespace=namespace)
+    storage.db = None
+    return storage
+
+
+@asynccontextmanager
+async def fake_init_lock():
+    yield
+
+
+def test_constructor_validates_workspace_like_other_backends():
+    from lightrag.kg.pgtable_impl import PGTableGraphStorage
+
+    with pytest.raises(ValueError, match="workspace"):
+        PGTableGraphStorage(
+            namespace=GRAPH_NAMESPACE,
+            workspace="../bad",
+            global_config={},
+            embedding_func=MagicMock(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_initialize_passes_raw_vector_storage_to_client_manager():
+    storage = make_uninitialized_storage(global_config={})
+    db = MagicMock()
+    db.workspace = None
+    db.execute = AsyncMock()
+
+    with (
+        patch(
+            "lightrag.kg.postgres_impl.ClientManager.get_client",
+            new=AsyncMock(return_value=db),
+        ) as get_client,
+        patch(
+            "lightrag.kg.pgtable_impl.get_data_init_lock",
+            new=MagicMock(return_value=fake_init_lock()),
+        ),
+        patch.object(storage, "_normalize_legacy_edges", new=AsyncMock()),
+    ):
+        await storage.initialize()
+
+    get_client.assert_awaited_once_with(vector_storage=None)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +149,24 @@ async def test_get_nodes_edges_batch_self_loop_counted_once():
     ):
         result = await storage.get_nodes_edges_batch(["A"])
     assert result["A"] == [("A", "A")]
+
+
+@pytest.mark.asyncio
+async def test_get_nodes_edges_batch_uses_index_friendly_union():
+    storage = make_storage()
+    with patch.object(storage, "_fetch", new=AsyncMock(return_value=[])) as fetch:
+        await storage.get_nodes_edges_batch(["A", "Z"])
+
+    sql, workspace, namespace, node_ids = fetch.call_args.args
+    normalized_sql = " ".join(sql.split()).upper()
+    compact_sql = normalized_sql.replace(" ", "")
+    assert workspace == "test"
+    assert namespace == GRAPH_NAMESPACE
+    assert node_ids == ["A", "Z"]
+    assert " OR " not in normalized_sql
+    assert "UNION" in normalized_sql
+    assert "SRC_ID=ANY($3)" in compact_sql
+    assert "TGT_ID=ANY($3)" in compact_sql
 
 
 # ---------------------------------------------------------------------------
@@ -314,18 +379,42 @@ async def test_get_knowledge_graph_uses_global_config_when_max_nodes_none():
 
 @pytest.mark.asyncio
 async def test_get_knowledge_graph_wildcard_uses_flat_limited_query():
-    """Wildcard should avoid recursive traversal."""
     storage = make_storage(global_config={"max_graph_nodes": 100})
-    fetch = AsyncMock(return_value=[])
+    all_rows = [
+        {
+            "id": f"node_{i}",
+            "properties": json.dumps({"entity_id": f"node_{i}"}),
+            "degree": i,
+        }
+        for i in range(20)
+    ]
 
-    with patch.object(storage, "_fetch", new=fetch):
+    async def fetch_rows(sql, *args):
+        normalized_sql = " ".join(sql.split()).upper()
+        if "FROM LIGHTRAG_GRAPH_NODES" in normalized_sql:
+            if "LIMIT" in normalized_sql:
+                return all_rows[: args[2]]
+            return all_rows
+        return []
+
+    fetch = AsyncMock(side_effect=fetch_rows)
+    node_degrees = AsyncMock(
+        return_value={f"node_{i}": i for i in range(len(all_rows))}
+    )
+
+    with (
+        patch.object(storage, "_fetch", new=fetch),
+        patch.object(storage, "node_degrees_batch", new=node_degrees),
+    ):
         await storage.get_knowledge_graph("*", max_nodes=7)
 
-    sql, workspace, namespace = fetch.call_args.args
-    assert workspace == "test"
-    assert namespace == GRAPH_NAMESPACE
+    sql, *args = fetch.call_args_list[0].args
+    normalized_sql = " ".join(sql.split()).upper()
+    assert args == ["test", GRAPH_NAMESPACE, 8]
     assert "WITH RECURSIVE" not in sql
-    assert "LIMIT $3" not in sql
+    assert "LIMIT" in normalized_sql
+    assert "$3" in normalized_sql
+    node_degrees.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -355,10 +444,10 @@ async def test_get_knowledge_graph_truncates_by_degree_then_id():
     """Truncation must not depend on unordered PostgreSQL row order."""
     storage = make_storage(global_config={"max_graph_nodes": 100})
     rows = [
-        {"id": "z_low", "properties": json.dumps({"entity_id": "z_low"})},
-        {"id": "tie_b", "properties": json.dumps({"entity_id": "tie_b"})},
-        {"id": "hub", "properties": json.dumps({"entity_id": "hub"})},
-        {"id": "tie_a", "properties": json.dumps({"entity_id": "tie_a"})},
+        {"id": "z_low", "properties": json.dumps({"entity_id": "z_low"}), "degree": 1},
+        {"id": "tie_b", "properties": json.dumps({"entity_id": "tie_b"}), "degree": 3},
+        {"id": "hub", "properties": json.dumps({"entity_id": "hub"}), "degree": 9},
+        {"id": "tie_a", "properties": json.dumps({"entity_id": "tie_a"}), "degree": 3},
     ]
     degrees = {"z_low": 1, "tie_b": 3, "hub": 9, "tie_a": 3}
 
@@ -430,8 +519,8 @@ async def test_get_knowledge_graph_wildcard_does_not_pin_literal_star():
     degree, not be pinned first."""
     storage = make_storage()
     node_rows = [
-        {"id": "*", "properties": json.dumps({"entity_id": "*"})},
-        {"id": "hub", "properties": json.dumps({"entity_id": "hub"})},
+        {"id": "*", "properties": json.dumps({"entity_id": "*"}), "degree": 1},
+        {"id": "hub", "properties": json.dumps({"entity_id": "hub"}), "degree": 99},
     ]
     degrees = {"*": 1, "hub": 99}
     with (
