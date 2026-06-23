@@ -99,7 +99,7 @@
         "error": "Some files failed to upload"
       },
       "generalError": "Upload Failed\n{{error}}",
-      "fileTypes": "Supported types: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Supported types: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",
@@ -139,10 +139,10 @@
       "filters": {
         "all": "All",
         "completed": "Completed",
-        "analyzing": "Analyzing",
-        "processing": "Processing",
-        "pending": "Pending",
-        "failed": "Failed"
+        "parse": "Parse",
+        "analyze": "Analyze",
+        "process": "Process",
+        "failed": "Fail"
       },
       "status": {
         "all": "All",
@@ -233,6 +233,9 @@
       "disease": "Disease",
       "drug": "Drug",
       "food": "Food",
+      "table": "Table",
+      "drawing": "Drawing",
+      "equation": "Equation",
       "other": "Other"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "Start a retrieval by typing your query below",
       "clear": "Clear",
       "send": "Send",
+      "stop": "Stop",
+      "userTerminated": "User terminated — response may be incomplete",
       "placeholder": "Enter your query (Support prefix: /<Query Mode>)",
       "error": "Error: Failed to get response",
       "queryModeError": "Only supports the following query modes: {{modes}}",
@@ -420,6 +425,7 @@
       "parametersDescription": "Configure your query parameters",
       "queryMode": "Query Mode",
       "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Traditional text chunk vector retrieval\n• Local: Focus on entity retrieval\n• Global: Focus on relationship retrieval\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Skip retrieval, send conversation history and current question to LLM",
+      "queryModeWarning": "May reduce retrieval quality",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import inspect
 import json
 
@@ -21,7 +20,6 @@ import json_repair
 import mimetypes
 import os
 import re
-import shutil
 import time
 import traceback
 from dataclasses import dataclass
@@ -35,14 +33,23 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
     PARSED_DIR_NAME,
-    PARSER_ENGINE_DOCLING,
-    PARSER_ENGINE_MINERU,
-    PARSER_ENGINE_NATIVE,
 )
-from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
+from lightrag.exceptions import (
+    MultimodalAnalysisError,
+    PipelineCancelledException,
+    IndexFlushError,
+)
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.operate import merge_nodes_and_edges
+from lightrag.parser.base import ParseContext
+from lightrag.parser.registry import (
+    get_parser,
+    parser_specs_snapshot,
+    supported_parser_engines,
+    suffix_capabilities,
+)
 from lightrag.parser.routing import (
+    parser_suffix,
     resolve_file_parser_directives,
     resolve_stored_document_parser_engine,
 )
@@ -59,30 +66,36 @@ from lightrag.utils import (
     get_llm_cache_identity,
     handle_cache,
     logger,
+    repair_vlm_json_escape_damage_nested,
     sanitize_text_for_encoding,
     save_to_cache,
     serialize_llm_cache_identity,
+    strip_control_characters,
 )
 from lightrag.utils_pipeline import (
-    archive_docx_source_after_full_docs_sync,
+    # Re-exported through the pipeline namespace (not used by this module
+    # directly): the parser layer resolves these as ``lightrag.pipeline.<name>``
+    # and the parser CLI / base archive path patch them there.
+    archive_docx_source_after_full_docs_sync,  # noqa: F401
+    parsed_artifact_dir_for,  # noqa: F401
     archive_source_after_full_docs_sync,
     build_chunks_dict_from_chunking_result,
     chunk_fields_from_status_doc,
     compute_text_content_hash,
     doc_status_field,
+    doc_status_parse_failure_fields,
     doc_status_transition_metadata,
     get_duplicate_doc_by_content_hash,
     get_existing_doc_by_content_hash,
     get_existing_doc_by_file_basename,
     has_known_document_source,
     input_dir_path,
-    load_lightrag_document_content,
-    make_lightrag_doc_content,
     normalize_document_file_path,
-    parsed_artifact_dir_for,
+    doc_status_metadata_has_attempt_fields,
+    doc_status_reset_metadata,
+    read_source_file_basename,
     resolve_doc_file_path,
-    sidecar_blocks_path,
-    sidecar_uri_for,
+    resolve_doc_status_parse_engine,
     strip_lightrag_doc_prefix,
 )
 
@@ -104,25 +117,32 @@ def _call_source_file_resolver(
     owner: Any,
     file_path: str,
     *,
-    source_file_name: str | None = None,
+    source_file: str | None = None,
     parser_engine: str | None = None,
 ) -> str:
     """Call parser source resolver while tolerating legacy test doubles."""
     resolver = owner._resolve_source_file_for_parser
     params = inspect.signature(resolver).parameters
-    supports_context = "source_file_name" in params or any(
+    supports_context = "source_file" in params or any(
         param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
     )
     if supports_context:
         return resolver(
             file_path,
-            source_file_name=source_file_name,
+            source_file=source_file,
             parser_engine=parser_engine,
         )
-    return resolver(source_file_name or file_path)
+    return resolver(source_file or file_path)
 
 
-# Map ``process_options.chunking`` selector → ``extraction_meta.chunking_method``
+# Backward-compatible source-file reader.  Implementation lives in
+# utils_pipeline so reset/normalisation helpers there can reuse it without a
+# reverse import into this module; kept as a module-level alias for the
+# existing call sites below.
+_read_source_file = read_source_file_basename
+
+
+# Map ``process_options.chunking`` selector → ``extraction_meta.chunk_method``
 # string used by the pipeline observability layer and the resume path.
 _CHUNKING_METHOD_LABELS: dict[str, str] = {
     "F": "fixed_token",
@@ -141,6 +161,7 @@ _CHUNK_LOG_KEY_ALIASES: dict[str, str] = {
     "split_by_character_only": "split_only",
     "separators": "seps",
     "sentence_split_regex": "regex",
+    "drop_references": "drop_rf",
 }
 
 
@@ -183,9 +204,12 @@ class _BatchRunContext:
     pipeline_status_lock: Any
     semaphore: asyncio.Semaphore
     total_files: int
-    q_native: asyncio.Queue
-    q_mineru: asyncio.Queue
-    q_docling: asyncio.Queue
+    # Parse queues are dynamic: one per ParserSpec.queue_group (always at
+    # least "native"). ``parser_specs`` is the batch snapshot threaded through
+    # routing + the parse workers so a mid-batch register_parser cannot change
+    # the engine set for this run.
+    parse_queues: dict[str, asyncio.Queue]
+    parser_specs: dict
     q_analyze: asyncio.Queue
     q_process: asyncio.Queue
     processed_count: int = 0
@@ -212,7 +236,6 @@ class _PipelineMixin:
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
         docs_format: str = FULL_DOCS_FORMAT_RAW,
-        lightrag_document_paths: str | list[str] | None = None,
         parse_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
         chunk_options: dict | list[dict] | None = None,
@@ -221,18 +244,26 @@ class _PipelineMixin:
         """
         Pipeline for Processing Documents
 
-        1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents (skip content dedup when format is lightrag)
+        1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         2. Generate document initial status
         3. Filter out already processed documents
         4. Enqueue document in status
 
         Args:
-            input: Single document string or list of document strings (can be empty when docs_format is lightrag)
-            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated (from content or file_path when lightrag)
+            input: Single document string or list of document strings (can be empty when docs_format is pending_parse)
+            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated (from content or file_path).
+                **Providing ``ids`` marks the SDK raw direct-insert path**
+                (:meth:`LightRAG.ainsert`) and takes precedence over
+                ``docs_format``: the documents are always enqueued as RAW
+                — sanitized verbatim content, no parse-worker deferral —
+                by design, not as an oversight. ``pending_parse`` is the
+                server upload path, which never passes ``ids``.
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status
-            docs_format: "raw" (default) or "lightrag"; when "lightrag" content may be empty and content-dedup is skipped
-            lightrag_document_paths: paths to LightRAG Document (e.g. .blocks.jsonl dir or base path), when docs_format is lightrag
+            docs_format: "raw" (default) or "pending_parse"; "pending_parse" defers
+                extraction to the parse worker (content may be empty and
+                content-dedup happens after parsing). Ignored when ``ids``
+                is provided (see ``ids`` above).
             parse_engine: file extraction engine already used or target engine for pending_parse
             process_options: per-document processing options string (i/t/e/!/F/R/V/P);
                 accepted as a single string broadcast to every input or as a list
@@ -322,10 +353,6 @@ class _PipelineMixin:
             ids = [ids]
         if isinstance(file_paths, str):
             file_paths = [file_paths]
-        if isinstance(lightrag_document_paths, str):
-            lightrag_document_paths = (
-                [lightrag_document_paths] if lightrag_document_paths else None
-            )
         if isinstance(parse_engine, str):
             parse_engine = [parse_engine] * len(input)
         if isinstance(process_options, str):
@@ -348,12 +375,14 @@ class _PipelineMixin:
         else:
             file_paths = ["unknown_source"] * len(input)
 
-        is_lightrag_format = docs_format == FULL_DOCS_FORMAT_LIGHTRAG
-        if is_lightrag_format and lightrag_document_paths is not None:
-            if len(lightrag_document_paths) != len(input):
-                raise ValueError(
-                    "Number of lightrag_document_paths must match the number of documents"
-                )
+        if docs_format not in (FULL_DOCS_FORMAT_RAW, FULL_DOCS_FORMAT_PENDING_PARSE):
+            raise ValueError(
+                f"Unsupported docs_format {docs_format!r}; expected "
+                f"{FULL_DOCS_FORMAT_RAW!r} or {FULL_DOCS_FORMAT_PENDING_PARSE!r}. "
+                "The 'lightrag' enqueue format was removed; already-parsed "
+                "documents are resumed via the full_docs parse_format marker "
+                "and ReuseParser."
+            )
         if parse_engine is not None and len(parse_engine) != len(input):
             raise ValueError(
                 "Number of parse engines must match the number of documents"
@@ -370,8 +399,25 @@ class _PipelineMixin:
         def _parse_engine_at(index: int) -> str | None:
             if parse_engine is None:
                 return None
-            engine = str(parse_engine[index] or "").strip().lower()
-            return engine or None
+            raw = str(parse_engine[index] or "").strip()
+            if not raw:
+                return None
+            # ``parse_engine`` may carry engine parameters encoded in hint
+            # syntax (``mineru(page_range=1-3,language=en)``).  Decode +
+            # validate + re-encode canonically so a direct SDK/API caller (who
+            # bypasses ``resolve_parser_directives``) gets the same rejection /
+            # coercion as the upload path; raise on a malformed directive.
+            from lightrag.parser.routing import (
+                decode_parse_engine,
+                encode_parse_engine,
+            )
+
+            engine, params, errs = decode_parse_engine(raw)
+            if errs:
+                raise ValueError(f"Invalid parse_engine {raw!r}: " + "; ".join(errs))
+            if not engine:
+                return None
+            return encode_parse_engine(engine, params) if params else engine
 
         def _process_options_at(index: int) -> str:
             if process_options is None:
@@ -429,36 +475,20 @@ class _PipelineMixin:
         source_to_doc_id: dict[str, str] = {}
         content_hash_to_doc_id: dict[str, str] = {}
         duplicate_attempts: list[dict[str, Any]] = []
-        # Per-doc I/O failures from the lightrag-format branch.  Populated when
-        # ``load_lightrag_document_content`` cannot read the user-supplied
-        # blocks.jsonl; flushed as FAILED stubs via
-        # ``apipeline_enqueue_error_documents`` inside the critical section so
-        # the UI surfaces the root cause instead of a silent empty document.
-        lightrag_load_errors: list[dict[str, Any]] = []
 
         def _add_content(
             index: int,
             content: str,
             doc_format: str,
-            *,
-            sidecar_location: str | None = None,
         ) -> None:
             file_path_canonical = file_paths_canonical[index]
 
-            # Body length excludes the {{LRdoc}} marker so duplicate-attempt
-            # bookkeeping reports the same units as raw documents.
-            # strip_lightrag_doc_prefix is a no-op for non-lightrag formats.
-            body_length = len(strip_lightrag_doc_prefix(content, doc_format))
+            body_length = len(content)
 
             # Compute content hash: skip for pending_parse (content extracted later).
-            # RAW and LIGHTRAG both hash the bare merged text so the same body
-            # carried by different envelopes (raw text vs sidecar) dedupes
-            # against itself across formats.
             content_hash: str | None = None
-            if doc_format in (FULL_DOCS_FORMAT_RAW, FULL_DOCS_FORMAT_LIGHTRAG):
-                content_hash = compute_text_content_hash(
-                    strip_lightrag_doc_prefix(content or "", doc_format)
-                )
+            if doc_format == FULL_DOCS_FORMAT_RAW:
+                content_hash = compute_text_content_hash(content or "")
 
             known_source = has_known_document_source(file_path_canonical)
             if ids is not None:
@@ -467,8 +497,6 @@ class _PipelineMixin:
                 doc_id = compute_mdhash_id(file_path_canonical, prefix="doc-")
             elif doc_format == FULL_DOCS_FORMAT_RAW:
                 doc_id = compute_mdhash_id(content or "", prefix="doc-")
-            elif content_hash:
-                doc_id = compute_mdhash_id(content_hash, prefix="doc-")
             else:
                 doc_id = compute_mdhash_id(
                     f"{file_path_canonical}-{track_id}-{index}", prefix="doc-"
@@ -514,14 +542,12 @@ class _PipelineMixin:
             }
             if content_hash:
                 content_data["content_hash"] = content_hash
-            if sidecar_location:
-                content_data["sidecar_location"] = sidecar_location
             if engine := _parse_engine_at(index):
                 content_data["parse_engine"] = engine
             if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-                source_file_name = Path(str(file_paths[index] or "").strip()).name
-                if has_known_document_source(source_file_name):
-                    content_data["source_file_name"] = source_file_name
+                source_file = Path(str(file_paths[index] or "").strip()).name
+                if has_known_document_source(source_file):
+                    content_data["source_file"] = source_file
             options_str = _process_options_at(index)
             if options_str:
                 content_data["process_options"] = options_str
@@ -532,70 +558,11 @@ class _PipelineMixin:
             content_data["chunk_options"] = _chunk_options_at(index)
             contents[doc_id] = content_data
 
-        if is_lightrag_format:
-            # LightRAG Document: no content hash dedup; content may be empty
-            for i in range(len(file_paths)):
-                path = file_paths[i]
-                raw_path = (
-                    lightrag_document_paths[i] if lightrag_document_paths else ""
-                ) or path
-                # Resolve to an absolute path so the sidecar URI carries
-                # full location info; relative paths are interpreted under
-                # input_dir.
-                p = Path(raw_path)
-                if not p.is_absolute():
-                    p = input_dir_path() / p
-                # The user may point at the ``*.blocks.jsonl`` file itself
-                # or at its containing ``*.parsed/`` directory.  Sidecars
-                # are addressed by directory, so step up when given a file.
-                sidecar_dir = (
-                    p.parent
-                    if p.suffix == ".jsonl" and p.name.endswith(".blocks.jsonl")
-                    else p
-                )
-                sidecar_location = sidecar_uri_for(sidecar_dir)
-                # Per docs/FileProcessingConfiguration-zh.md, full_docs.content
-                # for format=lightrag must be "{{LRdoc}}" + the merged body.
-                # If the blocks file cannot be read (permission, truncation,
-                # invalid JSON line), recording an empty body would let an
-                # untrue "{{LRdoc}}" record land in full_docs and desync from
-                # the on-disk blocks.jsonl.  Instead, skip this doc and flush
-                # a FAILED stub via apipeline_enqueue_error_documents after
-                # the critical section so /documents surfaces the cause and
-                # /documents/scan retries cleanly once the file is fixed.
-                try:
-                    merged_text, _ = await load_lightrag_document_content(
-                        sidecar_location
-                    )
-                except Exception as exc:
-                    error_msg = f"load_lightrag_document_content failed: {exc}"
-                    logger.warning(f"[apipeline_enqueue] {error_msg} ({raw_path})")
-                    file_size = 0
-                    blocks_path_str = sidecar_blocks_path(sidecar_location)
-                    if blocks_path_str:
-                        try:
-                            file_size = Path(blocks_path_str).stat().st_size
-                        except OSError:
-                            file_size = 0
-                    lightrag_load_errors.append(
-                        {
-                            "file_path": path,
-                            "error_description": (
-                                "Failed to load LightRAG Document blocks"
-                            ),
-                            "original_error": error_msg,
-                            "file_size": file_size,
-                        }
-                    )
-                    continue
-                summary_content = make_lightrag_doc_content(merged_text)
-                _add_content(
-                    i,
-                    summary_content,
-                    FULL_DOCS_FORMAT_LIGHTRAG,
-                    sidecar_location=sidecar_location,
-                )
-        elif ids is not None:
+        # ``ids`` outranks ``docs_format`` by design: explicit ids mark the
+        # SDK raw direct-insert path (ainsert), which always enqueues the
+        # sanitized body as RAW. pending_parse (server upload) never passes
+        # ids, so the two never legitimately combine.
+        if ids is not None:
             for i, doc in enumerate(input):
                 cleaned_content = sanitize_text_for_encoding(doc)
                 _add_content(
@@ -617,16 +584,7 @@ class _PipelineMixin:
 
         # 2. Generate document initial status (without content)
         def _initial_doc_status(content_data: dict[str, Any]) -> dict[str, Any]:
-            # For lightrag-format full_docs the persisted content carries the
-            # ``{{LRdoc}}`` marker; strip it so summary/length match raw
-            # semantics (the marker is full_docs internal bookkeeping and
-            # must not leak into doc_status).  strip_lightrag_doc_prefix
-            # internally checks parse_format, so non-lightrag formats pass
-            # through untouched.
-            body_text = strip_lightrag_doc_prefix(
-                content_data.get("content", ""),
-                content_data.get("parse_format"),
-            )
+            body_text = content_data.get("content", "")
             base: dict[str, Any] = {
                 "status": DocStatus.PENDING,
                 "content_summary": get_content_summary(body_text),
@@ -644,9 +602,9 @@ class _PipelineMixin:
                 # Mirror process_options into doc_status.metadata so admin UIs
                 # can surface the per-document strategy without a full_docs lookup.
                 metadata["process_options"] = options_str
-            source_file_name = content_data.get("source_file_name")
-            if source_file_name:
-                metadata["source_file_name"] = source_file_name
+            source_file = _read_source_file(content_data)
+            if source_file:
+                metadata["source_file"] = source_file
             if metadata:
                 base["metadata"] = metadata
             return base
@@ -830,16 +788,6 @@ class _PipelineMixin:
                         f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
                     )
 
-            # Flush lightrag-format I/O failures as FAILED stubs.  Done
-            # inside the critical section so concurrent enqueues either see
-            # the failure rows in full or not at all, and so a subsequent
-            # /documents/scan finds the stub-without-full_docs combination
-            # that document_routes treats as "delete and re-extract".
-            if lightrag_load_errors:
-                await self.apipeline_enqueue_error_documents(
-                    lightrag_load_errors, track_id=track_id
-                )
-
             # Filter new_docs to only include documents with unique IDs
             new_docs = {
                 doc_id: new_docs[doc_id]
@@ -849,13 +797,6 @@ class _PipelineMixin:
 
             if not new_docs:
                 logger.warning("No new unique documents were found.")
-                # If FAILED stubs were just flushed (lightrag-format I/O
-                # errors), the caller needs the track_id to query their
-                # status; a bare ``return None`` would also be interpreted
-                # by document_routes upload paths as "all duplicate —
-                # archive the source", silently hiding the failure.
-                if lightrag_load_errors:
-                    return track_id
                 return
 
             # 4. Store document content in full_docs and status in doc_status
@@ -873,10 +814,6 @@ class _PipelineMixin:
                 if contents[doc_id].get("content_hash"):
                     full_docs_data[doc_id]["content_hash"] = contents[doc_id][
                         "content_hash"
-                    ]
-                if contents[doc_id].get("sidecar_location"):
-                    full_docs_data[doc_id]["sidecar_location"] = contents[doc_id][
-                        "sidecar_location"
                     ]
                 if contents[doc_id].get("parse_engine"):
                     full_docs_data[doc_id]["parse_engine"] = contents[doc_id][
@@ -1029,6 +966,8 @@ class _PipelineMixin:
                         "cur_batch": 0,  # Number of files already processed
                         "request_pending": False,  # Clear any previous request
                         "cancellation_requested": False,  # Initialize cancellation flag
+                        "cancellation_reason": None,  # "internal_error" or None (user)
+                        "cancellation_detail": None,  # driver + root cause for internal
                         "latest_message": "",
                     }
                 )
@@ -1059,13 +998,31 @@ class _PipelineMixin:
                 # Check for cancellation request at the start of main loop
                 async with pipeline_status_lock:
                     if pipeline_status.get("cancellation_requested", False):
+                        # Read the cause BEFORE resetting reason/detail below.
+                        is_internal = (
+                            pipeline_status.get("cancellation_reason")
+                            == "internal_error"
+                        )
+                        label = self._cancellation_label(pipeline_status)
                         pipeline_status["request_pending"] = False
                         pipeline_status["cancellation_requested"] = False
 
-                        log_message = "Pipeline cancelled by user"
-                        logger.info(log_message)
+                        if is_internal:
+                            # Unrecoverable storage error: halting is intentional
+                            # (auto-retry into a broken backend will not recover).
+                            # Surface at error level with an actionable message;
+                            # affected docs stay queued (PENDING/FAILED) and are
+                            # picked up when processing is restarted after the
+                            # storage issue is resolved.
+                            log_message = self._internal_halt_message(label)
+                            logger.error(log_message)
+                        else:
+                            log_message = f"Pipeline cancelled ({label})"
+                            logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
+                        pipeline_status["cancellation_reason"] = None
+                        pipeline_status["cancellation_detail"] = None
 
                         # Exit directly, skipping request_pending check
                         return
@@ -1143,8 +1100,8 @@ class _PipelineMixin:
                 )
 
         finally:
-            log_message = "Enqueued document processing pipeline stopped"
-            logger.info(log_message)
+            stopped_message = "Enqueued document processing pipeline stopped"
+            logger.info(stopped_message)
             # If the loop already released ``busy`` under the atomic exit
             # check, don't clobber it here — a concurrent enqueue may have
             # observed busy=False and started a new processing pass that
@@ -1153,11 +1110,31 @@ class _PipelineMixin:
             async with pipeline_status_lock:
                 if not busy_released_in_loop:
                     pipeline_status["busy"] = False
+                # An internal-error abort normally exits via the batch's
+                # ``break`` (not the loop-top cancellation handler, which
+                # logs + clears the reason itself), so without this the only
+                # visible trace would be the generic "stopped" line. Surface
+                # the actionable halt reason here too, BEFORE clearing the
+                # reason/detail. Read it first so _cancellation_label still
+                # sees the cause.
+                internal_halt = None
+                if pipeline_status.get("cancellation_reason") == "internal_error":
+                    internal_halt = self._internal_halt_message(
+                        self._cancellation_label(pipeline_status)
+                    )
+                    logger.error(internal_halt)
                 pipeline_status["cancellation_requested"] = (
                     False  # Always reset cancellation flag
                 )
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                pipeline_status["cancellation_reason"] = None
+                pipeline_status["cancellation_detail"] = None
+                pipeline_status["history_messages"].append(stopped_message)
+                if internal_halt is not None:
+                    pipeline_status["history_messages"].append(internal_halt)
+                    # Prefer the actionable halt reason as the latest message.
+                    pipeline_status["latest_message"] = internal_halt
+                else:
+                    pipeline_status["latest_message"] = stopped_message
 
     # ============================================================
     # Pipeline orchestration
@@ -1183,59 +1160,157 @@ class _PipelineMixin:
             to_process_docs, total_files
         )
 
+        # Lock one registry snapshot for the whole batch; build one parse
+        # queue per distinct queue_group (always includes "native").
+        parser_specs = parser_specs_snapshot()
+        queue_groups = {spec.queue_group for spec in parser_specs.values()}
+        parse_queues = {
+            group: asyncio.Queue(maxsize=self.queue_size_parse)
+            for group in queue_groups
+        }
+
         ctx = _BatchRunContext(
             pipeline_status=pipeline_status,
             pipeline_status_lock=pipeline_status_lock,
             semaphore=asyncio.Semaphore(self.max_parallel_insert),
             total_files=total_files,
-            q_native=asyncio.Queue(maxsize=self.queue_size_default),
-            q_mineru=asyncio.Queue(maxsize=self.queue_size_default),
-            q_docling=asyncio.Queue(maxsize=self.queue_size_default),
-            q_analyze=asyncio.Queue(maxsize=self.queue_size_default),
+            parse_queues=parse_queues,
+            parser_specs=parser_specs,
+            q_analyze=asyncio.Queue(maxsize=self.queue_size_analyze),
             q_process=asyncio.Queue(maxsize=self.queue_size_insert),
         )
 
+        def _group_concurrency(group: str) -> int:
+            # Built-in groups keep their existing LightRAG fields (env +
+            # programmatic overrides preserved). Third-party groups use the
+            # owner spec's ``concurrency`` (the registrant baked in any env
+            # override at registration); an unowned group shares native's.
+            field_name = f"max_parallel_parse_{group}"
+            if hasattr(self, field_name):
+                # A spec declaring ``concurrency`` on a built-in group is a
+                # plugin-author misconfig: the pool is sized by the instance
+                # field, so surface the ignored value instead of silently
+                # dropping it.
+                ignored = [
+                    s.engine_name
+                    for s in parser_specs.values()
+                    if s.queue_group == group and s.concurrency is not None
+                ]
+                if ignored:
+                    logger.warning(
+                        "[parse] queue_group %r is built-in (sized by %s=%d); "
+                        "spec-level concurrency from %s is ignored",
+                        group,
+                        field_name,
+                        getattr(self, field_name),
+                        ignored,
+                    )
+                return getattr(self, field_name)
+            owners = [
+                s
+                for s in parser_specs.values()
+                if s.queue_group == group and s.concurrency is not None
+            ]
+            if len(owners) > 1:
+                raise ValueError(
+                    f"queue_group {group!r} has multiple concurrency owners: "
+                    f"{[s.engine_name for s in owners]}"
+                )
+            if owners:
+                return owners[0].concurrency
+            return self.max_parallel_parse_native
+
+        # Resolve every group's worker count BEFORE spawning any task:
+        # _group_concurrency can still raise (a queue_group with multiple
+        # concurrency owners). Raising here — while zero workers exist — avoids
+        # orphaning already-spawned workers outside the try/finally below (they
+        # would block forever on an empty queue, never cancelled).
+        group_worker_counts = {
+            group: max(1, _group_concurrency(group)) for group in parse_queues
+        }
+
         workers: list[asyncio.Task] = []
-        for _ in range(max(1, self.max_parallel_parse_native)):
-            workers.append(
-                asyncio.create_task(self._parse_worker("native", ctx.q_native, ctx))
-            )
-        for _ in range(max(1, self.max_parallel_parse_mineru)):
-            workers.append(
-                asyncio.create_task(self._parse_worker("mineru", ctx.q_mineru, ctx))
-            )
-        for _ in range(max(1, self.max_parallel_parse_docling)):
-            workers.append(
-                asyncio.create_task(self._parse_worker("docling", ctx.q_docling, ctx))
-            )
+        for group, queue in parse_queues.items():
+            for _ in range(group_worker_counts[group]):
+                workers.append(
+                    asyncio.create_task(self._parse_worker(group, queue, ctx))
+                )
         for _ in range(max(1, self.max_parallel_analyze)):
             workers.append(asyncio.create_task(self._analyze_worker(ctx)))
         for _ in range(max(1, self.max_parallel_insert)):
             workers.append(asyncio.create_task(self._process_worker(ctx)))
 
-        # Add pending files to the correct parsing queue
-        for doc_id, status_doc in to_process_docs.items():
-            content_data = await self.full_docs.get_by_id(doc_id) or {}
-            engine = resolve_stored_document_parser_engine(
-                file_path=getattr(status_doc, "file_path", "unknown_source"),
-                content_data=content_data,
+        # The workers above are live asyncio tasks; their cancellation MUST be
+        # guaranteed even if enqueuing or a queue join raises (e.g. an orchestrator-
+        # level storage call fails during a backend outage). Without this try/finally
+        # an escape here would orphan the workers — they keep draining the queues and
+        # appending to history_messages while the caller's finally has already cleared
+        # ``busy`` — leaving busy=False while processing visibly continues.
+        try:
+            # Add pending files to the correct parsing queue
+            for current_file_number, (doc_id, status_doc) in enumerate(
+                to_process_docs.items(), start=1
+            ):
+                file_path = getattr(status_doc, "file_path", "unknown_source")
+                # Per-document isolation: the engine-routing get_by_id is the only
+                # orchestrator-level storage read in this loop. A transient/corrupt
+                # single-doc failure must FAIL just that document and continue with
+                # the rest of the batch — not escape and abort the whole batch.
+                # During a full outage _finalize_doc_failure's own doc_status write
+                # also raises; that escape is caught by the finally below (workers
+                # are cleanly cancelled) and the batch aborts as a whole.
+                try:
+                    content_data = await self.full_docs.get_by_id(doc_id) or {}
+                except Exception as e:
+                    await self._finalize_doc_failure(
+                        doc_id=doc_id,
+                        status_doc=status_doc,
+                        file_path=file_path,
+                        error=e,
+                        stage_label="parse",
+                        current_file_number=current_file_number,
+                        total_files=total_files,
+                        failed_chunks_snapshot=([], 0),
+                        pending_tasks=[],
+                        metadata_extra={},
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                    )
+                    continue
+                # Select the concurrency pool by the engine's queue_group
+                # (snapshot). The worker re-resolves the actual parser per-doc;
+                # this only picks which queue/pool the doc waits in. Unknown
+                # group -> native pool (defensive; never KeyError).
+                key = resolve_stored_document_parser_engine(
+                    file_path=file_path,
+                    content_data=content_data,
+                )
+                spec = parser_specs.get(key)
+                group = spec.queue_group if spec is not None else "native"
+                queue = ctx.parse_queues.get(group, ctx.parse_queues["native"])
+                await queue.put((doc_id, status_doc))
+
+            await asyncio.gather(*(q.join() for q in ctx.parse_queues.values()))
+            await ctx.q_analyze.join()
+            await ctx.q_process.join()
+        finally:
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+        # If the batch aborted on an internal storage error, the shared
+        # cross-file flush buffers may still hold records from the documents
+        # that were marked FAILED. Discard them now (workers are stopped, so
+        # this does not race a flush) so they are neither re-flushed nor
+        # carried into the next batch — every affected document is reprocessed
+        # on retry. See _discard_pending_index_ops / drop_pending_index_ops.
+        async with pipeline_status_lock:
+            internal_abort = (
+                pipeline_status.get("cancellation_requested", False)
+                and pipeline_status.get("cancellation_reason") == "internal_error"
             )
-            if engine == "mineru":
-                await ctx.q_mineru.put((doc_id, status_doc))
-            elif engine == "docling":
-                await ctx.q_docling.put((doc_id, status_doc))
-            else:
-                await ctx.q_native.put((doc_id, status_doc))
-
-        await asyncio.gather(
-            ctx.q_native.join(), ctx.q_mineru.join(), ctx.q_docling.join()
-        )
-        await ctx.q_analyze.join()
-        await ctx.q_process.join()
-
-        for w in workers:
-            w.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
+        if internal_abort:
+            await self._discard_pending_index_ops()
 
     async def _validate_and_fix_document_consistency(
         self,
@@ -1321,51 +1396,80 @@ class _PipelineMixin:
         #     pipeline_status["latest_message"] = final_message
         #     pipeline_status["history_messages"].append(final_message)
 
-        # Reset interrupted documents that pass consistency checks to PENDING status
+        # Bring every to-be-processed document into a clean PENDING state.
+        # Two cases are handled here so stale per-attempt metadata never
+        # survives into the PENDING wait window (where the WebUI would render
+        # last attempt's parse/analyze timings):
+        #   * interrupted docs (PROCESSING/PARSING/ANALYZING/FAILED) are reset
+        #     to PENDING, clearing error_msg and resetting metadata to the
+        #     enqueue-time directives only;
+        #   * docs that are ALREADY PENDING but still carry per-attempt fields
+        #     (e.g. reset by an older build that preserved them) are normalised
+        #     in place to directives-only.
+        # In BOTH cases the cleaned metadata is mirrored back onto the in-memory
+        # ``status_doc`` so the downstream parse worker — which no longer scrubs
+        # stale keys itself — carries the clean dict forward through
+        # ``doc_status_transition_metadata`` at every later transition.
         docs_to_reset = {}
         reset_count = 0
+        normalized_count = 0
 
         for doc_id, status_doc in to_process_docs.items():
             # Check if document has corresponding content in full_docs (consistency check)
             content_data = await self.full_docs.get_by_id(doc_id)
-            if content_data:  # Document passes consistency check
-                # Check if document is in interrupted status
-                if hasattr(status_doc, "status") and status_doc.status in [
-                    DocStatus.PROCESSING,
-                    DocStatus.FAILED,
-                    DocStatus.PARSING,
-                    DocStatus.ANALYZING,
-                ]:
-                    preserved_chunks_list, preserved_chunks_count = (
-                        chunk_fields_from_status_doc(status_doc)
-                    )
-                    resolved_file_path = resolve_doc_file_path(
-                        status_doc=status_doc,
-                        content_data=content_data,
-                    )
-                    # Prepare document for status reset to PENDING
-                    docs_to_reset[doc_id] = {
-                        "status": DocStatus.PENDING,
-                        "content_summary": status_doc.content_summary,
-                        "content_length": status_doc.content_length,
-                        "chunks_count": preserved_chunks_count,
-                        "chunks_list": preserved_chunks_list,
-                        "created_at": status_doc.created_at,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                        "file_path": resolved_file_path,
-                        "track_id": getattr(status_doc, "track_id", ""),
-                        "content_hash": getattr(status_doc, "content_hash", None),
-                        # Clear transient error / processing fields but preserve
-                        # long-lived per-doc metadata (process_options) seeded
-                        # at enqueue time.
-                        "error_msg": "",
-                        "metadata": doc_status_transition_metadata(status_doc),
-                    }
+            if not content_data:  # Fails consistency check; handled above
+                continue
+            status = getattr(status_doc, "status", None)
+            is_interrupted = status in (
+                DocStatus.PROCESSING,
+                DocStatus.FAILED,
+                DocStatus.PARSING,
+                DocStatus.ANALYZING,
+            )
+            # Only normalise an already-PENDING doc when it actually carries a
+            # stale per-attempt field — a precise trigger so unrelated/custom
+            # metadata on a clean PENDING is never rewritten or dropped.
+            needs_pending_normalize = (
+                status == DocStatus.PENDING
+                and doc_status_metadata_has_attempt_fields(status_doc)
+            )
+            if not (is_interrupted or needs_pending_normalize):
+                continue
 
-                    # Update the status in to_process_docs as well
-                    status_doc.status = DocStatus.PENDING
-                    status_doc.file_path = resolved_file_path
-                    reset_count += 1
+            preserved_chunks_list, preserved_chunks_count = (
+                chunk_fields_from_status_doc(status_doc)
+            )
+            resolved_file_path = resolve_doc_file_path(
+                status_doc=status_doc,
+                content_data=content_data,
+            )
+            # Directives-only metadata: drop per-attempt timing/result fields,
+            # keep process_options / source_file (legacy source_file_name
+            # tolerant).
+            reset_metadata = doc_status_reset_metadata(status_doc)
+            docs_to_reset[doc_id] = {
+                "status": DocStatus.PENDING,
+                "content_summary": status_doc.content_summary,
+                "content_length": status_doc.content_length,
+                "chunks_count": preserved_chunks_count,
+                "chunks_list": preserved_chunks_list,
+                "created_at": status_doc.created_at,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "file_path": resolved_file_path,
+                "track_id": getattr(status_doc, "track_id", ""),
+                "content_hash": getattr(status_doc, "content_hash", None),
+                "error_msg": "",
+                "metadata": reset_metadata,
+            }
+
+            # Mirror onto the in-memory status_doc so workers carry it forward.
+            status_doc.status = DocStatus.PENDING
+            status_doc.file_path = resolved_file_path
+            status_doc.metadata = reset_metadata
+            if is_interrupted:
+                reset_count += 1
+            else:
+                normalized_count += 1
 
         # Update doc_status storage if there are documents to reset
         if docs_to_reset:
@@ -1375,6 +1479,12 @@ class _PipelineMixin:
                 reset_message = (
                     f"Reset {reset_count} documents from "
                     "PARSING/ANALYZING/PROCESSING/FAILED to PENDING status"
+                    + (
+                        f"; normalized {normalized_count} PENDING document(s) "
+                        "with stale metadata"
+                        if normalized_count
+                        else ""
+                    )
                 )
                 logger.info(reset_message)
                 pipeline_status["latest_message"] = reset_message
@@ -1448,6 +1558,14 @@ class _PipelineMixin:
         """
         while True:
             item = await in_q.get()
+            # Best-effort engine attribution for the FAILED metadata when the
+            # failure happens before the per-doc engine is resolved below.
+            resolved_engine_w: str | None = None
+            # doc_status ``parse_engine`` value, computed once below and used at
+            # BOTH the success stamp and the failure engine_hint so the field
+            # never jumps across transitions. Encoded (engine+params) when the
+            # engine that runs matches the stored engine, else bare effective.
+            status_engine_w: str | None = None
             try:
                 doc_id_w, status_doc_w = item
                 file_path_w = getattr(status_doc_w, "file_path", "unknown_source")
@@ -1473,37 +1591,30 @@ class _PipelineMixin:
                         f"Document content not found in full_docs for doc_id: {doc_id_w}"
                     )
                 if isinstance(status_doc_w.metadata, dict):
-                    source_file_name_w = status_doc_w.metadata.get("source_file_name")
-                    if source_file_name_w and not content_data_w.get(
-                        "source_file_name"
-                    ):
-                        content_data_w["source_file_name"] = source_file_name_w
-                # Stamp parsing_start_time on the in-memory status_doc so
+                    source_file_w = _read_source_file(status_doc_w.metadata)
+                    if source_file_w:
+                        # Normalize the legacy ``source_file_name`` onto the new
+                        # key in the in-memory status metadata so the carry-over
+                        # allowlist (which no longer lists ``source_file_name``)
+                        # preserves it through the PARSING upsert below. Without
+                        # this, a retry after a parse failure — before full_docs
+                        # is rewritten — would no longer resolve the hinted
+                        # source file. Idempotent when the new key already exists.
+                        status_doc_w.metadata["source_file"] = source_file_w
+                        if not _read_source_file(content_data_w):
+                            content_data_w["source_file"] = source_file_w
+                # Stamp parse_start_time on the in-memory status_doc so
                 # carry-over (_DOC_STATUS_METADATA_CARRY_OVER_KEYS) writes it
                 # into doc_status here and preserves it across every
                 # subsequent state transition for stage-duration analysis.
                 if not isinstance(status_doc_w.metadata, dict):
                     status_doc_w.metadata = {}
-                # Drop stale per-attempt fields from any prior failed/retried
-                # attempt before stamping the new parsing_start_time. All of
-                # these are written by either this worker (cache-hit /
-                # cache-miss branches below) or the downstream analyze worker,
-                # and would otherwise be carried forward via carry-over,
-                # skewing stage-duration metrics and the raw-cache-hit /
-                # skipped signals for the new attempt. The cache-hit mirror
-                # block only writes ``parse_stage_skipped`` when the parser
-                # actually returns a hit; the cache-miss branch only writes
-                # ``parsing_end_time`` when parse actually runs; the analyze
-                # worker writes its pair on re-entry.
-                for _stale_key in (
-                    "parsing_end_time",
-                    "parse_stage_skipped",
-                    "analyzing_start_time",
-                    "analyzing_end_time",
-                    "analyzing_stage_skipped",
-                ):
-                    status_doc_w.metadata.pop(_stale_key, None)
-                status_doc_w.metadata["parsing_start_time"] = int(time.time())
+                # Stale per-attempt fields (parse_end_time / *_stage_skipped /
+                # analyzing_*) from a prior failed/retried attempt are already
+                # scrubbed when the document is brought to PENDING in
+                # _validate_and_fix_document_consistency (the single cleanup
+                # point), so they are not carried into this PARSING upsert.
+                status_doc_w.metadata["parse_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
                     doc_id=doc_id_w,
                     status=DocStatus.PARSING,
@@ -1515,17 +1626,87 @@ class _PipelineMixin:
                     logger.info(log_message)
                     ctx.pipeline_status["latest_message"] = log_message
                     ctx.pipeline_status["history_messages"].append(log_message)
-                if engine == "mineru":
-                    parsed_data_w = await self.parse_mineru(
-                        doc_id_w, file_path_w, content_data_w
+                # Resolve the actual parser per-doc from the batch snapshot
+                # (snapshot-consistent: a mid-batch register_parser cannot be
+                # picked up here). ``engine`` is only the queue-group/pool id.
+                specs = ctx.parser_specs
+                doc_format_w = content_data_w.get("parse_format", FULL_DOCS_FORMAT_RAW)
+                key = resolve_stored_document_parser_engine(
+                    file_path=file_path_w, content_data=content_data_w
+                )
+                # PENDING_PARSE must resolve to a real (user-selectable) engine;
+                # an internal key (reuse/passthrough) wrongly stored as
+                # parse_engine is corrupt -> fail just this doc.
+                if doc_format_w == FULL_DOCS_FORMAT_PENDING_PARSE:
+                    key_spec = specs.get(key)
+                    if key_spec is not None and not key_spec.user_selectable:
+                        raise ValueError(
+                            f"internal parser {key!r} is not a valid "
+                            f"PENDING_PARSE engine: doc_id={doc_id_w}"
+                        )
+                parser = get_parser(key, specs=specs)
+                if parser is None:
+                    logger.warning(
+                        "[parse] engine %r not registered; falling back to legacy",
+                        key,
                     )
-                elif engine == "docling":
-                    parsed_data_w = await self.parse_docling(
-                        doc_id_w, file_path_w, content_data_w
+                effective_key = key if parser is not None else "legacy"
+                resolved_engine_w = effective_key
+                # When the stored parse_engine carries engine params AND the
+                # engine that actually ran matches it, preserve the encoded
+                # directive for the doc_status stamp so the per-file params stay
+                # user-visible. Left None otherwise (no params, or an engine
+                # mismatch / internal passthrough-reuse key) so the existing
+                # resolver logic decides the displayed engine unchanged.
+                _stored_pe_w = (
+                    content_data_w.get("parse_engine")
+                    if isinstance(content_data_w, dict)
+                    else None
+                )
+                if _stored_pe_w and "(" in str(_stored_pe_w):
+                    from lightrag.parser.routing import (
+                        decode_parse_engine,
+                        encode_parse_engine,
+                        normalize_parser_engine,
                     )
-                else:
-                    parsed_data_w = await self.parse_native(
-                        doc_id_w, file_path_w, content_data_w
+
+                    if normalize_parser_engine(_stored_pe_w) == effective_key:
+                        _, _stored_params_w, _ = decode_parse_engine(_stored_pe_w)
+                        if _stored_params_w:
+                            status_engine_w = encode_parse_engine(
+                                effective_key, _stored_params_w
+                            )
+                parser = parser or get_parser("legacy", specs=specs)
+                # Suffix gate only for real engines on a PENDING_PARSE parse;
+                # reuse/passthrough (raw/lightrag/unknown_source) are skipped.
+                if (
+                    doc_format_w == FULL_DOCS_FORMAT_PENDING_PARSE
+                    and effective_key in supported_parser_engines(specs)
+                ):
+                    suffix_w = parser_suffix(file_path_w)
+                    if suffix_w not in suffix_capabilities(effective_key, specs):
+                        raise ValueError(
+                            f"engine {effective_key!r} does not support "
+                            f".{suffix_w or '<no suffix>'}: doc_id={doc_id_w}"
+                        )
+                parsed_data_w = (
+                    await parser.parse(
+                        ParseContext(self, doc_id_w, file_path_w, content_data_w)
+                    )
+                ).to_dict()
+
+                # Align the in-memory body with the sanitized copy that
+                # _persist_parsed_full_docs wrote to full_docs: a parser may
+                # return ParseResult(content=...) carrying the pre-clean text
+                # (e.g. legacy returns the raw extraction verbatim). Downstream
+                # this body feeds content_summary / content_length on doc_status
+                # and the duplicate-check length, so leaving C0 control chars
+                # (incl. NUL, which breaks PostgreSQL text writes) here would let
+                # them reach doc_status. No-op for sidecar engines (already
+                # cleaned at write_sidecar) and for already-clean content.
+                if isinstance(parsed_data_w.get("content"), str):
+                    parsed_data_w["content"] = strip_control_characters(
+                        parsed_data_w["content"]
                     )
 
                 # Mirror non-fatal parser warnings (e.g. legacy docx tables
@@ -1538,18 +1719,53 @@ class _PipelineMixin:
                         status_doc_w.metadata = {}
                     status_doc_w.metadata["parse_warnings"] = parse_warnings_payload_w
 
-                # Mirror raw-bundle cache-hit flag from mineru/docling so the
-                # next upsert (ANALYZING) carries it into doc_status; cache-
+                # Mirror raw-bundle cache-hit flag from mineru/docling; cache-
                 # miss runs (including parse_native, which has no cache
-                # concept) stamp ``parsing_end_time`` instead so post-mortem
+                # concept) stamp ``parse_end_time`` instead so post-mortem
                 # can derive the parse-stage duration. The two fields are
-                # mutually exclusive per attempt.
+                # mutually exclusive per attempt. Both are persisted right
+                # below (before the doc enters q_analyze) so doc_status
+                # reflects the parse end immediately; carry-over keeps them
+                # visible across every later transition.
                 if not isinstance(status_doc_w.metadata, dict):
                     status_doc_w.metadata = {}
                 if parsed_data_w.get("parse_stage_skipped"):
                     status_doc_w.metadata["parse_stage_skipped"] = True
                 else:
-                    status_doc_w.metadata["parsing_end_time"] = int(time.time())
+                    status_doc_w.metadata["parse_end_time"] = int(time.time())
+
+                # Stamp the parse-stage extraction metadata (parse_format /
+                # parse_engine) now that the engine has run and reported its
+                # actual format/engine. These are determined here, so record
+                # them at the PARSING upsert below instead of deferring to
+                # PROCESSING; carry-over (_DOC_STATUS_METADATA_CARRY_OVER_KEYS)
+                # then preserves them across ANALYZING → PROCESSING → PROCESSED.
+                # ``resolve_doc_status_parse_engine`` is the shared resolver
+                # used by process_single_document too, so the value never jumps
+                # between the early and final writes. The engine source order
+                # mirrors the process stage's read from full_docs: the parser's
+                # own report wins, then the enqueue-time directive on
+                # content_data (raw passthrough), then the format-based default.
+                parse_format_w = (
+                    parsed_data_w.get("parse_format") or FULL_DOCS_FORMAT_RAW
+                )
+                # ``status_engine_w`` (computed pre-parse) is the encoded
+                # directive for the engine that actually ran; prefer it so the
+                # recorded value keeps the per-file params, then the parser's
+                # own bare report, then the stored value.
+                explicit_engine_w = (
+                    status_engine_w
+                    or parsed_data_w.get("parse_engine")
+                    or (
+                        content_data_w.get("parse_engine")
+                        if isinstance(content_data_w, dict)
+                        else None
+                    )
+                )
+                status_doc_w.metadata["parse_format"] = parse_format_w
+                status_doc_w.metadata["parse_engine"] = resolve_doc_status_parse_engine(
+                    parse_format_w, explicit_engine_w
+                )
 
                 # parse_* may have patched content_hash for
                 # pending_parse → raw transitions.
@@ -1575,6 +1791,35 @@ class _PipelineMixin:
                 ):
                     continue
 
+                # Compute content-derived fields here while the parse worker
+                # still holds the body, and stamp them on status_doc so they
+                # are persisted at the PARSING transition below. Downstream
+                # stages (analyze / process) re-read the body from full_docs by
+                # doc_id instead of carrying it through q_analyze / q_process,
+                # keeping large documents out of those in-memory buffers. Parse
+                # has already persisted the parsed body to full_docs (lightrag /
+                # raw), so the re-read is guaranteed to find it.
+                parsed_content_w = parsed_data_w.get("content", "") or ""
+                status_doc_w.content_summary = get_content_summary(parsed_content_w)
+                status_doc_w.content_length = len(parsed_content_w)
+
+                # Persist the parse-stage outcome to doc_status now, before the
+                # doc waits in q_analyze, so parse_end_time / parse_stage_skipped
+                # reflect the actual end of parsing instead of only landing at the
+                # ANALYZING transition via carry-over. content_hash is already
+                # refreshed and duplicates are filtered out by this point.
+                await self._upsert_doc_status_transition(
+                    doc_id=doc_id_w,
+                    status=DocStatus.PARSING,
+                    status_doc=status_doc_w,
+                    file_path=file_path_w,
+                )
+
+                # Drop the heavy body from the queue payload; q_analyze /
+                # q_process now carry only lightweight metadata (blocks_path,
+                # parse_format, flags). process_single_document re-reads the
+                # body from full_docs by doc_id.
+                parsed_data_w.pop("content", None)
                 await ctx.q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
             except PipelineCancelledException:
                 # Cancellation raised from inside the parse engine (future-
@@ -1592,16 +1837,32 @@ class _PipelineMixin:
                 )
             except Exception as e:
                 logger.error(f"Parse worker failed ({engine}): {e}")
+                # Mirror the pre-deferral enqueue-time error documents:
+                # content_summary (when empty) + metadata error_type /
+                # error_stage / parse_engine, so the WebUI list and detail
+                # views describe the failure instead of showing a blank row.
+                extra_fields_w, metadata_extra_w = doc_status_parse_failure_fields(
+                    e,
+                    status_doc=status_doc_w,
+                    engine_hint=status_engine_w or resolved_engine_w or engine,
+                )
                 try:
                     await self._upsert_doc_status_transition(
                         doc_id=doc_id_w,
                         status=DocStatus.FAILED,
                         status_doc=status_doc_w,
                         file_path=getattr(status_doc_w, "file_path", "unknown_source"),
-                        extra_fields={"error_msg": str(e)},
+                        extra_fields=extra_fields_w,
+                        metadata_extra=metadata_extra_w,
                     )
-                except Exception:
-                    pass
+                except Exception as upsert_err:
+                    # The storage backend may be unavailable too (e.g. the same
+                    # outage that failed the parse). Don't re-raise — that would
+                    # take down the worker — but log so the doc stuck in PARSING
+                    # is diagnosable instead of failing silently.
+                    logger.error(
+                        f"Failed to record FAILED status for {doc_id_w}: {upsert_err}"
+                    )
             finally:
                 in_q.task_done()
 
@@ -1634,11 +1895,11 @@ class _PipelineMixin:
                         pipeline_status_lock=ctx.pipeline_status_lock,
                     )
                     continue
-                refreshed_content_w = parsed_data_w.get("content", "") or ""
-                refreshed_summary_w = get_content_summary(refreshed_content_w)
-                refreshed_length_w = len(refreshed_content_w)
-                status_doc_w.content_summary = refreshed_summary_w
-                status_doc_w.content_length = refreshed_length_w
+                # content_summary / content_length were computed by the parse
+                # worker (which held the body) and are already set on this
+                # status_doc; the body is no longer carried through the queue,
+                # and analyze_multimodal works off the on-disk sidecar
+                # (blocks_path), not the body, so no re-read is needed here.
                 # Stamp analyzing_start_time so per-stage durations stay
                 # derivable from doc_status even after PROCESSED / FAILED;
                 # carry-over preserves it across later upserts.
@@ -1672,13 +1933,29 @@ class _PipelineMixin:
                 #     exception (generic ``except Exception``) or hit a
                 #     malformed/empty sidecar early return. Failure is not a
                 #     skip AND not a completion, so write neither field.
-                # The skipped/end_time pair is mutually exclusive.
+                # The skipped/end_time pair is mutually exclusive. The two
+                # outcome-bearing branches persist immediately below (before
+                # the doc enters q_process) so analyzing_end_time /
+                # analyzing_stage_skipped reflect the actual end of analysis
+                # rather than only landing at the PROCESSING transition.
                 if not isinstance(status_doc_w.metadata, dict):
                     status_doc_w.metadata = {}
+                analyze_outcome_recorded = False
                 if analyzed.pop("analyzing_stage_skipped", False):
                     status_doc_w.metadata["analyzing_stage_skipped"] = True
+                    analyze_outcome_recorded = True
                 elif analyzed.get("multimodal_processed"):
                     status_doc_w.metadata["analyzing_end_time"] = int(time.time())
+                    analyze_outcome_recorded = True
+                # Soft-failed attempts (neither flag) write nothing new, so skip
+                # the extra upsert; PROCESSING will be their next doc_status write.
+                if analyze_outcome_recorded:
+                    await self._upsert_doc_status_transition(
+                        doc_id=doc_id_w,
+                        status=DocStatus.ANALYZING,
+                        status_doc=status_doc_w,
+                        file_path=file_path_w,
+                    )
                 await ctx.q_process.put((doc_id_w, status_doc_w, analyzed))
             except PipelineCancelledException:
                 # In-flight cancellation surfaced from analyze_multimodal
@@ -1708,8 +1985,13 @@ class _PipelineMixin:
                         file_path=getattr(status_doc_w, "file_path", "unknown_source"),
                         extra_fields={"error_msg": str(e)},
                     )
-                except Exception:
-                    pass
+                except Exception as upsert_err:
+                    # Mirror _parse_worker: log instead of swallowing so a
+                    # storage write failure leaves the doc stuck in ANALYZING
+                    # with a diagnosable trail rather than silently.
+                    logger.error(
+                        f"Failed to record FAILED status for {doc_id_w}: {upsert_err}"
+                    )
             finally:
                 ctx.q_analyze.task_done()
 
@@ -1725,6 +2007,24 @@ class _PipelineMixin:
                     parsed_data=parsed_data_w,
                     ctx=ctx,
                 )
+            except Exception as e:
+                # process_single_document handles its own per-doc failures; an
+                # escape here means even the FAILED-status write failed (e.g.
+                # the doc_status backend is down). Do NOT let the worker die —
+                # that strands the remaining queued items and hangs
+                # q_process.join() forever, wedging the pipeline busy. Route it
+                # to the batch-abort path (same flag as IndexFlushError) and
+                # keep draining so the batch winds down cleanly. CancelledError
+                # is a BaseException, not caught here, so a normal worker
+                # cancellation at batch end still propagates.
+                logger.error(f"Unhandled error in process worker; aborting batch: {e}")
+                logger.error(traceback.format_exc())
+                async with ctx.pipeline_status_lock:
+                    ctx.pipeline_status["cancellation_requested"] = True
+                    ctx.pipeline_status["cancellation_reason"] = "internal_error"
+                    ctx.pipeline_status["cancellation_detail"] = (
+                        f"process worker unhandled error: {e}"
+                    )
             finally:
                 ctx.q_process.task_done()
 
@@ -1752,7 +2052,7 @@ class _PipelineMixin:
         file_path = resolve_doc_file_path(status_doc=status_doc)
         current_file_number = 0
         file_extraction_stage_ok = False
-        processing_start_time = int(time.time())
+        process_start_time = int(time.time())
         first_stage_tasks: list[asyncio.Task] = []
         entity_relation_task: asyncio.Task | None = None
         chunks: dict[str, Any] = {}
@@ -1813,7 +2113,15 @@ class _PipelineMixin:
                         )
                         del ctx.pipeline_status["history_messages"][:-5000]
 
-                content = parsed_data.get("content", "")
+                # The parsed body is no longer carried through q_analyze /
+                # q_process (it would pin large documents in memory). Re-read it
+                # from full_docs (already fetched into content_data above) and
+                # strip the lightrag marker according to the stored parse_format
+                # — parse persisted the body for every engine before enqueue.
+                content = strip_lightrag_doc_prefix(
+                    (content_data or {}).get("content"),
+                    (content_data or {}).get("parse_format"),
+                )
 
                 # Decode per-document processing options once; later stages
                 # (multimodal hook / KG extraction) re-read them from
@@ -1910,6 +2218,7 @@ class _PipelineMixin:
                             content,
                             p_chunk_size,
                             blocks_path=p_blocks_path,
+                            doc_id=doc_id,
                             **p_opts,
                         )
                     elif strategy == "R":
@@ -1968,6 +2277,7 @@ class _PipelineMixin:
                             self.tokenizer,
                             content,
                             f_chunk_size,
+                            _emit_source_span=True,
                             **f_opts,
                         )
                 else:
@@ -2003,6 +2313,14 @@ class _PipelineMixin:
                     logger.info(
                         f"Chunking F(legacy): {chunk_opts_str}, doc_id: {doc_id}"
                     )
+                    from lightrag.chunker import chunking_by_token_size
+
+                    # Only the unmodified default fixed-token chunker understands the
+                    # private ``_emit_source_span`` kwarg; a user-supplied
+                    # ``chunking_func`` must not receive it.
+                    legacy_kwargs = {}
+                    if self.chunking_func is chunking_by_token_size:
+                        legacy_kwargs["_emit_source_span"] = True
                     chunking_result = self.chunking_func(
                         self.tokenizer,
                         content,
@@ -2013,6 +2331,7 @@ class _PipelineMixin:
                             self.chunk_overlap_token_size,
                         ),
                         legacy_chunk_size,
+                        **legacy_kwargs,
                     )
                 if inspect.isawaitable(chunking_result):
                     chunking_result = await chunking_result
@@ -2041,13 +2360,13 @@ class _PipelineMixin:
                 )
                 extraction_meta = {
                     "parse_format": persisted_format,
-                    "parse_engine": persisted_engine
-                    or (
-                        "native"
-                        if persisted_format == FULL_DOCS_FORMAT_LIGHTRAG
-                        else "legacy"
+                    # Shared resolver with the parse stage (_parse_worker), so a
+                    # field already stamped at PARSING re-writes to the same
+                    # value here — no value jump across the transition.
+                    "parse_engine": resolve_doc_status_parse_engine(
+                        persisted_format, persisted_engine
                     ),
-                    "chunking_method": (
+                    "chunk_method": (
                         # Explicit selector in process_options: reflect
                         # the dispatched strategy.  ``fixed_token_fallback``
                         # is preserved as a defensive label in case a
@@ -2120,6 +2439,35 @@ class _PipelineMixin:
                             f"{original_chunk_count} -> {len(chunking_result)}"
                         )
 
+                # Backfill block provenance for F/R/V chunks (P already carries
+                # sidecars; multimodal chunks too). Runs on the final, post-split
+                # chunk list so each slice maps precisely to the block(s) its
+                # content covers. Raises ChunkBlockMatchError -> doc FAILED when a
+                # chunk cannot be located in blocks.jsonl.
+                #
+                # Gated to the built-in F/R/V strategies — or the legacy path only
+                # when ``chunking_func`` is still the unmodified default fixed-token
+                # chunker. A user-supplied ``chunking_func`` may emit summaries /
+                # rewritten text that cannot be located in blocks.jsonl, which would
+                # wrongly FAIL the document.
+                if doc_process_opts.chunking_explicit:
+                    sidecar_backfill_eligible = doc_process_opts.chunking in {
+                        "F",
+                        "R",
+                        "V",
+                    }
+                else:
+                    from lightrag.chunker import chunking_by_token_size
+
+                    sidecar_backfill_eligible = (
+                        self.chunking_func is chunking_by_token_size
+                    )
+
+                if blocks_path and sidecar_backfill_eligible:
+                    from lightrag.sidecar import backfill_chunk_sidecars
+
+                    backfill_chunk_sidecars(chunking_result, blocks_path)
+
                 chunks = build_chunks_dict_from_chunking_result(
                     chunking_result, doc_id=doc_id, file_path=file_path
                 )
@@ -2127,7 +2475,7 @@ class _PipelineMixin:
                 if not chunks:
                     logger.warning("No document chunks to process")
 
-                processing_start_time = int(time.time())
+                process_start_time = int(time.time())
 
                 await self._raise_if_cancelled(
                     ctx.pipeline_status, ctx.pipeline_status_lock
@@ -2145,7 +2493,7 @@ class _PipelineMixin:
                             "chunks_list": list(chunks.keys()),
                         },
                         metadata_extra={
-                            "processing_start_time": processing_start_time,
+                            "process_start_time": process_start_time,
                             **extraction_meta,
                         },
                     )
@@ -2198,8 +2546,8 @@ class _PipelineMixin:
                     failed_chunks_snapshot=get_failed_chunk_snapshot(),
                     pending_tasks=pending_tasks,
                     metadata_extra={
-                        "processing_start_time": processing_start_time,
-                        "processing_end_time": int(time.time()),
+                        "process_start_time": process_start_time,
+                        "process_end_time": int(time.time()),
                     },
                     pipeline_status=ctx.pipeline_status,
                     pipeline_status_lock=ctx.pipeline_status_lock,
@@ -2238,7 +2586,17 @@ class _PipelineMixin:
                             file_path=file_path,
                         )
 
-                    processing_end_time = int(time.time())
+                    # If another in-flight document already triggered an abort
+                    # (e.g. a storage flush error set cancellation_requested),
+                    # do not mark PROCESSED or re-run _insert_done here: the
+                    # shared flush buffer is being torn down, so re-flushing
+                    # would just re-raise the same error. Bail out as cancelled
+                    # so this document is FAILED and retried on the next run.
+                    await self._raise_if_cancelled(
+                        ctx.pipeline_status, ctx.pipeline_status_lock
+                    )
+
+                    process_end_time = int(time.time())
                     await self._upsert_doc_status_transition(
                         doc_id=doc_id,
                         status=DocStatus.PROCESSED,
@@ -2249,8 +2607,8 @@ class _PipelineMixin:
                             "chunks_list": list(chunks.keys()),
                         },
                         metadata_extra={
-                            "processing_start_time": processing_start_time,
-                            "processing_end_time": processing_end_time,
+                            "process_start_time": process_start_time,
+                            "process_end_time": process_end_time,
                             **extraction_meta,
                         },
                     )
@@ -2268,6 +2626,26 @@ class _PipelineMixin:
                         ctx.pipeline_status["history_messages"].append(log_message)
 
                 except Exception as e:
+                    # A storage flush failure (raised by _insert_done) is not
+                    # attributable to this document: index_done_callback flushes
+                    # a buffer shared across concurrently-processed files. We
+                    # cannot tell whose record failed, so continuing risks
+                    # marking other in-flight files PROCESSED with missing data.
+                    # Abort the whole batch via the cooperative cancellation
+                    # flag, tagging it as an internal error with the driver name
+                    # and root cause so it is distinguishable from a user cancel.
+                    if isinstance(e, IndexFlushError):
+                        async with ctx.pipeline_status_lock:
+                            ctx.pipeline_status["cancellation_requested"] = True
+                            ctx.pipeline_status["cancellation_reason"] = (
+                                "internal_error"
+                            )
+                            ctx.pipeline_status["cancellation_detail"] = (
+                                f"{e.storage_name}[{e.namespace}]: {e.__cause__}"
+                            )
+                        logger.error(
+                            f"Aborting pipeline batch due to storage flush error: {e}"
+                        )
                     await self._finalize_doc_failure(
                         doc_id=doc_id,
                         status_doc=status_doc,
@@ -2279,8 +2657,8 @@ class _PipelineMixin:
                         failed_chunks_snapshot=get_failed_chunk_snapshot(),
                         pending_tasks=[],
                         metadata_extra={
-                            "processing_start_time": processing_start_time,
-                            "processing_end_time": int(time.time()),
+                            "process_start_time": process_start_time,
+                            "process_end_time": int(time.time()),
                             **extraction_meta,
                         },
                         pipeline_status=ctx.pipeline_status,
@@ -2320,8 +2698,11 @@ class _PipelineMixin:
         if not content_already_extracted:
             return
 
+        from lightrag.parser.routing import normalize_parser_engine
+
         intended_engine, _ = resolve_file_parser_directives(file_path)
-        stored_engine = (content_data.get("parse_engine") or "").lower()
+        # ``parse_engine`` may carry encoded params; compare bare engine names.
+        stored_engine = normalize_parser_engine(content_data.get("parse_engine"))
         if intended_engine and stored_engine and intended_engine != stored_engine:
             log_message = (
                 f"[resume] {doc_id}: filename hint / "
@@ -2337,11 +2718,15 @@ class _PipelineMixin:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-        stored_chunk_ids = {
-            chunk_id
-            for chunk_id in (status_doc.chunks_list or [])
-            if isinstance(chunk_id, str) and chunk_id
-        }
+        # Order-preserving dedup; keep a list so it satisfies the storage delete
+        # contract (``delete(ids: list[str])``) when passed down to purge.
+        stored_chunk_ids = list(
+            dict.fromkeys(
+                chunk_id
+                for chunk_id in (status_doc.chunks_list or [])
+                if isinstance(chunk_id, str) and chunk_id
+            )
+        )
         if not stored_chunk_ids:
             return
 
@@ -2417,6 +2802,31 @@ class _PipelineMixin:
             if pipeline_status.get("cancellation_requested", False):
                 raise PipelineCancelledException("User cancelled")
 
+    @staticmethod
+    def _cancellation_label(pipeline_status: dict) -> str:
+        """Human-readable cancel cause: internal error (with detail) vs user.
+
+        Callers building cancellation messages use this so an internal abort
+        (e.g. a storage flush failure) is not mislabeled as a user cancel.
+        """
+        if pipeline_status.get("cancellation_reason") == "internal_error":
+            detail = pipeline_status.get("cancellation_detail") or "unknown"
+            return f"Cancelled by internal error: {detail}"
+        return "User cancelled"
+
+    @staticmethod
+    def _internal_halt_message(label: str) -> str:
+        """Actionable halt message for an internal-error abort.
+
+        Shared by the loop-top cancellation handler and the finally cleanup so
+        the same wording surfaces whichever exit path the batch takes.
+        """
+        return (
+            f"Pipeline halted on internal storage error ({label}). Resolve the "
+            f"storage issue and restart processing; affected documents remain "
+            f"queued (PENDING/FAILED)."
+        )
+
     async def _cancellation_requested(
         self,
         pipeline_status: dict,
@@ -2450,7 +2860,10 @@ class _PipelineMixin:
         sibling tasks (e.g. successful multimodal items inside a doc that is
         being cancelled) survive a server restart.
         """
-        error_msg = f"User cancelled during {stage_label}: {file_path}"
+        error_msg = (
+            f"{self._cancellation_label(pipeline_status)} during "
+            f"{stage_label}: {file_path}"
+        )
         logger.warning(error_msg)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = error_msg
@@ -2494,20 +2907,35 @@ class _PipelineMixin:
         preserves the failed chunks snapshot and processing-time metadata.
         """
         if isinstance(error, PipelineCancelledException):
+            cancel_label = self._cancellation_label(pipeline_status)
+            # The cancel exceptions raised by the merge/summary stages hardcode a
+            # generic "User cancelled during <stage>" message. When the batch was
+            # actually aborted by an internal error (e.g. a storage outage), that
+            # mislabels the cause. Swap the generic prefix for the reason-aware
+            # label so doc_status records "Cancelled by internal error: <detail>
+            # during <stage>" rather than "User cancelled during <stage>".
+            raw = str(error)
+            if raw.startswith("User cancelled"):
+                doc_error_msg = f"{cancel_label}{raw[len('User cancelled') :]}"
+            elif raw:
+                doc_error_msg = f"{cancel_label}: {raw}"
+            else:
+                doc_error_msg = cancel_label
             if stage_label == "merge":
                 error_msg = (
-                    f"User cancelled during merge {current_file_number}/"
+                    f"{cancel_label} during merge {current_file_number}/"
                     f"{total_files}: {file_path}"
                 )
             else:
                 error_msg = (
-                    f"User cancelled {current_file_number}/{total_files}: {file_path}"
+                    f"{cancel_label} {current_file_number}/{total_files}: {file_path}"
                 )
             logger.warning(error_msg)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = error_msg
                 pipeline_status["history_messages"].append(error_msg)
         else:
+            doc_error_msg = str(error)
             logger.error(traceback.format_exc())
             if stage_label == "merge":
                 error_msg = (
@@ -2542,447 +2970,12 @@ class _PipelineMixin:
             status_doc=status_doc,
             file_path=file_path,
             extra_fields={
-                "error_msg": str(error),
+                "error_msg": doc_error_msg,
                 "chunks_count": failed_chunks_count,
                 "chunks_list": failed_chunks_list,
             },
             metadata_extra=metadata_extra,
         )
-
-    # ============================================================
-    # Parser engines (also called by tests directly)
-    # ============================================================
-
-    async def parse_native(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Phase 1 parse for native/raw, lightrag and pending_parse formats."""
-        doc_format = content_data.get("parse_format", FULL_DOCS_FORMAT_RAW)
-        if doc_format == FULL_DOCS_FORMAT_LIGHTRAG:
-            # full_docs.content carries the merged text with the {{LRdoc}}
-            # marker; strip it so the chunking path is identical to raw.
-            # blocks_path is still resolved for downstream multimodal
-            # sidecar reads (_build_mm_chunks_from_sidecars).
-            # No re-parse happens here — content + sidecar are reused from a
-            # prior parse, so this is semantically a cache-hit and mirrors
-            # the parse_mineru / parse_docling raw-bundle skip path by
-            # setting ``parse_stage_skipped``.
-            merged_text = strip_lightrag_doc_prefix(
-                content_data.get("content"), doc_format
-            )
-            blocks_path = (
-                sidecar_blocks_path(content_data.get("sidecar_location")) or ""
-            )
-
-            return {
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "parse_format": doc_format,
-                "content": merged_text,
-                "blocks_path": blocks_path,
-                "parse_stage_skipped": True,
-            }
-
-        if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
-            source_path = _call_source_file_resolver(
-                self,
-                file_path,
-                source_file_name=content_data.get("source_file_name"),
-                parser_engine=PARSER_ENGINE_NATIVE,
-            )
-            p = Path(source_path)
-            if not (p.exists() and p.is_file() and p.suffix.lower() == ".docx"):
-                raise ValueError(
-                    f"Native parser does not support pending file: {file_path}"
-                )
-
-            # Lazy imports keep this module import-cheap and avoid pulling
-            # the docx parser into call paths that never touch the native
-            # engine (mirrors parse_mineru).
-            from lightrag.parser.docx.drawing_image_extractor import (
-                DrawingExtractionContext,
-                load_relationships,
-            )
-            from lightrag.parser.docx.parse_document import (
-                extract_docx_blocks,
-            )
-            from lightrag.parser.docx.ir_builder import NativeDocxIRBuilder
-            from lightrag.sidecar import write_sidecar
-
-            # ``file_path`` is canonical at the worker layer; canonicalize
-            # again defensively so direct callers (tests, CLI) may pass
-            # absolute paths or hint-bearing names.
-            document_name = normalize_document_file_path(file_path)
-            if document_name == "unknown_source":
-                document_name = p.name or f"{doc_id}.bin"
-            base_name = Path(document_name).stem or document_name
-            parsed_dir = parsed_artifact_dir_for(document_name, parent_hint=p.parent)
-            asset_dir = parsed_dir / f"{base_name}.blocks.assets"
-
-            def _extract_blocks_sync() -> (
-                tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]
-            ):
-                # Pre-clean parsed_dir and pre-create the asset dir so the
-                # drawing extractor can write image bytes BEFORE write_sidecar
-                # runs (which is then called with clean_parsed_dir=False to
-                # keep those bytes). ``parsed_artifact_dir_for`` returns
-                # a unique dir per source (with ``_001``/``_002`` suffixes on
-                # collision), so the rmtree here only ever clobbers stale
-                # artifacts from a previous attempt at the same doc_id.
-                if parsed_dir.exists():
-                    shutil.rmtree(parsed_dir)
-                parsed_dir.mkdir(parents=True, exist_ok=True)
-                asset_dir.mkdir(parents=True, exist_ok=True)
-                ctx = DrawingExtractionContext(
-                    docx_path=p,
-                    blocks_output_path=parsed_dir / f"{base_name}.blocks.jsonl",
-                    export_dir_name=asset_dir.name,
-                    export_dir_path=asset_dir,
-                )
-                load_relationships(ctx)
-                warnings: dict[str, Any] = {}
-                metadata: dict[str, Any] = {}
-                extracted = extract_docx_blocks(
-                    str(p),
-                    debug=False,
-                    fixlevel=0,
-                    drawing_context=ctx,
-                    parse_warnings=warnings,
-                    parse_metadata=metadata,
-                )
-                return extracted, warnings, metadata
-
-            try:
-                blocks, parse_warnings, parse_metadata = await asyncio.to_thread(
-                    _extract_blocks_sync
-                )
-            except BaseException:
-                # ``_extract_blocks_sync`` pre-creates ``parsed_dir`` and
-                # ``asset_dir`` before invoking the extractor; if extraction
-                # raises, those (possibly partially-populated) dirs would be
-                # left on disk. Roll them back so the next attempt starts clean.
-                if parsed_dir.exists():
-                    shutil.rmtree(parsed_dir, ignore_errors=True)
-                raise
-            if not blocks:
-                # Same cleanup path for the "extractor returned []" case —
-                # ``write_sidecar`` would never run, so without this the
-                # pre-created (empty) dirs would persist.
-                if parsed_dir.exists():
-                    shutil.rmtree(parsed_dir, ignore_errors=True)
-                raise ValueError(f"DOCX parser returned empty content for {file_path}")
-
-            missing_paraid_count = int(
-                parse_warnings.get("missing_paraid_count", 0) or 0
-            )
-            if missing_paraid_count > 0:
-                # Surface once per document — the parser may encounter many
-                # missing paraIds (legacy / non-Word authors omit
-                # ``w14:paraId``), but a single warning with the count is
-                # enough. Affected blocks emit
-                # ``positions: [{"type": "paraid", "range": null}]``.
-                logger.warning(
-                    "[parse_native] %s: %d paragraphs lack paraId; "
-                    "Re-saving file in Word 2013+ to regenerate ids.",
-                    p.name,
-                    missing_paraid_count,
-                )
-
-            ir = NativeDocxIRBuilder().normalize(
-                blocks,
-                document_name=document_name,
-                asset_dir_name=asset_dir.name,
-                parse_metadata=parse_metadata,
-            )
-            parsed_data = write_sidecar(
-                ir,
-                parsed_dir=parsed_dir,
-                doc_id=doc_id,
-                engine=PARSER_ENGINE_NATIVE,
-                clean_parsed_dir=False,  # we pre-populated the asset dir
-                block_drawing_path_style="basename_only",  # legacy native shape
-            )
-
-            await self._persist_parsed_full_docs(
-                doc_id,
-                {
-                    "content": make_lightrag_doc_content(parsed_data["content"]),
-                    "file_path": file_path,
-                    "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                    "sidecar_location": sidecar_uri_for(parsed_dir),
-                    "parse_engine": PARSER_ENGINE_NATIVE,
-                    "update_time": int(time.time()),
-                },
-            )
-            await archive_docx_source_after_full_docs_sync(str(p))
-            logger.info(
-                f"[parse_native] pending_parse completed for {file_path} "
-                f"via parser/docx"
-            )
-            result: dict[str, Any] = {
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "content": parsed_data["content"],
-                "blocks_path": parsed_data["blocks_path"],
-            }
-            if missing_paraid_count > 0:
-                # Pipeline reads this from the parsed_data dict and writes it
-                # to ``doc_status.metadata.parse_warnings`` so admin/list APIs
-                # can surface the issue alongside the document record.
-                result["parse_warnings"] = {
-                    "missing_paraid_count": missing_paraid_count
-                }
-            return result
-
-        # FULL_DOCS_FORMAT_RAW: no parser ran — the content was supplied
-        # at insert time and we pass it through verbatim. Mark as skipped
-        # so post-mortem doesn't credit the worker with a synthetic parse
-        # duration (mirrors the LIGHTRAG-format branch above).
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_RAW,
-            "content": content_data.get("content", ""),
-            "blocks_path": "",
-            "parse_stage_skipped": True,
-        }
-
-    async def parse_mineru(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Parse a document through MinerU and emit a spec-compliant sidecar.
-
-        Layout produced under ``inputs/<space>/__parsed__/``:
-
-        - ``<base>.parsed/``       — sidecar (blocks.jsonl + per-modality JSONs + assets)
-        - ``<base>.mineru_raw/``   — preserved MinerU bundle (content_list.json,
-          full.md, middle.json, images/, ...) plus ``_manifest.json``
-
-        The raw bundle is kept on disk so subsequent re-parses with the same
-        source content can skip the upload+poll+download round trip. It is
-        cleaned only when the user explicitly deletes the document with the
-        "also delete original file" option; see
-        :func:`lightrag.api.routers.document_routes.delete_file_variants_by_file_path`.
-        """
-        # Lazy imports keep this module import-cheap and avoid pulling httpx
-        # into call paths that never touch the MinerU engine.
-        from lightrag.parser.external.mineru import (
-            MinerUIRBuilder,
-            MinerURawClient,
-            clear_dir_contents,
-            is_bundle_valid,
-            raw_dir_for_parsed_dir,
-        )
-        from lightrag.sidecar import write_sidecar
-
-        source_file_path = Path(
-            _call_source_file_resolver(
-                self,
-                file_path,
-                source_file_name=content_data.get("source_file_name"),
-                parser_engine=PARSER_ENGINE_MINERU,
-            )
-        )
-        if not source_file_path.is_file():
-            raise FileNotFoundError(f"MinerU source file not found: {source_file_path}")
-
-        # Canonicalize defensively so direct callers (tests, CLI) may pass
-        # absolute paths or hint-bearing names.
-        document_name = normalize_document_file_path(file_path)
-        if document_name == "unknown_source":
-            document_name = source_file_path.name or f"{doc_id}.bin"
-        parsed_dir = parsed_artifact_dir_for(
-            document_name, parent_hint=source_file_path.parent
-        )
-        raw_dir = raw_dir_for_parsed_dir(parsed_dir)
-
-        force_reparse = os.getenv("LIGHTRAG_FORCE_REPARSE_MINERU", "").lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-
-        parse_stage_skipped = False
-        if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
-            # Cache hit: keep the path purely local so a re-parse still
-            # succeeds if MinerU credentials/endpoint are temporarily
-            # unavailable (key rotation, debugging, etc.). Network config
-            # is only required on cache miss below.
-            parse_stage_skipped = True
-            logger.info("[parse_mineru] raw cache hit doc_id=%s", doc_id)
-        else:
-            if force_reparse and raw_dir.exists():
-                logger.info(
-                    "[parse_mineru] LIGHTRAG_FORCE_REPARSE_MINERU set; "
-                    "discarding bundle at %s",
-                    raw_dir,
-                )
-            raw_dir.mkdir(parents=True, exist_ok=True)
-            clear_dir_contents(raw_dir)
-            client = MinerURawClient()
-            logger.info(
-                "[MinerU] Parsing %s %s (may take a few minutes)",
-                doc_id,
-                source_file_path.name,
-            )
-            await client.download_into(
-                raw_dir,
-                source_file_path,
-                upload_name=document_name,
-            )
-
-        ir_builder = MinerUIRBuilder()
-        ir = ir_builder.normalize_from_workdir(raw_dir, document_name=document_name)
-        parsed_data = write_sidecar(
-            ir,
-            parsed_dir=parsed_dir,
-            doc_id=doc_id,
-            engine=PARSER_ENGINE_MINERU,
-        )
-
-        # Keep full_docs in sync so restart/reprocess can directly use the
-        # sidecar (matches the native_docx and content_list paths).
-        await self._persist_parsed_full_docs(
-            doc_id,
-            {
-                "content": make_lightrag_doc_content(parsed_data["content"]),
-                "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "sidecar_location": sidecar_uri_for(parsed_dir),
-                "parse_engine": PARSER_ENGINE_MINERU,
-                "update_time": int(time.time()),
-            },
-        )
-        await archive_docx_source_after_full_docs_sync(str(source_file_path))
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-            "content": parsed_data["content"],
-            "blocks_path": parsed_data["blocks_path"],
-            "parse_stage_skipped": parse_stage_skipped,
-        }
-
-    async def parse_docling(
-        self, doc_id: str, file_path: str, content_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Parse a document through Docling Serve and emit a spec-compliant sidecar.
-
-        Produces the same dual-directory layout as ``parse_mineru``:
-
-        - ``<base>.parsed/``       — sidecar (blocks.jsonl + per-modality JSONs + assets)
-        - ``<base>.docling_raw/``  — preserved Docling bundle (``<stem>.json``,
-          ``<stem>.md``, ``artifacts/``) plus ``_manifest.json``
-
-        The raw bundle is kept so subsequent re-parses with the same source
-        bytes skip the upload + poll + download round trip.
-        """
-        # Lazy imports keep this module import-cheap and avoid pulling httpx
-        # into call paths that never touch the Docling engine.
-        from lightrag.parser.external.docling import (
-            DoclingIRBuilder,
-            DoclingRawClient,
-            clear_dir_contents,
-            is_bundle_valid,
-            raw_dir_for_parsed_dir,
-        )
-        from lightrag.sidecar import write_sidecar
-
-        source_file_path = Path(
-            _call_source_file_resolver(
-                self,
-                file_path,
-                source_file_name=content_data.get("source_file_name"),
-                parser_engine=PARSER_ENGINE_DOCLING,
-            )
-        )
-        if not source_file_path.is_file():
-            raise FileNotFoundError(
-                f"Docling source file not found: {source_file_path}"
-            )
-
-        document_name = normalize_document_file_path(file_path)
-        if document_name == "unknown_source":
-            document_name = source_file_path.name or f"{doc_id}.bin"
-        parsed_dir = parsed_artifact_dir_for(
-            document_name, parent_hint=source_file_path.parent
-        )
-        raw_dir = raw_dir_for_parsed_dir(parsed_dir)
-
-        force_reparse = os.getenv("LIGHTRAG_FORCE_REPARSE_DOCLING", "").lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-
-        parse_stage_skipped = False
-        if not force_reparse and is_bundle_valid(raw_dir, source_file_path):
-            # Cache hit: keep purely local so re-parses still work when the
-            # docling-serve endpoint is temporarily unavailable.
-            parse_stage_skipped = True
-            logger.info("[parse_docling] raw cache hit doc_id=%s", doc_id)
-        else:
-            if force_reparse and raw_dir.exists():
-                logger.info(
-                    "[parse_docling] LIGHTRAG_FORCE_REPARSE_DOCLING set; "
-                    "discarding bundle at %s",
-                    raw_dir,
-                )
-            # ``download_into`` mkdir's the raw_dir itself; we only need to
-            # wipe the existing contents (manifest + stale bundle files).
-            clear_dir_contents(raw_dir)
-            client = DoclingRawClient()
-            logger.info(
-                "[Docling] Parsing %s %s (may take a few minutes)",
-                doc_id,
-                source_file_path.name,
-            )
-            # Pass the canonical (hint-stripped) name so docling-serve names
-            # the bundle's main JSON ``<canonical_stem>.json`` instead of
-            # ``<hinted_stem>.json``. Otherwise the IR builder — which only sees
-            # the canonical ``document_name`` — cannot locate the bundle JSON
-            # via the preferred-path lookup.
-            await client.download_into(
-                raw_dir, source_file_path, upload_filename=document_name
-            )
-
-        ir_builder = DoclingIRBuilder()
-        ir = ir_builder.normalize_from_workdir(raw_dir, document_name=document_name)
-        if not ir.blocks:
-            raise ValueError(
-                f"Docling IR builder produced zero blocks for {file_path} "
-                f"(raw_dir={raw_dir})"
-            )
-        parsed_data = write_sidecar(
-            ir,
-            parsed_dir=parsed_dir,
-            doc_id=doc_id,
-            engine=PARSER_ENGINE_DOCLING,
-        )
-
-        await self._persist_parsed_full_docs(
-            doc_id,
-            {
-                "content": make_lightrag_doc_content(parsed_data["content"]),
-                "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "sidecar_location": sidecar_uri_for(parsed_dir),
-                "parse_engine": PARSER_ENGINE_DOCLING,
-                "update_time": int(time.time()),
-            },
-        )
-        await archive_docx_source_after_full_docs_sync(str(source_file_path))
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-            "content": parsed_data["content"],
-            "blocks_path": parsed_data["blocks_path"],
-            "parse_stage_skipped": parse_stage_skipped,
-        }
 
     # ============================================================
     # Parser internals
@@ -3010,6 +3003,17 @@ class _PipelineMixin:
         ``update_time``) take precedence, while pre-existing fields are
         preserved.
         """
+        # Strip C0 control/separator chars (incl. \x1c-\x1f FS/GS/RS/US) from the
+        # parsed body before it lands in full_docs — this is the single
+        # convergence point for every parser engine's persist. For RAW (legacy)
+        # the full_docs content IS the chunk source, so this guarantees clean
+        # chunks; for sidecar engines it is an idempotent backstop (the sidecar
+        # writer already cleaned the same text). Done before content_hash so the
+        # dedup hash is computed on the sanitized body. No-op for clean input.
+        record_content = record.get("content")
+        if isinstance(record_content, str):
+            record = {**record, "content": strip_control_characters(record_content)}
+
         fmt = record.get("parse_format")
         content_hash: str | None = None
         # Hash the bare merged text (after stripping the ``{{LRdoc}}`` marker
@@ -3108,9 +3112,7 @@ class _PipelineMixin:
         source_path = _call_source_file_resolver(
             self,
             file_path,
-            source_file_name=content_data.get("source_file_name")
-            if content_data
-            else None,
+            source_file=_read_source_file(content_data),
         )
         archived = await archive_source_after_full_docs_sync(source_path)
         archive_msg = f"; archived to {archived}" if archived else ""
@@ -3126,13 +3128,13 @@ class _PipelineMixin:
         self,
         file_path: str,
         *,
-        source_file_name: str | None = None,
+        source_file: str | None = None,
         parser_engine: str | None = None,
     ) -> str:
         """Resolve a readable source file path for parser upload.
 
         ``file_path`` is the canonical stored basename. Pending-parse records
-        may also carry ``source_file_name`` with the real uploaded/scanned
+        may also carry ``source_file`` with the real uploaded/scanned
         basename, including parser hints.
         """
         candidates: list[Path] = []
@@ -3153,7 +3155,7 @@ class _PipelineMixin:
 
         p = Path(file_path)
         name = p.name
-        source_name = Path(str(source_file_name or "").strip()).name
+        source_name = Path(str(source_file or "").strip()).name
         input_path = input_dir_path()
         # API ``DocumentManager`` scopes its input dir to
         # ``<base_input_dir>/<workspace>/`` (see DocumentManager.__init__);
@@ -3237,429 +3239,6 @@ class _PipelineMixin:
             if matches:
                 return str(matches[0])
         return file_path
-
-    async def _write_lightrag_document_from_content_list(
-        self,
-        doc_id: str,
-        file_path: str,
-        content_list: list[dict[str, Any]],
-        engine: str,
-    ) -> dict[str, Any]:
-        """Convert parser content list to LightRAG Document files and return parsed_data."""
-        document_name = normalize_document_file_path(file_path)
-        if document_name == "unknown_source":
-            document_name = f"{doc_id}.bin"
-        parsed_dir = parsed_artifact_dir_for(document_name)
-        if parsed_dir.exists():
-            shutil.rmtree(parsed_dir)
-        parsed_dir.mkdir(parents=True, exist_ok=True)
-
-        base_name = Path(document_name).stem or document_name
-        blocks_path = parsed_dir / f"{base_name}.blocks.jsonl"
-        tables_path = parsed_dir / f"{base_name}.tables.json"
-        drawings_path = parsed_dir / f"{base_name}.drawings.json"
-        equations_path = parsed_dir / f"{base_name}.equations.json"
-
-        blocks_lines: list[str] = []
-        merged_parts: list[str] = []
-        block_idx = 0
-        table_idx = 0
-        drawing_idx = 0
-        equation_idx = 0
-
-        tables: dict[str, Any] = {}
-        drawings: dict[str, Any] = {}
-        equations: dict[str, Any] = {}
-
-        def _to_list_str(value: Any) -> list[str]:
-            if value is None:
-                return []
-            if isinstance(value, list):
-                return [str(x) for x in value if str(x).strip()]
-            text_val = str(value).strip()
-            return [text_val] if text_val else []
-
-        def _parse_int(value: Any, default: int = 0) -> int:
-            try:
-                return int(value)
-            except Exception:
-                return default
-
-        def _normalize_grid_rows(grid: Any) -> list[list[str]]:
-            normalized_rows: list[list[str]] = []
-            if not isinstance(grid, list):
-                return normalized_rows
-            for row in grid:
-                if not isinstance(row, list):
-                    continue
-                normalized_row: list[str] = []
-                for cell in row:
-                    if isinstance(cell, dict):
-                        normalized_row.append(str(cell.get("text", "")).strip())
-                    else:
-                        normalized_row.append(str(cell).strip())
-                normalized_rows.append(normalized_row)
-            return normalized_rows
-
-        def _coerce_table_rows(
-            value: Any,
-        ) -> tuple[str, Any, list[list[str]], int, int]:
-            raw_value = value
-            if isinstance(raw_value, str):
-                stripped = raw_value.strip()
-                if not stripped:
-                    return "html", "", [], 0, 0
-                parsed_value = None
-                try:
-                    parsed_value = json.loads(stripped)
-                except Exception:
-                    try:
-                        import ast
-
-                        parsed_value = ast.literal_eval(stripped)
-                    except Exception:
-                        parsed_value = None
-                if parsed_value is None:
-                    return "html", raw_value, [], 0, 0
-                raw_value = parsed_value
-
-            if isinstance(raw_value, list):
-                rows = _normalize_grid_rows(raw_value)
-                return (
-                    "json",
-                    json.dumps(rows, ensure_ascii=False),
-                    rows,
-                    len(rows),
-                    max((len(r) for r in rows), default=0),
-                )
-
-            if isinstance(raw_value, dict):
-                rows = _normalize_grid_rows(raw_value.get("grid"))
-                if not rows and isinstance(raw_value.get("rows"), list):
-                    rows = _normalize_grid_rows(raw_value.get("rows"))
-                num_rows = _parse_int(
-                    raw_value.get("num_rows"), len(rows) if rows else 0
-                )
-                num_cols = _parse_int(
-                    raw_value.get("num_cols"),
-                    max((len(r) for r in rows), default=0),
-                )
-                if rows:
-                    return (
-                        "json",
-                        json.dumps(rows, ensure_ascii=False),
-                        rows,
-                        num_rows,
-                        num_cols,
-                    )
-                return (
-                    "html",
-                    json.dumps(raw_value, ensure_ascii=False),
-                    [],
-                    num_rows,
-                    num_cols,
-                )
-
-            text_value = str(raw_value or "").strip()
-            return "html", text_value, [], 0, 0
-
-        heading_stack: list[str] = []
-
-        def _update_heading_context(
-            heading_text: str, level: int
-        ) -> tuple[str, int, list[str]]:
-            nonlocal heading_stack
-            clean_heading = str(heading_text or "").strip()
-            clean_level = max(_parse_int(level, 1), 1)
-            heading_stack = heading_stack[: max(clean_level - 1, 0)]
-            parent_chain = [x for x in heading_stack if x]
-            heading_stack.append(clean_heading)
-            return clean_heading, clean_level, parent_chain
-
-        def _append_block(
-            content_text: str,
-            heading: str = "",
-            level: int = 0,
-            parent_headings: list[str] | None = None,
-        ) -> str:
-            nonlocal block_idx
-            content_text = str(content_text or "").strip()
-            if not content_text:
-                return ""
-            blockid = hashlib.md5(
-                f"{doc_id}:{block_idx}:{heading}:{content_text}".encode("utf-8")
-            ).hexdigest()
-            blocks_lines.append(
-                json.dumps(
-                    {
-                        "type": "content",
-                        "blockid": blockid,
-                        "format": "plain_text",
-                        "content": content_text,
-                        "heading": heading,
-                        "parent_headings": list(parent_headings or []),
-                        "level": level,
-                        "session_type": "body",
-                        "table_slice": "none",
-                        "positions": [],
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            merged_parts.append(content_text)
-            block_idx += 1
-            return blockid
-
-        current_heading = ""
-        current_level = 0
-        current_parent_headings: list[str] = []
-
-        for item in content_list:
-            if not isinstance(item, dict):
-                continue
-            item_type = str(item.get("type") or item.get("label") or "").lower()
-
-            if item_type in {"text", "title", "section_header", "list", "code"}:
-                text = (
-                    item.get("text")
-                    or item.get("content")
-                    or "\n".join(
-                        item.get("list_items", [])
-                        if isinstance(item.get("list_items"), list)
-                        else []
-                    )
-                    or item.get("code_body")
-                    or ""
-                )
-                if not str(text).strip():
-                    continue
-                inferred_level = int(item.get("text_level", 0) or 0)
-                if item_type in {"title", "section_header"} and inferred_level <= 0:
-                    inferred_level = int(item.get("level", 1) or 1)
-                if inferred_level > 0:
-                    (
-                        current_heading,
-                        current_level,
-                        current_parent_headings,
-                    ) = _update_heading_context(str(text), inferred_level)
-                _append_block(
-                    str(text),
-                    heading=current_heading,
-                    level=current_level,
-                    parent_headings=current_parent_headings,
-                )
-                continue
-
-            if item_type == "equation":
-                equation_idx += 1
-                eq_id = str(
-                    item.get("id")
-                    or f"eq-{doc_id.removeprefix('doc-')}-{equation_idx:04d}"
-                )
-                caption = str(item.get("caption") or f"公式{equation_idx}")
-                footnotes = _to_list_str(
-                    item.get("equation_footnote") or item.get("footnotes")
-                )
-                eq_text = str(item.get("text") or item.get("content") or "").strip()
-                wrapped = (
-                    f'<equation id="{eq_id}" format="latex" caption="{caption}">{eq_text}</equation>'
-                    if eq_text
-                    else f'<cite type="equation" refid="{eq_id}">公式{equation_idx}</cite>'
-                )
-                blockid = _append_block(
-                    wrapped,
-                    heading=current_heading,
-                    level=current_level,
-                    parent_headings=current_parent_headings,
-                )
-                equations[eq_id] = {
-                    "id": eq_id,
-                    "blockid": blockid,
-                    "heading": current_heading,
-                    "format": "latex",
-                    "content": eq_text,
-                    "caption": caption,
-                    "footnotes": footnotes,
-                }
-                continue
-
-            if item_type == "table":
-                table_idx += 1
-                table_id = str(
-                    item.get("id")
-                    or f"tb-{doc_id.removeprefix('doc-')}-{table_idx:04d}"
-                )
-                caption = str(item.get("caption") or f"表格{table_idx}")
-                table_caption = _to_list_str(item.get("table_caption"))
-                if table_caption and not item.get("caption"):
-                    caption = table_caption[0]
-                footnotes = _to_list_str(
-                    item.get("table_footnote") or item.get("footnotes")
-                )
-                table_body = item.get("table_body") or item.get("content") or ""
-                rows = item.get("rows") if isinstance(item.get("rows"), list) else None
-                (
-                    fmt,
-                    table_content,
-                    normalized_rows,
-                    inferred_num_rows,
-                    inferred_num_cols,
-                ) = _coerce_table_rows(rows if rows is not None else table_body)
-                rows = normalized_rows or (rows if isinstance(rows, list) else [])
-                cite_text = (
-                    f'<cite type="table" refid="{table_id}">表{table_idx}</cite>'
-                )
-                blockid = _append_block(
-                    cite_text,
-                    heading=current_heading,
-                    level=current_level,
-                    parent_headings=current_parent_headings,
-                )
-                tables[table_id] = {
-                    "id": table_id,
-                    "blockid": blockid,
-                    "heading": current_heading,
-                    "dimension": [
-                        _parse_int(item.get("num_rows"), inferred_num_rows),
-                        _parse_int(item.get("num_cols"), inferred_num_cols),
-                    ],
-                    "format": fmt,
-                    "content": table_content,
-                    "caption": caption,
-                    "footnotes": footnotes,
-                    "image": item.get("img_path") or item.get("image"),
-                }
-                continue
-
-            if item_type in {"image", "picture", "drawing"}:
-                drawing_idx += 1
-                drawing_id = str(
-                    item.get("id")
-                    or f"im-{doc_id.removeprefix('doc-')}-{drawing_idx:04d}"
-                )
-                image_caption = _to_list_str(
-                    item.get("image_caption") or item.get("captions")
-                )
-                caption = str(
-                    item.get("caption")
-                    or (image_caption[0] if image_caption else f"图{drawing_idx}")
-                )
-                footnotes = _to_list_str(
-                    item.get("image_footnote") or item.get("footnotes")
-                )
-                path_val = str(item.get("img_path") or item.get("path") or "")
-                src_val = str(item.get("src") or "")
-                fmt = (
-                    Path(path_val).suffix.lower().lstrip(".")
-                    if path_val
-                    else str(item.get("format") or "")
-                )
-                drawing_tag = (
-                    f'<drawing id="{drawing_id}" format="{fmt}" caption="{caption}" '
-                    f'path="{path_val}" src="{src_val}" />'
-                )
-                blockid = _append_block(
-                    drawing_tag,
-                    heading=current_heading,
-                    level=current_level,
-                    parent_headings=current_parent_headings,
-                )
-                drawings[drawing_id] = {
-                    "id": drawing_id,
-                    "blockid": blockid,
-                    "heading": current_heading,
-                    "format": fmt,
-                    "path": path_val,
-                    "src": src_val,
-                    "caption": caption,
-                    "footnotes": footnotes,
-                }
-                continue
-
-            # Fallback: serialize unknown item to text for robustness.
-            fallback_text = str(item.get("text") or item.get("content") or "").strip()
-            if fallback_text:
-                _append_block(
-                    fallback_text,
-                    heading=current_heading,
-                    level=current_level,
-                    parent_headings=current_parent_headings,
-                )
-
-        merged_text = "\n\n".join([x for x in merged_parts if x.strip()])
-        doc_hash = hashlib.sha256(merged_text.encode("utf-8")).hexdigest()
-        parse_time = datetime.now(timezone.utc).isoformat()
-        meta = {
-            "type": "meta",
-            "format": "lightrag",
-            "version": "1.0",
-            "document_name": document_name,
-            "document_format": Path(document_name).suffix.lower().lstrip("."),
-            "document_hash": f"sha256:{doc_hash}",
-            "table_file": bool(tables),
-            "equation_file": bool(equations),
-            "drawing_file": bool(drawings),
-            "asset_dir": False,
-            "split_option": {},
-            "blocks": len(blocks_lines),
-            "doc_id": doc_id,
-            "parse_engine": engine,
-            "parse_time": parse_time,
-            "doc_title": Path(document_name).stem or document_name,
-        }
-        blocks_path.write_text(
-            "\n".join([json.dumps(meta, ensure_ascii=False)] + blocks_lines) + "\n",
-            encoding="utf-8",
-        )
-
-        if tables:
-            tables_path.write_text(
-                json.dumps(
-                    {"version": "1.0", "tables": tables}, ensure_ascii=False, indent=2
-                ),
-                encoding="utf-8",
-            )
-        if drawings:
-            drawings_path.write_text(
-                json.dumps(
-                    {"version": "1.0", "drawings": drawings},
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        if equations:
-            equations_path.write_text(
-                json.dumps(
-                    {"version": "1.0", "equations": equations},
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-
-        # Keep full_docs in sync so restart/reprocess can directly use LightRAG Document.
-        await self._persist_parsed_full_docs(
-            doc_id,
-            {
-                "content": make_lightrag_doc_content(merged_text),
-                "file_path": file_path,
-                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "sidecar_location": sidecar_uri_for(parsed_dir),
-                "parse_engine": engine,
-                "update_time": int(time.time()),
-            },
-        )
-        await archive_docx_source_after_full_docs_sync(
-            self._resolve_source_file_for_parser(file_path)
-        )
-        return {
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-            "content": merged_text,
-            "blocks_path": str(blocks_path),
-        }
 
     # ============================================================
     # Multimodal / VLM
@@ -3810,6 +3389,7 @@ class _PipelineMixin:
                 IMAGE_TYPE_ENUM,
                 IMAGE_TYPE_FALLBACK,
                 MULTIMODAL_PROMPTS,
+                table_content_format_label,
             )
             from lightrag.constants import (
                 DEFAULT_MM_ANALYSIS_PRIORITY,
@@ -3869,6 +3449,13 @@ class _PipelineMixin:
                 3. Fall back to a greedy ``{...}`` regex slice for outputs
                    that wrap the JSON object in prose, then re-run
                    ``json_repair.loads`` on the slice.
+
+                String values in the recovered object are passed through
+                ``repair_vlm_json_escape_damage``: models writing LaTeX
+                inside JSON strings routinely under-escape backslashes
+                (``"\\frac"`` is valid JSON meaning form feed + ``rac``),
+                and this is the single choke point both fresh responses
+                and cache hits flow through.
                 """
                 if not text:
                     return {}
@@ -3883,7 +3470,7 @@ class _PipelineMixin:
                 try:
                     obj = json_repair.loads(candidate)
                     if isinstance(obj, dict):
-                        return obj
+                        return repair_vlm_json_escape_damage_nested(obj)
                 except Exception:
                     pass
                 m = re.search(r"\{[\s\S]*\}", candidate)
@@ -3891,10 +3478,88 @@ class _PipelineMixin:
                     try:
                         obj = json_repair.loads(m.group(0))
                         if isinstance(obj, dict):
-                            return obj
+                            return repair_vlm_json_escape_damage_nested(obj)
                     except Exception:
                         pass
                 return {}
+
+            class _MMJSONConformanceError(Exception):
+                """Raised only when an LLM/VLM response violates MM JSON schema."""
+
+            def _required_json_string(
+                parsed: dict[str, Any], prefix: str, field: str
+            ) -> str:
+                value = parsed.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise _MMJSONConformanceError(
+                        f"{prefix}: missing or invalid field '{field}'"
+                    )
+                return value.strip()
+
+            def _validate_drawing_analysis(
+                item_id: str, parsed: dict[str, Any]
+            ) -> dict[str, str]:
+                prefix = f"drawings/{item_id}"
+                name = _required_json_string(parsed, prefix, "name")
+                description = _required_json_string(parsed, prefix, "description")
+                type_value = _required_json_string(parsed, prefix, "type")
+                if type_value not in _IMAGE_TYPE_VALUES:
+                    type_value = IMAGE_TYPE_FALLBACK
+                return {
+                    "name": name,
+                    "type": type_value,
+                    "description": description,
+                }
+
+            def _validate_text_analysis(
+                kind: str, item_id: str, parsed: dict[str, Any]
+            ) -> dict[str, str]:
+                prefix = f"{kind}/{item_id}"
+                result_obj = {
+                    "name": _required_json_string(parsed, prefix, "name"),
+                    "description": _required_json_string(parsed, prefix, "description"),
+                }
+                if kind == "equation":
+                    result_obj["equation"] = _required_json_string(
+                        parsed, prefix, "equation"
+                    )
+                return result_obj
+
+            async def _run_json_conformance_retry(
+                prefix: str,
+                cached: tuple[str, int] | None,
+                call_model_once,
+                validate_result,
+            ) -> tuple[dict[str, str], str, bool]:
+                """Retry once only for JSON/schema conformance failures.
+
+                The first attempt may use the analysis cache.  If that cached
+                response is malformed, bypass the cache on the retry so a good
+                fresh response can overwrite the same cache key after success.
+                """
+
+                def _attempt(raw: Any, fresh: bool) -> tuple[dict[str, str], str, bool]:
+                    text = str(raw)
+                    return validate_result(_json_extract(text)), text, fresh
+
+                use_cached_response = cached is not None
+                first_text = (
+                    cached[0] if use_cached_response else await call_model_once()
+                )
+                try:
+                    return _attempt(first_text, fresh=not use_cached_response)
+                except _MMJSONConformanceError as exc:
+                    source = "cache" if use_cached_response else "model"
+                    logger.warning(
+                        f"[analyze_multimodal] {prefix}: invalid JSON schema "
+                        f"from {source}; retrying once: {exc} "
+                        f"(response snippet: {str(first_text)[:200]!r})"
+                    )
+
+                try:
+                    return _attempt(await call_model_once(), fresh=True)
+                except _MMJSONConformanceError as exc:
+                    raise MultimodalAnalysisError(str(exc)) from exc
 
             def _normalize_text(value: Any) -> str:
                 if value is None:
@@ -3975,8 +3640,7 @@ class _PipelineMixin:
                 ):
                     return (
                         _skipped_result(
-                            f"image width or height is smaller than "
-                            f"{min_image_pixel}px"
+                            f"image width or height is smaller than {min_image_pixel}px"
                         ),
                         None,
                     )
@@ -4042,40 +3706,29 @@ class _PipelineMixin:
                     mode="default",
                     cache_type="analysis",
                 )
-                if cached is not None:
-                    result_text = cached[0]
-                    fresh = False
-                else:
+
+                async def _call_vlm_once() -> str:
                     try:
-                        result_text = await use_vlm_func(
+                        return await use_vlm_func(
                             prompt,
                             stream=False,
                             image_inputs=[img_payload],
+                            response_format={"type": "json_object"},
                             _priority=DEFAULT_MM_ANALYSIS_PRIORITY,
                         )
+                    except PipelineCancelledException:
+                        raise
                     except Exception as exc:
                         raise MultimodalAnalysisError(
                             f"drawings/{item_id}: VLM call failed: {exc}"
                         ) from exc
-                    fresh = True
-                parsed = _json_extract(str(result_text))
-                name = parsed.get("name")
-                type_value = parsed.get("type")
-                description = parsed.get("description")
-                if not isinstance(name, str) or not name.strip():
-                    raise MultimodalAnalysisError(
-                        f"drawings/{item_id}: missing or invalid field 'name'"
-                    )
-                if not isinstance(description, str) or not description.strip():
-                    raise MultimodalAnalysisError(
-                        f"drawings/{item_id}: missing or invalid field 'description'"
-                    )
-                if not isinstance(type_value, str) or not type_value.strip():
-                    raise MultimodalAnalysisError(
-                        f"drawings/{item_id}: missing or invalid field 'type'"
-                    )
-                if type_value not in _IMAGE_TYPE_VALUES:
-                    type_value = IMAGE_TYPE_FALLBACK
+
+                analysis_fields, result_text, fresh = await _run_json_conformance_retry(
+                    f"drawings/{item_id}",
+                    cached,
+                    _call_vlm_once,
+                    lambda parsed: _validate_drawing_analysis(item_id, parsed),
+                )
                 cache_id_to_attach: str | None = None
                 if fresh and analysis_cache_enabled:
                     audit_blob = image_audit_metadata(normalized_images)
@@ -4104,9 +3757,9 @@ class _PipelineMixin:
                     cache_id_to_attach = cache_id
                 return (
                     {
-                        "name": name.strip(),
-                        "type": type_value,
-                        "description": description.strip(),
+                        "name": analysis_fields["name"],
+                        "type": analysis_fields["type"],
+                        "description": analysis_fields["description"],
                         "analyze_time": int(time.time()),
                         "status": "success",
                         "message": "",
@@ -4142,10 +3795,24 @@ class _PipelineMixin:
                     )
                 template = MULTIMODAL_PROMPTS[f"{kind}_analysis"]
 
+                # A table item written by the sidecar writer ALWAYS carries a
+                # valid ``format``; a missing/unknown one means a corrupt or
+                # incompatible sidecar — fail loudly rather than guess.
+                content_format = ""
+                if kind == "table":
+                    fmt = (item.get("format") or "").strip().lower()
+                    if fmt not in ("html", "json"):
+                        raise MultimodalAnalysisError(
+                            f"table/{item_id}: missing or invalid table format "
+                            f"{item.get('format')!r} ({file_path})"
+                        )
+                    content_format = table_content_format_label(fmt)
+
                 def _render(content_value: str) -> str:
                     return template.format(
                         language=language,
                         content=content_value,
+                        content_format=content_format,
                         captions=_captions_value(item),
                         footnotes=_footnotes_value(item),
                         leading=_surrounding_value(item, "leading"),
@@ -4242,50 +3909,37 @@ class _PipelineMixin:
                     mode="default",
                     cache_type="analysis",
                 )
-                if cached is not None:
-                    result_text = cached[0]
-                    fresh = False
-                else:
+
+                async def _call_extract_once() -> str:
                     try:
-                        result_text = await use_extract_func(
+                        return await use_extract_func(
                             prompt,
                             stream=False,
                             response_format={"type": "json_object"},
                             _priority=DEFAULT_MM_ANALYSIS_PRIORITY,
                         )
+                    except PipelineCancelledException:
+                        raise
                     except Exception as exc:
                         raise MultimodalAnalysisError(
                             f"{kind}/{item_id}: EXTRACT call failed: {exc}"
                         ) from exc
-                    fresh = True
-                parsed = _json_extract(str(result_text))
-                name = parsed.get("name")
-                description = parsed.get("description")
-                if not isinstance(name, str) or not name.strip():
-                    raise MultimodalAnalysisError(
-                        f"{kind}/{item_id}: missing or invalid field 'name'"
-                    )
-                if not isinstance(description, str) or not description.strip():
-                    raise MultimodalAnalysisError(
-                        f"{kind}/{item_id}: missing or invalid field 'description'"
-                    )
+
+                analysis_fields, result_text, fresh = await _run_json_conformance_retry(
+                    f"{kind}/{item_id}",
+                    cached,
+                    _call_extract_once,
+                    lambda parsed: _validate_text_analysis(kind, item_id, parsed),
+                )
                 result_obj: dict[str, Any] = {
-                    "name": name.strip(),
-                    "description": description.strip(),
+                    "name": analysis_fields["name"],
+                    "description": analysis_fields["description"],
                     "analyze_time": int(time.time()),
                     "status": "success",
                     "message": "",
                 }
                 if kind == "equation":
-                    equation_value = parsed.get("equation")
-                    if (
-                        not isinstance(equation_value, str)
-                        or not equation_value.strip()
-                    ):
-                        raise MultimodalAnalysisError(
-                            f"equation/{item_id}: missing or invalid field 'equation'"
-                        )
-                    result_obj["equation"] = equation_value.strip()
+                    result_obj["equation"] = analysis_fields["equation"]
                 cache_id_to_attach: str | None = None
                 if fresh and analysis_cache_enabled:
                     await save_to_cache(
@@ -4626,26 +4280,30 @@ class _PipelineMixin:
             if v is None:
                 return []
             if isinstance(v, list):
-                return [str(x).strip() for x in v if str(x).strip()]
-            s = str(v).strip()
+                cleaned = (sanitize_text_for_encoding(str(x)) for x in v)
+                return [s for s in cleaned if s]
+            s = sanitize_text_for_encoding(str(v))
             return [s] if s else []
 
         def _norm_parent_headings(value: Any) -> list[str]:
             if not isinstance(value, list):
                 return []
-            return [str(p).strip() for p in value if str(p or "").strip()]
+            cleaned = (sanitize_text_for_encoding(str(p or "")) for p in value)
+            return [p for p in cleaned if p]
 
         def _build_heading_dict(item: dict[str, Any]) -> dict[str, Any] | None:
             heading_raw = item.get("heading")
             if isinstance(heading_raw, dict):
-                heading_text = str(heading_raw.get("heading") or "").strip()
+                heading_text = sanitize_text_for_encoding(
+                    str(heading_raw.get("heading") or "")
+                )
                 parents = _norm_parent_headings(heading_raw.get("parent_headings"))
                 try:
                     level = int(heading_raw.get("level") or 0)
                 except (TypeError, ValueError):
                     level = 0
             else:
-                heading_text = str(heading_raw or "").strip()
+                heading_text = sanitize_text_for_encoding(str(heading_raw or ""))
                 parents = _norm_parent_headings(item.get("parent_headings"))
                 try:
                     level = int(item.get("level") or 0)
@@ -4723,10 +4381,21 @@ class _PipelineMixin:
                     # Treat unknown / legacy status as missing — no chunk.
                     continue
 
-                name = str(analysis.get("name") or "").strip()
-                description = str(analysis.get("description") or "").strip()
-                equation_body = str(analysis.get("equation") or "").strip()
-                image_type = str(analysis.get("type") or "").strip()
+                # Sanitize every VLM-produced field: analysis results are
+                # parsed from LLM JSON where unescaped LaTeX (e.g. "\frac")
+                # decodes into control characters ("\f" -> \x0c). These
+                # strings feed text_chunks, vector stores and — via the
+                # multimodal entity injection in operate.extract_entities —
+                # graph node/edge attributes, where XML-illegal characters
+                # crash the GraphML flush.
+                name = sanitize_text_for_encoding(str(analysis.get("name") or ""))
+                description = sanitize_text_for_encoding(
+                    str(analysis.get("description") or "")
+                )
+                equation_body = sanitize_text_for_encoding(
+                    str(analysis.get("equation") or "")
+                )
+                image_type = sanitize_text_for_encoding(str(analysis.get("type") or ""))
                 if not name:
                     raise MultimodalAnalysisError(
                         f"{root_key}/{item_id}: success result missing 'name'"

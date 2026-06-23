@@ -49,6 +49,37 @@ IMAGE_TYPE_ENUM: tuple[str, ...] = (
 IMAGE_TYPE_FALLBACK = "Other"
 
 
+_TABLE_FORMAT_LABELS: dict[str, str] = {
+    "html": (
+        "HTML format — a <table> fragment where merged cells use "
+        "rowspan/colspan and the header (if any) is inside <thead>"
+    ),
+    "json": (
+        "JSON format — a 2-D array where each inner array is one table row "
+        "(rows[i][j] is the cell at row i, column j); the first row(s) may be "
+        "the header"
+    ),
+}
+
+
+def table_content_format_label(fmt: str) -> str:
+    """Human-readable format declaration for the ``table_analysis`` prompt.
+
+    Maps the sidecar table item's ``format`` (``"html"`` / ``"json"``) to a
+    short clause describing how to read the body. Raises :class:`ValueError` on
+    any other value — a table item written by the sidecar writer ALWAYS carries
+    a valid format, so a missing/unknown one means a corrupt or incompatible
+    sidecar and must fail loudly rather than be guessed.
+    """
+    key = (fmt or "").strip().lower()
+    try:
+        return _TABLE_FORMAT_LABELS[key]
+    except KeyError:
+        raise ValueError(
+            f"unknown table format {fmt!r}; expected 'html' or 'json'"
+        ) from None
+
+
 MULTIMODAL_PROMPTS: dict[str, str] = {}
 
 
@@ -102,7 +133,8 @@ MULTIMODAL_PROMPTS[
 6. OUTPUT RULES
    - Return ONE valid JSON object only.
    - No surrounding markdown, no code fences, no preamble, no explanation.
-   - All string values must be properly escaped JSON strings (escape `"` as `\\"`, newlines as `\\n`).
+   - All string values must be properly escaped JSON strings (escape `"` as `\\"`, escape backslashes as `\\\\`, newlines as `\\n`).
+   - Any LaTeX inside a string value must use double-escaped backslashes (e.g. `\\frac{{a}}{{b}}` is written as `"\\\\frac{{a}}{{b}}"` in the JSON).
    - The output values for the JSON fields `name` and `description` must be written in `{language}`.
 
 ================ ADDITIONAL CONTEXT ================
@@ -133,7 +165,7 @@ Output:
 
 MULTIMODAL_PROMPTS[
     "table_analysis"
-] = """You are an expert table analyzer. The provided content contains table content in JSON or HTML format. Analyze it and return a single JSON object describing its structure and content.
+] = """You are an expert table analyzer. The exact format of the table (HTML or a JSON 2-D array) is declared in the TABLE CONTENT section below. Analyze it and return a single JSON object describing its structure and content.
 
 ================ INSTRUCTIONS ================
 
@@ -181,10 +213,12 @@ MULTIMODAL_PROMPTS[
 5. OUTPUT RULES
    - Return ONE valid JSON object only.
    - No surrounding markdown, no code fences, no preamble, no explanation.
-   - All string values must be properly escaped JSON strings (escape `"` as `\\"`, newlines as `\\n`).
+   - All string values must be properly escaped JSON strings (escape `"` as `\\"`, escape backslashes as `\\\\`, newlines as `\\n`).
+   - Any LaTeX inside a string value (e.g. formulas quoted from table cells) must use double-escaped backslashes (e.g. `\\frac{{a}}{{b}}` is written as `"\\\\frac{{a}}{{b}}"` in the JSON).
    - The output values for the JSON fields `name` and `description` must be written in `{language}`.
 
 ================ TABLE CONTENT ================
+The TABLE CONTENT below is in {content_format}.
 ```
 {content}
 ```
@@ -319,4 +353,5 @@ __all__ = [
     "IMAGE_TYPE_ENUM",
     "IMAGE_TYPE_FALLBACK",
     "MULTIMODAL_PROMPTS",
+    "table_content_format_label",
 ]

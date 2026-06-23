@@ -129,6 +129,14 @@ async def _collect_async_bytes(stream: Any) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+class _FakeRequestError(Exception):
+    """Stand-in for ``httpx.RequestError`` (transport-level base)."""
+
+
+class _FakeConnectError(_FakeRequestError):
+    """Stand-in for ``httpx.ConnectError``."""
+
+
 @pytest.fixture
 def fake_httpx(monkeypatch: pytest.MonkeyPatch) -> type:
     import lightrag.parser.external.mineru.client as mod
@@ -139,6 +147,8 @@ def fake_httpx(monkeypatch: pytest.MonkeyPatch) -> type:
         {
             "AsyncClient": _FakeAsyncClient,
             "Timeout": lambda *a, **k: None,
+            "RequestError": _FakeRequestError,
+            "ConnectError": _FakeConnectError,
         },
     )
     monkeypatch.setattr(mod, "httpx", fake)
@@ -408,7 +418,7 @@ async def test_client_local_mode_round_trip(
     assert dispatcher.form_data
     assert dispatcher.form_data["backend"] == "hybrid-auto-engine"
     assert dispatcher.form_data["parse_method"] == "auto"
-    assert dispatcher.form_data["image_analysis"] == "true"
+    assert dispatcher.form_data["image_analysis"] == "false"
     assert dispatcher.form_data["response_format_zip"] == "true"
     assert dispatcher.form_data["return_content_list"] == "true"
     assert dispatcher.form_data["return_images"] == "true"
@@ -640,6 +650,70 @@ async def test_client_local_bad_request_preserves_response_body(
     assert "HTTP 400" in message
     assert "unsupported file type" in message
     assert "demo.xlsx" in message
+
+
+class _LocalConnectErrorDispatcher(_Dispatcher):
+    """Backend is down: every request fails at the transport layer."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    def post(self, url: str, **_: Any) -> _FakeResponse:
+        raise _FakeConnectError(self.message)
+
+
+@pytest.mark.offline
+async def test_client_connection_error_is_wrapped_with_engine_context(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transport-level failure (e.g. backend restart) must surface as a
+    RuntimeError that names MinerU + the endpoint, so the doc_status error_msg
+    is attributable instead of an opaque ``All connection attempts failed``."""
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    _CURRENT.dispatcher = _LocalConnectErrorDispatcher("All connection attempts failed")
+    with pytest.raises(RuntimeError) as exc_info:
+        await MinerURawClient().download_into(raw, src)
+
+    message = str(exc_info.value)
+    assert "MinerU local backend request failed" in message
+    assert "http://127.0.0.1:8000" in message
+    assert "_FakeConnectError" in message
+    assert "All connection attempts failed" in message
+
+
+@pytest.mark.offline
+async def test_client_connection_error_with_empty_message_stays_non_empty(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Some transport errors stringify to an empty message; the wrapped
+    RuntimeError must still carry the exception class name and context."""
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    _CURRENT.dispatcher = _LocalConnectErrorDispatcher("")
+    with pytest.raises(RuntimeError) as exc_info:
+        await MinerURawClient().download_into(raw, src)
+
+    message = str(exc_info.value)
+    assert message.strip()
+    assert "MinerU local backend request failed" in message
+    assert "_FakeConnectError" in message
 
 
 @pytest.mark.offline

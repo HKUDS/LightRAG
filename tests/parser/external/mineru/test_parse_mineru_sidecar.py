@@ -32,7 +32,17 @@ from lightrag.parser.external.mineru.manifest import (
     ManifestFile,
     write_manifest,
 )
+from lightrag.parser.base import ParseContext
+from lightrag.parser.registry import get_parser
 from lightrag.utils import EmbeddingFunc, Tokenizer
+
+
+async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
+    """Drive a parser the way the pipeline worker does (registry dispatch)."""
+    result = await get_parser(engine).parse(
+        ParseContext(rag, doc_id, file_path, content_data)
+    )
+    return result.to_dict()
 
 
 class _SimpleTokenizerImpl:
@@ -66,14 +76,19 @@ def _new_rag(tmp_path: Path) -> LightRAG:
     )
 
 
+_FAKE_TABLE_HTML = (
+    '<table><thead><tr><th rowspan="2">Metric</th>'
+    '<th colspan="2">Score</th></tr><tr><th>A</th><th>B</th></tr></thead>'
+    "<tbody><tr><td>Accuracy</td><td>91%</td><td>93%</td></tr></tbody></table>"
+)
+
+
 _FAKE_CONTENT_LIST = [
     {"type": "text", "text": "1 Introduction", "text_level": 1},
     {"type": "text", "text": "Body paragraph."},
     {
         "type": "table",
-        "table_body": [["A", "B"], ["1", "2"]],
-        "num_rows": 2,
-        "num_cols": 2,
+        "table_body": _FAKE_TABLE_HTML,
         "table_caption": ["Tbl"],
         "page_idx": 0,
         "bbox": [10, 10, 100, 50],
@@ -199,7 +214,9 @@ def test_parse_mineru_emits_compliant_sidecar(
                 lambda _p: str(src),
             )
 
-            parsed = await rag.parse_mineru(
+            parsed = await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -236,7 +253,10 @@ def test_parse_mineru_emits_compliant_sidecar(
             # Spec fix: <table> placeholder inline, not <cite>
             contents = " ".join(row.get("content", "") for row in rows)
             assert '<table id="tb-' in contents
-            assert 'format="json"' in contents
+            assert 'format="html"' in contents
+            assert 'format="json"' not in contents
+            assert 'rowspan="2"' in contents
+            assert 'colspan="2"' in contents
             assert "<cite" not in contents
 
             # bbox positions present on at least one block
@@ -265,6 +285,20 @@ def test_parse_mineru_emits_compliant_sidecar(
             tables = json.loads((parsed_dir / "demo.tables.json").read_text())["tables"]
             (_, table_item) = next(iter(tables.items()))
             assert "image" not in table_item
+            assert table_item["format"] == "html"
+            assert table_item["content"] == _FAKE_TABLE_HTML
+            assert table_item["dimension"] == [3, 3]
+            assert 'rowspan="2"' in table_item["content"]
+            assert 'colspan="2"' in table_item["content"]
+            # HTML tables store table_header as the raw <thead> (rowspan/colspan
+            # preserved), not a flattened JSON grid.
+            assert table_item["table_header"] == (
+                '<thead><tr><th rowspan="2">Metric</th>'
+                '<th colspan="2">Score</th></tr>'
+                "<tr><th>A</th><th>B</th></tr></thead>"
+            )
+            assert 'rowspan="2"' in table_item["table_header"]
+            assert 'colspan="2"' in table_item["table_header"]
             assert table_item["self_ref"] == "content_list.json#/2"
 
             equations = json.loads((parsed_dir / "demo.equations.json").read_text())[
@@ -335,7 +369,9 @@ def test_parse_mineru_cache_hit_skips_download(
             )
 
             # First call: cache miss → download once.
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -343,7 +379,9 @@ def test_parse_mineru_cache_hit_skips_download(
             assert counters["calls"] == 1
 
             # Second call: should hit cache.
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -352,7 +390,9 @@ def test_parse_mineru_cache_hit_skips_download(
 
             # Third call with force-reparse: cache invalidated.
             monkeypatch.setenv("LIGHTRAG_FORCE_REPARSE_MINERU", "true")
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -408,7 +448,9 @@ def test_parse_mineru_upload_name_strips_parser_hint(
                 lambda _p: str(src),
             )
 
-            parsed = await rag.parse_mineru(
+            parsed = await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path=src.name,
                 content_data={},
@@ -484,7 +526,9 @@ def test_parse_mineru_cache_invalidates_on_source_change(
                 lambda _p: str(src),
             )
 
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -495,7 +539,9 @@ def test_parse_mineru_cache_invalidates_on_source_change(
             data = src.read_bytes()
             src.write_bytes(b"\x00" + data[1:])
 
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},

@@ -502,9 +502,9 @@ Though LightRAG Server uses one worker to process the document indexing pipeline
 ### Number of worker processes, not greater than (2 x number_of_cores) + 1
 WORKERS=2
 ### Number of parallel files to process in one batch
-MAX_PARALLEL_INSERT=2
-### Max concurrent requests to the LLM
-MAX_ASYNC=4
+MAX_PARALLEL_INSERT=3
+### Max concurrent requests to the LLM (MAX_ASYNC is still accepted as a deprecated alias)
+MAX_ASYNC_LLM=4
 ```
 
 On macOS, Gunicorn multi-worker mode also requires the Objective-C fork-safety override to be present before the Python process starts. Do not rely on `.env` for this variable; `.env` is loaded after Python startup and is too late for the Objective-C runtime:
@@ -726,7 +726,7 @@ lightrag-server --embedding-binding gemini --help
 
 > Please use OpenAI-compatible method to access LLMs deployed by OpenRouter or vLLM/SGLang. You can pass additional parameters to OpenRouter or vLLM/SGLang through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
 
-Set the max_tokens to **prevent excessively long or endless output loop** during the entity relationship extraction phase for Large Language Model (LLM) responses.  The purpose of setting max_tokens parameter is to truncate LLM output before timeouts occur, thereby preventing document extraction failures. This addresses issues where certain text blocks (e.g., tables or citations) containing numerous entities and relationships can lead to overly long or even endless loop outputs from LLMs. This setting is particularly crucial for locally deployed, smaller-parameter models. Max tokens value can be calculated by this formula: `LLM_TIMEOUT * llm_output_tokens/second` (i.e. `180s * 50 tokens/s = 9000`)
+Set the max_tokens to **prevent excessively long or endless output loop** during the entity relationship extraction phase for Large Language Model (LLM) responses.  The purpose of setting max_tokens parameter is to truncate LLM output before timeouts occur, thereby preventing document extraction failures. This addresses issues where certain text blocks (e.g., tables or citations) containing numerous entities and relationships can lead to overly long or even endless loop outputs from LLMs. This setting is particularly crucial for locally deployed, smaller-parameter models. Max tokens value can be calculated by this formula: `LLM_TIMEOUT * llm_output_tokens/second` (i.e. `240s * 50 tokens/s = 12000`, max_tokens should smaller than 12000)
 
 ```
 # For vLLM/SGLang doployed models, or most of OpenAI compatible API provider
@@ -792,7 +792,6 @@ The surrounding-context budgets control how much nearby text is included in VLM 
 
 Entity extraction is controlled by the base or `EXTRACT` role LLM. Important server-side options:
 
-- `ENABLE_LLM_CACHE_FOR_EXTRACT`: enable LLM cache for entity extraction (default: `true`). This is useful in test environments and during reprocessing.
 - `ENTITY_EXTRACTION_USE_JSON`: request JSON-structured extraction output. In v1.5 this is recommended for reliability, but it can increase latency.
 - `ENTITY_TYPE_PROMPT_FILE`: file-name-only YAML profile for entity type guidance and examples. The file is loaded from `PROMPT_DIR/entity_type`; do not pass an absolute path here.
 - `MAX_EXTRACT_INPUT_TOKENS`: maximum token budget for one extraction input context.
@@ -808,7 +807,6 @@ PROMPT_DIR=/opt/lightrag/prompts
 MAX_EXTRACT_INPUT_TOKENS=20480
 MAX_EXTRACTION_RECORDS=100
 MAX_EXTRACTION_ENTITIES=40
-ENABLE_LLM_CACHE_FOR_EXTRACT=true
 ```
 
 If an old `.env` still contains `ENTITY_TYPES`, remove it before startup. The server fails fast because this variable has been replaced by prompt profiles.
@@ -897,7 +895,7 @@ MAX_ASYNC_RERANK=4
 RERANK_TIMEOUT=30
 ```
 
-`MAX_ASYNC_RERANK` falls back to `MAX_ASYNC` when unset. `RERANK_TIMEOUT` has an independent default because reranker requests are usually shorter than LLM generation requests. For comprehensive reranker configuration examples, including Cohere-compatible chunking options and Jina/Aliyun endpoints, refer to the `env.example` file.
+`MAX_ASYNC_RERANK` falls back to `MAX_ASYNC_LLM` when unset (`MAX_ASYNC` is still accepted as a deprecated alias). `RERANK_TIMEOUT` has an independent default because reranker requests are usually shorter than LLM generation requests. For comprehensive reranker configuration examples, including Cohere-compatible chunking options and Jina/Aliyun endpoints, refer to the `env.example` file.
 
 ### Enable Reranking
 
@@ -974,21 +972,20 @@ WORKERS=2
 # LIGHTRAG_API_PREFIX=/site01
 
 ### Settings for document indexing
-ENABLE_LLM_CACHE_FOR_EXTRACT=true
 ENTITY_EXTRACTION_USE_JSON=true
 # ENTITY_TYPE_PROMPT_FILE=entity_type_prompt.yml
 # MAX_EXTRACT_INPUT_TOKENS=20480
 # MAX_EXTRACTION_RECORDS=100
 # MAX_EXTRACTION_ENTITIES=40
 SUMMARY_LANGUAGE=Chinese
-MAX_PARALLEL_INSERT=2
+MAX_PARALLEL_INSERT=3
 LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 # CHUNK_R_SEPARATORS=["\n\n","\n","。","！","？","；","，"," ",""]
 # CHUNK_P_SIZE=2000
 
 ### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
 TIMEOUT=150
-MAX_ASYNC=4
+MAX_ASYNC_LLM=4
 
 LLM_BINDING=openai
 LLM_MODEL=gpt-4o-mini
@@ -1114,7 +1111,7 @@ For the full routing syntax, supported extensions, parser cache behavior, chunke
 
 ### Pipeline Concurrency
 
-`MAX_PARALLEL_INSERT` controls how many files are processed in parallel. `MAX_ASYNC` controls concurrent LLM calls, including extraction, merging, query keyword generation, and final answer generation. Optional staged-pipeline variables such as `MAX_PARALLEL_PARSE_NATIVE`, `MAX_PARALLEL_PARSE_MINERU`, `MAX_PARALLEL_PARSE_DOCLING`, and `MAX_PARALLEL_ANALYZE` can be used for parser-heavy deployments.
+`MAX_PARALLEL_INSERT` controls how many files are processed in parallel. `MAX_ASYNC_LLM` (deprecated alias: `MAX_ASYNC`) controls concurrent LLM calls, including extraction, merging, query keyword generation, and final answer generation. Optional staged-pipeline variables such as `MAX_PARALLEL_PARSE_NATIVE`, `MAX_PARALLEL_PARSE_MINERU`, `MAX_PARALLEL_PARSE_DOCLING`, and `MAX_PARALLEL_ANALYZE` can be used for parser-heavy deployments.
 
 Uploads and text inserts can be accepted while the processing loop is busy; the running loop is nudged to pick up the new pending work. Destructive jobs such as document clear/delete and the classification phase of `/documents/scan` still reject concurrent enqueues to protect storage consistency. Failed files can be reprocessed from the WebUI or by triggering `/documents/scan`.
 

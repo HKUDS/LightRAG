@@ -99,7 +99,7 @@
         "error": "一部のファイルのアップロードに失敗しました"
       },
       "generalError": "アップロード失敗\n{{error}}",
-      "fileTypes": "サポートされている形式: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "サポートされている形式: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "一度に1つ以上のファイルをアップロードできません",
         "maxFilesLimit": "{{count}}個を超えるファイルをアップロードできません",
@@ -139,9 +139,9 @@
       "filters": {
         "all": "すべて",
         "completed": "完了",
-        "analyzing": "分析中",
-        "processing": "処理中",
-        "pending": "保留中",
+        "parse": "抽出",
+        "analyze": "分析",
+        "process": "処理",
         "failed": "失敗"
       },
       "status": {
@@ -233,6 +233,9 @@
       "disease": "病気",
       "drug": "薬",
       "food": "食品",
+      "table": "表",
+      "drawing": "図",
+      "equation": "数式",
       "other": "その他"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "下にクエリを入力して検索を開始",
       "clear": "クリア",
       "send": "送信",
+      "stop": "停止",
+      "userTerminated": "ユーザーが中断しました。応答が不完全な可能性があります",
       "placeholder": "クエリを入力（プレフィックス対応: /<クエリモード>）",
       "error": "エラー: 応答の取得に失敗しました",
       "queryModeError": "次のクエリモードのみサポートされています: {{modes}}",
@@ -420,6 +425,7 @@
       "parametersDescription": "クエリパラメータを設定",
       "queryMode": "クエリモード",
       "queryModeTooltip": "検索戦略を選択:\n• Naive: 従来のテキストチャンクベクトル検索\n• Local: エンティティ検索に焦点\n• Global: 関係検索に焦点\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: 検索をスキップし、会話履歴と現在の質問をLLMに送信",
+      "queryModeWarning": "検索品質が低下する可能性があります",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

@@ -216,15 +216,15 @@ async def test_graph_basic(storage):
             print(f"Node type: {node1_props.get('entity_type', 'No type')}")
             print(f"Node keywords: {node1_props.get('keywords', 'No keywords')}")
             # Verify that the returned properties are correct
-            assert (
-                node1_props.get("entity_id") == node1_id
-            ), f"Node ID mismatch: expected {node1_id}, got {node1_props.get('entity_id')}"
-            assert (
-                node1_props.get("description") == node1_data["description"]
-            ), "Node description mismatch"
-            assert (
-                node1_props.get("entity_type") == node1_data["entity_type"]
-            ), "Node type mismatch"
+            assert node1_props.get("entity_id") == node1_id, (
+                f"Node ID mismatch: expected {node1_id}, got {node1_props.get('entity_id')}"
+            )
+            assert node1_props.get("description") == node1_data["description"], (
+                "Node description mismatch"
+            )
+            assert node1_props.get("entity_type") == node1_data["entity_type"], (
+                "Node type mismatch"
+            )
         else:
             print(f"Failed to read node properties: {node1_id}")
             assert False, f"Failed to read node properties: {node1_id}"
@@ -242,15 +242,15 @@ async def test_graph_basic(storage):
             )
             print(f"Edge weight: {edge_props.get('weight', 'No weight')}")
             # Verify that the returned properties are correct
-            assert (
-                edge_props.get("relationship") == edge_data["relationship"]
-            ), "Edge relationship mismatch"
-            assert (
-                edge_props.get("description") == edge_data["description"]
-            ), "Edge description mismatch"
-            assert (
-                edge_props.get("weight") == edge_data["weight"]
-            ), "Edge weight mismatch"
+            assert edge_props.get("relationship") == edge_data["relationship"], (
+                "Edge relationship mismatch"
+            )
+            assert edge_props.get("description") == edge_data["description"], (
+                "Edge description mismatch"
+            )
+            assert edge_props.get("weight") == edge_data["weight"], (
+                "Edge weight mismatch"
+            )
         else:
             print(f"Failed to read edge properties: {node1_id} -> {node2_id}")
             assert False, f"Failed to read edge properties: {node1_id} -> {node2_id}"
@@ -272,15 +272,17 @@ async def test_graph_basic(storage):
                 f"Reverse edge weight: {reverse_edge_props.get('weight', 'No weight')}"
             )
             # Verify that forward and reverse edge properties are the same
-            assert (
-                edge_props == reverse_edge_props
-            ), "Forward and reverse edge properties are not consistent, undirected graph property verification failed"
+            assert edge_props == reverse_edge_props, (
+                "Forward and reverse edge properties are not consistent, undirected graph property verification failed"
+            )
             print(
                 "Undirected graph property verification successful: forward and reverse edge properties are consistent"
             )
         else:
             print(f"Failed to read reverse edge properties: {node2_id} -> {node1_id}")
-            assert False, f"Failed to read reverse edge properties: {node2_id} -> {node1_id}, undirected graph property verification failed"
+            assert False, (
+                f"Failed to read reverse edge properties: {node2_id} -> {node1_id}, undirected graph property verification failed"
+            )
 
         print("Basic tests completed, data is preserved in the database.")
         return True
@@ -362,9 +364,9 @@ async def test_graph_advanced(storage):
         print(f"== Testing node_degree: {node1_id}")
         node1_degree = await storage.node_degree(node1_id)
         print(f"Degree of node {node1_id}: {node1_degree}")
-        assert (
-            node1_degree == 1
-        ), f"Degree of node {node1_id} should be 1, but got {node1_degree}"
+        assert node1_degree == 1, (
+            f"Degree of node {node1_id} should be 1, but got {node1_degree}"
+        )
 
         # 2.1 Test degrees of all nodes
         print("== Testing degrees of all nodes")
@@ -372,28 +374,28 @@ async def test_graph_advanced(storage):
         node3_degree = await storage.node_degree(node3_id)
         print(f"Degree of node {node2_id}: {node2_degree}")
         print(f"Degree of node {node3_id}: {node3_degree}")
-        assert (
-            node2_degree == 2
-        ), f"Degree of node {node2_id} should be 2, but got {node2_degree}"
-        assert (
-            node3_degree == 1
-        ), f"Degree of node {node3_id} should be 1, but got {node3_degree}"
+        assert node2_degree == 2, (
+            f"Degree of node {node2_id} should be 2, but got {node2_degree}"
+        )
+        assert node3_degree == 1, (
+            f"Degree of node {node3_id} should be 1, but got {node3_degree}"
+        )
 
         # 3. Test edge_degree - get the degree of an edge
         print(f"== Testing edge_degree: {node1_id} -> {node2_id}")
         edge_degree = await storage.edge_degree(node1_id, node2_id)
         print(f"Degree of edge {node1_id} -> {node2_id}: {edge_degree}")
-        assert (
-            edge_degree == 3
-        ), f"Degree of edge {node1_id} -> {node2_id} should be 3, but got {edge_degree}"
+        assert edge_degree == 3, (
+            f"Degree of edge {node1_id} -> {node2_id} should be 3, but got {edge_degree}"
+        )
 
         # 3.1 Test reverse edge degree - verify undirected graph property
         print(f"== Testing reverse edge degree: {node2_id} -> {node1_id}")
         reverse_edge_degree = await storage.edge_degree(node2_id, node1_id)
         print(f"Degree of reverse edge {node2_id} -> {node1_id}: {reverse_edge_degree}")
-        assert (
-            edge_degree == reverse_edge_degree
-        ), "Degrees of forward and reverse edges are not consistent, undirected graph property verification failed"
+        assert edge_degree == reverse_edge_degree, (
+            "Degrees of forward and reverse edges are not consistent, undirected graph property verification failed"
+        )
         print(
             "Undirected graph property verification successful: degrees of forward and reverse edges are consistent"
         )
@@ -402,9 +404,9 @@ async def test_graph_advanced(storage):
         print(f"== Testing get_node_edges: {node2_id}")
         node2_edges = await storage.get_node_edges(node2_id)
         print(f"All edges of node {node2_id}: {node2_edges}")
-        assert (
-            len(node2_edges) == 2
-        ), f"Node {node2_id} should have 2 edges, but got {len(node2_edges)}"
+        assert len(node2_edges) == 2, (
+            f"Node {node2_id} should have 2 edges, but got {len(node2_edges)}"
+        )
 
         # 4.1 Verify undirected graph property of node edges
         print("== Verifying undirected graph property of node edges")
@@ -423,12 +425,12 @@ async def test_graph_advanced(storage):
             ):
                 has_connection_with_node3 = True
 
-        assert (
-            has_connection_with_node1
-        ), f"Edge list of node {node2_id} should include a connection with {node1_id}"
-        assert (
-            has_connection_with_node3
-        ), f"Edge list of node {node2_id} should include a connection with {node3_id}"
+        assert has_connection_with_node1, (
+            f"Edge list of node {node2_id} should include a connection with {node1_id}"
+        )
+        assert has_connection_with_node3, (
+            f"Edge list of node {node2_id} should include a connection with {node3_id}"
+        )
         print(
             f"Undirected graph property verification successful: edge list of node {node2_id} contains all relevant edges"
         )
@@ -447,15 +449,25 @@ async def test_graph_advanced(storage):
         kg = await storage.get_knowledge_graph("*", max_depth=2, max_nodes=10)
         print(f"Number of nodes in knowledge graph: {len(kg.nodes)}")
         print(f"Number of edges in knowledge graph: {len(kg.edges)}")
-        assert isinstance(
-            kg, KnowledgeGraph
-        ), "The returned result should be of type KnowledgeGraph"
-        assert (
-            len(kg.nodes) == 3
-        ), f"The knowledge graph should have 3 nodes, but got {len(kg.nodes)}"
-        assert (
-            len(kg.edges) == 2
-        ), f"The knowledge graph should have 2 edges, but got {len(kg.edges)}"
+        assert isinstance(kg, KnowledgeGraph), (
+            "The returned result should be of type KnowledgeGraph"
+        )
+        assert len(kg.nodes) == 3, (
+            f"The knowledge graph should have 3 nodes, but got {len(kg.nodes)}"
+        )
+        assert len(kg.edges) == 2, (
+            f"The knowledge graph should have 2 edges, but got {len(kg.edges)}"
+        )
+
+        # 6.1 Every returned node must carry its entity_id in properties: the
+        # WebUI reads properties['entity_id'] to render the node "Name" row and
+        # neighbour/edge-endpoint labels. A backend that strips it leaves the
+        # property panel nameless (regression guard for all backends).
+        expected_ids = {node1_id, node2_id, node3_id}
+        for kg_node in kg.nodes:
+            assert kg_node.properties.get("entity_id") in expected_ids, (
+                f"Node {kg_node.id} is missing entity_id in properties: {kg_node.properties}"
+            )
 
         # 7. Test delete_node - delete a node
         print(f"== Testing delete_node: {node3_id}")
@@ -475,9 +487,9 @@ async def test_graph_advanced(storage):
         print(
             f"Querying edge properties after deletion {node2_id} -> {node3_id}: {edge_props}"
         )
-        assert (
-            edge_props is None
-        ), f"Edge {node2_id} -> {node3_id} should have been deleted"
+        assert edge_props is None, (
+            f"Edge {node2_id} -> {node3_id} should have been deleted"
+        )
 
         # 8.1 Verify undirected graph property of edge deletion
         print(
@@ -487,9 +499,9 @@ async def test_graph_advanced(storage):
         print(
             f"Querying reverse edge properties after deletion {node3_id} -> {node2_id}: {reverse_edge_props}"
         )
-        assert (
-            reverse_edge_props is None
-        ), f"Reverse edge {node3_id} -> {node2_id} should also be deleted, undirected graph property verification failed"
+        assert reverse_edge_props is None, (
+            f"Reverse edge {node3_id} -> {node2_id} should also be deleted, undirected graph property verification failed"
+        )
         print(
             "Undirected graph property verification successful: deleting an edge in one direction also deletes the reverse edge"
         )
@@ -652,44 +664,44 @@ async def test_graph_batch_operations(storage):
         assert node1_id in nodes_dict, f"{node1_id} should be in the result"
         assert node2_id in nodes_dict, f"{node2_id} should be in the result"
         assert node3_id in nodes_dict, f"{node3_id} should be in the result"
-        assert (
-            nodes_dict[node1_id]["description"] == node1_data["description"]
-        ), f"{node1_id} description mismatch"
-        assert (
-            nodes_dict[node2_id]["description"] == node2_data["description"]
-        ), f"{node2_id} description mismatch"
-        assert (
-            nodes_dict[node3_id]["description"] == node3_data["description"]
-        ), f"{node3_id} description mismatch"
+        assert nodes_dict[node1_id]["description"] == node1_data["description"], (
+            f"{node1_id} description mismatch"
+        )
+        assert nodes_dict[node2_id]["description"] == node2_data["description"], (
+            f"{node2_id} description mismatch"
+        )
+        assert nodes_dict[node3_id]["description"] == node3_data["description"], (
+            f"{node3_id} description mismatch"
+        )
 
         # 3. Test node_degrees_batch - batch get degrees of multiple nodes
         print("== Testing node_degrees_batch")
         node_degrees = await storage.node_degrees_batch(node_ids)
         print(f"Batch get node degrees result: {node_degrees}")
-        assert (
-            len(node_degrees) == 3
-        ), f"Should return degrees of 3 nodes, but got {len(node_degrees)}"
+        assert len(node_degrees) == 3, (
+            f"Should return degrees of 3 nodes, but got {len(node_degrees)}"
+        )
         assert node1_id in node_degrees, f"{node1_id} should be in the result"
         assert node2_id in node_degrees, f"{node2_id} should be in the result"
         assert node3_id in node_degrees, f"{node3_id} should be in the result"
-        assert (
-            node_degrees[node1_id] == 3
-        ), f"Degree of {node1_id} should be 3, but got {node_degrees[node1_id]}"
-        assert (
-            node_degrees[node2_id] == 2
-        ), f"Degree of {node2_id} should be 2, but got {node_degrees[node2_id]}"
-        assert (
-            node_degrees[node3_id] == 3
-        ), f"Degree of {node3_id} should be 3, but got {node_degrees[node3_id]}"
+        assert node_degrees[node1_id] == 3, (
+            f"Degree of {node1_id} should be 3, but got {node_degrees[node1_id]}"
+        )
+        assert node_degrees[node2_id] == 2, (
+            f"Degree of {node2_id} should be 2, but got {node_degrees[node2_id]}"
+        )
+        assert node_degrees[node3_id] == 3, (
+            f"Degree of {node3_id} should be 3, but got {node_degrees[node3_id]}"
+        )
 
         # 4. Test edge_degrees_batch - batch get degrees of multiple edges
         print("== Testing edge_degrees_batch")
         edges = [(node1_id, node2_id), (node2_id, node3_id), (node3_id, node4_id)]
         edge_degrees = await storage.edge_degrees_batch(edges)
         print(f"Batch get edge degrees result: {edge_degrees}")
-        assert (
-            len(edge_degrees) == 3
-        ), f"Should return degrees of 3 edges, but got {len(edge_degrees)}"
+        assert len(edge_degrees) == 3, (
+            f"Should return degrees of 3 edges, but got {len(edge_degrees)}"
+        )
         assert (
             node1_id,
             node2_id,
@@ -703,15 +715,15 @@ async def test_graph_batch_operations(storage):
             node4_id,
         ) in edge_degrees, f"Edge {node3_id} -> {node4_id} should be in the result"
         # Verify edge degrees (sum of source and target node degrees)
-        assert (
-            edge_degrees[(node1_id, node2_id)] == 5
-        ), f"Degree of edge {node1_id} -> {node2_id} should be 5, but got {edge_degrees[(node1_id, node2_id)]}"
-        assert (
-            edge_degrees[(node2_id, node3_id)] == 5
-        ), f"Degree of edge {node2_id} -> {node3_id} should be 5, but got {edge_degrees[(node2_id, node3_id)]}"
-        assert (
-            edge_degrees[(node3_id, node4_id)] == 5
-        ), f"Degree of edge {node3_id} -> {node4_id} should be 5, but got {edge_degrees[(node3_id, node4_id)]}"
+        assert edge_degrees[(node1_id, node2_id)] == 5, (
+            f"Degree of edge {node1_id} -> {node2_id} should be 5, but got {edge_degrees[(node1_id, node2_id)]}"
+        )
+        assert edge_degrees[(node2_id, node3_id)] == 5, (
+            f"Degree of edge {node2_id} -> {node3_id} should be 5, but got {edge_degrees[(node2_id, node3_id)]}"
+        )
+        assert edge_degrees[(node3_id, node4_id)] == 5, (
+            f"Degree of edge {node3_id} -> {node4_id} should be 5, but got {edge_degrees[(node3_id, node4_id)]}"
+        )
 
         # 5. Test get_edges_batch - batch get properties of multiple edges
         print("== Testing get_edges_batch")
@@ -719,9 +731,9 @@ async def test_graph_batch_operations(storage):
         edge_dicts = [{"src": src, "tgt": tgt} for src, tgt in edges]
         edges_dict = await storage.get_edges_batch(edge_dicts)
         print(f"Batch get edge properties result: {edges_dict.keys()}")
-        assert (
-            len(edges_dict) == 3
-        ), f"Should return properties of 3 edges, but got {len(edges_dict)}"
+        assert len(edges_dict) == 3, (
+            f"Should return properties of 3 edges, but got {len(edges_dict)}"
+        )
         assert (
             node1_id,
             node2_id,
@@ -753,22 +765,21 @@ async def test_graph_batch_operations(storage):
         reverse_edge_dicts = [{"src": tgt, "tgt": src} for src, tgt in edges]
         reverse_edges_dict = await storage.get_edges_batch(reverse_edge_dicts)
         print(f"Batch get reverse edge properties result: {reverse_edges_dict.keys()}")
-        assert (
-            len(reverse_edges_dict) == 3
-        ), f"Should return properties of 3 reverse edges, but got {len(reverse_edges_dict)}"
+        assert len(reverse_edges_dict) == 3, (
+            f"Should return properties of 3 reverse edges, but got {len(reverse_edges_dict)}"
+        )
 
         # Verify that properties of forward and reverse edges are consistent
         for (src, tgt), props in edges_dict.items():
             assert (
-                (
-                    tgt,
-                    src,
-                )
-                in reverse_edges_dict
-            ), f"Reverse edge {tgt} -> {src} should be in the result"
-            assert (
-                props == reverse_edges_dict[(tgt, src)]
-            ), f"Properties of edge {src} -> {tgt} and reverse edge {tgt} -> {src} are inconsistent"
+                tgt,
+                src,
+            ) in reverse_edges_dict, (
+                f"Reverse edge {tgt} -> {src} should be in the result"
+            )
+            assert props == reverse_edges_dict[(tgt, src)], (
+                f"Properties of edge {src} -> {tgt} and reverse edge {tgt} -> {src} are inconsistent"
+            )
 
         print(
             "Undirected graph property verification successful: properties of batch-retrieved forward and reverse edges are consistent"
@@ -778,17 +789,17 @@ async def test_graph_batch_operations(storage):
         print("== Testing get_nodes_edges_batch")
         nodes_edges = await storage.get_nodes_edges_batch([node1_id, node3_id])
         print(f"Batch get node edges result: {nodes_edges.keys()}")
-        assert (
-            len(nodes_edges) == 2
-        ), f"Should return edges for 2 nodes, but got {len(nodes_edges)}"
+        assert len(nodes_edges) == 2, (
+            f"Should return edges for 2 nodes, but got {len(nodes_edges)}"
+        )
         assert node1_id in nodes_edges, f"{node1_id} should be in the result"
         assert node3_id in nodes_edges, f"{node3_id} should be in the result"
-        assert (
-            len(nodes_edges[node1_id]) == 3
-        ), f"{node1_id} should have 3 edges, but has {len(nodes_edges[node1_id])}"
-        assert (
-            len(nodes_edges[node3_id]) == 3
-        ), f"{node3_id} should have 3 edges, but has {len(nodes_edges[node3_id])}"
+        assert len(nodes_edges[node1_id]) == 3, (
+            f"{node1_id} should have 3 edges, but has {len(nodes_edges[node1_id])}"
+        )
+        assert len(nodes_edges[node3_id]) == 3, (
+            f"{node3_id} should have 3 edges, but has {len(nodes_edges[node3_id])}"
+        )
 
         # 6.1 Verify undirected property of batch-retrieved node edges
         print("== Verifying undirected property of batch-retrieved node edges")
@@ -808,15 +819,15 @@ async def test_graph_batch_operations(storage):
         has_edge_to_node4 = any(tgt == node4_id for _, tgt in node1_outgoing_edges)
         has_edge_to_node5 = any(tgt == node5_id for _, tgt in node1_outgoing_edges)
 
-        assert (
-            has_edge_to_node2
-        ), f"Edge list of node {node1_id} should include an edge to {node2_id}"
-        assert (
-            has_edge_to_node4
-        ), f"Edge list of node {node1_id} should include an edge to {node4_id}"
-        assert (
-            has_edge_to_node5
-        ), f"Edge list of node {node1_id} should include an edge to {node5_id}"
+        assert has_edge_to_node2, (
+            f"Edge list of node {node1_id} should include an edge to {node2_id}"
+        )
+        assert has_edge_to_node4, (
+            f"Edge list of node {node1_id} should include an edge to {node4_id}"
+        )
+        assert has_edge_to_node5, (
+            f"Edge list of node {node1_id} should include an edge to {node5_id}"
+        )
 
         # Check if node 3's edges include all relevant edges (regardless of direction)
         node3_outgoing_edges = [
@@ -845,21 +856,202 @@ async def test_graph_batch_operations(storage):
             for src, tgt in nodes_edges[node3_id]
         )
 
-        assert (
-            has_connection_with_node2
-        ), f"Edge list of node {node3_id} should include a connection with {node2_id}"
-        assert (
-            has_connection_with_node4
-        ), f"Edge list of node {node3_id} should include a connection with {node4_id}"
-        assert (
-            has_connection_with_node5
-        ), f"Edge list of node {node3_id} should include a connection with {node5_id}"
+        assert has_connection_with_node2, (
+            f"Edge list of node {node3_id} should include a connection with {node2_id}"
+        )
+        assert has_connection_with_node4, (
+            f"Edge list of node {node3_id} should include a connection with {node4_id}"
+        )
+        assert has_connection_with_node5, (
+            f"Edge list of node {node3_id} should include a connection with {node5_id}"
+        )
 
         print(
             "Undirected graph property verification successful: batch-retrieved node edges include all relevant edges (regardless of direction)"
         )
 
         print("\nBatch operations tests completed.")
+        return True
+
+    except Exception as e:
+        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
+        return False
+
+
+@pytest.mark.integration
+@pytest.mark.requires_db
+async def test_graph_batch_upsert(storage):
+    """
+    Test the batch *write* paths end-to-end against the configured backend:
+    1. upsert_nodes_batch inserts many nodes (forced across multiple chunks on
+       backends that chunk by record count, e.g. PGGraphStorage).
+    2. Same-batch last-write-wins dedup for nodes.
+    3. has_node / has_nodes_batch existence checks.
+    4. upsert_edges_batch inserts many edges, including a reciprocal duplicate
+       that must collapse to the last write (undirected last-write-wins).
+    5. Read-back of node/edge properties, degrees, and undirected consistency.
+
+    These paths are otherwise only covered by mock unit tests; this is the only
+    place they run against a real graph backend.
+    """
+    try:
+        # Force >1 chunk on backends that chunk batch upserts by record count
+        # (PGGraphStorage). Other backends simply ignore this attribute.
+        if hasattr(storage, "_max_upsert_records_per_batch"):
+            storage._max_upsert_records_per_batch = 2
+
+        # 1. Batch node upsert with a same-batch duplicate (last write wins).
+        nodes = [
+            ("E1", {"entity_id": "E1", "description": "first", "entity_type": "T"}),
+            ("E2", {"entity_id": "E2", "description": "second", "entity_type": "T"}),
+            ("E3", {"entity_id": "E3", "description": "third", "entity_type": "T"}),
+            ("E4", {"entity_id": "E4", "description": "fourth", "entity_type": "T"}),
+            ("E5", {"entity_id": "E5", "description": "fifth", "entity_type": "T"}),
+            # duplicate of E1 later in the same batch -> must keep this payload
+            (
+                "E1",
+                {"entity_id": "E1", "description": "first-updated", "entity_type": "T"},
+            ),
+        ]
+        print("== Testing upsert_nodes_batch (multi-chunk + same-batch dedup)")
+        await storage.upsert_nodes_batch(nodes)
+
+        # 2. All five distinct nodes exist; has_node / has_nodes_batch.
+        for nid in ["E1", "E2", "E3", "E4", "E5"]:
+            assert await storage.has_node(nid), (
+                f"{nid} should exist after upsert_nodes_batch"
+            )
+        existing = await storage.has_nodes_batch(["E1", "E3", "E5", "DOES_NOT_EXIST"])
+        assert existing == {
+            "E1",
+            "E3",
+            "E5",
+        }, f"has_nodes_batch returned unexpected set: {existing}"
+
+        # Last-write-wins: the second E1 in the batch wins.
+        e1 = await storage.get_node("E1")
+        assert e1 is not None and e1["description"] == "first-updated", (
+            "Same-batch node dedup should keep the last write"
+        )
+
+        # Batch read-back of the rest.
+        nodes_dict = await storage.get_nodes_batch(["E2", "E3", "E4", "E5"])
+        assert set(nodes_dict) == {"E2", "E3", "E4", "E5"}
+        assert nodes_dict["E3"]["description"] == "third"
+
+        # 3. Batch edge upsert with a reciprocal duplicate (undirected dedup).
+        edges = [
+            ("E1", "E2", {"relationship": "r12", "weight": 1.0, "description": "d12"}),
+            ("E2", "E3", {"relationship": "r23", "weight": 1.0, "description": "d23"}),
+            ("E3", "E4", {"relationship": "r34", "weight": 1.0, "description": "d34"}),
+            ("E4", "E5", {"relationship": "r45", "weight": 1.0, "description": "d45"}),
+            # reciprocal of (E1, E2): undirected -> last write wins
+            (
+                "E2",
+                "E1",
+                {
+                    "relationship": "r12-updated",
+                    "weight": 2.0,
+                    "description": "d12-updated",
+                },
+            ),
+        ]
+        print("== Testing upsert_edges_batch (multi-chunk + reciprocal dedup)")
+        await storage.upsert_edges_batch(edges)
+
+        # 4. Every edge readable in both directions (undirected).
+        for a, b in [("E1", "E2"), ("E2", "E3"), ("E3", "E4"), ("E4", "E5")]:
+            fwd = await storage.get_edge(a, b)
+            rev = await storage.get_edge(b, a)
+            assert fwd is not None, f"Edge {a}->{b} missing after upsert_edges_batch"
+            assert rev is not None, f"Reverse edge {b}->{a} missing (undirected)"
+            assert fwd == rev, f"Edge {a}<->{b} not undirected-consistent"
+
+        # Reciprocal dedup last-write-wins on (E1, E2).
+        e12 = await storage.get_edge("E1", "E2")
+        assert e12["relationship"] == "r12-updated", "Reciprocal edge dedup lost"
+        assert e12["weight"] == 2.0, "Reciprocal edge dedup kept the wrong weight"
+
+        # 5. Degrees reflect exactly the four distinct edges.
+        assert await storage.node_degree("E1") == 1
+        assert await storage.node_degree("E2") == 2
+        assert await storage.node_degree("E3") == 2
+        assert await storage.node_degree("E5") == 1
+
+        print("\nBatch upsert tests completed.")
+        return True
+
+    except Exception as e:
+        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
+        return False
+
+
+@pytest.mark.integration
+@pytest.mark.requires_db
+async def test_graph_query_helpers(storage):
+    """
+    Cover the whole-graph query helpers that the other tests don't touch:
+    1. get_all_nodes  - every node as a dict carrying its "id".
+    2. get_all_edges  - every edge as a dict carrying "source"/"target".
+    3. get_popular_labels - labels ordered by degree (highest first).
+    4. search_labels  - substring/fuzzy label search.
+    """
+    try:
+        # Star topology so degrees are distinct: Alpha=3, others=1.
+        node_ids = ["Alpha", "Beta", "Gamma", "Alphabet"]
+        for nid in node_ids:
+            await storage.upsert_node(
+                nid,
+                {
+                    "entity_id": nid,
+                    "description": f"desc of {nid}",
+                    "entity_type": "T",
+                },
+            )
+        star_edges = [("Alpha", "Beta"), ("Alpha", "Gamma"), ("Alpha", "Alphabet")]
+        for src, tgt in star_edges:
+            await storage.upsert_edge(
+                src, tgt, {"relationship": "rel", "weight": 1.0, "description": "d"}
+            )
+
+        # 1. get_all_nodes
+        print("== Testing get_all_nodes")
+        all_nodes = await storage.get_all_nodes()
+        assert isinstance(all_nodes, list)
+        ids = {n.get("id") for n in all_nodes}
+        assert ids == set(node_ids), f"get_all_nodes ids mismatch: {ids}"
+
+        # 2. get_all_edges (undirected: compare unordered endpoint pairs)
+        print("== Testing get_all_edges")
+        all_edges = await storage.get_all_edges()
+        assert isinstance(all_edges, list)
+        assert len(all_edges) == 3, (
+            f"get_all_edges should return 3 edges, got {len(all_edges)}"
+        )
+        edge_pairs = {frozenset((e["source"], e["target"])) for e in all_edges}
+        assert edge_pairs == {frozenset(p) for p in star_edges}
+
+        # 3. get_popular_labels - highest degree first
+        print("== Testing get_popular_labels")
+        popular = await storage.get_popular_labels(limit=2)
+        assert isinstance(popular, list)
+        assert len(popular) <= 2
+        assert popular and popular[0] == "Alpha", (
+            f"highest-degree label should be 'Alpha', got {popular}"
+        )
+
+        # 4. search_labels - substring / prefix match, and a clear miss
+        print("== Testing search_labels")
+        gamma_hits = await storage.search_labels("Gam")
+        assert "Gamma" in gamma_hits, f"search 'Gam' should find 'Gamma': {gamma_hits}"
+        alpha_hits = await storage.search_labels("Alpha")
+        assert "Alpha" in alpha_hits, (
+            f"search 'Alpha' should find 'Alpha': {alpha_hits}"
+        )
+        misses = await storage.search_labels("NoSuchEntityXYZ")
+        assert "Alpha" not in misses and "Gamma" not in misses
+
+        print("\nQuery helper tests completed.")
         return True
 
     except Exception as e:
@@ -945,14 +1137,14 @@ async def test_graph_special_characters(storage):
                 )
 
                 # Verify node ID is saved correctly
-                assert (
-                    node_props.get("entity_id") == node_id
-                ), f"Node ID mismatch: expected {node_id}, got {node_props.get('entity_id')}"
+                assert node_props.get("entity_id") == node_id, (
+                    f"Node ID mismatch: expected {node_id}, got {node_props.get('entity_id')}"
+                )
 
                 # Verify description is saved correctly
-                assert (
-                    node_props.get("description") == original_data["description"]
-                ), f"Node description mismatch: expected {original_data['description']}, got {node_props.get('description')}"
+                assert node_props.get("description") == original_data["description"], (
+                    f"Node description mismatch: expected {original_data['description']}, got {node_props.get('description')}"
+                )
 
                 print(f"Node {node_id} special character verification successful")
             else:
@@ -972,14 +1164,14 @@ async def test_graph_special_characters(storage):
             )
 
             # Verify edge relationship is saved correctly
-            assert (
-                edge1_props.get("relationship") == edge1_data["relationship"]
-            ), f"Edge relationship mismatch: expected {edge1_data['relationship']}, got {edge1_props.get('relationship')}"
+            assert edge1_props.get("relationship") == edge1_data["relationship"], (
+                f"Edge relationship mismatch: expected {edge1_data['relationship']}, got {edge1_props.get('relationship')}"
+            )
 
             # Verify edge description is saved correctly
-            assert (
-                edge1_props.get("description") == edge1_data["description"]
-            ), f"Edge description mismatch: expected {edge1_data['description']}, got {edge1_props.get('description')}"
+            assert edge1_props.get("description") == edge1_data["description"], (
+                f"Edge description mismatch: expected {edge1_data['description']}, got {edge1_props.get('description')}"
+            )
 
             print(
                 f"Edge {node1_id} -> {node2_id} special character verification successful"
@@ -999,14 +1191,14 @@ async def test_graph_special_characters(storage):
             )
 
             # Verify edge relationship is saved correctly
-            assert (
-                edge2_props.get("relationship") == edge2_data["relationship"]
-            ), f"Edge relationship mismatch: expected {edge2_data['relationship']}, got {edge2_props.get('relationship')}"
+            assert edge2_props.get("relationship") == edge2_data["relationship"], (
+                f"Edge relationship mismatch: expected {edge2_data['relationship']}, got {edge2_props.get('relationship')}"
+            )
 
             # Verify edge description is saved correctly
-            assert (
-                edge2_props.get("description") == edge2_data["description"]
-            ), f"Edge description mismatch: expected {edge2_data['description']}, got {edge2_props.get('description')}"
+            assert edge2_props.get("description") == edge2_data["description"], (
+                f"Edge description mismatch: expected {edge2_data['description']}, got {edge2_props.get('description')}"
+            )
 
             print(
                 f"Edge {node2_id} -> {node3_id} special character verification successful"
@@ -1114,15 +1306,15 @@ async def test_graph_string_escaping_regressions(storage):
 
     center_edges = await storage.get_node_edges(center_id)
     assert center_edges is not None
-    assert connects(
-        center_edges, center_id, backslash_id
-    ), f"center_edges should contain connection to {backslash_id}"
-    assert connects(
-        center_edges, center_id, mixed_id
-    ), f"center_edges should contain connection to {mixed_id}"
-    assert connects(
-        center_edges, center_id, single_quote_id
-    ), f"center_edges should contain connection to {single_quote_id}"
+    assert connects(center_edges, center_id, backslash_id), (
+        f"center_edges should contain connection to {backslash_id}"
+    )
+    assert connects(center_edges, center_id, mixed_id), (
+        f"center_edges should contain connection to {mixed_id}"
+    )
+    assert connects(center_edges, center_id, single_quote_id), (
+        f"center_edges should contain connection to {single_quote_id}"
+    )
 
     batch_edges = await storage.get_nodes_edges_batch(
         [center_id, mixed_id, backslash_id, single_quote_id]
@@ -1140,9 +1332,9 @@ async def test_graph_string_escaping_regressions(storage):
     for (src_id, tgt_id), payload in edge_payloads.items():
         fwd = await storage.get_edge(src_id, tgt_id)
         rev = await storage.get_edge(tgt_id, src_id)
-        assert (
-            fwd is not None
-        ), f"get_edge({src_id!r}, {tgt_id!r}) returned None after insertion"
+        assert fwd is not None, (
+            f"get_edge({src_id!r}, {tgt_id!r}) returned None after insertion"
+        )
         assert rev is not None, (
             f"get_edge({tgt_id!r}, {src_id!r}) returned None — "
             f"storage is not treating the edge as undirected"
@@ -1165,9 +1357,9 @@ async def test_graph_string_escaping_regressions(storage):
     # --- Undirected property: has_edge in both directions ---
     print("\n== Verifying undirected property: has_edge forward and reverse")
     for src_id, tgt_id in edge_payloads:
-        assert await storage.has_edge(
-            src_id, tgt_id
-        ), f"has_edge({src_id!r}, {tgt_id!r}) returned False after insertion"
+        assert await storage.has_edge(src_id, tgt_id), (
+            f"has_edge({src_id!r}, {tgt_id!r}) returned False after insertion"
+        )
         assert await storage.has_edge(tgt_id, src_id), (
             f"has_edge({tgt_id!r}, {src_id!r}) returned False — "
             f"storage is not treating the edge as undirected"
@@ -1191,9 +1383,9 @@ async def test_graph_string_escaping_regressions(storage):
         assert forward_edges[pair]["relationship"] == payload["relationship"]
         assert forward_edges[pair]["description"] == payload["description"]
         reverse_pair = (pair[1], pair[0])
-        assert (
-            reverse_pair in reverse_edges
-        ), f"get_edges_batch did not return reverse pair {reverse_pair!r}"
+        assert reverse_pair in reverse_edges, (
+            f"get_edges_batch did not return reverse pair {reverse_pair!r}"
+        )
         assert reverse_edges[reverse_pair]["relationship"] == payload["relationship"]
         assert reverse_edges[reverse_pair]["description"] == payload["description"]
     print(
@@ -1204,18 +1396,18 @@ async def test_graph_string_escaping_regressions(storage):
     # --- Undirected property: edge deletion removes both directions ---
     print("\n== Verifying undirected property: edge deletion removes both directions")
     await storage.remove_edges([(center_id, mixed_id)])
-    assert (
-        await storage.get_edge(center_id, mixed_id) is None
-    ), f"Forward edge ({center_id!r} -> {mixed_id!r}) should be deleted"
+    assert await storage.get_edge(center_id, mixed_id) is None, (
+        f"Forward edge ({center_id!r} -> {mixed_id!r}) should be deleted"
+    )
     assert await storage.get_edge(mixed_id, center_id) is None, (
         f"Reverse edge ({mixed_id!r} -> {center_id!r}) should also be deleted "
         f"— storage is not treating deletion as undirected"
     )
     remaining_center_edges = await storage.get_node_edges(center_id)
     assert remaining_center_edges is not None
-    assert not connects(
-        remaining_center_edges, center_id, mixed_id
-    ), "Edge between center and mixed_id should have been removed"
+    assert not connects(remaining_center_edges, center_id, mixed_id), (
+        "Edge between center and mixed_id should have been removed"
+    )
     print(
         "Undirected property verification successful: "
         "deleting an edge removes it in both directions"
@@ -1290,21 +1482,21 @@ async def test_graph_undirected_property(storage):
         # Verify forward query
         forward_edge = await storage.get_edge(node1_id, node2_id)
         print(f"Forward edge properties: {forward_edge}")
-        assert (
-            forward_edge is not None
-        ), f"Failed to read forward edge properties: {node1_id} -> {node2_id}"
+        assert forward_edge is not None, (
+            f"Failed to read forward edge properties: {node1_id} -> {node2_id}"
+        )
 
         # Verify reverse query
         reverse_edge = await storage.get_edge(node2_id, node1_id)
         print(f"Reverse edge properties: {reverse_edge}")
-        assert (
-            reverse_edge is not None
-        ), f"Failed to read reverse edge properties: {node2_id} -> {node1_id}"
+        assert reverse_edge is not None, (
+            f"Failed to read reverse edge properties: {node2_id} -> {node1_id}"
+        )
 
         # Verify that forward and reverse edge properties are consistent
-        assert (
-            forward_edge == reverse_edge
-        ), "Forward and reverse edge properties are inconsistent, undirected property verification failed"
+        assert forward_edge == reverse_edge, (
+            "Forward and reverse edge properties are inconsistent, undirected property verification failed"
+        )
         print(
             "Undirected property verification successful: forward and reverse edge properties are consistent"
         )
@@ -1326,9 +1518,9 @@ async def test_graph_undirected_property(storage):
         reverse_degree = await storage.edge_degree(node2_id, node1_id)
         print(f"Degree of forward edge {node1_id} -> {node2_id}: {forward_degree}")
         print(f"Degree of reverse edge {node2_id} -> {node1_id}: {reverse_degree}")
-        assert (
-            forward_degree == reverse_degree
-        ), "Degrees of forward and reverse edges are inconsistent, undirected property verification failed"
+        assert forward_degree == reverse_degree, (
+            "Degrees of forward and reverse edges are inconsistent, undirected property verification failed"
+        )
         print(
             "Undirected property verification successful: degrees of forward and reverse edges are consistent"
         )
@@ -1345,18 +1537,18 @@ async def test_graph_undirected_property(storage):
         print(
             f"Querying forward edge properties after deletion {node1_id} -> {node2_id}: {forward_edge}"
         )
-        assert (
-            forward_edge is None
-        ), f"Edge {node1_id} -> {node2_id} should have been deleted"
+        assert forward_edge is None, (
+            f"Edge {node1_id} -> {node2_id} should have been deleted"
+        )
 
         # Verify reverse edge is also deleted
         reverse_edge = await storage.get_edge(node2_id, node1_id)
         print(
             f"Querying reverse edge properties after deletion {node2_id} -> {node1_id}: {reverse_edge}"
         )
-        assert (
-            reverse_edge is None
-        ), f"Reverse edge {node2_id} -> {node1_id} should also be deleted, undirected property verification failed"
+        assert reverse_edge is None, (
+            f"Reverse edge {node2_id} -> {node1_id} should also be deleted, undirected property verification failed"
+        )
         print(
             "Undirected property verification successful: deleting an edge in one direction also deletes the reverse edge"
         )
@@ -1386,15 +1578,14 @@ async def test_graph_undirected_property(storage):
         # Verify that properties of forward and reverse edges are consistent
         for (src, tgt), props in edges_dict.items():
             assert (
-                (
-                    tgt,
-                    src,
-                )
-                in reverse_edges_dict
-            ), f"Reverse edge {tgt} -> {src} should be in the result"
-            assert (
-                props == reverse_edges_dict[(tgt, src)]
-            ), f"Properties of edge {src} -> {tgt} and reverse edge {tgt} -> {src} are inconsistent"
+                tgt,
+                src,
+            ) in reverse_edges_dict, (
+                f"Reverse edge {tgt} -> {src} should be in the result"
+            )
+            assert props == reverse_edges_dict[(tgt, src)], (
+                f"Properties of edge {src} -> {tgt} and reverse edge {tgt} -> {src} are inconsistent"
+            )
 
         print(
             "Undirected property verification successful: properties of batch-retrieved forward and reverse edges are consistent"
@@ -1418,12 +1609,12 @@ async def test_graph_undirected_property(storage):
             (src == node1_id and tgt == node3_id) for src, tgt in node1_edges
         )
 
-        assert (
-            has_edge_to_node2
-        ), f"Edge list of node {node1_id} should include an edge to {node2_id}"
-        assert (
-            has_edge_to_node3
-        ), f"Edge list of node {node1_id} should include an edge to {node3_id}"
+        assert has_edge_to_node2, (
+            f"Edge list of node {node1_id} should include an edge to {node2_id}"
+        )
+        assert has_edge_to_node3, (
+            f"Edge list of node {node1_id} should include an edge to {node3_id}"
+        )
 
         # Check if node 2 has a connection with node 1
         has_edge_to_node1 = any(
@@ -1431,9 +1622,9 @@ async def test_graph_undirected_property(storage):
             or (src == node1_id and tgt == node2_id)
             for src, tgt in node2_edges
         )
-        assert (
-            has_edge_to_node1
-        ), f"Edge list of node {node2_id} should include a connection with {node1_id}"
+        assert has_edge_to_node1, (
+            f"Edge list of node {node2_id} should include a connection with {node1_id}"
+        )
 
         print(
             "Undirected property verification successful: batch-retrieved node edges include all relevant edges (regardless of direction)"
@@ -1503,12 +1694,18 @@ async def main():
         ASCIIColors.white(
             "6. String Escaping Regression Test (Quoted and escaped entity IDs across graph operations)"
         )
-        ASCIIColors.white("7. All Tests")
+        ASCIIColors.white(
+            "7. Batch Upsert Test (upsert_nodes_batch / upsert_edges_batch, dedup, has_node)"
+        )
+        ASCIIColors.white(
+            "8. Query Helpers Test (get_all_nodes / get_all_edges / get_popular_labels / search_labels)"
+        )
+        ASCIIColors.white("9. All Tests")
 
-        choice = input("\nEnter your choice (1/2/3/4/5/6/7): ")
+        choice = input("\nEnter your choice (1/2/3/4/5/6/7/8/9): ")
 
         # Clean data before running tests
-        if choice in ["1", "2", "3", "4", "5", "6", "7"]:
+        if choice in ["1", "2", "3", "4", "5", "6", "7", "8", "9"]:
             await reset_storage("running tests")
 
         if choice == "1":
@@ -1524,6 +1721,10 @@ async def main():
         elif choice == "6":
             await test_graph_string_escaping_regressions(storage)
         elif choice == "7":
+            await test_graph_batch_upsert(storage)
+        elif choice == "8":
+            await test_graph_query_helpers(storage)
+        elif choice == "9":
             ASCIIColors.cyan("\n=== Starting Basic Test ===")
             await reset_storage("Basic Test")
             basic_result = await test_graph_basic(storage)
@@ -1559,7 +1760,27 @@ async def main():
                                     "\n=== Starting String Escaping Regression Test ==="
                                 )
                                 await reset_storage("String Escaping Regression Test")
-                                await test_graph_string_escaping_regressions(storage)
+                                escaping_result = (
+                                    await test_graph_string_escaping_regressions(
+                                        storage
+                                    )
+                                )
+
+                                if escaping_result is not False:
+                                    ASCIIColors.cyan(
+                                        "\n=== Starting Batch Upsert Test ==="
+                                    )
+                                    await reset_storage("Batch Upsert Test")
+                                    batch_upsert_result = await test_graph_batch_upsert(
+                                        storage
+                                    )
+
+                                    if batch_upsert_result is not False:
+                                        ASCIIColors.cyan(
+                                            "\n=== Starting Query Helpers Test ==="
+                                        )
+                                        await reset_storage("Query Helpers Test")
+                                        await test_graph_query_helpers(storage)
         else:
             ASCIIColors.red("Invalid choice")
 

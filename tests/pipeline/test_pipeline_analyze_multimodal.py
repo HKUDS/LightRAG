@@ -262,6 +262,7 @@ async def test_vlm_call_carries_image_inputs(tmp_path):
         kwargs = call_log[0]["kwargs"]
         assert kwargs.get("stream") is False
         assert kwargs.get("image_inputs") is not None
+        assert kwargs.get("response_format") == {"type": "json_object"}
         assert "messages" not in kwargs
         # _priority is consumed by the wrapper (see lightrag.utils
         # priority_limit_async_func_call); not observable on the raw mock.
@@ -479,9 +480,121 @@ async def test_tiny_image_writes_skipped_without_vlm_call(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_invalid_vlm_response_retries_once_then_succeeds(tmp_path):
+    """A transient malformed VLM JSON response should be retried once in the
+    item analysis layer, then persist the successful second response."""
+    call_log: list[dict] = []
+
+    async def vlm_func(prompt, **kwargs):
+        call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        if len(call_log) == 1:
+            return "not-json"
+        return json.dumps(
+            {
+                "name": "retry-fig",
+                "type": "Chart",
+                "description": "valid after retry",
+            }
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 2
+        assert all(
+            call["kwargs"].get("response_format") == {"type": "json_object"}
+            for call in call_log
+        )
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "retry-fig"
+        assert result["description"] == "valid after retry"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_malformed_cached_analysis_bypassed_and_overwritten(tmp_path):
+    """A malformed analysis cache entry (e.g. persisted by an older version)
+    is served on the first attempt, bypassed on the retry, and the fresh
+    successful response overwrites the same cache key."""
+    call_log: list[dict] = []
+
+    async def vlm_func(prompt, **kwargs):
+        call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        name = "seed-fig" if len(call_log) == 1 else "fresh-fig"
+        return json.dumps(
+            {
+                "name": name,
+                "type": "Chart",
+                "description": "concise figure description",
+            }
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+
+        # First run populates the analysis cache with a valid response.
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 1
+
+        # Corrupt the cache entry in place: same key, malformed body.
+        # JsonKVStorage shares one in-process store per (namespace,
+        # workspace), so go through the storage API rather than the file.
+        await rag.llm_response_cache.index_done_callback()
+        cache_file = (
+            Path(rag.working_dir) / rag.workspace / "kv_store_llm_response_cache.json"
+        )
+        cache_blob = json.loads(cache_file.read_text(encoding="utf-8"))
+        analysis_keys = [k for k in cache_blob if k.startswith("default:analysis:")]
+        assert len(analysis_keys) == 1
+        cache_key = analysis_keys[0]
+        corrupted_entry = dict(cache_blob[cache_key])
+        corrupted_entry["return"] = "not-json"
+        await rag.llm_response_cache.upsert({cache_key: corrupted_entry})
+
+        # Re-run: the first attempt consumes the malformed cache entry
+        # without a model call; the retry bypasses the cache and calls the
+        # VLM exactly once.
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 2
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "fresh-fig"
+
+        # The fresh response overwrote the malformed entry under the same key.
+        overwritten = await rag.llm_response_cache.get_by_id(cache_key)
+        assert overwritten is not None
+        assert json.loads(overwritten["return"])["name"] == "fresh-fig"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_invalid_vlm_response_hard_fails(tmp_path):
     """Invalid model JSON propagates MultimodalAnalysisError and lands a
-    status=failure marker on the sidecar so re-runs don't silently
+    status=failure marker after one retry so re-runs don't silently
     consume the failure."""
     call_log: list[dict] = []
 
@@ -500,7 +613,7 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
                 parsed_data=parsed_data,
                 process_options="i",
             )
-        assert len(call_log) == 1
+        assert len(call_log) == 2
         await rag.llm_response_cache.index_done_callback()
         cache_file = (
             Path(rag.working_dir) / rag.workspace / "kv_store_llm_response_cache.json"
@@ -510,12 +623,121 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
             analysis_keys = [
                 k for k in cache_blob.keys() if k.startswith("default:analysis:")
             ]
-            assert (
-                analysis_keys == []
-            ), f"invalid VLM response was cached: {analysis_keys}"
+            assert analysis_keys == [], (
+                f"invalid VLM response was cached: {analysis_keys}"
+            )
         payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
         item = payload["drawings"]["im-001"]
         assert item["llm_analyze_result"]["status"] == "failure"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_table_extract_json_conformance_retry_succeeds(tmp_path):
+    """Table analysis uses the EXTRACT role and retries once when the JSON
+    object is valid but missing required schema fields."""
+    extract_log: list[dict] = []
+    vlm_log: list[dict] = []
+
+    async def extract_func(prompt, **kwargs):
+        extract_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        if len(extract_log) == 1:
+            return json.dumps({"description": "missing name"})
+        return json.dumps(
+            {
+                "name": "retry-table",
+                "description": "valid table summary",
+            }
+        )
+
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=True,
+        vlm_func=_make_vlm_mock(vlm_log),
+        extract_func=extract_func,
+    )
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+            encoding="utf-8",
+        )
+        tables_path = parsed_dir / "doc.tables.json"
+        tables_path.write_text(
+            json.dumps(
+                {
+                    "tables": {
+                        "tb-001": {
+                            "caption": "Table 1",
+                            "format": "html",
+                            "content": "<table><tr><td>A</td></tr></table>",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        await rag.analyze_multimodal(
+            doc_id="doc-1",
+            file_path="fixture.pdf",
+            parsed_data={"blocks_path": str(blocks_path)},
+            process_options="t",
+        )
+        assert vlm_log == []
+        assert len(extract_log) == 2
+        assert all(
+            call["kwargs"].get("response_format") == {"type": "json_object"}
+            for call in extract_log
+        )
+        payload = json.loads(tables_path.read_text(encoding="utf-8"))
+        result = payload["tables"]["tb-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "retry-table"
+        assert result["description"] == "valid table summary"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_latex_escape_damage_repaired_before_sidecar_write(tmp_path):
+    """Regression: a VLM that under-escapes LaTeX in its JSON response
+    (``"\\frac"`` — valid JSON meaning form feed + ``rac``) must not leave
+    control characters in the persisted ``llm_analyze_result``.
+    ``_json_extract`` repairs the parsed values via
+    ``repair_vlm_json_escape_damage`` so the sidecar carries the intact
+    ``\\frac`` command."""
+    call_log: list[dict] = []
+
+    async def vlm_func(prompt, **kwargs):
+        call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        # Raw response text exactly as a sloppy model emits it: \frac
+        # single-escaped (decodes to \x0c + "rac"), \times correctly
+        # double-escaped — mirrors the mixed escaping observed in the wild.
+        return (
+            '{"name": "cost-formula", "type": "Chart", '
+            '"description": "calls $\\frac{610 \\\\times 1000}{C}$ shown"}'
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        result = payload["drawings"]["im-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["description"] == "calls $\\frac{610 \\times 1000}{C}$ shown"
+        assert "\x0c" not in result["description"]
     finally:
         await rag.finalize_storages()
 
@@ -548,6 +770,7 @@ async def test_table_routes_to_extract_role_not_vlm(tmp_path):
                     "tables": {
                         "tb-001": {
                             "caption": "Table 1",
+                            "format": "html",
                             "content": "<table><tr><td>A</td></tr></table>",
                         }
                     }
@@ -585,7 +808,7 @@ async def test_invalid_json_with_trailing_comma_is_repaired(tmp_path):
     async def vlm_func(prompt, **kwargs):
         call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
         # Trailing comma after "description" — strict json.loads would reject.
-        return '{"name": "fig-1", "type": "Chart", ' '"description": "ok",}'
+        return '{"name": "fig-1", "type": "Chart", "description": "ok",}'
 
     rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
     await rag.initialize_storages()
@@ -617,6 +840,7 @@ async def test_analyze_worker_marks_doc_failed_on_multimodal_error(tmp_path):
     from dataclasses import asdict
     from lightrag.base import DocProcessingStatus, DocStatus
     from lightrag.pipeline import _BatchRunContext
+    from lightrag.parser.registry import parser_specs_snapshot
 
     async def vlm_func(prompt, **kwargs):
         return ""
@@ -655,9 +879,12 @@ async def test_analyze_worker_marks_doc_failed_on_multimodal_error(tmp_path):
             pipeline_status_lock=asyncio.Lock(),
             semaphore=asyncio.Semaphore(1),
             total_files=1,
-            q_native=asyncio.Queue(),
-            q_mineru=asyncio.Queue(),
-            q_docling=asyncio.Queue(),
+            parse_queues={
+                "native": asyncio.Queue(),
+                "mineru": asyncio.Queue(),
+                "docling": asyncio.Queue(),
+            },
+            parser_specs=parser_specs_snapshot(),
             q_analyze=asyncio.Queue(),
             q_process=asyncio.Queue(),
         )
@@ -782,6 +1009,7 @@ async def test_oversized_table_content_truncated_to_extract_budget(tmp_path):
                     "tables": {
                         "tb-big": {
                             "caption": "huge table",
+                            "format": "json",
                             "content": big_table,
                         }
                     }
@@ -867,6 +1095,7 @@ async def test_max_extract_input_tokens_env_var_lowers_cap_and_logs_warning(
                     "tables": {
                         "tb-mid": {
                             "caption": "mid table",
+                            "format": "json",
                             "content": mid_table,
                         }
                     }
@@ -897,9 +1126,9 @@ async def test_max_extract_input_tokens_env_var_lowers_cap_and_logs_warning(
             and "tb-mid" in r.getMessage()
             and "content trimmed" in r.getMessage()
         ]
-        assert (
-            warning_records
-        ), "expected a WARNING-level log line announcing content truncation"
+        assert warning_records, (
+            "expected a WARNING-level log line announcing content truncation"
+        )
     finally:
         await rag.finalize_storages()
 
@@ -942,10 +1171,10 @@ async def test_extract_cap_below_prompt_frame_fails_item_without_llm_call(
                 {
                     "tables": {
                         "tb-tight": {
+                            "format": "json",
                             "content": (
-                                '<table id="tb-tight" format="json">'
-                                '[["A","B"]]</table>'
-                            )
+                                '<table id="tb-tight" format="json">[["A","B"]]</table>'
+                            ),
                         }
                     }
                 }
@@ -982,3 +1211,102 @@ async def test_extract_cap_below_prompt_frame_fails_item_without_llm_call(
         assert "MAX_EXTRACT_INPUT_TOKENS" in item["llm_analyze_result"]["message"]
     finally:
         await rag.finalize_storages()
+
+
+# ---------------------------------------------------------------------------
+# Table content-format declaration (prompt tells the LLM html vs json).
+# ---------------------------------------------------------------------------
+
+
+def test_table_content_format_label_html_and_json():
+    from lightrag.prompt_multimodal import table_content_format_label
+
+    html_label = table_content_format_label("html")
+    assert "HTML" in html_label
+    assert "rowspan" in html_label and "colspan" in html_label
+    assert "<thead>" in html_label
+
+    json_label = table_content_format_label("JSON")  # case-insensitive
+    assert "JSON" in json_label
+    assert "2-D" in json_label and "row" in json_label
+
+
+@pytest.mark.parametrize("bad", [None, "", "csv", "markdown"])
+def test_table_content_format_label_rejects_unknown(bad):
+    from lightrag.prompt_multimodal import table_content_format_label
+
+    with pytest.raises(ValueError):
+        table_content_format_label(bad)
+
+
+async def _capture_table_prompt(tmp_path, *, fmt, content):
+    """Run analyze_multimodal on a single table item and return the rendered
+    EXTRACT prompt captured by the mock."""
+    extract_log: list[dict] = []
+    rag = _build_rag(tmp_path, extract_func=_make_extract_mock(extract_log))
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+            encoding="utf-8",
+        )
+        item: dict = {"caption": "Table 1", "content": content}
+        if fmt is not None:
+            item["format"] = fmt
+        (parsed_dir / "doc.tables.json").write_text(
+            json.dumps({"tables": {"tb-001": item}}),
+            encoding="utf-8",
+        )
+        await rag.analyze_multimodal(
+            doc_id="doc-1",
+            file_path="fixture.pdf",
+            parsed_data={"blocks_path": str(blocks_path)},
+            process_options="t",
+        )
+        return extract_log
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_table_prompt_declares_html_format(tmp_path):
+    """The EXTRACT prompt for an HTML table must state it is HTML."""
+    extract_log = await _capture_table_prompt(
+        tmp_path,
+        fmt="html",
+        content="<table><tr><td>A</td></tr></table>",
+    )
+    assert len(extract_log) == 1
+    prompt = extract_log[0]["prompt"]
+    assert "in HTML format —" in prompt
+    assert "rowspan/colspan" in prompt
+
+
+@pytest.mark.asyncio
+async def test_table_prompt_declares_json_format(tmp_path):
+    """The EXTRACT prompt for a JSON table must state it is JSON."""
+    extract_log = await _capture_table_prompt(
+        tmp_path,
+        fmt="json",
+        content='[["A","B"],["1","2"]]',
+    )
+    assert len(extract_log) == 1
+    prompt = extract_log[0]["prompt"]
+    assert "in JSON format —" in prompt
+    assert "2-D array" in prompt
+
+
+@pytest.mark.asyncio
+async def test_table_missing_format_hard_fails(tmp_path):
+    """A table item without a valid ``format`` is a corrupt sidecar — the
+    worker must raise MultimodalAnalysisError, not guess the format."""
+    with pytest.raises(MultimodalAnalysisError) as excinfo:
+        await _capture_table_prompt(
+            tmp_path,
+            fmt=None,
+            content="<table><tr><td>A</td></tr></table>",
+        )
+    assert "tb-001" in str(excinfo.value)

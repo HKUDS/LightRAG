@@ -33,6 +33,7 @@
     <p>
       <a href="README-zh.md"><img src="https://img.shields.io/badge/🇨🇳中文版-1a1a2e?style=for-the-badge"></a>
       <a href="README.md"><img src="https://img.shields.io/badge/🇺🇸English-1a1a2e?style=for-the-badge"></a>
+      <a href="README-ja.md"><img src="https://img.shields.io/badge/🇯🇵日本語版-1a1a2e?style=for-the-badge"></a>
     </p>
     <p>
       <a href="https://pepy.tech/projects/lightrag-hku"><img src="https://static.pepy.tech/personalized-badge/lightrag-hku?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads"></a>
@@ -118,8 +119,6 @@
 > **📦 Offline Deployment**: For offline or air-gapped environments, see the [Offline Deployment Guide](./docs/OfflineDeployment.md) for instructions on pre-installing all dependencies and cache files.
 
 ### Install LightRAG Server
-
-The LightRAG Server is designed to provide Web UI and API support. The Web UI facilitates document indexing, knowledge graph exploration, and a simple RAG query interface. LightRAG Server also provide an Ollama compatible interfaces, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat bot, such as Open WebUI, to access LightRAG easily.
 
 * Install from PyPI
 
@@ -212,60 +211,150 @@ make env-security-check # Optional: audit the current .env for security risks
 ```
 
 For full description of every target see [docs/InteractiveSetup.md](./docs/InteractiveSetup.md).
-The setup wizards update configuration only; run `make env-security-check` separately to audit the
-current `.env` for security risks before deployment.
-By default, rerunning the setup preserves unchanged wizard-managed compose service blocks; use a
-`*-rewrite` target only when you need to rebuild those managed blocks from the bundled templates.
 
-### Install  LightRAG Core
+## About LightRAG
 
-* Install from source (Recommended)
+### A Lightweight, Graph-Based RAG Framework
+
+LightRAG is a lightweight knowledge-graph RAG framework and an efficient alternative to Microsoft GraphRAG. It adopts a dual-layer architecture to manage both knowledge graphs (KGs) and vector embeddings, effectively bridging the gap between traditional vector-based RAG and graph-based RAG approaches. Designed for high scalability, LightRAG addresses key challenges in large-scale graph indexing and retrieval, including heavy computational overhead, slow response times, and the high cost of incremental updates. While supporting large datasets, LightRAG can still deliver exceptionally high RAG quality, even when paired with a 30B open-source large language model (LLM).
+
+### Features & Advantages
+
+- **Deep Contextual Understanding:** Through graph-structured indexing, LightRAG captures complex semantic dependencies between entities, overcoming the fragmented context limitations typical of traditional chunk-based retrieval methods. Its generation quality and context awareness are particularly outstanding in vertical domains (e.g., legal, financial) that require global comprehension or logical reasoning.
+- **Exceptional Comprehensiveness & Diversity:** LightRAG’s dual-level retrieval mechanism allows it to integrate detailed facts and abstract concepts concurrently. This enables the system to achieve remarkable performance in query result comprehensiveness and diversity, making it highly effective at handling complex, cross-document queries.
+- **Extreme Retrieval Efficiency & Low Cost:** LightRAG does not rely on inefficient community reports or multi-hop reasoning for complex queries. This drastically reduces the number of LLM calls required during both the indexing and querying phases, significantly lowering response latency and LLM computational costs.
+- **Rapid Adaptation to Dynamic Data:** LightRAG supports seamless, incremental knowledge base updates. New data only needs to go through a standard graph indexing pipeline to generate a local graph, which is then directly integrated into the existing graph via set merging. This process eliminates the need to disrupt the original structure or rebuild the global index, ensuring real-time relevance in dynamic data environments. When deleting documents, the system leverages LLM caching from the construction phase to rapidly rebuild affected entity relationships, vastly improving knowledge base update efficiency.
+
+### Multimodal Capability Upgrades
+
+Starting from version v1.5, LightRAG has officially introduced analysis and retrieval capabilities for multimodal documents:
+
+- **Multi-Engine Document Parsing:** Its document processing pipeline supports parsing engines such as MinerU, Docling, and Native, enabling the highly efficient extraction of text, tables, formulas, and images from documents.
+- **Cross-Modal Entity & Relation Mapping:** It achieves cross-modal entity extraction and relationship mapping within a unified framework, resulting in seamless indexing and querying.
+- **Enhanced Application Scenarios:** The brand-new multimodal processing pipeline significantly improves RAG quality for documents rich in multimodal content, such as operation manuals and academic papers.
+
+### LightRAG API Server
+
+The LightRAG server offers not only a web-based UI for exploring LightRAG functionalities but also a comprehensive REST API. For more information about the LightRAG server, please refer to [LightRAG Server](./docs/LightRAG-API-Server.md).
+
+![iShot_2025-03-23_12.40.08](./README.assets/iShot_2025-03-23_12.40.08.png)
+
+## Key Configuration Guide
+
+### Selecting LLM Models
+
+LightRAG requires LLM/VLMs of four different roles during its workflow. You should configure models with different capabilities and speeds for different roles to strike a balance between performance and processing speed. LightRAG has higher capability requirements for Large Language Models (LLMs) than traditional RAG because it requires LLMs to perform complex entity-relation extraction tasks from documents. During the query phase, the LLM needs to process a large volume of retrieved information, including entities, relationships, and text chunks. This requires the model to have the capability of generating high-quality responses in long, noisy contexts. For detailed model configurations, please refer to [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md)
+
+### Selecting Query Modes
+
+LightRAG supports five query modes:
+
+- **local**: Focuses on precise matching of local contexts and specific entities. It retrieves candidate entities and their directly associated attributes from the knowledge graph. This mode is suitable for Q&A targeting specific objects, concrete concepts, or detailed facts, providing highly relevant and detailed local context support.
+- **global**: Focuses on macro themes, cross-document reasoning, and deep relationships between entities. It retrieves relationship chains covering broad themes and concepts. This mode is suitable for queries that require summarization across multiple contexts, trend analysis, or understanding complex semantic dependencies.
+- **hybrid**: Merges the retrieval results of both local and global modes. It performs comprehensive reasoning and generation by simultaneously recalling specific entities and global relationship contexts.
+- **naive**: Traditional RAG retrieval based on text chunks. It does not use a knowledge graph and relies directly on vector similarity to retrieve from the original text chunks.
+- **mix**: Fully-featured mode that merges retrieval results from local, global, and naive modes to provide the most comprehensive and rich retrieval results.
+
+The default query mode for LightRAG is `mix`. Using `mix` mode generally yields the most ideal query results. The `mix` mode takes slightly longer than `naive`, while other query modes are roughly comparable in latency.
+
+### Embedding Models
+
+When choosing an Embedding model, pay attention to its multilingual support capabilities. Since LightRAG's retrieval quality has limited dependency on the Embedding model, it is recommended to choose low-dimensional and fast models. Typically, `BAAI/bge-m3` is sufficient. We highly recommend deploying the Embedding model locally to achieve the best performance.
+
+**Important Note**: The Embedding model must be determined before document indexing, and the same model must be used in the query phase. Once selected, embedding models generally cannot be changed. If changed, you will need to re-embed all text chunks, entities, and relationships. LightRAG does not currently provide a re-embedding tool. Some storage backends (e.g., PostgreSQL) require the vector dimension to be defined when creating tables for the first time, so changing the Embedding model requires deleting vector-related tables so LightRAG can recreate them.
+
+### Enabling Reranking
+
+Enabling the Rerank option during the query phase can significantly improve query quality. However, enabling Rerank typically introduces a 1–2 second delay. To minimize latency, it is highly recommended to deploy the Rerank model locally. For configuration details, please refer to the `.env.example` file. Unlike Embedding models, the Rerank model can be changed at any time during the query phase.
+
+### Document Processing Pipeline Configuration
+
+The default pipeline configuration in LightRAG does not allow the system to perform at its best. The quality of document parsing greatly impacts document indexing and querying. Therefore, we recommend configuring the pipeline to enable the MinerU parsing engine and activating the pipeline's image analysis features. Suggested configuration:
+
+```
+LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
+
+VLM_PROCESS_ENABLE=true
+VLM_LLM_MODEL=<your_vlm_model_name>
+```
+
+Since the cloud-based MinerU service has limitations on usage, file size, and page count, it is recommended to use a locally deployed MinerU. For details on configuring the file processing pipeline, please refer to [FileProcessingPipeline.md](./docs/FileProcessingPipeline.md)
+
+### Concurrency Optimization for File Processing
+
+For large-scale document processing, you need to improve concurrency. Key environment variables related to concurrent file processing include:
+
+- **MAX_ASYNC_LLM/EXTRACT_ASYNC_LLM**: Controls the maximum concurrency for LLM models.
+- **MAX_PARALLEL_INSERT**: Controls the maximum number of files processed in parallel. Processing of text, tables, formulas, and images within a single file will also occur concurrently. `MAX_PARALLEL_INSERT` should ideally be set to about 1/3 of `MAX_ASYNC_LLM`.
+- **MAX_PARALLEL_PARSE_MINERU**: Controls the number of parallel files processed for MinerU parsing.
+- **MAX_PARALLEL_PARSE_DOCLING**: Controls the number of parallel files processed for Docling parsing.
+- **EMBEDDING_FUNC_MAX_ASYNC**: Controls the maximum concurrency for embedding models.
+- **EMBEDDING_BATCH_NUM**: Controls the number of texts included in each embedding model request (how many embeddings per batch). Increasing this number can significantly reduce the number of API calls to the embedding model and speed up data persistence in the embedding storage.
+
+```
+# Sample Configuration
+MAX_ASYNC_LLM=8
+MAX_PARALLEL_INSERT=3
+EMBEDDING_FUNC_MAX_ASYNC=16
+EMBEDDING_BATCH_NUM=32
+```
+
+### Selecting Backend Storage
+
+LightRAG requires four types of backend storage:
+
+- **KV_STORAGE**: Used to save LLM response caches, text chunking results, entity-relation extraction results, etc.
+- **VECTOR_STORAGE**: Used to store vector information for text chunks, entities, and relationships.
+- **GRAPH_STORAGE**: Used to save the knowledge graph.
+- **DOC_STATUS_STORAGE**: Used to store the document list.
+
+By default, LightRAG's storage backends are file-persisted, in-memory databases. These default storages are intended only for development and debugging, and are not suitable for production. In a production environment, if you prefer a single backend to handle all four storage types, you can choose PostgreSQL, MongoDB, or OpenSearch. Alternatively, you can select specialized databases for vector or graph storage, such as using Milvus or Qdrant for vector storage, and Neo4j or Memgraph for graph storage.
+
+### Other Important Configurations for Document Processing
+
+During the document insertion stage, you may also want to adjust the following environment variables based on your needs:
+
+- **SUMMARY_LANGUAGE**: Controls the language used by the LLM when outputting entity-relation names and summaries, e.g., `Chinese`, `English`.
+- **ENTITY_EXTRACTION_USE_JSON**: Controls whether the LLM outputs entity-relation extractions in JSON format. Using JSON format typically yields more stable results, but it consumes more tokens and can be slightly slower.
+- **ENABLE_CONTENT_HEADINGS**: Controls whether the section heading information of a text chunk is sent to the LLM during the query stage (enabled by default, providing more context for the LLM).
+- **FORCE_LLM_SUMMARY_ON_MERGE / MAX_SOURCE_IDS_PER_RELATION**: Controls the maximum number of text chunks an `entity/relation` can be associated with.
+- **SOURCE_IDS_LIMIT_METHOD**: Controls whether to keep updating the entity/relation description once an `entity/relation` exceeds its associated text chunk limit (by default it stops updating, because at that point the entity-relation description is already rich enough and further updates add little value; skipping updates can greatly speed up knowledge base construction).
+- **DEFAULT_MAX_FILE_PATHS**: Controls the maximum number of source files an `entity/relation` can be associated with; once this limit is exceeded, new file names are no longer written to the vector storage.
+- **OPENAI_LLM_MAX_TOKENS / OPENAI_LLM_MAX_COMPLETION_TOKENS**: Set a max output token limit to prevent endless output from certain LLMs, which may trigger timeout errors during entity and relation extraction. Different LLM providers require distinct parameter configurations, as detailed in the `env.example`.
+
+### Other Important Configurations for Document Querying
+
+During the document query stage, you may also want to adjust the following environment variables based on your needs:
+- **MAX_ENTITY_TOKENS / MAX_RELATION_TOKENS / MAX_TOTAL_TOKENS**: Controls the token length of the retrieved content sent to the LLM context. The retrieved content consists of three parts: `entities`, `relations`, and `text chunks`. The lengths of entities and relations can be controlled independently, while the text chunk length is determined by subtracting the entity and relation lengths from the total length.
+- **ENABLE_CONTENT_HEADINGS**: Controls whether the section heading where a text chunk resides is sent to the LLM; enabled by default, providing richer context for the LLM and improving answer quality.
+- **ENABLE_LLM_CACHE**: Whether to cache query results. Enabled by default; identical query questions, query modes, and LLM model parameters will return the same result.
+
+## Using LightRAG As SDK
+
+> ⚠️ **For integration into your project, we strongly recommend using the REST API provided by the LightRAG Server.** The LightRAG SDK is primarily intended for embedded applications or academic research and evaluation purposes.
+
+### Install LightRAG SDK
+
+* Install from source code
 
 ```bash
 cd LightRAG
-# Note: uv sync automatically creates a virtual environment in .venv/
+# 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
 uv sync
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
 
-# Or: pip install -e .
+# 或: pip install -e .
 ```
 
 * Install from PyPI
 
 ```bash
 uv pip install lightrag-hku
-# Or: pip install lightrag-hku
+# 或: pip install lightrag-hku
 ```
 
-## Quick Start
-
-### LLM and Technology Stack Requirements for LightRAG
-
-LightRAG's demands on the capabilities of Large Language Models (LLMs) are significantly higher than those of traditional RAG, as it requires the LLM to perform entity-relationship extraction tasks from documents. Configuring appropriate Embedding and Reranker models is also crucial for improving query performance.
-
-- **LLM Selection**:
-  - It is recommended to use an LLM with at least 32 billion parameters.
-  - The context length should be at least 32KB, with 64KB being recommended.
-  - It is not recommended to choose reasoning models during the document indexing stage.
-  - During the query stage, it is recommended to choose models with stronger capabilities than those used in the indexing stage to achieve better query results.
-- **Embedding Model**:
-  - A high-performance Embedding model is essential for RAG.
-  - We recommend using mainstream multilingual Embedding models, such as: `BAAI/bge-m3` and `text-embedding-3-large`.
-  - **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. Therefore, when changing embedding models, it is necessary to delete the existing vector-related tables and allow LightRAG to recreate them with the new dimensions.
-- **Reranker Model Configuration**:
-  - Configuring a Reranker model can significantly enhance LightRAG's retrieval performance.
-  - When a Reranker model is enabled, it is recommended to set the "mix mode" as the default query mode.
-  - We recommend using mainstream Reranker models, such as: `BAAI/bge-reranker-v2-m3` or models provided by services like Jina.
-
-### Quick Start for LightRAG Server
-
-The LightRAG Server is designed to provide Web UI and API support. The LightRAG Server offers a comprehensive knowledge graph visualization feature. It supports various gravity layouts, node queries, subgraph filtering, and more. For more information about LightRAG Server, please refer to [LightRAG Server](./docs/LightRAG-API-Server.md).
-
-![iShot_2025-03-23_12.40.08](./README.assets/iShot_2025-03-23_12.40.08.png)
-
-
-### Quick Start for LightRAG core
+### LightRAG SDK Sample Code
 
 To get started with LightRAG core, refer to the sample codes available in the `examples` folder. Additionally, a [video demo](https://www.youtube.com/watch?v=g21royNJ4fw) demonstration is provided to guide you through the local setup process. If you already possess an OpenAI API key, you can run the demo right away:
 
@@ -286,19 +375,9 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 **Note 2**: Only `lightrag_openai_demo.py` and `lightrag_openai_compatible_demo.py` are officially supported sample codes. Other sample files are community contributions that haven't undergone full testing and optimization.
 
-## Programming with LightRAG Core
+### **Notes on SDK Usage**
 
-For the complete Core API reference — including init parameters, `QueryParam`, LLM/embedding provider examples (OpenAI, Ollama, Azure, Gemini, HuggingFace, LlamaIndex), reranker injection, insert operations, entity/relation management, and delete/merge — see **[docs/ProgramingWithCore.md](./docs/ProgramingWithCore.md)**.
-
-> ⚠️ **If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server**. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
-
-### Advanced Features
-
-LightRAG provides additional capabilities including token usage tracking, knowledge graph data export, LLM cache management, Langfuse observability integration, and RAGAS-based evaluation. See **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**.
-
-### Multimodal Document Processing
-
-LightRAG Server includes a multimodal document pipeline for PDFs, Office documents, images, tables, and formulas. Parsing is handled through external MinerU or Docling services, while multimodal indexing runs in the LightRAG pipeline. For setup details, see **[docs/AdvancedFeatures.md](./docs/AdvancedFeatures.md)**.
+For detailed instructions on using the SDK, please refer to **[docs/ProgramingWithCore.md](./docs/ProgramingWithCore.md)**. Some LightRAG features are not exposed via the REST API and are accessible only through the SDK. These features are typically experimental and may not be compatible with future versions.
 
 ## Replicating Findings in the Paper
 

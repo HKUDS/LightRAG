@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 
-from lightrag.kg.milvus_impl import MilvusVectorDBStorage
+from lightrag.kg.milvus_impl import MILVUS_MAX_VARCHAR_BYTES, MilvusVectorDBStorage
 
 pytestmark = pytest.mark.offline
 
@@ -147,6 +147,150 @@ async def test_index_done_callback_triggers_flush():
     # Buffers cleared after a successful flush.
     assert s._pending_vector_docs == {}
     assert s._pending_vector_deletes == set()
+
+
+@pytest.mark.asyncio
+async def test_upsert_truncates_oversized_content_for_payload_only():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content"})
+    content = "x" * (MILVUS_MAX_VARCHAR_BYTES + 10)
+
+    await s.upsert({"v1": {"content": content}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    assert len(upserted["content"].encode("utf-8")) == MILVUS_MAX_VARCHAR_BYTES
+    assert embed.texts == [content]
+    assert s._pending_vector_docs == {}
+
+
+@pytest.mark.asyncio
+async def test_upsert_truncates_multibyte_content_on_character_boundary():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content"})
+    content = "源" * (MILVUS_MAX_VARCHAR_BYTES // 3 + 10)
+
+    await s.upsert({"v1": {"content": content}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    assert len(upserted["content"].encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
+    upserted["content"].encode("utf-8").decode("utf-8")
+    assert embed.texts == [content]
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_oversized_primary_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    long_id = "v" * 65
+
+    with pytest.raises(ValueError, match="primary keys cannot be truncated"):
+        await s.upsert({long_id: {"content": "hello"}})
+
+    assert s._pending_vector_docs == {}
+    assert embed.call_count == 0
+    s._client.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_oversized_entity_name():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content", "entity_name"})
+    long_entity_name = "e" * 513
+
+    with pytest.raises(ValueError, match="identity fields cannot be truncated"):
+        await s.upsert({"ent-1": {"content": "hello", "entity_name": long_entity_name}})
+
+    assert s._pending_vector_docs == {}
+    assert embed.call_count == 0
+    s._client.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_oversized_relation_identity_fields():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="relationships")
+    long_entity_id = "e" * 513
+
+    with pytest.raises(ValueError, match="identity fields cannot be truncated"):
+        await s.upsert(
+            {
+                "rel-1": {
+                    "content": "hello",
+                    "src_id": long_entity_id,
+                    "tgt_id": "B",
+                }
+            }
+        )
+
+    assert s._pending_vector_docs == {}
+    assert embed.call_count == 0
+    s._client.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_oversized_full_doc_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", meta_fields={"content", "full_doc_id"})
+    long_doc_id = "d" * 65
+
+    with pytest.raises(ValueError, match="identity fields cannot be truncated"):
+        await s.upsert({"chunk-1": {"content": "hello", "full_doc_id": long_doc_id}})
+
+    assert s._pending_vector_docs == {}
+    assert embed.call_count == 0
+    s._client.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_truncates_oversized_source_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content", "source_id"})
+    source_id = "s" * (MILVUS_MAX_VARCHAR_BYTES + 10)
+
+    await s.upsert({"v1": {"content": "hello", "source_id": source_id}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    assert len(upserted["source_id"].encode("utf-8")) == MILVUS_MAX_VARCHAR_BYTES
+
+
+@pytest.mark.asyncio
+async def test_upsert_truncates_source_id_on_separator_boundary():
+    # source_id is a <SEP>-joined list of chunk ids; truncation must drop whole
+    # ids at a separator boundary rather than leave a dangling partial id.
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content", "source_id"})
+    # Each chunk id is comfortably sized; enough of them to overflow the limit.
+    chunk_id = "chunk-" + "a" * 50
+    chunk_ids = [chunk_id] * ((MILVUS_MAX_VARCHAR_BYTES // len(chunk_id)) + 5)
+    source_id = "<SEP>".join(chunk_ids)
+    assert len(source_id.encode("utf-8")) > MILVUS_MAX_VARCHAR_BYTES
+
+    await s.upsert({"v1": {"content": "hello", "source_id": source_id}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    stored = upserted["source_id"]
+    assert len(stored.encode("utf-8")) <= MILVUS_MAX_VARCHAR_BYTES
+    # No trailing partial id: every retained id is intact.
+    assert all(part == chunk_id for part in stored.split("<SEP>"))
+
+
+@pytest.mark.asyncio
+async def test_upsert_truncates_oversized_single_source_id_without_separator():
+    # A single id longer than the limit has no separator to back off to, so it
+    # falls back to the raw byte cut instead of dropping the value entirely.
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, meta_fields={"content", "source_id"})
+    source_id = "s" * (MILVUS_MAX_VARCHAR_BYTES + 10)
+
+    await s.upsert({"v1": {"content": "hello", "source_id": source_id}})
+    await s.index_done_callback()
+
+    upserted = s._client.upsert.call_args.kwargs["data"][0]
+    assert len(upserted["source_id"].encode("utf-8")) == MILVUS_MAX_VARCHAR_BYTES
 
 
 @pytest.mark.asyncio
@@ -431,10 +575,12 @@ async def test_env_workspace_override_shares_flush_lock(patch_namespace_lock):
     with patch.dict(os.environ, {"MILVUS_WORKSPACE": "shared_ws"}, clear=False):
         a = _make_storage(embed, workspace="caller_a")
         b = _make_storage(embed, workspace="caller_b")
-        assert a.final_namespace == b.final_namespace == "shared_ws_entities"
+        assert (
+            a.final_namespace == b.final_namespace == "shared_ws_entities_mock_embed_8d"
+        )
         assert a._flush_lock is b._flush_lock
         # Sanity: only one lock object was cached for that final_namespace.
-        assert len([k for k in cache if k[0] == "shared_ws_entities"]) == 1
+        assert len([k for k in cache if k[0] == a.final_namespace]) == 1
 
 
 @pytest.mark.asyncio
@@ -502,8 +648,11 @@ async def test_drop_clears_pending_buffers():
     embed = CountingEmbeddingFunc()
     s = _make_storage(embed)
     s._client.has_collection.return_value = False  # skip drop_collection call
-    # Stub out _create_collection_if_not_exist to avoid hitting MilvusIndexConfig logic.
-    with patch.object(s, "_create_collection_if_not_exist"):
+    # Stub out the recreate path to avoid hitting MilvusIndexConfig logic.
+    with (
+        patch.object(s, "_create_collection_with_schema"),
+        patch.object(s, "_ensure_collection_loaded"),
+    ):
         await s.upsert({"v1": {"content": "hello"}})
         await s.delete(["v2"])
         assert s._pending_vector_docs and s._pending_vector_deletes
@@ -512,3 +661,45 @@ async def test_drop_clears_pending_buffers():
         assert result["status"] == "success"
         assert s._pending_vector_docs == {}
         assert s._pending_vector_deletes == set()
+
+
+@pytest.mark.asyncio
+async def test_drop_recreates_empty_without_legacy_migration():
+    # drop() must leave the collection EMPTY. Recreating via
+    # _create_collection_if_not_exist would re-run the legacy->suffixed
+    # migration (the legacy collection is intentionally kept after migration),
+    # pulling the just-dropped rows back in and forcing a needless full
+    # migration on every rebuild/clear. Regression for that path.
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    s._client.has_collection.return_value = True
+
+    with (
+        patch.object(s, "_create_collection_if_not_exist") as recreate_via_migration,
+        patch.object(s, "_create_collection_with_schema") as create_empty,
+        patch.object(s, "_ensure_collection_loaded") as load,
+    ):
+        result = await s.drop()
+
+    assert result["status"] == "success"
+    s._client.drop_collection.assert_called_once_with(s.final_namespace)
+    create_empty.assert_called_once_with(s.final_namespace)
+    load.assert_called_once_with()
+    # Never the migration-capable path.
+    recreate_via_migration.assert_not_called()
+    s._client.query_iterator.assert_not_called()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_drop_pending_index_ops_clears_buffers():
+    """On an internal-error abort the pipeline calls drop_pending_index_ops to
+    discard buffered upserts/deletes without flushing them (PR #3187)."""
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed)
+    await s.upsert({"v1": {"content": "x"}, "v2": {"content": "y"}})
+    s._pending_vector_deletes.add("old-id")
+    assert s._pending_vector_docs
+    await s.drop_pending_index_ops()
+    assert not s._pending_vector_docs
+    assert not s._pending_vector_deletes

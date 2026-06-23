@@ -159,9 +159,12 @@ def test_docling_adapter_simple_heading_hierarchy(tmp_path: Path) -> None:
     assert ir.blocks[2].content_template.splitlines()[0] == "### Details"
 
 
-def test_docling_adapter_adjacency_merge_folds_empty_heading(tmp_path: Path) -> None:
-    """When a heading block has no body and the next heading is deeper,
-    the deeper heading folds in as a body line (matches MinerU §5.1.4)."""
+def test_docling_adapter_empty_heading_becomes_standalone_block(
+    tmp_path: Path,
+) -> None:
+    """A heading with no body becomes its own standalone block whose content
+    is just the heading line; the following heading (with body) is a separate
+    block. No adjacency folding (matches the native docx parser)."""
     texts = [
         _text_item(label="title", text="Whole Doc Title", self_ref="#/texts/0"),
         _text_item(
@@ -177,15 +180,47 @@ def test_docling_adapter_adjacency_merge_folds_empty_heading(tmp_path: Path) -> 
         ),
     )
     ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
-    # Title had no body → Background folded into it as a `## ` line
-    assert len(ir.blocks) == 1
-    block = ir.blocks[0]
-    assert block.heading == "Whole Doc Title"
-    assert block.level == 1
-    lines = block.content_template.splitlines()
-    assert lines[0] == "# Whole Doc Title"
-    assert "## Background" in lines
-    assert "Body for Background." in lines
+    summary = [
+        (b.heading, b.content_template, b.level, b.parent_headings) for b in ir.blocks
+    ]
+    assert summary == [
+        ("Whole Doc Title", "# Whole Doc Title", 1, []),
+        (
+            "Background",
+            "## Background\nBody for Background.",
+            2,
+            ["Whole Doc Title"],
+        ),
+    ]
+
+
+def test_docling_adapter_existing_markdown_heading_not_double_prefixed(
+    tmp_path: Path,
+) -> None:
+    """A heading whose source text already carries a markdown ``#`` prefix is
+    kept verbatim in content but stored cleanly in metadata."""
+    texts = [
+        _text_item(label="title", text="# Already MD", self_ref="#/texts/0"),
+        _text_item(
+            label="section_header",
+            text="## Child MD",
+            level=1,
+            self_ref="#/texts/1",
+        ),
+        _text_item(label="text", text="Body.", self_ref="#/texts/2"),
+    ]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(body_children=["#/texts/0", "#/texts/1", "#/texts/2"], texts=texts),
+    )
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    assert ir.blocks[0].content_template.splitlines()[0] == "# Already MD"
+    assert ir.blocks[1].content_template.splitlines()[0] == "## Child MD"
+    assert ir.doc_title == "Already MD"
+    assert [(b.heading, b.parent_headings) for b in ir.blocks] == [
+        ("Already MD", []),
+        ("Child MD", ["Already MD"]),
+    ]
 
 
 def test_docling_adapter_preserves_docling_heading_level(tmp_path: Path) -> None:

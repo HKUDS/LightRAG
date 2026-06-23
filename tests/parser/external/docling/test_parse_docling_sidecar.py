@@ -38,7 +38,17 @@ from lightrag.parser.external.docling.cache import (
     snapshot_tunable_env,
 )
 from lightrag.parser.external.docling.client import FIXED_CONSTANTS
+from lightrag.parser.base import ParseContext
+from lightrag.parser.registry import get_parser
 from lightrag.utils import EmbeddingFunc, Tokenizer
+
+
+async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
+    """Drive a parser the way the pipeline worker does (registry dispatch)."""
+    result = await get_parser(engine).parse(
+        ParseContext(rag, doc_id, file_path, content_data)
+    )
+    return result.to_dict()
 
 
 class _SimpleTokenizerImpl:
@@ -288,7 +298,9 @@ def test_parse_docling_emits_compliant_sidecar(
             doc_id = "doc-abcdef0123456789abcdef0123456789"
             await _seed_doc_status(rag, doc_id)
 
-            parsed = await rag.parse_docling(
+            parsed = await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -373,14 +385,18 @@ def test_parse_docling_cache_hit_skips_download(
             doc_id = "doc-abcdef0123456789abcdef0123456789"
             await _seed_doc_status(rag, doc_id)
 
-            await rag.parse_docling(
+            await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
             )
             assert counters["calls"] == 1
 
-            await rag.parse_docling(
+            await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -388,7 +404,9 @@ def test_parse_docling_cache_hit_skips_download(
             assert counters["calls"] == 1, "cache hit must not re-download"
 
             monkeypatch.setenv("LIGHTRAG_FORCE_REPARSE_DOCLING", "true")
-            await rag.parse_docling(
+            await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -420,7 +438,9 @@ def test_parse_docling_cache_invalidates_on_source_change(
             doc_id = "doc-abcdef0123456789abcdef0123456789"
             await _seed_doc_status(rag, doc_id)
 
-            await rag.parse_docling(
+            await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -430,7 +450,9 @@ def test_parse_docling_cache_invalidates_on_source_change(
             data = src.read_bytes()
             src.write_bytes(b"\x00" + data[1:])
 
-            await rag.parse_docling(
+            await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -462,7 +484,9 @@ def test_parse_docling_options_signature_invalidates_cache(
             doc_id = "doc-abcdef0123456789abcdef0123456789"
             await _seed_doc_status(rag, doc_id)
 
-            await rag.parse_docling(
+            await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -471,14 +495,16 @@ def test_parse_docling_options_signature_invalidates_cache(
 
             # Flip an env var that participates in the options signature
             monkeypatch.setenv("DOCLING_OCR_LANG", "en,zh")
-            await rag.parse_docling(
+            await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
             )
-            assert (
-                counters["calls"] == 2
-            ), "DOCLING_OCR_LANG change must invalidate the bundle cache"
+            assert counters["calls"] == 2, (
+                "DOCLING_OCR_LANG change must invalidate the bundle cache"
+            )
         finally:
             await rag.finalize_storages()
 
@@ -505,7 +531,9 @@ def test_parse_docling_endpoint_signature_invalidates_cache(
             doc_id = "doc-abcdef0123456789abcdef0123456789"
             await _seed_doc_status(rag, doc_id)
 
-            await rag.parse_docling(
+            await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
@@ -515,14 +543,16 @@ def test_parse_docling_endpoint_signature_invalidates_cache(
             # Pointing at a different docling-serve instance must not silently
             # reuse a bundle that was produced by the previous one.
             monkeypatch.setenv("DOCLING_ENDPOINT", "http://docling-other.test")
-            await rag.parse_docling(
+            await _parse_via_registry(
+                rag,
+                "docling",
                 doc_id=doc_id,
                 file_path="demo.pdf",
                 content_data={},
             )
-            assert (
-                counters["calls"] == 2
-            ), "DOCLING_ENDPOINT change must invalidate the bundle cache"
+            assert counters["calls"] == 2, (
+                "DOCLING_ENDPOINT change must invalidate the bundle cache"
+            )
         finally:
             await rag.finalize_storages()
 
@@ -617,7 +647,9 @@ def test_parse_docling_zero_blocks_raises(
             await _seed_doc_status(rag, doc_id)
 
             with pytest.raises(ValueError, match="zero blocks"):
-                await rag.parse_docling(
+                await _parse_via_registry(
+                    rag,
+                    "docling",
                     doc_id=doc_id,
                     file_path="demo.pdf",
                     content_data={},
@@ -627,9 +659,9 @@ def test_parse_docling_zero_blocks_raises(
             # only after the zero-blocks check, so no ``*.blocks.jsonl`` may
             # exist anywhere under the workspace.
             blocks_files = list(tmp_path.rglob("*.blocks.jsonl"))
-            assert (
-                not blocks_files
-            ), f"sidecar emitted despite zero-blocks failure: {blocks_files}"
+            assert not blocks_files, (
+                f"sidecar emitted despite zero-blocks failure: {blocks_files}"
+            )
         finally:
             await rag.finalize_storages()
 

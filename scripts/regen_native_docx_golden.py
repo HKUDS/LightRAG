@@ -31,10 +31,12 @@ async def _regen() -> None:
         FULL_DOCS_FORMAT_PENDING_PARSE,
         PARSED_DIR_NAME,
     )
+    from lightrag.parser.base import ParseContext
     from lightrag.parser.debug import (
         FrozenDateTime,
         build_debug_rag,
     )
+    from lightrag.parser.registry import get_parser
     import lightrag.pipeline as pipeline_module
 
     from _native_docx_fixtures import SCENARIOS  # type: ignore[import]
@@ -56,7 +58,6 @@ async def _regen() -> None:
         def _stub_extract(
             file_path,
             *,
-            fixlevel=None,
             drawing_context=None,
             parse_warnings=None,
             parse_metadata=None,
@@ -92,14 +93,16 @@ async def _regen() -> None:
                 ),
                 mock.patch("lightrag.sidecar.writer.datetime", FrozenDateTime),
             ):
-                await rag.parse_native(
-                    scenario.doc_id,
-                    str(source_path),
-                    {
-                        "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-                        "content": "",
-                        "source_path": str(source_path),
-                    },
+                await get_parser("native").parse(
+                    ParseContext(
+                        rag,
+                        scenario.doc_id,
+                        str(source_path),
+                        {
+                            "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                            "content": "",
+                        },
+                    )
                 )
 
             produced_dir = input_dir / PARSED_DIR_NAME / f"{scenario.file_path}.parsed"

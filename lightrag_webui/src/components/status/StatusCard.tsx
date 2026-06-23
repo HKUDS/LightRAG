@@ -168,16 +168,16 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
       workspace: storageWorkspaces?.doc_status_storage ?? defaultWorkspace
     },
     {
-      key: 'graph',
-      label: t('graphPanel.statusCard.graphStorage'),
-      storageClass: status.configuration.graph_storage,
-      workspace: storageWorkspaces?.graph_storage ?? defaultWorkspace
-    },
-    {
       key: 'vector',
       label: t('graphPanel.statusCard.vectorStorage'),
       storageClass: status.configuration.vector_storage,
       workspace: storageWorkspaces?.vector_storage ?? defaultWorkspace
+    },
+    {
+      key: 'graph',
+      label: t('graphPanel.statusCard.graphStorage'),
+      storageClass: status.configuration.graph_storage,
+      workspace: storageWorkspaces?.graph_storage ?? defaultWorkspace
     }
   ]
 
@@ -230,6 +230,13 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
             <>
               <span>{t('graphPanel.statusCard.lockStatus')}:</span>
               <span>
+                {status.server_mode && (
+                  <>
+                    {status.server_mode}
+                    {status.server_mode === 'gunicorn' && status.workers ? ` ${status.workers}` : ''}
+                    {' | '}
+                  </>
+                )}
                 mp {status.keyed_locks.current_status.pending_mp_cleanup}/{status.keyed_locks.current_status.total_mp_locks} |
                 async {status.keyed_locks.current_status.pending_async_cleanup}/{status.keyed_locks.current_status.total_async_locks}
                 (pid: {status.keyed_locks.process_id})

@@ -2,13 +2,20 @@ import os
 import sys
 import asyncio
 import multiprocessing as mp
+import uuid
 from multiprocessing.synchronize import Lock as ProcessLock
 from multiprocessing import Manager
 import time
 import logging
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
+from typing import Any, Dict, List, Mapping, Optional, Union, TypeVar, Generic
 
+from lightrag.constants import (
+    DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL,
+    DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE,
+    DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL,
+    DEFAULT_QUEUE_STATS_STALE_TTL,
+)
 from lightrag.exceptions import PipelineNotInitializedError
 
 DEBUG_LOCKS = False
@@ -95,6 +102,37 @@ _async_locks: Optional[Dict[str, asyncio.Lock]] = None
 
 _debug_n_locks_acquired: int = 0
 
+# --- Cross-worker global concurrency gate + queue stats aggregation ---
+#
+# Read-only configuration set once by the FIRST initialize_share_data() call
+# (the gunicorn master, before fork — workers inherit it as a module global).
+# Later no-arg calls (e.g. LightRAG.__post_init__) hit the `_initialized`
+# guard and never overwrite it.
+_global_concurrency_limits: Optional[Dict[str, int]] = None
+
+# Separator between the queue name and the per-pid suffix in queue-stats
+# namespace keys. \x1f (ASCII unit separator) cannot appear in queue names.
+# (Concurrency gate state needs no separator: one key per group.)
+KEY_SEP = "\x1f"
+
+_CONCURRENCY_LEASE_NAMESPACE = "concurrency_leases"
+_QUEUE_STATS_NAMESPACE = "queue_stats"
+
+# Heartbeat / staleness parameters (module-level so tests can monkeypatch).
+_heartbeat_ttl: float = DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL
+_suspect_grace: float = DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE
+_queue_stats_stale_ttl: float = DEFAULT_QUEUE_STATS_STALE_TTL
+_waiter_stale_ttl: float = DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL
+
+# Per-process cached namespace references (avoid the internal lock on every
+# publish). Reset by initialize_share_data()/finalize_share_data().
+_lease_ns_cache: Optional[Dict[str, Any]] = None
+_queue_stats_ns_cache: Optional[Dict[str, Any]] = None
+
+# Rate limiting for acquire-failure warnings (fail-closed path).
+_ACQUIRE_FAILURE_LOG_INTERVAL = 30.0
+_last_acquire_failure_log: float = 0.0
+
 
 def get_final_namespace(namespace: str, workspace: str | None = None):
     global _default_workspace
@@ -152,11 +190,39 @@ class UnifiedLock(Generic[T]):
         self._enable_logging = enable_logging  # for debug only
         self._async_lock = async_lock  # auxiliary lock for coroutine synchronization
 
+    async def _acquire_mp_lock_in_executor(self) -> None:
+        """Acquire the multiprocess lock without blocking the event loop.
+
+        Cancellation safety: if this coroutine is cancelled while the
+        executor thread is still blocked inside ``acquire()``, the thread
+        cannot be interrupted and WILL take the lock eventually — with no
+        owner left to release it, every process would deadlock. The shield +
+        done-callback below returns such an orphaned acquisition immediately.
+        """
+        loop = asyncio.get_running_loop()
+        acquire_future = loop.run_in_executor(None, self._lock.acquire)
+        try:
+            await asyncio.shield(acquire_future)
+        except asyncio.CancelledError:
+
+            def _release_orphaned_acquire(f) -> None:
+                if f.cancelled() or f.exception() is not None:
+                    return
+                try:
+                    self._lock.release()
+                except Exception:
+                    pass
+
+            acquire_future.add_done_callback(_release_orphaned_acquire)
+            raise
+
     async def __aenter__(self) -> "UnifiedLock[T]":
+        async_gate_acquired = False
         try:
             # If in multiprocess mode and async lock exists, acquire it first
             if not self._is_async and self._async_lock is not None:
                 await self._async_lock.acquire()
+                async_gate_acquired = True
                 direct_log(
                     f"== Lock == Process {self._pid}: Acquired async lock '{self._name}",
                     level="DEBUG",
@@ -169,7 +235,13 @@ class UnifiedLock(Generic[T]):
             if self._is_async:
                 await self._lock.acquire()
             else:
-                self._lock.acquire()
+                # A Manager lock proxy blocks the calling thread until every
+                # other PROCESS ahead of us releases — unbounded. Offload to
+                # the default executor so this process's event loop keeps
+                # serving while we wait (the async gate above already
+                # serializes this process's coroutines, so at most one
+                # executor thread per lock key is ever parked here).
+                await self._acquire_mp_lock_in_executor()
 
             direct_log(
                 f"== Lock == Process {self._pid}: Acquired lock {self._name} (async={self._is_async})",
@@ -177,13 +249,23 @@ class UnifiedLock(Generic[T]):
                 enable_output=self._enable_logging,
             )
             return self
+        except asyncio.CancelledError:
+            # Cancellation can arrive while awaiting the executor-offloaded
+            # mp acquire (any orphaned acquisition is returned inside
+            # _acquire_mp_lock_in_executor). Roll back the per-process gate
+            # we already hold so this process's other coroutines never
+            # deadlock on it.
+            if async_gate_acquired:
+                self._async_lock.release()
+            direct_log(
+                f"== Lock == Process {self._pid}: Lock acquisition cancelled '{self._name}'",
+                level="WARNING",
+                enable_output=self._enable_logging,
+            )
+            raise
         except Exception as e:
             # If main lock acquisition fails, release the async lock if it was acquired
-            if (
-                not self._is_async
-                and self._async_lock is not None
-                and self._async_lock.locked()
-            ):
+            if async_gate_acquired:
                 self._async_lock.release()
 
             direct_log(
@@ -1173,7 +1255,10 @@ def get_keyed_lock_status() -> Dict[str, Any]:
     return status
 
 
-def initialize_share_data(workers: int = 1):
+def initialize_share_data(
+    workers: int = 1,
+    global_concurrency_limits: Optional[Mapping[str, int]] = None,
+):
     """
     Initialize shared storage data for single or multi-process mode.
 
@@ -1190,6 +1275,11 @@ def initialize_share_data(workers: int = 1):
     Args:
         workers (int): Number of worker processes. If 1, single-process mode is used.
                       If > 1, multi-process mode with shared memory is used.
+        global_concurrency_limits: Optional mapping of concurrency group name
+                      (e.g. "llm:extract", "embedding", "rerank") to the
+                      cross-worker global max concurrency for that group.
+                      Read-only after initialization; later calls (which hit
+                      the already-initialized guard) never overwrite it.
     """
     global \
         _manager, \
@@ -1208,7 +1298,10 @@ def initialize_share_data(workers: int = 1):
         _async_locks, \
         _storage_keyed_lock, \
         _earliest_mp_cleanup_time, \
-        _last_mp_cleanup_time
+        _last_mp_cleanup_time, \
+        _global_concurrency_limits, \
+        _lease_ns_cache, \
+        _queue_stats_ns_cache
 
     # Check if already initialized
     if _initialized:
@@ -1218,6 +1311,22 @@ def initialize_share_data(workers: int = 1):
         return
 
     _workers = workers
+    _global_concurrency_limits = (
+        {
+            str(group): int(limit)
+            for group, limit in global_concurrency_limits.items()
+            if limit is not None and int(limit) > 0
+        }
+        if global_concurrency_limits
+        else {}
+    )
+    _lease_ns_cache = None
+    _queue_stats_ns_cache = None
+    if _global_concurrency_limits:
+        direct_log(
+            f"Process {os.getpid()} Global concurrency limits: {_global_concurrency_limits}",
+            level="INFO",
+        )
 
     if workers > 1:
         _is_multiprocess = True
@@ -1628,7 +1737,10 @@ def finalize_share_data():
         _initialized, \
         _update_flags, \
         _async_locks, \
-        _default_workspace
+        _default_workspace, \
+        _global_concurrency_limits, \
+        _lease_ns_cache, \
+        _queue_stats_ns_cache
 
     # Check if already initialized
     if not _initialized:
@@ -1692,6 +1804,9 @@ def finalize_share_data():
     _update_flags = None
     _async_locks = None
     _default_workspace = None
+    _global_concurrency_limits = None
+    _lease_ns_cache = None
+    _queue_stats_ns_cache = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
 
@@ -1740,3 +1855,527 @@ def get_pipeline_status_lock(
     return get_namespace_lock(
         "pipeline_status", workspace=actual_workspace, enable_logging=enable_logging
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-worker global concurrency gate (lease + heartbeat semantics)
+# ---------------------------------------------------------------------------
+#
+# Each group's whole gate state lives under a SINGLE key of the
+# workspace-less "concurrency_leases" namespace::
+#
+#     ns[group] = {
+#         "leases":  {lease_id: {"pid": int, "updated_at": float,
+#                                ("suspect_since": float)}},
+#         "waiters": {str(pid): {"pid": int, "wait_start": float,
+#                                "last_poll": float}},
+#     }
+#
+# Whole-value replacement only — in multiprocess mode the namespace is a
+# Manager dict, so in-place mutation of a retrieved value would NOT persist
+# across processes. The single-key layout is deliberate: every proxy access
+# is one IPC round trip to the manager process, so an acquire attempt under
+# the group's keyed lock costs exactly one read (plus at most one write)
+# instead of scanning per-lease keys. Reaping, capacity counting and waiter
+# ranking all run on the local copy.
+#
+# Self-healing: holders refresh ``updated_at`` from their 5s health-check
+# heartbeat. A lease is reclaimed when its owner PID is dead (immediately)
+# or when its heartbeat expired AND the suspect grace elapsed (protects
+# live-but-momentarily-stalled owners from false reclamation). Long-running
+# tasks are never reclaimed as long as their owner keeps renewing.
+#
+# Best-effort cap, not a strict provider-side invariant: the lease table is
+# the admission source of truth, so the cap is exact while holders keep
+# renewing. A slot is reclaimed only when its owner PID is gone or its
+# heartbeat has expired beyond the suspect grace. That prevents permanent
+# capacity leaks after kill -9 / OOM and similar external termination, but
+# the provider may still be finishing the abandoned HTTP request until its
+# own timeout/connection close. During that window, a newly admitted caller
+# can overlap with the abandoned provider-side call. Long event-loop stalls
+# have the same shape after heartbeat TTL + suspect grace, though normal long
+# calls are protected by regular renewal. A reclaimed lease is never
+# resurrected (renew_global_slots refuses to re-insert a popped lease), which
+# keeps the internal gate self-healing.
+
+
+def is_share_data_initialized() -> bool:
+    """Return True once initialize_share_data() has run in this process."""
+    return bool(_initialized)
+
+
+def is_global_concurrency_limited(group: Optional[str]) -> bool:
+    """Synchronous, cacheable check: does ``group`` have a global limit?
+
+    Reads only the module-level read-only configuration — no IPC. Returns
+    False when shared data is not initialized, no limits were configured,
+    or the group has no positive limit.
+    """
+    if not group or not _global_concurrency_limits:
+        return False
+    limit = _global_concurrency_limits.get(group)
+    return limit is not None and limit > 0
+
+
+def get_global_concurrency_limit(group: Optional[str]) -> Optional[int]:
+    """Return the configured global limit for ``group`` (None if unlimited)."""
+    if not group or not _global_concurrency_limits:
+        return None
+    return _global_concurrency_limits.get(group)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness probe; errs on the side of 'alive'."""
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # PermissionError and friends: the process exists (or we cannot
+        # tell) — treat as alive so we never reclaim a live owner's lease.
+        return True
+    return True
+
+
+async def _get_lease_namespace() -> Dict[str, Any]:
+    global _lease_ns_cache
+    if _lease_ns_cache is None:
+        _lease_ns_cache = await get_namespace_data(
+            _CONCURRENCY_LEASE_NAMESPACE, workspace=""
+        )
+    return _lease_ns_cache
+
+
+async def _get_queue_stats_namespace() -> Dict[str, Any]:
+    global _queue_stats_ns_cache
+    if _queue_stats_ns_cache is None:
+        _queue_stats_ns_cache = await get_namespace_data(
+            _QUEUE_STATS_NAMESPACE, workspace=""
+        )
+    return _queue_stats_ns_cache
+
+
+def _empty_gate_state() -> Dict[str, Any]:
+    return {"leases": {}, "waiters": {}}
+
+
+def _load_gate_state(ns: Dict[str, Any], group: str) -> Dict[str, Any]:
+    """Return a local, independently mutable copy of a group's gate state.
+
+    Exactly one proxy read. The nested dicts are copied so that mutating the
+    result never aliases the stored value (a plain dict in single-process
+    mode) — callers mutate the copy and write it back whole.
+    """
+    raw = ns.get(group)
+    if raw is None:
+        return _empty_gate_state()
+    state = dict(raw)
+    state["leases"] = {
+        lease_id: dict(lease)
+        for lease_id, lease in dict(state.get("leases") or {}).items()
+    }
+    state["waiters"] = {
+        pid_key: dict(waiter)
+        for pid_key, waiter in dict(state.get("waiters") or {}).items()
+    }
+    return state
+
+
+def _reap_gate_state(state: Dict[str, Any], now: float) -> tuple[int, bool]:
+    """Reclaim dead/expired leases on a local state copy (no IPC).
+
+    Returns ``(live_lease_count, changed)``. Suspect handling: a lease whose
+    heartbeat expired while its PID is still alive is first marked with
+    ``suspect_since`` and reclaimed only after ``_suspect_grace`` elapses
+    without a renewal; a renewal (fresh ``updated_at``) clears the suspect
+    mark. Dead PIDs are reclaimed immediately. Suspect leases still count
+    toward capacity so the global limit is never exceeded.
+
+    Waiter records are reaped in the same pass: a process whose lease was
+    just reclaimed (timed out / died), whose PID is dead, or whose record
+    has not been refreshed within ``_waiter_stale_ttl`` must not keep
+    occupying the longest-waiter seat — a ghost favored waiter would push
+    every live waiter onto the deferred backoff and waste freed slots.
+    """
+    leases: Dict[str, Any] = state["leases"]
+    waiters: Dict[str, Any] = state["waiters"]
+    live = 0
+    changed = False
+    reclaimed_pids = set()
+    # Liveness is constant within this synchronous pass (no await, fixed
+    # ``now``), so memoize the probe: a PID holding many leases of this group
+    # is checked once instead of once per lease. NEVER cache across calls —
+    # PID reuse and staleness could reclaim a live owner's lease.
+    alive_cache: Dict[int, bool] = {}
+
+    def _alive(pid: int) -> bool:
+        cached = alive_cache.get(pid)
+        if cached is None:
+            cached = _pid_alive(pid)
+            alive_cache[pid] = cached
+        return cached
+
+    for lease_id in list(leases.keys()):
+        lease = leases[lease_id]
+        pid = lease.get("pid")
+        updated_at = lease.get("updated_at", 0.0)
+        if pid is None or not _alive(pid):
+            leases.pop(lease_id)
+            changed = True
+            if pid is not None:
+                reclaimed_pids.add(pid)
+            continue
+        if now - updated_at > _heartbeat_ttl:
+            suspect_since = lease.get("suspect_since")
+            if suspect_since is None:
+                lease["suspect_since"] = now
+                changed = True
+                live += 1
+            elif now - suspect_since > _suspect_grace:
+                leases.pop(lease_id)
+                reclaimed_pids.add(pid)
+                changed = True
+            else:
+                live += 1
+        else:
+            if "suspect_since" in lease:
+                lease.pop("suspect_since", None)
+                changed = True
+            live += 1
+
+    for pid_key in list(waiters.keys()):
+        waiter = waiters[pid_key]
+        pid = waiter.get("pid")
+        last_poll = waiter.get("last_poll", 0.0)
+        if (
+            pid is None
+            or pid in reclaimed_pids
+            or not _alive(pid)
+            or now - last_poll > _waiter_stale_ttl
+        ):
+            waiters.pop(pid_key)
+            changed = True
+    return live, changed
+
+
+def _log_acquire_failure(group: str, error: Exception) -> None:
+    global _last_acquire_failure_log
+    now = time.time()
+    if now - _last_acquire_failure_log >= _ACQUIRE_FAILURE_LOG_INTERVAL:
+        _last_acquire_failure_log = now
+        direct_log(
+            f"Process {os.getpid()} failed to acquire global slot for group "
+            f"'{group}' (fail-closed, task stays queued): {error}",
+            level="WARNING",
+        )
+
+
+def _is_longest_live_waiter(state: Dict[str, Any], pid: int, now: float) -> bool:
+    """Is ``pid`` the longest-waiting live poller in this gate state?
+
+    Operates on a local state copy after the reap pass has dropped
+    dead/stale waiter records — every remaining record belongs to a live,
+    actively polling process.
+    """
+    my_start = None
+    others_min = None
+    for waiter in state["waiters"].values():
+        wait_start = waiter.get("wait_start", now)
+        if waiter.get("pid") == pid:
+            my_start = wait_start
+        elif others_min is None or wait_start < others_min:
+            others_min = wait_start
+    if my_start is None:
+        return False
+    return others_min is None or my_start <= others_min
+
+
+async def _acquire_global_slot(
+    group: str, track_wait: bool
+) -> tuple[Optional[str], bool]:
+    """Shared implementation for the two acquire entry points.
+
+    Returns ``(lease_id, is_priority_waiter)``. When ``track_wait`` is set,
+    a failed attempt registers/refreshes this process's waiter record
+    (``wait_start`` set once per waiting episode, ``last_poll`` refreshed on
+    every attempt) and reports whether this process is the longest-waiting
+    live poller; a successful attempt always clears the record.
+
+    IPC budget under the keyed lock: one state read, plus one write only
+    when something changed (reap effects, waiter registration, or a new
+    lease) — a plain failed attempt on an unchanged gate writes nothing.
+    """
+    limit = get_global_concurrency_limit(group)
+    if limit is None or limit <= 0:
+        return None, False
+    try:
+        ns = await _get_lease_namespace()
+        async with get_storage_keyed_lock(
+            group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+        ):
+            now = time.time()
+            state = _load_gate_state(ns, group)
+            in_use, changed = _reap_gate_state(state, now)
+            pid = os.getpid()
+            pid_key = str(pid)
+            if in_use >= limit:
+                if not track_wait:
+                    if changed:
+                        ns[group] = state
+                    return None, False
+                waiter = state["waiters"].get(pid_key) or {
+                    "pid": pid,
+                    "wait_start": now,
+                }
+                waiter["last_poll"] = now
+                state["waiters"][pid_key] = waiter
+                ns[group] = state
+                return None, _is_longest_live_waiter(state, pid, now)
+            lease_id = uuid.uuid4().hex
+            state["leases"][lease_id] = {"pid": pid, "updated_at": now}
+            # Got a slot: this process is no longer waiting. Resetting here
+            # (rather than keeping seniority) is what de-prioritizes a
+            # backlog-heavy process after each win, yielding approximate
+            # round-robin across processes under sustained contention.
+            state["waiters"].pop(pid_key, None)
+            ns[group] = state
+            return lease_id, True
+    except Exception as e:
+        _log_acquire_failure(group, e)
+        return None, False
+
+
+async def try_acquire_global_slot(group: str) -> Optional[str]:
+    """Try to claim one global concurrency slot for ``group`` (non-blocking).
+
+    Returns a lease id on success, or None when the group is at capacity.
+    Any shared-storage error is fail-closed: returns None (with a
+    rate-limited warning) so the caller keeps the task queued and retries —
+    capacity is never exceeded due to infrastructure errors.
+
+    This plain variant never registers waiter records — use
+    :func:`try_acquire_global_slot_tracked` from polling loops that want
+    longest-waiter fairness.
+    """
+    lease_id, _ = await _acquire_global_slot(group, track_wait=False)
+    return lease_id
+
+
+async def try_acquire_global_slot_tracked(group: str) -> tuple[Optional[str], bool]:
+    """Acquire variant for polling loops: ``(lease_id, is_priority_waiter)``.
+
+    On failure the caller's waiter record is registered/refreshed and the
+    second element reports whether this process is currently the
+    longest-waiting live poller of the group. Pollers should keep the
+    fastest poll interval when favored and back off (bounded) otherwise —
+    a soft FIFO across worker processes with no hard gate: any poller that
+    finds a free slot still takes it, so a sleeping favored waiter can
+    never leave capacity idle indefinitely. Fail-closed errors report
+    ``(None, False)``.
+    """
+    return await _acquire_global_slot(group, track_wait=True)
+
+
+async def clear_slot_waiter(group: str) -> None:
+    """Drop this process's waiter record for ``group`` (idempotent).
+
+    Called when a wrapper shuts down so a no-longer-polling process never
+    lingers in the longest-waiter seat; the stale TTL and the reap pass
+    cover crashes where this cleanup never runs.
+    """
+    if not _initialized:
+        return
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        state = _load_gate_state(ns, group)
+        if state["waiters"].pop(str(os.getpid()), None) is not None:
+            ns[group] = state
+
+
+async def global_slot_waiters(group: str) -> List[Dict[str, Any]]:
+    """Snapshot of processes actively polling for a slot of ``group``.
+
+    Returns ``[{"pid": ..., "waited": seconds}, ...]`` sorted by descending
+    wait time; stale records (not refreshed within the waiter TTL) are
+    skipped. Read-only and lock-free — intended for observability.
+    """
+    if not _initialized:
+        return []
+    ns = await _get_lease_namespace()
+    now = time.time()
+    state = _load_gate_state(ns, group)
+    waiters = []
+    for waiter in state["waiters"].values():
+        if now - waiter.get("last_poll", 0.0) > _waiter_stale_ttl:
+            continue
+        waiters.append(
+            {
+                "pid": waiter.get("pid"),
+                "waited": max(0.0, now - waiter.get("wait_start", now)),
+            }
+        )
+    return sorted(waiters, key=lambda w: -w["waited"])
+
+
+async def release_global_slot(group: str, lease_id: str) -> None:
+    """Release a previously acquired global slot (idempotent).
+
+    Raises on shared-storage errors — callers that must never propagate
+    (e.g. worker ``finally`` blocks) wrap this and queue the lease for a
+    later retry; the heartbeat TTL guarantees eventual reclamation anyway.
+    """
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        state = _load_gate_state(ns, group)
+        if state["leases"].pop(lease_id, None) is not None:
+            ns[group] = state
+
+
+async def renew_global_slots(group: str, lease_ids) -> None:
+    """Refresh the heartbeat of this process's held leases for ``group``.
+
+    A renewal rewrites the lease whole (clearing any ``suspect_since``
+    mark). Leases that have already been reclaimed are NOT resurrected —
+    re-inserting could exceed the configured limit; the suspect grace
+    exists precisely to make false reclamation unlikely.
+    """
+    lease_ids = list(lease_ids)
+    if not lease_ids:
+        return
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        now = time.time()
+        state = _load_gate_state(ns, group)
+        changed = False
+        for lease_id in lease_ids:
+            if lease_id in state["leases"]:
+                state["leases"][lease_id] = {"pid": os.getpid(), "updated_at": now}
+                changed = True
+        if changed:
+            ns[group] = state
+
+
+async def reconcile_global_slots(group: str) -> int:
+    """Run the lease reaper for ``group``; return surviving lease count."""
+    ns = await _get_lease_namespace()
+    async with get_storage_keyed_lock(
+        group, namespace=_CONCURRENCY_LEASE_NAMESPACE, enable_logging=False
+    ):
+        state = _load_gate_state(ns, group)
+        live, changed = _reap_gate_state(state, time.time())
+        if changed:
+            ns[group] = state
+        return live
+
+
+async def global_concurrency_in_use(group: str) -> int:
+    """Approximate count of currently held global slots for ``group``.
+
+    Lock-free single read — intended for observability.
+    """
+    ns = await _get_lease_namespace()
+    return len(_load_gate_state(ns, group)["leases"])
+
+
+# ---------------------------------------------------------------------------
+# Cross-worker queue stats (best-effort, debounced snapshots)
+# ---------------------------------------------------------------------------
+#
+# Each worker process publishes per-queue snapshots under
+# ``f"{queue_name}{KEY_SEP}{pid}"`` in the workspace-less "queue_stats"
+# namespace (whole-value replacement). The local closure counters remain
+# the source of truth; the shared area only needs to be "fresh enough"
+# (event-triggered publishes debounced by the caller + 5s heartbeat flush).
+
+# Flat counter fields summed across workers during aggregation. These are
+# the existing get_queue_stats() fields (schema compatibility for /health
+# and the webui) plus the new global_slot_waits / physical_queued counters.
+QUEUE_STATS_SUM_FIELDS = (
+    "queued",
+    "running",
+    "in_flight",
+    "worker_count",
+    "submitted_total",
+    "completed_total",
+    "failed_total",
+    "cancelled_total",
+    "rejected_total",
+    "global_slot_waits",
+    "physical_queued",
+)
+
+
+async def publish_queue_stats(queue_name: str, snapshot: Dict[str, Any]) -> None:
+    """Publish this process's snapshot for ``queue_name`` (whole replacement).
+
+    The snapshot must carry ``pid`` and ``updated_at`` (wall-clock time) so
+    aggregation can reap stale entries. Best-effort by contract: callers
+    must tolerate exceptions.
+    """
+    if not _initialized:
+        return
+    ns = await _get_queue_stats_namespace()
+    ns[f"{queue_name}{KEY_SEP}{os.getpid()}"] = dict(snapshot)
+
+
+async def unpublish_queue_stats(queue_name: str) -> None:
+    """Remove this process's snapshot for ``queue_name`` (idempotent)."""
+    if not _initialized:
+        return
+    ns = await _get_queue_stats_namespace()
+    ns.pop(f"{queue_name}{KEY_SEP}{os.getpid()}", None)
+
+
+async def aggregate_queue_stats(queue_name: str) -> Dict[str, Any]:
+    """Aggregate all workers' published snapshots for ``queue_name``.
+
+    Sums the flat counter fields across live snapshots and returns them
+    together with ``reporting_workers`` and the raw ``per_worker`` map.
+    Entries owned by dead PIDs or older than the stale TTL are reaped —
+    re-checked under the internal lock against the previously observed
+    ``updated_at`` so a snapshot republished concurrently is never deleted.
+    """
+    ns = await _get_queue_stats_namespace()
+    now = time.time()
+    prefix = f"{queue_name}{KEY_SEP}"
+    per_worker: Dict[str, Dict[str, Any]] = {}
+    stale: List[tuple] = []
+    for key in [k for k in ns.keys() if k.startswith(prefix)]:
+        raw = ns.get(key)
+        if raw is None:
+            continue
+        snap = dict(raw)
+        pid = snap.get("pid")
+        updated_at = snap.get("updated_at", 0.0)
+        if (pid is not None and not _pid_alive(pid)) or (
+            now - updated_at > _queue_stats_stale_ttl
+        ):
+            stale.append((key, updated_at))
+            continue
+        per_worker[str(pid)] = snap
+
+    if stale:
+        async with get_internal_lock():
+            for key, seen_updated_at in stale:
+                current = ns.get(key)
+                if current is None:
+                    continue
+                if dict(current).get("updated_at", 0.0) != seen_updated_at:
+                    continue  # republished since we looked — keep it
+                ns.pop(key, None)
+
+    aggregated: Dict[str, Any] = {
+        field: sum(int(snap.get(field, 0) or 0) for snap in per_worker.values())
+        for field in QUEUE_STATS_SUM_FIELDS
+    }
+    aggregated["reporting_workers"] = len(per_worker)
+    aggregated["per_worker"] = per_worker
+    return aggregated

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -25,12 +26,22 @@ from lightrag.parser.routing import (
     resolve_stored_document_parser_engine,
     validate_parser_routing_config,
 )
+from lightrag.parser.base import ParseContext
+from lightrag.parser.registry import get_parser
 from lightrag.utils import (
     EmbeddingFunc,
     Tokenizer,
     compute_mdhash_id,
     safe_vdb_operation_with_exception,
 )
+
+
+async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
+    """Drive a parser the way the pipeline worker does (registry dispatch)."""
+    result = await get_parser(engine).parse(
+        ParseContext(rag, doc_id, file_path, content_data)
+    )
+    return result.to_dict()
 
 
 class _SimpleTokenizerImpl:
@@ -98,9 +109,11 @@ def test_parse_engine_routing_by_filename_and_env(monkeypatch):
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
     monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru-iet,*:native")
     assert resolve_stored_document_parser_engine("paper.pdf", {}) == "mineru"
+    # A row that is not pending_parse is already-extracted content -> the
+    # passthrough handler (legacy now means worker-stage extraction).
     assert (
         resolve_stored_document_parser_engine("paper.pdf", {"parse_engine": "native"})
-        == "legacy"
+        == "passthrough"
     )
 
 
@@ -318,16 +331,16 @@ def test_doc_status_metadata_carry_over_helper():
 
     # Carries the internal pending-parse source basename forward for retries.
     md = doc_status_transition_metadata(
-        _StubStatusDoc({"source_file_name": "demo.[mineru].pdf"})
+        _StubStatusDoc({"source_file": "demo.[mineru].pdf"})
     )
-    assert md == {"source_file_name": "demo.[mineru].pdf"}
+    assert md == {"source_file": "demo.[mineru].pdf"}
 
     # Layers in transition extras while keeping the carry-over.
     md = doc_status_transition_metadata(
         _StubStatusDoc({"process_options": "R!"}),
-        extra={"processing_start_time": 12345},
+        extra={"process_start_time": 12345},
     )
-    assert md == {"process_options": "R!", "processing_start_time": 12345}
+    assert md == {"process_options": "R!", "process_start_time": 12345}
 
     # No carry-over when metadata is missing or empty.
     assert doc_status_transition_metadata(_StubStatusDoc({})) == {}
@@ -345,21 +358,25 @@ def test_carry_over_keys_grouped_by_stage():
     """Strict tuple-equality guard on ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``.
 
     The tuple order is the WebUI ``DocumentStatusDetailsDialog`` render order,
-    so per-stage fields must stay grouped (parse-stage trio then analyze-stage
-    trio). Locking the order here forces any future field addition to update
-    this assertion alongside the tuple, preventing silent regressions in the
-    dialog's timeline-ordered display.
+    so per-stage fields must stay grouped (parse-stage fields then analyze-stage
+    trio). ``parse_format`` / ``parse_engine`` join the parse-stage group so
+    they are stamped at PARSING (once the engine has run) and carried through
+    to PROCESSED instead of only landing at PROCESSING. Locking the order here
+    forces any future field addition to update this assertion alongside the
+    tuple, preventing silent regressions in the dialog's timeline display.
     """
     from lightrag.utils_pipeline import _DOC_STATUS_METADATA_CARRY_OVER_KEYS
 
     assert _DOC_STATUS_METADATA_CARRY_OVER_KEYS == (
         "process_options",
-        "source_file_name",
+        "source_file",
         "parse_warnings",
         "chunk_opts",
-        "parsing_start_time",
-        "parsing_end_time",
+        "parse_start_time",
+        "parse_end_time",
         "parse_stage_skipped",
+        "parse_format",
+        "parse_engine",
         "analyzing_start_time",
         "analyzing_end_time",
         "analyzing_stage_skipped",
@@ -381,16 +398,16 @@ def test_carry_over_helper_propagates_end_times_and_skipped():
     md = doc_status_transition_metadata(
         _StubStatusDoc(
             {
-                "parsing_start_time": 1700000000,
-                "parsing_end_time": 1700000010,
+                "parse_start_time": 1700000000,
+                "parse_end_time": 1700000010,
                 "analyzing_start_time": 1700000020,
                 "analyzing_end_time": 1700000050,
             }
         )
     )
     assert md == {
-        "parsing_start_time": 1700000000,
-        "parsing_end_time": 1700000010,
+        "parse_start_time": 1700000000,
+        "parse_end_time": 1700000010,
         "analyzing_start_time": 1700000020,
         "analyzing_end_time": 1700000050,
     }
@@ -457,18 +474,84 @@ def test_doc_status_metadata_survives_processed_transition(tmp_path):
             )
             # parse_native on FULL_DOCS_FORMAT_RAW does not actually parse —
             # it passes content through verbatim — so the skip branch fires
-            # and ``parsing_end_time`` stays absent. ``parse_stage_skipped``
+            # and ``parse_end_time`` stays absent. ``parse_stage_skipped``
             # is the cache-hit / no-parse-work sentinel (same field used by
             # parse_mineru / parse_docling for raw-bundle cache hits).
-            assert isinstance(metadata.get("parsing_start_time"), int)
+            assert isinstance(metadata.get("parse_start_time"), int)
             assert metadata.get("parse_stage_skipped") is True
-            assert "parsing_end_time" not in metadata
+            assert "parse_end_time" not in metadata
             # parse_native on raw content returns blocks_path="", which makes
             # analyze_multimodal take the "no blocks_path" early-return branch
             # and set analyzing_stage_skipped=True (no analyzing_end_time).
             assert isinstance(metadata.get("analyzing_start_time"), int)
             assert metadata.get("analyzing_stage_skipped") is True
             assert "analyzing_end_time" not in metadata
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_legacy_source_file_name_migrated_and_carried_over(tmp_path):
+    """Regression: a document persisted before the ``source_file_name`` →
+    ``source_file`` rename carries its source hint only as
+    ``metadata['source_file_name']`` (and full_docs lacks the key entirely).
+
+    The parse worker must normalize the legacy key onto the new
+    ``source_file`` key on the in-memory status_doc BEFORE the PARSING upsert.
+    Otherwise the carry-over allowlist (which no longer lists the legacy key)
+    drops the hint from doc_status, so a retry after a parse failure — before
+    full_docs is rewritten — can no longer resolve the hinted source file.
+    Here we assert the hint survives all the way to PROCESSED under the new key.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            doc_id = compute_mdhash_id("legacy_hint.txt", prefix="doc-")
+
+            # full_docs has NO source hint — the only copy lives under the
+            # legacy metadata key on doc_status, exactly as a pre-rename doc
+            # would have persisted it.
+            await rag.full_docs.upsert(
+                {
+                    doc_id: {
+                        "content": "legacy body for chunking.",
+                        "file_path": "legacy_hint.txt",
+                        "parse_format": "raw",
+                        "parse_engine": "legacy",
+                        "content_hash": "legacyhash",
+                    }
+                }
+            )
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PENDING,
+                        "content_summary": "legacy body for chunking.",
+                        "content_length": len("legacy body for chunking."),
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:01+00:00",
+                        "file_path": "legacy_hint.txt",
+                        "track_id": "track-legacy",
+                        "content_hash": "legacyhash",
+                        "metadata": {"source_file_name": "legacy_hint.[mineru].pdf"},
+                    }
+                }
+            )
+
+            await rag.apipeline_process_enqueue_documents()
+
+            final_status = await rag.doc_status.get_by_id(doc_id)
+            assert final_status is not None
+            assert _status_value_text(final_status.get("status")) == "processed"
+            metadata = final_status.get("metadata") or {}
+            assert metadata.get("source_file") == "legacy_hint.[mineru].pdf", (
+                "legacy source_file_name was not migrated to source_file and "
+                f"carried over; final metadata: {metadata!r}"
+            )
         finally:
             await rag.finalize_storages()
 
@@ -531,6 +614,75 @@ def test_analyze_soft_failure_writes_neither_end_time_nor_skipped(tmp_path):
 
 
 @pytest.mark.offline
+def test_stage_end_outcomes_persist_within_their_own_stage(tmp_path):
+    """The parse-stage outcome (parse_end_time / parse_stage_skipped) must be
+    persisted to doc_status during the PARSING stage — before the doc waits in
+    q_analyze and the ANALYZING transition fires — and the analyze-stage outcome
+    during ANALYZING, before PROCESSING. Otherwise these signals only land at the
+    next stage's transition via carry-over, so a doc sitting in a backlogged queue
+    shows its prior status with no end-of-stage signal.
+
+    Wraps doc_status.upsert to capture the (status, metadata-keys) sequence and
+    asserts each stage-end signal appears under its own status ahead of the next
+    stage's first upsert. parse_native on raw content takes the skip branches, so
+    the signals here are the skipped flags rather than the *_end_time stamps.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        calls: list[tuple[str, set[str]]] = []
+        try:
+            original_upsert = rag.doc_status.upsert
+
+            async def _recording_upsert(data, *args, **kwargs):
+                for payload in data.values():
+                    status_text = _status_value_text(payload.get("status"))
+                    metadata = payload.get("metadata") or {}
+                    calls.append((status_text, set(metadata.keys())))
+                return await original_upsert(data, *args, **kwargs)
+
+            rag.doc_status.upsert = _recording_upsert  # type: ignore[assignment]
+
+            await rag.apipeline_enqueue_documents(
+                "Some content body for chunking.",
+                file_paths="stage_end_timing.txt",
+                track_id="track-stage-end-timing",
+            )
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            await rag.finalize_storages()
+
+        first_analyzing = next(
+            (i for i, (s, _) in enumerate(calls) if s == "analyzing"), None
+        )
+        first_processing = next(
+            (i for i, (s, _) in enumerate(calls) if s == "processing"), None
+        )
+        assert first_analyzing is not None, f"no ANALYZING upsert; sequence: {calls!r}"
+        assert first_processing is not None, (
+            f"no PROCESSING upsert; sequence: {calls!r}"
+        )
+
+        assert any(
+            s == "parsing" and "parse_stage_skipped" in keys
+            for s, keys in calls[:first_analyzing]
+        ), (
+            f"parse-stage outcome not persisted under PARSING before the "
+            f"ANALYZING transition; upsert sequence: {calls!r}"
+        )
+        assert any(
+            s == "analyzing" and "analyzing_stage_skipped" in keys
+            for s, keys in calls[first_analyzing:first_processing]
+        ), (
+            f"analyze-stage outcome not persisted under ANALYZING before the "
+            f"PROCESSING transition; upsert sequence: {calls!r}"
+        )
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_apipeline_enqueue_persists_process_options(tmp_path):
     async def _run():
         rag = _new_rag(tmp_path)
@@ -566,7 +718,7 @@ def test_apipeline_enqueue_persists_process_options(tmp_path):
 
 @pytest.mark.offline
 def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
-    """``_purge_doc_chunks_and_kg`` with an empty chunk_ids set must be a
+    """``_purge_doc_chunks_and_kg`` with an empty chunk_ids list must be a
     no-op so callers (including the resume branch) can invoke it
     unconditionally without first checking for non-empty chunks_list.
     """
@@ -586,10 +738,10 @@ def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
             pipeline_status_lock = get_namespace_lock(
                 "pipeline_status", workspace=rag.workspace
             )
-            # Empty set: must return immediately without touching storage.
+            # Empty list: must return immediately without touching storage.
             await rag._purge_doc_chunks_and_kg(
                 "doc-empty",
-                set(),
+                [],
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
             )
@@ -597,7 +749,7 @@ def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
             # since the helper is idempotent on the empty input.
             await rag._purge_doc_chunks_and_kg(
                 "doc-empty",
-                set(),
+                [],
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
             )
@@ -674,7 +826,7 @@ def test_purge_doc_chunks_and_kg_clears_chunks_for_unknown_doc(tmp_path):
 
             await rag._purge_doc_chunks_and_kg(
                 "doc-X",
-                {"doc-X-chunk-0", "doc-X-chunk-1"},
+                ["doc-X-chunk-0", "doc-X-chunk-1"],
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
             )
@@ -832,9 +984,9 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
                 # was NOT called for an empty chunks_list.
                 pass
 
-            assert (
-                calls == []
-            ), "purge helper should not be called when chunks_list is empty"
+            assert calls == [], (
+                "purge helper should not be called when chunks_list is empty"
+            )
         finally:
             await rag.finalize_storages()
 
@@ -1427,6 +1579,7 @@ def test_analyze_multimodal_overwrites_already_analyzed_items(tmp_path):
                         "tbl1": {
                             "id": "tbl1",
                             "caption": "tbl",
+                            "format": "html",
                             "content": "Header|Row",
                         }
                     },
@@ -1742,55 +1895,37 @@ def test_content_hash_lookup_via_storage(tmp_path):
 
 
 @pytest.mark.offline
-def test_lightrag_format_uses_blocks_file_hash(tmp_path, monkeypatch):
-    async def _run():
-        input_dir = tmp_path / "input"
-        parsed_dir = input_dir / "__parsed__"
-        parsed_dir.mkdir(parents=True)
-        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+def test_enqueue_rejects_removed_or_unknown_docs_format(tmp_path):
+    """The 'lightrag' ingestion entrypoint was removed: enqueue accepts only
+    raw / pending_parse and raises explicitly for anything else (previously
+    an unknown value was silently treated as raw)."""
 
-        rag = _new_rag(tmp_path / "work")
-        rag.workspace = "test-pending-parse-duplicate"
+    async def _run():
+        rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
-            blocks_path = parsed_dir / "doc.blocks.jsonl"
-            blocks_path.write_text(
-                json.dumps({"type": "header"})
-                + "\n"
-                + json.dumps({"type": "content", "text": "hello"})
-                + "\n",
-                encoding="utf-8",
-            )
-
-            # Enqueue twice with different filenames pointing at the same
-            # blocks file: the second one must be rejected as content_hash dup.
-            # ``content`` arg is ignored on the LIGHTRAG path — the LightRAG
-            # Document file is read to derive both content_hash and the
-            # ``{{LRdoc}}`` summary — so any string here is fine.
-            await rag.apipeline_enqueue_documents(
-                "",
-                file_paths="first.lightrag",
-                docs_format="lightrag",
-                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
-                track_id="track-a",
-            )
-            await rag.apipeline_enqueue_documents(
-                "",
-                file_paths="second.lightrag",
-                docs_format="lightrag",
-                lightrag_document_paths="__parsed__/doc.blocks.jsonl",
-                track_id="track-b",
-            )
-            second_id = compute_mdhash_id("second.lightrag", prefix="doc-")
-            assert await rag.full_docs.get_by_id(second_id) is None
-
+            with pytest.raises(ValueError, match="Unsupported docs_format"):
+                await rag.apipeline_enqueue_documents(
+                    "",
+                    file_paths="first.lightrag",
+                    docs_format="lightrag",
+                )
+            with pytest.raises(ValueError, match="Unsupported docs_format"):
+                await rag.apipeline_enqueue_documents(
+                    "some content",
+                    file_paths="doc.txt",
+                    docs_format="bogus",
+                )
+            # The companion parameter is gone entirely (no compat shim).
+            with pytest.raises(TypeError):
+                await rag.apipeline_enqueue_documents(  # type: ignore[call-arg]
+                    "",
+                    file_paths="first.lightrag",
+                    lightrag_document_paths="__parsed__/doc.blocks.jsonl",
+                )
+            # Nothing was enqueued by the rejected calls.
             failed = await rag.doc_status.get_docs_by_status(DocStatus.FAILED)
-            kinds = {
-                getattr(doc, "metadata", {}).get("duplicate_kind")
-                for doc in failed.values()
-                if getattr(doc, "metadata", {}).get("is_duplicate")
-            }
-            assert "content_hash" in kinds
+            assert failed == {}
         finally:
             await rag.finalize_storages()
 
@@ -2126,22 +2261,15 @@ def test_three_phase_status_flow(tmp_path, monkeypatch):
         async def _fake_merge(*args, **kwargs):
             return None
 
-        async def _fake_parse_native(doc_id, file_path, content_data):
-            return {
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "parse_format": "raw",
-                "content": "hello world",
-                "blocks_path": "",
-            }
-
         async def _fake_analyze(doc_id, file_path, parsed_data, **kwargs):
             parsed_data["multimodal_processed"] = True
             return parsed_data
 
         monkeypatch.setattr(rag, "_process_extract_entities", _fake_extract)
         monkeypatch.setattr("lightrag.pipeline.merge_nodes_and_edges", _fake_merge)
-        monkeypatch.setattr(rag, "parse_native", _fake_parse_native)
+        # "sample text" enqueues as RAW; the worker dispatches it to the
+        # PassthroughParser (no parse_* wrapper involved), so no parse stub is
+        # needed — the status-flow assertions below exercise the real path.
         monkeypatch.setattr(rag, "analyze_multimodal", _fake_analyze)
 
         status_seq: list[str] = []
@@ -2252,8 +2380,8 @@ def test_analyze_multimodal_invalid_json_hard_fails(tmp_path):
 
         drawings_payload = json.loads(drawings.read_text(encoding="utf-8"))
         result = drawings_payload["drawings"]["id1"]["llm_analyze_result"]
-        # No retry: VLM mock called exactly once.
-        assert calls["n"] == 1
+        # One JSON conformance retry, then the hard failure surfaces.
+        assert calls["n"] == 2
         # Sidecar carries a failure marker so a re-run sees the prior failure
         # and does not silently consume it.
         assert result["status"] == "failure"
@@ -2475,136 +2603,6 @@ def test_analyze_multimodal_skips_tiny_image_without_vlm_call(tmp_path):
 
 
 @pytest.mark.offline
-def test_write_lightrag_document_preserves_headings_and_table_dimensions(
-    tmp_path, monkeypatch
-):
-    async def _run():
-        monkeypatch.setenv("INPUT_DIR", str(tmp_path))
-        rag = _new_rag(tmp_path)
-        await rag.initialize_storages()
-        source_path = tmp_path / "demo.docx"
-        source_path.write_bytes(b"docx bytes")
-
-        content_list = [
-            {"type": "section_header", "text": "第一章 绪论", "level": 1},
-            {"type": "section_header", "text": "1.1 研究背景", "level": 2},
-            {"type": "text", "text": "这是正文段落。"},
-            {
-                "type": "table",
-                "table_caption": ["表1 指标说明"],
-                "table_body": {
-                    "num_rows": 2,
-                    "num_cols": 3,
-                    "grid": [
-                        [{"text": "符号"}, {"text": "含义"}, {"text": "单位"}],
-                        [{"text": "A"}, {"text": "面积"}, {"text": "m2"}],
-                    ],
-                },
-            },
-            {
-                "type": "image",
-                "img_path": "/tmp/a.png",
-                "image_caption": ["图1 架构图"],
-            },
-        ]
-
-        parsed = await rag._write_lightrag_document_from_content_list(
-            doc_id="doc-1",
-            file_path="demo.docx",
-            content_list=content_list,
-            engine="docling",
-        )
-
-        blocks_path = Path(parsed["blocks_path"])
-        assert blocks_path == (
-            tmp_path / PARSED_DIR_NAME / "demo.docx.parsed" / "demo.blocks.jsonl"
-        )
-        assert not source_path.exists()
-        assert (tmp_path / PARSED_DIR_NAME / source_path.name).exists()
-        blocks = [
-            json.loads(line)
-            for line in blocks_path.read_text(encoding="utf-8").splitlines()
-        ]
-        content_blocks = blocks[1:]
-        body_block = next(x for x in content_blocks if x["content"] == "这是正文段落。")
-        table_block = next(
-            x for x in content_blocks if 'refid="tb-1-0001"' in x["content"]
-        )
-        image_block = next(
-            x for x in content_blocks if 'id="im-1-0001"' in x["content"]
-        )
-
-        assert body_block["heading"] == "1.1 研究背景"
-        assert body_block["parent_headings"] == ["第一章 绪论"]
-        assert table_block["heading"] == "1.1 研究背景"
-        assert image_block["heading"] == "1.1 研究背景"
-
-        base = str(blocks_path)[: -len(".blocks.jsonl")]
-        tables = json.loads(Path(base + ".tables.json").read_text(encoding="utf-8"))
-        table_entry = tables["tables"]["tb-1-0001"]
-        assert table_entry["heading"] == "1.1 研究背景"
-        assert table_entry["dimension"] == [2, 3]
-        assert table_entry["format"] == "json"
-        assert json.loads(table_entry["content"]) == [
-            ["符号", "含义", "单位"],
-            ["A", "面积", "m2"],
-        ]
-
-        drawings = json.loads(Path(base + ".drawings.json").read_text(encoding="utf-8"))
-        assert drawings["drawings"]["im-1-0001"]["heading"] == "1.1 研究背景"
-
-        full_doc = await rag.full_docs.get_by_id("doc-1")
-        expected_sidecar_dir = (
-            tmp_path / PARSED_DIR_NAME / "demo.docx.parsed"
-        ).resolve()
-        assert full_doc["sidecar_location"].startswith("file://")
-        assert full_doc["sidecar_location"].endswith("/")
-        assert str(expected_sidecar_dir) in full_doc["sidecar_location"]
-
-        await rag.finalize_storages()
-
-    asyncio.run(_run())
-
-
-@pytest.mark.offline
-def test_write_lightrag_document_strips_parser_hint_from_artifact_names(
-    tmp_path, monkeypatch
-):
-    async def _run():
-        monkeypatch.setenv("INPUT_DIR", str(tmp_path))
-        rag = _new_rag(tmp_path)
-        await rag.initialize_storages()
-        try:
-            source_path = tmp_path / "demo.[native].docx"
-            source_path.write_bytes(b"docx bytes")
-
-            parsed = await rag._write_lightrag_document_from_content_list(
-                doc_id="doc-hinted",
-                file_path="demo.[native].docx",
-                content_list=[{"type": "text", "text": "body"}],
-                engine="native",
-            )
-
-            blocks_path = Path(parsed["blocks_path"])
-            assert blocks_path == (
-                tmp_path / PARSED_DIR_NAME / "demo.docx.parsed" / "demo.blocks.jsonl"
-            )
-            assert not source_path.exists()
-            assert (tmp_path / PARSED_DIR_NAME / source_path.name).exists()
-            full_doc = await rag.full_docs.get_by_id("doc-hinted")
-            expected_sidecar_dir = (
-                tmp_path / PARSED_DIR_NAME / "demo.docx.parsed"
-            ).resolve()
-            assert full_doc["sidecar_location"].startswith("file://")
-            assert full_doc["sidecar_location"].endswith("/")
-            assert str(expected_sidecar_dir) in full_doc["sidecar_location"]
-        finally:
-            await rag.finalize_storages()
-
-    asyncio.run(_run())
-
-
-@pytest.mark.offline
 def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
     async def _run():
         # Tables now route to the EXTRACT role, not VLM (per design §3.1).
@@ -2649,6 +2647,7 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
                             "id": "id1",
                             "caption": "表1 指标说明",
                             "footnotes": ["单位：国际标准单位"],
+                            "format": "html",
                             "content": "<table><tr><th>符号</th><th>代表意义</th><th>单位</th></tr><tr><td>A</td><td>面积</td><td>m2</td></tr></table>",
                         }
                     },
@@ -2800,7 +2799,9 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
         monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
         monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
 
-        parsed = await rag.parse_mineru(
+        parsed = await _parse_via_registry(
+            rag,
+            "mineru",
             doc_id="doc-1",
             file_path=str(src_file),
             content_data={"content": ""},
@@ -2912,13 +2913,15 @@ def test_parse_mineru_uses_hint_source_and_canonical_upload_name(tmp_path, monke
         status = await rag.doc_status.get_by_id(doc_id)
         assert status is not None
         assert status["file_path"] == canonical_name
-        assert status["metadata"]["source_file_name"] == hinted_name
+        assert status["metadata"]["source_file"] == hinted_name
 
         content_data = await rag.full_docs.get_by_id(doc_id)
         assert content_data is not None
-        content_data["source_file_name"] = status["metadata"]["source_file_name"]
+        content_data["source_file"] = status["metadata"]["source_file"]
 
-        parsed = await rag.parse_mineru(
+        parsed = await _parse_via_registry(
+            rag,
+            "mineru",
             doc_id=doc_id,
             file_path=status["file_path"],
             content_data=content_data,
@@ -3032,6 +3035,82 @@ def test_mm_chunks_and_modality_relations_from_sidecars(tmp_path):
         # covers chunk assembly. The companion regression below
         # (test_parse_mm_display_name_matches_chunk_format) pins the
         # builder/consumer format contract.
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_mm_chunks_sanitize_vlm_control_characters(tmp_path):
+    """Regression: VLM analysis fields parsed from LLM JSON can carry
+    control characters (unescaped LaTeX ``\\frac`` decodes as ``\\x0c`` +
+    ``rac``). The builder must strip them — they propagate into chunk
+    content, vector stores and graph node attributes, where XML-illegal
+    characters crash the GraphML flush with "All strings must be XML
+    compatible".
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            json.dumps(
+                {
+                    "type": "meta",
+                    "format": "lightrag",
+                    "version": "1.0",
+                    "doc_id": "doc-1",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        tables = tmp_path / "demo.tables.json"
+        tables.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "tables": {
+                        "t1": {
+                            "id": "t1",
+                            "heading": "章节\x0bB",
+                            "footnotes": ["脚注\x00一"],
+                            "llm_analyze_result": {
+                                "name": "成本对比表\x00",
+                                "description": "GraphRAG消耗$\x0crac{610}{C}$次调用",
+                                "analyze_time": 1700000000,
+                                "status": "success",
+                                "message": "",
+                            },
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        mm_chunks = rag._build_mm_chunks_from_sidecars(
+            doc_id="doc-1",
+            file_path="demo.pdf",
+            blocks_path=str(blocks),
+            base_order_index=0,
+        )
+        assert len(mm_chunks) == 1
+        chunk = mm_chunks[0]
+
+        illegal = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+        assert not illegal.search(chunk["content"])
+        assert not illegal.search(chunk["heading"]["heading"])
+        # Control chars are removed, surrounding text retained.
+        assert "[Table Name]成本对比表" in chunk["content"]
+        assert "$rac{610}{C}$" in chunk["content"]
+        assert "[Table Footnotes]脚注一" in chunk["content"]
+        assert chunk["heading"]["heading"] == "章节B"
 
         await rag.finalize_storages()
 
@@ -3214,7 +3293,9 @@ def test_parse_mineru_empty_service_result_raises_without_fallback(
         monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake")
 
         with pytest.raises(FileNotFoundError, match="content_list.json"):
-            await rag.parse_mineru(
+            await _parse_via_registry(
+                rag,
+                "mineru",
                 doc_id="doc-local-1",
                 file_path=str(src_file),
                 content_data={"content": "native fallback content"},
@@ -3522,6 +3603,85 @@ def test_reinsert_without_process_options_skips_stale_mm_chunks(tmp_path):
             process_options=effective,
         )
         assert mm_chunks == []
+
+        await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_engine_params_survive_persist_to_full_docs(tmp_path, monkeypatch):
+    """Per-file engine params encoded in parse_engine survive the parse persist.
+
+    Regression for the ``{**existing, **record}`` merge in
+    ``_persist_parsed_full_docs``: the external parser must re-encode
+    ``engine_name(params)`` so full_docs keeps the per-file params instead of
+    reverting to the bare engine name.
+    """
+    from lightrag.parser.external.mineru import compute_size_and_hash
+    from lightrag.parser.external.mineru.cache import (
+        current_mineru_options_signature,
+    )
+    from lightrag.parser.external.mineru.client import MinerURawClient
+    from lightrag.parser.external.mineru.manifest import (
+        Manifest,
+        ManifestFile,
+        write_manifest,
+    )
+
+    async def _run():
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+        monkeypatch.setenv("MINERU_API_MODE", "local")
+        monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
+
+        rag = _new_rag(tmp_path / "work")
+        await rag.initialize_storages()
+
+        src_file = input_dir / "demo.pdf"
+        src_file.write_bytes(b"fake-pdf")
+
+        async def _fake_download(self, raw_dir, source_file_path, **_kwargs):
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            (raw_dir / "content_list.json").write_text(
+                json.dumps([{"type": "text", "text": "正文"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            src_size, src_hash = compute_size_and_hash(source_file_path)
+            crit_size, crit_hash = compute_size_and_hash(raw_dir / "content_list.json")
+            write_manifest(
+                raw_dir,
+                Manifest(
+                    source_content_hash=src_hash,
+                    source_size_bytes=src_size,
+                    source_filename_at_parse=source_file_path.name,
+                    critical_file=ManifestFile(
+                        path="content_list.json", size=crit_size, sha256=crit_hash
+                    ),
+                    files=[],
+                    total_size_bytes=crit_size,
+                    task_id="fake-task",
+                    api_mode="local",
+                    options_signature=current_mineru_options_signature(
+                        {"page_range": "1-3"}
+                    ),
+                ),
+            )
+
+        monkeypatch.setattr(MinerURawClient, "download_into", _fake_download)
+
+        await _parse_via_registry(
+            rag,
+            "mineru",
+            doc_id="doc-ep",
+            file_path=str(src_file),
+            content_data={"content": "", "parse_engine": "mineru(page_range=1-3)"},
+        )
+
+        stored = await rag.full_docs.get_by_id("doc-ep")
+        assert stored is not None
+        # The encoded directive (with params) is preserved, not reverted to bare.
+        assert stored["parse_engine"] == "mineru(page_range=1-3)"
 
         await rag.finalize_storages()
 

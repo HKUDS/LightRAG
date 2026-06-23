@@ -238,6 +238,56 @@ def test_writer_equation_caption_preserved_block_and_inline(
 
 
 @pytest.mark.offline
+def test_writer_propagates_parent_headings_to_sidecar_items(
+    tmp_path: Path,
+) -> None:
+    """Spec §4/§5/§6: tables/drawings/equations items carry the owning
+    block's ``parent_headings`` (the top-down ancestor chain), mirroring the
+    block's ``parent_headings`` in blocks.jsonl so multimodal analysis sees
+    the full section context, not just the nearest ``heading``."""
+    parsed = tmp_path / "ph.parsed"
+    parents = ["2 Product Description", "2.4 Environmental Adaptability"]
+    ir = IRDoc(
+        document_name="ph.pdf",
+        document_format="pdf",
+        doc_title="ph",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="see {{TBL:t1}} {{IMG:i1}} {{EQ:b1}}",
+                heading="2.4.4 Combined",
+                parent_headings=parents,
+                tables=[
+                    IRTable(
+                        placeholder_key="t1",
+                        rows=[["a", "b"]],
+                        num_rows=1,
+                        num_cols=2,
+                    )
+                ],
+                drawings=[IRDrawing(placeholder_key="i1", asset_ref="img1", fmt="png")],
+                equations=[
+                    IREquation(placeholder_key="b1", latex="x^2", is_block=True)
+                ],
+            )
+        ],
+        assets=[AssetSpec(ref="img1", suggested_name="x.png", source=b"\x89PNG")],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-cafebabe", engine="mineru")
+
+    # blocks.jsonl already carries parent_headings; sidecar items must match.
+    _, rows = _load_jsonl(parsed / "ph.blocks.jsonl")
+    assert rows[0]["parent_headings"] == parents
+
+    tables = json.loads((parsed / "ph.tables.json").read_text())["tables"]
+    drawings = json.loads((parsed / "ph.drawings.json").read_text())["drawings"]
+    equations = json.loads((parsed / "ph.equations.json").read_text())["equations"]
+    assert tables["tb-cafebabe-0001"]["parent_headings"] == parents
+    assert drawings["im-cafebabe-0001"]["parent_headings"] == parents
+    assert equations["eq-cafebabe-0001"]["parent_headings"] == parents
+
+
+@pytest.mark.offline
 def test_writer_positions_round_trip_bbox(tmp_path: Path) -> None:
     """Fix 4: positions go through unchanged. bbox type is the mineru path."""
     parsed = tmp_path / "p.parsed"
@@ -391,6 +441,69 @@ def test_writer_table_self_ref_emitted_only_when_nonempty(tmp_path: Path) -> Non
     items = list(tables.values())
     assert "self_ref" not in items[0]
     assert items[1]["self_ref"] == "#/tables/0"
+
+
+@pytest.mark.offline
+def test_writer_table_header_serialized_by_format(tmp_path: Path) -> None:
+    """``table_header`` is stored in the table's own format: a JSON 2-D array
+    for JSON tables, a raw ``<thead>`` (verbatim) for HTML tables — and a grid
+    supplied for an HTML table is rendered to a span-less ``<thead>``."""
+    parsed = tmp_path / "th.parsed"
+    html_thead = '<thead><tr><th colspan="2">Group</th></tr></thead>'
+    ir = IRDoc(
+        document_name="th.pdf",
+        document_format="pdf",
+        doc_title="th",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="{{TBL:j}} {{TBL:h}} {{TBL:g}}",
+                tables=[
+                    # JSON table: grid header → JSON 2-D array string.
+                    IRTable(
+                        placeholder_key="j",
+                        rows=[["a", "b"]],
+                        num_rows=1,
+                        num_cols=2,
+                        table_header=[["H1", "H2"]],
+                    ),
+                    # HTML table: raw <thead> string → stored verbatim.
+                    IRTable(
+                        placeholder_key="h",
+                        html="<table><tbody><tr><td>a</td><td>b</td></tr></tbody></table>",
+                        num_rows=1,
+                        num_cols=2,
+                        table_header=html_thead,
+                    ),
+                    # HTML table: grid header → rendered to a span-less <thead>.
+                    IRTable(
+                        placeholder_key="g",
+                        html="<table><tbody><tr><td>x</td><td>y</td></tr></tbody></table>",
+                        num_rows=1,
+                        num_cols=2,
+                        table_header=[["P", "Q"]],
+                    ),
+                ],
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-thh1", engine="mineru")
+    tables = json.loads((parsed / "th.tables.json").read_text("utf-8"))["tables"]
+    items = list(tables.values())
+
+    json_item = items[0]
+    assert json_item["format"] == "json"
+    assert json.loads(json_item["table_header"]) == [["H1", "H2"]]
+
+    html_item = items[1]
+    assert html_item["format"] == "html"
+    assert html_item["table_header"] == html_thead  # verbatim, spans preserved
+
+    grid_html_item = items[2]
+    assert grid_html_item["format"] == "html"
+    assert (
+        grid_html_item["table_header"] == "<thead><tr><th>P</th><th>Q</th></tr></thead>"
+    )
 
 
 @pytest.mark.offline
@@ -610,3 +723,88 @@ def test_writer_blockid_formula_stable(tmp_path: Path) -> None:
     rows_a = _load_jsonl(parsed_a / "x.blocks.jsonl")[1]
     rows_b = _load_jsonl(parsed_b / "x.blocks.jsonl")[1]
     assert rows_a[0]["blockid"] == rows_b[0]["blockid"]
+
+
+@pytest.mark.offline
+def test_writer_strips_control_separators_from_block_content(
+    tmp_path: Path,
+) -> None:
+    """C0 control/separator chars (\\x1c-\\x1f FS/GS/RS/US, plus NUL/DEL) in a
+    block must not survive into blocks.jsonl content (the chunk source) or the
+    document_hash/merged_text. \\t/\\n inside the block are preserved."""
+    parsed = tmp_path / "ctrl.parsed"
+    ir = IRDoc(
+        document_name="ctrl.pdf",
+        document_format="pdf",
+        doc_title="ctrl",
+        split_option={},
+        blocks=[
+            IRBlock(
+                content_template="a\x1cb\x1dc\x1ed\x1fe\x00\x7f\tkeep\nline",
+                heading="H",
+                level=1,
+            )
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-ctrl", engine="mineru")
+
+    meta, rows = _load_jsonl(parsed / "ctrl.blocks.jsonl")
+    body = rows[0]["content"]
+    assert not any(c in body for c in "\x1c\x1d\x1e\x1f\x00\x7f")
+    # separators removed (no spurious split), whitespace controls kept.
+    assert body == "abcde\tkeep\nline"
+    # document_hash is derived from the cleaned merged_text.
+    assert meta["document_hash"].startswith("sha256:")
+
+
+@pytest.mark.offline
+def test_writer_blockid_unchanged_when_no_control_chars(tmp_path: Path) -> None:
+    """The control-char strip is a no-op for clean input: blockid/document_hash
+    for a control-char-free block stay identical to the pre-change baseline
+    (guards golden/byte-equivalence snapshots)."""
+    parsed_clean = tmp_path / "clean.parsed"
+    parsed_dirty = tmp_path / "dirty.parsed"
+    clean = IRDoc(
+        document_name="d.pdf",
+        document_format="pdf",
+        doc_title="d",
+        split_option={},
+        blocks=[IRBlock(content_template="hello world", heading="H", level=1)],
+    )
+    # Same logical content but with separators interspersed; after cleaning the
+    # rendered text collapses to the clean form, so blockid must match.
+    dirty = IRDoc(
+        document_name="d.pdf",
+        document_format="pdf",
+        doc_title="d",
+        split_option={},
+        blocks=[IRBlock(content_template="hello\x1f world\x1c", heading="H", level=1)],
+    )
+    write_sidecar(clean, parsed_dir=parsed_clean, doc_id="doc-x", engine="mineru")
+    write_sidecar(dirty, parsed_dir=parsed_dirty, doc_id="doc-x", engine="mineru")
+    meta_c, rows_c = _load_jsonl(parsed_clean / "d.blocks.jsonl")
+    meta_d, rows_d = _load_jsonl(parsed_dirty / "d.blocks.jsonl")
+    assert rows_c[0]["content"] == rows_d[0]["content"] == "hello world"
+    assert rows_c[0]["blockid"] == rows_d[0]["blockid"]
+    assert meta_c["document_hash"] == meta_d["document_hash"]
+
+
+@pytest.mark.offline
+def test_writer_drops_block_that_is_only_control_chars(tmp_path: Path) -> None:
+    """A block whose entire body is control chars + whitespace collapses to
+    empty after cleaning and is dropped (not emitted as a blank row)."""
+    parsed = tmp_path / "empty.parsed"
+    ir = IRDoc(
+        document_name="e.pdf",
+        document_format="pdf",
+        doc_title="e",
+        split_option={},
+        blocks=[
+            IRBlock(content_template="\x1c\x1d  \x1f\x1e", heading="H", level=1),
+            IRBlock(content_template="real body", heading="H2", level=1),
+        ],
+    )
+    write_sidecar(ir, parsed_dir=parsed, doc_id="doc-drop", engine="mineru")
+    _, rows = _load_jsonl(parsed / "e.blocks.jsonl")
+    assert len(rows) == 1
+    assert rows[0]["content"] == "real body"

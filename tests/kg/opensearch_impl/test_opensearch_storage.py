@@ -18,7 +18,11 @@ pytest.importorskip(
     reason="opensearchpy is required for OpenSearch storage tests",
 )
 
-from opensearchpy.exceptions import NotFoundError, OpenSearchException  # type: ignore
+from opensearchpy.exceptions import (  # type: ignore
+    NotFoundError,
+    OpenSearchException,
+    ConflictError,
+)
 from lightrag.kg.opensearch_impl import (
     OpenSearchKVStorage,
     OpenSearchDocStatusStorage,
@@ -29,6 +33,15 @@ from lightrag.kg.opensearch_impl import (
     _resolve_workspace,
     _sanitize_index_name,
     _verify_mirrored_id_mapping,
+    _resolve_bulk_batch_limits,
+    _run_chunked_async_bulk,
+    _canonical_edge_id,
+    _merge_edge_payloads,
+    _EDGE_ID_CANONICAL_META_FLAG,
+    _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES,
+    DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES,
+    DEFAULT_OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH,
+    DEFAULT_OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH,
 )
 from lightrag.base import DocStatus, DocProcessingStatus
 
@@ -242,6 +255,104 @@ class TestHelpers:
         assert _sanitize_index_name("Hello_World") == "hello_world"
         assert _sanitize_index_name("-bad") == "x-bad"
         assert _sanitize_index_name("a.b/c") == "a_b_c"
+
+
+# ---------------------------------------------------------------------------
+# Bulk batching limits (mirrors mongo_impl's payload/record split)
+# ---------------------------------------------------------------------------
+
+
+class TestBulkBatchLimits:
+    """Tests for _resolve_bulk_batch_limits and the _run_chunked_async_bulk wrapper."""
+
+    def test_resolve_defaults(self):
+        with patch.dict("os.environ", {}, clear=True):
+            payload, upserts, deletes = _resolve_bulk_batch_limits()
+        assert payload == DEFAULT_OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES
+        assert upserts == DEFAULT_OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH
+        assert deletes == DEFAULT_OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH
+
+    def test_resolve_env_override(self):
+        env = {
+            "OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES": "12345",
+            "OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH": "7",
+            "OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH": "9",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            assert _resolve_bulk_batch_limits() == (12345, 7, 9)
+
+    def test_resolve_non_positive_disables_and_warns(self):
+        env = {
+            "OPENSEARCH_UPSERT_MAX_PAYLOAD_BYTES": "0",
+            "OPENSEARCH_UPSERT_MAX_RECORDS_PER_BATCH": "-1",
+            "OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH": "0",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            with patch("lightrag.kg.opensearch_impl.logger") as mock_logger:
+                payload, upserts, deletes = _resolve_bulk_batch_limits()
+        assert (payload, upserts, deletes) == (0, -1, 0)
+        # one warning per disabled dimension
+        warnings = [c.args[0] for c in mock_logger.warning.call_args_list]
+        assert sum("non-positive" in msg for msg in warnings) == 3
+
+    @pytest.mark.asyncio
+    async def test_run_chunked_empty_short_circuits(self):
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+        ) as mock_bulk:
+            success, failed = await _run_chunked_async_bulk(
+                AsyncMock(),
+                [],
+                max_payload_bytes=10,
+                max_records_per_batch=10,
+                log_prefix="x",
+                what="y",
+            )
+        assert (success, failed) == (0, [])
+        mock_bulk.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_run_chunked_forwards_limits(self):
+        actions = [{"_op_type": "index", "_id": str(i)} for i in range(3)]
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+        ) as mock_bulk:
+            mock_bulk.return_value = (3, [])
+            await _run_chunked_async_bulk(
+                "client",
+                actions,
+                max_payload_bytes=4096,
+                max_records_per_batch=2,
+                log_prefix="[ws] ns:",
+                what="upsert",
+                refresh="wait_for",
+            )
+        _, kwargs = mock_bulk.call_args
+        assert kwargs["chunk_size"] == 2
+        assert kwargs["max_chunk_bytes"] == 4096
+        assert kwargs["raise_on_error"] is False
+        assert kwargs["refresh"] == "wait_for"
+
+    @pytest.mark.asyncio
+    async def test_run_chunked_non_positive_uses_sentinels(self):
+        actions = [{"_op_type": "index", "_id": str(i)} for i in range(3)]
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+        ) as mock_bulk:
+            mock_bulk.return_value = (3, [])
+            await _run_chunked_async_bulk(
+                "client",
+                actions,
+                max_payload_bytes=0,
+                max_records_per_batch=0,
+                log_prefix="x",
+                what="y",
+            )
+        _, kwargs = mock_bulk.call_args
+        # disabled record cap -> whole list in one chunk; disabled byte cap ->
+        # large finite sentinel (async_bulk needs a positive int).
+        assert kwargs["chunk_size"] == len(actions)
+        assert kwargs["max_chunk_bytes"] == _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -1076,9 +1187,9 @@ class TestKVStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
                 flush_can_finish.set()
                 await flush_task
@@ -1112,11 +1223,14 @@ class TestKVStorageBatching:
                 assert "k2" in s._pending_upserts
 
     @pytest.mark.asyncio
-    async def test_kv_failed_flush_drops_non_retryable(
+    async def test_kv_failed_flush_raises_on_non_retryable(
         self, global_config, embed_func, mock_client
     ):
-        """Permanent (4xx, e.g. mapping error) failures are cleared from
-        the buffer rather than retried forever."""
+        """Permanent (4xx, e.g. mapping error) failures must surface as an
+        error so _insert_done aborts the pipeline instead of silently marking
+        the document PROCESSED. The non-retryable op is dropped from the buffer
+        (it can never land — keeping it would replay-and-refail on every later
+        flush and poison direct callers); the retryable op stays for retry."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -1140,8 +1254,11 @@ class TestKVStorageBatching:
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.upsert({"k1": {"content": "x"}, "k2": {"content": "y"}})
-                await s.index_done_callback()
+                with pytest.raises(RuntimeError, match="failed permanently"):
+                    await s.index_done_callback()
+                # Non-retryable dropped (can never land; not replayed).
                 assert "k1" not in s._pending_upserts
+                # Retryable kept for the next flush.
                 assert "k2" in s._pending_upserts
 
     @pytest.mark.asyncio
@@ -1172,9 +1289,9 @@ class TestKVStorageBatching:
                 )
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 assert "k2" not in s._pending_upserts
 
                 flush_can_finish.set()
@@ -1184,6 +1301,37 @@ class TestKVStorageBatching:
                 # k1 flushed and cleared; k2 added after flush released.
                 assert "k1" not in s._pending_upserts
                 assert "k2" in s._pending_upserts
+
+    @pytest.mark.asyncio
+    async def test_flush_splits_delete_and_upsert_into_separate_phases(
+        self, global_config, embed_func, mock_client
+    ):
+        """A mixed flush issues two async_bulk calls, each with its own cap.
+
+        Deletes and upserts go as separate requests so the delete record-count
+        cap can differ from the upsert cap (mirrors mongo_impl). The per-call
+        failed lists are merged before retry classification.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (1, [])
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                # Distinct caps so we can tell the two phases apart.
+                s._max_upsert_records_per_batch = 11
+                s._max_delete_records_per_batch = 22
+                await s.upsert({"keep": {"content": "v"}})
+                await s.delete(["gone"])
+                await s.index_done_callback()
+
+                assert mock_bulk.await_count == 2
+                by_op = {}
+                for call in mock_bulk.call_args_list:
+                    actions = call.args[1]
+                    by_op[actions[0]["_op_type"]] = call.kwargs["chunk_size"]
+                assert by_op == {"delete": 22, "index": 11}
 
 
 # ---------------------------------------------------------------------------
@@ -1875,22 +2023,24 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_has_edge(self, global_config, embed_func, mock_client):
-        mock_client.search = AsyncMock(
-            return_value={
-                "hits": {"hits": [], "total": {"value": 1}},
-                "aggregations": {
-                    "status_counts": {"buckets": []},
-                    "src": {"buckets": []},
-                    "tgt": {"buckets": []},
-                    "source_degrees": {"buckets": []},
-                    "target_degrees": {"buckets": []},
-                },
-            }
-        )
+        # has_edge point-checks the single canonical _id via exists().
+        mock_client.exists = AsyncMock(return_value=True)
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.has_edge("A", "B") is True
+            mock_client.exists.assert_awaited_once_with(
+                index=s._edges_index, id=_canonical_edge_id("A", "B")
+            )
+            mock_client.mget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_has_edge_false(self, global_config, embed_func, mock_client):
+        mock_client.exists = AsyncMock(return_value=False)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.has_edge("A", "B") is False
 
     @pytest.mark.asyncio
     async def test_node_degree(self, global_config, embed_func, mock_client):
@@ -1939,22 +2089,19 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_get_edge(self, global_config, embed_func, mock_client):
-        # get_edge now uses mget (translog real-time) instead of search.
+        # get_edge reads the single canonical _id via mget (translog real-time).
+        canonical = _canonical_edge_id("A", "B")
         mock_client.mget = AsyncMock(
             return_value={
                 "docs": [
                     {
-                        "_id": "e1",
+                        "_id": canonical,
                         "found": True,
                         "_source": {
                             "source_node_id": "A",
                             "target_node_id": "B",
                             "weight": 1.0,
                         },
-                    },
-                    {
-                        "_id": "e2",
-                        "found": False,
                     },
                 ]
             }
@@ -1965,6 +2112,10 @@ class TestGraphStorage:
             edge = await s.get_edge("A", "B")
             assert edge is not None
             assert edge["weight"] == 1.0
+            assert edge["_id"] == canonical
+            mock_client.mget.assert_awaited_once_with(
+                index=s._edges_index, body={"ids": [canonical]}
+            )
 
     @pytest.mark.asyncio
     async def test_get_node_edges(self, global_config, embed_func, mock_client):
@@ -2063,9 +2214,55 @@ class TestGraphStorage:
             assert mock_client.index.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_upsert_edges_batch_reuses_id_for_reciprocal_edges(
+    async def test_upsert_edge_uses_canonical_id_without_reverse_lookup(
         self, global_config, embed_func, mock_client
     ):
+        """Reciprocal writes land on the same canonical _id, no exists(reverse)."""
+        mock_client.exists = AsyncMock(return_value=True)  # source node already exists
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            await s.upsert_edge("A", "B", {"weight": "1.0"})
+            await s.upsert_edge("B", "A", {"weight": "2.0"})
+
+            # No reverse-direction existence probe against the edges index any
+            # more (has_node still probes the nodes index, that's expected).
+            for call in mock_client.exists.await_args_list:
+                assert call.kwargs["index"] != s._edges_index
+            edge_ids = [
+                c.kwargs["id"]
+                for c in mock_client.index.await_args_list
+                if c.kwargs["index"] == s._edges_index
+            ]
+            assert edge_ids[0] == edge_ids[1] == _canonical_edge_id("A", "B")
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_does_not_delete_on_write(
+        self, global_config, embed_func, mock_client
+    ):
+        """No per-write reverse-orientation cleanup — the fail-fast migration
+        already guarantees the index is canonical before any write."""
+        mock_client.exists = AsyncMock(return_value=True)  # source exists
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert_edge("B", "A", {"weight": "1.0"})
+
+            edge_index_ids = [
+                c.kwargs["id"]
+                for c in mock_client.index.await_args_list
+                if c.kwargs["index"] == s._edges_index
+            ]
+            assert edge_index_ids == [_canonical_edge_id("B", "A")]
+            mock_client.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upsert_edges_batch_collapses_reciprocal_edges(
+        self, global_config, embed_func, mock_client
+    ):
+        """Reciprocal edges in one batch collapse to a single canonical action,
+        with no extra self-heal delete bulk."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -2075,13 +2272,6 @@ class TestGraphStorage:
             async def capture_bulk(_client, actions, *args, **kwargs):
                 bulk_calls.append(list(actions))
                 return (len(bulk_calls[-1]), [])
-
-            mock_client.mget = AsyncMock(
-                side_effect=[
-                    {"docs": []},
-                    {"docs": [{"_id": "edge-ba", "found": False}] * 2},
-                ]
-            )
 
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk",
@@ -2094,9 +2284,635 @@ class TestGraphStorage:
                     ]
                 )
 
-            edge_actions = bulk_calls[-1]
-            assert len(edge_actions) == 2
-            assert edge_actions[0]["_id"] == edge_actions[1]["_id"]
+            # Only index ops against the edges index (node-placeholder bulks
+            # target the nodes index — filtered out); no delete bulk.
+            edge_acts = [
+                a for call in bulk_calls for a in call if a["_index"] == s._edges_index
+            ]
+            index_actions = [a for a in edge_acts if a["_op_type"] == "index"]
+            assert not [a for a in edge_acts if a["_op_type"] == "delete"]
+            assert len(index_actions) == 1
+            assert index_actions[0]["_id"] == _canonical_edge_id("A", "B")
+            # last-write-wins within the batch
+            assert index_actions[0]["_source"]["weight"] == "2.0"
+
+    @pytest.mark.asyncio
+    async def test_migrate_edges_to_canonical_id_reindexes_legacy_docs(
+        self, global_config, embed_func, mock_client
+    ):
+        """A legacy non-canonical doc is reindexed onto its canonical _id and
+        the stale id is deleted; the index is flagged so it runs once."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-legacy-noncanonical",
+                            "_source": {
+                                "source_node_id": "A",
+                                "target_node_id": "B",
+                                "weight": 1.0,
+                            },
+                        }
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+
+        bulk_calls = []
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            bulk_calls.append(list(actions))
+            return (len(bulk_calls[-1]), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        canonical = _canonical_edge_id("A", "B")
+        # Two phases: create bulk, then delete bulk.
+        all_actions = [a for call in bulk_calls for a in call]
+        create_ops = [a for a in all_actions if a["_op_type"] == "create"]
+        delete_ops = [a for a in all_actions if a["_op_type"] == "delete"]
+        # Insert-only create (never clobber a concurrent live canonical write).
+        assert not [a for a in all_actions if a["_op_type"] == "index"]
+        assert create_ops[0]["_id"] == canonical
+        assert create_ops[0]["_source"]["source_node_id"] == "A"
+        assert delete_ops[0]["_id"] == "edge-legacy-noncanonical"
+
+        # Completion flag persisted via _meta.
+        put_body = mock_client.indices.put_mapping.await_args.kwargs["body"]
+        assert put_body["_meta"][_EDGE_ID_CANONICAL_META_FLAG] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "create_errors, delete_errors, expect_raise",
+        [
+            ([], [], False),  # clean run → flag set
+            # stale source already removed by another run — benign 404.
+            ([], [{"delete": {"_id": "edge-old", "status": 404}}], False),
+            # busy cluster rejected the create — fail fast, no flag.
+            ([{"create": {"_id": "C", "status": 503}}], [], True),
+            # delete genuinely failed — fail fast, no flag.
+            ([], [{"delete": {"_id": "edge-old", "status": 500}}], True),
+        ],
+    )
+    async def test_migrate_edges_phase_error_handling(
+        self,
+        global_config,
+        embed_func,
+        mock_client,
+        create_errors,
+        delete_errors,
+        expect_raise,
+    ):
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-old",
+                            "_source": {"source_node_id": "A", "target_node_id": "B"},
+                        }
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+
+        # First async_bulk call is the create phase, second is the delete phase.
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=[(1, create_errors), (1, delete_errors)]),
+        ):
+            if expect_raise:
+                # Fail fast: the migration raises so startup aborts, flag unset.
+                with pytest.raises(RuntimeError):
+                    await s._migrate_edges_to_canonical_id_if_needed()
+                mock_client.indices.put_mapping.assert_not_awaited()
+            else:
+                await s._migrate_edges_to_canonical_id_if_needed()
+                mock_client.indices.put_mapping.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_migrate_edges_fail_fast_preserves_source_when_create_fails(
+        self, global_config, embed_func, mock_client
+    ):
+        """A non-benign create failure raises BEFORE any delete, so the source
+        row survives and the unflagged retry can rebuild the edge."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-old",
+                            "_source": {"source_node_id": "A", "target_node_id": "B"},
+                        }
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+
+        canonical = _canonical_edge_id("A", "B")
+        bulk_calls = []
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            bulk_calls.append(acts)
+            if acts and acts[0]["_op_type"] == "create":
+                return (0, [{"create": {"_id": canonical, "status": 503}}])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            with pytest.raises(RuntimeError):
+                await s._migrate_edges_to_canonical_id_if_needed()
+
+        # No delete bulk was issued (raise happened first), and the index stays
+        # unflagged for the next startup's retry.
+        all_actions = [a for call in bulk_calls for a in call]
+        assert not [a for a in all_actions if a["_op_type"] == "delete"]
+        mock_client.indices.put_mapping.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_migrate_merges_reverse_payload_into_canonical_on_conflict(
+        self, global_config, embed_func, mock_client
+    ):
+        """A reciprocal duplicate (create 409) merges the reverse doc's relation
+        payload into the existing canonical before deleting the reverse — no
+        evidence lost, mirroring the Mongo dedupe merge."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        canonical = _canonical_edge_id("A", "B")
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        # Scroll yields the reverse-orientation doc with its own payload.
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-reverse",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "description": "d2",
+                                "keywords": "beta,gamma",
+                                "weight": 2.0,
+                                "source_ids": ["c2"],
+                                "file_path": "f2",
+                            },
+                        }
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+        # The existing canonical (forward) doc with distinct payload.
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": canonical,
+                "_seq_no": 7,
+                "_primary_term": 1,
+                "_source": {
+                    "source_node_id": "A",
+                    "target_node_id": "B",
+                    "description": "d1",
+                    "keywords": "alpha,beta",
+                    "weight": 1.0,
+                    "source_ids": ["c1"],
+                    "file_path": "f1",
+                },
+            }
+        )
+        mock_client.index = AsyncMock()
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            if acts and acts[0]["_op_type"] == "create":
+                # canonical already exists -> 409 conflict
+                return (0, [{"create": {"_id": canonical, "status": 409}}])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        # Merged write goes to the canonical id with optimistic concurrency.
+        index_kwargs = mock_client.index.await_args.kwargs
+        assert index_kwargs["id"] == canonical
+        assert index_kwargs["if_seq_no"] == 7
+        assert index_kwargs["if_primary_term"] == 1
+        merged = index_kwargs["body"]
+        assert merged["description"] == "d1<SEP>d2"  # both descriptions kept
+        assert merged["keywords"] == "alpha,beta,gamma"  # comma set-union
+        assert merged["weight"] == 3.0  # summed (1.0 + 2.0)
+        assert merged["source_ids"] == ["c1", "c2"]  # provenance unioned
+        assert merged["file_path"] == "f1<SEP>f2"
+        # Direction fields kept from the surviving canonical doc.
+        assert merged["source_node_id"] == "A"
+        mock_client.indices.put_mapping.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_merge_into_canonical_retries_on_version_conflict(
+        self, global_config, embed_func, mock_client
+    ):
+        """A concurrent write (version conflict) is not clobbered: the merge
+        re-reads and retries."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": "edge-canon",
+                "_seq_no": 1,
+                "_primary_term": 1,
+                "_source": {"source_node_id": "A", "target_node_id": "B"},
+            }
+        )
+        mock_client.index = AsyncMock(
+            side_effect=[ConflictError(409, "version_conflict", {}), None]
+        )
+
+        await s._merge_into_canonical_edge(
+            "edge-canon", [("edge-rev9", {"source_id": "c9"})]
+        )
+
+        assert mock_client.get.await_count == 2  # re-read after the conflict
+        assert mock_client.index.await_count == 2
+        # Folded only after the write that finally succeeds (post-conflict).
+        mock_client.delete.assert_awaited_once_with(
+            index=s._edges_index, id="edge-rev9"
+        )
+
+    @pytest.mark.asyncio
+    async def test_merge_into_canonical_recreates_when_canonical_vanished(
+        self, global_config, embed_func, mock_client
+    ):
+        """If the canonical doc disappears between the create-409 and the merge
+        GET, recreate it from the (merged) reverse sources rather than crashing."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.get = AsyncMock(side_effect=NotFoundError(404, "not_found", {}))
+        mock_client.index = AsyncMock()
+
+        await s._merge_into_canonical_edge(
+            "edge-canon",
+            [
+                (
+                    "edge-rev1",
+                    {"source_ids": ["c1"], "weight": 1.0, "source_node_id": "A"},
+                ),
+                ("edge-rev2", {"source_ids": ["c2"], "weight": 2.0}),
+            ],
+        )
+
+        # Recreated with a plain index (no optimistic concurrency to honour —
+        # there is no current version) carrying the merged reverse payload.
+        kwargs = mock_client.index.await_args.kwargs
+        assert kwargs["id"] == "edge-canon"
+        assert "if_seq_no" not in kwargs
+        body = kwargs["body"]
+        assert body["source_ids"] == ["c1", "c2"]
+        assert body["weight"] == 3.0  # summed across both reverse sources
+        assert body["source_node_id"] == "A"  # base reverse-source fields kept
+        # Both folded reverse docs are deleted so a re-scan never re-folds them.
+        deleted_ids = {c.kwargs["id"] for c in mock_client.delete.await_args_list}
+        assert deleted_ids == {"edge-rev1", "edge-rev2"}
+
+    @pytest.mark.asyncio
+    async def test_merge_into_canonical_aborts_after_persistent_conflicts(
+        self, global_config, embed_func, mock_client
+    ):
+        """Persistent version conflicts abort startup (fail-safe: raised before
+        any delete) rather than silently giving up."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": "edge-canon",
+                "_seq_no": 1,
+                "_primary_term": 1,
+                "_source": {"source_node_id": "A", "target_node_id": "B"},
+            }
+        )
+        mock_client.index = AsyncMock(
+            side_effect=ConflictError(409, "version_conflict", {})
+        )
+
+        with pytest.raises(RuntimeError, match="could not merge into edge-canon"):
+            await s._merge_into_canonical_edge(
+                "edge-canon", [("edge-rev9", {"source_id": "c9"})]
+            )
+        assert mock_client.index.await_count == 3  # bounded retries
+        # The reverse doc is never deleted while its evidence is unmerged.
+        mock_client.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_migrate_merges_multiple_reverse_docs_into_one_canonical(
+        self, global_config, embed_func, mock_client
+    ):
+        """When 3+ legacy docs map to one canonical pair, every 409'd reverse
+        source is folded in — not just the last one (no evidence dropped)."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        canonical = _canonical_edge_id("A", "B")
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        # Two reverse-orientation docs (distinct old ids) for the same pair, each
+        # with its own provenance, both non-canonical so both end up pending.
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-rev1",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c2"],
+                                "weight": 2.0,
+                            },
+                        },
+                        {
+                            "_id": "edge-rev2",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c3"],
+                                "weight": 3.0,
+                            },
+                        },
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+        mock_client.get = AsyncMock(
+            return_value={
+                "_id": canonical,
+                "_seq_no": 7,
+                "_primary_term": 1,
+                "_source": {
+                    "source_node_id": "A",
+                    "target_node_id": "B",
+                    "source_ids": ["c1"],
+                    "weight": 1.0,
+                },
+            }
+        )
+        mock_client.index = AsyncMock()
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            if acts and acts[0]["_op_type"] == "create":
+                # First create wins the insert; the second 409s on the same id.
+                return (1, [{"create": {"_id": canonical, "status": 409}}])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        # A single merge write into the canonical folds in *both* reverse docs.
+        assert mock_client.index.await_count == 1
+        merged = mock_client.index.await_args.kwargs["body"]
+        assert merged["source_ids"] == ["c1", "c2", "c3"]  # all provenance kept
+        assert merged["weight"] == 6.0  # 1.0 + 2.0 + 3.0 summed
+
+    @pytest.mark.asyncio
+    async def test_migrate_premerges_same_canonical_docs_into_one_create(
+        self, global_config, embed_func, mock_client
+    ):
+        """When several non-canonical docs map to a canonical that does NOT yet
+        exist, the batch issues ONE pre-merged create (not one per doc). This
+        avoids the intra-batch create race where one doc wins the insert and the
+        rest 409, then folding the 409'd docs re-merges the create winner and
+        double-counts its weight. The single create carries the summed-once
+        weight and no merge-into-canonical write happens."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        canonical = _canonical_edge_id("A", "B")
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        # Two reverse-orientation docs for the same pair, both non-canonical.
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "edge-rev1",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c2"],
+                                "weight": 2.0,
+                            },
+                        },
+                        {
+                            "_id": "edge-rev2",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "A",
+                                "source_ids": ["c3"],
+                                "weight": 3.0,
+                            },
+                        },
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+        mock_client.index = AsyncMock()
+
+        created = []
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            if acts and acts[0]["_op_type"] == "create":
+                created.extend(acts)
+                # Canonical did not pre-exist: the create succeeds (no 409).
+                return (len(acts), [])
+            return (len(acts), [])
+
+        with patch(
+            "lightrag.kg.opensearch_impl.helpers.async_bulk",
+            new=AsyncMock(side_effect=capture_bulk),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        # Exactly one create for the canonical, carrying the summed-once weight —
+        # the create winner is never re-merged, so weight is 5.0, not 7.0.
+        create_for_canon = [a for a in created if a["_id"] == canonical]
+        assert len(create_for_canon) == 1
+        body = create_for_canon[0]["_source"]
+        assert body["weight"] == 5.0  # 2.0 + 3.0, counted once
+        assert body["source_ids"] == ["c2", "c3"]
+        # No fold/merge write into the canonical (no create conflicted).
+        mock_client.index.assert_not_awaited()
+
+    def test_merge_edge_payloads_sums_every_fragment_weight(self):
+        """Weight is summed across every fragment (base + each duplicate), matching
+        operate.py's _merge_edges_then_upsert — including reciprocal duplicates that
+        share a source/chunk id, which must NOT be skipped (that undercounts)."""
+        # Disjoint provenance -> weights sum.
+        disjoint = _merge_edge_payloads(
+            [
+                {"source_ids": ["c1"], "weight": 1.0},
+                {"source_ids": ["c2"], "weight": 2.0},
+            ]
+        )
+        assert disjoint["weight"] == 3.0
+        assert disjoint["source_ids"] == ["c1", "c2"]
+        # Same-source reciprocal duplicate: both fragments carry separate
+        # accumulated weight, so their weights still sum (the regression this
+        # guards against silently dropped the duplicate's weight here).
+        same_source = _merge_edge_payloads(
+            [
+                {"source_ids": ["c1"], "weight": 1.0},
+                {"source_ids": ["c1"], "weight": 2.0},
+            ]
+        )
+        assert same_source["weight"] == 3.0
+        assert same_source["source_ids"] == ["c1"]
+
+    @pytest.mark.asyncio
+    async def test_migrate_edges_logs_progress_for_large_scan(
+        self, global_config, embed_func, mock_client
+    ):
+        """Operators get periodic progress lines with an X/total denominator."""
+        from unittest.mock import MagicMock
+
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={s._edges_index: {"mappings": {}}}
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        mock_client.count = AsyncMock(return_value={"count": 3})
+        # One page of 3 already-canonical edges (nothing to migrate), then end.
+        mock_client.search = AsyncMock(
+            return_value={
+                "_scroll_id": "s1",
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": _canonical_edge_id(n, "Z"),
+                            "_source": {"source_node_id": n, "target_node_id": "Z"},
+                        }
+                        for n in ("A", "B", "C")
+                    ]
+                },
+            }
+        )
+        mock_client.scroll = AsyncMock(
+            return_value={"_scroll_id": "s1", "hits": {"hits": []}}
+        )
+        mock_client.clear_scroll = AsyncMock()
+
+        fake_logger = MagicMock()
+        with (
+            patch("lightrag.kg.opensearch_impl._EDGE_MIGRATION_PROGRESS_INTERVAL", 2),
+            patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                new=AsyncMock(return_value=(0, [])),
+            ),
+            patch("lightrag.kg.opensearch_impl.logger", fake_logger),
+        ):
+            await s._migrate_edges_to_canonical_id_if_needed()
+
+        info_lines = [c.args[0] for c in fake_logger.info.call_args_list]
+        progress_lines = [m for m in info_lines if "progress: scanned" in m]
+        assert progress_lines and "/3" in progress_lines[0]
+        # Already-canonical docs need no writes, but the scan still completes.
+        assert mock_client.indices.put_mapping.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_migrate_edges_skipped_when_flag_present(
+        self, global_config, embed_func, mock_client
+    ):
+        """Already-migrated indices skip the full scan entirely."""
+        s = self._make(global_config, embed_func)
+        s.client = mock_client
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={
+                s._edges_index: {
+                    "mappings": {"_meta": {_EDGE_ID_CANONICAL_META_FLAG: True}}
+                }
+            }
+        )
+        mock_client.indices.put_mapping = AsyncMock()
+        mock_client.search = AsyncMock()
+
+        await s._migrate_edges_to_canonical_id_if_needed()
+
+        mock_client.search.assert_not_awaited()
+        mock_client.indices.put_mapping.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_upsert_after_drop_recreates_indices(
@@ -2184,17 +3000,35 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_remove_edges(self, global_config, embed_func, mock_client):
-        # remove_edges now uses bulk delete with deterministic IDs instead of
-        # delete_by_query, so mock bulk as AsyncMock.
+        # remove_edges bulk-deletes one canonical _id per edge.
         mock_client.bulk = AsyncMock(return_value={"errors": False, "items": []})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.remove_edges([("A", "B"), ("C", "D")])
-            # 2 edges × 2 candidate directions = 4 delete actions in one bulk call
+            # 2 distinct canonical edges = 2 delete actions in one bulk call
             mock_client.bulk.assert_awaited_once()
             call_body = mock_client.bulk.call_args.kwargs["body"]
-            assert len(call_body) == 4
+            assert len(call_body) == 2
+            assert {op["delete"]["_id"] for op in call_body} == {
+                _canonical_edge_id("A", "B"),
+                _canonical_edge_id("C", "D"),
+            }
+
+    @pytest.mark.asyncio
+    async def test_remove_edges_dedups_reciprocal(
+        self, global_config, embed_func, mock_client
+    ):
+        # (A,B) and (B,A) share a canonical _id, so they collapse to one op.
+        mock_client.bulk = AsyncMock(return_value={"errors": False, "items": []})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.remove_edges([("A", "B"), ("B", "A")])
+            mock_client.bulk.assert_awaited_once()
+            call_body = mock_client.bulk.call_args.kwargs["body"]
+            assert len(call_body) == 1
+            assert call_body[0]["delete"]["_id"] == _canonical_edge_id("A", "B")
 
     @pytest.mark.asyncio
     async def test_get_all_labels(self, global_config, embed_func, mock_client):
@@ -2444,7 +3278,10 @@ class TestGraphStorage:
         assert node.id == "Alice"
         assert "entity_type" in node.properties
         assert "_id" not in node.properties
-        assert "entity_id" not in node.properties
+        # entity_id must be preserved in properties: the WebUI reads
+        # properties['entity_id'] to render the node's "Name" row and the
+        # neighbour/edge-endpoint labels. Stripping it left the panel nameless.
+        assert node.properties["entity_id"] == "Alice"
 
     @pytest.mark.asyncio
     async def test_construct_graph_edge(self, global_config, embed_func):
@@ -3773,10 +4610,13 @@ class TestVectorStorageBatching:
         assert non_retryable[0].error.endswith("...")
 
     @pytest.mark.asyncio
-    async def test_failed_flush_drops_non_retryable_entries(
+    async def test_failed_flush_raises_on_non_retryable_entries(
         self, global_config, embed_func, mock_client
     ):
-        """4xx (non-429) failures are dropped, not perpetually retried."""
+        """4xx (non-429) permanent failures must raise so the pipeline aborts
+        instead of marking the document PROCESSED; the failed op is dropped
+        from the buffer (it can never land — keeping it would replay-and-refail
+        on every later flush), while the retryable op stays for retry."""
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
@@ -3795,10 +4635,28 @@ class TestVectorStorageBatching:
                 await s.upsert(
                     {"v1": {"content": "bad"}, "v2": {"content": "transient"}}
                 )
-                await s.index_done_callback()
-                # v1 is dropped (non-retryable), v2 is retained (retryable).
+                with pytest.raises(RuntimeError, match="failed permanently"):
+                    await s.index_done_callback()
+                # v1 (non-retryable) dropped (can never land; not replayed);
+                # v2 (retryable) retained for the next flush.
                 assert "v1" not in s._pending_vector_docs
                 assert "v2" in s._pending_vector_docs
+
+    @pytest.mark.asyncio
+    async def test_drop_pending_index_ops_clears_buffers(
+        self, global_config, embed_func, mock_client
+    ):
+        """On an internal-error abort the pipeline calls drop_pending_index_ops
+        to discard buffered upserts/deletes without flushing them."""
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert({"v1": {"content": "x"}, "v2": {"content": "y"}})
+            s._pending_vector_deletes.add("old-id")
+            assert s._pending_vector_docs
+            await s.drop_pending_index_ops()
+            assert not s._pending_vector_docs
+            assert not s._pending_vector_deletes
 
     @pytest.mark.asyncio
     async def test_concurrent_writes_during_flush_are_serialised(
@@ -3835,9 +4693,9 @@ class TestVectorStorageBatching:
                 # embedding computation and arrive at the lock.
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not concurrent_task.done()
-                ), "concurrent upsert should be blocked by the flush lock"
+                assert not concurrent_task.done(), (
+                    "concurrent upsert should be blocked by the flush lock"
+                )
                 # v2 must not be visible in the buffer yet.
                 assert "v2" not in s._pending_vector_docs
 
@@ -3886,9 +4744,9 @@ class TestVectorStorageBatching:
                 delete_task = asyncio.create_task(s.delete(["v1"]))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_task.done()
-                ), "concurrent delete should be blocked by the flush lock"
+                assert not delete_task.done(), (
+                    "concurrent delete should be blocked by the flush lock"
+                )
 
                 flush_can_finish.set()
                 await flush_task
@@ -3973,12 +4831,11 @@ class TestVectorStorageBatching:
             )
 
     @pytest.mark.asyncio
-    async def test_non_retryable_logs_sample_ids(
-        self, global_config, embed_func, mock_client, caplog
+    async def test_non_retryable_raises_with_sample_ids(
+        self, global_config, embed_func, mock_client
     ):
-        """Non-retryable bulk failures log a sample with id/status/error."""
-        import logging as _logging
-
+        """Non-retryable bulk failures raise an error carrying a sample with
+        id/status/error so the abort is diagnosable."""
         failed = [
             {
                 "index": {
@@ -3992,36 +4849,25 @@ class TestVectorStorageBatching:
             }
             for i in range(6)
         ]
-        # lightrag logger has propagate=False, so caplog's root handler
-        # would miss these records. Re-enable propagation just for this
-        # test so caplog can capture the warning we emit.
-        lightrag_logger = _logging.getLogger("lightrag")
-        original_propagate = lightrag_logger.propagate
-        lightrag_logger.propagate = True
-        try:
-            with patch.object(ClientManager, "get_client", return_value=mock_client):
-                with patch(
-                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
-                    new_callable=AsyncMock,
-                ) as mock_bulk:
-                    mock_bulk.return_value = (0, failed)
-                    s = self._make(global_config, embed_func)
-                    await s.initialize()
-                    await s.upsert({f"v{i}": {"content": f"d{i}"} for i in range(6)})
-                    with caplog.at_level("WARNING", logger="lightrag"):
-                        await s.index_done_callback()
-        finally:
-            lightrag_logger.propagate = original_propagate
-        warning_text = "\n".join(
-            rec.message for rec in caplog.records if rec.levelname == "WARNING"
-        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                new_callable=AsyncMock,
+            ) as mock_bulk:
+                mock_bulk.return_value = (0, failed)
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.upsert({f"v{i}": {"content": f"d{i}"} for i in range(6)})
+                with pytest.raises(RuntimeError) as excinfo:
+                    await s.index_done_callback()
+        error_text = str(excinfo.value)
         # Sample contains the first 5 ids with op/status/reason text.
         for i in range(5):
-            assert f"v{i}" in warning_text
-        assert "status=400" in warning_text
-        assert "bad field" in warning_text
+            assert f"v{i}" in error_text
+        assert "status=400" in error_text
+        assert "bad field" in error_text
         # 6 permanent failures reported in aggregate.
-        assert "6 vector ops" in warning_text
+        assert "6 vector ops" in error_text
 
     @pytest.mark.asyncio
     async def test_index_done_callback_flushes_when_index_recreated(
@@ -4035,9 +4881,9 @@ class TestVectorStorageBatching:
         # invocation actually creates the index again.
         exists_responses = [False, False]
         mock_client.indices.exists = AsyncMock(
-            side_effect=lambda **kw: exists_responses.pop(0)
-            if exists_responses
-            else False
+            side_effect=lambda **kw: (
+                exists_responses.pop(0) if exists_responses else False
+            )
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
@@ -4099,9 +4945,9 @@ class TestVectorStorageBatching:
                 rel_task = asyncio.create_task(s.delete_entity_relation("Alice"))
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not delete_started.is_set()
-                ), "delete_by_query should be blocked behind the flush lock"
+                assert not delete_started.is_set(), (
+                    "delete_by_query should be blocked behind the flush lock"
+                )
                 assert not rel_task.done()
 
                 flush_can_finish.set()
@@ -4141,9 +4987,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked behind the flush lock"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked behind the flush lock"
+                )
                 assert not drop_task.done()
 
                 flush_can_finish.set()
@@ -4186,9 +5032,9 @@ class TestVectorStorageBatching:
                 drop_task = asyncio.create_task(s.drop())
                 for _ in range(5):
                     await asyncio.sleep(0)
-                assert (
-                    not drop_delete_started.is_set()
-                ), "indices.delete should be blocked during deferred embedding"
+                assert not drop_delete_started.is_set(), (
+                    "indices.delete should be blocked during deferred embedding"
+                )
                 assert not drop_task.done()
 
                 embedding_can_finish.set()

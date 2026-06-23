@@ -42,7 +42,7 @@ MINERU_LOCAL_ENDPOINT=http://localhost:8000
 
 > `P` is LightRAG's native chunking strategy; see [Paragraph Semantic Chunking](ParagraphSemanticChunking.md) for details. For VLM configuration, see [Role-based LLM/VLM Configuration Guide](RoleSpecificLLMConfiguration.md).
 
-## 2. Content Extraction and Processing Option Configuration
+## 2. File Processing Configuration
 
 LightRAG's file processing configuration is composed of two parts: the content extraction engine determines how the original file is parsed, and the processing options determine whether multimodal analysis is performed after parsing, which chunking method to use, and whether to build a knowledge graph. Typically, the environment variable `LIGHTRAG_PARSER` is first used to set default rules by file extension, and then a `[hint]` in the filename overrides individual files. Engine and options can be written in the same configuration fragment, for example `docx:native-iet` or `report.[native-R!].docx`.
 
@@ -93,7 +93,7 @@ ext:engine-options
 ```
 
 - The left side matches the file extension, not the full filename; write `pdf:mineru`, not `*.pdf:mineru`.
-- Rules can be separated by either a comma `,` or a semicolon `;`.
+- Rules are separated by a semicolon `;` (recommended) or a comma `,`.
 - Rules are checked left to right; priority rules go in front, with the wildcard rule typically at the end.
 - The `-options` suffix after the engine serves as the default `process_options` for files matched by this rule. For example, `LIGHTRAG_PARSER=docx:native-iet` means all `.docx` files default to the `native` engine with image, table, and equation analysis enabled.
 
@@ -118,12 +118,60 @@ The content inside the square brackets supports three forms:
 
 When parsing the hint, content without a hyphen must match an engine name exactly (`mineru` / `native` / `docling` / `legacy`); when there is content before a hyphen, the part before the hyphen is the engine and the part after is the options; when starting with a hyphen, it specifies only options. The legacy `[OPTIONS]` syntax is no longer valid; for example, `[iet]` must now be written as `[-iet]`.
 
-### 2.4 Content Extraction Engines
+#### Attaching chunk parameters
+
+A chunk-strategy selector (`F` / `R` / `V` / `P`) — in a `LIGHTRAG_PARSER` rule or a filename hint — may carry per-strategy chunking parameters in parentheses. Inside the parentheses a comma **only** separates parameters; rule splitting is parenthesis-aware, so this comma is never mistaken for a rule separator (both `;` and `,` remain valid rule separators, but `;` is recommended).
+
+```text
+notes.[-R(chunk_ts=800,chunk_ol=80)].md                            # filename hint
+LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # rule
+```
+
+Currently supported parameters (canonical name / short alias):
+
+| Parameter | Alias | Strategies | Type | Meaning |
+| --- | --- | --- | --- | --- |
+| `chunk_token_size` | `chunk_ts` | F / R / V / P | int (≥ 1) | Per-strategy chunk size |
+| `chunk_overlap_token_size` | `chunk_ol` | F / R / P | int (≥ 0) | Overlap between chunks (V has no overlap) |
+| `drop_references` | `drop_rf` | P | bool | Drop the trailing reference section before chunking, e.g. `paper.[-P(drop_rf=true)].pdf`. As a boolean it may be written bare: `paper.[-P(drop_rf)].pdf` means `drop_rf=true` |
+
+- `process_options` stays a pure selector string; each parameter is applied to that strategy's `chunk_options` (see §3) while the strategy's other env-derived parameters are kept. Aliases are normalized to their canonical name internally.
+- Merge priority: the selector still follows "a non-empty filename-hint options string wholesale-overrides the rule options"; parameters overlay **per strategy** — rule parameters first, then filename-hint parameters (filename wins on a shared key).
+- Validation is strict both at startup (`LIGHTRAG_PARSER`) and at upload (filename hint): an unknown parameter, a wrong type, an out-of-range value, or a parameter on a strategy that does not support it (e.g. `chunk_ol` on `V`) all raise a friendly error.
+
+> `drop_references` detection knobs `CHUNK_P_REFERENCES_TAIL_N` (default 2) / `CHUNK_P_REFERENCES_HEADINGS` (pipe-separated, default `References\|Bibliography\|参考文献`) are env-only and read live at run time. Global default can be set via env var `CHUNK_P_DROP_REFERENCES`.
+
+#### Attaching engine parameters
+
+Parameters may also be attached to the **engine token** to override an external engine's per-file behaviour. They are encoded into the persisted `parse_engine` field and feed both the engine request and its raw-bundle cache signature (so changing a parameter forces a re-parse rather than reusing a stale bundle).
+
+```text
+paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # filename hint
+scan.[docling(force_ocr=true)].pdf
+LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # rule
+```
+
+Currently supported engine parameters (canonical / alias):
+
+| Engine | Parameter | Alias | Type | Notes |
+| --- | --- | --- | --- | --- |
+| `mineru` | `page_range` | `pr` | list | One or more page ranges; **see the list note below** |
+| `mineru` | `language` | — | str | OCR / model language (e.g. `en`, `ch`) |
+| `mineru` | `local_parse_method` | `local_pm` | enum | `auto` / `txt` / `ocr` (local mode) |
+| `docling` | `force_ocr` | `ocr` | bool | `true` / `false` |
+
+- **`page_range` may contain multiple page segments — write one `page_range=...` item per segment.** Inside `(...)` a comma only separates parameters, so a multi-segment list should be written as `page_range=1-3,page_range=5,page_range=7-9`, not as the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`. A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (for example, `page_range=1-3`).
+- **`local_parse_method` is local-only.** It only affects the local MinerU request, so it is **rejected** under `MINERU_API_MODE=official` (the official API neither sends it nor folds it into the cache key — accepting it would silently do nothing).
+- Only `mineru` and `docling` accept engine parameters; attaching one to `legacy`/`native` is a friendly error. Validation runs at startup (`LIGHTRAG_PARSER`) and at upload.
+- Merge priority: engine parameters resolve for the **final engine** — a rule's engine parameters are dropped when a filename hint selects a different (usable) engine.
+- `parse_engine` is stored in hint syntax (e.g. `mineru(page_range=1-3)`) and shown in `doc_status` metadata so you can see the parse parameters a document used.
+
+### 2.4 File Parsing Engines
 
 | Engine | Description | Supported file formats (extensions) |
 | --- | --- | --- |
 | `legacy` | Legacy extraction; content is centrally extracted before joining the pipeline | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
-| `native` | Built-in intelligent structured content extractor | `docx` |
+| `native` | Built-in intelligent structured content extractor | `docx` `md` `textpack` |
 | `mineru` | External MinerU content extraction engine | `pdf` `doc` `docx` `ppt` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
 | `docling` | External Docling content extraction engine | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
 
@@ -131,39 +179,75 @@ When parsing the hint, content without a hyphen must match an engine name exactl
 
 LightRAG caches the parsing results of the `mineru` and `docling` engines locally. Re-uploading the same file usually does not trigger the engine to re-parse the document. To delete the parse cache, you must click the "also delete file" option in the delete-file dialog of the document management interface. Modifying the endpoint addresses and effective extraction parameters of the `mineru` / `docling` engines will also invalidate the cache, causing the engine to re-parse the file content on the next upload of the same file.
 
-#### MinerU Configuration and Local Deployment
+#### Using the Native File Parsing Engine
 
-The MinerU client supports two modes; choose one:
+`native` is LightRAG's built-in structured content extractor that runs **fully locally**: it does not depend on external services such as MinerU / Docling, the extraction stage never calls a VLM, and it works out of the box with no deployment. Its runtime dependencies are only `python-docx` + `defusedxml` (required); the markdown path additionally relies on the **optional** `cairosvg` for SVG rasterization (when missing, the SVG is skipped with a warning and the rest of the content is unaffected).
 
-- `local`: self-hosted MinerU service (the official Docker Compose deployment is recommended); LightRAG calls the local container via HTTP.
-- `official`: directly connects to the MinerU official precise API v4; you need to apply for a token at [mineru.net](https://mineru.net).
+Supported extensions: `docx` / `md` / `textpack`. How to enable:
 
-**Local deployment (Docker Compose)**
+- `docx` and `md` still default to `legacy`; select native explicitly, e.g. a default rule `LIGHTRAG_PARSER=docx:native` / `LIGHTRAG_PARSER=md:native`, or a filename hint `report.[native-iet].docx` / `notes.[native].md` (syntax in [§2.2](#22-default-rules-lightrag_parser) / [§2.3](#23-single-file-override-filename-hints)).
+- `textpack` is a native-exclusive extension and is routed to native automatically without a hint/rule.
 
-Clone the official [opendatalab/MinerU](https://github.com/opendatalab/MinerU) repository to your local machine, enter the docker deployment directory inside the repository, and first build the image:
+##### docx Extraction Capabilities
 
-```bash
-docker compose -f compose.yaml build
+`native` parses OOXML directly and recognizes the following structures, writing them to the corresponding sidecars (whether a sidecar is produced depends on the document's actual content; see [§4.2](#42-__parsed__-directory-structure)):
+
+| Element | Extraction behavior | Sidecar |
+| --- | --- | --- |
+| Heading levels | Heading 1–9 (inferred from `pPr/outlineLvl` or the style inheritance chain), feeding the `P` chunking strategy's heading-based splitting | `blocks.jsonl` |
+| Paragraphs | Includes hyperlink text and list auto-numbering; tracked changes keep only the final text (deletions removed) | `blocks.jsonl` |
+| Tables | 2D structure, auto-expanding merged cells (colspan/rowspan) and extracting cross-page repeated headers | `tables.json` |
+| Images / drawings | Embedded images exported to a resource directory, with placeholders left in the body | `drawings.json` + `<base>.blocks.assets/` |
+| Equations | OMML → LaTeX, distinguishing block-level vs inline | `equations.json` |
+
+Image export details:
+
+- Embedded images are exported to a `<base>.blocks.assets/` directory beside `blocks.jsonl`, supporting `png` `jpeg` `gif` `bmp` `tiff` `webp` `emf` `wmf`.
+- **SVG images**: when Word saves an SVG it stores both the vector `.svg` and a PNG raster fallback; native docx writes that **PNG fallback** (reading `<a:blip>`'s `r:embed`, which points at the PNG) and does not export the SVG vector original. For downstream VLM consumption PNG is usually sufficient, with no further rasterization needed. (Note this differs from the md path's "SVG rasterized via cairosvg" below: docx simply takes the PNG Word already generated.)
+- **VML / OLE objects** (legacy Word images, Visio diagrams, equation-editor previews, etc.): their rendered preview is exported via `v:imagedata`, commonly EMF/WMF, landing in the same assets directory; if the relationship is marked as an external link (`TargetMode="External"`), only the URL is recorded and no bytes are exported. **Note: EMF/WMF (and the previews of OLE objects such as Visio) can currently only be "extracted to disk" and cannot enter multimodal analysis** — the downstream VLM image analysis accepts only the raster formats `png` / `jpg` / `jpeg` / `gif` / `webp`, and other formats (EMF/WMF/SVG, etc.) are silently skipped (marked `skipped`; no error, and the rest of the document is unaffected). The exception is **equations**: they are stored as LaTeX text rather than images and are analyzed by the text (EXTRACT) role rather than the VLM, so they are processed normally.
+
+##### docx Paragraph Provenance (paraId) Notice
+
+native docx collects the `w14:paraId` written by Word 2013+ as a paragraph-level provenance anchor. If a document was produced by LibreOffice / WPS / older Word, or its internal docx XML was edited by hand, some paragraphs will lack paraId, and a one-time notice is logged:
+
+```text
+[parse_native] <filename>: N paragraphs lack paraId; Re-saving file in Word 2013+ to regenerate ids.
 ```
 
-Then start the API service (`--profile api` is required to enable the HTTP API container; the default listening port is 8000):
+The affected blocks' `positions` degrade to `[{"type": "paraid", "range": null}]`. This is only a notice and **does not affect parsing success**; if you need precise paragraph provenance, follow the hint and "Save As .docx" in Word 2013+ to regenerate the ids.
 
-```bash
-docker compose -f compose.yaml --profile api up -d
-```
+##### md / textpack Extraction Capabilities
 
-For image build details, GPU driver setup, model weight locations, etc., refer to the official README: <https://github.com/opendatalab/MinerU>.
+Beyond `docx`, the `native` engine also supports Markdown:
 
-**LightRAG-side env configuration**
+- `md`: splits by heading (ATX `#`), recognizes native pipe tables (with header), HTML `<table>` (with `<thead>`, preserving colspan/rowspan), block-level equations (a paragraph starting with `$$` and ending with `$$`; inline `$...$` is not recognized), and embedded images (base64 data URLs). Content inside fenced code blocks (```` ``` ````) is kept verbatim and not interpreted. As with `docx`, `md` still defaults to `legacy`; select native via `LIGHTRAG_PARSER=md:native` or a filename `[native]` hint.
+- `textpack`: a TextBundle-format zip package (markdown body plus a resource directory, conventionally `assets/`; the export format of Bear / Ulysses, etc.). Only `native` supports this extension, so it is routed to native automatically without a hint/rule.
+  - **Package structure requirements** (the body is located by extension, not a fixed `text.markdown` name, so you can pack it with any zip tool):
+    - The body file may have any name, as long as its extension is `.md` or `.markdown`.
+    - If the package contains a `*.textbundle` subdirectory, **at most one is allowed** (more than one is an error), and the body is **looked up only inside that `.textbundle` subdirectory** (md files in the root are ignored).
+    - If the package contains **no** `*.textbundle` subdirectory, the body is **looked up only in the package root**.
+    - The lookup directory must contain **exactly one** `.md` / `.markdown` file: zero or more than one is an error.
+    - The directory holding the body is the "bundle root" (`bundle_root`) used for asset resolution.
+  - File-reference images embedded by relative path are resolved relative to the bundle root and **may live in any subdirectory** (not only `assets/`); directory traversal is forbidden (`..`, absolute paths, or references escaping the bundle root are skipped with a warning), and the resolved bytes must pass an image magic-byte check or they are skipped. Relative-path images in a standalone `.md` (not a textpack) are not resolved (skipped with a warning).
+- SVG images (base64 / textpack file / downloaded) are rasterized to PNG via cairosvg before being written to the sidecar; if cairosvg is unavailable or rendering fails, the image is skipped (with a warning).
+- External URL images (`![](http://...)`) are **downloaded and embedded by default** (`NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` defaults to `true`); a drawing is always emitted (the fetched asset on success, or an external-link fallback on failure). Downloading allows only globally-routable public IPs (both DNS-resolved IPs and every redirect target are checked, and the socket dials the validated IP directly to defeat DNS rebinding; any ambient `HTTP(S)_PROXY` is ignored); private / loopback / link-local / reserved / CGNAT (`100.64.0.0/10`) ranges are all rejected. To allow specific internal ranges, configure a CIDR allowlist via `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`. Set the flag to `false` to instead drop external images entirely (no drawing emitted, so a document whose only images are external links produces no `drawings.json`).
 
-Local mode (self-hosted mineru-api):
+##### Environment Variables
 
-```bash
-MINERU_API_MODE=local
-MINERU_LOCAL_ENDPOINT=http://localhost:8000
-```
+All of native's `NATIVE_*` environment variables and the `.native_raw/` cache directory **apply only to external-image downloading in the markdown / textpack engine**; **the docx path reads no `NATIVE_*` variable**. The two most common:
 
-Official mode (MinerU cloud API):
+- `LIGHTRAG_FORCE_REPARSE_NATIVE` (default `false`): discard the `.native_raw/` cache and re-download external images over the network.
+- `NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` (default `true`): the master switch for external-image downloading; set to `false` to drop all external images.
+
+The remaining download / size / SSRF variables (`NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT` / `NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED` / `NATIVE_MD_IMAGE_MAX_BYTES` / `NATIVE_MD_IMAGE_MAX_SVG_PIXELS` / `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`) — their meanings and defaults are listed in [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example) at the repository root.
+
+Downloaded external images are cached in `<file>.native_raw/` (beside `.parsed/`, analogous to `.mineru_raw`/`.docling_raw`), reused directly when re-parsing the same unchanged file instead of going back over the network; the cache is invalidated when the source content or the size / SVG-pixel / CIDR options above change. When the document is deleted (with "also delete file" checked in the delete dialog), this cache directory is removed together with `.parsed/`.
+
+#### Using the MinerU File Parsing Engine
+
+The LightRAG document processing pipeline supports MinerU as a document parser and offers two MinerU access modes:
+
+- `official` mode: uses MinerU's cloud API v4 service. You need to register an account at the [MinerU official website](https://mineru.net/) and create an API-KEY first. Then add the following configuration to LightRAG's `.env` file:
 
 ```bash
 MINERU_API_MODE=official
@@ -171,9 +255,116 @@ MINERU_API_TOKEN=<your_token>
 # MINERU_OFFICIAL_ENDPOINT=https://mineru.net   # Default value, usually no need to change
 ```
 
-For the remaining advanced switches (`MINERU_MODEL_VERSION`, `MINERU_LANGUAGE`, `MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`, `MINERU_PAGE_RANGES`, `MINERU_LOCAL_BACKEND` / `MINERU_LOCAL_PARSE_METHOD`, `MINERU_POLL_INTERVAL_SECONDS` / `MINERU_MAX_POLLS`, `MINERU_ENGINE_VERSION`, `LIGHTRAG_FORCE_REPARSE_MINERU`, etc.), refer to the MinerU section of the `env.example` template at the repository root. Note that `MINERU_PAGE_RANGES` has different semantics in the two modes: `official` supports a complete list (e.g., `1-3,5,7-9`), while `local` only supports a single page (`3`) or a simple range (`1-10`); it does not accept comma-separated lists.
+* `local` mode: uses a locally deployed MinerU service. See the deployment instructions below. After the local MinerU service is started, add the following configuration to LightRAG's `.env` file:
 
-#### Docling Configuration
+```bash
+MINERU_API_MODE=local
+MINERU_LOCAL_ENDPOINT=http://<your_mineru_local_server_ip>:8000
+```
+
+For the remaining detailed MinerU configuration, refer to the MinerU section of the environment variable example file [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example) at the repository root. The `official` and `local` modes each have different environment variable configurations; read the instructions in the example file carefully.
+
+#### **Local Deployment of the MinerU Service**
+
+Copy `Dockerfile` and `compose.yaml` from the official GitHub repository [opendatalab/MinerU](https://github.com/opendatalab/MinerU) to your local machine. Both files can be found in the repository's `docker` directory. For special GPUs from Chinese vendors, you need to choose the corresponding `Dockerfile`.
+
+After preparing the two files above, build the Docker image with the following command:
+
+```bash
+docker build --tag mineru:latest .
+```
+
+Once the image is built, start the API service with the following command (the `--profile api` parameter indicates starting only MinerU's API service; the service listens on port 8000 by default):
+
+```bash
+docker compose -f compose.yaml --profile api up -d
+```
+
+For image build details, GPU driver setup, model weight locations, etc., refer to the official README: <https://github.com/opendatalab/MinerU>.
+
+**Advanced configuration: enabling vLLM preload and title-level correction (optional)**
+
+On top of the basic deployment, it is recommended to additionally enable two MinerU **server-side** features for your local MinerU. Both modify MinerU container-side configuration (the in-container `mineru.json` and the official `compose.yaml`), and do not involve any LightRAG env variable; title-level correction additionally requires an available LLM API.
+
+- **vLLM startup preload**: loads the VLM model into GPU memory at container startup, avoiding the model-loading latency on the first parse request.
+- **Title-level correction (`title_aided`)**: MinerU uses an external LLM to correct the title hierarchy of the parsed output, improving the quality of the structured artifacts. This is especially helpful for the [P (paragraph semantic) chunking strategy](#25-file-processing-options), which depends on the title structure; the `P` chunking strategy splits by titles first, so the more accurate the title hierarchy, the better the chunking semantics.
+
+**Step 1: Export and modify `mineru-lightrag.json`**
+
+Copy `/root/mineru.json` from the official image to `mineru-lightrag.json` in the host's current directory (using the fixed container name `temp_mineru`, without running the container):
+
+```bash
+docker create --name temp_mineru mineru:latest
+docker cp temp_mineru:/root/mineru.json ./mineru-lightrag.json
+docker rm temp_mineru
+```
+
+Then modify `llm-aided-config.title_aided` in `mineru-lightrag.json`: fill in `api_key` and change `enable` to `true`:
+
+```json
+"llm-aided-config": {
+    "title_aided": {
+        "api_key": "your_api_key",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen3.5-plus",
+        "enable_thinking": false,
+        "enable": true
+    }
+}
+```
+
+> `api_key` / `base_url` / `model` should be replaced with an LLM service available to you (the example uses Alibaba Cloud DashScope's OpenAI-compatible endpoint).
+
+**Step 2: Modify the `api` profile service (`mineru-api`) in the official `compose.yaml`**
+
+Make three changes to the `mineru-api` service: add `MINERU_TOOLS_CONFIG_JSON` to `environment` (so MinerU reads the modified config instead of the image's built-in `mineru.json`), mount the host's `mineru-lightrag.json` into the container via `volumes`, and append `--enable-vlm-preload true` to `command` to enable vLLM preload. The complete `mineru-api` profile after modification is as follows (the three increments are marked with `# <-- added`):
+
+```yaml
+  mineru-api:
+    image: mineru:latest
+    container_name: mineru-api
+    restart: always
+    profiles: ["api"]
+    ports:
+      - 8000:8000
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_TOOLS_CONFIG_JSON: /root/mineru-lightrag.json   # <-- added
+    volumes:
+      - ./mineru-lightrag.json:/root/mineru-lightrag.json    # <-- added
+    entrypoint: mineru-api
+    command:
+      --host 0.0.0.0
+      --port 8000
+      --allow-public-http-client
+      --gpu-memory-utilization 0.45         #
+      --enable-vlm-preload true             # <-- added
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]  # For multiple GPUs: ["0", "1"]
+              capabilities: [gpu]
+```
+
+> In the example, adjust `gpu-memory-utilization` according to your actual GPU setup. The three items `environment` / `volumes` / `command` are the additions for this change; keep everything else as in the official file.
+
+**Step 3: Restart to take effect**
+
+After making the changes, restart the API service for them to take effect:
+
+```bash
+docker compose -f compose.yaml --profile api up -d
+```
+
+#### Using the Docling File Parsing Engine
 
 The `docling` content extraction engine requires an external [docling-serve](https://github.com/DS4SD/docling-serve) service (v1 async API). Minimal configuration:
 
@@ -459,7 +650,7 @@ File enqueue and extraction results are written into `full_docs`:
 | `canonical_basename` | The canonicalized basename with the processing hint stripped (e.g., `abc.docx`). Filename deduplication uses this field as the index key, ensuring `abc.docx` and `abc.[native-iet].docx` are treated as the same logical document. |
 | `source_path` | The original path provided at enqueue time (written only when it contains a directory separator or is an absolute path), used by the `native` / `mineru` / `docling` parsers to locate the actual file. |
 | `parse_format` | Content format: `pending_parse`, `raw`, `lightrag`. |
-| `content` | When `raw`, holds the extracted text; when `pending_parse`, it is an empty string; when `lightrag`, holds the **complete merged text** starting with `{{LRdoc}}` (concatenated body segments of all `type=="content"` lines in `.blocks.jsonl`). During chunking, `parse_native` strips the prefix and hands it to the chunking_func, going through exactly the same code path as `raw`. |
+| `content` | When `raw`, holds the extracted text; when `pending_parse`, it is an empty string; when `lightrag`, holds the **complete merged text** starting with `{{LRdoc}}` (concatenated body segments of all `type=="content"` lines in `.blocks.jsonl`). At the parse stage, the reuse handler (`ReuseParser`) strips the prefix and hands it to the chunking_func, going through exactly the same code path as `raw`. |
 | `content_hash` | MD5 of the content, used for cross-filename deduplication. For `parse_format=raw`, takes the hash of text after `sanitize_text_for_encoding`; for `parse_format=lightrag`, takes the hash of the `*.blocks.jsonl` file; for `parse_format=pending_parse`, not written, filled in after extraction completes. |
 | `lightrag_document_path` | When `parse_format=lightrag`, saves the path to the structured LightRAG Document; new records prefer to save the path relative to `INPUT_DIR`, e.g., `__parsed__/report.docx.parsed/report.blocks.jsonl`. Note that the subdirectories and the blocks filename in the path both use the canonicalized basename (without hint). |
 | `parse_engine` | The engine that actually completed extraction: `legacy`, `native`, `mineru`, `docling`. For files awaiting extraction, can also temporarily store the target engine. |
@@ -711,36 +902,38 @@ The lock does **not** cover the `request_pending` nudge (outside the lock; only 
 The locks around `pipeline_status` solve the correctness problem of "who can write"; this section's set of parameters solves the throughput problem of "how many workers run concurrently". The pipeline is divided into 3 stages, each with an independently tunable worker pool:
 
 ```
-          ┌─ q_native  ──► [native parser  × N1] ─┐
-PENDING ─►├─ q_mineru  ──► [mineru parser  × N2] ─┼─► q_analyze ─►[analyzer × N4] ─► q_process ─►[processor × N5]
-          └─ q_docling ──► [docling parser × N3] ─┘
+          ┌─ parse_queues["native"]  ─► [native pool  × N1] ─┐   ← legacy shares this pool
+PENDING ─►├─ parse_queues["mineru"]  ─► [mineru pool  × N2] ─┼─► q_analyze ─►[analyzer × N4] ─► q_process ─►[processor × N5]
+          ├─ parse_queues["docling"] ─► [docling pool × N3] ─┤
+          └─ parse_queues[<3rd-party group>] ─► [custom pool] ┘   ← created per ParserSpec.queue_group
 ```
 
-At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the three parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
+Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): the built-in native/mineru/docling each own a group, legacy shares the native pool (local, no network), and a third-party engine may declare its own group with a custom worker count (see `docs/ThirdPartyParser-zh.md`). At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
 
 | Environment variable | Default | Effect | Tuning advice |
 | --- | --- | --- | --- |
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: number of concurrent workers for native parsing (docx / pdf / txt and other pure local processing) | Pure CPU, low memory usage; can be raised to CPU core count |
-| `MAX_PARALLEL_PARSE_MINERU` | `1` | N2: number of concurrent workers for MinerU parsing | MinerU has significant GPU/CPU usage; **the default of serial is most stable**. With local deployment and ample VRAM, you can set 2–3; when going through MinerU's official cloud service, you can raise it appropriately (subject to cloud quotas). |
-| `MAX_PARALLEL_PARSE_DOCLING` | `1` | N3: number of concurrent workers for Docling parsing | Docling is similarly resource-sensitive; **the default of serial is most stable**. With local deployment and ample CPU/GPU, you can set 2–3. |
+| `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: number of concurrent workers for MinerU parsing | MinerU has significant GPU/CPU usage; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample VRAM, you can set 2–3; when going through MinerU's official cloud service, you can raise it appropriately (subject to cloud quotas). |
+| `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: number of concurrent workers for Docling parsing | Docling is similarly resource-sensitive; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample CPU/GPU, you can set 2–3. |
 | `MAX_PARALLEL_ANALYZE` | `5` | N4: number of concurrent workers for multimodal analysis (VLM image / table description) | Directly consumes the VLM quota. Recommended ≤ VLM service concurrency cap. |
-| `MAX_PARALLEL_INSERT` | `2` | N5: number of concurrent documents at the entity / relation extraction + ingest stage | Recommended `MAX_ASYNC / 3`, in the range 2–10. This stage triggers multiple LLM calls per document; setting it too high will hit LLM rate limits. This value also serves as the `asyncio.Semaphore` for an additional constraint (worker count and semaphore value are the same). |
-| `QUEUE_SIZE_DEFAULT` | `100` | Bounded queue capacity between the parse / analyze stages | Generally no need to tune. For very large batches (thousands or more), can be raised to avoid backpressure at the enqueue side; lower it when memory is tight. |
+| `MAX_PARALLEL_INSERT` | `3` | N5: number of concurrent documents at the entity / relation extraction + ingest stage | Recommended `MAX_ASYNC_LLM / 3`, in the range 2–10. This stage triggers multiple LLM calls per document; setting it too high will hit LLM rate limits. This value also serves as the `asyncio.Semaphore` for an additional constraint (worker count and semaphore value are the same). |
+| `QUEUE_SIZE_PARSE` | `20` | Bounded capacity of the parse-input queues (native/MinerU/Docling) | Generally no need to tune. Items here are lightweight doc_ids (the large parsed body is stripped before the analyze stage); this only bounds how many pending docs the pipeline pre-dispatches to parse workers, so tuning has little effect. |
+| `QUEUE_SIZE_ANALYZE` | `100` | Bounded capacity of the analyze queue (parse → analyze stage) | Generally no need to tune. For very large batches (thousands or more), can be raised to avoid backpressure at the enqueue side; lower it when memory is tight. |
 | `QUEUE_SIZE_INSERT` | `4` | Queue capacity between the analyze → process stage | The process stage is the slowest and most memory-hungry in the pipeline; the queue is deliberately small to provide backpressure to upstream and prevent memory bloat. |
 
 **Several key points:**
 
 1. **Parsing stage is isolated per engine**, so when mixing native/mineru/docling, you don't have to worry about a slow engine dragging another down.
-2. **mineru / docling default to serial (=1)**: in practice both have high resource usage, and concurrency benefits are unstable (prone to OOM / VRAM contention / failure retry). With multi-GPU or a dedicated parser server, you can raise them manually.
+2. **mineru / docling default to 2**: both have high resource usage, so the default keeps parallelism modest. Lower to 1 when resources are tight (OOM / VRAM contention / failure retry); with multi-GPU or a dedicated parser server, you can raise them manually.
 3. **`MAX_PARALLEL_INSERT` doubles as worker pool size and semaphore cap**: the pipeline creates a `Semaphore(max_parallel_insert)`, and each process worker also takes the semaphore before extraction and ingest. So even if you manually raise the worker count, the actual concurrency cap is still bounded by this value — just tune it directly.
 4. **Queue size and backpressure**: the small default `QUEUE_SIZE_INSERT=4` is intentional — the process stage is slow and memory-hungry; when the queue fills, analyze blocks, and backpressure reaches the parse stage, preventing thousands of parsing results from piling up in memory at once.
 5. **How changes take effect**: all parameters are passed in via `.env` (or environment variables), read once at `LightRAG` construction; restart the service after changing them.
 
 **Typical tuning scenarios:**
 
-- Large batch of PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=1`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=2` (defaults are fine).
+- Large batch of PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=2`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=3` (defaults are fine; lower MINERU to 1 if VRAM is tight).
 - Large batch of PDFs + MinerU cloud service: `MAX_PARALLEL_PARSE_MINERU=3~5` (depending on cloud quota), others at defaults.
-- Pure docx / txt (only native): `MAX_PARALLEL_PARSE_NATIVE=10`; `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC/3`.
+- Pure docx / txt (only native): `MAX_PARALLEL_PARSE_NATIVE=10`; `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC_LLM/3`.
 - Heavy LLM rate-limiting: first lower `MAX_PARALLEL_INSERT` (the process stage makes multiple LLM calls per document), then lower `MAX_PARALLEL_ANALYZE` (VLM is a separate quota).
 
 ## 7. Pipeline Resume Rules at Startup
@@ -761,7 +954,7 @@ Read `full_docs[doc_id]`:
 
 ### 7.2 Branch A: Not Extracted
 
-Go through the full pipeline (`parse_native` / `parse_mineru` / `parse_docling` → `analyze_multimodal` → chunking → entity extraction), with each stage's behavior determined by `full_docs.process_options`. This is the normal flow of a "first-time enqueue".
+Go through the full pipeline (registry-dispatched parsing `get_parser(engine).parse(...)` → `analyze_multimodal` → chunking → entity extraction), with each stage's behavior determined by `full_docs.process_options`. This is the normal flow of a "first-time enqueue".
 
 ### 7.3 Branch B: Already Extracted
 

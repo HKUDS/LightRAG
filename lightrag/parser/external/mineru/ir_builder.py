@@ -20,10 +20,13 @@ Conversion rules (informed by spec §3-§六):
   ``Preface/Uncategorized`` block at level 0.
 - ``list`` items joined with ``\n``; ``code`` body taken from ``code_body``
   if present.
-- ``table`` → IRTable + ``{{TBL:k}}`` placeholder. ``table_body`` (HTML) or
-  the ``rows`` field (2D array) become ``html`` / ``rows`` on IRTable.
-  ``num_rows`` / ``num_cols`` are taken from MinerU if present, otherwise
-  inferred. ``header`` populates ``table_header`` (per spec §5).
+- ``table`` → IRTable + ``{{TBL:k}}`` placeholder. MinerU HTML tables are
+  preserved verbatim on ``IRTable.html`` so merged cells (``rowspan`` /
+  ``colspan``) survive in ``tables.json``; the block placeholder receives
+  only the table's inner HTML to avoid nested ``<table>`` wrappers. ``rows``
+  is reserved for explicit 2D-array / non-HTML compatibility inputs. A real
+  HTML ``<thead>`` populates ``table_header`` (per spec §5); otherwise the
+  adapter does not guess a header row.
 - ``image`` / ``picture`` / ``drawing`` → IRDrawing + ``{{IMG:k}}`` placeholder.
   Asset bytes are referenced via ``img_path`` relative to the raw dir.
 - ``equation`` → IREquation. ``is_block`` is decided by whether
@@ -48,6 +51,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from lightrag.parser._html_table import (
+    HTMLTableInfo,
+    extract_html_table_info,
+    extract_thead_html,
+    html_table_inner_body,
+    looks_like_html_table_payload,
+    unwrap_html_table,
+)
+from lightrag.parser._markdown import (
+    render_heading_line,
+    strip_heading_markdown_prefix,
+)
 from lightrag.sidecar.ir import (
     AssetSpec,
     IRBlock,
@@ -175,11 +190,6 @@ class MinerUIRBuilder:
         cb_heading = PREFACE_HEADING
         cb_level = 0
         cb_parents: list[str] = []
-        # ``cb_has_body`` flips True the moment we accumulate any non-heading
-        # payload into the current block. While it stays False, an adjacent
-        # deeper heading is folded into this block as a body line (aligning
-        # with the native docx parser's behaviour for back-to-back headings).
-        cb_has_body = False
 
         def _record_position(item: dict) -> None:
             """Route an item's positional info into the right channel.
@@ -200,7 +210,7 @@ class MinerUIRBuilder:
         def _flush_block() -> None:
             """Emit the in-flight block if it carries any content."""
             nonlocal cb_lines, cb_tables, cb_drawings, cb_equations
-            nonlocal cb_page_set, cb_bbox_positions, cb_has_body
+            nonlocal cb_page_set, cb_bbox_positions
             has_payload = bool(cb_lines or cb_tables or cb_drawings or cb_equations)
             if not has_payload:
                 return
@@ -210,7 +220,6 @@ class MinerUIRBuilder:
                 cb_lines = []
                 cb_page_set = set()
                 cb_bbox_positions = []
-                cb_has_body = False
                 return
             positions = [
                 IRPosition(type="bbox", anchor=p)
@@ -234,17 +243,19 @@ class MinerUIRBuilder:
             cb_equations = []
             cb_page_set = set()
             cb_bbox_positions = []
-            cb_has_body = False
 
-        def _open_block(heading: str, level: int, parents: list[str]) -> None:
+        def _open_block(
+            heading: str, level: int, parents: list[str], raw_heading: str | None = None
+        ) -> None:
             nonlocal cb_heading, cb_level, cb_parents
             cb_heading = heading
             cb_level = level
             cb_parents = parents
             # Render the heading line into the block body so the merged
-            # text reads like markdown (``# Foo`` / ``## Bar`` / …).
-            md_prefix = "#" * max(level, 1)
-            cb_lines.append(f"{md_prefix} {heading}")
+            # text reads like markdown (``# Foo`` / ``## Bar`` / …). Levels
+            # are capped at 6 ``#`` and headings already carrying a markdown
+            # prefix are left untouched (see ``render_heading_line``).
+            cb_lines.append(render_heading_line(level, raw_heading or heading))
 
         def _append_text(text: str) -> bool:
             """Append ``text`` to the current block body and return whether
@@ -252,55 +263,46 @@ class MinerUIRBuilder:
             decide whether to also record the item's source position — an
             empty text item must NOT leak its ``page_idx`` to the block.
             """
-            nonlocal cb_has_body
             if not text:
                 return False
             cb_lines.append(text)
-            cb_has_body = True
             return True
-
-        def _merge_heading_as_body(heading: str, level: int) -> None:
-            """Fold an adjacent deeper heading into the current block.
-
-            The line keeps its markdown ``#`` prefix so the rendered block
-            still reads as ``# Section\n## Subsection``. Does NOT flip
-            ``cb_has_body`` — successive headings can keep folding until a
-            real body item lands.
-            """
-            md_prefix = "#" * max(level, 1)
-            cb_lines.append(f"{md_prefix} {heading}")
 
         for item_index, item in enumerate(content_list):
             if not isinstance(item, dict):
                 continue
             item_type = str(item.get("type") or item.get("label") or "").lower()
 
+            # Page numbers are layout noise, not document body. MinerU emits a
+            # ``page_number`` item per page; skip it entirely so it never enters
+            # the block content nor leaks its page_idx into block positions.
+            # (Empty-text page numbers were already dropped by the fallback's
+            # _append_text guard; this also drops page numbers that carry real
+            # text like "12" / "iii".)
+            if item_type == "page_number":
+                continue
+
             heading_text, heading_level = _detect_heading(item, item_type)
             if heading_text:
+                clean_heading = strip_heading_markdown_prefix(heading_text)
                 # Heading hierarchy is updated unconditionally so deeper
                 # parents resolve correctly once the next real body item
                 # opens a fresh block.
                 heading_stack = heading_stack[: max(heading_level - 1, 0)]
                 parents = [h for h in heading_stack if h]
-                heading_stack.append(heading_text)
+                heading_stack.append(clean_heading)
 
-                # Adjacency merge: previous block is a real heading with no
-                # body yet AND the new heading is strictly deeper — append
-                # this heading as body to the existing block instead of
-                # flushing. (Preface, level=0, is never merged into.)
-                if cb_level > 0 and not cb_has_body and heading_level > cb_level:
-                    _merge_heading_as_body(heading_text, heading_level)
-                    _record_position(item)
-                    if not doc_title and heading_level == 1:
-                        doc_title = heading_text
-                    continue
-
+                # Every recognized heading starts its own block: flush the
+                # in-flight block (whether it had body or was a bare heading)
+                # and open a fresh one. A heading with no following body thus
+                # becomes a standalone block whose content is just the heading
+                # line, matching the native docx parser's behaviour.
                 _flush_block()
-                _open_block(heading_text, heading_level, parents)
+                _open_block(clean_heading, heading_level, parents, heading_text)
                 _record_position(item)
 
                 if not doc_title and heading_level == 1:
-                    doc_title = heading_text
+                    doc_title = clean_heading
                 continue
 
             if item_type == "text":
@@ -348,7 +350,6 @@ class MinerUIRBuilder:
                     )
                 )
                 cb_lines.append(f"{{{{{token}:{placeholder}}}}}")
-                cb_has_body = True
                 _record_position(item)
                 continue
 
@@ -364,7 +365,6 @@ class MinerUIRBuilder:
                 table.self_ref = _content_list_self_ref(item_index)
                 cb_tables.append(table)
                 cb_lines.append(f"{{{{TBL:{placeholder}}}}}")
-                cb_has_body = True
                 _record_position(item)
                 continue
 
@@ -377,7 +377,6 @@ class MinerUIRBuilder:
                     assets.append(asset)
                 cb_drawings.append(drawing)
                 cb_lines.append(f"{{{{IMG:{placeholder}}}}}")
-                cb_has_body = True
                 _record_position(item)
                 continue
 
@@ -415,6 +414,7 @@ class MinerUIRBuilder:
     def _build_ir_table(self, item: dict) -> IRTable | None:
         rows: list[list[str]] | None = None
         html: str | None = None
+        body_override: str | None = None
         body_field = item.get("rows")
         body = body_field if body_field is not None else item.get("table_body")
 
@@ -422,14 +422,27 @@ class MinerUIRBuilder:
             rows = _normalize_grid(body)
         elif isinstance(body, str):
             stripped = body.strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
+            if looks_like_html_table_payload(stripped):
+                # MinerU's table model sometimes wraps output in a
+                # ``<html><body>…</body></html>`` document; unwrap to the bare
+                # ``<table>…</table>`` so the sidecar ``content`` stays a single
+                # clean table and the writer does not nest ``<table>`` wrappers.
+                html = unwrap_html_table(stripped) or None
+                if html:
+                    # ``or None`` so a degenerate ``<table></table>`` (empty
+                    # inner body) falls back to rendering ``table.html`` in the
+                    # writer instead of emitting an empty ``body_override``.
+                    body_override = html_table_inner_body(html) or None
+            elif stripped.startswith("[") and stripped.endswith("]"):
                 try:
                     decoded = json.loads(stripped)
                     if isinstance(decoded, list):
                         rows = _normalize_grid(decoded)
                 except json.JSONDecodeError:
                     pass
-            if rows is None:
+            if rows is None and html is None:
+                # Non-HTML, non-JSON string (or JSON that failed to parse):
+                # fall back to the raw payload as the html body.
                 html = stripped or None
         elif isinstance(body, dict):
             grid = body.get("grid") or body.get("rows")
@@ -455,15 +468,37 @@ class MinerUIRBuilder:
         num_rows = int(item.get("num_rows") or (len(rows) if rows else 0) or 0)
         num_cols_default = max((len(r) for r in rows), default=0) if rows else 0
         num_cols = int(item.get("num_cols") or num_cols_default or 0)
+        html_table_info: HTMLTableInfo | None = None
+        if html and (num_rows <= 0 or num_cols <= 0):
+            html_table_info = extract_html_table_info(html)
+            if num_rows <= 0:
+                num_rows = html_table_info.num_rows
+            if num_cols <= 0:
+                num_cols = html_table_info.num_cols
 
         captions = item.get("table_caption")
         caption = str(item.get("caption") or "")
         if not caption and isinstance(captions, list) and captions:
             caption = str(captions[0])
 
+        # The header representation follows the table's format so merged-cell
+        # semantics survive: HTML tables keep the raw ``<thead>…</thead>``
+        # (preserving rowspan/colspan); grid/JSON tables keep a 2-D grid.
         table_header_raw = item.get("header")
-        table_header: list[list[str]] | None = None
-        if isinstance(table_header_raw, list) and table_header_raw:
+        table_header: list[list[str]] | str | None = None
+        if html:
+            table_header = extract_thead_html(html)
+            # Fallback: an HTML table whose markup carries no ``<thead>`` but for
+            # which MinerU supplied a separate ``header`` grid keeps that grid —
+            # the writer renders it to a (span-less) ``<thead>`` rather than
+            # silently dropping the recovered header.
+            if (
+                table_header is None
+                and isinstance(table_header_raw, list)
+                and table_header_raw
+            ):
+                table_header = _normalize_grid(table_header_raw)
+        elif isinstance(table_header_raw, list) and table_header_raw:
             table_header = _normalize_grid(table_header_raw)
 
         return IRTable(
@@ -475,6 +510,7 @@ class MinerUIRBuilder:
             caption=caption,
             footnotes=_as_str_list(item.get("table_footnote") or item.get("footnotes")),
             table_header=table_header,
+            body_override=body_override,
         )
 
     def _build_ir_drawing(

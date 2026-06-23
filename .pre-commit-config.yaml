@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
         exclude: ^lightrag/api/webui/
@@ -11,7 +11,7 @@ repos:
 
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.4
+    rev: v0.15.17
     hooks:
       - id: ruff-format
         exclude: ^lightrag/api/webui/
@@ -21,7 +21,7 @@ repos:
 
 
   - repo: https://github.com/mgedmin/check-manifest
-    rev: "0.49"
+    rev: "0.51"
     hooks:
       - id: check-manifest
         stages: [manual]

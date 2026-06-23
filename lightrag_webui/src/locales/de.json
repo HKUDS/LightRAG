@@ -99,7 +99,7 @@
         "error": "Einige Dateien konnten nicht hochgeladen werden"
       },
       "generalError": "Upload fehlgeschlagen\n{{error}}",
-      "fileTypes": "Unterstützte Typen: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Unterstützte Typen: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Es kann nicht mehr als 1 Datei gleichzeitig hochgeladen werden",
         "maxFilesLimit": "Es können nicht mehr als {{count}} Dateien hochgeladen werden",
@@ -139,9 +139,9 @@
       "filters": {
         "all": "Alle",
         "completed": "Abgeschlossen",
-        "analyzing": "Wird analysiert",
-        "processing": "Verarbeitung",
-        "pending": "Ausstehend",
+        "parse": "Extraktion",
+        "analyze": "Analyse",
+        "process": "Verarbeitung",
         "failed": "Fehlgeschlagen"
       },
       "status": {
@@ -233,6 +233,9 @@
       "disease": "Krankheit",
       "drug": "Medikament",
       "food": "Lebensmittel",
+      "table": "Tabelle",
+      "drawing": "Zeichnung",
+      "equation": "Gleichung",
       "other": "Sonstiges"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "Starten Sie eine Abfrage, indem Sie Ihre Frage unten eingeben",
       "clear": "Löschen",
       "send": "Senden",
+      "stop": "Stopp",
+      "userTerminated": "Vom Benutzer abgebrochen — die Antwort ist möglicherweise unvollständig",
       "placeholder": "Geben Sie Ihre Abfrage ein (Präfix unterstützt: /<Abfragemodus>)",
       "error": "Fehler: Antwort konnte nicht abgerufen werden",
       "queryModeError": "Nur die folgenden Abfragemodi werden unterstützt: {{modes}}",
@@ -420,6 +425,7 @@
       "parametersDescription": "Konfigurieren Sie Ihre Abfrageparameter",
       "queryMode": "Abfragemodus",
       "queryModeTooltip": "Abfragestrategie auswählen:\n• Naive: Traditionelle Text-Chunk-Vektorabfrage\n• Local: Fokus auf Entitätsabfrage\n• Global: Fokus auf Beziehungsabfrage\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Abfrage überspringen, Konversationsverlauf und aktuelle Frage an LLM senden",
+      "queryModeWarning": "Kann die Abrufqualität verringern",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

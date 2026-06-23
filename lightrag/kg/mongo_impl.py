@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import time
 from dataclasses import dataclass, field
 import numpy as np
@@ -16,9 +17,15 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..utils import logger, compute_mdhash_id, _cooperative_yield
+from ..utils import (
+    logger,
+    compute_mdhash_id,
+    _cooperative_yield,
+    merge_source_ids,
+    validate_workspace,
+)
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP
+from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
 from .._version import __version__
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
@@ -28,21 +35,249 @@ if not pm.is_installed("pymongo"):
     pm.install("pymongo")
 
 from pymongo import AsyncMongoClient  # type: ignore
-from pymongo import UpdateOne, DeleteOne  # type: ignore
+from pymongo import UpdateOne  # type: ignore
 from pymongo.asynchronous.database import AsyncDatabase  # type: ignore
 from pymongo.asynchronous.collection import AsyncCollection  # type: ignore
 from pymongo.operations import SearchIndexModel  # type: ignore
 from pymongo.driver_info import DriverInfo  # type: ignore
-from pymongo.errors import PyMongoError  # type: ignore
+from pymongo.errors import (  # type: ignore
+    PyMongoError,
+    DuplicateKeyError,
+    BulkWriteError,
+)
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 GRAPH_BFS_MODE = os.getenv("MONGO_GRAPH_BFS_MODE", "bidirectional")
 
+# Flush-time batching limits shared by every MongoDB upsert path
+# (MongoVectorDBStorage, MongoKVStorage, MongoGraphStorage).
+# The payload-byte budget is the primary limiter; the record-count caps are a
+# secondary guard that only binds when individual records are small.
+# Upsert and delete have separate count caps on purpose: upsert records each
+# carry a full embedding vector and are far heavier than delete _ids, so the
+# upsert batch count is kept much smaller than the delete one.
+# MongoDB caps a single BSON document at 16MB and a single bulk command message
+# at 48MB; a 16MB JSON estimate (which overestimates the real BSON size) keeps
+# every bulk_write comfortably below the wire limit and bounds peak memory.
+DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16MB
+DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH = 128
+DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+# MongoDB duplicate-key error code, raised when an upsert insert races the
+# unique edge-endpoint index (another writer inserted the same edge first).
+_DUPLICATE_KEY_CODE = 11000
+
+# Emit a migration progress line every this many deduped docs, so operators
+# watching a large migration see liveness (mirrors the OpenSearch canonical-id
+# migration's progress cadence).
+_EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
+
+
+def _canonical_edge_endpoints(
+    source_node_id: str, target_node_id: str
+) -> tuple[str, str]:
+    """Direction-independent ``(edge_lo, edge_hi)`` endpoints for an undirected edge.
+
+    The sorted pair maps ``(A,B)`` and ``(B,A)`` to the same two field values,
+    so a *compound* unique index on ``(edge_lo, edge_hi)`` lets MongoDB reject
+    the second of two racing inserts (the classic ``$or``-upsert duplicate gap)
+    regardless of direction. Storing the endpoints as two separate fields — not
+    a single delimiter-joined string — avoids any collision between distinct
+    pairs whose ids happen to contain the delimiter (e.g. custom-KG ids), and
+    needs no input sanitisation. Reads keep using the bidirectional ``$or``.
+    """
+    return tuple(sorted((source_node_id, target_node_id)))  # type: ignore[return-value]
+
+
+def _edge_source_id_list(doc: dict[str, Any]) -> list[str]:
+    """Return an edge doc's source ids, from the ``source_ids`` array or by
+    splitting the ``GRAPH_FIELD_SEP``-joined ``source_id`` string."""
+    sids = doc.get("source_ids")
+    if not sids and doc.get("source_id"):
+        sids = doc["source_id"].split(GRAPH_FIELD_SEP)
+    return list(sids or [])
+
+
+def _coerce_weight(weight: Any) -> float | None:
+    """Coerce a (possibly string) edge weight to float, or None if non-numeric."""
+    if weight is None:
+        return None
+    try:
+        return float(weight)
+    except (TypeError, ValueError):
+        return None
+
+
+def _estimate_doc_bytes(doc: Any) -> int:
+    """Estimate a document's serialized byte size via compact JSON.
+
+    JSON overestimates the real BSON size MongoDB writes (a JSON float string is
+    far longer than the 8 bytes a BSON double encodes), so callers stay
+    conservatively below server limits and never underestimate.
+
+    This is a splitting *heuristic*, not the exact wire size: upsert callers pass
+    only the dominant payload field (the ``$set`` body / ``update_doc``), not the
+    full ``UpdateOne`` op (filter, ``$setOnInsert``, ``$or`` wrapper). Those extras
+    are tiny next to an embedding/document body, and the 16MB estimate budget sits
+    far under MongoDB's 48MB bulk-command limit, so the under-count is immaterial;
+    the server stays the final arbiter.
+    """
+    return len(
+        json.dumps(doc, ensure_ascii=False, separators=(",", ":"), default=str).encode(
+            "utf-8"
+        )
+    )
+
+
+def _chunk_by_budget(
+    items: list[Any],
+    size_of,
+    max_payload_bytes: int,
+    max_records_per_batch: int,
+) -> list[tuple[list[Any], int]]:
+    """Split items into batches by estimated payload size (primary) and count.
+
+    The byte budget is the primary limiter: items accumulate until adding the
+    next one would exceed ``max_payload_bytes``, then a new batch starts.
+    ``size_of(item)`` returns an item's estimated serialized byte size. A single
+    item larger than the byte budget is emitted as its own batch rather than
+    raising; the server stays the final arbiter. A non-positive limit disables
+    that dimension. Returns ``(batch, summed_estimated_bytes)`` tuples (the
+    estimate is used for logging).
+    """
+    if not items:
+        return []
+
+    payload_limit = max_payload_bytes if max_payload_bytes > 0 else float("inf")
+    records_limit = max_records_per_batch if max_records_per_batch > 0 else float("inf")
+
+    batches: list[tuple[list[Any], int]] = []
+    current: list[Any] = []
+    # JSON array overhead ("[]")
+    current_bytes = 2
+
+    for item in items:
+        item_bytes = size_of(item)
+        # If current batch not empty, a comma is needed before next element.
+        separator_overhead = 1 if current else 0
+        next_bytes = current_bytes + separator_overhead + item_bytes
+
+        if current and (len(current) >= records_limit or next_bytes > payload_limit):
+            batches.append((current, current_bytes))
+            current = []
+            current_bytes = 2
+            next_bytes = current_bytes + item_bytes
+
+        current.append(item)
+        current_bytes = next_bytes
+
+    if current:
+        batches.append((current, current_bytes))
+
+    return batches
+
+
+def _resolve_upsert_batch_limits() -> tuple[int, int]:
+    """Resolve flush-time upsert batching limits from env, with module defaults.
+
+    Shared by every MongoDB upsert path so the byte/record caps that bound a
+    single ``bulk_write`` are consistent across all of them. A non-positive
+    value disables that splitting dimension.
+    """
+    max_payload_bytes = int(
+        os.getenv(
+            "MONGO_UPSERT_MAX_PAYLOAD_BYTES",
+            str(DEFAULT_MONGO_UPSERT_MAX_PAYLOAD_BYTES),
+        )
+    )
+    max_records_per_batch = int(
+        os.getenv(
+            "MONGO_UPSERT_MAX_RECORDS_PER_BATCH",
+            str(DEFAULT_MONGO_UPSERT_MAX_RECORDS_PER_BATCH),
+        )
+    )
+    if max_payload_bytes <= 0:
+        logger.warning(
+            f"MONGO_UPSERT_MAX_PAYLOAD_BYTES={max_payload_bytes} is non-positive, disable payload-size splitting"
+        )
+    if max_records_per_batch <= 0:
+        logger.warning(
+            f"MONGO_UPSERT_MAX_RECORDS_PER_BATCH={max_records_per_batch} is non-positive, disable upsert record-count splitting"
+        )
+    return max_payload_bytes, max_records_per_batch
+
+
+def _resolve_delete_batch_limit() -> int:
+    """Resolve the flush-time delete record-count cap from env, with module default.
+
+    Shared by every MongoDB delete path that fans a list of match clauses into a
+    single server message (``delete_many`` with ``$in``/``$or``), so the cap that
+    keeps one delete under the bulk message / 16MB query limit is consistent. A
+    non-positive value disables record-count splitting.
+    """
+    max_records_per_batch = int(
+        os.getenv(
+            "MONGO_DELETE_MAX_RECORDS_PER_BATCH",
+            str(DEFAULT_MONGO_DELETE_MAX_RECORDS_PER_BATCH),
+        )
+    )
+    if max_records_per_batch <= 0:
+        logger.warning(
+            f"MONGO_DELETE_MAX_RECORDS_PER_BATCH={max_records_per_batch} is non-positive, disable delete record-count splitting"
+        )
+    return max_records_per_batch
+
+
+async def _run_batched_bulk_write(
+    collection,
+    ops: list[tuple[Any, int, str]],
+    *,
+    max_payload_bytes: int,
+    max_records_per_batch: int,
+    ordered: bool,
+    log_prefix: str,
+    what: str,
+) -> None:
+    """Execute UpdateOne ops as payload-size/record-count bounded bulk_write batches.
+
+    ``ops`` is a list of ``(operation, estimated_bytes, id_for_log)`` triples.
+    Splitting keeps each bulk command below MongoDB's 48MB message ceiling and
+    bounds the in-memory op list. Fail-fast: a batch failure raises and no
+    further batches run, so callers must treat the whole write as retryable
+    (UpdateOne(..., upsert=True) is idempotent).
+    """
+    if not ops:
+        return
+
+    batches = _chunk_by_budget(
+        ops, lambda triple: triple[1], max_payload_bytes, max_records_per_batch
+    )
+    if len(batches) > 1:
+        logger.info(
+            f"{log_prefix} {what} split into {len(batches)} batches "
+            f"for {len(ops)} records"
+        )
+    for batch_index, (batch, estimated_bytes) in enumerate(batches, 1):
+        if (
+            len(batch) == 1
+            and max_payload_bytes > 0
+            and estimated_bytes > max_payload_bytes
+        ):
+            logger.warning(
+                f"{log_prefix} {what}: single record id={batch[0][2]} "
+                f"estimated {estimated_bytes} bytes exceeds {max_payload_bytes}"
+            )
+        logger.debug(
+            f"{log_prefix} {what} batch {batch_index}/{len(batches)}: "
+            f"records={len(batch)}, estimated_payload_bytes={estimated_bytes}"
+        )
+        await collection.bulk_write([triple[0] for triple in batch], ordered=ordered)
+
 
 class ClientManager:
-    _instances = {"db": None, "ref_count": 0}
+    _instances: dict = {"client": None, "db": None, "ref_count": 0}
     _lock = asyncio.Lock()
 
     @classmethod
@@ -66,6 +301,7 @@ class ClientManager:
                     driver=DriverInfo(name="LightRAG", version=__version__),
                 )
                 db = client.get_database(database_name)
+                cls._instances["client"] = client
                 cls._instances["db"] = db
                 cls._instances["ref_count"] = 0
             cls._instances["ref_count"] += 1
@@ -78,6 +314,10 @@ class ClientManager:
                 if db is cls._instances["db"]:
                     cls._instances["ref_count"] -= 1
                     if cls._instances["ref_count"] == 0:
+                        client = cls._instances.get("client")
+                        if client is not None:
+                            await client.close()
+                        cls._instances["client"] = None
                         cls._instances["db"] = None
 
 
@@ -97,6 +337,7 @@ class MongoKVStorage(BaseKVStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
@@ -131,6 +372,10 @@ class MongoKVStorage(BaseKVStorage):
             )
 
         self._collection_name = self.final_namespace
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        ) = _resolve_upsert_batch_limits()
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -184,10 +429,10 @@ class MongoKVStorage(BaseKVStorage):
         if not data:
             return
 
-        # Unified handling for all namespaces with flattened keys
-        # Use bulk_write for better performance
-
-        operations = []
+        # Unified handling for all namespaces with flattened keys. KV docs
+        # (full_docs, text_chunks, llm_response_cache) can be large, so the
+        # upsert is split into payload-bounded bulk_write batches.
+        operations: list[tuple[Any, int, str]] = []
         current_time = int(time.time())  # Get current Unix timestamp
 
         for i, (k, v) in enumerate(data.items(), start=1):
@@ -205,21 +450,36 @@ class MongoKVStorage(BaseKVStorage):
             v_for_set.pop("create_time", None)
 
             operations.append(
-                UpdateOne(
-                    {"_id": k},
-                    {
-                        "$set": v_for_set,  # Update all fields except create_time
-                        "$setOnInsert": {
-                            "create_time": current_time
-                        },  # Set create_time only on insert
-                    },
-                    upsert=True,
+                (
+                    UpdateOne(
+                        {"_id": k},
+                        {
+                            "$set": v_for_set,  # Update all fields except create_time
+                            "$setOnInsert": {
+                                "create_time": current_time
+                            },  # Set create_time only on insert
+                        },
+                        upsert=True,
+                    ),
+                    _estimate_doc_bytes(v_for_set),
+                    k,
                 )
             )
             await _cooperative_yield(i)
 
-        if operations:
-            await self._data.bulk_write(operations)
+        # ordered=False (intentional): the old single bulk_write used pymongo's
+        # default ordered=True, but every op targets a distinct flattened _id, so
+        # the writes are order-independent. ordered=False lets the server apply
+        # them in parallel and is the right choice for idempotent upserts.
+        await _run_batched_bulk_write(
+            self._data,
+            operations,
+            max_payload_bytes=self._max_upsert_payload_bytes,
+            max_records_per_batch=self._max_upsert_records_per_batch,
+            ordered=False,
+            log_prefix=f"[{self.workspace}] {self.namespace} upsert:",
+            what="upsert",
+        )
 
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
@@ -326,6 +586,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
@@ -519,6 +780,9 @@ class MongoDocStatusStorage(DocStatusStorage):
             return {"status": "error", "message": str(e)}
 
     async def delete(self, ids: list[str]) -> None:
+        # Convert to list if it's a set (MongoDB BSON cannot encode sets)
+        if isinstance(ids, set):
+            ids = list(ids)
         await self._data.delete_many({"_id": {"$in": ids}})
 
     async def create_and_migrate_indexes_if_not_exists(self):
@@ -836,6 +1100,7 @@ class MongoGraphStorage(BaseGraphStorage):
             global_config=global_config,
             embedding_func=embedding_func,
         )
+        validate_workspace(self.workspace)
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
@@ -869,6 +1134,11 @@ class MongoGraphStorage(BaseGraphStorage):
 
         self._collection_name = self.final_namespace
         self._edge_collection_name = f"{self._collection_name}_edges"
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        ) = _resolve_upsert_batch_limits()
+        self._max_delete_records_per_batch = _resolve_delete_batch_limit()
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -885,6 +1155,11 @@ class MongoGraphStorage(BaseGraphStorage):
             # Create Atlas Search index for better search performance if possible
             await self.create_search_index_if_not_exists()
 
+            # Fail-fast: migrate legacy edges to canonical endpoint fields and
+            # build the unique index before serving (upsert relies on it). Raises
+            # on failure so startup aborts rather than serving a half-migrated graph.
+            await self.create_edge_indexes_and_migrate_if_not_exists()
+
             logger.debug(
                 f"[{self.workspace}] Use MongoDB as KG {self._collection_name}"
             )
@@ -895,6 +1170,252 @@ class MongoGraphStorage(BaseGraphStorage):
             self.db = None
             self.collection = None
             self.edge_collection = None
+
+    async def create_edge_indexes_and_migrate_if_not_exists(self) -> None:
+        """Create the compound unique edge-endpoint index, migrating legacy edges first.
+
+        Fail-fast one-time migration (mirrors the OpenSearch canonical-id work):
+
+          1. dedupe legacy reciprocal duplicate docs, **merging the full relation
+             payload** into the survivor (provenance unioned, keywords
+             set-unioned, descriptions joined, weight summed — like
+             ``_merge_edges_then_upsert``) so no relation evidence is lost;
+          2. backfill the canonical ``edge_lo`` / ``edge_hi`` endpoints on every
+             remaining doc;
+          3. build the partial **compound** unique index on ``(edge_lo, edge_hi)``.
+
+        The endpoints are two separate fields (not a delimiter-joined string), so
+        distinct pairs never collide even if an id contains the would-be
+        delimiter — no input sanitisation required.
+
+        The index doubles as the completion flag: if it already exists we skip.
+        Anything failing raises, so ``initialize``/startup aborts rather than
+        serving a half-migrated collection (the upsert filter relies on every doc
+        having ``edge_lo``/``edge_hi``). Runs inside ``get_data_init_lock``, so
+        only the first worker of a deployment migrates; the rest skip on the index.
+
+        Assumes no concurrent *old-version* writer adds endpoint-less docs after
+        this completes (true for stop-the-world / single-deployment restarts). A
+        true rolling deploy with mixed code versions writing one collection could
+        leave a straggler duplicate; the remedy is to drop the
+        ``edge_endpoints_unique`` index and let the next startup re-migrate.
+        """
+        workspace_prefix = f"{self.workspace}_" if self.workspace != "" else ""
+        index_name = f"{workspace_prefix}edge_endpoints_unique"
+
+        indexes_cursor = await self.edge_collection.list_indexes()
+        existing_indexes = await indexes_cursor.to_list(length=None)
+        if any(idx.get("name") == index_name for idx in existing_indexes):
+            logger.info(
+                f"[{self.workspace}] Edge collection {self._edge_collection_name} "
+                f"already on canonical edge endpoints; skipping migration"
+            )
+            return
+
+        # Best-effort total for an X/total denominator (estimated_document_count
+        # is O(1) metadata); migration still works if it is unavailable.
+        try:
+            total = await self.edge_collection.estimated_document_count()
+        except PyMongoError:
+            total = None
+        logger.info(
+            f"[{self.workspace}] Starting canonical edge migration for "
+            f"{self._edge_collection_name}"
+            + (f" (~{total} edges to scan)" if total is not None else "")
+        )
+
+        removed = await self._dedupe_legacy_edges()
+        backfilled = await self._backfill_edge_endpoints()
+        # The unique index is the completion flag — only created on full success.
+        # unique build raises if any duplicate slipped through (e.g. a concurrent
+        # old-version writer), which fails startup so the next run retries.
+        await self.edge_collection.create_index(
+            [("edge_lo", 1), ("edge_hi", 1)],
+            name=index_name,
+            unique=True,
+            partialFilterExpression={
+                "edge_lo": {"$exists": True, "$type": "string"},
+                "edge_hi": {"$exists": True, "$type": "string"},
+            },
+        )
+        scanned = total if total is not None else "?"
+        logger.info(
+            f"[{self.workspace}] Canonical edge migration complete for "
+            f"{self._edge_collection_name}: scanned {scanned}, deduped {removed}, "
+            f"backfilled {backfilled}"
+        )
+
+    async def _dedupe_legacy_edges(self) -> int:
+        """Collapse duplicate docs for the same undirected edge into one.
+
+        Groups by the canonical (sorted) endpoint pair; for each group with more
+        than one doc, keeps the newest by ``created_at`` and **merges the
+        non-survivors' relation payload into it before deleting them** so no
+        relation evidence is lost: ``source_ids``/``source_id``/``file_path`` and
+        ``description`` are unioned over their ``GRAPH_FIELD_SEP`` components,
+        ``keywords`` are comma-set-unioned, and ``weight`` is **summed** (like
+        ``_merge_edges_then_upsert`` — duplicate docs carry separate accumulated
+        weight).
+
+        The merge is **idempotent across retries**: if a transient error aborts
+        startup after the survivor update but before the delete, the next run
+        re-processes the same group and must produce the same survivor. The union
+        fields union their split components (re-merging an already-merged
+        survivor is a no-op), and the weight sum counts the survivor's current
+        weight once plus each other duplicate only while its source_ids are not
+        yet folded into the survivor — so a retry (whose survivor already
+        contains them) does not double-count. Returns the number of docs removed.
+        """
+        pipeline = [
+            {
+                "$group": {
+                    "_id": {
+                        "lo": {
+                            "$cond": [
+                                {"$lte": ["$source_node_id", "$target_node_id"]},
+                                "$source_node_id",
+                                "$target_node_id",
+                            ]
+                        },
+                        "hi": {
+                            "$cond": [
+                                {"$lte": ["$source_node_id", "$target_node_id"]},
+                                "$target_node_id",
+                                "$source_node_id",
+                            ]
+                        },
+                    },
+                    "docs": {
+                        "$push": {
+                            "_id": "$_id",
+                            "source_id": "$source_id",
+                            "source_ids": "$source_ids",
+                            "file_path": "$file_path",
+                            "description": "$description",
+                            "keywords": "$keywords",
+                            "weight": "$weight",
+                            "created_at": "$created_at",
+                        }
+                    },
+                    "count": {"$sum": 1},
+                }
+            },
+            {"$match": {"count": {"$gt": 1}}},
+        ]
+        removed = 0
+        next_progress = _EDGE_MIGRATION_PROGRESS_INTERVAL
+        cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
+        async for group in cursor:
+            docs = group["docs"]
+            survivor = max(docs, key=lambda d: d.get("created_at") or 0)
+            others = [d for d in docs if d["_id"] != survivor["_id"]]
+            if not others:
+                continue
+
+            # Merge the full relation payload across ALL docs (survivor included).
+            # The union fields (source_ids/file_path/description/keywords) union
+            # their split components, so re-merging an already-merged survivor (a
+            # fail-fast retry) is a no-op.
+            all_source_ids: list[str] = []
+            all_file_paths: list[str] = []
+            all_descriptions: list[str] = []
+            all_keywords: set[str] = set()
+            for d in docs:
+                all_source_ids = merge_source_ids(
+                    all_source_ids, _edge_source_id_list(d)
+                )
+                fp = d.get("file_path")
+                all_file_paths = merge_source_ids(
+                    all_file_paths, fp.split(GRAPH_FIELD_SEP) if fp else []
+                )
+                desc = d.get("description")
+                all_descriptions = merge_source_ids(
+                    all_descriptions, desc.split(GRAPH_FIELD_SEP) if desc else []
+                )
+                kw = d.get("keywords")
+                if kw:
+                    all_keywords.update(k.strip() for k in kw.split(",") if k.strip())
+
+            # Weight is summed like _merge_edges_then_upsert (duplicate docs carry
+            # separate accumulated evidence), but idempotently: the survivor's
+            # current weight is the base (counted once) and each other duplicate
+            # adds its weight ONLY if its source_ids are not already folded into
+            # the survivor. On a fail-fast retry the survivor already contains the
+            # others' source_ids, so they are skipped and the sum stays stable.
+            # Legacy string weights are coerced; non-numeric values are skipped so
+            # the migration cannot crash on a bad value.
+            survivor_sids = set(_edge_source_id_list(survivor))
+            weights: list[float] = []
+            sw = _coerce_weight(survivor.get("weight"))
+            if sw is not None:
+                weights.append(sw)
+            for o in others:
+                o_sids = set(_edge_source_id_list(o))
+                if not o_sids or o_sids <= survivor_sids:
+                    continue  # no new trackable evidence -> don't (re-)add weight
+                ow = _coerce_weight(o.get("weight"))
+                if ow is not None:
+                    weights.append(ow)
+
+            set_fields: dict[str, Any] = {}
+            if all_source_ids:
+                set_fields["source_ids"] = all_source_ids
+                set_fields["source_id"] = GRAPH_FIELD_SEP.join(all_source_ids)
+            if all_file_paths:
+                set_fields["file_path"] = GRAPH_FIELD_SEP.join(all_file_paths)
+            if all_descriptions:
+                set_fields["description"] = GRAPH_FIELD_SEP.join(all_descriptions)
+            if all_keywords:
+                set_fields["keywords"] = ",".join(sorted(all_keywords))
+            if weights:
+                set_fields["weight"] = sum(weights)
+            if set_fields:
+                await self.edge_collection.update_one(
+                    {"_id": survivor["_id"]}, {"$set": set_fields}
+                )
+            await self.edge_collection.delete_many(
+                {"_id": {"$in": [d["_id"] for d in others]}}
+            )
+            removed += len(others)
+            if removed >= next_progress:
+                logger.info(
+                    f"[{self.workspace}] Canonical edge migration progress: "
+                    f"deduped {removed} duplicate doc(s) so far"
+                )
+                next_progress += _EDGE_MIGRATION_PROGRESS_INTERVAL
+        return removed
+
+    async def _backfill_edge_endpoints(self) -> int:
+        """Set the canonical ``edge_lo``/``edge_hi`` on every doc that lacks them.
+
+        Returns the modified count. Runs after dedupe, so each canonical pair has
+        one doc and the backfilled (edge_lo, edge_hi) pairs are unique.
+        """
+        is_sorted = {"$lte": ["$source_node_id", "$target_node_id"]}
+        result = await self.edge_collection.update_many(
+            {"edge_lo": {"$exists": False}},
+            [
+                {
+                    "$set": {
+                        "edge_lo": {
+                            "$cond": [
+                                is_sorted,
+                                "$source_node_id",
+                                "$target_node_id",
+                            ]
+                        },
+                        "edge_hi": {
+                            "$cond": [
+                                is_sorted,
+                                "$target_node_id",
+                                "$source_node_id",
+                            ]
+                        },
+                    }
+                }
+            ],
+        )
+        return result.modified_count
 
     # Sample entity document
     # "source_ids" is Array representation of "source_id" split by GRAPH_FIELD_SEP
@@ -942,20 +1463,15 @@ class MongoGraphStorage(BaseGraphStorage):
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """
         Check if there's a direct single-hop edge between source_node_id and target_node_id.
+
+        Matches on the canonical ``(edge_lo, edge_hi)`` pair (direction-independent)
+        instead of the bidirectional ``$or``, so this point lookup is served by the
+        compound unique index. Safe because the fail-fast migration in
+        ``initialize`` guarantees every served doc carries the endpoints.
         """
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
         doc = await self.edge_collection.find_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            },
+            {"edge_lo": edge_lo, "edge_hi": edge_hi},
             {"_id": 1},
         )
         return doc is not None
@@ -997,27 +1513,34 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """
-        Return the full node document, or None if missing.
+        Return the node properties, or None if missing.
+
+        The Mongo-managed ``_id`` (which holds the entity name) is stripped so
+        the returned dict carries only node properties, matching the contract
+        honored by the other backends. Leaving it in lets callers that re-upsert
+        a fetched node (e.g. entity rename) push ``_id`` into ``$set``, which
+        MongoDB rejects as a modification of the immutable ``_id``.
         """
-        return await self.collection.find_one({"_id": node_id})
+        doc = await self.collection.find_one({"_id": node_id})
+        if doc is not None:
+            doc.pop("_id", None)
+        return doc
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        return await self.edge_collection.find_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            }
+        # Canonical (edge_lo, edge_hi) point lookup served by the compound unique
+        # index (see has_edge); the fail-fast migration guarantees the endpoints.
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
+        doc = await self.edge_collection.find_one(
+            {"edge_lo": edge_lo, "edge_hi": edge_hi}
         )
+        if doc is not None:
+            # Strip the Mongo-managed ``_id`` so re-upserting a fetched edge
+            # (e.g. relation rewrite during entity rename) cannot push ``_id``
+            # into ``$set`` and trip the immutable-field error.
+            doc.pop("_id", None)
+        return doc
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
@@ -1048,7 +1571,8 @@ class MongoGraphStorage(BaseGraphStorage):
         result = {}
 
         async for doc in self.collection.find({"_id": {"$in": node_ids}}):
-            result[doc.get("_id")] = doc
+            node_id = doc.pop("_id")
+            result[node_id] = doc
         return result
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
@@ -1145,38 +1669,41 @@ class MongoGraphStorage(BaseGraphStorage):
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        """
-        Upsert an edge between source_node_id and target_node_id with optional 'relation'.
-        If an edge with the same target exists, we remove it and re-insert with updated data.
+        """Upsert the undirected edge between source_node_id and target_node_id.
+
+        Matches on the canonical ``(edge_lo, edge_hi)`` endpoint pair
+        (direction-independent) instead of the old bidirectional ``$or`` filter,
+        so the compound unique index can reject a racing duplicate insert. If two
+        writers race the first insert, the loser hits a ``DuplicateKeyError``; we
+        retry once, which now matches the just-inserted doc and updates it.
         """
         # Ensure source node exists
         await self.upsert_node(source_node_id, {})
 
-        update_doc = {"$set": edge_data}
+        edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
+
+        # Copy so we never mutate the caller's edge_data dict.
+        set_doc: dict = {**edge_data}
         if edge_data.get("source_id", ""):
-            update_doc["$set"]["source_ids"] = edge_data["source_id"].split(
-                GRAPH_FIELD_SEP
-            )
+            set_doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
+        set_doc["source_node_id"] = source_node_id
+        set_doc["target_node_id"] = target_node_id
+        set_doc["edge_lo"] = edge_lo
+        set_doc["edge_hi"] = edge_hi
+        update_doc = {"$set": set_doc}
 
-        edge_data["source_node_id"] = source_node_id
-        edge_data["target_node_id"] = target_node_id
-
-        await self.edge_collection.update_one(
-            {
-                "$or": [
-                    {
-                        "source_node_id": source_node_id,
-                        "target_node_id": target_node_id,
-                    },
-                    {
-                        "source_node_id": target_node_id,
-                        "target_node_id": source_node_id,
-                    },
-                ]
-            },
-            update_doc,
-            upsert=True,
-        )
+        for attempt in range(2):
+            try:
+                await self.edge_collection.update_one(
+                    {"edge_lo": edge_lo, "edge_hi": edge_hi}, update_doc, upsert=True
+                )
+                return
+            except DuplicateKeyError:
+                # Another writer inserted this edge between our filter miss and
+                # insert. Retry once: the doc now exists, so the upsert becomes a
+                # plain update. A second failure is unexpected — let it surface.
+                if attempt == 1:
+                    raise
 
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes using a single bulk_write() call.
@@ -1186,15 +1713,29 @@ class MongoGraphStorage(BaseGraphStorage):
         """
         if not nodes:
             return
-        ops = []
+        ops: list[tuple[Any, int, str]] = []
         for node_id, node_data in nodes:
             update_doc: dict = {"$set": {**node_data}}
             if node_data.get("source_id", ""):
                 update_doc["$set"]["source_ids"] = node_data["source_id"].split(
                     GRAPH_FIELD_SEP
                 )
-            ops.append(UpdateOne({"_id": node_id}, update_doc, upsert=True))
-        await self.collection.bulk_write(ops, ordered=True)
+            ops.append(
+                (
+                    UpdateOne({"_id": node_id}, update_doc, upsert=True),
+                    _estimate_doc_bytes(update_doc),
+                    node_id,
+                )
+            )
+        await _run_batched_bulk_write(
+            self.collection,
+            ops,
+            max_payload_bytes=self._max_upsert_payload_bytes,
+            max_records_per_batch=self._max_upsert_records_per_batch,
+            ordered=True,
+            log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
+            what="node upsert",
+        )
 
     async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
         """Check existence of multiple nodes using a single $in query.
@@ -1227,13 +1768,30 @@ class MongoGraphStorage(BaseGraphStorage):
 
         # Ensure all source nodes exist (mirrors upsert_edge's upsert_node call)
         source_node_ids = list(dict.fromkeys(src for src, _tgt, _data in edges))
-        node_ops = [
-            UpdateOne({"_id": src}, {"$setOnInsert": {"_id": src}}, upsert=True)
+        node_ops: list[tuple[Any, int, str]] = [
+            (
+                UpdateOne({"_id": src}, {"$setOnInsert": {"_id": src}}, upsert=True),
+                _estimate_doc_bytes({"_id": src}),
+                src,
+            )
             for src in source_node_ids
         ]
-        await self.collection.bulk_write(node_ops, ordered=False)
+        await _run_batched_bulk_write(
+            self.collection,
+            node_ops,
+            max_payload_bytes=self._max_upsert_payload_bytes,
+            max_records_per_batch=self._max_upsert_records_per_batch,
+            ordered=False,
+            log_prefix=f"[{self.workspace}] {self.namespace} edges:",
+            what="source-node placeholder upsert",
+        )
 
-        edge_ops = []
+        # Key every edge by its canonical (edge_lo, edge_hi) pair and dedupe
+        # within the batch (last-write-wins). Deduping collapses reciprocal
+        # directions onto one op, which both matches the compound unique index
+        # and avoids an intra-batch duplicate-key error from two ops inserting
+        # the same endpoint pair.
+        deduped_ops: dict[tuple[str, str], tuple[Any, int, str]] = {}
         for source_node_id, target_node_id, edge_data in edges:
             update_doc: dict = {"$set": {**edge_data}}
             if edge_data.get("source_id", ""):
@@ -1242,25 +1800,65 @@ class MongoGraphStorage(BaseGraphStorage):
                 )
             update_doc["$set"]["source_node_id"] = source_node_id
             update_doc["$set"]["target_node_id"] = target_node_id
-            edge_ops.append(
+            edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
+            update_doc["$set"]["edge_lo"] = edge_lo
+            update_doc["$set"]["edge_hi"] = edge_hi
+            deduped_ops[(edge_lo, edge_hi)] = (
                 UpdateOne(
-                    {
-                        "$or": [
-                            {
-                                "source_node_id": source_node_id,
-                                "target_node_id": target_node_id,
-                            },
-                            {
-                                "source_node_id": target_node_id,
-                                "target_node_id": source_node_id,
-                            },
-                        ]
-                    },
-                    update_doc,
-                    upsert=True,
-                )
+                    {"edge_lo": edge_lo, "edge_hi": edge_hi}, update_doc, upsert=True
+                ),
+                _estimate_doc_bytes(update_doc),
+                f"{source_node_id}->{target_node_id}",
             )
-        await self.edge_collection.bulk_write(edge_ops, ordered=True)
+        edge_ops = list(deduped_ops.values())
+
+        # ordered=True (kept from the pre-canonical behaviour). Intra-batch
+        # last-write-wins is already guaranteed by the endpoint-pair dedupe above
+        # (one op per pair), so ordering is not load-bearing for that; we keep it
+        # for continuity. If a concurrent writer (another process bypassing the keyed
+        # lock) wins an insert, our upsert hits 11000 and the bulk aborts; we
+        # retry the whole op list once — the racing docs now exist, so the
+        # upserts update instead of inserting (idempotent). A non-11000 / write-
+        # concern error re-raises rather than being masked.
+        async def _run_edge_bulk() -> None:
+            await _run_batched_bulk_write(
+                self.edge_collection,
+                edge_ops,
+                max_payload_bytes=self._max_upsert_payload_bytes,
+                max_records_per_batch=self._max_upsert_records_per_batch,
+                ordered=True,
+                log_prefix=f"[{self.workspace}] {self.namespace} edges:",
+                what="edge upsert",
+            )
+
+        try:
+            await _run_edge_bulk()
+        except BulkWriteError as e:
+            details = e.details or {}
+            write_errors = details.get("writeErrors", [])
+            # Retry ONLY when every failure is a duplicate-key race; a
+            # writeConcern failure (durability problem, empty writeErrors) or any
+            # other write error must surface, not be masked by a blind retry.
+            #
+            # NOTE: under ordered=True the bulk aborts at the FIRST failing op, so
+            # writeErrors holds at most one entry — the all(...) check therefore
+            # only inspects that first error, not the whole batch. Ops after it
+            # never ran; they re-run when we retry the entire op list below. So a
+            # non-11000 error hidden behind a leading 11000 is not masked — it
+            # simply surfaces one retry later (the retry hits it and re-raises,
+            # since by then the leading dup has resolved to a plain update).
+            dup_only = (
+                bool(write_errors)
+                and all(we.get("code") == _DUPLICATE_KEY_CODE for we in write_errors)
+                and not details.get("writeConcernErrors")
+            )
+            if not dup_only:
+                raise
+            logger.debug(
+                f"[{self.workspace}] {self.namespace} edges: {len(write_errors)} "
+                f"duplicate-key race(s) on edge upsert; retrying as updates"
+            )
+            await _run_edge_bulk()
 
     #
     # -------------------------------------------------------------------------
@@ -1337,6 +1935,8 @@ class MongoGraphStorage(BaseGraphStorage):
                     "target_node_id",
                     "relationship",
                     "source_ids",
+                    "edge_lo",
+                    "edge_hi",
                 ]
             },
         )
@@ -1763,16 +2363,31 @@ class MongoGraphStorage(BaseGraphStorage):
         if not edges:
             return
 
+        # Match each edge by its canonical (edge_lo, edge_hi) pair: one clause per
+        # edge (vs. the old two-clause bidirectional pair) served by the compound
+        # unique index, with reciprocal/duplicate inputs collapsed. Safe because
+        # the fail-fast migration guarantees every served doc carries the endpoints.
+        seen: set[tuple[str, str]] = set()
         all_edge_pairs = []
         for source_id, target_id in edges:
-            all_edge_pairs.append(
-                {"source_node_id": source_id, "target_node_id": target_id}
-            )
-            all_edge_pairs.append(
-                {"source_node_id": target_id, "target_node_id": source_id}
-            )
+            endpoints = _canonical_edge_endpoints(source_id, target_id)
+            if endpoints in seen:
+                continue
+            seen.add(endpoints)
+            all_edge_pairs.append({"edge_lo": endpoints[0], "edge_hi": endpoints[1]})
 
-        await self.edge_collection.delete_many({"$or": all_edge_pairs})
+        # Chunk the $or by record count so a large delete stays under the bulk
+        # message / 16MB query limit; endpoints are bounded id strings, so a count
+        # cap is enough (no byte budget needed). A non-positive cap disables it.
+        chunk = (
+            self._max_delete_records_per_batch
+            if self._max_delete_records_per_batch > 0
+            else len(all_edge_pairs)
+        )
+        for i in range(0, len(all_edge_pairs), chunk):
+            await self.edge_collection.delete_many(
+                {"$or": all_edge_pairs[i : i + chunk]}
+            )
 
         logger.debug(f"[{self.workspace}] Successfully deleted edges: {edges}")
 
@@ -2263,6 +2878,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
 
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
@@ -2313,6 +2929,16 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
         self._collection_name = self.final_namespace
         self._max_batch_size = self.global_config["embedding_batch_num"]
+
+        # Flush-time batching limits (see module-level DEFAULT_MONGO_* constants).
+        # A non-positive value disables that splitting dimension. The upsert and
+        # delete caps are shared across KV/graph/VDB via the _resolve_* helpers so
+        # every path stays under the same bulk message / 16MB query limit.
+        (
+            self._max_upsert_payload_bytes,
+            self._max_upsert_records_per_batch,
+        ) = _resolve_upsert_batch_limits()
+        self._max_delete_records_per_batch = _resolve_delete_batch_limit()
 
         # Deferred-embedding buffers and the per-namespace flush lock.
         # Constructed in initialize() once shared-storage primitives are
@@ -2371,41 +2997,122 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 f"deletes buffered after final flush attempt (these writes have been lost)"
             )
 
+    async def _wait_for_search_index_absent(
+        self, index_name: str, *, timeout: float = 120.0, interval: float = 2.0
+    ) -> None:
+        """Poll until a dropped search index disappears.
+
+        ``create_search_index`` rejects a name that still exists while the
+        prior drop is in the DELETING state, so a recreate must wait for the
+        old index to clear first. Best-effort: on timeout it logs and returns
+        so the subsequent create surfaces any genuine conflict itself rather
+        than blocking initialize() indefinitely.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            cursor = await self._data.list_search_indexes()
+            names = {idx["name"] for idx in await cursor.to_list(length=None)}
+            if index_name not in names:
+                return
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    f"[{self.workspace}] dropped search index {index_name} still "
+                    f"present after {timeout:.0f}s; proceeding to recreate"
+                )
+                return
+            await asyncio.sleep(interval)
+
     async def create_vector_index_if_not_exists(self):
-        """Creates an Atlas Vector Search index."""
+        """Create the Atlas Vector Search index, repairing a FAILED one.
+
+        Atlas/mongot leaves a vector index in the terminal ``FAILED`` state
+        after a build error and never retries it on its own; when that index
+        is also non-queryable every subsequent ``$vectorSearch`` raises
+        ``cannot query vector index ... while in state FAILED``. Matching the
+        index only by name would treat that dead index as healthy and wedge
+        all queries permanently, so a non-queryable, same-dimension FAILED
+        index is dropped and rebuilt here.
+
+        Two guards run *before* the rebuild: (1) a FAILED index that is still
+        ``queryable`` (a background rebuild/update failed but the previously
+        built index keeps serving) is left in place to avoid taking a
+        still-serving index offline; (2) a FAILED index built under a
+        different embedding model raises rather than being auto-rebuilt
+        against incompatible stored vectors. Transitional states
+        (``PENDING``/``BUILDING``) are left alone -- they become queryable
+        without intervention.
+        """
         try:
             indexes_cursor = await self._data.list_search_indexes()
             indexes = await indexes_cursor.to_list(length=None)
             for index in indexes:
-                if index["name"] == self._index_name:
-                    # Check if the existing index has matching vector dimensions
-                    existing_dim = None
-                    definition = index.get("latestDefinition", {})
-                    fields = definition.get("fields", [])
-                    for field in fields:
-                        if (
-                            field.get("type") == "vector"
-                            and field.get("path") == "vector"
-                        ):
-                            existing_dim = field.get("numDimensions")
-                            break
+                if index["name"] != self._index_name:
+                    continue
 
-                    expected_dim = self.embedding_func.embedding_dim
+                # Read the stored vector dimension first so the mismatch
+                # guard below runs even for a FAILED index. A FAILED index
+                # built under a *different* embedding model must NOT be
+                # silently auto-rebuilt: recreating with the new dimension
+                # against incompatible stored vectors would just FAIL again
+                # and hide the required data-directory reset from the
+                # operator. Only a same-dimension FAILED index is self-healed.
+                existing_dim = None
+                definition = index.get("latestDefinition", {})
+                fields = definition.get("fields", [])
+                for field in fields:
+                    if field.get("type") == "vector" and field.get("path") == "vector":
+                        existing_dim = field.get("numDimensions")
+                        break
 
-                    if existing_dim is not None and existing_dim != expected_dim:
-                        error_msg = (
-                            f"Vector dimension mismatch! Index '{self._index_name}' has "
-                            f"dimension {existing_dim}, but current embedding model expects "
-                            f"dimension {expected_dim}. Please drop the existing index or "
-                            f"use an embedding model with matching dimensions."
-                        )
-                        logger.error(f"[{self.workspace}] {error_msg}")
-                        raise ValueError(error_msg)
+                expected_dim = self.embedding_func.embedding_dim
 
-                    logger.info(
-                        f"[{self.workspace}] vector index {self._index_name} already exists with matching dimensions ({expected_dim})"
+                if existing_dim is not None and existing_dim != expected_dim:
+                    error_msg = (
+                        f"Vector dimension mismatch! Index '{self._index_name}' has "
+                        f"dimension {existing_dim}, but current embedding model expects "
+                        f"dimension {expected_dim}. Please drop the existing index or "
+                        f"use an embedding model with matching dimensions."
                     )
-                    return
+                    logger.error(f"[{self.workspace}] {error_msg}")
+                    raise ValueError(error_msg)
+
+                # Self-heal a FAILED index, but ONLY when it is actually
+                # non-queryable. Atlas can report status="FAILED" while
+                # queryable=true -- e.g. a background rebuild/update failed
+                # yet the previously-built index keeps serving queries (see
+                # the listSearchIndexes status docs). Dropping such an index
+                # here would take a still-serving index offline and cause
+                # avoidable query downtime while we wait for deletion and
+                # rebuild. Reached only once the dimension guard above
+                # confirmed the stored dimension matches.
+                if index.get("status") == "FAILED":
+                    if index.get("queryable", True):
+                        logger.warning(
+                            f"[{self.workspace}] vector index {self._index_name} reports "
+                            f"FAILED status but is still queryable; leaving the active "
+                            f"index in place. A background rebuild/update likely failed -- "
+                            f"inspect $listSearchIndexes statusDetail and drop/rebuild "
+                            f"manually if queries degrade."
+                        )
+                        return
+
+                    # Non-queryable FAILED build is terminal: drop and fall
+                    # through to recreate (the same self-heal `drop()` relies
+                    # on). Wait for the drop to clear first -- create_search_index
+                    # rejects a name that still exists while the old index is
+                    # DELETING.
+                    logger.warning(
+                        f"[{self.workspace}] vector index {self._index_name} is FAILED "
+                        f"and non-queryable; dropping and recreating it"
+                    )
+                    await self._data.drop_search_index(self._index_name)
+                    await self._wait_for_search_index_absent(self._index_name)
+                    break
+
+                logger.info(
+                    f"[{self.workspace}] vector index {self._index_name} already exists with matching dimensions ({expected_dim})"
+                )
+                return
 
             search_index_model = SearchIndexModel(
                 definition={
@@ -2490,7 +3197,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         else:
             # Generate the embedding
             embedding = await self.embedding_func(
-                [query], context="query", _priority=5
+                [query], context="query", _priority=DEFAULT_QUERY_PRIORITY
             )  # higher priority for query
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()
@@ -2530,8 +3237,14 @@ class MongoVectorDBStorage(BaseVectorStorage):
         """Flush buffered vector ops; Mongo persists automatically once written."""
         await self._flush_pending_vector_ops()
 
+    async def drop_pending_index_ops(self) -> None:
+        """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        async with self._flush_lock:
+            self._pending_vector_docs.clear()
+            self._pending_vector_deletes.clear()
+
     async def _flush_pending_vector_ops(self) -> None:
-        """Flush buffered vector upserts and deletes via a single bulk_write.
+        """Flush buffered vector upserts and deletes in batched bulk writes.
 
         Embedding runs *inside* this lock (not in `upsert` or lock-free):
         it makes deferred embedding and the bulk write atomic against
@@ -2596,23 +3309,76 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     pdoc.vector = np.array(embedding, dtype=np.float32).tolist()
                     await _cooperative_yield(i)
 
-            # Build the bulk_write op list.
-            ops: list[Any] = []
-            committed_ids: list[str] = []
-            for doc_id, pdoc in pending_docs.items():
-                if pdoc.vector is None:
-                    continue
-                committed_ids.append(doc_id)
-                full_doc = {**pdoc.source, "vector": pdoc.vector}
-                ops.append(UpdateOne({"_id": doc_id}, {"$set": full_doc}, upsert=True))
-            for doc_id in pending_deletes:
-                ops.append(DeleteOne({"_id": doc_id}))
-
-            if not ops:
-                return
+            # Assemble final upsert payload. After the embed loop above every
+            # pending doc has a non-None vector (count-mismatch was checked),
+            # so we can iterate without re-guarding. Each full_doc carries its
+            # own "_id" (from source), matching the UpdateOne filter key.
+            ids_to_commit: list[str] = list(pending_docs.keys())
+            list_data: list[dict[str, Any]] = [
+                {**pending_docs[doc_id].source, "vector": pending_docs[doc_id].vector}
+                for doc_id in ids_to_commit
+            ]
 
             try:
-                await self._data.bulk_write(ops, ordered=False)
+                if list_data:
+                    # Split the upsert into batches that stay under the server-side
+                    # bulk-command message limit and bound peak memory. Fail-fast:
+                    # any batch failure raises immediately and the full buffer is
+                    # retained for the next flush (upsert/delete are idempotent).
+                    # Logging is kept aligned with MilvusVectorDBStorage; the
+                    # batching maths is shared via _chunk_by_budget.
+                    upsert_batches = _chunk_by_budget(
+                        list_data,
+                        _estimate_doc_bytes,
+                        self._max_upsert_payload_bytes,
+                        self._max_upsert_records_per_batch,
+                    )
+                    if len(upsert_batches) > 1:
+                        logger.info(
+                            f"[{self.workspace}] {self.namespace} flush: upsert split into "
+                            f"{len(upsert_batches)} batches for {len(list_data)} records "
+                            f"(max_payload={self._max_upsert_payload_bytes} batch={self._max_upsert_records_per_batch})"
+                        )
+                    for batch_index, (records_batch, estimated_bytes) in enumerate(
+                        upsert_batches, 1
+                    ):
+                        if (
+                            len(records_batch) == 1
+                            and self._max_upsert_payload_bytes > 0
+                            and estimated_bytes > self._max_upsert_payload_bytes
+                        ):
+                            logger.warning(
+                                f"[{self.workspace}] {self.namespace} flush: single record "
+                                f"id={records_batch[0].get('_id')} estimated {estimated_bytes} bytes "
+                                f"exceeds {self._max_upsert_payload_bytes}"
+                            )
+                        logger.debug(
+                            f"[{self.workspace}] MongoDB upsert batch {batch_index}/{len(upsert_batches)}: "
+                            f"records={len(records_batch)}, estimated_payload_bytes={estimated_bytes}"
+                        )
+                        await self._data.bulk_write(
+                            [
+                                UpdateOne(
+                                    {"_id": doc["_id"]}, {"$set": doc}, upsert=True
+                                )
+                                for doc in records_batch
+                            ],
+                            ordered=False,
+                        )
+                if pending_deletes:
+                    # Chunk deletes by record count; _ids are short strings so a
+                    # count cap is enough to stay under the bulk message limit.
+                    # delete_many($in) is the 1:1 equivalent of a batched delete.
+                    delete_ids = list(pending_deletes)
+                    delete_chunk = (
+                        self._max_delete_records_per_batch
+                        if self._max_delete_records_per_batch > 0
+                        else len(delete_ids)
+                    )
+                    for i in range(0, len(delete_ids), delete_chunk):
+                        await self._data.delete_many(
+                            {"_id": {"$in": delete_ids[i : i + delete_chunk]}}
+                        )
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Error flushing vector ops "
@@ -2623,7 +3389,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
             # On success, clear the buffers in-place so external references
             # (e.g. drop()) see the cleared state.
-            for doc_id in committed_ids:
+            for doc_id in ids_to_commit:
                 pending_docs.pop(doc_id, None)
             pending_deletes.clear()
 

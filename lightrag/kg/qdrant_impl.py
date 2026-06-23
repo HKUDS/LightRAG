@@ -11,9 +11,10 @@ import numpy as np
 import pipmaster as pm
 
 from ..base import BaseVectorStorage
+from ..constants import DEFAULT_QUERY_PRIORITY
 from ..exceptions import DataMigrationError
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
-from ..utils import _cooperative_yield, compute_mdhash_id, logger
+from ..utils import _cooperative_yield, compute_mdhash_id, logger, validate_workspace
 
 if not pm.is_installed("qdrant-client"):
     pm.install("qdrant-client")
@@ -37,6 +38,7 @@ CREATED_AT_FIELD = "created_at"
 ID_FIELD = "id"
 DEFAULT_QDRANT_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16MB
 DEFAULT_QDRANT_UPSERT_MAX_POINTS_PER_BATCH = 128
+DEFAULT_QDRANT_DELETE_MAX_POINTS_PER_BATCH = 1000
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -122,6 +124,46 @@ def _find_legacy_collection(
             return candidate
 
     return None
+
+
+def _legacy_collection_has_workspace_field(
+    client: QdrantClient, collection_name: str
+) -> bool | None:
+    """Return whether the legacy collection tags its points with workspace_id.
+
+    Mirrors the detection in ``setup_collection``: trust the payload schema for
+    indexed fields, otherwise sample a few points (payload_schema only reflects
+    INDEXED fields).
+
+    Returns:
+        ``True``  - workspace_id present (workspace-tagged legacy).
+        ``False`` - confidently absent (untagged, pre-isolation legacy):
+                    ``setup_collection`` migrates ALL of it with no workspace
+                    filter, so the whole collection is the migration source.
+        ``None``  - tagging could not be determined (metadata / scroll error).
+                    Callers MUST NOT treat this as untagged: dropping an
+                    actually-tagged, shared legacy collection would delete other
+                    workspaces' migration source.
+    """
+    try:
+        legacy_info = client.get_collection(collection_name)
+        if WORKSPACE_ID_FIELD in (legacy_info.payload_schema or {}):
+            return True
+        sample_points, _ = client.scroll(
+            collection_name=collection_name,
+            limit=10,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as e:
+        logger.warning(
+            f"Qdrant: could not determine workspace tagging of legacy collection "
+            f"'{collection_name}': {e}"
+        )
+        return None
+    return any(
+        point.payload and WORKSPACE_ID_FIELD in point.payload for point in sample_points
+    )
 
 
 @final
@@ -426,6 +468,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
 
     def __post_init__(self):
+        validate_workspace(self.workspace)
         self._validate_embedding_func()
         # Check for QDRANT_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Qdrant storage instances
@@ -485,6 +528,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 str(DEFAULT_QDRANT_UPSERT_MAX_POINTS_PER_BATCH),
             )
         )
+        self._max_delete_points_per_batch = int(
+            os.getenv(
+                "QDRANT_DELETE_MAX_POINTS_PER_BATCH",
+                str(DEFAULT_QDRANT_DELETE_MAX_POINTS_PER_BATCH),
+            )
+        )
         if self._max_upsert_payload_bytes <= 0:
             logger.warning(
                 f"QDRANT_UPSERT_MAX_PAYLOAD_BYTES={self._max_upsert_payload_bytes} is non-positive, disable payload-size splitting"
@@ -492,6 +541,10 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         if self._max_upsert_points_per_batch <= 0:
             logger.warning(
                 f"QDRANT_UPSERT_MAX_POINTS_PER_BATCH={self._max_upsert_points_per_batch} is non-positive, disable point-count splitting"
+            )
+        if self._max_delete_points_per_batch <= 0:
+            logger.warning(
+                f"QDRANT_DELETE_MAX_POINTS_PER_BATCH={self._max_delete_points_per_batch} is non-positive, disable delete point-count splitting"
             )
         self._initialized = False
 
@@ -544,7 +597,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         max_payload_bytes: int,
         max_points_per_batch: int,
     ) -> list[tuple[list[models.PointStruct], int]]:
-        """Split points into batches using payload size and point count limits."""
+        """Split points into batches using payload size and point count limits.
+
+        The byte budget is the primary limiter; the point count is a secondary
+        guard. A single point larger than the byte budget is emitted as its own
+        single-point batch rather than raising: the JSON estimate is
+        conservative (and the default budget sits well below the real
+        server/gateway limit), so the request may still be accepted. Leaving the
+        server as the final arbiter avoids failing the entire flush over one
+        oversized point, which would also block every healthy point buffered
+        alongside it from ever committing.
+        """
         if not points:
             return []
 
@@ -560,15 +623,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         for point in points:
             point_size = QdrantVectorDBStorage._estimate_point_payload_bytes(point)
-            point_with_array_overhead = point_size + 2
-            point_id = str(point.id)
-
-            if point_with_array_overhead > payload_limit:
-                raise ValueError(
-                    f"Single Qdrant point exceeds payload limit: id={point_id}, "
-                    f"estimated_bytes={point_with_array_overhead}, "
-                    f"limit={int(payload_limit)}"
-                )
 
             # If current batch not empty, a comma is needed before next element.
             separator_overhead = 1 if current_batch else 0
@@ -703,7 +757,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             embedding = query_embedding
         else:
             embedding_result = await self.embedding_func(
-                [query], context="query", _priority=5
+                [query], context="query", _priority=DEFAULT_QUERY_PRIORITY
             )  # higher priority for query
             embedding = embedding_result[0]
 
@@ -730,6 +784,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
     async def index_done_callback(self) -> None:
         """Flush buffered vector ops; Qdrant persists automatically once written."""
         await self._flush_pending_vector_ops()
+
+    async def drop_pending_index_ops(self) -> None:
+        """Discard buffered upserts/deletes (pipeline aborting on error)."""
+        async with self._flush_lock:
+            self._pending_vector_docs.clear()
+            self._pending_vector_deletes.clear()
 
     async def _flush_pending_vector_ops(self) -> None:
         """Flush buffered vector upserts and deletes via batched client calls.
@@ -830,13 +890,24 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     if len(point_batches) > 1:
                         logger.info(
                             f"[{self.workspace}] Qdrant upsert split into {len(point_batches)} batches "
-                            f"for {len(list_points)} points (max_payload_bytes={self._max_upsert_payload_bytes}, "
-                            f"max_points_per_batch={self._max_upsert_points_per_batch})"
+                            f"for {len(list_points)} records (max_payload={self._max_upsert_payload_bytes}, "
+                            f"batch={self._max_upsert_points_per_batch})"
                         )
 
                     for batch_index, (points_batch, estimated_bytes) in enumerate(
                         point_batches, 1
                     ):
+                        if (
+                            len(points_batch) == 1
+                            and self._max_upsert_payload_bytes > 0
+                            and estimated_bytes > self._max_upsert_payload_bytes
+                        ):
+                            logger.warning(
+                                f"[{self.workspace}] {self.namespace} flush: single point "
+                                f"id={points_batch[0].id} estimated {estimated_bytes} bytes "
+                                f"exceeds QDRANT_UPSERT_MAX_PAYLOAD_BYTES="
+                                f"{self._max_upsert_payload_bytes}; sending as its own batch"
+                            )
                         logger.debug(
                             f"[{self.workspace}] Qdrant upsert batch {batch_index}/{len(point_batches)}: "
                             f"points={len(points_batch)}, estimated_payload_bytes={estimated_bytes}"
@@ -857,11 +928,21 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                         )
                         for doc_id in pending_deletes
                     ]
-                    self._client.delete(
-                        collection_name=self.final_namespace,
-                        points_selector=models.PointIdsList(points=qdrant_delete_ids),
-                        wait=True,
+                    # Chunk deletes by point count; ids are short so a count cap
+                    # is enough to keep each request under the server limit.
+                    delete_chunk = (
+                        self._max_delete_points_per_batch
+                        if self._max_delete_points_per_batch > 0
+                        else len(qdrant_delete_ids)
                     )
+                    for i in range(0, len(qdrant_delete_ids), delete_chunk):
+                        self._client.delete(
+                            collection_name=self.final_namespace,
+                            points_selector=models.PointIdsList(
+                                points=qdrant_delete_ids[i : i + delete_chunk]
+                            ),
+                            wait=True,
+                        )
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Error flushing vector ops "
@@ -1248,6 +1329,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         index are NOT recreated — they were provisioned at
         ``initialize()`` and remain in place.
 
+        The same workspace-scoped delete is also issued against the kept
+        legacy collection (the un-suffixed collection that the model-suffix
+        migration leaves behind as a backup), when one is found. The
+        legacy->suffixed migration only runs while the suffixed collection
+        has no points for the workspace; if a deliberate clear left this
+        workspace's data behind in legacy, the next startup would migrate
+        it back into the freshly-emptied suffixed collection (resurrection).
+        Only this workspace's legacy points are removed, so other
+        workspaces' legacy data and their pending one-time migration stay
+        intact.
+
         MUST only be called when ``pipeline_status`` is idle (see the
         Pipeline concurrency contract in ``AGENTS.md``); the only
         in-tree caller ``clear_documents`` enforces this.
@@ -1281,15 +1373,66 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 self._pending_vector_deletes.clear()
 
                 # Delete all points for the current workspace
+                workspace_selector = models.FilterSelector(
+                    filter=models.Filter(
+                        must=[workspace_filter_condition(self.effective_workspace)]
+                    )
+                )
                 self._client.delete(
                     collection_name=self.final_namespace,
-                    points_selector=models.FilterSelector(
-                        filter=models.Filter(
-                            must=[workspace_filter_condition(self.effective_workspace)]
-                        )
-                    ),
+                    points_selector=workspace_selector,
                     wait=True,
                 )
+
+                # Also clear this workspace's data from the kept legacy
+                # collection so the next startup does not re-migrate the
+                # just-cleared data back into the suffixed collection.
+                legacy_collection = _find_legacy_collection(
+                    self._client,
+                    self.namespace,
+                    self.effective_workspace,
+                    self.model_suffix,
+                )
+                if legacy_collection and legacy_collection != self.final_namespace:
+                    legacy_has_workspace = _legacy_collection_has_workspace_field(
+                        self._client, legacy_collection
+                    )
+                    if legacy_has_workspace is None:
+                        # Tagging undetermined (transient metadata / scroll error):
+                        # do NOT drop the collection (it may be an actually-tagged,
+                        # shared legacy and we'd delete other workspaces' migration
+                        # source). But the legacy data is left untouched, so the
+                        # next startup would re-migrate this workspace's cleared
+                        # points back — the clear is NOT durable. Abort with an
+                        # error so the caller can retry instead of reporting a
+                        # success that does not survive a restart.
+                        raise RuntimeError(
+                            f"Could not determine workspace tagging of legacy "
+                            f"collection '{legacy_collection}'; aborting clear of "
+                            f"'{self.namespace}' to avoid leaving stale legacy data "
+                            f"that would resurrect on restart. Retry once Qdrant "
+                            f"metadata is reachable."
+                        )
+                    elif legacy_has_workspace:
+                        # Workspace-tagged legacy: remove only this workspace's points.
+                        self._client.delete(
+                            collection_name=legacy_collection,
+                            points_selector=workspace_selector,
+                            wait=True,
+                        )
+                    else:
+                        # Untagged (pre-isolation) legacy: setup_collection migrates
+                        # ALL of its points into this workspace with no workspace
+                        # filter, so a workspace-filtered delete would miss them.
+                        # Drop the whole legacy collection to remove the migration
+                        # source.
+                        self._client.delete_collection(
+                            collection_name=legacy_collection
+                        )
+                        logger.info(
+                            f"[{self.workspace}] Dropped untagged legacy Qdrant collection "
+                            f"'{legacy_collection}' on workspace clear"
+                        )
 
             logger.info(
                 f"[{self.workspace}] Process {os.getpid()} dropped workspace data from Qdrant collection {self.namespace}"

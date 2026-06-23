@@ -299,6 +299,58 @@ async def test_bedrock_embed_empty_endpoint_url_uses_sdk_default(monkeypatch):
     assert client_kwargs_calls[-1] == {"region_name": None}
 
 
+class _FakeCohereEmbeddingBody:
+    async def json(self):
+        return {"embeddings": [[0.1] * 1024]}
+
+
+class _FakeCohereEmbeddingResponse:
+    def get(self, key):
+        assert key == "body"
+        return _FakeCohereEmbeddingBody()
+
+
+class _FakeCohereEmbeddingClient(_FakeBedrockClient):
+    async def invoke_model(self, **kwargs):
+        self._captured_calls.append(kwargs)
+        return _FakeCohereEmbeddingResponse()
+
+
+class _FakeCohereEmbeddingSession(_FakeSession):
+    def client(self, *_args, **kwargs):
+        self._client_kwargs_calls.append(dict(kwargs))
+        return _FakeCohereEmbeddingClient(self._captured_calls)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_embed_cohere_passes_modelid_to_invoke_model(monkeypatch):
+    """Cohere embeddings must call invoke_model with ``modelId`` (not ``model``).
+
+    boto3's bedrock-runtime ``invoke_model`` only accepts ``modelId``; passing
+    ``model`` raises botocore ``ParamValidationError`` before any request, so
+    the whole Cohere embedding path used to fail. This mirrors the sibling
+    amazon branch, which already uses ``modelId``.
+    """
+    captured_calls: list[dict] = []
+    client_kwargs_calls: list[dict] = []
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeCohereEmbeddingSession(captured_calls, client_kwargs_calls),
+    ):
+        await bedrock_embed(
+            texts=["hello"],
+            model="cohere.embed-english-v3",
+        )
+
+    assert captured_calls, "invoke_model was not called"
+    invoke_kwargs = captured_calls[-1]
+    assert invoke_kwargs["modelId"] == "cohere.embed-english-v3"
+    assert "model" not in invoke_kwargs
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_bedrock_complete_forwards_explicit_sigv4_client_kwargs(monkeypatch):

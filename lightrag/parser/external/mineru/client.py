@@ -22,7 +22,7 @@ import json
 import os
 import shutil
 import zipfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -116,7 +116,8 @@ class MinerURawClient:
     cannot expose without leaking abstractions.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, overrides: "Mapping[str, Any] | None" = None) -> None:
+        self._overrides = overrides or {}
         self.api_mode = (
             os.getenv("MINERU_API_MODE", DEFAULT_MINERU_API_MODE).strip().lower()
         )
@@ -159,10 +160,13 @@ class MinerURawClient:
             )
             self.endpoint = self.local_endpoint
         self.poll_interval = float(os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2"))
-        self.max_polls = int(os.getenv("MINERU_MAX_POLLS", "180"))
+        # 600 * 2s client-side sleep ≈ 20 min worst case; raise for very large PDFs.
+        self.max_polls = int(os.getenv("MINERU_MAX_POLLS", "600"))
         self.engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
 
-        options = MinerUParserOptions.from_env(api_mode=self.api_mode)
+        options = MinerUParserOptions.from_env(
+            api_mode=self.api_mode, overrides=self._overrides
+        )
         self._parser_options = options
         self.model_version = options.model_version
         self.language = options.language
@@ -202,15 +206,30 @@ class MinerURawClient:
         resolved_upload_name = _resolve_upload_name(upload_name, source_file_path)
 
         timeout = httpx.Timeout(120.0, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            if self.api_mode == "official":
-                task_id = await self._download_official(
-                    client, source_file_path, raw_dir, resolved_upload_name
-                )
-            else:
-                task_id = await self._download_local(
-                    client, source_file_path, raw_dir, resolved_upload_name
-                )
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                if self.api_mode == "official":
+                    task_id = await self._download_official(
+                        client, source_file_path, raw_dir, resolved_upload_name
+                    )
+                else:
+                    task_id = await self._download_local(
+                        client, source_file_path, raw_dir, resolved_upload_name
+                    )
+        except httpx.RequestError as exc:
+            # Transport-level failures (connection refused/reset, server
+            # disconnect, read/connect timeout) bubble up from httpx with an
+            # opaque, sometimes empty message like "All connection attempts
+            # failed" that gives no hint the parse engine was MinerU. HTTP
+            # status errors and protocol errors already raise context-rich
+            # RuntimeErrors via raise_for_status_with_detail, so they stay
+            # untouched. Re-raise with the engine + endpoint and the exception
+            # class name so the doc_status error_msg is always non-empty and
+            # clearly attributable to the MinerU backend.
+            raise RuntimeError(
+                f"MinerU {self.api_mode} backend request failed "
+                f"(endpoint={self.endpoint}): {type(exc).__name__}: {exc}"
+            ) from exc
 
         self._normalize_raw_bundle(raw_dir, source_file_path, resolved_upload_name)
         return self._build_and_write_manifest(

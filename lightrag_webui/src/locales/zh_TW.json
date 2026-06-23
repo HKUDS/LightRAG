@@ -99,7 +99,7 @@
         "error": "部分檔案上傳失敗"
       },
       "generalError": "上傳失敗\n{{error}}",
-      "fileTypes": "支援的檔案類型：TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "支援的檔案類型：TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "一次只能上傳一個檔案",
         "maxFilesLimit": "最多只能上傳 {{count}} 個檔案",
@@ -139,9 +139,9 @@
       "filters": {
         "all": "全部",
         "completed": "已完成",
-        "analyzing": "分析中",
-        "processing": "處理中",
-        "pending": "等待中",
+        "parse": "內容解析",
+        "analyze": "模態分析",
+        "process": "抽取處理",
         "failed": "失敗"
       },
       "status": {
@@ -233,6 +233,9 @@
       "disease": "疾病",
       "drug": "藥物",
       "food": "食物",
+      "table": "表格",
+      "drawing": "圖片",
+      "equation": "公式",
       "other": "其他"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "輸入查詢開始檢索",
       "clear": "清空",
       "send": "送出",
+      "stop": "停止",
+      "userTerminated": "使用者已終止，回應內容可能不完整",
       "placeholder": "輸入查詢內容 (支援模式前綴：/<Query Mode>)",
       "error": "錯誤：取得回應失敗",
       "queryModeError": "僅支援以下查詢模式：{{modes}}",
@@ -420,6 +425,7 @@
       "parametersDescription": "設定查詢參數",
       "queryMode": "查詢模式",
       "queryModeTooltip": "選擇檢索策略：\n• Naive：傳統文字塊向量檢索\n• Local：側重實體檢索\n• Global：側重關係檢索\n• Hybrid：Local+Global\n• Mix：Local+Global+Naive\n• Bypass：跳過檢索，把歷史會話與當前問題送LLM",
+      "queryModeWarning": "可能降低檢索品質",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

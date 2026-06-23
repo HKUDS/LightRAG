@@ -24,10 +24,18 @@ are preserved so the extracted entities can still ground against them.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
+
+from lightrag.constants import DEFAULT_HEADING_LEVEL_MAX_CHARS
 
 
 _SIDECAR_TYPES = frozenset({"block", "drawing", "table", "equation"})
+
+# Separator joining heading levels into a single breadcrumb line. Shared so the
+# extraction-side token budgeter (see ``operate._truncate_section_context``) can
+# split the rendered breadcrumb back into levels without a drifting magic string.
+HEADING_BREADCRUMB_SEP = " → "
 
 
 def normalize_chunk_heading(dp: dict[str, Any]) -> dict[str, Any] | None:
@@ -72,6 +80,122 @@ def normalize_chunk_heading(dp: dict[str, Any]) -> dict[str, Any] | None:
         "heading": heading_text,
         "parent_headings": parent_headings,
     }
+
+
+_HEADING_WHITESPACE_RE = re.compile(r"\s+")
+# Unicode categories stripped from a heading: control (Cc) and format (Cf)
+# chars — NULs, zero-width marks (ZWSP/ZWNJ/ZWJ/WORD JOINER/BOM are all Cf),
+# directional/format codes — that only add token noise to the LLM prompt.
+_HEADING_STRIP_CATEGORIES = frozenset({"Cc", "Cf"})
+# The only Cc chars that ``\s`` folds into a space; keep them through the strip
+# pass so they become a space below instead of gluing adjacent words. (Cannot
+# use ``str.isspace()`` for this: Python treats \x1c-\x1f as whitespace but
+# ``\s`` does not, so those would survive the strip — an explicit set matches
+# the regex.)
+_HEADING_KEEP_WS = frozenset("\t\n\r\f\v")
+
+
+def _clean_heading_text(text: str) -> str:
+    """Flatten a heading into one clean line for the LLM.
+
+    Converts the breadcrumb separator ``→`` to a space, drops every Unicode
+    control (Cc) / format (Cf) char (zero-width marks, NULs, directional/format
+    codes), and collapses every run of whitespace (tab, newline, NBSP,
+    full-width / ideographic space, ...) into a single regular space as the
+    final step. Normal CJK, Latin, digits, and punctuation are left untouched,
+    and no spaces are inserted between adjacent CJK characters, so it is safe
+    for Chinese headings.
+    """
+    # ``→`` (U+2192, the breadcrumb separator char) must never survive inside a
+    # single heading, or it would forge an extra level when the breadcrumb is
+    # split back on " → " (see operate._truncate_section_context).
+    text = text.replace("→", " ")
+    text = "".join(
+        ch
+        for ch in text
+        if ch in _HEADING_KEEP_WS
+        or unicodedata.category(ch) not in _HEADING_STRIP_CATEGORIES
+    )
+    # Collapse LAST so the spaces introduced above (→, kept whitespace controls,
+    # and any gap left around a removed control char) all fold into one space.
+    text = _HEADING_WHITESPACE_RE.sub(" ", text)
+    return text.strip()
+
+
+def _truncate_heading_level(text: str, max_chars: int) -> str:
+    """Hard-cap a single heading level, marking elision with an ellipsis."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    # Reserve one char for the ellipsis so the result length stays <= max_chars.
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def _clean_and_cap_headings(headings: list[str], max_heading_len: int) -> list[str]:
+    """Clean each heading, drop empties, then hard-cap each level's length.
+
+    Shared by :func:`format_parent_headings` and :func:`format_heading_context`
+    so both the query-stage and extraction-stage breadcrumbs apply identical
+    cleaning (:func:`_clean_heading_text`) and per-level truncation, and cannot
+    drift apart. Order matters: clean → drop empties → cap.
+    """
+    return [
+        _truncate_heading_level(c, max_heading_len)
+        for c in (_clean_heading_text(h) for h in headings)
+        if c
+    ]
+
+
+def format_parent_headings(
+    dp: dict[str, Any],
+    *,
+    max_heading_len: int = DEFAULT_HEADING_LEVEL_MAX_CHARS,
+) -> str:
+    """Join a chunk's parent heading chain into ``h1 → h2 → h3``.
+
+    Reuses :func:`normalize_chunk_heading` so both the nested and legacy flat
+    heading shapes are handled, then cleans each heading via
+    :func:`_clean_heading_text` so the string sent to the LLM is a single tidy
+    line. Returns an empty string when the chunk has no (non-empty) parent
+    headings, so callers can simply omit the field when it is empty.
+
+    Each individual heading level is capped at ``max_heading_len`` characters
+    (set ``<= 0`` to disable), matching :func:`format_heading_context`, so one
+    runaway title cannot bloat the query context before its token truncation.
+    """
+    normalized = normalize_chunk_heading(dp)
+    if not normalized:
+        return ""
+    cleaned = _clean_and_cap_headings(normalized["parent_headings"], max_heading_len)
+    return HEADING_BREADCRUMB_SEP.join(cleaned)
+
+
+def format_heading_context(
+    dp: dict[str, Any],
+    *,
+    max_heading_len: int = DEFAULT_HEADING_LEVEL_MAX_CHARS,
+) -> str:
+    """Join a chunk's full heading chain (parents + current) into ``h1 → h2 → h3``.
+
+    Like :func:`format_parent_headings` but appends the chunk's own section
+    heading after the parent chain, so the entity-extraction LLM sees the
+    complete breadcrumb of the section the input text belongs to. Reuses
+    :func:`normalize_chunk_heading` (handles both nested and legacy flat shapes)
+    and :func:`_clean_heading_text`. Returns an empty string when the chunk
+    carries no (non-empty) heading information, so callers can simply omit the
+    field when it is empty.
+
+    Each individual heading level is capped at ``max_heading_len`` characters
+    (set ``<= 0`` to disable) so one runaway title cannot bloat the prompt; the
+    caller is still responsible for token-budgeting the joined breadcrumb.
+    """
+    normalized = normalize_chunk_heading(dp)
+    if not normalized:
+        return ""
+    chain = list(normalized["parent_headings"])
+    if normalized["heading"]:
+        chain.append(normalized["heading"])
+    cleaned = _clean_and_cap_headings(chain, max_heading_len)
+    return HEADING_BREADCRUMB_SEP.join(cleaned)
 
 
 def normalize_chunk_sidecar(dp: dict[str, Any]) -> dict[str, Any] | None:
@@ -251,6 +375,9 @@ def strip_internal_multimodal_markup_for_extraction(
 
 __all__ = [
     "normalize_chunk_heading",
+    "format_parent_headings",
+    "format_heading_context",
+    "HEADING_BREADCRUMB_SEP",
     "normalize_chunk_sidecar",
     "strip_internal_multimodal_markup_for_extraction",
 ]

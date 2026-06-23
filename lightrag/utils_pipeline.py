@@ -20,13 +20,17 @@ from urllib.parse import quote, unquote, urlsplit
 
 from lightrag.base import DocProcessingStatus, DocStatus, DocStatusStorage
 from lightrag.constants import (
+    FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_LIGHTRAG,
     LIGHTRAG_DOC_CONTENT_PREFIX,
     PARSED_DIR_NAME,
+    PARSER_ENGINE_LEGACY,
+    PARSER_ENGINE_NATIVE,
 )
 from lightrag.parser.routing import canonicalize_parser_hinted_basename
 from lightrag.utils import (
     compute_mdhash_id,
+    get_content_summary,
     logger,
     move_file_to_parsed_dir,
 )
@@ -86,8 +90,9 @@ def build_chunks_dict_from_chunking_result(
                 if key and key not in seen:
                     seen.add(key)
                     seed_cache_list.append(key)
+        stored_chunk = {k: v for k, v in dp.items() if k != "_source_span"}
         chunks[chunk_key] = {
-            **dp,
+            **stored_chunk,
             "full_doc_id": doc_id,
             "file_path": file_path,
             "llm_cache_list": seed_cache_list,
@@ -170,6 +175,21 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
     return getattr(doc, field, default)
 
 
+def read_source_file_basename(data: Any) -> str | None:
+    """Read the source-file basename with backward compatibility.
+
+    The ``source_file_name`` → ``source_file`` rename means documents enqueued
+    before the change persisted the old key in full_docs content_data /
+    doc_status.metadata.  Read through here so resumed/legacy docs still resolve
+    their original source basename; write sites always use the new
+    ``source_file`` key.  Lives here (not in pipeline.py) so utils_pipeline
+    helpers can reuse it without importing back into the pipeline module.
+    """
+    if not isinstance(data, dict):
+        return None
+    return data.get("source_file") or data.get("source_file_name")
+
+
 # Long-lived per-document metadata fields that must survive every
 # doc_status state transition.  ``process_options`` records the user's
 # per-file processing strategy at enqueue time and is read by analyze /
@@ -184,11 +204,11 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # format as the ``Chunking <strategy>: ...`` log line (params portion only).
 # Carrying it forward keeps the value visible after PROCESSING -> FAILED,
 # whose ``metadata_extra`` only carries timing fields.
-# ``parsing_start_time`` / ``analyzing_start_time`` are Unix epoch seconds
+# ``parse_start_time`` / ``analyzing_start_time`` are Unix epoch seconds
 # stamped at the entry of ``_parse_worker`` / ``_analyze_worker`` (mirrors
-# the existing ``processing_start_time`` set when entering PROCESSING) so
+# the existing ``process_start_time`` set when entering PROCESSING) so
 # per-stage durations can be derived from doc_status post-mortem.
-# ``parsing_end_time`` is the paired Unix epoch seconds stamped by
+# ``parse_end_time`` is the paired Unix epoch seconds stamped by
 # ``_parse_worker`` when the parse stage actually runs (cache-miss branch,
 # covering ``parse_native`` too which has no cache concept). Absent on
 # cache-hit attempts (``parse_stage_skipped`` is set instead).
@@ -211,7 +231,7 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # Within each stage, the ``*_end_time`` and ``*_stage_skipped`` fields are
 # mutually exclusive (at most one is written per attempt; both may be
 # absent if analyze soft-failed).
-# ``source_file_name`` records the original pending-parse source basename used
+# ``source_file`` records the original pending-parse source basename used
 # by parser workers; it is intentionally separate from canonical ``file_path``.
 #
 # The order of this tuple is the rendering order of metadata fields in
@@ -220,14 +240,40 @@ def doc_status_field(doc: Any, field: str, default: Any = "") -> Any:
 # insertion order all the way to the rendered output). Keep fields
 # grouped by stage: parse-stage fields together, analyze-stage fields
 # together, etc., so the dialog reads top-to-bottom along the pipeline.
+def resolve_doc_status_parse_engine(
+    parse_format: str | None,
+    explicit_engine: str | None,
+) -> str:
+    """Resolve the ``parse_engine`` value recorded in doc_status metadata.
+
+    Single source of truth shared by the parse stage (``_parse_worker``) and
+    the process stage (``process_single_document``) so both stamp the *same*
+    value — preventing a value "jump" when the field is written early at
+    PARSING and re-written later at PROCESSING.  ``explicit_engine`` wins when
+    a parser reported the engine it actually ran (or full_docs carries an
+    enqueue-time directive); otherwise fall back to ``native`` for the
+    structured ``lightrag`` format and ``legacy`` for everything else
+    (``raw`` passthrough), mirroring how a pre-engine corpus was processed.
+    """
+    if explicit_engine:
+        return explicit_engine
+    return (
+        PARSER_ENGINE_NATIVE
+        if parse_format == FULL_DOCS_FORMAT_LIGHTRAG
+        else PARSER_ENGINE_LEGACY
+    )
+
+
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "process_options",
-    "source_file_name",
+    "source_file",
     "parse_warnings",
     "chunk_opts",
-    "parsing_start_time",
-    "parsing_end_time",
+    "parse_start_time",
+    "parse_end_time",
     "parse_stage_skipped",
+    "parse_format",
+    "parse_engine",
     "analyzing_start_time",
     "analyzing_end_time",
     "analyzing_stage_skipped",
@@ -271,6 +317,150 @@ def doc_status_transition_metadata(
     if extra:
         payload.update(extra)
     return payload
+
+
+# Long-lived per-document *directives* that record how the document should be
+# processed (written at enqueue time by ``_initial_doc_status``).  Unlike the
+# full carry-over list above, this is the subset that must survive a *reset*
+# back to PENDING: it deliberately EXCLUDES the per-attempt timing / result
+# fields (``parse_*`` / ``analyzing_*`` / ``parse_warnings`` / ``chunk_opts``),
+# which the next attempt regenerates and which would otherwise show stale
+# values while the document waits in PENDING.
+_DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
+    "process_options",
+    "source_file",
+)
+
+
+# Per-attempt metadata produced by a parse/analyze/process attempt.  Used as
+# the *precise* trigger for normalising an already-PENDING document's metadata
+# (see ``apipeline_process_enqueue_documents``' consistency check): only a
+# document carrying one of these stale keys is rebuilt to directives-only, so
+# unrelated (future / custom) metadata is never dropped just for being
+# non-directive.  Covers the timing/skip pairs, parser warnings, and the
+# ``extraction_meta`` fields stamped when entering PROCESSING.
+_DOC_STATUS_METADATA_ATTEMPT_KEYS: frozenset[str] = frozenset(
+    {
+        "parse_start_time",
+        "parse_end_time",
+        "parse_stage_skipped",
+        "analyzing_start_time",
+        "analyzing_end_time",
+        "analyzing_stage_skipped",
+        "parse_warnings",
+        "chunk_opts",
+        "process_start_time",
+        "process_end_time",
+        "parse_format",
+        "parse_engine",
+        "chunk_method",
+        "skip_kg",
+        "mm_chunks",
+        "hard_fallback_split",
+        "error_type",
+        "error_stage",
+    }
+)
+
+
+def doc_status_reset_metadata(status_doc: Any) -> dict[str, Any]:
+    """Build the ``metadata`` payload for a reset back to PENDING.
+
+    Keeps only the long-lived processing directives
+    (``_DOC_STATUS_METADATA_DIRECTIVE_KEYS``) and drops every per-attempt
+    timing/result field, so a document that is interrupted and re-queued does
+    not surface stale parse/analyze timings (or warnings / chunk opts) while it
+    waits in PENDING.  ``source_file`` is read with legacy ``source_file_name``
+    tolerance and normalised onto the new key, mirroring the parse worker's own
+    normalisation so a resumed legacy pending_parse doc keeps its source hint.
+    """
+    payload: dict[str, Any] = {}
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    if not isinstance(raw_metadata, dict):
+        return payload
+    # Iterate the directive whitelist so a future addition to
+    # _DOC_STATUS_METADATA_DIRECTIVE_KEYS is automatically carried across a
+    # reset.  ``source_file`` is read with legacy ``source_file_name``
+    # tolerance and normalised onto the new key; all other directives carry
+    # verbatim when present and non-blank.
+    for key in _DOC_STATUS_METADATA_DIRECTIVE_KEYS:
+        if key == "source_file":
+            value = read_source_file_basename(raw_metadata)
+        else:
+            value = raw_metadata.get(key)
+        if value not in (None, ""):
+            payload[key] = value
+    return payload
+
+
+def doc_status_parse_failure_fields(
+    error: BaseException,
+    *,
+    status_doc: Any,
+    engine_hint: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the FAILED-upsert extras for a parse-stage failure.
+
+    Returns ``(extra_fields, metadata_extra)`` for
+    ``_upsert_doc_status_transition``.  Restores the UI fields that the
+    pre-deferral enqueue-time error documents carried: a human-readable
+    ``content_summary`` (written only when the document has none —
+    ``pending_parse`` docs enqueue with an empty summary, while raw
+    passthrough docs keep their real one — or when the existing summary
+    is itself a ``[File Extraction]``-generated one from a previous
+    failed attempt, which the retry reset preserves and would otherwise
+    go stale next to the fresh ``error_msg``) plus ``metadata.error_type`` /
+    ``metadata.error_stage`` for error classification.  ``error_type``
+    keeps the legacy ``file_extraction_error`` value consumers may match
+    on; ``error_stage`` distinguishes the parse-worker failure from an
+    enqueue-time error document.  Both metadata keys ride
+    ``metadata_extra`` and are deliberately NOT in the carry-over /
+    directive whitelists, so the next transition (retry reset, PARSING)
+    drops them automatically — mirroring how ``error_msg`` is cleared.
+
+    ``engine_hint`` (the parse worker's resolved engine key, falling back
+    to its queue-group id) is stamped as ``parse_engine`` only when the
+    failure happened before the post-parse stamp put one on
+    ``status_doc.metadata``; an existing value always wins via carry-over.
+    """
+    error_text = str(error)
+    if not error_text.strip():
+        # Some exceptions (e.g. certain httpx transport errors) stringify to
+        # an empty message; fall back to the class name so the WebUI never
+        # drops the Error Message row for a FAILED document.
+        error_text = type(error).__name__
+    extra_fields: dict[str, Any] = {"error_msg": error_text}
+    current_summary = str(
+        doc_status_field(status_doc, "content_summary", "") or ""
+    ).strip()
+    if not current_summary or current_summary.startswith(
+        FILE_EXTRACTION_SUMMARY_PREFIX
+    ):
+        extra_fields["content_summary"] = (
+            FILE_EXTRACTION_SUMMARY_PREFIX + get_content_summary(error_text)
+        )
+    metadata_extra: dict[str, Any] = {
+        "error_type": "file_extraction_error",
+        "error_stage": "parse",
+    }
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    has_engine = isinstance(raw_metadata, dict) and raw_metadata.get("parse_engine")
+    if engine_hint and not has_engine:
+        metadata_extra["parse_engine"] = engine_hint
+    return extra_fields, metadata_extra
+
+
+def doc_status_metadata_has_attempt_fields(status_doc: Any) -> bool:
+    """True when ``status_doc.metadata`` carries any per-attempt field.
+
+    Used to decide whether an already-PENDING document needs its metadata
+    normalised to directives-only — avoids a redundant upsert for documents
+    whose metadata is already clean (or only holds non-attempt custom fields).
+    """
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    if not isinstance(raw_metadata, dict):
+        return False
+    return not _DOC_STATUS_METADATA_ATTEMPT_KEYS.isdisjoint(raw_metadata)
 
 
 def doc_status_value(doc: Any) -> str:

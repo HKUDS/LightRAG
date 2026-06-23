@@ -302,6 +302,27 @@ def test_resolve_split_by_character_only_false_overrides_env(monkeypatch):
     assert chunk_options["fixed_token"]["split_by_character_only"] is False
 
 
+def test_resolve_drop_references_request_false_overrides_env_true(monkeypatch):
+    # The JSON text API can express an explicit ``drop_references=False`` that
+    # overrides ``CHUNK_P_DROP_REFERENCES=true`` (resolved via slim_chunk_options
+    # then overlaid by the request params). Mirrors the split_by_character_only
+    # override above for the paragraph-semantic switch.
+    monkeypatch.setenv("CHUNK_P_DROP_REFERENCES", "true")
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "paragraph_semantic", "params": {"drop_references": False}}
+    )
+    _, chunk_options = _resolve_text_chunking(cfg, _stub_rag())
+    assert chunk_options["paragraph_semantic"]["drop_references"] is False
+
+
+def test_resolve_drop_references_env_true_without_request_param(monkeypatch):
+    # No request param → the env-true default survives into the snapshot.
+    monkeypatch.setenv("CHUNK_P_DROP_REFERENCES", "true")
+    cfg = TextChunkingConfig.model_validate({"strategy": "paragraph_semantic"})
+    _, chunk_options = _resolve_text_chunking(cfg, _stub_rag())
+    assert chunk_options["paragraph_semantic"]["drop_references"] is True
+
+
 def test_resolve_rejects_size_below_inherited_overlap(monkeypatch):
     # Overlap is inherited from addon_params (not in the request), so the
     # request model can't catch it — _resolve_text_chunking must.

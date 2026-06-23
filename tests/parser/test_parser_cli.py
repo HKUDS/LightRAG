@@ -23,6 +23,8 @@ two engines exercise the same CLI code path:
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -213,3 +215,55 @@ def test_cli_rejects_suffix_engine_mismatch(
     assert "native" in err
     assert "pdf" in err
     assert "docx" in err  # supported suffix list mentions docx
+
+
+def test_cli_legacy_engine_prints_raw_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # legacy is registry-selectable and emits plain content with no sidecar
+    # (blocks_path=""). The CLI must summarize the content instead of trying
+    # to open a non-existent blocks file.
+    source = tmp_path / "notes.txt"
+    source.write_text("hello world\nsecond line\n", encoding="utf-8")
+
+    rc = main([str(source), "--engine", "legacy"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "engine     : legacy" in out
+    assert "format     : raw" in out
+    assert "hello world" in out
+
+
+def test_cli_direct_script_native_does_not_shadow_python_docx(
+    tmp_path: Path,
+) -> None:
+    from docx import Document
+
+    source = tmp_path / "demo.docx"
+    doc = Document()
+    doc.add_heading("Hello Title", level=1)
+    doc.add_paragraph("Body line.")
+    doc.save(source)
+
+    repo_root = Path(__file__).resolve().parents[2]
+    cli_path = repo_root / "lightrag" / "parser" / "cli.py"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(cli_path),
+            str(source),
+            "--engine",
+            "native",
+            "--preview",
+            "0",
+        ],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert "python-docx not installed" not in proc.stderr
+    assert (tmp_path / "demo.docx.parsed" / "demo.blocks.jsonl").is_file()
+    assert source.is_file()

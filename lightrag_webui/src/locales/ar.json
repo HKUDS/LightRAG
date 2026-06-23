@@ -99,7 +99,7 @@
         "error": "فشل رفع بعض الملفات"
       },
       "generalError": "فشل الرفع\n{{error}}",
-      "fileTypes": "الأنواع المدعومة: TXT، MD، MDX، DOCX، PDF، PPTX، XLSX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، H، CPP، HPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "fileTypes": "الأنواع المدعومة: TXT، MD، TEXTPACK، MDX، DOCX، PDF، PPTX، XLSX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، H، CPP، HPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
       "fileUploader": {
         "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
         "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
@@ -139,9 +139,9 @@
       "filters": {
         "all": "الكل",
         "completed": "مكتمل",
-        "analyzing": "جارٍ التحليل",
-        "processing": "قيد المعالجة",
-        "pending": "معلق",
+        "parse": "استخراج",
+        "analyze": "تحليل",
+        "process": "معالجة",
         "failed": "فشل"
       },
       "status": {
@@ -233,6 +233,9 @@
       "disease": "مرض",
       "drug": "دواء",
       "food": "طعام",
+      "table": "جدول",
+      "drawing": "رسم",
+      "equation": "معادلة",
       "other": "أخرى"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "ابدأ الاسترجاع بكتابة استفسارك أدناه",
       "clear": "مسح",
       "send": "إرسال",
+      "stop": "إيقاف",
+      "userTerminated": "أوقف المستخدم العملية — قد تكون الإجابة غير مكتملة",
       "placeholder": "اكتب استفسارك (بادئة وضع الاستعلام: /<Query Mode>)",
       "error": "خطأ: فشل الحصول على الرد",
       "queryModeError": "يُسمح فقط بأنماط الاستعلام التالية: {{modes}}",
@@ -420,6 +425,7 @@
       "parametersDescription": "تكوين معلمات الاستعلام الخاص بك",
       "queryMode": "وضع الاستعلام",
       "queryModeTooltip": "حدد استراتيجية الاسترجاع:\n• ساذج: استرجاع متجهي تقليدي لقطع النص\n• محلي: يركز على استرجاع الكيانات\n• عالمي: يركز على استرجاع العلاقات\n• مختلط: محلي+عالمي\n• مزيج: محلي+عالمي+ساذج\n• تجاوز: تخطي الاسترجاع، إرسال تاريخ المحادثة والسؤال الحالي إلى LLM",
+      "queryModeWarning": "قد يقلل من جودة الاسترجاع",
       "queryModeOptions": {
         "naive": "ساذج",
         "local": "محلي",

@@ -1338,13 +1338,13 @@ async def test_delete_doc_entries_guard_prevents_zombie_record(tmp_path, monkeyp
         # _update_delete_retry_state (which would upsert the record with
         # deletion_failed=True) when deletion_stage is "delete_doc_entries".
         status_record = await rag.doc_status.get_by_id(doc_id)
-        assert (
-            status_record is not None
-        ), "doc_status should still exist (delete failed)"
+        assert status_record is not None, (
+            "doc_status should still exist (delete failed)"
+        )
         metadata = status_record.get("metadata", {})
-        assert not metadata.get(
-            "deletion_failed"
-        ), "guard failed: zombie record written with deletion_failed=True"
+        assert not metadata.get("deletion_failed"), (
+            "guard failed: zombie record written with deletion_failed=True"
+        )
     finally:
         await rag.finalize_storages()
 
@@ -1593,9 +1593,9 @@ async def test_deletion_fully_completed_prevents_success_override_in_finally(
 
             result = await rag.adelete_by_doc_id(doc_id)
 
-            assert (
-                result.status == "success"
-            ), f"[{scenario}] expected success but got {result.status}: {result.message}"
+            assert result.status == "success", (
+                f"[{scenario}] expected success but got {result.status}: {result.message}"
+            )
         finally:
             monkeypatch.undo()
             await rag.finalize_storages()

@@ -86,6 +86,9 @@ def _make_storage(
     # db.execute is used by delete_entity, delete_entity_relation, drop.
     db.execute = AsyncMock(return_value=None)
     db.query = AsyncMock(return_value=[])
+    # drop() probes the legacy table to clear its workspace rows; default to
+    # "no legacy table" so unrelated tests see a single workspace delete.
+    db.check_table_exists = AsyncMock(return_value=False)
     db.workspace = "test_ws"
 
     embedding = embed or CountingEmbed()
@@ -442,6 +445,28 @@ async def test_drop_clears_buffers_and_runs_delete():
     storage.db.execute.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_drop_also_clears_workspace_rows_from_legacy_table():
+    """drop() must also delete this workspace's rows from the kept legacy table,
+    so a later startup does not re-migrate the cleared rows back into the
+    suffixed table (resurrection)."""
+    storage = _make_storage()
+    # Legacy table exists (kept after migration); suffixed table != legacy.
+    storage.db.check_table_exists = AsyncMock(return_value=True)
+    assert storage.legacy_table_name.lower() != storage.table_name.lower()
+
+    result = await storage.drop()
+    assert result["status"] == "success"
+
+    deleted_tables = [
+        call.args[0] for call in storage.db.execute.await_args_list if call.args
+    ]
+    # Both the active suffixed table and the legacy table are cleared for the
+    # workspace.
+    assert any(storage.table_name in sql for sql in deleted_tables)
+    assert any(storage.legacy_table_name in sql for sql in deleted_tables)
+
+
 # ---------------------------------------------------------------------------
 # 13. Read-your-writes: get_by_id, get_by_ids, get_vectors_by_ids
 # ---------------------------------------------------------------------------
@@ -621,9 +646,9 @@ async def test_delete_entity_serializes_against_in_flight_flush():
     # Give the event loop a few turns to confirm delete_entity is blocked.
     for _ in range(5):
         await asyncio.sleep(0)
-    assert (
-        not delete_task.done()
-    ), "delete_entity should be waiting on _flush_lock while flush holds it"
+    assert not delete_task.done(), (
+        "delete_entity should be waiting on _flush_lock while flush holds it"
+    )
 
     # Unblock the flush; both should complete.
     embed.gate.set()
@@ -874,3 +899,132 @@ async def test_get_vectors_by_ids_drops_when_pending_record_removed():
 
     # The vector for the removed id is dropped from the response.
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Flush batching: upsert split by record cap, delete split by id cap
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flush_upsert_splits_by_record_cap():
+    storage = _make_storage()
+    storage._max_upsert_records_per_batch = 2  # byte cap left at default
+
+    await storage.upsert({f"c{i}": _chunk_data(content=f"text {i}") for i in range(5)})
+    await storage.index_done_callback()
+
+    # 5 records / cap 2 => 3 executemany calls (one per upsert chunk).
+    assert len(storage._captured_executemany) == 3
+    assert [len(rows) for _, rows in storage._captured_executemany] == [2, 2, 1]
+    # No deletes in this flush.
+    assert storage._captured_execute == []
+    assert storage._pending_vector_docs == {}
+
+
+@pytest.mark.asyncio
+async def test_flush_upsert_splits_by_payload_bytes():
+    storage = _make_storage()
+    # Disable record cap; force a byte cap small enough that each big chunk
+    # lands in its own batch.
+    storage._max_upsert_records_per_batch = 0
+    storage._max_upsert_payload_bytes = 200
+
+    await storage.upsert({f"c{i}": _chunk_data(content="X" * 150) for i in range(3)})
+    await storage.index_done_callback()
+
+    # Each ~150-byte content row exceeds half the 200-byte budget, so the three
+    # rows cannot coalesce -> 3 separate executemany calls.
+    assert len(storage._captured_executemany) == 3
+
+
+@pytest.mark.asyncio
+async def test_flush_delete_splits_by_id_cap():
+    storage = _make_storage()
+    storage._max_delete_records_per_batch = 2
+
+    await storage.delete([f"c{i}" for i in range(5)])
+    await storage.index_done_callback()
+
+    # 5 ids / cap 2 => 3 DELETE statements, each a bounded ANY($2) slice.
+    assert len(storage._captured_execute) == 3
+    slices = [args[1] for _, args in storage._captured_execute]
+    assert [len(s) for s in slices] == [2, 2, 1]
+    # Every captured statement is a DELETE.
+    assert all("DELETE FROM" in sql for sql, _ in storage._captured_execute)
+    assert storage._pending_vector_deletes == set()
+
+
+@pytest.mark.asyncio
+async def test_upsert_only_flush_with_delete_splitting_disabled():
+    """Regression: delete cap <= 0 + no pending deletes must not raise.
+
+    The disabled-delete fallback used to yield delete_chunk == 0, making the
+    empty-delete range() step raise ValueError and fail the upsert.
+    """
+    storage = _make_storage()
+    storage._max_delete_records_per_batch = 0  # documented "disable splitting"
+
+    await storage.upsert({"c1": _chunk_data(content="alpha")})
+    await storage.index_done_callback()  # upsert-only flush, no deletes
+
+    assert len(storage._captured_executemany) == 1
+    assert storage._captured_execute == []
+    assert storage._pending_vector_docs == {}
+
+
+@pytest.mark.asyncio
+async def test_flush_delete_with_splitting_disabled_runs_single_statement():
+    """delete cap <= 0 sends every pending id in one ANY($2) statement."""
+    storage = _make_storage()
+    storage._max_delete_records_per_batch = 0
+
+    await storage.delete([f"c{i}" for i in range(5)])
+    await storage.index_done_callback()
+
+    assert len(storage._captured_execute) == 1
+    _, args = storage._captured_execute[0]
+    assert len(args[1]) == 5
+
+
+@pytest.mark.asyncio
+async def test_flush_upsert_and_delete_are_separate_phases():
+    storage = _make_storage()
+    storage._max_upsert_records_per_batch = 10
+    storage._max_delete_records_per_batch = 10
+
+    await storage.upsert({"keep": _chunk_data(content="v")})
+    await storage.delete(["gone1", "gone2"])
+    await storage.index_done_callback()
+
+    # One upsert executemany + one delete execute (disjoint buffers).
+    assert len(storage._captured_executemany) == 1
+    assert len(storage._captured_execute) == 1
+
+
+@pytest.mark.asyncio
+async def test_flush_failure_keeps_pending_buffers():
+    storage = _make_storage(fail_run_with_retry=True)
+    await storage.upsert({"c1": _chunk_data()})
+    await storage.delete(["c2"])
+
+    with pytest.raises(RuntimeError, match="simulated PG failure"):
+        await storage.index_done_callback()
+
+    # Fail-fast-retain: nothing cleared, next flush replays everything.
+    assert "c1" in storage._pending_vector_docs
+    assert "c2" in storage._pending_vector_deletes
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_drop_pending_index_ops_clears_buffers():
+    """On an internal-error abort the pipeline calls drop_pending_index_ops to
+    discard buffered upserts/deletes without flushing them (PR #3187)."""
+    storage = _make_storage()
+    await storage.upsert({"c1": _chunk_data(content="alpha")})
+    storage._pending_vector_deletes.add("old-id")
+    assert storage._pending_vector_docs
+    await storage.drop_pending_index_ops()
+    assert not storage._pending_vector_docs
+    assert not storage._pending_vector_deletes

@@ -5,7 +5,7 @@ from typing import final
 
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from lightrag.utils import logger
+from lightrag.utils import logger, validate_workspace
 from lightrag.base import BaseGraphStorage
 import networkx as nx
 from .shared_storage import (
@@ -139,6 +139,8 @@ class NetworkXStorage(BaseGraphStorage):
         )
 
     def __post_init__(self):
+        # Reject path traversal before using workspace in a file path
+        validate_workspace(self.workspace)
         working_dir = self.global_config["working_dir"]
         if self.workspace:
             # Include workspace in the file path for data isolation
@@ -740,8 +742,13 @@ class NetworkXStorage(BaseGraphStorage):
                 self.storage_updated.value = False
                 return True  # Return success
             except Exception as e:
+                # Raise (do NOT swallow + return False): _insert_done's
+                # _flush_one only detects failures via exceptions, so a
+                # swallowed graph-save error would let the document be marked
+                # PROCESSED with the graph changes unpersisted. Surfacing it
+                # aligns this backend with the others (faiss/nano raise too).
                 logger.error(f"[{self.workspace}] Error saving graph: {e}")
-                return False  # Return error
+                raise
 
         return True
 

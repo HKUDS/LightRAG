@@ -53,7 +53,6 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   "equation_file": true,
   "drawing_file": true,
   "asset_dir": true,
-  "split_option": { "fixlevel": 0 },
   "blocks": 39,
   "doc_id": "doc-f1bee60173d067d88595c00e7d9b0ce5",
   "parse_engine": "native",
@@ -72,7 +71,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `document_hash` | `"sha256:<hex>"` | sidecar 正文指纹，定义为 `SHA-256(merged_text)`，其中 `merged_text` 是所有非空 content 行的 `content` 字段按 `"\n\n"` 拼接后的字符串。供外部消费者快速判断两份 `.parsed/` 是否同源（不必逐行比对 body），并作为 sidecar 文件的自描述内容校验位。注意：LightRAG 入库流水线本身不读此字段，跨文档去重由 `doc_status.content_hash` 单独承担 |
 | `table_file` / `equation_file` / `drawing_file` | `bool` | 是否存在对应 sidecar 文件（为真时对应文件必然存在） |
 | `asset_dir` | `bool` | 是否存在`blocks.assets`资源目录 |
-| `split_option` | `object` | 文件提取时的分块参数。此字段留给文件提取引擎自己记录和使用 |
+| `split_option` | `object` | 可选。解析引擎自我记录的元数据（如 `engine_version` 及引擎特定附加信息）；引擎无任何记录时（native/markdown 常见情形）整个字段省略。分块不在解析阶段进行（由下游 chunker 负责），故此字段从不含分块参数 |
 | `blocks` | `int` | content 行数（不含 meta） |
 | `doc_id` | `"doc-<md5>"` | 文档全局 id。sidecar item id（`im-/tb-/eq-`）使用 `doc_id` 去掉 `doc-` 前缀后的哈希部分，以缩短嵌入正文中的占位标签 |
 | `parse_engine` | `str` | 解析引擎`native/mineru/docling/legacy` |
@@ -91,9 +90,9 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 ```json
 {
   "type": "content",
-  "blockid": "462c6364584a7ba4bdae6853f85ac429",
+  "blockid": "b5b5264333943cfd623710da1c36fc93",
   "format": "plain_text",
-  "content": "1 产品用途和功能\nMI012模块用于支撑供氧抗荷调节器的供氧抗荷控制功能...",
+  "content": "# 1 产品用途和功能\nMI012模块用于支撑供氧抗荷调节器的供氧抗荷控制功能...",
   "heading": "1 产品用途和功能",
   "parent_headings": [],
   "level": 1,
@@ -113,8 +112,8 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `type` | `"content"` |
 | `blockid` | 全局唯一的Block ID |
 | `format` | 内容形态，目前固定为 `"plain_text"` |
-| `content` | 文本内容；**公式和图片此以占位标签出现，表格以带table标签的JSON或HTLM格式出现**（见 3.3） |
-| `heading` | content所在章节的最高层级标题；heading真实存在时，应该同时出现在content的开头；如果heading之后紧接着下一个层级的heading，则把下一个层级的heading正文看待。这样做的目的是需要保证所有 Block 的 content字段内容拼接后形成完整的原文。 |
+| `content` | 文本内容；**公式和图片此以占位标签出现，表格以带table标签的JSON或HTLM格式出现**（见 3.3）。标题行会按 `level` 渲染 markdown `#` 前缀（后跟一个空格）：level 1 → 一个 `#`，level 2 → 两个 `#`，……，封顶 6 个（level ≥ 7 的标题仍渲染为 `######`）。若源标题文字本身已以 markdown 前缀开头（1–6 个 `#` 后跟空格），则原样保留、不再重复加前缀。注意 `heading` 字段本身保持干净（不含 `#`）。 |
+| `heading` | content所在章节的最高层级标题；heading真实存在时，应该以 markdown 渲染后的标题行出现在content的开头。**每个被识别出的标题都独立成块**：若标题后紧跟正文，正文与该标题合并进同一个块（content = markdown 渲染后的标题行 + 正文）；若标题后没有正文（例如其后紧接下一个层级的标题），该标题仍单独成块、content 仅为 markdown 渲染后的标题行。这样可保证所有 Block 的 content 字段拼接后仍能完整、无重叠地还原原文。 |
 | `parent_headings` | 字符串数组: 自顶向下的祖先标题列表，不含当前 `heading` |
 | `level` | 整数: `heading` 在文档大纲中的层级（`1` = H1 / 一级标题，0表示无标题） |
 | `session_type` | Block所处区域：`body` `preface` `TOC` `references` `appendix` |
@@ -142,7 +141,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 葛总分块策略在sidecar文件存在时，会在其输出的每个 chunk 都会带上 `sidecar = {"type": "block", "id": <主来源 blockid>, "refs": [{"type": "block", "id": <blockid>}, …]}`，其中：
 
 - 未合并的 chunk → `sidecar.refs` 只有一个元素，等于该 chunk 来自的 blocks.jsonl 行的 `blockid`；
-- Stage D 合并后的 chunk → `refs` 顺序保留所有来源 `blockid`（去重）；
+- LevelMerge 合并后的 chunk → `refs` 顺序保留所有来源 `blockid`（去重）；
 - hard fallback split 后的子 chunk → 共享父 chunk 的 `sidecar`。
 
 这条链路是文档级追溯（chunk ↔ block ↔ 原段落 paraId）的基础。
@@ -156,6 +155,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   "id": "im-f1bee60173d067d88595c00e7d9b0ce5-0004",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 结构尺寸及重量",
+  "parent_headings": ["2 产品说明"],
   "format": "png",
   "path": "m012-manual.blocks.assets/image4.png",
   "src": "",
@@ -188,6 +188,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `id` | `im-<doc_hash>-<NNNN>` 形式（`doc_hash` 为 `doc_id` 去掉 `doc-` 前缀后的 32 位 md5） |
 | `blockid` | 指向产生该图形的 content 行 |
 | `heading` | 所在章节标题 |
+| `parent_headings` | 字符串数组：自顶向下的祖先标题列表，不含当前 `heading`（与该图形所属 block 在 `blocks.jsonl` 中的同名字段一致） |
 | `format` | 原始扩展名（去点）：`png` / `jpeg` / `gif` / `webp` / `wmf` / `emf` / … |
 | `path` | 相对 `*.parsed/` 目录的资源路径，**永远**指向 `*.blocks.assets/` 内文件 |
 | `src` | 原文档里图形的引用别名（多数情况下为空） |
@@ -219,6 +220,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
   "id": "tb-f1bee60173d067d88595c00e7d9b0ce5-0007",
   "blockid": "3f33897b5e105d254addc655f1efbf8c",
   "heading": "2.4.4 温度-湿度-高度（随系统进行）",
+  "parent_headings": ["2 产品说明", "2.4 环境适应性"],
   "dimension": [16, 8],
   "format": "json",
   "content": "[[\"试验步骤\", \"温度(℃)\", \"高度(m)\", \"相对湿度\", \"时间(min)\", \"辅助冷却\", \"系统电源\", \"功能、性能检查\"],…",
@@ -242,7 +244,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 }
 ```
 
-tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字段与drawings.json相同。不同或新添加的字段说明如下：
+tables.json 文件的 `blockid` `heading` `parent_headings` `surrounding` `llm_analyze_result` 字段与drawings.json相同。不同或新添加的字段说明如下：
 
 | 字段 | 说明 |
 |---|---|
@@ -264,6 +266,7 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
   "id": "eq-f1bee60173d067d88595c00e7d9b0ce5-0001",
   "blockid": "2f52b70839d13a936d97955916820147",
   "heading": "2.3 结构尺寸及重量",
+  "parent_headings": ["2 产品说明"],
   "format": "latex",
   "content": "C=2∗\\frac{P∗T}{\\left( {V}_{H}^{2}−{V}_{L}^{2} \\right)∗η}",
   "caption": "",
@@ -286,7 +289,7 @@ tables.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字
 }
 ```
 
-equations.json 文件的 `blockid` `heading` `surrounding` `llm_analyze_result` 字段与drawings.json相同。不同或新添加的字段说明如下：
+equations.json 文件的 `blockid` `heading` `parent_headings` `surrounding` `llm_analyze_result` 字段与drawings.json相同。不同或新添加的字段说明如下：
 
 | 字段 | 说明 |
 |---|---|

@@ -99,7 +99,7 @@
         "error": "Деякі файли не вдалося завантажити"
       },
       "generalError": "Завантаження не вдалося\n{{error}}",
-      "fileTypes": "Підтримувані типи: TXT, MD, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Підтримувані типи: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
       "fileUploader": {
         "singleFileLimit": "Не можна завантажити більше 1 файлу одночасно",
         "maxFilesLimit": "Не можна завантажити більше {{count}} файлів",
@@ -139,9 +139,9 @@
       "filters": {
         "all": "Усі",
         "completed": "Завершено",
-        "analyzing": "Аналіз",
-        "processing": "Обробка",
-        "pending": "Очікування",
+        "parse": "Видобування",
+        "analyze": "Аналіз",
+        "process": "Обробка",
         "failed": "Помилка"
       },
       "status": {
@@ -233,6 +233,9 @@
       "disease": "Хвороба",
       "drug": "Ліки",
       "food": "Їжа",
+      "table": "Таблиця",
+      "drawing": "Малюнок",
+      "equation": "Рівняння",
       "other": "Інше"
     },
     "sideBar": {
@@ -410,6 +413,8 @@
       "startPrompt": "Почніть пошук, ввівши ваш запит нижче",
       "clear": "Очистити",
       "send": "Відправити",
+      "stop": "Зупинити",
+      "userTerminated": "Перервано користувачем — відповідь може бути неповною",
       "placeholder": "Введіть ваш запит (Підтримка префіксу: /<Режим запиту>)",
       "error": "Помилка: Не вдалося отримати відповідь",
       "queryModeError": "Підтримуються лише наступні режими запиту: {{modes}}",
@@ -420,6 +425,7 @@
       "parametersDescription": "Налаштуйте параметри вашого запиту",
       "queryMode": "Режим запиту",
       "queryModeTooltip": "Виберіть стратегію пошуку:\n• Naive: Традиційний пошук векторів текстових чанків\n• Local: Фокус на пошуку сутностей\n• Global: Фокус на пошуку відношень\n• Hybrid: Local+Global\n• Mix: Local+Global+Naive\n• Bypass: Пропустити пошук, надіслати історію розмови та поточне питання в LLM",
+      "queryModeWarning": "Може знизити якість пошуку",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",

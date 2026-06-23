@@ -46,6 +46,7 @@ export const supportedFileTypes = {
   'text/plain': [
     '.txt',
     '.md',
+    '.textpack', // # Markdown Bundle(zip)
     '.mdx', // # MDX (Markdown + JSX)
     '.rtf', // # Rich Text Format
     '.odt', // # OpenDocument Text
@@ -92,3 +93,10 @@ export const SiteInfo = {
   home: '/',
   github: 'https://github.com/HKUDS/LightRAG'
 }
+
+// One-time system-suggested user prompts, injected once into userPromptHistory
+// (for both fresh installs and upgrades). See settings store version 20 migration.
+export const suggestedUserPrompts: string[] = [
+  'Ignore the `References Section Format` instruction in the system prompt, and do not include a `References` section in the response.',
+  'For inline citations, use the footnote marker syntax `[^1]`, where the `^` preceding the identifier indicates a footnote reference. When multiple citations are required at a single location, each ID should be enclosed in separate footnote markers (e.g., `[^1][^2][^3]`).'
+]
