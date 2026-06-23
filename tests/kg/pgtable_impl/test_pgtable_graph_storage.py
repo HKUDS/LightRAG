@@ -414,9 +414,9 @@ async def test_get_knowledge_graph_seed_never_dropped_on_truncation():
         kg = await storage.get_knowledge_graph("low_seed", max_nodes=2)
 
     node_ids = [node.id for node in kg.nodes]
-    assert (
-        "low_seed" in node_ids
-    ), f"seed 'low_seed' was dropped by truncation; got {node_ids}"
+    assert "low_seed" in node_ids, (
+        f"seed 'low_seed' was dropped by truncation; got {node_ids}"
+    )
     assert len(node_ids) == 2
     assert kg.is_truncated is True
     # Seed is at position 0 (pinned), then the highest-degree neighbor.
