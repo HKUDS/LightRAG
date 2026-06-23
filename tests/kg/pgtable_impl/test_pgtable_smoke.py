@@ -15,6 +15,7 @@ and ``integration`` markers so that:
   the module-level ``POSTGRES_PASSWORD`` guard provides a second safety net.
 """
 
+import asyncio
 import os
 import time
 import uuid
@@ -254,7 +255,8 @@ async def test_self_loop_degree_matches_networkx(store):
 
 @pytest.mark.asyncio
 async def test_get_knowledge_graph_bfs(store):
-    """Exercise the WITH RECURSIVE BFS path against a real PostgreSQL instance.
+    """Exercise the frontier-capped iterative BFS path against a real PostgreSQL
+    instance (the traversal is _bfs_frontier, not a recursive CTE).
 
     Builds a chain A-B-C-D and verifies that get_knowledge_graph("A", max_depth=2)
     returns A, B, C but not D (3 hops away).
@@ -428,3 +430,67 @@ async def test_get_knowledge_graph_truncation_prefers_high_degree(store):
     ids = {n.id for n in kg.nodes}
     assert ids == {"S", "hi", "mid"}, f"degree-priority truncation failed: {ids}"
     assert kg.is_truncated is True
+
+
+# ---------------------------------------------------------------------------
+# Real-PG semantics the mock-based unit tests cannot exercise
+# (FK visibility inside a data-modifying CTE, concurrent JSONB merge, atomic drop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_creates_both_missing_endpoints(store):
+    """Both endpoints absent: the data-modifying CTE must insert the two nodes
+    AND the edge in one statement without tripping the FK.
+
+    The offline unit test only asserts the SQL *text* contains
+    ``jsonb_build_object(...)``; only a live PG proves the FK is satisfied by
+    rows inserted in the same CTE (FK checks use transaction, not snapshot,
+    visibility), so this is the real regression guard for that CTE.
+    """
+    await store.upsert_edge("Ghost1", "Ghost2", _edge())
+
+    assert await store.has_edge("Ghost1", "Ghost2") is True
+    assert await store.get_node("Ghost1") == {"entity_id": "Ghost1"}
+    assert await store.get_node("Ghost2") == {"entity_id": "Ghost2"}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_node_merge_preserves_all_keys(store):
+    """Concurrent upsert_node on one id must not lose updates: the ``||`` JSONB
+    merge is serialized by the row lock ON CONFLICT takes, so every distinct key
+    survives. Guards the 'properties are MERGED, not replaced' contract under
+    real concurrency (impossible to show with a mocked _execute).
+    """
+    await store.upsert_node("M", _node("M"))
+
+    await asyncio.gather(
+        *[
+            store.upsert_node("M", dict(_node("M"), **{f"k{i}": str(i)}))
+            for i in range(20)
+        ]
+    )
+
+    row = await store.get_node("M")
+    assert row is not None
+    survived = {k for k in row if k.startswith("k")}
+    assert survived == {f"k{i}" for i in range(20)}, (
+        f"lost update under concurrent merge: {sorted(survived)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_drop_clears_nodes_and_edges_atomically(store):
+    """drop() deletes edges and nodes in a single data-modifying CTE. Verify it
+    leaves neither orphan edges nor stray nodes (the edge delete is explicit, so
+    it holds even without FK CASCADE).
+    """
+    await store.upsert_edge("P", "Q", _edge())
+    await store.upsert_node("R", _node("R"))
+
+    result = await store.drop()
+
+    assert result["status"] == "success", result
+    assert await store.get_all_nodes() == []
+    assert await store.get_all_edges() == []
+    assert await store.has_edge("P", "Q") is False
