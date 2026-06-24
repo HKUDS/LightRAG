@@ -143,6 +143,27 @@ class TestWildcardCorsDisablesCredentials:
         assert "access-control-allow-credentials" not in resp.headers
 
 
+class TestEmptyCorsFailsClosed:
+    """An explicitly empty CORS_ORIGINS disables cross-origin access (fail closed)."""
+
+    def test_empty_string_allows_no_origin(self, monkeypatch):
+        # CORS_ORIGINS= is an explicit "disable cross-origin" config and must not
+        # silently widen to "*".
+        client = _build_client("", monkeypatch)
+        resp = _preflight(client, "https://evil.example.com")
+
+        assert "access-control-allow-origin" not in resp.headers
+        assert "access-control-allow-credentials" not in resp.headers
+
+    def test_only_commas_allows_no_origin(self, monkeypatch):
+        # A value with no real origins (e.g. ",,") also fails closed.
+        client = _build_client(",,", monkeypatch)
+        resp = _preflight(client, "https://evil.example.com")
+
+        assert "access-control-allow-origin" not in resp.headers
+        assert "access-control-allow-credentials" not in resp.headers
+
+
 class TestExplicitAllowlistEnablesCredentials:
     """An explicit origin allowlist reflects the origin and allows credentials."""
 

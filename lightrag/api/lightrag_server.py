@@ -1360,16 +1360,19 @@ def create_app(args):
             return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
     def get_cors_origins():
-        """Get allowed origins from global_args
-        Returns a list of allowed origins, defaults to ["*"] if not set.
-        Empty entries (e.g. from a trailing comma) are dropped.
+        """Get allowed origins from global_args.
+
+        Returns a list of allowed origins. The wildcard default ["*"] applies
+        only when CORS_ORIGINS is unset (config defaults the value to "*"). An
+        explicitly empty or origin-less value (e.g. CORS_ORIGINS= or a stray
+        comma) fails closed, returning an empty list so that no cross-origin
+        browser access is granted rather than silently widening to "*". Empty
+        entries (e.g. from a trailing comma) are dropped.
         """
         origins_str = global_args.cors_origins
         if origins_str == "*":
             return ["*"]
-        origins = [origin.strip() for origin in origins_str.split(",")]
-        origins = [origin for origin in origins if origin]
-        return origins or ["*"]
+        return [origin.strip() for origin in origins_str.split(",") if origin.strip()]
 
     # Normalize scope["path"] for proxy-strip deployments so the WebUI
     # Mount (and any other Mount) routes correctly. Added before CORS so it
@@ -1393,7 +1396,9 @@ def create_app(args):
     # Starlette treats ANY allow_origins list that contains "*" as allow-all, so we
     # must test membership rather than exact equality: a mixed config such as
     # "*,https://app.example.com" is still allow-all and must not enable credentials.
-    allow_credentials = "*" not in cors_origins
+    # An empty list is a fail-closed (no-origin) config, which also gets no
+    # credentials header.
+    allow_credentials = bool(cors_origins) and "*" not in cors_origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
