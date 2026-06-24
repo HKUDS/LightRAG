@@ -2,10 +2,10 @@ import { useRegisterEvents, useSetSettings, useSigma } from '@react-sigma/core'
 import { AbstractGraph } from 'graphology-types'
 import forceAtlas2 from 'graphology-layout-forceatlas2'
 import FA2LayoutSupervisor from 'graphology-layout-forceatlas2/worker'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 
 import { EdgeType, NodeType } from '@/hooks/useLightragGraph'
-import useTheme from '@/hooks/useTheme'
+import useIsDarkMode from '@/hooks/useIsDarkMode'
 import * as Constants from '@/lib/constants'
 
 import { useSettingsStore } from '@/stores/settings'
@@ -31,7 +31,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const registerEvents = useRegisterEvents<NodeType, EdgeType>()
   const setSettings = useSetSettings<NodeType, EdgeType>()
 
-  const { theme } = useTheme()
+  const isDarkTheme = useIsDarkMode()
   const hideUnselectedEdges = useSettingsStore.use.enableHideUnselectedEdges()
   const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
   const renderEdgeLabels = useSettingsStore.use.showEdgeLabel()
@@ -43,20 +43,6 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
-
-  // Track system theme changes when theme is set to 'system'
-  const [systemThemeIsDark, setSystemThemeIsDark] = useState(
-    () => window.matchMedia('(prefers-color-scheme: dark)').matches
-  )
-
-  useEffect(() => {
-    if (theme === 'system') {
-      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-      const handler = (e: MediaQueryListEvent) => setSystemThemeIsDark(e.matches)
-      mediaQuery.addEventListener('change', handler)
-      return () => mediaQuery.removeEventListener('change', handler)
-    }
-  }, [theme])
 
   /**
    * When component mounts or the graph changes
@@ -255,9 +241,6 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
    *   linearly for every single node of the graph, per refresh.
    */
   useEffect(() => {
-    const isDarkTheme =
-      theme === 'dark' ||
-      (theme === 'system' && window.document.documentElement.classList.contains('dark'))
     const labelColor = isDarkTheme ? Constants.labelColorDarkTheme : undefined
     const edgeColor = isDarkTheme ? Constants.edgeColorDarkTheme : undefined
 
@@ -370,8 +353,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     sigma,
     sigmaGraph,
     disableHoverEffect,
-    theme,
-    systemThemeIsDark,
+    isDarkTheme,
     hideUnselectedEdges,
     enableEdgeEvents,
     renderEdgeLabels,

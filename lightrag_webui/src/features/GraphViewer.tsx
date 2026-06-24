@@ -29,6 +29,7 @@ import LegendButton from '@/components/graph/LegendButton'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
+import useIsDarkMode from '@/hooks/useIsDarkMode'
 import { labelColorDarkTheme, labelColorLightTheme, edgeColorDarkTheme } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
@@ -148,11 +149,15 @@ const GraphViewer = () => {
 
   const [isThemeSwitching, setIsThemeSwitching] = useState(false)
 
-  // Memoize sigma settings to prevent unnecessary re-creation
-  const memoizedSigmaSettings = useMemo(() => {
-    const isDarkTheme = theme === 'dark'
-    return createSigmaSettings(isDarkTheme)
-  }, [theme])
+  // Resolve effective dark mode (handles theme === 'system' against the OS
+  // preference, and stays reactive to OS color-scheme changes).
+  const isDarkMode = useIsDarkMode()
+
+  // Memoize sigma settings to prevent unnecessary re-creation. Keyed on the
+  // RESOLVED dark mode, not the raw theme: under theme === 'system' + OS dark
+  // the old `theme === 'dark'` check produced light-theme defaults, which the
+  // idle-state (null reducers) graph rendered verbatim.
+  const memoizedSigmaSettings = useMemo(() => createSigmaSettings(isDarkMode), [isDarkMode])
 
   // Detect theme changes and briefly show a loading overlay to avoid flash of
   // unstyled content. setState is inside setTimeout (async), not synchronously
