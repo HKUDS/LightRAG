@@ -66,7 +66,10 @@ RUN mkdir -p /app/data/tiktoken \
     if [ -n "${status:-}" ] && [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
 
 # Final stage
-FROM python:3.12-slim
+# Pin to bookworm: keeps Python 3.12 (venv compat with the builder stage) while
+# avoiding Debian trixie's perl 5.40.x exposure (CVE-2026-12087, no patch yet),
+# and aligns the final Debian release with the builder (also bookworm).
+FROM python:3.12-slim-bookworm
 
 WORKDIR /app
 
@@ -104,7 +107,30 @@ ENV WORKING_DIR=/app/data/rag_storage
 ENV INPUT_DIR=/app/data/inputs
 ENV PROMPT_DIR=/app/data/prompts
 
+# Create a non-root user (CIS Docker 4.1) and install gosu for privilege drop.
+# Fixed UID/GID 1000 gives predictable ownership for bind-mounts / PVCs.
+# chown -R /app MUST run after every data COPY above so the venv (pipmaster
+# installs packages at runtime), data dirs, and the tiktoken cache are writable.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 lightrag \
+    && useradd -u 1000 -g lightrag -m -d /home/lightrag -s /usr/sbin/nologin lightrag \
+    && chown -R lightrag:lightrag /app /home/lightrag
+
+# HOME and cache dirs for the non-root user so pipmaster's runtime pip installs
+# never fall back to an unwritable /root or a missing HOME.
+ENV HOME=/home/lightrag \
+    XDG_CACHE_HOME=/home/lightrag/.cache \
+    PIP_CACHE_DIR=/home/lightrag/.cache/pip \
+    UV_CACHE_DIR=/home/lightrag/.cache/uv
+
+# Entrypoint starts as root, fixes mount ownership, then drops to lightrag.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Expose API port
 EXPOSE 9621
 
-ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["python", "-m", "lightrag.api.lightrag_server"]
