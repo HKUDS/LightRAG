@@ -438,5 +438,49 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     Make sure to login before making the request, and include the 'Authorization' in the header.
     """)
 
+    # Warn when the server runs without any authentication. In this mode every
+    # endpoint is publicly reachable (see get_combined_auth_dependency: with
+    # neither AUTH_ACCOUNTS nor LIGHTRAG_API_KEY set, all requests are allowed).
+    if not args.key and not args.auth_accounts:
+        loopback_hosts = {"127.0.0.1", "::1", "localhost"}
+        if args.host in loopback_hosts:
+            ASCIIColors.yellow("\n⚠️  Security Notice:")
+            ASCIIColors.white(f"""    No authentication is configured (no API Key, no login accounts).
+    The server is bound to a loopback address ('{args.host}'), so it is only
+    reachable from this machine. Set LIGHTRAG_API_KEY, or AUTH_ACCOUNTS together
+    with TOKEN_SECRET, before binding to a non-loopback address (e.g. HOST=0.0.0.0).
+    """)
+        else:
+            ASCIIColors.red("\n🔴 SECURITY WARNING:")
+            ASCIIColors.white(f"""    The server is listening on '{args.host}' WITHOUT any authentication.
+    Every endpoint (document upload, query, knowledge graph, deletion) is
+    publicly accessible to anyone who can reach this address.
+
+    Secure the server before exposing it to a network by setting at least one of:
+      - LIGHTRAG_API_KEY=<a-strong-secret>   (X-API-Key header authentication)
+      - AUTH_ACCOUNTS=user:password together with TOKEN_SECRET=<a-strong-secret>
+                                             (JWT login authentication; AUTH_ACCOUNTS
+                                              without TOKEN_SECRET fails to start)
+    Or restrict access by binding to loopback only: HOST=127.0.0.1
+    """)
+
+    # When authentication IS configured but the server is exposed on a
+    # non-loopback address, warn that the default whitelist still exempts the
+    # Ollama-compatible /api/* routes (kept open for Ollama-client compatibility).
+    # Those routes invoke the LLM and read the knowledge base, so they stay
+    # public unless the operator narrows WHITELIST_PATHS (e.g. to /health).
+    if args.key or args.auth_accounts:
+        loopback_hosts = {"127.0.0.1", "::1", "localhost"}
+        whitelisted = [p.strip() for p in args.whitelist_paths.split(",") if p.strip()]
+        ollama_open = any(p.startswith("/api") for p in whitelisted)
+        if args.host not in loopback_hosts and ollama_open:
+            ASCIIColors.yellow("\n⚠️  Security Notice:")
+            ASCIIColors.white(f"""    WHITELIST_PATHS ('{args.whitelist_paths}') exempts the Ollama-compatible
+    /api/* routes (/api/chat, /api/generate, ...) from authentication, so they
+    remain publicly accessible on '{args.host}' even though auth is enabled.
+    These routes invoke the LLM and read your knowledge base. If you do not need
+    open Ollama access, set WHITELIST_PATHS=/health to require authentication.
+    """)
+
     # Ensure splash output flush to system log
     sys.stdout.flush()

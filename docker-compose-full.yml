@@ -25,6 +25,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      # The container must listen on 0.0.0.0 to be reachable via the published port.
+      # SECURITY: set LIGHTRAG_API_KEY (or AUTH_ACCOUNTS with TOKEN_SECRET) in .env
+      # so the exposed server is authenticated — without it every endpoint is public.
       HOST: "0.0.0.0"
       PORT: "9621"
       EMBEDDING_BINDING_HOST: "http://vllm-embed:8001/v1"

@@ -142,7 +142,12 @@ cd ..
 # 从 GitHub 仓库的根目录上下载 env.example 文件
 # 或从本地检出的源代码中获取 env.example 文件
 cp env.example .env  # 使用你的LLM和Embedding模型访问参数更新.env文件
-# 启动API-WebUI服务
+# 启动 API-WebUI 服务。默认绑定所有网络接口(0.0.0.0)。
+# 安全提示:对外网暴露前,请在 .env 中配置认证(LIGHTRAG_API_KEY,或
+# AUTH_ACCOUNTS 搭配 TOKEN_SECRET);若仅需本机访问,可绑定 127.0.0.1;
+# 否则所有接口都将公开可访问。
+# 注意:为兼容 Ollama 客户端,/api/* 路由默认不鉴权;如需对其启用认证,
+# 请将 WHITELIST_PATHS 收窄为 /health。
 lightrag-server
 ```
 
