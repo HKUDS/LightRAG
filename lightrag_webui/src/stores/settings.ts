@@ -49,9 +49,6 @@ interface SettingsState {
   backendMaxGraphNodes: number | null
   setBackendMaxGraphNodes: (maxNodes: number | null) => void
 
-  graphLayoutMaxIterations: number
-  setGraphLayoutMaxIterations: (iterations: number) => void
-
   // Retrieval settings
   queryLabel: string
   setQueryLabel: (queryLabel: string) => void
@@ -106,7 +103,6 @@ const useSettingsStoreBase = create<SettingsState>()(
       graphQueryMaxDepth: 3,
       graphMaxNodes: 1000,
       backendMaxGraphNodes: null,
-      graphLayoutMaxIterations: 15,
 
       queryLabel: defaultQueryLabel,
 
@@ -141,11 +137,6 @@ const useSettingsStoreBase = create<SettingsState>()(
       setLanguage: (language: Language) => {
         set({ language })
       },
-
-      setGraphLayoutMaxIterations: (iterations: number) =>
-        set({
-          graphLayoutMaxIterations: iterations
-        }),
 
       setQueryLabel: (queryLabel: string) =>
         set({
@@ -275,7 +266,6 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 7) {
           state.graphQueryMaxDepth = 3
-          state.graphLayoutMaxIterations = 15
         }
         if (version < 8) {
           state.graphMinDegree = 0

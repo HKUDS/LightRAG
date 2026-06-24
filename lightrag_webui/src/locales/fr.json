@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Les données du graphe sont tronquées au nombre maximum de nœuds",
+    "fetchRetriesExhausted": "Échec du chargement des données du graphe. Utilisez l'actualisation pour réessayer.",
+    "graphBuildFailed": "Échec du rendu des données du graphe. Utilisez l'actualisation pour réessayer.",
     "statusDialog": {
       "title": "Paramètres du Serveur LightRAG",
       "description": "Afficher l'état actuel du système et les informations de connexion"
@@ -251,7 +253,6 @@
         "edgeEvents": "Événements des arêtes",
         "maxQueryDepth": "Profondeur maximale de la requête",
         "maxNodes": "Nombre maximum de nœuds",
-        "maxLayoutIterations": "Itérations maximales de mise en page",
         "resetToDefault": "Réinitialiser par défaut",
         "edgeSizeRange": "Plage de taille des arêtes",
         "depth": "D",

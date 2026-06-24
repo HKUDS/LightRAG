@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "تم اقتصار بيانات الرسم البياني على الحد الأقصى للعقد",
+    "fetchRetriesExhausted": "فشل تحميل بيانات الرسم البياني. استخدم التحديث للمحاولة مرة أخرى.",
+    "graphBuildFailed": "فشل عرض بيانات الرسم البياني. استخدم التحديث لإعادة المحاولة.",
     "statusDialog": {
       "title": "إعدادات خادم LightRAG",
       "description": "عرض حالة النظام الحالية ومعلومات الاتصال"
@@ -251,7 +253,6 @@
         "edgeEvents": "أحداث الحافة",
         "maxQueryDepth": "أقصى عمق للاستعلام",
         "maxNodes": "الحد الأقصى للعقد",
-        "maxLayoutIterations": "أقصى تكرارات التخطيط",
         "resetToDefault": "إعادة التعيين إلى الافتراضي",
         "edgeSizeRange": "نطاق حجم الحافة",
         "depth": "D",
