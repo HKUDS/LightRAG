@@ -1923,6 +1923,40 @@ security_check_env_file
     assert "WHITELIST_PATHS exposes /api routes" in result.stdout
 
 
+def test_security_check_reports_api_key_only_with_catch_all_whitelist(
+    tmp_path: Path,
+) -> None:
+    """A catch-all WHITELIST_PATHS=/* exempts every route (incl. /api) and must be flagged.
+
+    Regression for GHSA-mmg5-8x8q-v934: '/*' strips to an empty prefix that
+    every path starts with, so the old substring check (entries beginning with
+    '/api') missed it and emitted no notice.
+    """
+    write_text_lines(
+        tmp_path / ".env",
+        ["LIGHTRAG_API_KEY=my-secret-key", "WHITELIST_PATHS=/*"],
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "WHITELIST_PATHS exposes /api routes" in result.stdout
+
+
 def test_security_check_passes_for_api_key_only_with_safe_whitelist(
     tmp_path: Path,
 ) -> None:

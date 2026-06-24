@@ -440,23 +440,28 @@ validate_auth_accounts_runtime_config() {
 
 whitelist_exposes_api_routes() {
   local whitelist_paths="$1"
-  local entry trimmed_entry normalized_entry
+  local entry trimmed_entry prefix
+  local entries=()
 
   IFS=',' read -r -a entries <<< "$whitelist_paths"
   for entry in "${entries[@]}"; do
     trimmed_entry="${entry#"${entry%%[![:space:]]*}"}"
     trimmed_entry="${trimmed_entry%"${trimmed_entry##*[![:space:]]}"}"
-    normalized_entry="$trimmed_entry"
+    [[ -z "$trimmed_entry" ]] && continue
 
-    if [[ "$normalized_entry" == *"/*" ]]; then
-      normalized_entry="${normalized_entry%/*}"
-    fi
-    if [[ "$normalized_entry" != "/" ]]; then
-      normalized_entry="${normalized_entry%/}"
-    fi
-
-    if [[ "$normalized_entry" == "/api" || "$normalized_entry" == /api/* ]]; then
-      return 0
+    if [[ "$trimmed_entry" == *"/*" ]]; then
+      # Prefix match (mirrors get_combined_auth_dependency): the entry exempts
+      # an /api route when "/api" starts with the prefix — which includes the
+      # empty prefix produced by the catch-all "/*" — or the prefix is under /api.
+      prefix="${trimmed_entry%/\*}"
+      if [[ "/api" == "$prefix"* || "$prefix" == "/api"* ]]; then
+        return 0
+      fi
+    else
+      # Exact match: only this literal path is exempted.
+      if [[ "$trimmed_entry" == "/api" || "$trimmed_entry" == "/api/"* ]]; then
+        return 0
+      fi
     fi
   done
 

@@ -284,6 +284,32 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
     return combined_dependency
 
 
+def whitelist_exposes_api_routes(whitelist_paths: str) -> bool:
+    """Return True if WHITELIST_PATHS exempts any Ollama-compatible /api route.
+
+    Mirrors the prefix/exact matching in get_combined_auth_dependency so that a
+    catch-all entry such as ``/*`` (which strips to an empty prefix and matches
+    every request path, including ``/api/chat``) is recognized as exposing the
+    /api routes — not just literal ``/api...`` entries.
+    """
+    for entry in whitelist_paths.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if entry.endswith("/*"):
+            # Prefix match: this entry exempts an /api route when some /api path
+            # starts with the prefix ("/api".startswith(prefix) also covers the
+            # empty catch-all prefix from "/*") or the prefix lives under /api.
+            prefix = entry[:-2]
+            if "/api".startswith(prefix) or prefix.startswith("/api"):
+                return True
+        else:
+            # Exact match: only the literal path is exempted.
+            if entry == "/api" or entry.startswith("/api/"):
+                return True
+    return False
+
+
 def display_splash_screen(args: argparse.Namespace) -> None:
     """
     Display a colorful splash screen showing LightRAG server configuration
@@ -471,8 +497,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     # public unless the operator narrows WHITELIST_PATHS (e.g. to /health).
     if args.key or args.auth_accounts:
         loopback_hosts = {"127.0.0.1", "::1", "localhost"}
-        whitelisted = [p.strip() for p in args.whitelist_paths.split(",") if p.strip()]
-        ollama_open = any(p.startswith("/api") for p in whitelisted)
+        ollama_open = whitelist_exposes_api_routes(args.whitelist_paths)
         if args.host not in loopback_hosts and ollama_open:
             ASCIIColors.yellow("\n⚠️  Security Notice:")
             ASCIIColors.white(f"""    WHITELIST_PATHS ('{args.whitelist_paths}') exempts the Ollama-compatible
