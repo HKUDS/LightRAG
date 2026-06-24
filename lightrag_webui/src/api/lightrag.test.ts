@@ -440,7 +440,12 @@ describe('kb iteration api', () => {
       return { workspace: 'demo', stopReason: 'pending_human_review', proposalIds: [] }
     })
 
-    await apiModule.runKBIterationLLMReview('demo workspace', { max_review_rounds: 1 })
+    await apiModule.runKBIterationLLMReview('demo workspace', {
+      max_review_rounds: 1,
+      max_subagent_tasks: 8,
+      max_parallel_subagents: 1,
+      max_proposals_per_run: 20
+    })
     await apiModule.executeKBIterationAcceptedChanges('demo workspace')
     await apiModule.getKBIterationLLMReviewTrace('demo workspace')
     await apiModule.getKBIterationLLMReviewReport('demo workspace')
@@ -450,7 +455,12 @@ describe('kb iteration api', () => {
 
     expect(postCalls[0]).toEqual({
       path: '/kb-iteration/demo%20workspace/llm-review/runs',
-      body: { max_review_rounds: 1 }
+      body: {
+        max_review_rounds: 1,
+        max_subagent_tasks: 8,
+        max_parallel_subagents: 1,
+        max_proposals_per_run: 20
+      }
     })
     expect(postCalls[1]).toEqual({
       path: '/kb-iteration/demo%20workspace/accepted-changes/execute',

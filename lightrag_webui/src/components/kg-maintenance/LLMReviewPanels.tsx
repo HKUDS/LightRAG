@@ -1,4 +1,5 @@
 import Button from '@/components/ui/Button'
+import type { KBIterationProposalFunnelReport } from '@/api/lightrag'
 import { BrainCircuitIcon, FileDiffIcon, ShieldCheckIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 
@@ -32,6 +33,7 @@ export type LLMReviewPanelProps = {
   missingBranchInference: string
   evidenceMap: string
   repairPlan: string
+  deterministicProposalReport?: KBIterationProposalFunnelReport | null
   running: boolean
   onRun: () => void
 }
@@ -55,6 +57,7 @@ export function LLMReviewPanel({
   missingBranchInference,
   evidenceMap,
   repairPlan,
+  deterministicProposalReport,
   running,
   onRun
 }: LLMReviewPanelProps) {
@@ -106,19 +109,19 @@ export function LLMReviewPanel({
                 </div>
                 {typeof stage?.attempts === 'number' ? (
                   <div className="text-muted-foreground mt-2 text-xs">
-                    attempt: <span className="font-medium">{stage.attempts}</span>
+                    尝试次数：<span className="font-medium">{stage.attempts}</span>
                   </div>
                 ) : null}
                 <AttemptLogList logs={stage?.attempt_logs} />
                 <RoundField
-                  label="artifact key"
+                  label="产物键"
                   values={stage?.artifact_keys}
-                  emptyText="暂无 artifact key。"
+                  emptyText="暂无产物键。"
                 />
                 <RoundField
-                  label="proposal ID"
+                  label="提案 ID"
                   values={stage?.proposal_ids}
-                  emptyText="暂无 proposal ID。"
+                  emptyText="暂无提案 ID。"
                 />
               </article>
             )
@@ -127,6 +130,7 @@ export function LLMReviewPanel({
       </div>
 
       <ArtifactBlock title="问题解释" content={issueAnalysis} emptyText="暂无问题解释。" />
+      <DeterministicProposalFunnel report={deterministicProposalReport} />
       <ArtifactBlock
         title="缺失分支推断"
         content={missingBranchInference}
@@ -151,9 +155,9 @@ export function LLMReviewPanel({
               </div>
               <RoundField label="关注项" values={round.focus} emptyText="暂无关注项。" />
               <RoundField
-                label="proposal ID"
+                label="提案 ID"
                 values={round.proposal_ids}
-                emptyText="暂无 proposal ID。"
+                emptyText="暂无提案 ID。"
               />
             </article>
           ))
@@ -163,19 +167,380 @@ export function LLMReviewPanel({
       </div>
 
       <ArtifactBlock title="LLM 审阅报告" content={report} emptyText="暂无审阅报告。" />
-      <ArtifactBlock title="生成的 proposal" content={proposals} emptyText="暂无候选 proposal。" />
+      <ArtifactBlock title="生成的提案" content={proposals} emptyText="暂无候选提案。" />
     </section>
   )
 }
 
 const TRACE_STAGE_LABELS = [
-  { key: 'explain', label: 'Explain' },
-  { key: 'infer_branches', label: 'Infer' },
-  { key: 'locate_evidence', label: 'Evidence' },
-  { key: 'propose', label: 'Propose' },
-  { key: 'rank_repairs', label: 'Rank' },
-  { key: 'judge', label: 'Judge' }
+  { key: 'explain', label: '问题解释' },
+  { key: 'infer_branches', label: '缺失分支' },
+  { key: 'locate_evidence', label: '证据定位' },
+  { key: 'propose', label: '生成提案' },
+  { key: 'rank_repairs', label: '修复排序' },
+  { key: 'judge', label: '评判复核' }
 ]
+
+const FAMILY_LABELS: Record<string, string> = {
+  diagnosis: '诊断',
+  treatment: '治疗',
+  risk_safety: '风险/安全',
+  prevention: '预防',
+  clinical_modeling: '临床建模',
+  entity_cleanup: '实体清理',
+  legacy_schema: '旧关系',
+  direction: '方向修正',
+  multi_predicate_split: '多谓词拆分',
+  alias_role_conflict: '别名冲突'
+}
+
+type FunnelFamilyRow = {
+  family: string
+  rawIssueCount: number
+  issueWithCandidateCount: number
+  deterministicCandidateIssueCount: number
+  actionCandidateCount: number
+  deterministicCoveredCount: number
+  deterministicProposalCount: number
+  llmResidualCount: number
+  llmResidualEligibleCount: number
+  llmResidualSelectedCount: number
+  validLlmProposalCount: number
+  blockedCount: number
+  schemaBlockedCount: number
+  safetyBlockedCount: number
+  evidenceBlockedCount: number
+  applyBlockedCount: number
+  decisionMemoryBlockedCount: number
+  conflictCount: number
+  deferredBudgetCount: number
+  conversionFailureCount: number
+  mergeDropCount: number
+  selectedProposalCount: number
+  selectedApprovalProposalCount: number
+  topReasonCode: string
+}
+
+function DeterministicProposalFunnel({
+  report
+}: {
+  report?: KBIterationProposalFunnelReport | null
+}) {
+  const rows = deterministicFunnelRows(report)
+  if (!rows.length) {
+    return null
+  }
+  const summary = isRecord(report?.summary) ? report.summary : {}
+  const conflictGroups = deterministicConflictGroups(report)
+
+  return (
+    <div className="border-border/70 rounded-lg border p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-medium">按家族漏斗统计</h3>
+          <p className="text-muted-foreground mt-1 text-xs">确定性提案漏斗</p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+          <MetricPill label="问题入账率" value={formatRate(summary.issue_accounting_rate)} />
+          <MetricPill label="候选校验率" value={formatRate(summary.candidate_validation_rate)} />
+          <MetricPill label="候选转提案率" value={formatRate(summary.candidate_to_proposal_rate)} />
+          <MetricPill label="队列应用支持率" value={formatRate(summary.queue_apply_support_rate)} />
+        </div>
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-muted/40 text-muted-foreground">
+            <tr>
+              {[
+                '家族',
+                '原始问题',
+                '有候选',
+                '候选动作',
+                '确定性覆盖',
+                '确定性提案',
+                'LLM 剩余',
+                'LLM 有效提案',
+                '阻塞',
+                '延后',
+                '已选提案',
+                '主要原因'
+              ].map((heading) => (
+                <th key={heading} className="px-3 py-2 text-left font-medium">
+                  {heading}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.family} className="border-border/60 border-t">
+                <td className="px-3 py-2 font-medium">{familyLabel(row.family)}</td>
+                <NumericCell value={row.rawIssueCount} />
+                <NumericCell value={row.issueWithCandidateCount} />
+                <NumericCell value={row.actionCandidateCount} />
+                <NumericCell value={row.deterministicCoveredCount} />
+                <NumericCell value={row.deterministicProposalCount} />
+                <NumericCell value={row.llmResidualCount} />
+                <NumericCell value={row.validLlmProposalCount} />
+                <NumericCell value={row.blockedCount} />
+                <NumericCell value={row.deferredBudgetCount} />
+                <NumericCell value={row.selectedApprovalProposalCount} />
+                <td className="px-3 py-2">{row.topReasonCode}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
+        <FunnelBreakdownTable title="阻断原因" rows={rows} mode="blockers" />
+        <FunnelBreakdownTable title="LLM 剩余已选/延后" rows={rows} mode="residual" />
+      </div>
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
+        <ConflictGroupsPanel groups={conflictGroups} />
+        <RecurrencePanel summary={summary} />
+      </div>
+    </div>
+  )
+}
+
+function MetricPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-muted/40 rounded-md px-2 py-1">
+      <div className="text-muted-foreground">{label}</div>
+      <div className="font-medium tabular-nums">{value}</div>
+    </div>
+  )
+}
+
+function NumericCell({ value }: { value: number }) {
+  return <td className="px-3 py-2 text-right">{value}</td>
+}
+
+function deterministicFunnelRows(report?: KBIterationProposalFunnelReport | null): FunnelFamilyRow[] {
+  const families = report?.families
+  if (Array.isArray(families)) {
+    return families
+      .filter(isRecord)
+      .map((family) => deterministicFunnelRow(stringValue(family.family), family))
+  }
+  if (isRecord(families)) {
+    return Object.entries(families)
+      .filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]))
+      .map(([familyKey, metrics]) => deterministicFunnelRow(familyKey, metrics))
+  }
+  return []
+}
+
+function deterministicFunnelRow(
+  familyKey: string,
+  metrics: Record<string, unknown>
+): FunnelFamilyRow {
+  const reasonCodeCounts = isRecord(metrics.reason_code_counts)
+    ? metrics.reason_code_counts
+    : {}
+  const schemaBlockedCount = metricNumber(metrics, 'schema_blocked_count', 'blocked_schema_count')
+  const safetyBlockedCount = metricNumber(metrics, 'safety_blocked_count', 'blocked_safety_count')
+  const evidenceBlockedCount = metricNumber(
+    metrics,
+    'evidence_blocked_count',
+    'blocked_evidence_count'
+  )
+  const applyBlockedCount = metricNumber(metrics, 'apply_blocked_count', 'blocked_apply_count')
+  const decisionMemoryBlockedCount = metricNumber(
+    metrics,
+    'decision_memory_blocked_count',
+    'blocked_decision_memory_count'
+  )
+  const deferredBudgetCount = metricNumber(
+    metrics,
+    'deferred_by_family_cap_count',
+    'deferred_budget_count'
+  )
+  const llmResidualEligibleCount = metricNumber(
+    metrics,
+    'llm_residual_eligible_count',
+    'llm_residual_count'
+  )
+  const selectedApprovalProposalCount = metricNumber(
+    metrics,
+    'selected_approval_proposal_count',
+    'selected_proposal_count'
+  )
+  return {
+    family: stringValue(metrics.family) || familyKey || 'unknown',
+    rawIssueCount: numericValue(metrics.raw_issue_count),
+    issueWithCandidateCount: numericValue(metrics.issue_with_candidate_count),
+    deterministicCandidateIssueCount: metricNumber(
+      metrics,
+      'deterministic_candidate_issue_count',
+      'issue_with_candidate_count'
+    ),
+    actionCandidateCount: numericValue(metrics.action_candidate_count),
+    deterministicCoveredCount: numericValue(metrics.deterministic_covered_count),
+    deterministicProposalCount: metricNumber(
+      metrics,
+      'deterministic_proposal_count',
+      'deterministic_covered_count'
+    ),
+    llmResidualCount: numericValue(metrics.llm_residual_count),
+    llmResidualEligibleCount,
+    llmResidualSelectedCount: numericValue(metrics.llm_residual_selected_count),
+    validLlmProposalCount: numericValue(metrics.valid_llm_proposal_count),
+    blockedCount:
+      schemaBlockedCount +
+      safetyBlockedCount +
+      evidenceBlockedCount +
+      applyBlockedCount +
+      decisionMemoryBlockedCount,
+    schemaBlockedCount,
+    safetyBlockedCount,
+    evidenceBlockedCount,
+    applyBlockedCount,
+    decisionMemoryBlockedCount,
+    conflictCount: numericValue(metrics.conflict_count),
+    deferredBudgetCount,
+    conversionFailureCount: numericValue(metrics.conversion_failure_count),
+    mergeDropCount: numericValue(metrics.merge_drop_count),
+    selectedProposalCount: numericValue(metrics.selected_proposal_count),
+    selectedApprovalProposalCount,
+    topReasonCode: topReasonCode(reasonCodeCounts)
+  }
+}
+
+function FunnelBreakdownTable({
+  title,
+  rows,
+  mode
+}: {
+  title: string
+  rows: FunnelFamilyRow[]
+  mode: 'blockers' | 'residual'
+}) {
+  const headings =
+    mode === 'blockers'
+      ? ['家族', '结构', '安全', '证据', '应用', '记忆', '冲突', '转换失败', '合并丢弃']
+      : ['家族', '可送 LLM', '已选 LLM', '延后', '有效 LLM 提案', '已进审批']
+  return (
+    <section>
+      <h4 className="text-sm font-medium">{title}</h4>
+      <div className="mt-2 overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-muted/40 text-muted-foreground">
+            <tr>
+              {headings.map((heading) => (
+                <th key={heading} className="px-3 py-2 text-left font-medium">
+                  {heading}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={`${title}-${row.family}`} className="border-border/60 border-t">
+                <td className="px-3 py-2 font-medium">{familyLabel(row.family)}</td>
+                {mode === 'blockers' ? (
+                  <>
+                    <NumericCell value={row.schemaBlockedCount} />
+                    <NumericCell value={row.safetyBlockedCount} />
+                    <NumericCell value={row.evidenceBlockedCount} />
+                    <NumericCell value={row.applyBlockedCount} />
+                    <NumericCell value={row.decisionMemoryBlockedCount} />
+                    <NumericCell value={row.conflictCount} />
+                    <NumericCell value={row.conversionFailureCount} />
+                    <NumericCell value={row.mergeDropCount} />
+                  </>
+                ) : (
+                  <>
+                    <NumericCell value={row.llmResidualEligibleCount} />
+                    <NumericCell value={row.llmResidualSelectedCount} />
+                    <NumericCell value={row.deferredBudgetCount} />
+                    <NumericCell value={row.validLlmProposalCount} />
+                    <NumericCell value={row.selectedApprovalProposalCount} />
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+function ConflictGroupsPanel({ groups }: { groups: Record<string, unknown>[] }) {
+  return (
+    <section>
+      <h4 className="text-sm font-medium">冲突组</h4>
+      {groups.length ? (
+        <div className="mt-2 overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-muted/40 text-muted-foreground">
+              <tr>
+                {['目标', '提案', '原因'].map((heading) => (
+                  <th key={heading} className="px-3 py-2 text-left font-medium">
+                    {heading}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map((group, index) => (
+                <tr key={`conflict-${index}`} className="border-border/60 border-t">
+                  <td className="px-3 py-2">{conflictTarget(group)}</td>
+                  <td className="px-3 py-2">
+                    {stringArray(group.proposal_ids)?.join(', ') || '暂无'}
+                  </td>
+                  <td className="px-3 py-2">{stringValue(group.reason) || '需要人工复核'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <EmptyBlock>暂无冲突组。</EmptyBlock>
+      )}
+    </section>
+  )
+}
+
+function RecurrencePanel({ summary }: { summary: Record<string, unknown> }) {
+  return (
+    <section>
+      <h4 className="text-sm font-medium">复现的拒绝记忆命中数</h4>
+      <div className="mt-2 grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
+        <MetricPill
+          label="硬拒绝复现"
+          value={String(numericValue(summary.hard_rejection_recurrence_count))}
+        />
+        <MetricPill
+          label="精确重复复现"
+          value={String(numericValue(summary.exact_duplicate_recurrence_count))}
+        />
+        <MetricPill
+          label="已知坏模式"
+          value={String(numericValue(summary.known_bad_pattern_count))}
+        />
+      </div>
+    </section>
+  )
+}
+
+function familyLabel(family: string) {
+  return FAMILY_LABELS[family] ?? family
+}
+
+function topReasonCode(reasonCodeCounts: Record<string, unknown>) {
+  let topKey = ''
+  let topCount = -1
+  for (const [key, value] of Object.entries(reasonCodeCounts)) {
+    const count = numericValue(value)
+    if (count > topCount) {
+      topKey = key
+      topCount = count
+    }
+  }
+  return topKey || '暂无'
+}
 
 export function PatchCandidatesPanel({
   proposals,
@@ -194,7 +559,7 @@ export function PatchCandidatesPanel({
       />
 
       <div className="space-y-2">
-        <h3 className="text-sm font-medium">proposal ID</h3>
+        <h3 className="text-sm font-medium">提案 ID</h3>
         {proposalIds.length ? (
           <div className="flex flex-wrap gap-2">
             {proposalIds.map((proposalId) => (
@@ -209,12 +574,12 @@ export function PatchCandidatesPanel({
             ))}
           </div>
         ) : (
-          <EmptyBlock>暂无可加载的 proposal ID。</EmptyBlock>
+          <EmptyBlock>暂无可加载的提案 ID。</EmptyBlock>
         )}
       </div>
 
       <ArtifactBlock title="已选择 Patch" content={patchText} emptyText="尚未选择候选 Patch。" />
-      <ArtifactBlock title="proposal 来源" content={proposals} emptyText="暂无候选 proposal。" />
+      <ArtifactBlock title="提案来源" content={proposals} emptyText="暂无候选提案。" />
     </section>
   )
 }
@@ -287,13 +652,13 @@ function AttemptLogList({ logs }: { logs?: TraceAttemptLog[] }) {
 
   return (
     <div className="mt-3 space-y-1">
-      <div className="text-muted-foreground text-xs">rejected attempts</div>
+      <div className="text-muted-foreground text-xs">被拒绝的尝试</div>
       {logs.map((log, index) => (
         <div
           key={`${log.attempt || index}-${log.error || ''}`}
           className="bg-muted rounded-md px-2 py-1 text-xs"
         >
-          <span className="font-medium">Attempt {log.attempt || index + 1}</span>
+          <span className="font-medium">第 {log.attempt || index + 1} 次</span>
           {log.state ? <span className="text-muted-foreground"> - {log.state}</span> : null}
           {log.error ? <div className="mt-1 break-words">{log.error}</div> : null}
         </div>
@@ -332,6 +697,47 @@ function EmptyBlock({ children }: { children: ReactNode }) {
 
 function isTraceStage(stage: TraceStage | null): stage is TraceStage {
   return stage !== null
+}
+
+function numericValue(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function metricNumber(metrics: Record<string, unknown>, key: string, fallbackKey: string) {
+  if (key in metrics) {
+    return numericValue(metrics[key])
+  }
+  return numericValue(metrics[fallbackKey])
+}
+
+function formatRate(value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '暂无'
+  }
+  return `${Math.round(value * 1000) / 10}%`
+}
+
+function stringValue(value: unknown) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function deterministicConflictGroups(report?: KBIterationProposalFunnelReport | null) {
+  const primary = Array.isArray(report?.conflict_groups) ? report?.conflict_groups : undefined
+  const fallback = Array.isArray(report?.conflicts) ? report?.conflicts : undefined
+  return (primary || fallback || []).filter(isRecord)
+}
+
+function conflictTarget(group: Record<string, unknown>) {
+  return (
+    stringValue(group.target) ||
+    stringValue(group.issue_ref) ||
+    stringArray(group.candidate_ids)?.join(', ') ||
+    '未标注'
+  )
 }
 
 function normalizeTraceStageEntry(stage: unknown): TraceStage | null {

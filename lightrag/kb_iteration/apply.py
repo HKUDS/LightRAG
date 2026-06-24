@@ -17,6 +17,7 @@ from lightrag.medical_kg.ontology import MedicalCategory, TOP_LEVEL_MEDICAL_CATE
 from .medical_schema import CANONICAL_MEDICAL_RELATION_IDS
 from .models import ImprovementProposal
 from .proposals import validate_proposal
+from .relation_tokens import split_relation_tokens
 
 APPLY_SOURCE = "kb_iteration_apply"
 ACCEPTED_CHANGES_SOURCE_ARTIFACT = "accepted_changes.md"
@@ -30,8 +31,6 @@ VALUE_LIKE_RELATION_KEYWORDS = frozenset(
         "剂量用法",
         "dosage_usage",
         "dose_usage",
-        "has_result",
-        "has_dosing_regimen",
     }
 )
 _PROPOSAL_FIELD_NAMES = {field_info.name for field_info in fields(ImprovementProposal)}
@@ -54,6 +53,43 @@ class ApplyChangeStatus(Enum):
     ALREADY_PRESENT = "already_present"
     BLOCKED = "blocked"
     UNSUPPORTED = "unsupported"
+
+
+PROPOSAL_APPLY_HANDLER_REGISTRY: dict[tuple[str, str], str] = {
+    ("add_hierarchy_branch", "add_hierarchy_branch"): "add_hierarchy_branch",
+    ("medical_relation_schema_migration", "replace_relation"): (
+        "medical_relation_schema_migration"
+    ),
+    ("medical_relation_schema_migration", "retire_relation"): (
+        "medical_relation_schema_migration"
+    ),
+    ("medical_fact_role_split", "split_relation"): "medical_fact_role_split",
+    ("value_node_to_qualifier", "value_node_to_qualifier"): (
+        "value_node_to_qualifier"
+    ),
+    ("candidate_kg_expansion", "candidate_kg_expansion"): "candidate_kg_expansion",
+}
+
+
+@dataclass(frozen=True)
+class ProposalApplyCapability:
+    supported: bool
+    action: str
+    reason: str = ""
+
+
+def proposal_apply_capability(
+    proposal: ImprovementProposal | dict[str, Any],
+) -> ProposalApplyCapability:
+    proposal_type = _proposal_type(proposal)
+    action = _proposal_action(proposal, proposal_type)
+    if (proposal_type, action) in PROPOSAL_APPLY_HANDLER_REGISTRY:
+        return ProposalApplyCapability(supported=True, action=action)
+    return ProposalApplyCapability(
+        supported=False,
+        action=action,
+        reason=f"Unsupported proposal apply action: {proposal_type}/{action}.",
+    )
 
 
 @dataclass(frozen=True)
@@ -165,20 +201,24 @@ async def apply_accepted_changes_to_graph(
 
     for record in records:
         proposal_id = str(record.get("proposal_id", "")).strip()
-        proposal_ids.append(proposal_id)
         if proposal_id not in proposals_by_id:
+            proposal_ids.append(proposal_id)
+            proposal_type = str(record.get("proposal_type") or "").strip()
+            target = str(record.get("proposal_target") or record.get("target") or "").strip()
+            action = _proposal_action(record, proposal_type)
             changes.append(
                 ApplyChange(
                     proposal_id=proposal_id,
-                    proposal_type="",
-                    target="",
+                    proposal_type=proposal_type,
+                    target=target,
                     status=ApplyChangeStatus.BLOCKED,
-                    action="resolve_proposal_definition",
+                    action=action,
                     reason="Accepted proposal definition was not found.",
                 )
             )
             continue
 
+        proposal_ids.append(proposal_id)
         proposal = proposals_by_id[proposal_id]
         proposal_type = str(
             proposal.get("type") or record.get("proposal_type") or ""
@@ -189,14 +229,31 @@ async def apply_accepted_changes_to_graph(
             for item in proposal.get("evidence", [])
             if isinstance(item, str)
         ]
+        capability = proposal_apply_capability({**record, **proposal})
 
-        if proposal_type == "medical_relation_schema_migration":
+        if not capability.supported:
+            changes.append(
+                ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type=proposal_type,
+                    target=target,
+                    status=ApplyChangeStatus.UNSUPPORTED,
+                    action=capability.action,
+                    evidence=evidence,
+                    reason=capability.reason,
+                )
+            )
+            continue
+
+        handler = PROPOSAL_APPLY_HANDLER_REGISTRY[(proposal_type, capability.action)]
+
+        if handler == "medical_relation_schema_migration":
             if graph is None:
                 changes.append(
                     _blocked_change(
                         proposal_id,
                         proposal,
-                        "replace_relation",
+                        capability.action,
                         "Graph storage is not available.",
                     )
                 )
@@ -212,7 +269,7 @@ async def apply_accepted_changes_to_graph(
             changes.append(change)
             continue
 
-        if proposal_type == "value_node_to_qualifier":
+        if handler == "value_node_to_qualifier":
             if graph is None:
                 changes.append(
                     _blocked_change(
@@ -234,18 +291,48 @@ async def apply_accepted_changes_to_graph(
             changes.append(change)
             continue
 
-        if proposal_type != "add_hierarchy_branch":
-            changes.append(
-                ApplyChange(
-                    proposal_id=proposal_id,
-                    proposal_type=proposal_type,
-                    target=target,
-                    status=ApplyChangeStatus.UNSUPPORTED,
-                    action=proposal_type,
-                    evidence=evidence,
-                    reason="Unsupported proposal type.",
+        if handler == "candidate_kg_expansion":
+            if graph is None:
+                changes.append(
+                    _blocked_change(
+                        proposal_id,
+                        proposal,
+                        "candidate_kg_expansion",
+                        "Graph storage is not available.",
+                    )
                 )
+                continue
+            change = await _apply_candidate_kg_expansion(
+                graph=graph,
+                workspace=workspace,
+                proposal_id=proposal_id,
+                proposal=proposal,
             )
+            if change.status == ApplyChangeStatus.APPLIED:
+                graph_writes_happened = True
+            changes.append(change)
+            continue
+
+        if handler == "medical_fact_role_split":
+            if graph is None:
+                changes.append(
+                    _blocked_change(
+                        proposal_id,
+                        proposal,
+                        "split_relation",
+                        "Graph storage is not available.",
+                    )
+                )
+                continue
+            change = await _apply_medical_fact_role_split(
+                graph=graph,
+                workspace=workspace,
+                proposal_id=proposal_id,
+                proposal=proposal,
+            )
+            if change.status == ApplyChangeStatus.APPLIED:
+                graph_writes_happened = True
+            changes.append(change)
             continue
 
         branch_key = branch_key_from_proposal({**record, **proposal})
@@ -372,6 +459,473 @@ def _branch_node_data(
     }
 
 
+async def _apply_candidate_kg_expansion(
+    *,
+    graph: Any,
+    workspace: str,
+    proposal_id: str,
+    proposal: dict[str, Any],
+) -> ApplyChange:
+    action = "candidate_kg_expansion"
+    action_payload = proposal.get("action_payload")
+    if not isinstance(action_payload, dict):
+        return _blocked_change(
+            proposal_id,
+            proposal,
+            action,
+            "Incomplete action_payload for candidate_kg_expansion.",
+        )
+
+    candidate_nodes = _candidate_node_payloads(action_payload)
+    candidate_edges = _candidate_edge_payloads(action_payload)
+    retire_edges = _candidate_retire_edge_payloads(action_payload)
+    source_id = _required_action_string(action_payload, "source_id")
+    file_path = _required_action_string(action_payload, "file_path")
+    if (
+        candidate_nodes is None
+        or candidate_edges is None
+        or retire_edges is None
+        or not source_id
+        or not file_path
+    ):
+        return _blocked_change(
+            proposal_id,
+            proposal,
+            action,
+            "Incomplete action_payload for candidate_kg_expansion.",
+        )
+
+    lock_keys = sorted(
+        {
+            *[node["id"] for node in candidate_nodes],
+            *[edge["source"] for edge in candidate_edges],
+            *[edge["target"] for edge in candidate_edges],
+            *[edge["source"] for edge in retire_edges],
+            *[edge["target"] for edge in retire_edges],
+        }
+    )
+    if not lock_keys:
+        return _blocked_change(
+            proposal_id,
+            proposal,
+            action,
+            "candidate_kg_expansion has no nodes or edges to apply.",
+        )
+
+    wrote_graph = False
+    candidate_node_ids = {node["id"] for node in candidate_nodes}
+    async with get_storage_keyed_lock(
+        lock_keys,
+        namespace=f"{workspace}:GraphDB",
+        enable_logging=False,
+    ):
+        for edge in candidate_edges:
+            for endpoint in (edge["source"], edge["target"]):
+                if endpoint in candidate_node_ids:
+                    continue
+                if not await graph.has_node(endpoint):
+                    return _blocked_change(
+                        proposal_id,
+                        proposal,
+                        action,
+                        f"Candidate edge endpoint was not found: {endpoint}.",
+                    )
+            existing_edge = await graph.get_edge(edge["source"], edge["target"])
+            if existing_edge is not None and str(
+                existing_edge.get("keywords", "")
+            ).strip() != edge["keywords"]:
+                return _blocked_change(
+                    proposal_id,
+                    proposal,
+                    action,
+                    "Candidate edge already exists with different keywords.",
+                )
+
+        for retire_edge in retire_edges:
+            existing_edge = await graph.get_edge(
+                retire_edge["source"], retire_edge["target"]
+            )
+            if existing_edge is None:
+                continue
+            if str(existing_edge.get("keywords", "")).strip() != retire_edge["keywords"]:
+                return _blocked_change(
+                    proposal_id,
+                    proposal,
+                    action,
+                    "Retired edge keywords no longer match proposal.",
+                )
+
+        nodes_to_upsert: list[tuple[str, dict[str, Any]]] = []
+        for node in candidate_nodes:
+            if await graph.has_node(node["id"]):
+                continue
+            nodes_to_upsert.append(
+                (
+                    node["id"],
+                    _candidate_node_data(
+                        node,
+                        source_id=source_id,
+                        file_path=file_path,
+                        proposal_id=proposal_id,
+                    ),
+                )
+            )
+        if nodes_to_upsert:
+            await graph.upsert_nodes_batch(
+                [
+                    (node_id, _scalar_graph_payload(node_data))
+                    for node_id, node_data in nodes_to_upsert
+                ]
+            )
+            wrote_graph = True
+
+        for edge in candidate_edges:
+            existing_edge = await graph.get_edge(edge["source"], edge["target"])
+            if _candidate_edge_already_present(
+                existing_edge,
+                edge["keywords"],
+                proposal_id,
+            ):
+                continue
+            edge_data = _candidate_edge_data(
+                edge,
+                existing_edge or {},
+                source_id=source_id,
+                file_path=file_path,
+                proposal_id=proposal_id,
+            )
+            await graph.upsert_edge(
+                edge["source"],
+                edge["target"],
+                _scalar_graph_payload(edge_data),
+            )
+            wrote_graph = True
+
+        for retire_edge in retire_edges:
+            if await graph.get_edge(retire_edge["source"], retire_edge["target"]):
+                await graph.remove_edges([(retire_edge["source"], retire_edge["target"])])
+                wrote_graph = True
+
+    if not wrote_graph:
+        return _already_present_change(
+            proposal_id,
+            proposal,
+            action,
+            "Candidate KG expansion already applied.",
+        )
+
+    return ApplyChange(
+        proposal_id=proposal_id,
+        proposal_type=str(proposal.get("type", "")),
+        target=str(proposal.get("target", "")),
+        status=ApplyChangeStatus.APPLIED,
+        action=action,
+        evidence=_proposal_evidence(proposal),
+    )
+
+
+def _candidate_node_payloads(
+    action_payload: dict[str, Any],
+) -> list[dict[str, str]] | None:
+    raw_nodes = action_payload.get("candidate_nodes")
+    if not isinstance(raw_nodes, list):
+        return None
+    nodes: list[dict[str, str]] = []
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict):
+            return None
+        node_id = _required_action_string(raw_node, "id")
+        label = _required_action_string(raw_node, "label")
+        entity_type = _required_action_string(raw_node, "entity_type")
+        if not node_id or not label or not entity_type:
+            return None
+        nodes.append(
+            {
+                "id": node_id,
+                "label": label,
+                "entity_type": entity_type,
+                "description": str(raw_node.get("description") or "").strip(),
+            }
+        )
+    return nodes
+
+
+def _candidate_edge_payloads(
+    action_payload: dict[str, Any],
+) -> list[dict[str, str]] | None:
+    raw_edges = action_payload.get("candidate_edges")
+    if not isinstance(raw_edges, list):
+        return None
+    edges: list[dict[str, str]] = []
+    for raw_edge in raw_edges:
+        if not isinstance(raw_edge, dict):
+            return None
+        source = _required_action_string(raw_edge, "source")
+        target = _required_action_string(raw_edge, "target")
+        keywords = _required_action_string(raw_edge, "keywords")
+        if not source or not target or keywords not in CANONICAL_MEDICAL_RELATION_IDS:
+            return None
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "keywords": keywords,
+                "description": str(raw_edge.get("description") or "").strip(),
+            }
+        )
+    return edges
+
+
+def _candidate_retire_edge_payloads(
+    action_payload: dict[str, Any],
+) -> list[dict[str, str]] | None:
+    raw_edges = action_payload.get("retire_edges", [])
+    if raw_edges is None:
+        return []
+    if not isinstance(raw_edges, list):
+        return None
+    edges: list[dict[str, str]] = []
+    for raw_edge in raw_edges:
+        if not isinstance(raw_edge, dict):
+            return None
+        source = _required_action_string(raw_edge, "source")
+        target = _required_action_string(raw_edge, "target")
+        keywords = _required_action_string(raw_edge, "keywords")
+        if not source or not target or not keywords:
+            return None
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "keywords": keywords,
+                "reason": str(raw_edge.get("reason") or "").strip(),
+            }
+        )
+    return edges
+
+
+def _candidate_node_data(
+    node: dict[str, str],
+    *,
+    source_id: str,
+    file_path: str,
+    proposal_id: str,
+) -> dict[str, Any]:
+    return {
+        "entity_id": node["id"],
+        "label": node["label"],
+        "entity_type": node["entity_type"],
+        "description": node.get("description", ""),
+        "source_id": source_id,
+        "file_path": file_path,
+        "generated_by": APPLY_SOURCE,
+        "accepted_proposal_ids": proposal_id,
+    }
+
+
+def _candidate_edge_data(
+    edge: dict[str, str],
+    existing_edge: dict[str, Any],
+    *,
+    source_id: str,
+    file_path: str,
+    proposal_id: str,
+) -> dict[str, Any]:
+    edge_data = dict(existing_edge)
+    edge_data.update(
+        {
+            "id": f"{edge['source']}->{edge['target']}",
+            "source": edge["source"],
+            "target": edge["target"],
+            "source_node_id": edge["source"],
+            "target_node_id": edge["target"],
+            "keywords": edge["keywords"],
+            "description": edge.get("description", ""),
+            "source_id": _merge_graph_field_values(existing_edge.get("source_id"), source_id),
+            "file_path": _merge_graph_field_values(existing_edge.get("file_path"), file_path),
+            "generated_by": APPLY_SOURCE,
+            "accepted_proposal_ids": _append_graph_field(
+                existing_edge.get("accepted_proposal_ids"),
+                proposal_id,
+            ),
+        }
+    )
+    return edge_data
+
+
+def _candidate_edge_already_present(
+    edge_data: dict[str, Any] | None,
+    keywords: str,
+    proposal_id: str,
+) -> bool:
+    if edge_data is None:
+        return False
+    return (
+        str(edge_data.get("keywords", "")).strip() == keywords
+        and _graph_field_contains(edge_data.get("accepted_proposal_ids"), proposal_id)
+    )
+
+
+async def _apply_medical_fact_role_split(
+    *,
+    graph: Any,
+    workspace: str,
+    proposal_id: str,
+    proposal: dict[str, Any],
+) -> ApplyChange:
+    action = "split_relation"
+    action_payload = proposal.get("action_payload")
+    if not isinstance(action_payload, dict):
+        return _blocked_change(
+            proposal_id,
+            proposal,
+            action,
+            "Incomplete action_payload for split_relation.",
+        )
+    if action_payload.get("action") != action:
+        return _blocked_change(
+            proposal_id,
+            proposal,
+            action,
+            "Unsupported medical fact role split action.",
+        )
+
+    required_fields = (
+        "edge_id",
+        "expected_source",
+        "expected_target",
+        "current_keywords",
+    )
+    values = _required_string_payload_values(action_payload, required_fields)
+    new_edges = _split_relation_new_edges(action_payload)
+    if values is None or not new_edges:
+        return _blocked_change(
+            proposal_id,
+            proposal,
+            action,
+            "Incomplete action_payload for split_relation.",
+        )
+
+    edge_id = values["edge_id"]
+    expected_source = values["expected_source"]
+    expected_target = values["expected_target"]
+    current_keywords = values["current_keywords"]
+    retire_original = action_payload.get("retire_original", True) is not False
+    new_pairs = {(edge["source"], edge["target"]) for edge in new_edges}
+    if retire_original and (expected_source, expected_target) in new_pairs:
+        return _blocked_change(
+            proposal_id,
+            proposal,
+            action,
+            "Split relation cannot retire an original edge reused by a new edge.",
+        )
+
+    lock_keys = sorted(
+        {
+            expected_source,
+            expected_target,
+            *[edge["source"] for edge in new_edges],
+            *[edge["target"] for edge in new_edges],
+        }
+    )
+    async with get_storage_keyed_lock(
+        lock_keys,
+        namespace=f"{workspace}:GraphDB",
+        enable_logging=False,
+    ):
+        edge_data = await graph.get_edge(expected_source, expected_target)
+        if edge_data is None:
+            if await _split_relation_already_applied(
+                graph, new_edges, proposal_id
+            ):
+                return _already_present_change(
+                    proposal_id,
+                    proposal,
+                    action,
+                    "Relation split already applied.",
+                )
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Expected edge was not found.",
+            )
+        if not _edge_identity_matches(edge_data, edge_id):
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Expected edge identity does not match proposal.",
+            )
+        if not _edge_orientation_matches(edge_data, expected_source, expected_target):
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Expected edge orientation does not match proposal.",
+            )
+        if str(edge_data.get("keywords", "")).strip() != current_keywords:
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Current edge keywords no longer match proposal.",
+            )
+        for edge in new_edges:
+            if not await graph.has_node(edge["source"]) or not await graph.has_node(
+                edge["target"]
+            ):
+                return _blocked_change(
+                    proposal_id,
+                    proposal,
+                    action,
+                    "Split relation endpoint was not found.",
+                )
+            target_edge_data = await graph.get_edge(edge["source"], edge["target"])
+            if target_edge_data is not None and str(
+                target_edge_data.get("keywords", "")
+            ).strip() not in {"", edge["predicate"]}:
+                return _blocked_change(
+                    proposal_id,
+                    proposal,
+                    action,
+                    "Split relation target edge already exists.",
+                )
+
+        for edge in new_edges:
+            target_edge_data = await graph.get_edge(edge["source"], edge["target"])
+            base_edge_data = (
+                _merged_relation_edge_data(edge_data, target_edge_data)
+                if target_edge_data is not None
+                else edge_data
+            )
+            await graph.upsert_edge(
+                edge["source"],
+                edge["target"],
+                _scalar_graph_payload(
+                    _relation_replacement_edge_data(
+                        base_edge_data,
+                        proposal_id=proposal_id,
+                        new_source=edge["source"],
+                        new_target=edge["target"],
+                        new_keywords=edge["predicate"],
+                        qualifiers=edge.get("qualifiers"),
+                    )
+                ),
+            )
+        if retire_original:
+            await graph.remove_edges([(expected_source, expected_target)])
+
+    return ApplyChange(
+        proposal_id=proposal_id,
+        proposal_type=str(proposal.get("type", "")),
+        target=str(proposal.get("target", "")),
+        status=ApplyChangeStatus.APPLIED,
+        action=action,
+        evidence=_proposal_evidence(proposal),
+    )
+
+
 async def _apply_medical_relation_schema_migration(
     *,
     graph: Any,
@@ -389,6 +943,15 @@ async def _apply_medical_relation_schema_migration(
         )
 
     action = action_payload.get("action")
+    if action == "retire_relation":
+        return await _apply_medical_relation_retirement(
+            graph=graph,
+            workspace=workspace,
+            proposal_id=proposal_id,
+            proposal=proposal,
+            action_payload=action_payload,
+        )
+
     if action != "replace_relation":
         return _blocked_change(
             proposal_id,
@@ -442,6 +1005,31 @@ async def _apply_medical_relation_schema_migration(
                 new_keywords,
                 proposal_id,
             ):
+                if not _relation_direction_metadata_matches(
+                    new_edge_data, new_source, new_target
+                ):
+                    await graph.upsert_edge(
+                        new_source,
+                        new_target,
+                        _scalar_graph_payload(
+                            _relation_replacement_edge_data(
+                                new_edge_data or {},
+                                proposal_id=proposal_id,
+                                new_source=new_source,
+                                new_target=new_target,
+                                new_keywords=new_keywords,
+                                qualifiers=action_payload.get("qualifiers"),
+                            )
+                        ),
+                    )
+                    return ApplyChange(
+                        proposal_id=proposal_id,
+                        proposal_type=str(proposal.get("type", "")),
+                        target=str(proposal.get("target", "")),
+                        status=ApplyChangeStatus.APPLIED,
+                        action="replace_relation",
+                        evidence=_proposal_evidence(proposal),
+                    )
                 return _already_present_change(
                     proposal_id,
                     proposal,
@@ -460,6 +1048,37 @@ async def _apply_medical_relation_schema_migration(
             new_keywords,
             proposal_id,
         ):
+            if not _relation_direction_metadata_matches(
+                edge_data, new_source, new_target
+            ):
+                target_edge_exists_before = await graph.has_edge(new_source, new_target)
+                await graph.upsert_edge(
+                    new_source,
+                    new_target,
+                    _scalar_graph_payload(
+                        _relation_replacement_edge_data(
+                            edge_data,
+                            proposal_id=proposal_id,
+                            new_source=new_source,
+                            new_target=new_target,
+                            new_keywords=new_keywords,
+                            qualifiers=action_payload.get("qualifiers"),
+                        )
+                    ),
+                )
+                if (
+                    not target_edge_exists_before
+                    and (expected_source, expected_target) != (new_source, new_target)
+                ):
+                    await graph.remove_edges([(expected_source, expected_target)])
+                return ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type=str(proposal.get("type", "")),
+                    target=str(proposal.get("target", "")),
+                    status=ApplyChangeStatus.APPLIED,
+                    action="replace_relation",
+                    evidence=_proposal_evidence(proposal),
+                )
             return _already_present_change(
                 proposal_id,
                 proposal,
@@ -468,6 +1087,35 @@ async def _apply_medical_relation_schema_migration(
             )
 
         if not _edge_identity_matches(edge_data, edge_id):
+            target_edge_data = await graph.get_edge(new_source, new_target)
+            if _relation_replacement_matches_target(
+                target_edge_data,
+                new_source,
+                new_target,
+                new_keywords,
+            ):
+                await graph.upsert_edge(
+                    new_source,
+                    new_target,
+                    _scalar_graph_payload(
+                        _relation_replacement_edge_data(
+                            target_edge_data or edge_data,
+                            proposal_id=proposal_id,
+                            new_source=new_source,
+                            new_target=new_target,
+                            new_keywords=new_keywords,
+                            qualifiers=action_payload.get("qualifiers"),
+                        )
+                    ),
+                )
+                return ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type=str(proposal.get("type", "")),
+                    target=str(proposal.get("target", "")),
+                    status=ApplyChangeStatus.APPLIED,
+                    action="replace_relation",
+                    evidence=_proposal_evidence(proposal),
+                )
             return _blocked_change(
                 proposal_id,
                 proposal,
@@ -476,11 +1124,47 @@ async def _apply_medical_relation_schema_migration(
             )
 
         if not _edge_orientation_matches(edge_data, expected_source, expected_target):
-            return _blocked_change(
-                proposal_id,
-                proposal,
-                "replace_relation",
-                "Expected edge orientation does not match proposal.",
+            same_storage_new_edge_data = (
+                await graph.get_edge(new_source, new_target)
+                if {expected_source, expected_target} == {new_source, new_target}
+                and _edge_orientation_matches(edge_data, new_source, new_target)
+                else None
+            )
+            if same_storage_new_edge_data != edge_data:
+                return _blocked_change(
+                    proposal_id,
+                    proposal,
+                    "replace_relation",
+                    "Expected edge orientation does not match proposal.",
+                )
+
+        if _relation_replacement_matches_target(
+            edge_data,
+            new_source,
+            new_target,
+            new_keywords,
+        ):
+            await graph.upsert_edge(
+                new_source,
+                new_target,
+                _scalar_graph_payload(
+                    _relation_replacement_edge_data(
+                        edge_data,
+                        proposal_id=proposal_id,
+                        new_source=new_source,
+                        new_target=new_target,
+                        new_keywords=new_keywords,
+                        qualifiers=action_payload.get("qualifiers"),
+                    )
+                ),
+            )
+            return ApplyChange(
+                proposal_id=proposal_id,
+                proposal_type=str(proposal.get("type", "")),
+                target=str(proposal.get("target", "")),
+                status=ApplyChangeStatus.APPLIED,
+                action="replace_relation",
+                evidence=_proposal_evidence(proposal),
             )
 
         current_keywords = action_payload.get("current_keywords")
@@ -526,6 +1210,29 @@ async def _apply_medical_relation_schema_migration(
 
         same_storage_edge = target_edge_exists and target_edge_data == edge_data
         if target_edge_exists and not same_storage_edge:
+            if _edge_orientation_matches(target_edge_data or {}, new_source, new_target):
+                new_edge_data = _relation_replacement_edge_data(
+                    _merged_relation_edge_data(edge_data, target_edge_data or {}),
+                    proposal_id=proposal_id,
+                    new_source=new_source,
+                    new_target=new_target,
+                    new_keywords=new_keywords,
+                    qualifiers=action_payload.get("qualifiers"),
+                )
+                await graph.upsert_edge(
+                    new_source,
+                    new_target,
+                    _scalar_graph_payload(new_edge_data),
+                )
+                await graph.remove_edges([(expected_source, expected_target)])
+                return ApplyChange(
+                    proposal_id=proposal_id,
+                    proposal_type=str(proposal.get("type", "")),
+                    target=str(proposal.get("target", "")),
+                    status=ApplyChangeStatus.APPLIED,
+                    action="replace_relation",
+                    evidence=_proposal_evidence(proposal),
+                )
             return _blocked_change(
                 proposal_id,
                 proposal,
@@ -533,21 +1240,14 @@ async def _apply_medical_relation_schema_migration(
                 "Replacement relation target edge already exists.",
             )
 
-        new_edge_data = dict(edge_data)
-        new_edge_data["keywords"] = new_keywords
-        new_edge_data["normalized_by"] = APPLY_SOURCE
-        new_edge_data["accepted_proposal_ids"] = _append_graph_field(
-            new_edge_data.get("accepted_proposal_ids"),
-            proposal_id,
+        new_edge_data = _relation_replacement_edge_data(
+            edge_data,
+            proposal_id=proposal_id,
+            new_source=new_source,
+            new_target=new_target,
+            new_keywords=new_keywords,
+            qualifiers=action_payload.get("qualifiers"),
         )
-        qualifiers = action_payload.get("qualifiers")
-        if qualifiers:
-            new_edge_data["qualifiers"] = json.dumps(
-                qualifiers,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
 
         await graph.upsert_edge(
             new_source,
@@ -563,6 +1263,84 @@ async def _apply_medical_relation_schema_migration(
         target=str(proposal.get("target", "")),
         status=ApplyChangeStatus.APPLIED,
         action="replace_relation",
+        evidence=_proposal_evidence(proposal),
+    )
+
+
+async def _apply_medical_relation_retirement(
+    *,
+    graph: Any,
+    workspace: str,
+    proposal_id: str,
+    proposal: dict[str, Any],
+    action_payload: dict[str, Any],
+) -> ApplyChange:
+    action = "retire_relation"
+    required_fields = (
+        "edge_id",
+        "expected_source",
+        "expected_target",
+        "current_keywords",
+        "retirement_reason",
+    )
+    values = _required_string_payload_values(action_payload, required_fields)
+    if values is None:
+        return _blocked_change(
+            proposal_id,
+            proposal,
+            action,
+            "Incomplete action_payload for retire_relation.",
+        )
+
+    edge_id = values["edge_id"]
+    expected_source = values["expected_source"]
+    expected_target = values["expected_target"]
+
+    async with get_storage_keyed_lock(
+        sorted({expected_source, expected_target}),
+        namespace=f"{workspace}:GraphDB",
+        enable_logging=False,
+    ):
+        edge_data = await graph.get_edge(expected_source, expected_target)
+        if edge_data is None:
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Expected edge was not found.",
+            )
+        if not _edge_identity_matches(edge_data, edge_id):
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Expected edge identity does not match proposal.",
+            )
+        if not _edge_orientation_matches(edge_data, expected_source, expected_target):
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Expected edge orientation does not match proposal.",
+            )
+
+        edge_keywords = str(edge_data.get("keywords", "")).strip()
+        if edge_keywords != values["current_keywords"]:
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Current edge keywords no longer match proposal.",
+            )
+
+        await graph.remove_edges([(expected_source, expected_target)])
+
+    return ApplyChange(
+        proposal_id=proposal_id,
+        proposal_type=str(proposal.get("type", "")),
+        target=str(proposal.get("target", "")),
+        status=ApplyChangeStatus.APPLIED,
+        action=action,
         evidence=_proposal_evidence(proposal),
     )
 
@@ -674,6 +1452,20 @@ async def _apply_value_node_to_qualifier(
                 action,
                 "Value node incident edge is not value-like.",
             )
+        expected_incident_keywords = _required_action_string(
+            action_payload,
+            "expected_incident_keywords",
+        )
+        if expected_incident_keywords and not _edge_has_expected_keyword(
+            incident_edge_data,
+            expected_incident_keywords,
+        ):
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Value node incident edge keywords do not match proposal.",
+            )
 
         if carrier_edge_data is None:
             return _blocked_change(
@@ -682,9 +1474,30 @@ async def _apply_value_node_to_qualifier(
                 action,
                 "Carrier edge was not found.",
             )
+        expected_carrier_keywords = _required_action_string(
+            action_payload,
+            "expected_carrier_keywords",
+        )
+        if expected_carrier_keywords and not _edge_has_expected_keyword(
+            carrier_edge_data,
+            expected_carrier_keywords,
+        ):
+            return _blocked_change(
+                proposal_id,
+                proposal,
+                action,
+                "Carrier edge keywords do not match proposal.",
+            )
 
         new_edge_data = dict(carrier_edge_data)
-        new_edge_data[f"qualifier_{qualifier_key}"] = qualifier_value
+        qualifiers = _parse_graph_qualifiers(new_edge_data.get("qualifiers"))
+        qualifiers[qualifier_key] = qualifier_value
+        new_edge_data["qualifiers"] = json.dumps(
+            qualifiers,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         new_edge_data["accepted_proposal_ids"] = _append_graph_field(
             new_edge_data.get("accepted_proposal_ids"),
             proposal_id,
@@ -704,6 +1517,65 @@ async def _apply_value_node_to_qualifier(
         action=action,
         evidence=_proposal_evidence(proposal),
     )
+
+
+def _relation_direction_metadata_matches(
+    edge_data: dict[str, Any] | None,
+    new_source: str,
+    new_target: str,
+) -> bool:
+    if edge_data is None:
+        return False
+    return (
+        str(edge_data.get("id", "")).strip() == f"{new_source}->{new_target}"
+        and str(edge_data.get("source_node_id", "")).strip() == new_source
+        and str(edge_data.get("target_node_id", "")).strip() == new_target
+    )
+
+
+def _relation_replacement_edge_data(
+    edge_data: dict[str, Any],
+    *,
+    proposal_id: str,
+    new_source: str,
+    new_target: str,
+    new_keywords: str,
+    qualifiers: Any,
+) -> dict[str, Any]:
+    new_edge_data = dict(edge_data)
+    new_edge_data["id"] = f"{new_source}->{new_target}"
+    new_edge_data["source"] = new_source
+    new_edge_data["target"] = new_target
+    new_edge_data["source_node_id"] = new_source
+    new_edge_data["target_node_id"] = new_target
+    new_edge_data["keywords"] = new_keywords
+    new_edge_data["normalized_by"] = APPLY_SOURCE
+    new_edge_data["accepted_proposal_ids"] = _append_graph_field(
+        new_edge_data.get("accepted_proposal_ids"),
+        proposal_id,
+    )
+    if qualifiers:
+        new_edge_data["qualifiers"] = json.dumps(
+            qualifiers,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    return new_edge_data
+
+
+def _merged_relation_edge_data(
+    edge_data: dict[str, Any],
+    target_edge_data: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(edge_data)
+    merged.update(target_edge_data)
+    for field_name in ("source_id", "file_path"):
+        merged[field_name] = _merge_graph_field_values(
+            edge_data.get(field_name),
+            target_edge_data.get(field_name),
+        )
+    return {key: value for key, value in merged.items() if value not in ("", None)}
 
 
 def _already_present_change(
@@ -748,6 +1620,28 @@ def _proposal_evidence(proposal: dict[str, Any]) -> list[str]:
     ]
 
 
+def _proposal_type(proposal: ImprovementProposal | dict[str, Any]) -> str:
+    if isinstance(proposal, ImprovementProposal):
+        return proposal.type.strip()
+    return str(proposal.get("type") or proposal.get("proposal_type") or "").strip()
+
+
+def _proposal_action(
+    proposal: ImprovementProposal | dict[str, Any],
+    proposal_type: str,
+) -> str:
+    action_payload = (
+        proposal.action_payload
+        if isinstance(proposal, ImprovementProposal)
+        else proposal.get("action_payload")
+    )
+    if isinstance(action_payload, dict):
+        action = str(action_payload.get("action") or "").strip()
+        if action:
+            return action
+    return proposal_type
+
+
 def _edge_identity_matches(edge_data: dict[str, Any], edge_id: str) -> bool:
     for field_name in ("id", "edge_id", "relation_id"):
         if field_name in edge_data and str(edge_data[field_name]).strip() != edge_id:
@@ -760,10 +1654,7 @@ def _edge_orientation_matches(
     expected_source: str,
     expected_target: str,
 ) -> bool:
-    for source_field, target_field in (
-        ("source_node_id", "target_node_id"),
-        ("source", "target"),
-    ):
+    for source_field, target_field in (("source_node_id", "target_node_id"),):
         if source_field in edge_data or target_field in edge_data:
             if str(edge_data.get(source_field, "")).strip() != expected_source:
                 return False
@@ -785,6 +1676,70 @@ def _relation_replacement_already_present(
     )
 
 
+def _relation_replacement_matches_target(
+    edge_data: dict[str, Any] | None,
+    new_source: str,
+    new_target: str,
+    new_keywords: str,
+) -> bool:
+    if edge_data is None:
+        return False
+    return (
+        str(edge_data.get("keywords", "")).strip() == new_keywords
+        and _relation_direction_metadata_matches(edge_data, new_source, new_target)
+    )
+
+
+def _split_relation_new_edges(
+    action_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw_edges = action_payload.get("new_edges")
+    if not isinstance(raw_edges, list):
+        return []
+    parsed_edges: list[dict[str, Any]] = []
+    endpoint_pairs: set[tuple[str, str]] = set()
+    for raw_edge in raw_edges:
+        if not isinstance(raw_edge, dict):
+            return []
+        source = _required_action_string(raw_edge, "source")
+        target = _required_action_string(raw_edge, "target")
+        predicate = _required_action_string(raw_edge, "predicate")
+        if not source or not target or predicate not in CANONICAL_MEDICAL_RELATION_IDS:
+            return []
+        endpoint_pair = (source, target)
+        if endpoint_pair in endpoint_pairs:
+            return []
+        endpoint_pairs.add(endpoint_pair)
+        parsed_edge = {
+            "source": source,
+            "target": target,
+            "predicate": predicate,
+        }
+        qualifiers = raw_edge.get("qualifiers")
+        if isinstance(qualifiers, dict):
+            parsed_edge["qualifiers"] = dict(qualifiers)
+        elif qualifiers not in (None, ""):
+            return []
+        parsed_edges.append(parsed_edge)
+    return parsed_edges
+
+
+async def _split_relation_already_applied(
+    graph: Any,
+    new_edges: list[dict[str, Any]],
+    proposal_id: str,
+) -> bool:
+    for edge in new_edges:
+        edge_data = await graph.get_edge(edge["source"], edge["target"])
+        if not _relation_replacement_already_present(
+            edge_data,
+            edge["predicate"],
+            proposal_id,
+        ):
+            return False
+    return True
+
+
 def _value_node_qualifier_already_present(
     edge_data: dict[str, Any] | None,
     qualifier_key: str,
@@ -793,10 +1748,15 @@ def _value_node_qualifier_already_present(
 ) -> bool:
     if edge_data is None:
         return False
-    return (
+    qualifiers = _parse_graph_qualifiers(edge_data.get("qualifiers"))
+    has_json_qualifier = str(qualifiers.get(qualifier_key, "")).strip() == qualifier_value
+    has_legacy_qualifier = (
         str(edge_data.get(f"qualifier_{qualifier_key}", "")).strip()
         == qualifier_value
-        and _graph_field_contains(edge_data.get("accepted_proposal_ids"), proposal_id)
+    )
+    return (has_json_qualifier or has_legacy_qualifier) and _graph_field_contains(
+        edge_data.get("accepted_proposal_ids"),
+        proposal_id,
     )
 
 
@@ -823,12 +1783,32 @@ async def _value_node_incident_edge(
 def _edge_has_value_like_keyword(edge_data: dict[str, Any] | None) -> bool:
     if edge_data is None:
         return False
-    keywords = {
-        keyword.strip()
-        for keyword in str(edge_data.get("keywords", "")).split(GRAPH_FIELD_SEP)
-        if keyword.strip()
-    }
+    keywords = set(split_relation_tokens(edge_data.get("keywords")))
     return bool(keywords & VALUE_LIKE_RELATION_KEYWORDS)
+
+
+def _edge_has_expected_keyword(
+    edge_data: dict[str, Any] | None,
+    expected_keywords: str,
+) -> bool:
+    if edge_data is None:
+        return False
+    edge_keywords = set(split_relation_tokens(edge_data.get("keywords")))
+    expected = set(split_relation_tokens(expected_keywords))
+    return bool(edge_keywords & expected)
+
+
+def _parse_graph_qualifiers(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return dict(parsed)
+    return {}
 
 
 def _required_string_payload_values(
@@ -844,6 +1824,13 @@ def _required_string_payload_values(
     return values
 
 
+def _required_action_string(payload: dict[str, Any], field_name: str) -> str:
+    value = payload.get(field_name)
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
 def _append_graph_field(existing: Any, new_value: str) -> str:
     values = [
         value.strip()
@@ -852,6 +1839,16 @@ def _append_graph_field(existing: Any, new_value: str) -> str:
     ]
     if new_value not in values:
         values.append(new_value)
+    return GRAPH_FIELD_SEP.join(values)
+
+
+def _merge_graph_field_values(*raw_values: Any) -> str:
+    values: list[str] = []
+    for raw_value in raw_values:
+        for value in str(raw_value or "").split(GRAPH_FIELD_SEP):
+            value = value.strip()
+            if value and value not in values:
+                values.append(value)
     return GRAPH_FIELD_SEP.join(values)
 
 

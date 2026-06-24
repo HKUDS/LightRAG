@@ -20,6 +20,8 @@ EDGE_FIELDS = {
     "source_id",
     "file_path",
     "weight",
+    "source_node_id",
+    "target_node_id",
 }
 
 
@@ -89,6 +91,7 @@ def _snapshot_node(node_id: str, data: dict[str, Any]) -> SnapshotNode:
 
 def _snapshot_edge(edge: tuple[str, str, str, dict[str, Any]]) -> SnapshotEdge:
     source, target, edge_id, data = edge
+    source, target = _directional_edge_endpoints(source, target, data)
     return SnapshotEdge(
         id=str(edge_id),
         source=str(source),
@@ -100,6 +103,20 @@ def _snapshot_edge(edge: tuple[str, str, str, dict[str, Any]]) -> SnapshotEdge:
         weight=_as_float(data.get("weight")),
         properties=_extra_properties(data, EDGE_FIELDS),
     )
+
+
+def _directional_edge_endpoints(
+    source: str, target: str, data: dict[str, Any]
+) -> tuple[str, str]:
+    directional_source = _as_text(data.get("source_node_id"))
+    directional_target = _as_text(data.get("target_node_id"))
+    if (
+        directional_source
+        and directional_target
+        and {directional_source, directional_target} == {str(source), str(target)}
+    ):
+        return directional_source, directional_target
+    return source, target
 
 
 def _iter_edges(graph: nx.Graph) -> list[tuple[str, str, str, dict[str, Any]]]:

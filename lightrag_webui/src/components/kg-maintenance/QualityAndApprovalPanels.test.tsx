@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ApprovalPanel, requestProposalRevisionFromPanel } from './QualityAndApprovalPanels'
+import { ApprovalPanel } from './QualityAndApprovalPanels'
+import {
+  acceptAllPendingProposalsFromPanel,
+  requestProposalRevisionFromPanel
+} from './proposalApprovalActions'
 import type { ProposalSummary } from './kgMaintenanceData'
 
 const approvalQueue = `# Approval Queue
@@ -123,6 +127,7 @@ display-only deferred decision`
         deferredChanges={displayDeferredChanges}
         deferredChangesSource=""
         onDecision={() => undefined}
+        onAcceptAll={() => undefined}
         onRequestRevision={() => undefined}
       />
     )
@@ -179,6 +184,76 @@ display-only deferred decision`
     expect(markup).toContain('已拒绝')
     expect(markup).toContain('已延后')
     expect(markup).toContain('待审批')
+  })
+
+  test('renders bulk accept action for pending proposals', () => {
+    const markup = renderToStaticMarkup(
+      <ApprovalPanel
+        approvalQueue={approvalQueueWithRecordedRows}
+        approvalQueueSource={approvalQueueWithRecordedRows}
+        improvementBacklog=""
+        acceptedChanges="## prop-a"
+        rejectedChanges="## prop-b"
+        deferredChanges="## prop-c"
+        deferredChangesSource="## prop-c"
+        onDecision={() => undefined}
+        onAcceptAll={() => undefined}
+        onRequestRevision={() => undefined}
+      />
+    )
+
+    expect(markup).toContain('全部接受')
+    expect(markup).toContain('1')
+  })
+
+  test('bulk accept helper submits only undecided approval proposals', async () => {
+    const proposals: ProposalSummary[] = [
+      {
+        id: 'prop-a',
+        type: 'rule_change',
+        target: 'relation_keyword_extraction',
+        proposedChange: 'Normalize relation keywords',
+        reason: 'Improve readability',
+        confidence: '0.8',
+        risk: 'medium',
+        requiresApproval: true,
+        evidence: ['source_id: chunk-1'],
+        expectedMetricChange: '{}'
+      },
+      {
+        id: 'prop-b',
+        type: 'rule_change',
+        target: 'entity_name_normalization',
+        proposedChange: 'Normalize entity aliases',
+        reason: 'Already accepted',
+        confidence: '0.7',
+        risk: 'medium',
+        requiresApproval: true,
+        evidence: ['source_id: chunk-2'],
+        expectedMetricChange: '{}'
+      },
+      {
+        id: 'prop-c',
+        type: 'quality_report_note',
+        target: 'quality_report.md',
+        proposedChange: 'Record note',
+        reason: 'No approval needed',
+        confidence: '0.6',
+        risk: 'low',
+        requiresApproval: false,
+        evidence: ['source_id: chunk-3'],
+        expectedMetricChange: '{}'
+      }
+    ]
+    const accepted: string[] = []
+
+    await Promise.resolve(
+      acceptAllPendingProposalsFromPanel(proposals, { 'prop-b': 'accept' }, (pending) => {
+        accepted.push(...pending.map((proposal) => proposal.id))
+      })
+    )
+
+    expect(accepted).toEqual(['prop-a'])
   })
 
   test('shows agent revision action for rejected proposal', () => {

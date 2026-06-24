@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 
 MEDICAL_RELATION_SCHEMA_VERSION = "medical_relation_schema_v1"
@@ -14,6 +15,100 @@ _MEDICAL_PROFILE_HINTS = frozenset(
         "influenza",
     }
 )
+_NORMALIZED_MEDICAL_ENTITY_TYPES = {
+    "disease": "Disease",
+    "syndrome": "Syndrome",
+    "clinicalcondition": "ClinicalCondition",
+    "clinicalfinding": "ClinicalFinding",
+    "clinicalpathway": "ClinicalPathway",
+    "symptom": "Symptom",
+    "sign": "Symptom",
+    "clinicalmanifestation": "Symptom",
+    "signorsymptom": "Symptom",
+    "sign_or_symptom": "Symptom",
+    "diagnostictest": "Test",
+    "diagnosticmethod": "Test",
+    "test": "Test",
+    "treatmentregimen": "DosingRegimen",
+    "dosingregimen": "DosingRegimen",
+    "doseregimen": "DosingRegimen",
+    "treatment": "Treatment",
+    "procedure": "Procedure",
+    "intervention": "Intervention",
+    "publichealthmeasure": "PublicHealthMeasure",
+    "clinicaldepartment": "ClinicalDepartment",
+    "pathogen": "Pathogen",
+    "drug": "Drug",
+    "drugingredient": "Drug",
+    "drugclass": "DrugClass",
+    "vaccine": "Vaccine",
+    "diagnosticcriterion": "DiagnosticCriterion",
+    "testresult": "TestResult",
+    "testresultpattern": "TestResultPattern",
+    "labresult": "TestResult",
+    "labresultpattern": "TestResultPattern",
+    "method": "Method",
+    "technique": "Technique",
+    "instrument": "Instrument",
+    "observation": "Observation",
+    "diagnosis": "Diagnosis",
+    "evidence": "Evidence",
+    "specimen": "Specimen",
+    "population": "Population",
+    "riskfactor": "RiskFactor",
+    "complication": "Complication",
+    "adversereaction": "AdverseReaction",
+    "guideline": "Guideline",
+    "recommendation": "Recommendation",
+    "medicalgroup": "MedicalGroup",
+    "medicalcategory": "MedicalCategory",
+    "medicalconcept": "MedicalConcept",
+    "anatomy": "Anatomy",
+    "outcome": "Outcome",
+}
+_MEDICAL_TYPE_SUPERTYPES = {
+    "Disease": ("ClinicalCondition", "MedicalConcept"),
+    "Syndrome": ("Disease", "ClinicalCondition", "MedicalConcept"),
+    "ClinicalCondition": ("MedicalConcept",),
+    "ClinicalFinding": ("Evidence", "MedicalConcept"),
+    "Symptom": ("ClinicalFinding", "MedicalConcept"),
+    "Test": ("Procedure", "Observation", "MedicalConcept"),
+    "TestResult": ("ClinicalFinding", "Evidence", "MedicalConcept"),
+    "TestResultPattern": (
+        "TestResult",
+        "ClinicalFinding",
+        "Evidence",
+        "MedicalConcept",
+    ),
+    "Treatment": ("Intervention", "MedicalConcept"),
+    "Procedure": ("Treatment", "Intervention", "MedicalConcept"),
+    "Drug": ("Intervention", "MedicalConcept"),
+    "Vaccine": ("Drug", "Intervention", "PublicHealthMeasure", "MedicalConcept"),
+    "PublicHealthMeasure": ("Intervention", "MedicalConcept"),
+    "DosingRegimen": ("Treatment", "MedicalConcept"),
+    "Pathogen": ("MedicalConcept",),
+    "DrugClass": ("MedicalConcept",),
+    "DiagnosticCriterion": ("MedicalConcept",),
+    "Population": ("MedicalConcept",),
+    "RiskFactor": ("MedicalConcept",),
+    "Complication": ("Disease", "ClinicalCondition", "MedicalConcept"),
+    "AdverseReaction": ("ClinicalFinding", "MedicalConcept"),
+    "Guideline": ("Evidence", "MedicalConcept"),
+    "Recommendation": ("Evidence", "MedicalConcept"),
+    "ClinicalPathway": ("Recommendation", "MedicalConcept"),
+    "Evidence": ("MedicalConcept",),
+    "Method": ("MedicalConcept",),
+    "Technique": ("Method", "MedicalConcept"),
+    "Instrument": ("MedicalConcept",),
+    "Observation": ("Evidence", "MedicalConcept"),
+    "Diagnosis": ("MedicalConcept",),
+    "Specimen": ("MedicalConcept",),
+    "MedicalGroup": ("MedicalConcept",),
+    "MedicalCategory": ("MedicalConcept",),
+    "Anatomy": ("MedicalConcept",),
+    "Outcome": ("MedicalConcept",),
+    "ClinicalDepartment": ("MedicalConcept",),
+}
 
 
 @dataclass(frozen=True)
@@ -24,7 +119,13 @@ class MedicalRelationSpec:
     domain_types: tuple[str, ...]
     range_types: tuple[str, ...]
     allowed_qualifiers: tuple[str, ...] = ()
+    required_qualifiers: tuple[str, ...] = ()
+    required_any_qualifier_groups: tuple[tuple[str, ...], ...] = ()
+    qualifier_enums: tuple[tuple[str, tuple[str, ...]], ...] = ()
     guidance: str = ""
+    inverse_of: str = ""
+    deprecated: bool = False
+    canonical_replacement: str = ""
 
 
 @dataclass(frozen=True)
@@ -68,7 +169,24 @@ MEDICAL_RELATION_SPECS: tuple[MedicalRelationSpec, ...] = (
         family="treatment",
         domain_types=("Drug", "Treatment", "Procedure", "Vaccine"),
         range_types=("Disease", "ClinicalCondition", "Population"),
-        allowed_qualifiers=("population", "severity", "timing", "contraindication"),
+        allowed_qualifiers=(
+            "dose",
+            "frequency",
+            "route",
+            "duration",
+            "age",
+            "age_min",
+            "age_max",
+            "age_unit",
+            "population",
+            "severity",
+            "timing",
+            "time_window",
+            "purpose",
+            "contraindication",
+            "evidence_level",
+            "version",
+        ),
         guidance="Therapy points to the disease or clinical context it applies to.",
     ),
     MedicalRelationSpec(
@@ -78,6 +196,7 @@ MEDICAL_RELATION_SPECS: tuple[MedicalRelationSpec, ...] = (
         domain_types=("Guideline", "Recommendation", "ClinicalPathway"),
         range_types=("Drug", "Treatment", "Procedure", "Test", "Vaccine"),
         allowed_qualifiers=("strength", "evidence_level", "population", "version"),
+        required_any_qualifier_groups=(("strength", "evidence_level", "version"),),
         guidance="Recommendation-bearing node points to the recommended action.",
     ),
     MedicalRelationSpec(
@@ -114,6 +233,8 @@ MEDICAL_RELATION_SPECS: tuple[MedicalRelationSpec, ...] = (
         domain_types=("Evidence", "TestResult", "ClinicalFinding"),
         range_types=("Disease", "ClinicalCondition", "Diagnosis"),
         allowed_qualifiers=("polarity", "certainty", "threshold"),
+        required_qualifiers=("polarity",),
+        qualifier_enums=(("polarity", ("refutes", "supports")),),
         guidance="Evidence-bearing finding points to the diagnosis it supports/refutes.",
     ),
     MedicalRelationSpec(
@@ -137,34 +258,345 @@ MEDICAL_RELATION_SPECS: tuple[MedicalRelationSpec, ...] = (
     _generic_relation_spec("part_of", "ontology"),
     _generic_relation_spec("names", "ontology"),
     _generic_relation_spec("maps_to_code", "ontology"),
-    _generic_relation_spec("causative_agent", "diagnosis"),
-    _generic_relation_spec("has_complication", "diagnosis"),
-    _generic_relation_spec("has_risk_factor", "diagnosis"),
+    MedicalRelationSpec(
+        id="causative_agent",
+        zh_label="causative_agent",
+        family="diagnosis",
+        domain_types=("Disease", "ClinicalCondition"),
+        range_types=("Pathogen",),
+        guidance="Disease or clinical condition points to the causative pathogen.",
+    ),
+    MedicalRelationSpec(
+        id="has_complication",
+        zh_label="并发症",
+        family="diagnosis",
+        domain_types=("Disease", "ClinicalCondition"),
+        range_types=("Complication", "Disease", "ClinicalCondition"),
+        guidance="Disease or clinical condition points to complications.",
+    ),
+    MedicalRelationSpec(
+        id="has_risk_factor",
+        zh_label="风险因素",
+        family="diagnosis",
+        domain_types=("Disease", "ClinicalCondition"),
+        range_types=("RiskFactor", "Population"),
+        guidance="Disease or clinical condition points to risk factors.",
+    ),
     _generic_relation_spec("differential_with", "diagnosis"),
     _generic_relation_spec("has_severity_grade", "diagnosis"),
     _generic_relation_spec("has_evidence", "diagnosis"),
     _generic_relation_spec("ruled_out", "diagnosis"),
     _generic_relation_spec("due_to", "diagnosis"),
-    _generic_relation_spec("orders_test", "tests"),
-    _generic_relation_spec("has_result", "tests"),
+    MedicalRelationSpec(
+        id="orders_test",
+        zh_label="orders_test",
+        family="tests",
+        domain_types=(
+            "Recommendation",
+            "ClinicalPathway",
+            "Disease",
+            "ClinicalCondition",
+        ),
+        range_types=("Test",),
+        allowed_qualifiers=("timing", "population", "indication", "urgency", "setting"),
+        guidance="Recommendation, pathway, or condition points to an ordered test.",
+    ),
+    MedicalRelationSpec(
+        id="has_result",
+        zh_label="has_result",
+        family="tests",
+        domain_types=("Test", "Observation"),
+        range_types=("TestResult",),
+        allowed_qualifiers=("threshold", "polarity", "unit", "value", "interpretation"),
+        guidance="Test or observation points to a result value or result pattern.",
+    ),
     _generic_relation_spec("observes", "tests"),
     _generic_relation_spec("has_value", "tests"),
     _generic_relation_spec("has_interpretation", "tests"),
-    _generic_relation_spec("uses_specimen", "tests"),
+    MedicalRelationSpec(
+        id="uses_specimen",
+        zh_label="uses_specimen",
+        family="tests",
+        domain_types=("Test",),
+        range_types=("Specimen",),
+        allowed_qualifiers=("site", "collection_method", "timing"),
+        guidance="Test points to the specimen used for measurement.",
+    ),
     _generic_relation_spec("has_active_ingredient", "treatment"),
-    _generic_relation_spec("belongs_to_drug_class", "treatment"),
-    _generic_relation_spec("recommended_for", "treatment"),
-    _generic_relation_spec("not_recommended_for", "treatment"),
-    _generic_relation_spec("contraindicated_for", "treatment"),
-    _generic_relation_spec("precaution_for", "treatment"),
-    _generic_relation_spec("interaction_with", "treatment"),
-    _generic_relation_spec("monitor_with", "treatment"),
-    _generic_relation_spec("targets_disease", "prevention"),
-    _generic_relation_spec("reduces_risk_of", "prevention"),
+    MedicalRelationSpec(
+        id="belongs_to_drug_class",
+        zh_label="belongs_to_drug_class",
+        family="treatment",
+        domain_types=("Drug", "Vaccine"),
+        range_types=("DrugClass",),
+        guidance="Drug points to its pharmacologic class.",
+    ),
+    MedicalRelationSpec(
+        id="recommended_for",
+        zh_label="推荐人群",
+        family="treatment",
+        domain_types=("Drug", "Treatment", "Vaccine", "PublicHealthMeasure"),
+        range_types=("Population",),
+        allowed_qualifiers=(
+            "condition",
+            "context",
+            "purpose",
+            "age",
+            "age_min",
+            "age_max",
+            "age_unit",
+            "population",
+            "risk",
+            "reason",
+            "route",
+            "timing",
+            "time_window",
+            "strength",
+            "evidence_level",
+            "version",
+        ),
+        required_qualifiers=("purpose",),
+        required_any_qualifier_groups=(
+            (
+                "condition",
+                "age",
+                "age_min",
+                "age_max",
+                "population",
+                "route",
+                "timing",
+                "time_window",
+            ),
+        ),
+        qualifier_enums=(("purpose", ("prevention", "treatment")),),
+        guidance="Drug, treatment, or vaccine points to the recommended population.",
+    ),
+    MedicalRelationSpec(
+        id="not_recommended_for",
+        zh_label="not_recommended_for",
+        family="treatment",
+        domain_types=("Drug", "Treatment", "Procedure", "Vaccine", "PublicHealthMeasure"),
+        range_types=("Population", "ClinicalCondition", "RiskFactor"),
+        allowed_qualifiers=(
+            "condition",
+            "context",
+            "age",
+            "age_min",
+            "age_max",
+            "age_unit",
+            "population",
+            "route",
+            "reason",
+            "risk",
+            "time_window",
+            "version",
+        ),
+        guidance="Intervention points to a population or condition where it is not recommended.",
+    ),
+    MedicalRelationSpec(
+        id="contraindicated_for",
+        zh_label="contraindicated_for",
+        family="treatment",
+        domain_types=("Drug", "Treatment", "Procedure", "Vaccine", "PublicHealthMeasure"),
+        range_types=("Population", "ClinicalCondition", "RiskFactor"),
+        allowed_qualifiers=(
+            "condition",
+            "context",
+            "age",
+            "age_min",
+            "age_max",
+            "age_unit",
+            "population",
+            "route",
+            "reason",
+            "risk",
+            "time_window",
+            "version",
+        ),
+        guidance="Intervention points to a population, condition, or risk factor where it must not be used.",
+    ),
+    MedicalRelationSpec(
+        id="precaution_for",
+        zh_label="precaution_for",
+        family="treatment",
+        domain_types=("Drug", "Treatment", "Procedure", "Vaccine", "PublicHealthMeasure"),
+        range_types=("Population", "ClinicalCondition", "RiskFactor"),
+        allowed_qualifiers=(
+            "condition",
+            "context",
+            "age",
+            "age_min",
+            "age_max",
+            "age_unit",
+            "population",
+            "route",
+            "reason",
+            "risk",
+            "time_window",
+            "version",
+        ),
+        guidance="Intervention points to a population, condition, or risk factor needing caution.",
+    ),
+    MedicalRelationSpec(
+        id="temporarily_deferred_for",
+        zh_label="temporarily_deferred_for",
+        family="treatment",
+        domain_types=("Drug", "Treatment", "Procedure", "Vaccine", "PublicHealthMeasure"),
+        range_types=("Population", "ClinicalCondition", "RiskFactor"),
+        allowed_qualifiers=(
+            "condition",
+            "context",
+            "age",
+            "age_min",
+            "age_max",
+            "age_unit",
+            "population",
+            "route",
+            "reason",
+            "risk",
+            "time_window",
+            "version",
+        ),
+        required_qualifiers=("reason",),
+        guidance=(
+            "Intervention points to a population, condition, or risk factor "
+            "where use should be temporarily deferred rather than permanently "
+            "contraindicated."
+        ),
+    ),
+    MedicalRelationSpec(
+        id="interaction_with",
+        zh_label="interaction_with",
+        family="treatment",
+        domain_types=("Drug", "Treatment", "Vaccine"),
+        range_types=("Drug", "Treatment"),
+        allowed_qualifiers=("severity", "mechanism", "management"),
+        guidance="Drug, vaccine, or treatment points to an interacting intervention.",
+    ),
+    MedicalRelationSpec(
+        id="monitor_with",
+        zh_label="monitor_with",
+        family="treatment",
+        domain_types=("Drug", "Treatment", "Procedure", "Vaccine"),
+        range_types=("Test", "Observation"),
+        allowed_qualifiers=("timing", "frequency", "reason", "threshold"),
+        guidance="Intervention points to a test or observation used for monitoring.",
+    ),
+    MedicalRelationSpec(
+        id="targets_disease",
+        zh_label="目标疾病",
+        family="prevention",
+        domain_types=("Vaccine", "PublicHealthMeasure"),
+        range_types=("Disease", "ClinicalCondition"),
+        guidance="Vaccine or public-health measure points to the target disease.",
+    ),
+    MedicalRelationSpec(
+        id="reduces_risk_of",
+        zh_label="降低风险",
+        family="prevention",
+        domain_types=("Vaccine", "PublicHealthMeasure"),
+        range_types=("Disease", "ClinicalCondition", "Outcome", "Complication"),
+        guidance=(
+            "Vaccine or public-health measure points to the disease, outcome, "
+            "or complication whose risk is reduced."
+        ),
+    ),
     _generic_relation_spec("has_dose_schedule", "prevention"),
-    _generic_relation_spec("risk_group_for", "prevention"),
+    MedicalRelationSpec(
+        id="risk_factor_for",
+        zh_label="risk factor for",
+        family="risk",
+        domain_types=("RiskFactor", "ClinicalCondition"),
+        range_types=("Disease", "ClinicalCondition", "Outcome", "Complication"),
+        allowed_qualifiers=(
+            "population",
+            "age",
+            "severity",
+            "time_window",
+            "magnitude",
+            "certainty",
+            "evidence_level",
+            "version",
+        ),
+        inverse_of="has_risk_factor",
+        guidance=(
+            "Risk factor or underlying clinical condition points to the disease "
+            "or adverse outcome for which it is a risk factor."
+        ),
+    ),
+    MedicalRelationSpec(
+        id="high_risk_for",
+        zh_label="high risk for",
+        family="risk",
+        domain_types=("Population",),
+        range_types=("Disease", "ClinicalCondition", "Outcome", "Complication"),
+        allowed_qualifiers=(
+            "condition",
+            "age",
+            "severity",
+            "time_window",
+            "reason",
+            "evidence_level",
+            "version",
+        ),
+        guidance=(
+            "A population points to the disease, severe state, or outcome for "
+            "which it is considered high risk."
+        ),
+    ),
+    MedicalRelationSpec(
+        id="increases_risk_of",
+        zh_label="increases risk of",
+        family="risk",
+        domain_types=("RiskFactor", "Disease", "ClinicalCondition"),
+        range_types=("Disease", "ClinicalCondition", "Outcome", "Complication"),
+        allowed_qualifiers=(
+            "population",
+            "time_window",
+            "magnitude",
+            "relative_risk",
+            "odds_ratio",
+            "hazard_ratio",
+            "certainty",
+            "evidence_level",
+            "version",
+        ),
+        guidance=(
+            "A disease, condition, or risk factor points to the clinical event "
+            "whose probability is increased."
+        ),
+    ),
+    MedicalRelationSpec(
+        id="acute_exacerbation_of",
+        zh_label="acute exacerbation of",
+        family="risk",
+        domain_types=("Disease", "ClinicalCondition"),
+        range_types=("Disease", "ClinicalCondition"),
+        allowed_qualifiers=("trigger", "severity", "time_window", "population"),
+        guidance=(
+            "An acute exacerbation state points to its underlying chronic disease."
+        ),
+    ),
+    MedicalRelationSpec(
+        id="risk_group_for",
+        zh_label="风险人群",
+        family="prevention",
+        domain_types=("Population", "RiskFactor"),
+        range_types=("Disease", "ClinicalCondition"),
+        guidance="Population or risk factor points to the disease it is a risk group for.",
+        deprecated=True,
+        canonical_replacement="high_risk_for",
+    ),
     _generic_relation_spec("defined_by_characteristic", "prevention"),
-    _generic_relation_spec("evidenced_by", "evidence"),
+    MedicalRelationSpec(
+        id="evidenced_by",
+        zh_label="evidenced_by",
+        family="evidence",
+        domain_types=("MedicalConcept",),
+        range_types=("Evidence", "Guideline"),
+        allowed_qualifiers=("source_id", "file_path", "page", "span", "version"),
+        guidance="Medical fact points to the evidence source that supports it.",
+    ),
     _generic_relation_spec("asserted_by", "guideline"),
     _generic_relation_spec("issued_by", "guideline"),
     _generic_relation_spec("valid_during", "guideline"),
@@ -225,10 +657,20 @@ LEGACY_MEDICAL_RELATION_MIGRATIONS: tuple[MedicalRelationMigrationRule, ...] = (
     ),
     MedicalRelationMigrationRule(
         legacy_keywords=("并发风险", "complication_risk", "adverse_risk"),
-        canonical_options=("has_complication", "may_cause_adverse_reaction"),
+        canonical_options=(
+            "has_complication",
+            "risk_factor_for",
+            "high_risk_for",
+            "increases_risk_of",
+            "acute_exacerbation_of",
+            "may_cause_adverse_reaction",
+        ),
         guidance=(
             "疾病自然病程的并发症用 has_complication；药物、疫苗或操作的"
-            "潜在负面结果用 may_cause_adverse_reaction。"
+            "潜在负面结果用 may_cause_adverse_reaction；风险因素用 "
+            "risk_factor_for；高危人群用 high_risk_for；概率增加用 "
+            "increases_risk_of；急性加重状态指向基础慢病用 "
+            "acute_exacerbation_of。"
         ),
     ),
     MedicalRelationMigrationRule(
@@ -276,6 +718,129 @@ _LEGACY_KEYWORD_OPTION_FALLBACKS = {
 
 def relation_spec_by_id(relation_id: str) -> MedicalRelationSpec:
     return _RELATION_SPEC_BY_ID[relation_id]
+
+
+def normalize_medical_entity_type(entity_type: object) -> str:
+    if not isinstance(entity_type, str):
+        return "Unknown"
+    normalized = (
+        entity_type.strip()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .casefold()
+    )
+    if not normalized or normalized == "unknown":
+        return "Unknown"
+    return _NORMALIZED_MEDICAL_ENTITY_TYPES.get(normalized, "Unknown")
+
+
+def medical_type_allowed(
+    actual_type: object,
+    expected_types: tuple[str, ...],
+) -> bool:
+    normalized_actual = normalize_medical_entity_type(actual_type)
+    if normalized_actual == "Unknown":
+        return False
+    normalized_expected = _normalize_expected_types(expected_types)
+    if normalized_actual in normalized_expected:
+        return True
+    actual_lineage = _medical_type_lineage(normalized_actual)
+    return any(expected_type in actual_lineage for expected_type in normalized_expected)
+
+
+def validate_relation_instance(
+    *,
+    predicate: str,
+    source_type: object,
+    target_type: object,
+    qualifiers: Mapping[str, Any] | None = None,
+) -> list[str]:
+    spec = relation_spec_by_id(predicate)
+    normalized_source_type = normalize_medical_entity_type(source_type)
+    normalized_target_type = normalize_medical_entity_type(target_type)
+    errors: list[str] = []
+
+    if not medical_type_allowed(normalized_source_type, spec.domain_types):
+        errors.append(
+            "source_type "
+            f"{normalized_source_type} is outside {predicate} domain "
+            f"{_format_expected_types(spec.domain_types)}"
+        )
+    if not medical_type_allowed(normalized_target_type, spec.range_types):
+        errors.append(
+            "target_type "
+            f"{normalized_target_type} is outside {predicate} range "
+            f"{_format_expected_types(spec.range_types)}"
+        )
+
+    qualifier_keys = _non_empty_qualifier_keys(qualifiers)
+    for required_key in spec.required_qualifiers:
+        if required_key not in qualifier_keys:
+            errors.append(f"{predicate} requires qualifier {required_key}")
+    for required_group in spec.required_any_qualifier_groups:
+        if not (set(required_group) & qualifier_keys):
+            errors.append(
+                f"{predicate} requires one qualifier from "
+                + " | ".join(required_group)
+            )
+    if spec.allowed_qualifiers:
+        unexpected_keys = sorted(qualifier_keys - set(spec.allowed_qualifiers))
+        if unexpected_keys:
+            errors.append(
+                f"{predicate} does not allow qualifier(s) "
+                + ", ".join(unexpected_keys)
+            )
+    qualifier_values = qualifiers if isinstance(qualifiers, Mapping) else {}
+    for qualifier_name, allowed_values in spec.qualifier_enums:
+        if qualifier_name not in qualifier_keys:
+            continue
+        value = str(qualifier_values.get(qualifier_name, "")).strip().casefold()
+        allowed_normalized = tuple(item.casefold() for item in allowed_values)
+        if value not in allowed_normalized:
+            errors.append(
+                f"{predicate} qualifier {qualifier_name} must be one of "
+                + " | ".join(allowed_values)
+            )
+
+    return errors
+
+
+def _normalize_expected_types(types: tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for type_name in types:
+        normalized_type = normalize_medical_entity_type(type_name)
+        if normalized_type == "Unknown" and type_name:
+            normalized_type = str(type_name)
+        if normalized_type not in normalized:
+            normalized.append(normalized_type)
+    return tuple(normalized)
+
+
+def _medical_type_lineage(entity_type: str) -> frozenset[str]:
+    lineage = {entity_type}
+    pending = list(_MEDICAL_TYPE_SUPERTYPES.get(entity_type, ()))
+    while pending:
+        parent = pending.pop()
+        if parent in lineage:
+            continue
+        lineage.add(parent)
+        pending.extend(_MEDICAL_TYPE_SUPERTYPES.get(parent, ()))
+    return frozenset(lineage)
+
+
+def _format_expected_types(types: tuple[str, ...]) -> str:
+    return " | ".join(_normalize_expected_types(types))
+
+
+def _non_empty_qualifier_keys(
+    qualifiers: Mapping[str, Any] | None,
+) -> set[str]:
+    if qualifiers is None:
+        return set()
+    if not isinstance(qualifiers, Mapping):
+        return {"<invalid_qualifiers>"}
+    return {str(key) for key, value in qualifiers.items() if str(value).strip()}
 
 
 def migration_rule_for_legacy_keyword(
@@ -338,8 +903,8 @@ Canonical relation families:
 - Ontology/terminology: is_a, part_of, names, maps_to_code.
 - Diagnosis/problem list: causative_agent, has_manifestation, has_complication, has_risk_factor, has_diagnostic_criterion, criterion_requires, differential_with, has_severity_grade, has_evidence, ruled_out, due_to.
 - Tests/evidence: orders_test, has_result, observes, has_value, has_interpretation, uses_specimen, performed_by_method, supports_or_refutes.
-- Drug/treatment: has_active_ingredient, belongs_to_drug_class, has_indication, recommends, recommended_for, not_recommended_for, contraindicated_for, precaution_for, has_dosing_regimen, may_cause_adverse_reaction, interaction_with, monitor_with.
-- Vaccine/prevention: targets_disease, reduces_risk_of, has_dose_schedule, risk_group_for, defined_by_characteristic.
+- Drug/treatment: has_active_ingredient, belongs_to_drug_class, has_indication, recommends, recommended_for, not_recommended_for, contraindicated_for, precaution_for, temporarily_deferred_for, has_dosing_regimen, may_cause_adverse_reaction, interaction_with, monitor_with.
+- Vaccine/prevention: targets_disease, reduces_risk_of, has_dose_schedule, high_risk_for, defined_by_characteristic.
 - Evidence/guideline/hospital: evidenced_by, asserted_by, issued_by, valid_during, provided_by, available_at.
 
 Direction examples:

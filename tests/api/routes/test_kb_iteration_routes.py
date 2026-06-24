@@ -602,6 +602,13 @@ def test_accept_reject_and_defer_records_are_append_only(tmp_path: Path, monkeyp
     assert reject.status_code == 200
     assert accept.status_code == 200
     assert defer.status_code == 200
+    reject_record = reject.json()["record"]
+    assert reject_record["decision_reason_code"] == "insufficient_evidence"
+    assert reject_record["rejection_scope"] == "semantic_until_evidence_change"
+    assert len(reject_record["semantic_fingerprint"]) == 64
+    assert len(reject_record["execution_fingerprint"]) == 64
+    assert len(reject_record["evidence_fingerprint"]) == 64
+    assert reject_record["action_payload"] == {}
     assert "Needs stronger evidence" in (
         fixture.package / "rejected_changes.md"
     ).read_text(encoding="utf-8")
@@ -638,9 +645,59 @@ def test_proposal_decision_accepts_empty_review_and_records_defaults(
     assert record["verification"]
     assert "p2" in record["reason"]
     assert "web_display_change" in record["impact_scope"]
+    assert record["schema_version"]
+    assert record["decision_reason_code"] == "accepted"
+    assert record["rejection_scope"] == "exact_action"
+    assert record["semantic_rejection_class"] == "accepted"
+    assert record["action_payload"] == {}
+    assert len(record["semantic_fingerprint"]) == 64
+    assert len(record["execution_fingerprint"]) == 64
+    assert len(record["evidence_fingerprint"]) == 64
     accepted = (fixture.package / "accepted_changes.md").read_text(encoding="utf-8")
     assert "p2" in accepted
     assert "web_display_change" in accepted
+
+
+def test_proposal_decision_rejects_invalid_rejection_scope(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p1/reject",
+        headers=HEADERS,
+        json={
+            "reviewer": "maintainer",
+            "reason": "Invalid scope should not persist",
+            "rejection_scope": "forever",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "forever" not in (
+        fixture.package / "rejected_changes.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_proposal_decision_reject_defer_only_scope_is_not_persisted(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/proposals/p1/reject",
+        headers=HEADERS,
+        json={
+            "reviewer": "maintainer",
+            "reason": "Reject should not use defer-only scope",
+            "rejection_scope": "defer_only",
+        },
+    )
+
+    assert response.status_code == 400
+    rejected = (fixture.package / "rejected_changes.md").read_text(encoding="utf-8")
+    assert "defer_only" not in rejected
+    assert "Reject should not use defer-only scope" not in rejected
 
 
 def test_proposal_revision_request_accepts_empty_body_and_records_defaults(
@@ -1538,6 +1595,229 @@ def test_llm_agent_artifact_keys_read_whitelisted_markdown(
     assert run_response.json()["content"] == expected_content
 
 
+@pytest.mark.parametrize(
+    ("artifact_key", "filename", "content_type", "payload"),
+    [
+        (
+            "proposal_task_packs",
+            "proposal_task_packs.json",
+            "application/json",
+            [{"agent": "schema", "task": "repair_relation"}],
+        ),
+        (
+            "proposal_merge_report",
+            "proposal_merge_report.md",
+            "text/markdown",
+            "# Proposal Merge Report\n",
+        ),
+        (
+            "subagent_output_index",
+            "subagent_outputs/index.json",
+            "application/json",
+            {"outputs": [{"agent": "schema", "file": "schema.json"}]},
+        ),
+        (
+            "issue_ledger",
+            "issue_ledger.json",
+            "application/json",
+            {"issue_routes": [{"issue_ref": "issue-1"}]},
+        ),
+        (
+            "deterministic_proposal_report",
+            "deterministic_proposal_report.json",
+            "application/json",
+            {"families": [{"family": "diagnosis", "raw_issue_count": 3}]},
+        ),
+        (
+            "deterministic_proposal_report_md",
+            "deterministic_proposal_report.md",
+            "text/markdown",
+            "# Deterministic Proposal Report\n",
+        ),
+        (
+            "proposal_funnel_report",
+            "proposal_funnel_report.json",
+            "application/json",
+            {"families": {"diagnosis": {"raw_issue_count": 3}}},
+        ),
+        (
+            "proposal_funnel_report_md",
+            "proposal_funnel_report.md",
+            "text/markdown",
+            "# Proposal Funnel Report\n",
+        ),
+        (
+            "proposal_conflict_groups",
+            "proposal_conflict_groups.json",
+            "application/json",
+            [{"target": "edge-1", "proposal_ids": ["p1", "p2"]}],
+        ),
+    ],
+)
+def test_orchestrated_proposal_artifact_keys_read_from_generic_and_run_endpoints(
+    tmp_path: Path,
+    monkeypatch,
+    artifact_key: str,
+    filename: str,
+    content_type: str,
+    payload: object,
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+    path = fixture.package / filename
+    if content_type == "application/json":
+        _write_json(path, payload)
+    else:
+        _write_text(path, str(payload))
+
+    response = client.get(
+        f"/kb-iteration/influenza_medical_v1/artifacts/{artifact_key}",
+        headers=HEADERS,
+    )
+    run_response = client.get(
+        f"/kb-iteration/influenza_medical_v1/runs/latest/artifacts/{artifact_key}",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert run_response.status_code == 200
+    assert response.json()["artifactKey"] == artifact_key
+    assert response.json()["contentType"] == content_type
+    assert run_response.json()["artifactKey"] == artifact_key
+    assert run_response.json()["contentType"] == content_type
+    if content_type == "application/json":
+        assert response.json()["payload"] == payload
+        assert run_response.json()["payload"] == payload
+    else:
+        assert response.json()["content"] == payload
+        assert run_response.json()["content"] == payload
+
+
+def test_artifact_manifest_includes_orchestrated_proposal_display_metadata(
+    tmp_path: Path, monkeypatch
+):
+    client, fixture = _client(tmp_path, monkeypatch)
+    _write_json(fixture.package / "proposal_task_packs.json", [])
+    _write_text(fixture.package / "proposal_merge_report.md", "# Merge\n")
+    _write_json(fixture.package / "subagent_outputs" / "index.json", {"outputs": []})
+    _write_json(fixture.package / "issue_ledger.json", {"issue_routes": []})
+    _write_json(
+        fixture.package / "deterministic_proposal_report.json", {"families": []}
+    )
+    _write_text(
+        fixture.package / "deterministic_proposal_report.md", "# Deterministic\n"
+    )
+    _write_json(fixture.package / "proposal_funnel_report.json", {"families": {}})
+    _write_text(fixture.package / "proposal_funnel_report.md", "# Funnel\n")
+    _write_json(fixture.package / "proposal_conflict_groups.json", [])
+
+    response = client.get(
+        "/kb-iteration/influenza_medical_v1/runs/latest/artifacts",
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    artifacts = {item["key"]: item for item in response.json()["artifacts"]}
+    assert artifacts["proposal_task_packs"] == {
+        "key": "proposal_task_packs",
+        "contentType": "application/json",
+        "exists": True,
+        "sourceFile": "proposal_task_packs.json",
+        "display": {
+            "language": "zh",
+            "zhFile": "proposal_task_packs.zh.json",
+            "zhExists": False,
+        },
+    }
+    assert artifacts["proposal_merge_report"] == {
+        "key": "proposal_merge_report",
+        "contentType": "text/markdown",
+        "exists": True,
+        "sourceFile": "proposal_merge_report.md",
+        "display": {
+            "language": "zh",
+            "zhFile": "proposal_merge_report.zh.md",
+            "zhExists": False,
+        },
+    }
+    assert artifacts["subagent_output_index"] == {
+        "key": "subagent_output_index",
+        "contentType": "application/json",
+        "exists": True,
+        "sourceFile": "subagent_outputs/index.json",
+        "display": {
+            "language": "zh",
+            "zhFile": "subagent_outputs/index.zh.json",
+            "zhExists": False,
+        },
+    }
+    assert artifacts["issue_ledger"] == {
+        "key": "issue_ledger",
+        "contentType": "application/json",
+        "exists": True,
+        "sourceFile": "issue_ledger.json",
+        "display": {
+            "language": "zh",
+            "zhFile": "issue_ledger.zh.json",
+            "zhExists": False,
+        },
+    }
+    assert artifacts["deterministic_proposal_report"] == {
+        "key": "deterministic_proposal_report",
+        "contentType": "application/json",
+        "exists": True,
+        "sourceFile": "deterministic_proposal_report.json",
+        "display": {
+            "language": "zh",
+            "zhFile": "deterministic_proposal_report.zh.json",
+            "zhExists": False,
+        },
+    }
+    assert artifacts["deterministic_proposal_report_md"] == {
+        "key": "deterministic_proposal_report_md",
+        "contentType": "text/markdown",
+        "exists": True,
+        "sourceFile": "deterministic_proposal_report.md",
+        "display": {
+            "language": "zh",
+            "zhFile": "deterministic_proposal_report.zh.md",
+            "zhExists": False,
+        },
+    }
+    assert artifacts["proposal_funnel_report"] == {
+        "key": "proposal_funnel_report",
+        "contentType": "application/json",
+        "exists": True,
+        "sourceFile": "proposal_funnel_report.json",
+        "display": {
+            "language": "zh",
+            "zhFile": "proposal_funnel_report.zh.json",
+            "zhExists": False,
+        },
+    }
+    assert artifacts["proposal_funnel_report_md"] == {
+        "key": "proposal_funnel_report_md",
+        "contentType": "text/markdown",
+        "exists": True,
+        "sourceFile": "proposal_funnel_report.md",
+        "display": {
+            "language": "zh",
+            "zhFile": "proposal_funnel_report.zh.md",
+            "zhExists": False,
+        },
+    }
+    assert artifacts["proposal_conflict_groups"] == {
+        "key": "proposal_conflict_groups",
+        "contentType": "application/json",
+        "exists": True,
+        "sourceFile": "proposal_conflict_groups.json",
+        "display": {
+            "language": "zh",
+            "zhFile": "proposal_conflict_groups.zh.json",
+            "zhExists": False,
+        },
+    }
+
+
 def test_llm_review_context_rejects_invalid_round_id(tmp_path: Path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
 
@@ -1644,7 +1924,7 @@ def test_default_llm_review_client_uses_kb_iteration_openai_compatible_env(
     monkeypatch.setenv("KB_ITERATION_LLM_BINDING", "openai")
     monkeypatch.setenv("KB_ITERATION_LLM_BINDING_HOST", "https://api.deepseek.com")
     monkeypatch.setenv("KB_ITERATION_LLM_BINDING_API_KEY", "test-secret")
-    monkeypatch.setenv("KB_ITERATION_LLM_MODEL", "deepseek-v4-pro")
+    monkeypatch.setenv("KB_ITERATION_LLM_MODEL", "deepseek-v4-flash")
     monkeypatch.setenv("KB_ITERATION_LLM_TIMEOUT", "45")
 
     from lightrag.api.routers import kb_iteration_routes
@@ -1680,13 +1960,14 @@ def test_default_llm_review_client_uses_kb_iteration_openai_compatible_env(
     client = kb_iteration_routes._default_llm_review_client(SimpleNamespace())
 
     assert not isinstance(client, kb_iteration_routes._UnavailableLLMReviewClient)
-    assert client.model == "deepseek-v4-pro"
+    assert client.model == "deepseek-v4-flash"
+    assert client.supports_parallel_subagent_calls is True
     assert client.complete(system_prompt="system", user_prompt="user") == (
         '{"proposals":[]}'
     )
     assert calls == [
         {
-            "model": "deepseek-v4-pro",
+            "model": "deepseek-v4-flash",
             "prompt": "user",
             "system_prompt": "system",
             "history_messages": [],
@@ -1817,6 +2098,16 @@ def test_llm_review_run_defaults_to_agent_pipeline(tmp_path: Path, monkeypatch):
             "profile": "clinical_guideline_zh",
             "max_context_tokens_per_round": 9000,
             "max_stage_retries": 2,
+            "max_subagent_tasks": 3,
+            "max_parallel_subagents": 2,
+            "max_subagent_issues_per_task": 4,
+            "max_subagent_proposals_per_task": 2,
+            "max_proposals_per_run": 9,
+            "deterministic_family_caps": {"diagnosis": 7, "entity_cleanup": 3},
+            "strict_subagent_role_contracts": False,
+            "prevalidate_action_candidates": False,
+            "require_candidate_evidence_allowlist": False,
+            "skip_deterministic_subagent_calls": False,
             "allow_llm_judge": False,
             "generate_patch_candidates": True,
             "require_human_for_mutation": False,
@@ -1834,12 +2125,82 @@ def test_llm_review_run_defaults_to_agent_pipeline(tmp_path: Path, monkeypatch):
     config = agent_calls[0]["config"]
     assert config.max_context_tokens_per_stage == 9000
     assert config.max_stage_retries == 2
+    assert config.max_subagent_tasks == 3
+    assert config.max_parallel_subagents == 2
+    assert config.max_subagent_issues_per_task == 4
+    assert config.max_subagent_proposals_per_task == 2
+    assert config.max_proposals_per_run == 9
+    assert config.deterministic_family_caps == {"diagnosis": 7, "entity_cleanup": 3}
+    assert config.strict_subagent_role_contracts is False
+    assert config.prevalidate_action_candidates is False
+    assert config.require_candidate_evidence_allowlist is False
+    assert config.skip_deterministic_subagent_calls is False
     assert config.allow_llm_judge is False
     assert config.generate_patch_candidates is True
     assert config.require_human_for_mutation is False
 
 
-def test_llm_review_run_defaults_to_five_agent_stage_retries(
+@pytest.mark.parametrize(
+    "request_body",
+    [
+        {"max_subagent_tasks": 0},
+        {"max_subagent_tasks": 51},
+        {"max_parallel_subagents": 0},
+        {"max_parallel_subagents": 9},
+        {"max_subagent_issues_per_task": 0},
+        {"max_subagent_issues_per_task": 21},
+        {"max_subagent_proposals_per_task": 0},
+        {"max_subagent_proposals_per_task": 11},
+        {"max_proposals_per_run": 0},
+        {"max_proposals_per_run": 201},
+        {"deterministic_family_caps": {"diagnosis": 0}},
+        {"deterministic_family_caps": {"diagnosis": 501}},
+    ],
+)
+def test_llm_review_run_rejects_out_of_bounds_subagent_controls(
+    tmp_path: Path, monkeypatch, request_body: dict[str, int]
+):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.routers import kb_iteration_routes
+
+    client, _ = _client(tmp_path, monkeypatch)
+    agent_calls = []
+
+    class FakeClient:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            return "{}"
+
+    def fake_run_llm_agent_pipeline(**kwargs):
+        agent_calls.append(kwargs)
+        return SimpleNamespace(
+            output_dir=Path(),
+            stop_reason="agent_done",
+            proposal_ids=[],
+            artifact_paths={},
+        )
+
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "run_llm_agent_pipeline",
+        fake_run_llm_agent_pipeline,
+    )
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda rag: FakeClient(),
+    )
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/llm-review/runs",
+        headers=HEADERS,
+        json=request_body,
+    )
+
+    assert response.status_code == 422
+    assert agent_calls == []
+
+
+def test_llm_review_run_defaults_to_one_agent_stage_retry(
     tmp_path: Path, monkeypatch
 ):
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
@@ -1880,7 +2241,57 @@ def test_llm_review_run_defaults_to_five_agent_stage_retries(
 
     assert response.status_code == 200
     assert len(agent_calls) == 1
-    assert agent_calls[0]["config"].max_stage_retries == 5
+    assert agent_calls[0]["config"].max_stage_retries == 1
+
+
+def test_llm_review_run_defaults_to_bulk_proposal_limit(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    from lightrag.api.routers import kb_iteration_routes
+
+    client, fixture = _client(tmp_path, monkeypatch)
+    agent_calls = []
+
+    class FakeClient:
+        def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            return "{}"
+
+    def fake_run_llm_agent_pipeline(**kwargs):
+        agent_calls.append(kwargs)
+        return SimpleNamespace(
+            output_dir=fixture.package,
+            stop_reason="agent_done",
+            proposal_ids=[],
+            artifact_paths={},
+        )
+
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "run_llm_agent_pipeline",
+        fake_run_llm_agent_pipeline,
+    )
+    monkeypatch.setattr(
+        kb_iteration_routes,
+        "_default_llm_review_client",
+        lambda rag: FakeClient(),
+    )
+
+    response = client.post(
+        "/kb-iteration/influenza_medical_v1/llm-review/runs",
+        headers=HEADERS,
+        json={"profile": "clinical_guideline_zh"},
+    )
+
+    assert response.status_code == 200
+    assert len(agent_calls) == 1
+    assert agent_calls[0]["config"].max_parallel_subagents == 4
+    assert agent_calls[0]["config"].max_subagent_issues_per_task == 4
+    assert agent_calls[0]["config"].max_subagent_proposals_per_task == 2
+    assert agent_calls[0]["config"].max_proposals_per_run == 200
+    assert agent_calls[0]["config"].deterministic_family_caps is None
+    assert agent_calls[0]["config"].strict_subagent_role_contracts is True
+    assert agent_calls[0]["config"].prevalidate_action_candidates is True
+    assert agent_calls[0]["config"].require_candidate_evidence_allowlist is True
+    assert agent_calls[0]["config"].skip_deterministic_subagent_calls is True
 
 
 def test_llm_review_run_accepts_agent_stage_retries_up_to_eight(

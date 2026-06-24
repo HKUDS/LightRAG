@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +14,12 @@ from lightrag.kb_iteration.apply import (
     ApplyChangeStatus,
     AcceptedApplyResult,
     ApplyChange,
+    PROPOSAL_APPLY_HANDLER_REGISTRY,
     apply_accepted_changes_to_graph,
     branch_key_from_proposal,
     category_for_branch_key,
     load_proposals_by_id,
+    proposal_apply_capability,
     render_apply_result_markdown,
     write_apply_result_artifacts,
 )
@@ -190,6 +193,110 @@ def _replace_relation_proposal(
         "evidence": ["relation_id:edge-dry-cough-flu; source_id:chunk-1"],
         "action_payload": payload,
     }
+
+
+def _retire_relation_proposal(
+    proposal_id: str = "proposal-retire-category-edge",
+    **payload_overrides: object,
+) -> dict[str, Any]:
+    payload: dict[str, object] = {
+        "action": "retire_relation",
+        "edge_id": "clinical-manifestations->flu",
+        "expected_source": "clinical-manifestations",
+        "expected_target": "flu",
+        "current_keywords": "clinical_manifestation",
+        "retirement_reason": "category node is not an atomic clinical manifestation",
+    }
+    payload.update(payload_overrides)
+    return {
+        "id": proposal_id,
+        "type": "medical_relation_schema_migration",
+        "target": "edge:clinical-manifestations->flu",
+        "proposed_change": "Retire invalid category manifestation relation.",
+        "reason": "The edge cannot be normalized without creating a false fact.",
+        "evidence": ["relation_id:clinical-manifestations->flu; source_id:chunk-1"],
+        "action_payload": payload,
+    }
+
+
+def _split_relation_proposal(
+    proposal_id: str = "proposal-split-drug-relation",
+    **payload_overrides: object,
+) -> dict[str, Any]:
+    payload: dict[str, object] = {
+        "action": "split_relation",
+        "edge_id": "edge-zanamivir-mixed",
+        "expected_source": "zanamivir",
+        "expected_target": "mixed-target",
+        "current_keywords": "recommended_treatment,applies_to",
+        "retire_original": True,
+        "new_edges": [
+            {
+                "source": "zanamivir",
+                "target": "influenza",
+                "predicate": "has_indication",
+                "qualifiers": {"purpose": "treatment"},
+            },
+            {
+                "source": "zanamivir",
+                "target": "children",
+                "predicate": "recommended_for",
+                "qualifiers": {
+                    "purpose": "treatment",
+                    "age_min": 7,
+                    "age_unit": "year",
+                    "route": "inhalation",
+                },
+            },
+        ],
+    }
+    payload.update(payload_overrides)
+    return {
+        "id": proposal_id,
+        "type": "medical_fact_role_split",
+        "target": "edge:edge-zanamivir-mixed",
+        "proposed_change": "Split overloaded zanamivir relation.",
+        "reason": "The relation mixes indication and population recommendation semantics.",
+        "evidence": ["relation_id:edge-zanamivir-mixed; source_id:chunk-1"],
+        "action_payload": payload,
+    }
+
+
+def test_proposal_apply_capability_reports_supported_handlers() -> None:
+    expected_supported = {
+        ("add_hierarchy_branch", "add_hierarchy_branch"),
+        ("medical_relation_schema_migration", "replace_relation"),
+        ("medical_relation_schema_migration", "retire_relation"),
+        ("medical_fact_role_split", "split_relation"),
+        ("value_node_to_qualifier", "value_node_to_qualifier"),
+        ("candidate_kg_expansion", "candidate_kg_expansion"),
+    }
+
+    assert set(PROPOSAL_APPLY_HANDLER_REGISTRY) == expected_supported
+    for proposal_type, action in PROPOSAL_APPLY_HANDLER_REGISTRY:
+        proposal = {
+            "type": proposal_type,
+            "action_payload": {"action": action} if action != proposal_type else {},
+        }
+
+        capability = proposal_apply_capability(proposal)
+
+        assert capability.supported is True
+        assert capability.action == action
+        assert capability.reason == ""
+
+
+def test_proposal_apply_capability_blocks_entity_alias_merge() -> None:
+    proposal = {
+        "type": "entity_alias_merge",
+        "action_payload": {"action": "entity_alias_merge"},
+    }
+
+    capability = proposal_apply_capability(proposal)
+
+    assert capability.supported is False
+    assert capability.action == "entity_alias_merge"
+    assert "Unsupported" in capability.reason
 
 
 def test_add_hierarchy_branch_is_a_known_mutation_type() -> None:
@@ -868,6 +975,89 @@ async def test_apply_accepted_changes_is_idempotent_for_existing_branch(
 
 
 @pytest.mark.asyncio
+async def test_apply_candidate_kg_expansion_creates_nodes_edges_and_retires_old_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"流感病毒", "甲型流感"})
+    graph.edges[("流感病毒", "甲型流感")] = {
+        "id": "流感病毒->甲型流感",
+        "source_node_id": "流感病毒",
+        "target_node_id": "甲型流感",
+        "keywords": "病原分型",
+        "source_id": "chunk-020",
+        "file_path": "儿童流感指南.pdf",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = {
+        "id": "prop-action-candidate-typed-flu-a",
+        "type": "candidate_kg_expansion",
+        "target": "kg:candidate:typed-influenza-pathogen:甲型流感",
+        "proposed_change": "Create a precise typed influenza pathogen candidate.",
+        "reason": "Typed influenza diseases should not use generic influenza virus as the causative agent.",
+        "evidence": [
+            "source_id: chunk-020; file_path: 儿童流感指南.pdf; relation_id: 流感病毒->甲型流感"
+        ],
+        "action_payload": {
+            "candidate_nodes": [
+                {
+                    "id": "甲型流感病毒",
+                    "label": "甲型流感病毒",
+                    "entity_type": "pathogen",
+                    "description": "甲型流感的精确病原体，属于流感病毒。",
+                }
+            ],
+            "candidate_edges": [
+                {
+                    "source": "甲型流感病毒",
+                    "target": "流感病毒",
+                    "keywords": "is_a",
+                    "description": "甲型流感病毒是流感病毒的一个分型病原体。",
+                },
+                {
+                    "source": "甲型流感",
+                    "target": "甲型流感病毒",
+                    "keywords": "causative_agent",
+                    "description": "甲型流感应指向精确的甲型流感病毒病原体。",
+                },
+            ],
+            "retire_edges": [
+                {
+                    "source": "流感病毒",
+                    "target": "甲型流感",
+                    "keywords": "病原分型",
+                    "reason": "用精确病原体节点和疾病 causative_agent 关系替代泛化分型边。",
+                }
+            ],
+            "source_id": "chunk-020",
+            "file_path": "儿童流感指南.pdf",
+            "evidence_quote": "流感病毒->甲型流感",
+            "why_not_existing": "甲型流感需要精确病原体节点，不能直接指向泛化流感病毒。",
+        },
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "prop-action-candidate-typed-flu-a"}],
+        proposals_by_id={"prop-action-candidate-typed-flu-a": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert result.changes[0].action == "candidate_kg_expansion"
+    assert graph.nodes["甲型流感病毒"]["entity_type"] == "pathogen"
+    assert graph.edges[("甲型流感病毒", "流感病毒")]["keywords"] == "is_a"
+    assert (
+        graph.edges[("甲型流感", "甲型流感病毒")]["keywords"]
+        == "causative_agent"
+    )
+    assert graph.edges[("甲型流感", "甲型流感病毒")]["accepted_proposal_ids"] == (
+        "prop-action-candidate-typed-flu-a"
+    )
+    assert ("流感病毒", "甲型流感") in graph.removed_edges
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_apply_accepted_changes_replaces_medical_relation_preserving_provenance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -908,6 +1098,11 @@ async def test_apply_accepted_changes_replaces_medical_relation_preserving_prove
                     f"proposal-existing{GRAPH_FIELD_SEP}"
                     "proposal-replace-dry-cough-flu"
                 ),
+                "id": "flu->dry-cough",
+                "source": "flu",
+                "target": "dry-cough",
+                "source_node_id": "flu",
+                "target_node_id": "dry-cough",
                 "normalized_by": APPLY_SOURCE,
                 "qualifiers": '{"certainty":"guideline_supported"}',
             },
@@ -917,6 +1112,58 @@ async def test_apply_accepted_changes_replaces_medical_relation_preserving_prove
     assert lock_calls == [
         {
             "keys": ["dry-cough", "flu"],
+            "namespace": "influenza_medical_v1:GraphDB",
+            "enable_logging": False,
+            "entered": True,
+            "exited": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_splits_overloaded_medical_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(
+        existing_nodes={"zanamivir", "mixed-target", "influenza", "children"}
+    )
+    graph.edges[("zanamivir", "mixed-target")] = {
+        "id": "edge-zanamivir-mixed",
+        "source": "zanamivir",
+        "target": "mixed-target",
+        "source_node_id": "zanamivir",
+        "target_node_id": "mixed-target",
+        "keywords": "recommended_treatment,applies_to",
+        "source_id": "chunk-1",
+        "file_path": "guideline.md",
+        "description": "Zanamivir relation mixes indication and population.",
+    }
+    lock_calls = install_recording_keyed_lock(monkeypatch)
+    proposal = _split_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-split-drug-relation"}],
+        proposals_by_id={"proposal-split-drug-relation": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert result.changes[0].action == "split_relation"
+    assert ("zanamivir", "mixed-target") not in graph.edges
+    assert graph.removed_edges == [("zanamivir", "mixed-target")]
+    assert graph.edges[("zanamivir", "influenza")]["keywords"] == "has_indication"
+    assert graph.edges[("zanamivir", "children")]["keywords"] == "recommended_for"
+    assert graph.edges[("zanamivir", "children")]["qualifiers"] == (
+        '{"age_min":7,"age_unit":"year","purpose":"treatment","route":"inhalation"}'
+    )
+    assert graph.edges[("zanamivir", "influenza")]["accepted_proposal_ids"] == (
+        "proposal-split-drug-relation"
+    )
+    assert graph.index_done_calls == 1
+    assert lock_calls == [
+        {
+            "keys": ["children", "influenza", "mixed-target", "zanamivir"],
             "namespace": "influenza_medical_v1:GraphDB",
             "enable_logging": False,
             "entered": True,
@@ -945,6 +1192,34 @@ async def test_apply_accepted_changes_blocks_medical_relation_when_expected_edge
     assert graph.removed_edges == []
     assert graph.upserted_edges == []
     assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_retires_invalid_medical_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"clinical-manifestations", "flu"})
+    graph.edges[("clinical-manifestations", "flu")] = {
+        "id": "clinical-manifestations->flu",
+        "keywords": "clinical_manifestation",
+        "source_id": "chunk-1",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _retire_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-retire-category-edge"}],
+        proposals_by_id={"proposal-retire-category-edge": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert result.changes[0].action == "retire_relation"
+    assert ("clinical-manifestations", "flu") not in graph.edges
+    assert graph.removed_edges == [("clinical-manifestations", "flu")]
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 1
 
 
 @pytest.mark.asyncio
@@ -1079,11 +1354,59 @@ async def test_apply_accepted_changes_blocks_medical_relation_identity_mismatch(
 
 
 @pytest.mark.asyncio
+async def test_apply_accepted_changes_repairs_legacy_source_target_attribute_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"flu-vaccine", "seasonal-flu"})
+    graph.edges[("flu-vaccine", "seasonal-flu")] = {
+        "keywords": "\u9884\u9632\u63aa\u65bd",
+        "source": "seasonal-flu",
+        "target": "flu-vaccine",
+        "source_id": "chunk-1",
+        "file_path": "guideline.md",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal(
+        proposal_id="proposal-replace-vaccine-seasonal-flu",
+        edge_id="flu-vaccine->seasonal-flu",
+        expected_source="flu-vaccine",
+        expected_target="seasonal-flu",
+        new_source="flu-vaccine",
+        new_target="seasonal-flu",
+        new_keywords="targets_disease",
+        current_keywords="\u9884\u9632\u63aa\u65bd",
+    )
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-vaccine-seasonal-flu"}],
+        proposals_by_id={"proposal-replace-vaccine-seasonal-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert graph.edges[("flu-vaccine", "seasonal-flu")]["keywords"] == (
+        "targets_disease"
+    )
+    assert graph.edges[("flu-vaccine", "seasonal-flu")]["id"] == (
+        "flu-vaccine->seasonal-flu"
+    )
+    assert graph.edges[("flu-vaccine", "seasonal-flu")]["source"] == "flu-vaccine"
+    assert graph.edges[("flu-vaccine", "seasonal-flu")]["target"] == "seasonal-flu"
+    assert graph.edges[("flu-vaccine", "seasonal-flu")]["source_node_id"] == (
+        "flu-vaccine"
+    )
+    assert graph.edges[("flu-vaccine", "seasonal-flu")]["target_node_id"] == (
+        "seasonal-flu"
+    )
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "orientation_fields",
     [
         {"source_node_id": "flu", "target_node_id": "dry-cough"},
-        {"source": "flu", "target": "dry-cough"},
     ],
 )
 async def test_apply_accepted_changes_blocks_medical_relation_orientation_mismatch(
@@ -1182,6 +1505,56 @@ async def test_apply_accepted_changes_cleans_old_relation_when_target_already_ap
 
 
 @pytest.mark.asyncio
+async def test_apply_accepted_changes_normalizes_existing_target_edge_and_removes_old_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"antiviral-drug", "flu", "flu-virus"})
+    graph.edges[("flu-virus", "antiviral-drug")] = {
+        "id": "flu-virus->antiviral-drug",
+        "keywords": "recommended_treatment",
+        "source_id": "chunk-old",
+    }
+    graph.edges[("antiviral-drug", "flu")] = {
+        "id": "antiviral-drug->flu",
+        "keywords": "recommended_treatment",
+        "source_id": "chunk-existing",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal(
+        proposal_id="proposal-normalize-existing-treatment-target",
+        edge_id="flu-virus->antiviral-drug",
+        expected_source="flu-virus",
+        expected_target="antiviral-drug",
+        current_keywords="recommended_treatment",
+        new_source="antiviral-drug",
+        new_target="flu",
+        new_keywords="has_indication",
+    )
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-normalize-existing-treatment-target"}],
+        proposals_by_id={"proposal-normalize-existing-treatment-target": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert graph.removed_edges == [("flu-virus", "antiviral-drug")]
+    assert ("flu-virus", "antiviral-drug") not in graph.edges
+    assert graph.edges[("antiviral-drug", "flu")]["keywords"] == "has_indication"
+    assert graph.edges[("antiviral-drug", "flu")]["source_node_id"] == "antiviral-drug"
+    assert graph.edges[("antiviral-drug", "flu")]["target_node_id"] == "flu"
+    assert graph.upserted_edges == [
+        (
+            "antiviral-drug",
+            "flu",
+            graph.edges[("antiviral-drug", "flu")],
+        )
+    ]
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_apply_accepted_changes_keeps_old_relation_when_replacement_upsert_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1229,10 +1602,197 @@ async def test_apply_accepted_changes_relation_replacement_is_idempotent_for_und
         proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
     )
 
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == [
+        (
+            "flu",
+            "dry-cough",
+            {
+                "keywords": "has_manifestation",
+                "accepted_proposal_ids": "proposal-replace-dry-cough-flu",
+                "source_id": "chunk-1",
+                "id": "flu->dry-cough",
+                "source": "flu",
+                "target": "dry-cough",
+                "source_node_id": "flu",
+                "target_node_id": "dry-cough",
+                "normalized_by": APPLY_SOURCE,
+            },
+        )
+    ]
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_normalizes_undirected_edge_with_new_direction_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = UndirectedFakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("flu", "dry-cough")] = {
+        "id": "edge-dry-cough-flu",
+        "source_node_id": "flu",
+        "target_node_id": "dry-cough",
+        "keywords": "\u4e34\u5e8a\u8868\u73b0",
+        "source_id": "chunk-1",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == [
+        (
+            "flu",
+            "dry-cough",
+            {
+                "id": "flu->dry-cough",
+                "source_node_id": "flu",
+                "target_node_id": "dry-cough",
+                "keywords": "has_manifestation",
+                "source_id": "chunk-1",
+                "source": "flu",
+                "target": "dry-cough",
+                "normalized_by": APPLY_SOURCE,
+                "accepted_proposal_ids": "proposal-replace-dry-cough-flu",
+            },
+        )
+    ]
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_relation_replacement_already_present_with_direction_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = UndirectedFakeGraph(existing_nodes={"dry-cough", "flu"})
+    graph.edges[("flu", "dry-cough")] = {
+        "id": "flu->dry-cough",
+        "source_node_id": "flu",
+        "target_node_id": "dry-cough",
+        "keywords": "has_manifestation",
+        "accepted_proposal_ids": "proposal-replace-dry-cough-flu",
+        "source_id": "chunk-1",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-replace-dry-cough-flu"}],
+        proposals_by_id={"proposal-replace-dry-cough-flu": proposal},
+    )
+
     assert result.changes[0].status == ApplyChangeStatus.ALREADY_PRESENT
     assert graph.removed_edges == []
     assert graph.upserted_edges == []
     assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_merges_duplicate_replacement_qualifiers_after_prior_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = UndirectedFakeGraph(existing_nodes={"children", "oseltamivir"})
+    graph.edges[("oseltamivir", "children")] = {
+        "id": "oseltamivir->children",
+        "source_node_id": "oseltamivir",
+        "target_node_id": "children",
+        "keywords": "recommended_for",
+        "accepted_proposal_ids": "proposal-first",
+        "source_id": "chunk-1",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal(
+        proposal_id="proposal-second",
+        edge_id="children->oseltamivir",
+        expected_source="children",
+        expected_target="oseltamivir",
+        current_keywords="recommended_for",
+        new_source="oseltamivir",
+        new_target="children",
+        new_keywords="recommended_for",
+        qualifiers={"condition": "influenza", "purpose": "treatment"},
+    )
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-second"}],
+        proposals_by_id={"proposal-second": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert graph.removed_edges == []
+    assert graph.edges[("oseltamivir", "children")]["accepted_proposal_ids"] == (
+        f"proposal-first{GRAPH_FIELD_SEP}proposal-second"
+    )
+    assert graph.edges[("oseltamivir", "children")]["qualifiers"] == (
+        '{"condition":"influenza","purpose":"treatment"}'
+    )
+    assert graph.upserted_edges == [
+        (
+            "oseltamivir",
+            "children",
+            graph.edges[("oseltamivir", "children")],
+        )
+    ]
+    assert graph.index_done_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_merges_proposal_id_when_relation_already_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = FakeGraph(existing_nodes={"flu", "pathogen-test"})
+    graph.edges[("flu", "pathogen-test")] = {
+        "id": "flu->pathogen-test",
+        "source_node_id": "flu",
+        "target_node_id": "pathogen-test",
+        "keywords": "has_diagnostic_criterion",
+        "accepted_proposal_ids": "proposal-first",
+        "source_id": "chunk-1",
+    }
+    install_recording_keyed_lock(monkeypatch)
+    proposal = _replace_relation_proposal(
+        proposal_id="proposal-second",
+        edge_id="flu->pathogen-test",
+        expected_source="flu",
+        expected_target="pathogen-test",
+        current_keywords="诊断依据",
+        new_source="flu",
+        new_target="pathogen-test",
+        new_keywords="has_diagnostic_criterion",
+    )
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-second"}],
+        proposals_by_id={"proposal-second": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.APPLIED
+    assert graph.edges[("flu", "pathogen-test")]["accepted_proposal_ids"] == (
+        f"proposal-first{GRAPH_FIELD_SEP}proposal-second"
+    )
+    assert graph.removed_edges == []
+    assert graph.upserted_edges == [
+        (
+            "flu",
+            "pathogen-test",
+            graph.edges[("flu", "pathogen-test")],
+        )
+    ]
+    assert graph.index_done_calls == 1
 
 
 @pytest.mark.asyncio
@@ -1313,8 +1873,14 @@ async def test_apply_accepted_changes_moves_single_value_node_to_carrier_qualifi
         "evidence": ["node:dose-75mg"],
         "action_payload": {
             "value_node_id": "dose-75mg",
+            "incident_edge_id": "oseltamivir->dose-75mg",
+            "expected_incident_keywords": "has_value",
+            "carrier_edge_id": "oseltamivir->flu",
             "carrier_edge_source": "oseltamivir",
             "carrier_edge_target": "flu",
+            "expected_carrier_keywords": "has_indication",
+            "carrier_source_type": "Drug",
+            "carrier_target_type": "Disease",
             "qualifier_key": "dose",
             "qualifier_value": "75 mg",
         },
@@ -1330,7 +1896,9 @@ async def test_apply_accepted_changes_moves_single_value_node_to_carrier_qualifi
     assert result.changes[0].status == ApplyChangeStatus.APPLIED
     assert result.changes[0].action == "value_node_to_qualifier"
     assert graph.removed_nodes == ["dose-75mg"]
-    assert graph.edges[("oseltamivir", "flu")]["qualifier_dose"] == "75 mg"
+    assert json.loads(graph.edges[("oseltamivir", "flu")]["qualifiers"]) == {
+        "dose": "75 mg"
+    }
     assert (
         graph.edges[("oseltamivir", "flu")]["accepted_proposal_ids"]
         == "proposal-dose-qualifier"
@@ -1661,6 +2229,34 @@ async def test_apply_accepted_changes_unsupported_type_writes_nothing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_accepted_changes_uses_registry_for_unsupported_action() -> None:
+    graph = FakeGraph()
+    proposal = {
+        "id": "proposal-alias-merge",
+        "type": "entity_alias_merge",
+        "target": "node:flu-short",
+        "proposed_change": "Merge duplicate aliases.",
+        "reason": "Alias merge is not statically applyable yet.",
+        "evidence": ["node:flu-short"],
+        "action_payload": {"action": "entity_alias_merge"},
+    }
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[{"proposal_id": "proposal-alias-merge"}],
+        proposals_by_id={"proposal-alias-merge": proposal},
+    )
+
+    assert result.changes[0].status == ApplyChangeStatus.UNSUPPORTED
+    assert result.changes[0].action == "entity_alias_merge"
+    assert result.changes[0].reason == proposal_apply_capability(proposal).reason
+    assert graph.upserted_nodes == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_apply_accepted_changes_blocks_missing_proposal_definition_even_if_record_contains_mutation_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1681,14 +2277,42 @@ async def test_apply_accepted_changes_blocks_missing_proposal_definition_even_if
         proposals_by_id={},
     )
 
+    assert result.proposal_ids == ["proposal-missing"]
     assert result.changes[0].status == ApplyChangeStatus.BLOCKED
-    assert result.changes[0].proposal_type == ""
-    assert result.changes[0].target == ""
-    assert result.changes[0].action == "resolve_proposal_definition"
-    assert (
-        result.changes[0].reason
-        == "Accepted proposal definition was not found."
+    assert result.changes[0].proposal_id == "proposal-missing"
+    assert result.changes[0].proposal_type == "add_hierarchy_branch"
+    assert result.changes[0].target == "hierarchy"
+    assert result.changes[0].action == "add_hierarchy_branch"
+    assert result.changes[0].reason == "Accepted proposal definition was not found."
+    assert graph.upserted_nodes == []
+    assert graph.upserted_edges == []
+    assert graph.index_done_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_accepted_changes_blocks_historical_missing_proposal_definition() -> None:
+    graph = FakeGraph()
+
+    result = await apply_accepted_changes_to_graph(
+        rag=FakeRAG(graph),
+        workspace="influenza_medical_v1",
+        records=[
+            {
+                "proposal_id": "proposal-historical",
+                "proposal_type": "medical_relation_schema_migration",
+                "proposal_target": "edge:historical",
+                "recorded_at": "2026-06-20T00:00:00+00:00",
+            }
+        ],
+        proposals_by_id={},
     )
+
+    assert result.proposal_ids == ["proposal-historical"]
+    assert result.changes[0].status == ApplyChangeStatus.BLOCKED
+    assert result.changes[0].proposal_type == "medical_relation_schema_migration"
+    assert result.changes[0].target == "edge:historical"
+    assert result.changes[0].action == "medical_relation_schema_migration"
+    assert result.changes[0].reason == "Accepted proposal definition was not found."
     assert graph.upserted_nodes == []
     assert graph.upserted_edges == []
     assert graph.index_done_calls == 0

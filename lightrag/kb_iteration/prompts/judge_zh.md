@@ -17,6 +17,54 @@ You must check:
 - Whether agent_memory_summary records that similar work was already rejected.
 - For disease/symptom clinical manifestation proposals, whether the target relation
   direction is consistent with the profile convention: disease -> symptom.
+- For has_manifestation proposals, reject or flag category/section targets such as
+  “流感临床表现”, “临床表现”, or “症状表现”; targets must be patient-observable
+  symptoms, signs, or clinical findings.
+- For causative_agent proposals involving influenza diseases, reject bacterial
+  secondary-infection pathogens such as 肺炎链球菌 or 金黄色葡萄球菌 as the cause of
+  甲型流感/流行性感冒; use a complication/secondary-infection schema instead when
+  evidence supports that relation.
+- For supports_or_refutes proposals, check direction carefully: diagnostic evidence,
+  tests, or findings should point toward the disease diagnosis being supported or
+  refuted. Reject disease -> supports_or_refutes -> generic test patterns such as
+  流行性感冒 -> supports_or_refutes -> 病原学检查.
+- For supports_or_refutes proposals involving influenza, reject nonspecific
+  labs or complication assessment findings such as 血常规, 血生化,
+  动脉血气分析, 丙氨酸氨基转移酶, 天门冬氨酸氨基转移酶, or MRI as direct support/refutation for
+  流行性感冒 diagnosis; require clinical-finding, severity/complication, or
+  more specific endpoint semantics.
+- For has_diagnostic_criterion proposals involving influenza, reserve the predicate
+  for pathogen/etiology tests or true disease-defining criteria. Reject nonspecific
+  labs or complication-assessment findings such as 血常规, 血生化,
+  动脉血气分析, 丙氨酸氨基转移酶, 天门冬氨酸氨基转移酶, or MRI as direct
+  流行性感冒 diagnostic criteria.
+- For has_complication proposals involving influenza, reject chronic underlying
+  conditions such as 慢性阻塞性肺疾病(COPD) as direct flu complications; they
+  usually need risk-factor/high-risk-population semantics unless the endpoint is
+  an explicitly grounded acute exacerbation.
+- For executable replace_relation proposals, verify current_keywords exactly copies
+  the full current edge keyword string, including all comma-separated or
+  field-separated labels. If a legacy edge mixes multiple meanings, require split
+  proposals or a review_context_request instead of silently dropping one meaning.
+- Reject no-op replace_relation proposals where source, target, predicate, and
+  empty qualifiers are unchanged.
+- For is_a taxonomy proposals, check subtype direction carefully: child/subtype
+  should point to parent/supertype. Accept patterns such as
+  乙型流感病毒 -> is_a -> 流感病毒; reject parent-to-subtype patterns such as
+  流感病毒 -> is_a -> 乙型流感病毒.
+- For recommended_for proposals targeting broad populations such as 儿童, 孕妇,
+  老年人, or patients, require `purpose` (`treatment` or `prevention`) plus
+  scope qualifiers such as condition, context, age, route, risk, or reason.
+  Flag over-broad proposals such as 扎那米韦 -> recommended_for -> 儿童 when
+  qualifiers are empty or purpose is missing.
+- For contraindicated_for, precaution_for, not_recommended_for, and
+  temporarily_deferred_for proposals, verify that the proposal preserves the
+  difference between contraindication, caution, not-recommended, and temporary
+  deferral and carries route/risk/reason/time_window/version qualifiers when
+  available.
+- For has_manifestation proposals, flag electrolyte/laboratory abnormalities such
+  as 低钾血症 or 低钠血症; these usually need complication, clinical finding, or
+  manual split semantics instead of a plain symptom edge.
 - For taxonomy keyword proposals, whether belongs_to/属于 is used only for true
   category/type hierarchies and not for direct disease-symptom facts.
 

@@ -14,6 +14,7 @@ const EXPLICIT_SOURCE_ARTIFACT_KEYS = new Set([
   'rejected_changes',
   'accepted_changes_apply_result',
   'llm_review_trace',
+  'deterministic_proposal_report',
   'proposals_generated',
   'quality_rules',
   'known_issues'

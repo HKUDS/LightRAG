@@ -205,3 +205,27 @@ def test_build_snapshot_from_graphml_preserves_edge_ids_defaults_and_weight(
     assert snapshot.edges[0].source_id == ""
     assert snapshot.edges[0].file_path == ""
     assert snapshot.edges[0].weight == 2.5
+
+
+def test_build_snapshot_from_graphml_uses_directional_edge_metadata_for_undirected_graph(
+    tmp_path: Path,
+):
+    graph = nx.Graph()
+    graph.add_node("A")
+    graph.add_node("B")
+    graph.add_edge(
+        "A",
+        "B",
+        id="B->A",
+        source_node_id="B",
+        target_node_id="A",
+        keywords="has_manifestation",
+    )
+    graph_path = tmp_path / "graph.graphml"
+    nx.write_graphml(graph, graph_path)
+
+    snapshot = build_snapshot_from_graphml(graph_path, workspace="demo")
+
+    assert snapshot.edges[0].id == "B->A"
+    assert snapshot.edges[0].source == "B"
+    assert snapshot.edges[0].target == "A"

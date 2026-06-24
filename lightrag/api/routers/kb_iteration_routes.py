@@ -12,12 +12,13 @@ from typing import Any, Iterator, Literal, Optional
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from lightrag.kb_iteration.agent_pipeline import (
     LLMAgentPipelineConfig,
     run_llm_agent_pipeline,
 )
+from lightrag.kb_iteration.issue_ledger import normalize_deterministic_family_caps
 from lightrag.kb_iteration.apply import (
     APPLY_RESULT_MARKDOWN,
     AcceptedApplyResult,
@@ -33,6 +34,8 @@ from lightrag.kb_iteration.memory import (
     AGENT_MEMORY_SUMMARY_FILE,
     refresh_agent_memory_summary,
 )
+from lightrag.kb_iteration.medical_schema import MEDICAL_RELATION_SCHEMA_VERSION
+from lightrag.kb_iteration.proposal_fingerprints import proposal_fingerprints
 from lightrag.kb_iteration.proposals import validate_proposal_id
 from lightrag.kb_iteration.review_loop import (
     LLMReviewLoopConfig,
@@ -91,12 +94,42 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
     "llm_evidence_map": ("llm_evidence_map.md", "text/markdown"),
     "llm_repair_plan": ("llm_repair_plan.md", "text/markdown"),
     "proposals_generated": ("proposals.generated.yaml", "text/markdown"),
+    "issue_ledger": ("issue_ledger.json", "application/json"),
+    "deterministic_proposal_report": (
+        "deterministic_proposal_report.json",
+        "application/json",
+    ),
+    "deterministic_proposal_report_md": (
+        "deterministic_proposal_report.md",
+        "text/markdown",
+    ),
+    "proposal_funnel_report": (
+        "proposal_funnel_report.json",
+        "application/json",
+    ),
+    "proposal_funnel_report_md": (
+        "proposal_funnel_report.md",
+        "text/markdown",
+    ),
+    "proposal_conflict_groups": (
+        "proposal_conflict_groups.json",
+        "application/json",
+    ),
+    "proposal_task_packs": ("proposal_task_packs.json", "application/json"),
+    "proposal_merge_report": ("proposal_merge_report.md", "text/markdown"),
+    "subagent_output_index": ("subagent_outputs/index.json", "application/json"),
 }
 
 DECISION_FILES = {
     "accept": "accepted_changes.md",
     "reject": "rejected_changes.md",
     "defer": "deferred_changes.md",
+}
+ALLOWED_REJECTION_SCOPES = {
+    "exact_action",
+    "semantic_until_schema_change",
+    "semantic_until_evidence_change",
+    "defer_only",
 }
 _RUN_LOCKS: dict[str, Lock] = {}
 _RUN_LOCKS_GUARD = Lock()
@@ -107,6 +140,23 @@ class ProposalDecisionRequest(BaseModel):
     reason: str = Field(default="", max_length=4000)
     impact_scope: str = Field(default="", max_length=1000)
     verification: str = Field(default="", max_length=1000)
+    decision_reason_code: Optional[str] = Field(default=None, max_length=120)
+    rejection_scope: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("rejection_scope", mode="after")
+    @classmethod
+    def _validate_rejection_scope(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized not in ALLOWED_REJECTION_SCOPES:
+            raise ValueError(
+                "rejection_scope must be one of: "
+                + ", ".join(sorted(ALLOWED_REJECTION_SCOPES))
+            )
+        return normalized
 
 
 class ProposalRevisionRequest(BaseModel):
@@ -125,12 +175,33 @@ class RunLLMReviewRequest(BaseModel):
     max_review_rounds: int = Field(default=4, ge=1, le=10)
     max_focus_items_per_round: int = Field(default=3, ge=1, le=10)
     max_context_tokens_per_round: int = Field(default=12000, ge=1000, le=100000)
-    max_stage_retries: int = Field(default=5, ge=0, le=8)
+    max_stage_retries: int = Field(default=1, ge=0, le=8)
+    max_subagent_tasks: int = Field(default=8, ge=1, le=50)
+    max_parallel_subagents: int = Field(default=4, ge=1, le=8)
+    max_subagent_issues_per_task: int = Field(default=4, ge=1, le=20)
+    max_subagent_proposals_per_task: int = Field(default=2, ge=1, le=10)
+    max_proposals_per_run: int = Field(default=200, ge=1, le=200)
+    strict_subagent_role_contracts: bool = True
+    prevalidate_action_candidates: bool = True
+    require_candidate_evidence_allowlist: bool = True
+    skip_deterministic_subagent_calls: bool = True
+    deterministic_family_caps: dict[str, int] | None = None
     allow_llm_judge: bool = True
     allow_llm_auto_accept: bool = False
     allow_low_risk_auto_reject: bool = True
     generate_patch_candidates: bool = False
     require_human_for_mutation: bool = True
+
+    @field_validator("deterministic_family_caps", mode="after")
+    @classmethod
+    def _validate_deterministic_family_caps(
+        cls,
+        value: dict[str, int] | None,
+    ) -> dict[str, int] | None:
+        if value is None:
+            return None
+        normalize_deterministic_family_caps(value)
+        return value
 
 
 class _UnavailableLLMReviewClient:
@@ -148,6 +219,8 @@ class _DisplayArtifactFallbackClient:
 
 
 class _OpenAICompatibleLLMReviewClient:
+    supports_parallel_subagent_calls = True
+
     def __init__(
         self,
         *,
@@ -324,6 +397,32 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
                                 ),
                                 require_human_for_mutation=(
                                     request.require_human_for_mutation
+                                ),
+                                max_subagent_tasks=request.max_subagent_tasks,
+                                max_parallel_subagents=(
+                                    request.max_parallel_subagents
+                                ),
+                                max_subagent_issues_per_task=(
+                                    request.max_subagent_issues_per_task
+                                ),
+                                max_subagent_proposals_per_task=(
+                                    request.max_subagent_proposals_per_task
+                                ),
+                                max_proposals_per_run=request.max_proposals_per_run,
+                                strict_subagent_role_contracts=(
+                                    request.strict_subagent_role_contracts
+                                ),
+                                prevalidate_action_candidates=(
+                                    request.prevalidate_action_candidates
+                                ),
+                                require_candidate_evidence_allowlist=(
+                                    request.require_candidate_evidence_allowlist
+                                ),
+                                skip_deterministic_subagent_calls=(
+                                    request.skip_deterministic_subagent_calls
+                                ),
+                                deterministic_family_caps=(
+                                    request.deterministic_family_caps
                                 ),
                             ),
                             profile=request.profile,
@@ -770,6 +869,7 @@ def create_kb_iteration_routes(rag, args, api_key: Optional[str] = None):
     ) -> dict[str, Any]:
         workspace = _validate_workspace_or_400(workspace)
         proposal_id = _validate_proposal_id_or_400(proposal_id)
+        _validate_decision_request_or_400(decision, request)
         with _exclusive_workspace_file_lock(
             _output_root(args), workspace, ".kb_iteration_decisions.lock"
         ):
@@ -797,6 +897,17 @@ def _validate_proposal_id_or_400(proposal_id: str) -> str:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return proposal_id
+
+
+def _validate_decision_request_or_400(
+    decision: Literal["accept", "reject", "defer"],
+    request: ProposalDecisionRequest,
+) -> None:
+    if request.rejection_scope == "defer_only" and decision != "defer":
+        raise HTTPException(
+            status_code=400,
+            detail="rejection_scope=defer_only is only valid for defer decisions",
+        )
 
 
 def _output_root(args) -> Path:
@@ -1316,6 +1427,10 @@ def _list_of_records(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def _dict_value(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _list_of_strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -1693,6 +1808,14 @@ def _build_proposal_decision_record(
     request: ProposalDecisionRequest,
 ) -> dict[str, Any]:
     audit_review = _proposal_decision_audit_defaults(proposal_id, proposal, request)
+    schema_version = _proposal_decision_schema_version(proposal)
+    fingerprints = proposal_fingerprints(proposal, schema_version=schema_version)
+    decision_reason_code = _proposal_decision_reason_code(decision, request)
+    rejection_scope = _proposal_decision_rejection_scope(
+        decision,
+        request,
+        decision_reason_code=decision_reason_code,
+    )
     return {
         "proposal_id": proposal_id,
         "proposal_type": proposal.get("type", ""),
@@ -1703,7 +1826,69 @@ def _build_proposal_decision_record(
         "impact_scope": audit_review["impact_scope"],
         "verification": audit_review["verification"],
         "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": schema_version,
+        "semantic_fingerprint": fingerprints.semantic,
+        "execution_fingerprint": fingerprints.execution,
+        "evidence_fingerprint": fingerprints.evidence,
+        "action_payload": _dict_value(proposal.get("action_payload")),
+        "decision_reason_code": decision_reason_code,
+        "rejection_scope": rejection_scope,
+        "semantic_rejection_class": decision_reason_code,
     }
+
+
+def _proposal_decision_schema_version(proposal: dict[str, Any]) -> str:
+    return str(proposal.get("schema_version") or MEDICAL_RELATION_SCHEMA_VERSION).strip()
+
+
+def _proposal_decision_reason_code(
+    decision: Literal["accept", "reject", "defer"],
+    request: ProposalDecisionRequest,
+) -> str:
+    structured = str(request.decision_reason_code or "").strip()
+    if structured:
+        return structured
+
+    reason = request.reason.casefold()
+    if decision == "accept":
+        return "accepted"
+    if decision == "defer":
+        return "deferred"
+    if any(token in reason for token in ("evidence", "source", "grounding")):
+        return "insufficient_evidence"
+    if any(
+        token in reason
+        for token in (
+            "unsafe",
+            "semantic",
+            "schema",
+            "wrong relation",
+            "incorrect relation",
+            "predicate",
+        )
+    ):
+        return "unsafe_semantics"
+    return "manual_reject"
+
+
+def _proposal_decision_rejection_scope(
+    decision: Literal["accept", "reject", "defer"],
+    request: ProposalDecisionRequest,
+    *,
+    decision_reason_code: str,
+) -> str:
+    structured = str(request.rejection_scope or "").strip()
+    if structured:
+        return structured
+    if decision == "defer":
+        return "defer_only"
+    if decision == "accept":
+        return "exact_action"
+    if decision_reason_code == "insufficient_evidence":
+        return "semantic_until_evidence_change"
+    if decision_reason_code == "unsafe_semantics":
+        return "semantic_until_schema_change"
+    return "exact_action"
 
 
 def _proposal_decision_audit_defaults(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -14,15 +15,21 @@ from lightrag.medical_kg.ontology import (
 from .medical_schema import (
     MedicalRelationMigrationRule,
     is_medical_profile,
+    medical_type_allowed,
     migration_rule_for_legacy_keyword,
+    normalize_medical_entity_type,
+    relation_spec_by_id,
+    validate_relation_instance,
 )
 from .models import KGSnapshot, QualityFinding, QualityScore, SnapshotEdge, SnapshotNode
+from .relation_tokens import split_relation_tokens
 
 GENERIC_RELATION_KEYWORDS = frozenset({"\u76f8\u5173", "\u90bb\u63a5", "related"})
 CLINICAL_MANIFESTATION_KEYWORDS = frozenset(
     {
         "clinical_manifestation",
         "clinical manifestation",
+        "has_manifestation",
         "manifestation",
         "symptom_of",
         "has_symptom",
@@ -32,13 +39,44 @@ CLINICAL_MANIFESTATION_KEYWORDS = frozenset(
         "\u8868\u73b0\u4e3a",
     }
 )
+CAUSATIVE_AGENT_KEYWORDS = frozenset(
+    {"causative_agent", "\u75c5\u539f\u5bfc\u81f4"}
+)
+TREATMENT_RECOMMENDATION_KEYWORDS = frozenset(
+    {
+        "recommended_treatment",
+        "treatment_recommendation",
+        "has_indication",
+        "recommends",
+        "\u63a8\u8350\u6cbb\u7597",
+    }
+)
+RECOMMENDS_RELATION_KEYWORDS = frozenset({"recommends"})
+DIAGNOSTIC_BASIS_KEYWORDS = frozenset(
+    {"diagnostic_basis", "diagnosis_basis", "\u8bca\u65ad\u4f9d\u636e"}
+)
+DOSING_USAGE_KEYWORDS = frozenset(
+    {"dosage_usage", "dose_usage", "has_dosing_regimen", "\u5242\u91cf\u7528\u6cd5"}
+)
+APPLIES_TO_KEYWORDS = frozenset(
+    {"applies_to", "applicable_to", "recommended_for", "\u9002\u7528\u4e8e"}
+)
 TAXONOMY_RELATION_KEYWORDS = frozenset(
     {"belongs_to", "is_a", "type_of", "\u5c5e\u4e8e"}
 )
-DISEASE_ENTITY_TYPES = frozenset({"disease", "\u75be\u75c5"})
-SYMPTOM_ENTITY_TYPES = frozenset(
-    {"symptom", "sign", "clinical_manifestation", "\u75c7\u72b6", "\u4f53\u5f81"}
+DISEASE_ENTITY_TYPES = frozenset({"Disease"})
+SYMPTOM_ENTITY_TYPES = frozenset({"Symptom"})
+MANIFESTATION_SOURCE_TYPES = frozenset({"Symptom", "ClinicalFinding"})
+MANIFESTATION_TARGET_TYPES = frozenset(
+    {"Disease", "Syndrome", "ClinicalCondition"}
 )
+INTERVENTION_ENTITY_TYPES = frozenset({"Drug", "Treatment", "Vaccine"})
+RECOMMENDATION_SOURCE_TYPES = frozenset(
+    {"Guideline", "Recommendation", "ClinicalPathway"}
+)
+INDICATION_TARGET_TYPES = frozenset({"Disease", "ClinicalCondition", "Population"})
+RECOMMENDATION_TARGET_TYPES = frozenset({"Drug", "Treatment", "Vaccine", "Test"})
+DIAGNOSTIC_TARGET_TYPES = frozenset({"Disease", "Syndrome", "ClinicalCondition"})
 DIAGNOSTIC_SCHEMA_PREDICATES = frozenset(
     {
         "has_diagnostic_criterion",
@@ -75,18 +113,33 @@ def evaluate_snapshot_quality(snapshot: KGSnapshot) -> QualityScore:
         if _needs_medical_schema(snapshot)
         else []
     )
+    medical_domain_range_issues = (
+        [
+            *_medical_schema_domain_range_issues(snapshot.edges, node_by_id),
+            *_medical_schema_cross_edge_issues(snapshot.edges),
+        ]
+        if _needs_medical_schema(snapshot)
+        else []
+    )
     medical_schema_issues = _medical_schema_issue_details(
+        domain_range_issues=medical_domain_range_issues,
         clinical_direction_issues=clinical_direction_issues,
         taxonomy_relation_misuses=taxonomy_relation_misuses,
         legacy_schema_relation_issues=legacy_schema_relation_issues,
     )
     legacy_schema_edges = [edge for edge, _rule in legacy_schema_relation_issues]
+    edge_by_id = {edge.id: edge for edge in snapshot.edges}
     relation_semantic_issue_edges = _unique_edges_by_id(
         [
             *generic_edges,
             *clinical_direction_issues,
             *taxonomy_relation_misuses,
             *legacy_schema_edges,
+            *[
+                edge_by_id[edge_id]
+                for issue in medical_schema_issues
+                if (edge_id := issue.get("edge_id")) in edge_by_id
+            ],
         ]
     )
 
@@ -219,8 +272,7 @@ def _is_generic_relation(edge: SnapshotEdge) -> bool:
 
 
 def _relation_tokens(keywords: str) -> list[str]:
-    normalized = keywords.replace("\uff0c", ",").replace(GRAPH_FIELD_SEP, ",")
-    return [token.strip().casefold() for token in normalized.split(",") if token.strip()]
+    return split_relation_tokens(keywords)
 
 
 def _clinical_relation_direction_issues(
@@ -263,7 +315,422 @@ def _medical_schema_legacy_relation_issues(
             if rule is not None:
                 issues.append((edge, rule))
                 break
+            try:
+                spec = relation_spec_by_id(token)
+            except KeyError:
+                continue
+            if spec.deprecated and spec.canonical_replacement:
+                issues.append(
+                    (
+                        edge,
+                        MedicalRelationMigrationRule(
+                            legacy_keywords=(token,),
+                            canonical_options=(spec.canonical_replacement,),
+                            guidance=(
+                                f"{token} is deprecated; use "
+                                f"{spec.canonical_replacement}."
+                            ),
+                        ),
+                    )
+                )
+                break
     return issues
+
+
+def _medical_schema_domain_range_issues(
+    edges: list[SnapshotEdge], node_by_id: dict[str, SnapshotNode]
+) -> list[dict[str, Any]]:
+    issues = []
+    for edge in edges:
+        tokens = set(_relation_tokens(edge.keywords))
+        source_type = _normalized_node_type(node_by_id.get(edge.source))
+        target_type = _normalized_node_type(node_by_id.get(edge.target))
+
+        if tokens & CLINICAL_MANIFESTATION_KEYWORDS:
+            if (
+                source_type in MANIFESTATION_SOURCE_TYPES
+                and target_type in MANIFESTATION_TARGET_TYPES
+            ):
+                issues.append(
+                    _schema_issue_payload(
+                        edge,
+                        issue_kind="reverse_clinical_manifestation",
+                        candidate_predicates=["has_manifestation"],
+                        new_source=edge.target,
+                        new_target=edge.source,
+                        guidance=(
+                            "Clinical manifestation edges should point disease "
+                            "to symptom."
+                        ),
+                        source_type=source_type,
+                        target_type=target_type,
+                    )
+                )
+            if (
+                source_type in INTERVENTION_ENTITY_TYPES
+                and target_type == "Symptom"
+            ):
+                issues.append(
+                    _schema_issue_payload(
+                        edge,
+                        issue_kind="adverse_reaction_modeled_as_manifestation",
+                        candidate_predicates=["may_cause_adverse_reaction"],
+                        guidance=(
+                            "Symptoms caused by drugs, vaccines, or treatments "
+                            "should be modeled as adverse reactions."
+                        ),
+                        source_type=source_type,
+                        target_type=target_type,
+                    )
+                )
+
+        if (
+            tokens & CAUSATIVE_AGENT_KEYWORDS
+            and source_type == "Pathogen"
+            and target_type == "Disease"
+        ):
+            issues.append(
+                _schema_issue_payload(
+                    edge,
+                    issue_kind="reverse_causative_agent",
+                    candidate_predicates=["causative_agent"],
+                    new_source=edge.target,
+                    new_target=edge.source,
+                    guidance="Causative-agent edges should point disease to pathogen.",
+                    source_type=source_type,
+                    target_type=target_type,
+                )
+            )
+
+        if (
+            tokens & TREATMENT_RECOMMENDATION_KEYWORDS
+            and not _is_valid_treatment_recommendation_edge(
+                tokens, source_type, target_type
+            )
+        ):
+            issues.append(
+                _schema_issue_payload(
+                    edge,
+                    issue_kind="treatment_domain_range_mismatch",
+                    candidate_predicates=["has_indication", "recommends"],
+                    guidance=(
+                        "Treatment recommendations should connect an intervention "
+                        "to an indication or a recommendation to an intervention."
+                    ),
+                    source_type=source_type,
+                    target_type=target_type,
+                )
+            )
+
+        if (
+            tokens & DIAGNOSTIC_BASIS_KEYWORDS
+            and source_type == "Test"
+            and target_type in DIAGNOSTIC_TARGET_TYPES
+        ):
+            issues.append(
+                _schema_issue_payload(
+                    edge,
+                    issue_kind="diagnostic_evidence_direction_mismatch",
+                    candidate_predicates=[
+                        "has_diagnostic_criterion",
+                        "supports_or_refutes",
+                    ],
+                    new_source=edge.target,
+                    new_target=edge.source,
+                    guidance=(
+                        "Diagnosis-basis edges should separate disease criteria "
+                        "from evidence that supports or refutes a diagnosis."
+                    ),
+                    source_type=source_type,
+                    target_type=target_type,
+                )
+            )
+
+        issues.extend(
+            _canonical_relation_domain_range_issues(
+                edge,
+                tokens=tokens,
+                source_type=source_type,
+                target_type=target_type,
+            )
+        )
+
+        predicate_tokens = _multi_predicate_tokens(tokens)
+        if len(predicate_tokens) > 1:
+            candidate_predicates = _candidate_predicates_for_tokens(predicate_tokens)
+            repair_options = _split_repair_options(
+                edge,
+                candidate_predicates=candidate_predicates,
+                source_type=source_type,
+                target_type=target_type,
+            )
+            issues.append(
+                _schema_issue_payload(
+                    edge,
+                    issue_kind="multi_predicate_edge_split_needed",
+                    candidate_predicates=candidate_predicates,
+                    suggested_action="split_relation",
+                    guidance=(
+                        "Edges with multiple medical predicate meanings should "
+                        "be split into separate relations."
+                    ),
+                    source_type=source_type,
+                    target_type=target_type,
+                    predicate_tokens=predicate_tokens,
+                    repair_options=repair_options,
+                )
+            )
+
+    return issues
+
+
+def _canonical_relation_domain_range_issues(
+    edge: SnapshotEdge,
+    *,
+    tokens: set[str],
+    source_type: str,
+    target_type: str,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for token in sorted(tokens):
+        try:
+            spec = relation_spec_by_id(token)
+        except KeyError:
+            continue
+        validation_errors = validate_relation_instance(
+            predicate=token,
+            source_type=source_type,
+            target_type=target_type,
+            qualifiers=_edge_qualifiers(edge),
+        )
+        if not validation_errors:
+            continue
+        issue_kind = _issue_kind_for_relation_errors(validation_errors)
+        expected_domain_types = _normalized_expected_types(spec.domain_types)
+        expected_range_types = _normalized_expected_types(spec.range_types)
+        issue = _schema_issue_payload(
+            edge,
+            issue_kind=issue_kind,
+            candidate_predicates=[spec.id],
+            guidance=spec.guidance
+            or "Canonical medical relation domain/range does not match node types.",
+            source_type=source_type,
+            target_type=target_type,
+        )
+        issue["expected_domain_types"] = list(expected_domain_types)
+        issue["expected_range_types"] = list(expected_range_types)
+        issue["validation_errors"] = validation_errors
+        missing_qualifiers = _missing_relation_qualifier_names(validation_errors)
+        if missing_qualifiers:
+            issue["missing_qualifiers"] = missing_qualifiers
+        missing_qualifier_groups = _missing_relation_qualifier_groups(
+            validation_errors
+        )
+        if missing_qualifier_groups:
+            issue["missing_qualifier_groups"] = missing_qualifier_groups
+        unsupported_qualifiers = _unsupported_relation_qualifier_names(
+            validation_errors
+        )
+        if unsupported_qualifiers:
+            issue["unsupported_qualifiers"] = unsupported_qualifiers
+        invalid_qualifier_values = _invalid_relation_qualifier_value_names(
+            validation_errors
+        )
+        if invalid_qualifier_values:
+            issue["invalid_qualifier_values"] = invalid_qualifier_values
+        issues.append(issue)
+    return issues
+
+
+def _issue_kind_for_relation_errors(errors: list[str]) -> str:
+    if any(" is outside " in error for error in errors):
+        return "canonical_relation_domain_range_mismatch"
+    if any("requires qualifier" in error for error in errors) or any(
+        "requires one qualifier from" in error for error in errors
+    ):
+        return "missing_required_relation_qualifier"
+    if any("does not allow qualifier" in error for error in errors):
+        return "unsupported_relation_qualifier"
+    if any(" must be one of " in error for error in errors):
+        return "invalid_relation_qualifier_value"
+    return "canonical_relation_domain_range_mismatch"
+
+
+def _missing_relation_qualifier_names(errors: list[str]) -> list[str]:
+    missing = []
+    marker = " requires qualifier "
+    for error in errors:
+        if marker not in error:
+            continue
+        qualifier = error.split(marker, 1)[1].strip()
+        if qualifier and qualifier not in missing:
+            missing.append(qualifier)
+    return missing
+
+
+def _missing_relation_qualifier_groups(errors: list[str]) -> list[list[str]]:
+    groups = []
+    marker = " requires one qualifier from "
+    for error in errors:
+        if marker not in error:
+            continue
+        group = [
+            qualifier.strip()
+            for qualifier in error.split(marker, 1)[1].split("|")
+            if qualifier.strip()
+        ]
+        if group and group not in groups:
+            groups.append(group)
+    return groups
+
+
+def _unsupported_relation_qualifier_names(errors: list[str]) -> list[str]:
+    unsupported = []
+    marker = " does not allow qualifier(s) "
+    for error in errors:
+        if marker not in error:
+            continue
+        for qualifier in error.split(marker, 1)[1].split(","):
+            qualifier = qualifier.strip()
+            if qualifier and qualifier not in unsupported:
+                unsupported.append(qualifier)
+    return unsupported
+
+
+def _invalid_relation_qualifier_value_names(errors: list[str]) -> list[str]:
+    invalid = []
+    qualifier_marker = " qualifier "
+    value_marker = " must be one of "
+    for error in errors:
+        if qualifier_marker not in error or value_marker not in error:
+            continue
+        qualifier = error.split(qualifier_marker, 1)[1].split(value_marker, 1)[0]
+        qualifier = qualifier.strip()
+        if qualifier and qualifier not in invalid:
+            invalid.append(qualifier)
+    return invalid
+
+
+def _medical_schema_cross_edge_issues(edges: list[SnapshotEdge]) -> list[dict[str, Any]]:
+    by_scope: dict[
+        tuple[str, str, str],
+        dict[str, list[SnapshotEdge]],
+    ] = {}
+    scoped_predicates = {
+        "recommended_for",
+        "not_recommended_for",
+        "contraindicated_for",
+        "precaution_for",
+        "temporarily_deferred_for",
+    }
+    for edge in edges:
+        for predicate in set(_relation_tokens(edge.keywords)) & scoped_predicates:
+            key = (
+                edge.source.strip().casefold(),
+                edge.target.strip().casefold(),
+                _qualifier_scope_key(_edge_qualifiers(edge)),
+            )
+            by_scope.setdefault(key, {}).setdefault(predicate, []).append(edge)
+
+    issues: list[dict[str, Any]] = []
+    safety_predicates = (
+        "contraindicated_for",
+        "not_recommended_for",
+        "precaution_for",
+        "temporarily_deferred_for",
+    )
+    for scoped_edges in by_scope.values():
+        for recommended_edge in scoped_edges.get("recommended_for", []):
+            for safety_predicate in safety_predicates:
+                for safety_edge in scoped_edges.get(safety_predicate, []):
+                    issue = _schema_issue_payload(
+                        recommended_edge,
+                        issue_kind="conflicting_recommendation_safety_scope",
+                        candidate_predicates=["recommended_for", safety_predicate],
+                        suggested_action="review_conflict",
+                        guidance=(
+                            "The same intervention and target have both a "
+                            "recommendation and a safety-limiting relation under "
+                            "the same qualifier scope. Split the scope or preserve "
+                            "the contradiction for human review."
+                        ),
+                    )
+                    issue["conflict_edge_id"] = safety_edge.id
+                    issue["conflict_keywords"] = safety_edge.keywords
+                    issues.append(issue)
+    return issues
+
+
+def _qualifier_scope_key(qualifiers: dict[str, Any]) -> str:
+    return json.dumps(qualifiers, ensure_ascii=False, sort_keys=True)
+
+
+def _normalized_expected_types(types: tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for type_name in types:
+        normalized_type = normalize_medical_entity_type(type_name)
+        if normalized_type == "Unknown" and type_name:
+            normalized_type = str(type_name)
+        if normalized_type not in normalized:
+            normalized.append(normalized_type)
+    return tuple(normalized)
+
+
+def _type_allowed(actual_type: str, expected_types: tuple[str, ...]) -> bool:
+    return medical_type_allowed(actual_type, expected_types)
+
+
+def _edge_qualifiers(edge: SnapshotEdge) -> dict[str, Any]:
+    qualifiers = edge.properties.get("qualifiers")
+    if isinstance(qualifiers, dict):
+        return deepcopy(qualifiers)
+    return {}
+
+
+def _is_valid_treatment_recommendation_edge(
+    tokens: set[str], source_type: str, target_type: str
+) -> bool:
+    if tokens & RECOMMENDS_RELATION_KEYWORDS:
+        return (
+            source_type in RECOMMENDATION_SOURCE_TYPES
+            and target_type in RECOMMENDATION_TARGET_TYPES
+        )
+    if source_type in INTERVENTION_ENTITY_TYPES and target_type in INDICATION_TARGET_TYPES:
+        return True
+    return False
+
+
+def _normalized_node_type(node: SnapshotNode | None) -> str:
+    if node is None:
+        return "Unknown"
+    return normalize_medical_entity_type(node.entity_type)
+
+
+def _multi_predicate_tokens(tokens: set[str]) -> list[str]:
+    semantic_tokens = []
+    for token in sorted(tokens):
+        if (
+            token in DOSING_USAGE_KEYWORDS
+            or token in TREATMENT_RECOMMENDATION_KEYWORDS
+            or token in APPLIES_TO_KEYWORDS
+            or token in DIAGNOSTIC_BASIS_KEYWORDS
+        ):
+            semantic_tokens.append(token)
+    return semantic_tokens
+
+
+def _candidate_predicates_for_tokens(tokens: list[str]) -> list[str]:
+    candidates: list[str] = []
+    for token in tokens:
+        if token in DOSING_USAGE_KEYWORDS:
+            candidates.append("has_dosing_regimen")
+        if token in TREATMENT_RECOMMENDATION_KEYWORDS:
+            candidates.extend(["has_indication", "recommends"])
+        if token in APPLIES_TO_KEYWORDS:
+            candidates.extend(["recommended_for", "has_indication"])
+        if token in DIAGNOSTIC_BASIS_KEYWORDS:
+            candidates.extend(["has_diagnostic_criterion", "supports_or_refutes"])
+    return list(dict.fromkeys(candidates))
 
 
 def _connects_disease_and_symptom(
@@ -278,11 +745,11 @@ def _connects_disease_and_symptom(
 
 
 def _is_disease_node(node: SnapshotNode | None) -> bool:
-    return node is not None and _normalize_identifier(node.entity_type) in DISEASE_ENTITY_TYPES
+    return _normalized_node_type(node) in DISEASE_ENTITY_TYPES
 
 
 def _is_symptom_node(node: SnapshotNode | None) -> bool:
-    return node is not None and _normalize_identifier(node.entity_type) in SYMPTOM_ENTITY_TYPES
+    return _normalized_node_type(node) in SYMPTOM_ENTITY_TYPES
 
 
 def _unique_edges_by_id(edges: list[SnapshotEdge]) -> list[SnapshotEdge]:
@@ -434,9 +901,13 @@ def _score_subsections(
     entity_hygiene = _clamp_score(
         100 - round(100 * metrics["value_like_node_count"] / node_count)
     )
-    relation_semantics = _clamp_score(
-        100 - round(100 * metrics["generic_relation_count"] / edge_count)
+    relation_semantic_issue_count = metrics["relation_semantic_issue_count"]
+    relation_semantic_penalty = round(
+        100 * relation_semantic_issue_count / edge_count
     )
+    if relation_semantic_issue_count:
+        relation_semantic_penalty = max(1, relation_semantic_penalty)
+    relation_semantics = _clamp_score(100 - relation_semantic_penalty)
     if metrics["hierarchy_required_branch_count"]:
         hierarchy_completeness = _clamp_score(
             round(
@@ -677,6 +1148,7 @@ def _relation_semantic_issue_details(
 
 def _medical_schema_issue_details(
     *,
+    domain_range_issues: list[dict[str, Any]],
     clinical_direction_issues: list[SnapshotEdge],
     taxonomy_relation_misuses: list[SnapshotEdge],
     legacy_schema_relation_issues: list[
@@ -684,6 +1156,8 @@ def _medical_schema_issue_details(
     ],
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    issues.extend(domain_range_issues)
+    domain_range_issue_keys = _schema_issue_keys(domain_range_issues)
     issues.extend(
         _schema_issue_payload(
             edge,
@@ -694,6 +1168,7 @@ def _medical_schema_issue_details(
             guidance="Clinical manifestation edges should point disease to symptom.",
         )
         for edge in clinical_direction_issues
+        if (edge.id, "reverse_clinical_manifestation") not in domain_range_issue_keys
     )
     issues.extend(
         _schema_issue_payload(
@@ -713,7 +1188,14 @@ def _medical_schema_issue_details(
         )
         for edge, rule in legacy_schema_relation_issues
     )
-    return issues
+    return _dedupe_schema_issues(issues)
+
+
+def _schema_issue_keys(issues: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    return {
+        (str(issue.get("edge_id", "")), str(issue.get("issue_kind", "")))
+        for issue in issues
+    }
 
 
 def _schema_issue_payload(
@@ -726,24 +1208,103 @@ def _schema_issue_payload(
     new_target: str = "",
     guidance: str = "",
     medical_subcase: str = "",
+    source_type: str = "",
+    target_type: str = "",
+    predicate_tokens: list[str] | None = None,
+    repair_options: list[dict[str, Any]] | None = None,
+    validation_errors: list[str] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "issue_kind": issue_kind,
         "edge_id": edge.id,
         "source": edge.source,
+        "source_type": source_type,
         "target": edge.target,
+        "target_type": target_type,
         "keywords": edge.keywords,
         "source_id": edge.source_id,
         "file_path": edge.file_path,
+        "evidence_quote": _evidence_quote(edge),
         "suggested_action": suggested_action,
         "candidate_predicates": candidate_predicates,
         "new_source": new_source,
         "new_target": new_target,
         "guidance": guidance,
+        "qualifiers": _edge_qualifiers(edge),
+        "repair_options": repair_options or [],
     }
     if medical_subcase:
         payload["medical_subcase"] = medical_subcase
+    if predicate_tokens is not None:
+        payload["predicate_tokens"] = predicate_tokens
+    if validation_errors:
+        payload["validation_errors"] = validation_errors
     return payload
+
+
+def _evidence_quote(edge: SnapshotEdge) -> str:
+    for key in ("evidence_quote", "quote", "source_quote", "text_span"):
+        value = edge.properties.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return edge.description.strip()
+
+
+def _split_repair_options(
+    edge: SnapshotEdge,
+    *,
+    candidate_predicates: list[str],
+    source_type: str,
+    target_type: str,
+) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    qualifiers = _edge_qualifiers(edge)
+    for predicate in candidate_predicates:
+        validation_errors = validate_relation_instance(
+            predicate=predicate,
+            source_type=source_type,
+            target_type=target_type,
+            qualifiers=qualifiers,
+        )
+        options.append(
+            {
+                "predicate": predicate,
+                "new_source": edge.source,
+                "new_target": edge.target,
+                "source_type": source_type,
+                "target_type": target_type,
+                "qualifiers": deepcopy(qualifiers),
+                "auto_fixable": not validation_errors,
+                "validation_errors": validation_errors,
+            }
+        )
+    return options
+
+
+def _dedupe_schema_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped = []
+    for issue in issues:
+        key = _schema_issue_identity(issue)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(issue)
+    return deduped
+
+
+def _schema_issue_identity(issue: dict[str, Any]) -> str:
+    stable_issue = {
+        key: value
+        for key, value in issue.items()
+        if key not in {"issue_ref", "issue_order", "issue_source_index"}
+    }
+    return json.dumps(
+        stable_issue,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _legacy_medical_subcase(rule: MedicalRelationMigrationRule) -> str:
@@ -761,7 +1322,7 @@ def _entity_cleanup_issue_details(
     synonym_duplicate_issues: list[dict[str, Any]],
     edge_ids_by_node: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
-    return [
+    issues = [
         *[
             {
                 "issue_kind": "value_node_to_qualifier",
@@ -773,11 +1334,40 @@ def _entity_cleanup_issue_details(
                 "connected_edge_ids": edge_ids_by_node.get(node.id, []),
                 "source_id": node.source_id,
                 "file_path": node.file_path,
+                "evidence_quote": _node_evidence_quote(node),
+                "candidate_predicates": [],
+                "repair_options": [],
             }
             for node in value_like_nodes
         ],
         *synonym_duplicate_issues,
     ]
+    return [_entity_cleanup_contract_issue(issue) for issue in issues]
+
+
+def _node_evidence_quote(node: SnapshotNode) -> str:
+    for key in ("evidence_quote", "quote", "source_quote", "text_span"):
+        value = node.properties.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return node.description.strip()
+
+
+def _entity_cleanup_contract_issue(issue: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(issue)
+    normalized.setdefault("candidate_predicates", [])
+    normalized.setdefault("repair_options", [])
+    normalized.setdefault("evidence_quote", "")
+    if "source_id" not in normalized or "file_path" not in normalized:
+        for node in normalized.get("nodes", []):
+            if not isinstance(node, dict):
+                continue
+            normalized.setdefault("source_id", node.get("source_id", ""))
+            normalized.setdefault("file_path", node.get("file_path", ""))
+            break
+    normalized.setdefault("source_id", "")
+    normalized.setdefault("file_path", "")
+    return normalized
 
 
 def _edge_ids_by_node(edges: list[SnapshotEdge]) -> dict[str, list[str]]:

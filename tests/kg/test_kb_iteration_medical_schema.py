@@ -4,8 +4,11 @@ from lightrag.kb_iteration.medical_schema import (
     CANONICAL_MEDICAL_RELATION_IDS,
     LEGACY_MEDICAL_RELATION_MIGRATIONS,
     MEDICAL_RELATION_SCHEMA_VERSION,
+    medical_type_allowed,
     migration_rule_for_legacy_keyword,
+    normalize_medical_entity_type,
     relation_spec_by_id,
+    validate_relation_instance,
 )
 
 
@@ -21,6 +24,10 @@ def test_medical_schema_registry_exposes_core_hospital_relations() -> None:
         "supports_or_refutes",
         "has_dosing_regimen",
         "may_cause_adverse_reaction",
+        "risk_factor_for",
+        "high_risk_for",
+        "increases_risk_of",
+        "acute_exacerbation_of",
     ):
         assert relation_id in CANONICAL_MEDICAL_RELATION_IDS
 
@@ -103,3 +110,229 @@ def test_schema_registry_covers_prompt_canonical_relation_families() -> None:
     )
 
     assert set(prompt_relation_ids) <= CANONICAL_MEDICAL_RELATION_IDS
+
+
+def test_normalize_medical_entity_type_handles_runtime_snapshot_types() -> None:
+    cases = {
+        "disease": "Disease",
+        "syndrome": "Syndrome",
+        "clinicalcondition": "ClinicalCondition",
+        "clinical_condition": "ClinicalCondition",
+        "clinicalfinding": "ClinicalFinding",
+        "clinical_finding": "ClinicalFinding",
+        "clinicalpathway": "ClinicalPathway",
+        "clinical_pathway": "ClinicalPathway",
+        "symptom": "Symptom",
+        "sign": "Symptom",
+        "diagnostictest": "Test",
+        "treatmentregimen": "DosingRegimen",
+        "dosingregimen": "DosingRegimen",
+        "treatment": "Treatment",
+        "procedure": "Procedure",
+        "publichealthmeasure": "PublicHealthMeasure",
+        "clinicaldepartment": "ClinicalDepartment",
+        "pathogen": "Pathogen",
+        "drug": "Drug",
+        "drugingredient": "Drug",
+        "drugclass": "DrugClass",
+        "vaccine": "Vaccine",
+        "diagnosticcriterion": "DiagnosticCriterion",
+        "testresult": "TestResult",
+        "testresultpattern": "TestResultPattern",
+        "method": "Method",
+        "observation": "Observation",
+        "diagnosis": "Diagnosis",
+        "evidence": "Evidence",
+        "specimen": "Specimen",
+        "population": "Population",
+        "riskfactor": "RiskFactor",
+        "complication": "Complication",
+        "adversereaction": "AdverseReaction",
+        "guideline": "Guideline",
+        "recommendation": "Recommendation",
+        "medicalgroup": "MedicalGroup",
+        "anatomy": "Anatomy",
+        "": "Unknown",
+        "UNKNOWN": "Unknown",
+        None: "Unknown",
+    }
+
+    for raw_type, expected in cases.items():
+        assert normalize_medical_entity_type(raw_type) == expected
+
+    assert normalize_medical_entity_type(" DiagnosticTest ") == "Test"
+    assert normalize_medical_entity_type(object()) == "Unknown"
+
+
+def test_medical_type_allowed_understands_clinical_supertypes() -> None:
+    assert medical_type_allowed("Drug", ("Intervention",))
+    assert medical_type_allowed("Procedure", ("Treatment",))
+    assert medical_type_allowed("Symptom", ("ClinicalFinding",))
+    assert medical_type_allowed("TestResultPattern", ("Evidence",))
+    assert medical_type_allowed("DrugClass", ("MedicalConcept",))
+    assert not medical_type_allowed("Disease", ("Pathogen",))
+
+
+def test_core_medical_relation_specs_are_strict_not_generic() -> None:
+    expectations = {
+        "causative_agent": (("Disease", "ClinicalCondition"), ("Pathogen",)),
+        "orders_test": (
+            ("Recommendation", "ClinicalPathway", "Disease", "ClinicalCondition"),
+            ("Test",),
+        ),
+        "has_result": (("Test", "Observation"), ("TestResult",)),
+        "contraindicated_for": (
+            ("Drug", "Treatment", "Procedure", "Vaccine", "PublicHealthMeasure"),
+            ("Population", "ClinicalCondition", "RiskFactor"),
+        ),
+        "precaution_for": (
+            ("Drug", "Treatment", "Procedure", "Vaccine", "PublicHealthMeasure"),
+            ("Population", "ClinicalCondition", "RiskFactor"),
+        ),
+        "interaction_with": (("Drug", "Treatment", "Vaccine"), ("Drug", "Treatment")),
+        "evidenced_by": (("MedicalConcept",), ("Evidence", "Guideline")),
+    }
+
+    for relation_id, (domain_types, range_types) in expectations.items():
+        spec = relation_spec_by_id(relation_id)
+
+        assert spec.domain_types == domain_types
+        assert spec.range_types == range_types
+        assert spec.domain_types != ("MedicalConcept",) or relation_id == "evidenced_by"
+
+
+def test_validate_relation_instance_uses_shared_domain_range_rules() -> None:
+    assert validate_relation_instance(
+        predicate="causative_agent",
+        source_type="Disease",
+        target_type="Pathogen",
+    ) == []
+
+    errors = validate_relation_instance(
+        predicate="causative_agent",
+        source_type="Disease",
+        target_type="Symptom",
+    )
+
+    assert errors == [
+        "target_type Symptom is outside causative_agent range Pathogen"
+    ]
+
+
+def test_validate_relation_instance_checks_required_qualifiers() -> None:
+    errors = validate_relation_instance(
+        predicate="supports_or_refutes",
+        source_type="TestResultPattern",
+        target_type="Disease",
+        qualifiers={},
+    )
+
+    assert errors == ["supports_or_refutes requires qualifier polarity"]
+
+
+def test_validate_relation_instance_checks_required_qualifier_groups() -> None:
+    errors = validate_relation_instance(
+        predicate="recommends",
+        source_type="Guideline",
+        target_type="Test",
+        qualifiers={"population": "children"},
+    )
+
+    assert errors == [
+        "recommends requires one qualifier from strength | evidence_level | version"
+    ]
+
+    assert (
+        validate_relation_instance(
+            predicate="recommends",
+            source_type="Guideline",
+            target_type="Test",
+            qualifiers={"version": "2025"},
+        )
+        == []
+    )
+
+
+def test_validate_relation_instance_checks_recommendation_scope_qualifiers() -> None:
+    errors = validate_relation_instance(
+        predicate="recommended_for",
+        source_type="Drug",
+        target_type="Population",
+        qualifiers={},
+    )
+
+    assert errors == [
+        "recommended_for requires qualifier purpose",
+        (
+            "recommended_for requires one qualifier from condition | age | "
+            "age_min | age_max | population | route | timing | time_window"
+        ),
+    ]
+
+    assert (
+        validate_relation_instance(
+            predicate="recommended_for",
+            source_type="Drug",
+            target_type="Population",
+            qualifiers={"purpose": "treatment", "age_min": 7, "route": "inhalation"},
+        )
+        == []
+    )
+
+
+def test_validate_relation_instance_checks_qualifier_enum_values() -> None:
+    assert validate_relation_instance(
+        predicate="supports_or_refutes",
+        source_type="TestResultPattern",
+        target_type="Disease",
+        qualifiers={"polarity": "maybe"},
+    ) == ["supports_or_refutes qualifier polarity must be one of refutes | supports"]
+
+    assert validate_relation_instance(
+        predicate="recommended_for",
+        source_type="Drug",
+        target_type="Population",
+        qualifiers={"purpose": "diagnosis", "age_min": 7},
+    ) == ["recommended_for qualifier purpose must be one of prevention | treatment"]
+
+
+def test_risk_relations_model_chronic_disease_risk_without_complication_semantics() -> None:
+    assert validate_relation_instance(
+        predicate="high_risk_for",
+        source_type="Population",
+        target_type="Disease",
+        qualifiers={"condition": "流行性感冒"},
+    ) == []
+    assert validate_relation_instance(
+        predicate="increases_risk_of",
+        source_type="ClinicalCondition",
+        target_type="Outcome",
+        qualifiers={"population": "COPD患者"},
+    ) == []
+    assert validate_relation_instance(
+        predicate="acute_exacerbation_of",
+        source_type="ClinicalCondition",
+        target_type="Disease",
+        qualifiers={"trigger": "流感病毒感染"},
+    ) == []
+
+
+def test_schema_registry_includes_temporarily_deferred_for() -> None:
+    assert "temporarily_deferred_for" in CANONICAL_MEDICAL_RELATION_IDS
+
+    spec = relation_spec_by_id("temporarily_deferred_for")
+    assert spec.domain_types == (
+        "Drug",
+        "Treatment",
+        "Procedure",
+        "Vaccine",
+        "PublicHealthMeasure",
+    )
+    assert spec.range_types == ("Population", "ClinicalCondition", "RiskFactor")
+
+    assert validate_relation_instance(
+        predicate="temporarily_deferred_for",
+        source_type="Vaccine",
+        target_type="ClinicalCondition",
+        qualifiers={},
+    ) == ["temporarily_deferred_for requires qualifier reason"]

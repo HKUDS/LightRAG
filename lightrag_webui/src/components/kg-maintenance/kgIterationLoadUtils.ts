@@ -152,8 +152,9 @@ const optionalDisplayArtifact = async (
   let displayArtifact: KBIterationDisplayArtifactResponse | null = null
   try {
     displayArtifact = await loaders.getDisplayArtifact(requestWorkspace, artifactKey)
-  } catch {
-    // Display artifacts are optional; source loaders preserve the existing fallback behavior.
+  } catch (error) {
+    if (!isMissingResourceError(error)) throw error
+    // Display artifacts are optional when the generated zh artifact is absent.
   }
 
   const sourceArtifact =
@@ -168,6 +169,18 @@ const optionalDisplayArtifact = async (
     sourceArtifact,
     displayArtifact:
       displayArtifact ?? fallbackDisplayArtifact(artifactKey, sourceArtifact, fallbackContentType)
+  }
+}
+
+const loadProposalFunnelReportSource = async (
+  requestWorkspace: string,
+  loaders: KGMaintenanceWorkspaceLoaders
+): Promise<KBIterationArtifactResponse> => {
+  try {
+    return await loaders.getArtifact(requestWorkspace, 'proposal_funnel_report')
+  } catch (error) {
+    if (!isMissingResourceError(error)) throw error
+    return loaders.getArtifact(requestWorkspace, 'deterministic_proposal_report')
   }
 }
 
@@ -225,6 +238,7 @@ type KGMaintenanceWorkspaceBundle = {
   acceptedApplyResultSourceArtifact: string
   llmTraceArtifact: unknown
   llmTraceSourceArtifact: unknown
+  deterministicProposalReportArtifact: unknown
   llmReportArtifact: string
   llmProposalsArtifact: string
   llmProposalsSourceArtifact: string
@@ -276,6 +290,7 @@ export async function loadKGMaintenanceWorkspaceBundle(
     deferredChangesResult,
     acceptedApplyResult,
     llmTraceResult,
+    deterministicProposalReportResult,
     llmReportResult,
     llmProposalsResult,
     llmJudgeReportResult,
@@ -310,6 +325,11 @@ export async function loadKGMaintenanceWorkspaceBundle(
       fallbackLoader: () => resolvedLoaders.getTrace(requestWorkspace),
       loadSource: true
     }),
+    optionalDisplayArtifact(requestWorkspace, 'proposal_funnel_report', resolvedLoaders, {
+      fallbackContentType: 'application/json',
+      fallbackLoader: () => loadProposalFunnelReportSource(requestWorkspace, resolvedLoaders),
+      loadSource: true
+    }),
     optionalDisplayArtifact(requestWorkspace, 'llm_review_report', resolvedLoaders, {
       fallbackLoader: () => resolvedLoaders.getReport(requestWorkspace)
     }),
@@ -334,6 +354,7 @@ export async function loadKGMaintenanceWorkspaceBundle(
     deferredChangesResult,
     acceptedApplyResult,
     llmTraceResult,
+    deterministicProposalReportResult,
     llmReportResult,
     llmProposalsResult,
     llmJudgeReportResult,
@@ -364,6 +385,9 @@ export async function loadKGMaintenanceWorkspaceBundle(
     acceptedApplyResultSourceArtifact: artifactTextOrEmpty(acceptedApplyResult.sourceArtifact),
     llmTraceArtifact: artifactContentOrPayload(llmTraceResult.artifact),
     llmTraceSourceArtifact: artifactContentOrPayload(llmTraceResult.sourceArtifact),
+    deterministicProposalReportArtifact: artifactContentOrPayload(
+      deterministicProposalReportResult.sourceArtifact ?? deterministicProposalReportResult.artifact
+    ),
     llmReportArtifact: artifactTextOrEmpty(llmReportResult.artifact),
     llmProposalsArtifact: artifactTextOrEmpty(llmProposalsResult.artifact),
     llmProposalsSourceArtifact: artifactTextOrEmpty(llmProposalsResult.sourceArtifact),
@@ -383,6 +407,16 @@ type ProposalDecisionActionArgs = {
   proposal: ProposalSummary
   decision: KBIterationProposalDecision
   review: ProposalDecisionReview
+  reloadWorkspaceData: () => Promise<void>
+  recordDecision?: typeof recordKBIterationProposalDecision
+  onError?: (error: unknown) => void
+}
+
+type ProposalDecisionBulkActionArgs = {
+  requestWorkspace: string
+  getCurrentWorkspace: () => string | null
+  proposals: ProposalSummary[]
+  decision: KBIterationProposalDecision
   reloadWorkspaceData: () => Promise<void>
   recordDecision?: typeof recordKBIterationProposalDecision
   onError?: (error: unknown) => void
@@ -418,6 +452,46 @@ export async function submitProposalDecisionForWorkspace({
         impact_scope: auditReview.impactScope,
         verification: auditReview.verification
       }),
+    onSuccess: async (_result, shouldApply) => {
+      if (!shouldApply()) return
+      await reloadWorkspaceData()
+    },
+    onError: (error) => {
+      onError?.(error)
+    }
+  })
+}
+
+export async function submitAllProposalDecisionsForWorkspace({
+  requestWorkspace,
+  getCurrentWorkspace,
+  proposals,
+  decision,
+  reloadWorkspaceData,
+  recordDecision = recordKBIterationProposalDecision,
+  onError
+}: ProposalDecisionBulkActionArgs): Promise<void> {
+  if (!proposals.length) return
+
+  await runWorkspaceAction({
+    requestWorkspace,
+    getCurrentWorkspace,
+    action: async () => {
+      for (const proposal of proposals) {
+        const auditReview = buildProposalDecisionReview(proposal, decision, {
+          reason: '',
+          impactScope: '',
+          verification: '',
+          confirmation: ''
+        })
+        await recordDecision(requestWorkspace, proposal.id, decision, {
+          reviewer: 'maintainer',
+          reason: auditReview.reason,
+          impact_scope: auditReview.impactScope,
+          verification: auditReview.verification
+        })
+      }
+    },
     onSuccess: async (_result, shouldApply) => {
       if (!shouldApply()) return
       await reloadWorkspaceData()

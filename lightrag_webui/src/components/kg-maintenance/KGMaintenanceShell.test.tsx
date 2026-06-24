@@ -24,6 +24,7 @@ const { default: KGMaintenanceShell } = await import('./KGMaintenanceShell')
 const kgMaintenanceConsoleModule = await import('@/features/KGMaintenanceConsole')
 const { ArtifactsDrawerPlaceholder, MainPanel } = kgMaintenanceConsoleModule
 const { buildDisplayArtifactItems } = await import('./kgMaintenanceArtifactItems')
+const { buildDefaultLLMReviewRequest } = await import('./kgMaintenanceLLMReviewRequest')
 const { useKGMaintenanceStore } = await import('@/stores/kgMaintenance')
 const {
   applyWorkspaceResponse,
@@ -35,6 +36,7 @@ const {
   isGeneratedDisplayArtifact,
   normalizeTraceArtifactForLogic,
   requestProposalRevisionForWorkspace,
+  submitAllProposalDecisionsForWorkspace,
   submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse
 } = await import('./kgIterationLoadUtils')
@@ -145,6 +147,7 @@ function renderMainPanel(
     llmTrace?: Record<string, any> | null
     llmProposals?: string
     llmProposalsSource?: string
+    deterministicProposalReport?: Record<string, any> | null
     approvalQueue?: string
     approvalQueueSource?: string
     acceptedExecuting?: boolean
@@ -252,6 +255,7 @@ hierarchy_missing_branch_count: 4 -> 0`
       llmReport="# LLM Review Report"
       llmProposals={options.llmProposals ?? '- id: proposal-1'}
       llmProposalsSource={options.llmProposalsSource}
+      deterministicProposalReport={options.deterministicProposalReport ?? null}
       llmJudgeReport="# Judge Report"
       llmIssueAnalysis="# Issue Analysis"
       llmMissingBranchInference="# Missing Branch Inference"
@@ -266,6 +270,7 @@ hierarchy_missing_branch_count: 4 -> 0`
       onOpenSection={() => undefined}
       onRunReview={() => undefined}
       onProposalDecision={() => undefined}
+      onAcceptAllProposals={() => undefined}
       onExecuteAcceptedChanges={() => undefined}
       onRunLLMReview={() => undefined}
       onLoadPatch={() => undefined}
@@ -290,6 +295,7 @@ function renderEmptyMainPanel(activeSection: KGMaintenanceSection) {
       llmTrace={null}
       llmReport=""
       llmProposals=""
+      deterministicProposalReport={null}
       llmJudgeReport=""
       llmIssueAnalysis=""
       llmMissingBranchInference=""
@@ -410,6 +416,30 @@ function createWorkspaceBundleLoaders(overrides: Record<string, any> = {}) {
 describe('KGMaintenanceShell responsive layout', () => {
   test('store starts at the check workflow section', () => {
     expect(useKGMaintenanceStore.getState().activeSection).toBe('check')
+  })
+
+  test('console default LLM review request sends bounded subagent controls', () => {
+    expect(buildDefaultLLMReviewRequest('clinical_guideline_zh')).toMatchObject({
+      profile: 'clinical_guideline_zh',
+      mode: 'agent_pipeline',
+      max_stage_retries: 1,
+      max_review_rounds: 4,
+      max_focus_items_per_round: 3,
+      max_subagent_tasks: 8,
+      max_parallel_subagents: 4,
+      max_subagent_issues_per_task: 4,
+      max_subagent_proposals_per_task: 2,
+      max_proposals_per_run: 200,
+      strict_subagent_role_contracts: true,
+      prevalidate_action_candidates: true,
+      require_candidate_evidence_allowlist: true,
+      skip_deterministic_subagent_calls: true,
+      allow_llm_judge: true,
+      allow_llm_auto_accept: false,
+      allow_low_risk_auto_reject: true,
+      generate_patch_candidates: false,
+      require_human_for_mutation: true
+    })
   })
 
   test('renders the fallback workspace option when workspaces is empty', () => {
@@ -669,6 +699,30 @@ describe('MainPanel workflow routing', () => {
     const fallbackKbContext = fallbackItems.find((artifact) => artifact.key === 'kb_context')
 
     expect(fallbackKbContext?.originalContent).toBe('source fallback content')
+  })
+
+  test('llm review source artifacts include deterministic proposal report JSON', () => {
+    const report = {
+      families: {
+        diagnosis: {
+          raw_issue_count: 2,
+          deterministic_covered_count: 1
+        }
+      }
+    }
+    const items = buildDisplayArtifactItems({
+      step: 'llm-review',
+      displayArtifacts: {},
+      sourceArtifacts: {
+        deterministic_proposal_report: JSON.stringify(report, null, 2)
+      },
+      artifactExists: new Map([['deterministic_proposal_report', true]])
+    })
+
+    const item = items.find((artifact) => artifact.key === 'deterministic_proposal_report')
+
+    expect(item?.originalContent).toBe(JSON.stringify(report, null, 2))
+    expect(item?.displayStatus).toBe('原始文件')
   })
 
   test('main panel production routing excludes transitional workflow section labels', () => {
@@ -1073,6 +1127,107 @@ describe('MainPanel workflow routing', () => {
     expect(markup).not.toContain('zh-round-label')
   })
 
+  test('workspace bundle prefers proposal funnel report JSON for LLM review logic', async () => {
+    const funnelReport = {
+      families: {
+        treatment: {
+          raw_issue_count: 4,
+          llm_residual_count: 2
+        }
+      }
+    }
+    const legacyReport = {
+      families: {
+        diagnosis: {
+          raw_issue_count: 2,
+          llm_residual_count: 1
+        }
+      }
+    }
+    const requestedKeys: string[] = []
+
+    const bundle = await loadKGMaintenanceWorkspaceBundle(
+      'workspace-a',
+      createWorkspaceBundleLoaders({
+        getArtifact: async (_workspace: string, key: string) => {
+          requestedKeys.push(key)
+          if (key === 'proposal_funnel_report') {
+            return {
+              artifactKey: key,
+              contentType: 'application/json',
+              payload: funnelReport
+            }
+          }
+          if (key === 'deterministic_proposal_report') {
+            return {
+              artifactKey: key,
+              contentType: 'application/json',
+              payload: legacyReport
+            }
+          }
+          return {
+            artifactKey: key,
+            contentType:
+              key === 'kg_snapshot' || key === 'quality_score'
+                ? 'application/json'
+                : 'text/markdown',
+            ...(key === 'kg_snapshot' || key === 'quality_score'
+              ? { payload: { source: key } }
+              : { content: `source:${key}` })
+          }
+        }
+      })
+    )
+
+    expect(requestedKeys).toContain('proposal_funnel_report')
+    expect(bundle.deterministicProposalReportArtifact).toEqual(funnelReport)
+  })
+
+  test('workspace bundle falls back to deterministic proposal report JSON when funnel report is missing', async () => {
+    const report = {
+      families: {
+        diagnosis: {
+          raw_issue_count: 2,
+          llm_residual_count: 1
+        }
+      }
+    }
+    const requestedKeys: string[] = []
+
+    const bundle = await loadKGMaintenanceWorkspaceBundle(
+      'workspace-a',
+      createWorkspaceBundleLoaders({
+        getArtifact: async (_workspace: string, key: string) => {
+          requestedKeys.push(key)
+          if (key === 'proposal_funnel_report') {
+            throw Object.assign(new Error('404 Not Found'), { response: { status: 404 } })
+          }
+          if (key === 'deterministic_proposal_report') {
+            return {
+              artifactKey: key,
+              contentType: 'application/json',
+              payload: report
+            }
+          }
+          return {
+            artifactKey: key,
+            contentType:
+              key === 'kg_snapshot' || key === 'quality_score'
+                ? 'application/json'
+                : 'text/markdown',
+            ...(key === 'kg_snapshot' || key === 'quality_score'
+              ? { payload: { source: key } }
+              : { content: `source:${key}` })
+          }
+        }
+      })
+    )
+
+    expect(requestedKeys).toContain('proposal_funnel_report')
+    expect(requestedKeys).toContain('deterministic_proposal_report')
+    expect(bundle.deterministicProposalReportArtifact).toEqual(report)
+  })
+
   test('trace normalization returns null when source artifact is missing', () => {
     expect(
       normalizeTraceArtifactForLogic(null, {
@@ -1110,49 +1265,39 @@ describe('MainPanel workflow routing', () => {
     expect(bundle.displayArtifacts.kb_context.display.fallbackToSource).toBe(true)
   })
 
-  test('workspace bundle falls back to source artifacts when display loading fails', async () => {
-    const bundle = await loadKGMaintenanceWorkspaceBundle(
-      'workspace-a',
-      createWorkspaceBundleLoaders({
-        getDisplayArtifact: async () => {
-          throw Object.assign(new Error('500 Internal Server Error'), {
-            response: { status: 500 }
+  test('workspace bundle rethrows non-missing display loading failures', async () => {
+    await expect(
+      loadKGMaintenanceWorkspaceBundle(
+        'workspace-a',
+        createWorkspaceBundleLoaders({
+          getDisplayArtifact: async () => {
+            throw Object.assign(new Error('500 Internal Server Error'), {
+              response: { status: 500 }
+            })
+          },
+          getTrace: async () => ({
+            artifactKey: 'llm_review_trace',
+            contentType: 'application/json',
+            payload: { stop_reason: 'source-trace' }
+          }),
+          getReport: async () => ({
+            artifactKey: 'llm_review_report',
+            contentType: 'text/markdown',
+            content: 'source report'
+          }),
+          getProposals: async () => ({
+            artifactKey: 'proposals_generated',
+            contentType: 'text/markdown',
+            content: 'source proposals'
+          }),
+          getJudgeReport: async () => ({
+            artifactKey: 'llm_judge_report',
+            contentType: 'text/markdown',
+            content: 'source judge'
           })
-        },
-        getTrace: async () => ({
-          artifactKey: 'llm_review_trace',
-          contentType: 'application/json',
-          payload: { stop_reason: 'source-trace' }
-        }),
-        getReport: async () => ({
-          artifactKey: 'llm_review_report',
-          contentType: 'text/markdown',
-          content: 'source report'
-        }),
-        getProposals: async () => ({
-          artifactKey: 'proposals_generated',
-          contentType: 'text/markdown',
-          content: 'source proposals'
-        }),
-        getJudgeReport: async () => ({
-          artifactKey: 'llm_judge_report',
-          contentType: 'text/markdown',
-          content: 'source judge'
         })
-      })
-    )
-
-    expect(bundle.summaryPayload.workspace).toBe('workspace-a')
-    expect(bundle.kbContextArtifact).toBe('source:kb_context')
-    expect(bundle.llmTraceArtifact).toEqual({ stop_reason: 'source-trace' })
-    expect(bundle.llmReportArtifact).toBe('source report')
-    expect(bundle.llmProposalsArtifact).toBe('source proposals')
-    expect(bundle.llmJudgeReportArtifact).toBe('source judge')
-    expect(bundle.displayArtifacts.kb_context.display.fallbackToSource).toBe(true)
-    expect(bundle.displayArtifacts.llm_review_trace.display.fallbackToSource).toBe(true)
-    expect(bundle.displayArtifacts.llm_review_report.content).toBe('source report')
-    expect(bundle.displayArtifacts.proposals_generated.content).toBe('source proposals')
-    expect(bundle.displayArtifacts.llm_judge_report.content).toBe('source judge')
+      )
+    ).rejects.toThrow('500 Internal Server Error')
   })
 
   test('workspace bundle display loading skips stale removed artifacts', async () => {
@@ -1541,6 +1686,53 @@ describe('MainPanel workflow routing', () => {
     expect(refreshCalls).toBe(1)
   })
 
+  test('bulk proposal accept records each proposal and refreshes once', async () => {
+    const calls: string[] = []
+    let refreshCalls = 0
+
+    await submitAllProposalDecisionsForWorkspace({
+      requestWorkspace: 'workspace-a',
+      getCurrentWorkspace: () => 'workspace-a',
+      proposals: [
+        {
+          id: 'proposal-1',
+          type: 'prompt_edit',
+          target: 'workspace_profile.json',
+          proposedChange: 'Tighten approval policy',
+          reason: 'More evidence needed',
+          evidence: [],
+          confidence: '0.8',
+          risk: 'high',
+          requiresApproval: true,
+          expectedMetricChange: 'approval_latency: -1'
+        },
+        {
+          id: 'proposal-2',
+          type: 'relation_rule_change',
+          target: 'relation_rules.json',
+          proposedChange: 'Normalize relation labels',
+          reason: 'Improve KG quality',
+          evidence: [],
+          confidence: '0.7',
+          risk: 'medium',
+          requiresApproval: true,
+          expectedMetricChange: 'relation_quality: 1'
+        }
+      ],
+      decision: 'accept',
+      reloadWorkspaceData: async () => {
+        refreshCalls += 1
+      },
+      recordDecision: async (workspace, proposalId, decision) => {
+        calls.push(`${workspace}:${proposalId}:${decision}`)
+        return proposalDecisionResponse(decision)
+      }
+    })
+
+    expect(calls).toEqual(['workspace-a:proposal-1:accept', 'workspace-a:proposal-2:accept'])
+    expect(refreshCalls).toBe(1)
+  })
+
   test('proposal revision request calls backend helper and reloads current workspace', async () => {
     const calls: string[] = []
     let refreshCalls = 0
@@ -1781,6 +1973,33 @@ hierarchy_missing_branch_count: 4 -> 0`
 
     expect(markup).toContain('translated proposal display without parseable ids')
     expect(markup).toContain('proposal-source-1')
+  })
+
+  test('llm-review passes deterministic proposal report into the review panel', () => {
+    const markup = renderMainPanel('llm-review', {
+      deterministicProposalReport: {
+        families: [
+          {
+            family: 'treatment',
+            raw_issue_count: 4,
+            issue_with_candidate_count: 3,
+            action_candidate_count: 3,
+            deterministic_covered_count: 2,
+            llm_residual_count: 1,
+            blocked_safety_count: 0,
+            blocked_apply_count: 1,
+            blocked_evidence_count: 0,
+            deferred_budget_count: 0,
+            selected_proposal_count: 2,
+            reason_code_counts: { APPLY_NOT_SUPPORTED: 1 }
+          }
+        ]
+      }
+    })
+
+    expect(markup).toContain('确定性 Proposal 漏斗')
+    expect(markup).toContain('治疗')
+    expect(markup).toContain('APPLY_NOT_SUPPORTED')
   })
 
   test('validate renders quality deltas and apply result', () => {

@@ -104,6 +104,54 @@ export const KG_MAINTENANCE_ARTIFACTS: KGMaintenanceArtifactDefinition[] = [
     contentType: 'text/markdown'
   },
   {
+    key: 'issue_ledger',
+    title: '问题路由台账',
+    sourceFile: 'issue_ledger.json',
+    zhFile: 'issue_ledger.zh.json',
+    step: 'llm-review',
+    contentType: 'application/json'
+  },
+  {
+    key: 'deterministic_proposal_report',
+    title: '确定性 Proposal 漏斗',
+    sourceFile: 'deterministic_proposal_report.json',
+    zhFile: 'deterministic_proposal_report.zh.json',
+    step: 'llm-review',
+    contentType: 'application/json'
+  },
+  {
+    key: 'deterministic_proposal_report_md',
+    title: '确定性 Proposal 漏斗报告',
+    sourceFile: 'deterministic_proposal_report.md',
+    zhFile: 'deterministic_proposal_report.zh.md',
+    step: 'llm-review',
+    contentType: 'text/markdown'
+  },
+  {
+    key: 'proposal_task_packs',
+    title: 'Proposal 任务包',
+    sourceFile: 'proposal_task_packs.json',
+    zhFile: 'proposal_task_packs.zh.json',
+    step: 'llm-review',
+    contentType: 'application/json'
+  },
+  {
+    key: 'proposal_merge_report',
+    title: 'Proposal 合并报告',
+    sourceFile: 'proposal_merge_report.md',
+    zhFile: 'proposal_merge_report.zh.md',
+    step: 'llm-review',
+    contentType: 'text/markdown'
+  },
+  {
+    key: 'subagent_output_index',
+    title: '子 Agent 输出索引',
+    sourceFile: 'subagent_outputs/index.json',
+    zhFile: 'subagent_outputs/index.zh.json',
+    step: 'llm-review',
+    contentType: 'application/json'
+  },
+  {
     key: 'llm_review_trace',
     title: 'LLM 审阅轨迹',
     sourceFile: 'llm_review_trace.json',

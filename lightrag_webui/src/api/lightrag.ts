@@ -654,29 +654,68 @@ export type KBIterationRunsResponse = {
 
 export type KBIterationArtifactResponse =
   | {
-      artifactKey: string
-      contentType: 'application/json' | string
-      payload: any
-    }
+    artifactKey: string
+    contentType: 'application/json' | string
+    payload: any
+  }
   | {
-      artifactKey: string
-      contentType: 'text/markdown' | string
-      content: string
-    }
+    artifactKey: string
+    contentType: 'text/markdown' | string
+    content: string
+  }
 
 export type KBIterationDisplayArtifactResponse =
   | {
-      artifactKey: string
-      contentType: 'application/json' | string
-      payload: any
-      display: KBIterationDisplayMetadata
-    }
+    artifactKey: string
+    contentType: 'application/json' | string
+    payload: any
+    display: KBIterationDisplayMetadata
+  }
   | {
-      artifactKey: string
-      contentType: 'text/markdown' | 'text/plain' | string
-      content: string
-      display: KBIterationDisplayMetadata
-    }
+    artifactKey: string
+    contentType: 'text/markdown' | 'text/plain' | string
+    content: string
+    display: KBIterationDisplayMetadata
+  }
+
+export type KBIterationProposalFunnelFamily = {
+  family?: string
+  raw_issue_count?: number
+  deterministic_candidate_issue_count?: number
+  action_candidate_count?: number
+  schema_blocked_count?: number
+  safety_blocked_count?: number
+  evidence_blocked_count?: number
+  apply_blocked_count?: number
+  decision_memory_blocked_count?: number
+  conflict_count?: number
+  deferred_by_family_cap_count?: number
+  deterministic_proposal_count?: number
+  llm_residual_eligible_count?: number
+  llm_residual_selected_count?: number
+  valid_llm_proposal_count?: number
+  conversion_failure_count?: number
+  merge_drop_count?: number
+  selected_approval_proposal_count?: number
+  [key: string]: any
+}
+
+export type KBIterationProposalFunnelReport = {
+  summary?: {
+    issue_accounting_rate?: number
+    candidate_validation_rate?: number
+    candidate_to_proposal_rate?: number
+    queue_apply_support_rate?: number
+    hard_rejection_recurrence_count?: number
+    exact_duplicate_recurrence_count?: number
+    known_bad_pattern_count?: number
+    [key: string]: any
+  }
+  families?: Record<string, KBIterationProposalFunnelFamily> | KBIterationProposalFunnelFamily[]
+  conflict_groups?: Array<Record<string, any>>
+  conflicts?: Array<Record<string, any>>
+  [key: string]: any
+}
 
 export type KBIterationProposalDecision = 'accept' | 'reject' | 'defer'
 
@@ -719,6 +758,16 @@ export type KBIterationLLMReviewRunRequest = {
   max_focus_items_per_round?: number
   max_context_tokens_per_round?: number
   max_stage_retries?: number
+  max_subagent_tasks?: number
+  max_parallel_subagents?: number
+  max_subagent_issues_per_task?: number
+  max_subagent_proposals_per_task?: number
+  max_proposals_per_run?: number
+  deterministic_family_caps?: Record<string, number>
+  strict_subagent_role_contracts?: boolean
+  prevalidate_action_candidates?: boolean
+  require_candidate_evidence_allowlist?: boolean
+  skip_deterministic_subagent_calls?: boolean
   allow_llm_judge?: boolean
   allow_llm_auto_accept?: boolean
   allow_low_risk_auto_reject?: boolean

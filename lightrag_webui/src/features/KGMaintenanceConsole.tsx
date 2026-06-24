@@ -33,12 +33,14 @@ import {
   buildDisplayArtifactItems,
   stringifyArtifactContent
 } from '@/components/kg-maintenance/kgMaintenanceArtifactItems'
+import { buildDefaultLLMReviewRequest } from '@/components/kg-maintenance/kgMaintenanceLLMReviewRequest'
 import {
   normalizeWorkspaceList,
   loadKGMaintenanceWorkspaceBundle,
   normalizeOptionalMarkdown,
   runWorkspaceAction,
   requestProposalRevisionForWorkspace,
+  submitAllProposalDecisionsForWorkspace,
   submitProposalDecisionForWorkspace,
   shouldApplyWorkspaceResponse,
   normalizeTraceArtifactForLogic,
@@ -155,6 +157,8 @@ export default function KGMaintenanceConsole() {
   const [acceptedApplyResult, setAcceptedApplyResult] = useState('')
   const [acceptedApplyResultSource, setAcceptedApplyResultSource] = useState('')
   const [llmTrace, setLlmTrace] = useState<Record<string, any> | null>(null)
+  const [deterministicProposalReport, setDeterministicProposalReport] =
+    useState<Record<string, any> | null>(null)
   const [llmReport, setLlmReport] = useState('')
   const [llmProposals, setLlmProposals] = useState('')
   const [llmProposalsSource, setLlmProposalsSource] = useState('')
@@ -243,6 +247,7 @@ export default function KGMaintenanceConsole() {
         acceptedApplyResultSourceArtifact,
         llmTraceArtifact,
         llmTraceSourceArtifact,
+        deterministicProposalReportArtifact,
         llmReportArtifact,
         llmProposalsArtifact,
         llmProposalsSourceArtifact,
@@ -279,6 +284,13 @@ export default function KGMaintenanceConsole() {
       setAcceptedApplyResult(normalizeOptionalMarkdown(acceptedApplyResultArtifact))
       setAcceptedApplyResultSource(normalizeOptionalMarkdown(acceptedApplyResultSourceArtifact))
       setLlmTrace(normalizeTraceArtifactForLogic(llmTraceSourceArtifact, llmTraceArtifact))
+      setDeterministicProposalReport(
+        deterministicProposalReportArtifact &&
+          typeof deterministicProposalReportArtifact === 'object' &&
+          !Array.isArray(deterministicProposalReportArtifact)
+          ? deterministicProposalReportArtifact
+          : null
+      )
       setLlmReport(typeof llmReportArtifact === 'string' ? llmReportArtifact : '')
       setLlmProposals(typeof llmProposalsArtifact === 'string' ? llmProposalsArtifact : '')
       setLlmProposalsSource(normalizeOptionalMarkdown(llmProposalsSourceArtifact))
@@ -318,6 +330,7 @@ export default function KGMaintenanceConsole() {
       setApprovalQueueSource('')
       setDeferredChangesSource('')
       setAcceptedApplyResultSource('')
+      setDeterministicProposalReport(null)
       setLlmProposalsSource('')
       setSelectedWorkspace(workspace || null)
     },
@@ -362,18 +375,10 @@ export default function KGMaintenanceConsole() {
       requestWorkspace,
       getCurrentWorkspace,
       action: () =>
-        runKBIterationLLMReview(requestWorkspace, {
-          profile: activeProfile,
-          mode: 'agent_pipeline',
-          max_stage_retries: 5,
-          max_review_rounds: 4,
-          max_focus_items_per_round: 3,
-          allow_llm_judge: true,
-          allow_llm_auto_accept: false,
-          allow_low_risk_auto_reject: true,
-          generate_patch_candidates: false,
-          require_human_for_mutation: true
-        }),
+        runKBIterationLLMReview(
+          requestWorkspace,
+          buildDefaultLLMReviewRequest(activeProfile)
+        ),
       onSuccess: async (_result, shouldApply) => {
         await loadWorkspaceData()
         if (shouldApply()) setPatchText('')
@@ -425,6 +430,26 @@ export default function KGMaintenanceConsole() {
         proposal,
         decision,
         review,
+        reloadWorkspaceData: loadWorkspaceData,
+        onError: (err) => {
+          setError(errorMessage(err))
+        }
+      })
+    },
+    [loadWorkspaceData, selectedWorkspace]
+  )
+
+  const handleAcceptAllProposals = useCallback(
+    async (proposals: ProposalSummary[]) => {
+      if (!selectedWorkspace || proposals.length === 0) return
+      const requestWorkspace = selectedWorkspace
+      const getCurrentWorkspace = () => useKGMaintenanceStore.getState().selectedWorkspace
+      setError(null)
+      await submitAllProposalDecisionsForWorkspace({
+        requestWorkspace,
+        getCurrentWorkspace,
+        proposals,
+        decision: 'accept',
         reloadWorkspaceData: loadWorkspaceData,
         onError: (err) => {
           setError(errorMessage(err))
@@ -531,6 +556,7 @@ export default function KGMaintenanceConsole() {
           acceptedApplyResult={acceptedApplyResult}
           acceptedApplyResultSource={acceptedApplyResultSource}
           llmTrace={llmTrace}
+          deterministicProposalReport={deterministicProposalReport}
           llmReport={llmReport}
           llmProposals={llmProposals}
           llmProposalsSource={llmProposalsSource}
@@ -548,6 +574,7 @@ export default function KGMaintenanceConsole() {
           onOpenSection={handleOpenSection}
           onRunReview={handleRunReview}
           onProposalDecision={handleProposalDecision}
+          onAcceptAllProposals={handleAcceptAllProposals}
           onRequestProposalRevision={handleRequestProposalRevision}
           onExecuteAcceptedChanges={handleExecuteAcceptedChanges}
           onRunLLMReview={handleRunLLMReview}
@@ -579,6 +606,7 @@ interface MainPanelProps {
   acceptedApplyResult: string
   acceptedApplyResultSource?: string
   llmTrace: Record<string, any> | null
+  deterministicProposalReport?: Record<string, any> | null
   llmReport: string
   llmProposals: string
   llmProposalsSource?: string
@@ -600,6 +628,7 @@ interface MainPanelProps {
     decision: KBIterationProposalDecision,
     review: ProposalDecisionReview
   ) => void | Promise<void>
+  onAcceptAllProposals?: (proposals: ProposalSummary[]) => void | Promise<void>
   onRequestProposalRevision?: (proposal: ProposalSummary) => void | Promise<void>
   onExecuteAcceptedChanges: () => void
   onRunLLMReview: () => void
@@ -621,6 +650,7 @@ export function MainPanel({
   acceptedApplyResult,
   acceptedApplyResultSource,
   llmTrace,
+  deterministicProposalReport,
   llmReport,
   llmProposals,
   llmProposalsSource,
@@ -638,6 +668,7 @@ export function MainPanel({
   onOpenSection,
   onRunReview,
   onProposalDecision,
+  onAcceptAllProposals,
   onRequestProposalRevision,
   onExecuteAcceptedChanges,
   onRunLLMReview,
@@ -654,6 +685,7 @@ export function MainPanel({
       rejected_changes: rules?.rejectedChanges || '',
       accepted_changes_apply_result: acceptedApplyResultSource,
       llm_review_trace: stringifyArtifactContent(llmTrace),
+      deterministic_proposal_report: stringifyArtifactContent(deterministicProposalReport),
       proposals_generated: llmProposalsSource,
       quality_rules: rules?.qualityRules || '',
       known_issues: rules?.knownIssues || ''
@@ -662,6 +694,7 @@ export function MainPanel({
       acceptedApplyResultSource,
       approvalQueueSource,
       deferredChangesSource,
+      deterministicProposalReport,
       llmProposalsSource,
       llmTrace,
       qualityScoreSource,
@@ -724,6 +757,7 @@ export function MainPanel({
         <div className="space-y-4">
           <LLMReviewPanel
             trace={llmTrace}
+            deterministicProposalReport={deterministicProposalReport}
             report={llmReport}
             proposals={llmProposals}
             issueAnalysis={llmIssueAnalysis}
@@ -754,6 +788,7 @@ export function MainPanel({
           deferredChanges={deferredChanges}
           deferredChangesSource={deferredChangesSource}
           onDecision={onProposalDecision}
+          onAcceptAll={onAcceptAllProposals}
           onRequestRevision={onRequestProposalRevision}
         />
       )

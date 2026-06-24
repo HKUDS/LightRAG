@@ -12,7 +12,18 @@ import {
   type ProposalDecisionReview,
   type ProposalSummary
 } from './kgMaintenanceData'
-import { ClipboardCheckIcon, ExternalLinkIcon, MaximizeIcon, MinimizeIcon } from 'lucide-react'
+import {
+  acceptAllPendingProposalsFromPanel,
+  pendingApprovalProposals,
+  requestProposalRevisionFromPanel
+} from './proposalApprovalActions'
+import {
+  CheckCheckIcon,
+  ClipboardCheckIcon,
+  ExternalLinkIcon,
+  MaximizeIcon,
+  MinimizeIcon
+} from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 interface QualityPanelProps {
@@ -33,6 +44,7 @@ interface ApprovalPanelProps {
     decision: KBIterationProposalDecision,
     review: ProposalDecisionReview
   ) => void | Promise<void>
+  onAcceptAll?: (proposals: ProposalSummary[]) => void | Promise<void>
   onRequestRevision?: (proposal: ProposalSummary) => void | Promise<void>
 }
 
@@ -165,6 +177,7 @@ export function ApprovalPanel({
   deferredChangesSource = '',
   onOpenEvidence,
   onDecision,
+  onAcceptAll,
   onRequestRevision
 }: ApprovalPanelProps) {
   const proposals = parseProposalSummaries(approvalQueueSource)
@@ -177,14 +190,44 @@ export function ApprovalPanel({
       }),
     [acceptedChanges, deferredChangesSource, rejectedChanges]
   )
-  const pendingApprovalCount = proposals.filter(
-    (proposal) => proposal.requiresApproval && !decisionStates[proposal.id]
-  ).length
+  const pendingProposals = pendingApprovalProposals(proposals, decisionStates)
+  const pendingApprovalCount = pendingProposals.length
   const [collapsedProposals, setCollapsedProposals] = useState<Record<string, boolean>>({})
+  const [acceptingAll, setAcceptingAll] = useState(false)
+  const acceptAllDisabled = pendingApprovalCount === 0 || !onAcceptAll || acceptingAll
+  const handleAcceptAll = async () => {
+    if (acceptAllDisabled) return
+    setAcceptingAll(true)
+    try {
+      await acceptAllPendingProposalsFromPanel(proposals, decisionStates, onAcceptAll)
+    } finally {
+      setAcceptingAll(false)
+    }
+  }
 
   return (
     <section className="space-y-4">
-      <PanelHeader title="待审批 proposal" subtitle={`${pendingApprovalCount} 个需要人工审批`} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <PanelHeader title="待审批 proposal" subtitle={`${pendingApprovalCount} 个需要人工审批`} />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={acceptAllDisabled}
+          tooltip={
+            pendingApprovalCount > 0
+              ? `接受全部 ${pendingApprovalCount} 条待审批 proposal`
+              : '没有可接受的待审批 proposal'
+          }
+          onClick={() => void handleAcceptAll()}
+        >
+          <CheckCheckIcon className="size-4" />
+          {acceptingAll ? '接受中' : '全部接受'}
+          <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-xs">
+            {pendingApprovalCount}
+          </span>
+        </Button>
+      </div>
       <div className="space-y-2">
         {proposals.length === 0 ? (
           <div className="border-border/70 bg-muted/20 rounded-lg border p-4 text-sm">
@@ -334,13 +377,6 @@ function RecordedDecisionNotice({ decision }: { decision: KBIterationProposalDec
 
 function proposalDetailsId(proposalId: string) {
   return `proposal-details-${proposalId.replace(/[^a-zA-Z0-9_-]/g, '-')}`
-}
-
-export function requestProposalRevisionFromPanel(
-  proposal: ProposalSummary,
-  onRequestRevision?: (proposal: ProposalSummary) => void | Promise<void>
-) {
-  return onRequestRevision?.(proposal)
 }
 
 function emptyProposalReview(): ProposalDecisionReview {

@@ -9,6 +9,7 @@ from lightrag.kb_iteration.agent_outputs import (
     stage_output_to_markdown,
     write_agent_stage_artifacts,
 )
+from lightrag.kb_iteration.subagent_contracts import role_contract
 
 
 def _proposal_payload(**overrides):
@@ -26,6 +27,51 @@ def _proposal_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def _candidate_expansion_payload(**overrides):
+    evidence_quote = "Oseltamivir is indicated for influenza treatment in this guideline."
+    payload = {
+        "id": "proposal-candidate-expansion-001",
+        "type": "candidate_kg_expansion",
+        "target": "candidate:oseltamivir-influenza",
+        "proposed_change": "Add a grounded treatment indication edge.",
+        "reason": "The source states a direct treatment indication.",
+        "evidence": ["source_id: chunk-1; file_path: guide.md"],
+        "confidence": 0.8,
+        "risk": "medium",
+        "requires_approval": True,
+        "expected_metric_change": {},
+        "action_payload": {
+            "candidate_nodes": [
+                {"id": "oseltamivir", "label": "Oseltamivir", "entity_type": "Drug"},
+                {"id": "influenza", "label": "Influenza", "entity_type": "Disease"},
+            ],
+            "candidate_edges": [
+                {
+                    "source": "oseltamivir",
+                    "target": "influenza",
+                    "keywords": "has_indication",
+                    "source_id": "chunk-1",
+                    "file_path": "guide.md",
+                }
+            ],
+            "source_id": "chunk-1",
+            "file_path": "guide.md",
+            "evidence_quote": evidence_quote,
+            "why_not_existing": "No existing edge captures this indication.",
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _parse_candidate_expansion_payload(payload, **kwargs):
+    return parse_agent_stage_output(
+        "propose",
+        json.dumps({"proposals": [payload]}, ensure_ascii=False),
+        **kwargs,
+    )
 
 
 def test_stage_output_to_markdown_uses_readable_chinese_stage_headings():
@@ -148,21 +194,230 @@ def test_parse_agent_stage_output_rejects_non_finite_numeric_metric_changes(
         )
 
 
-def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
+def test_parse_agent_stage_output_rejects_structured_proposal_evidence():
+    with pytest.raises(ValueError, match="EVIDENCE_MUST_BE_STRING"):
+        parse_agent_stage_output(
+            "propose",
+            json.dumps(
+                {
+                    "proposals": [
+                        _proposal_payload(
+                            evidence=[
+                                {
+                                    "source_id": "chunk-1",
+                                    "file_path": "guide.md",
+                                    "item_id": "edge-flu-fever",
+                                },
+                                "quality:hierarchy_missing_branch_count=1",
+                            ]
+                        )
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+
+def test_parse_agent_stage_output_requires_candidate_edge_endpoint_types():
+    with pytest.raises(ValueError, match="CANDIDATE_EDGE_TYPES_REQUIRED"):
+        _parse_candidate_expansion_payload(_candidate_expansion_payload())
+
+
+def test_parse_agent_stage_output_accepts_exact_candidate_evidence_tuple():
+    payload = _candidate_expansion_payload()
+    payload["action_payload"]["candidate_edges"][0].update(
+        {"source_type": "Drug", "target_type": "Disease"}
+    )
+
+    output = _parse_candidate_expansion_payload(
+        payload,
+        allowed_evidence_spans=[
+            {
+                "source_id": "chunk-1",
+                "file_path": "guide.md",
+                "evidence_quote": payload["action_payload"]["evidence_quote"],
+            }
+        ],
+    )
+
+    assert output.proposals[0].id == "proposal-candidate-expansion-001"
+
+
+def test_parse_agent_stage_output_rejects_cross_combined_evidence_tuple():
+    payload = _candidate_expansion_payload()
+    payload["action_payload"].update(
+        {
+            "source_id": "chunk-1",
+            "file_path": "other-guide.md",
+        }
+    )
+    payload["action_payload"]["candidate_edges"][0].update(
+        {
+            "source_type": "Drug",
+            "target_type": "Disease",
+            "source_id": "chunk-1",
+            "file_path": "other-guide.md",
+        }
+    )
+
+    with pytest.raises(ValueError, match="EVIDENCE_TUPLE_MUST_MATCH_ALLOWED_SPAN"):
+        _parse_candidate_expansion_payload(
+            payload,
+            allowed_evidence_spans=[
+                {
+                    "source_id": "chunk-1",
+                    "file_path": "guide.md",
+                    "evidence_quote": payload["action_payload"]["evidence_quote"],
+                },
+                {
+                    "source_id": "chunk-2",
+                    "file_path": "other-guide.md",
+                    "evidence_quote": payload["action_payload"]["evidence_quote"],
+                },
+            ],
+        )
+
+
+def test_parse_agent_stage_output_rejects_sep_joined_evidence_references():
+    payload = _candidate_expansion_payload()
+    payload["action_payload"].update(
+        {
+            "source_id": "chunk-1<SEP>chunk-2",
+            "file_path": "guide.md",
+        }
+    )
+    payload["action_payload"]["candidate_edges"][0].update(
+        {
+            "source_type": "Drug",
+            "target_type": "Disease",
+            "source_id": "chunk-1<SEP>chunk-2",
+            "file_path": "guide.md",
+        }
+    )
+
+    with pytest.raises(ValueError, match="EVIDENCE_TUPLE_MUST_MATCH_ALLOWED_SPAN"):
+        _parse_candidate_expansion_payload(
+            payload,
+            allowed_evidence_spans=[
+                {
+                    "source_id": "chunk-1",
+                    "file_path": "guide.md",
+                    "evidence_quote": payload["action_payload"]["evidence_quote"],
+                }
+            ],
+        )
+
+
+def test_role_contract_exposes_structured_retry_error_codes_and_missing_fields():
+    contract = role_contract("treatment").to_dict()
+
+    assert "EVIDENCE_MUST_BE_STRING" in contract["retry_error_codes"]
+    assert contract["candidate_edge_required_fields"] == (
+        "source",
+        "target",
+        "source_type",
+        "target_type",
+        "keywords",
+        "source_id",
+        "file_path",
+    )
+    assert contract["retry_contract"]["CANDIDATE_EDGE_TYPES_REQUIRED"][
+        "missing_fields"
+    ] == ("source_type", "target_type")
+
+
+def test_parse_agent_stage_output_normalizes_common_llm_proposal_aliases():
+    output = parse_agent_stage_output(
+        "propose",
+        json.dumps(
+            {
+                "proposals": [
+                    {
+                        "proposal_id": "修复-咳嗽-流感",
+                        "proposal_type": "medical_relation_schema_migration",
+                        "target": "edge:咳嗽->流行性感冒",
+                        "reason": "Reverse clinical manifestation edge direction.",
+                        "requires_approval": True,
+                        "expected_metric_change": {},
+                        "action_payload": {
+                            "action": "replace_relation",
+                            "edge_id": "咳嗽->流行性感冒",
+                            "expected_source": "咳嗽",
+                            "expected_target": "流行性感冒",
+                            "current_keywords": "临床表现",
+                            "new_source": "流行性感冒",
+                            "new_target": "咳嗽",
+                            "new_keywords": "has_manifestation",
+                            "source_id": "chunk-1",
+                            "file_path": "guide.md",
+                        },
+                        "evidence": [
+                            "source_id: chunk-1; file_path: guide.md; item_id: 咳嗽->流行性感冒"
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    proposal = output.proposals[0]
+    assert proposal.id.startswith("prop-medical_relation_schema_migration-")
+    assert proposal.type == "medical_relation_schema_migration"
+    assert proposal.proposed_change == "Reverse clinical manifestation edge direction."
+    assert proposal.evidence == [
+        "source_id: chunk-1; file_path: guide.md; item_id: 咳嗽->流行性感冒"
+    ]
+
+
+def test_parse_agent_stage_output_derives_evidence_from_action_payload():
+    output = parse_agent_stage_output(
+        "propose",
+        json.dumps(
+            {
+                "proposals": [
+                    {
+                        "proposal_id": "prop-fix-flu-cough",
+                        "proposal_type": "medical_relation_schema_migration",
+                        "target": "edge:flu->cough",
+                        "reason": "Reverse clinical manifestation edge direction.",
+                        "requires_approval": True,
+                        "expected_metric_change": {},
+                        "action_payload": {
+                            "action": "replace_relation",
+                            "edge_id": "flu->cough",
+                            "expected_source": "cough",
+                            "expected_target": "flu",
+                            "current_keywords": "clinical_manifestation",
+                            "new_source": "flu",
+                            "new_target": "cough",
+                            "new_keywords": "has_manifestation",
+                            "source_id": "chunk-1",
+                            "file_path": "guide.md",
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    proposal = output.proposals[0]
+    assert proposal.id == "prop-fix-flu-cough"
+    assert proposal.evidence == [
+        "source_id: chunk-1; file_path: guide.md; relation_id: flu->cough"
+    ]
+
+
+def test_parse_agent_stage_output_uses_change_alias_for_default_proposed_change():
     output = parse_agent_stage_output(
         "propose",
         json.dumps(
             {
                 "proposals": [
                     _proposal_payload(
-                        evidence=[
-                            {
-                                "source_id": "chunk-1",
-                                "file_path": "guide.md",
-                                "item_id": "edge-flu-fever",
-                            },
-                            "quality:hierarchy_missing_branch_count=1",
-                        ]
+                        proposed_change="",
+                        change="Record the aliased recommendation.",
                     )
                 ]
             },
@@ -170,12 +425,9 @@ def test_parse_agent_stage_output_normalizes_structured_proposal_evidence():
         ),
     )
 
-    evidence = output.proposals[0].evidence
-    assert all(isinstance(item, str) for item in evidence)
-    assert evidence == [
-        "source_id: chunk-1; file_path: guide.md; item_id: edge-flu-fever",
-        "quality:hierarchy_missing_branch_count=1",
-    ]
+    assert output.proposals[0].proposed_change == (
+        "Record the aliased recommendation."
+    )
 
 
 @pytest.mark.parametrize("unknown_key", ["comment", "reason"])
@@ -284,6 +536,53 @@ def test_parse_agent_stage_output_allows_context_request_with_blank_evidence():
 
     assert output.proposals[0].type == "review_context_request"
     assert output.proposals[0].evidence == ["   "]
+
+
+def test_parse_agent_stage_output_defaults_context_request_to_human_review():
+    proposal = _proposal_payload(
+        id="proposal-context-request-default-approval-001",
+        type="review_context_request",
+        target="review-context",
+        proposed_change="Request source snippets for review.",
+        reason="The reviewer needs more context before mutation.",
+        evidence=[],
+        expected_metric_change={},
+    )
+    proposal.pop("requires_approval")
+
+    output = parse_agent_stage_output(
+        "propose",
+        json.dumps({"proposals": [proposal]}, ensure_ascii=False),
+    )
+
+    assert output.proposals[0].type == "review_context_request"
+    assert output.proposals[0].requires_approval is True
+
+
+def test_parse_agent_stage_output_coerces_context_request_false_approval():
+    output = parse_agent_stage_output(
+        "propose",
+        json.dumps(
+            {
+                "proposals": [
+                    _proposal_payload(
+                        id="proposal-context-request-coerced-approval-001",
+                        type="review_context_request",
+                        target="review-context",
+                        proposed_change="Request source snippets for review.",
+                        reason="The reviewer needs more context before mutation.",
+                        evidence=[],
+                        requires_approval=False,
+                        expected_metric_change={},
+                    )
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert output.proposals[0].type == "review_context_request"
+    assert output.proposals[0].requires_approval is True
 
 
 def test_stage_output_to_markdown_renders_explain_report():

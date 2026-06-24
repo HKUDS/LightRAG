@@ -136,4 +136,65 @@ describe('kg maintenance artifact catalog', () => {
       ])
     )
   })
+
+  test('includes orchestrated proposal artifacts in the llm-review step', () => {
+    expect(findArtifactDefinition('proposal_task_packs')).toMatchObject({
+      key: 'proposal_task_packs',
+      title: 'Proposal 任务包',
+      sourceFile: 'proposal_task_packs.json',
+      zhFile: 'proposal_task_packs.zh.json',
+      step: 'llm-review',
+      contentType: 'application/json'
+    })
+    expect(findArtifactDefinition('proposal_merge_report')).toMatchObject({
+      key: 'proposal_merge_report',
+      title: 'Proposal 合并报告',
+      sourceFile: 'proposal_merge_report.md',
+      zhFile: 'proposal_merge_report.zh.md',
+      step: 'llm-review',
+      contentType: 'text/markdown'
+    })
+    expect(findArtifactDefinition('subagent_output_index')).toMatchObject({
+      key: 'subagent_output_index',
+      title: '子 Agent 输出索引',
+      sourceFile: 'subagent_outputs/index.json',
+      zhFile: 'subagent_outputs/index.zh.json',
+      step: 'llm-review',
+      contentType: 'application/json'
+    })
+    expect(findArtifactDefinition('issue_ledger')).toMatchObject({
+      key: 'issue_ledger',
+      title: '问题路由台账',
+      sourceFile: 'issue_ledger.json',
+      zhFile: 'issue_ledger.zh.json',
+      step: 'llm-review',
+      contentType: 'application/json'
+    })
+    expect(findArtifactDefinition('deterministic_proposal_report')).toMatchObject({
+      key: 'deterministic_proposal_report',
+      title: '确定性 Proposal 漏斗',
+      sourceFile: 'deterministic_proposal_report.json',
+      zhFile: 'deterministic_proposal_report.zh.json',
+      step: 'llm-review',
+      contentType: 'application/json'
+    })
+    expect(findArtifactDefinition('deterministic_proposal_report_md')).toMatchObject({
+      key: 'deterministic_proposal_report_md',
+      title: '确定性 Proposal 漏斗报告',
+      sourceFile: 'deterministic_proposal_report.md',
+      zhFile: 'deterministic_proposal_report.zh.md',
+      step: 'llm-review',
+      contentType: 'text/markdown'
+    })
+    expect(artifactsForStep('llm-review').map((artifact) => artifact.key)).toEqual(
+      expect.arrayContaining([
+        'proposal_task_packs',
+        'proposal_merge_report',
+        'subagent_output_index',
+        'issue_ledger',
+        'deterministic_proposal_report',
+        'deterministic_proposal_report_md'
+      ])
+    )
+  })
 })

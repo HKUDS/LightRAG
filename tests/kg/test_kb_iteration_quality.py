@@ -10,6 +10,118 @@ from lightrag.kb_iteration.quality import (
 from lightrag.medical_kg.ontology import TOP_LEVEL_MEDICAL_CATEGORIES
 
 
+def _snapshot_with_reversed_diagnostic_test_edge() -> KGSnapshot:
+    return KGSnapshot(
+        workspace="medical_demo",
+        generated_at="2026-06-23T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "positive-pcr",
+                "Positive PCR",
+                "TestResultPattern",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "flu",
+                "Influenza",
+                "Disease",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-evidence-without-polarity",
+                "positive-pcr",
+                "flu",
+                "supports_or_refutes",
+                source_id="chunk-1",
+                file_path="guide.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+
+def _snapshot_with_value_node_cleanup_issue() -> KGSnapshot:
+    return KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-23T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "oseltamivir",
+                "Oseltamivir",
+                "DrugIngredient",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "dose-75mg",
+                "75 mg",
+                "Dosage",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-dose",
+                "oseltamivir",
+                "dose-75mg",
+                "dosage_usage",
+                source_id="chunk-1",
+                file_path="guide.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+
+def test_quality_schema_issue_includes_raw_issue_contract_fields() -> None:
+    snapshot = _snapshot_with_reversed_diagnostic_test_edge()
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = score.details["medical_schema_issues"][0]
+    for key in (
+        "issue_kind",
+        "edge_id",
+        "source",
+        "source_type",
+        "target",
+        "target_type",
+        "keywords",
+        "qualifiers",
+        "candidate_predicates",
+        "repair_options",
+        "source_id",
+        "file_path",
+        "evidence_quote",
+    ):
+        assert key in issue
+
+
+def test_quality_entity_cleanup_issue_includes_contract_fields() -> None:
+    snapshot = _snapshot_with_value_node_cleanup_issue()
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = score.details["entity_cleanup_issues"][0]
+    for key in (
+        "issue_kind",
+        "node_id",
+        "candidate_predicates",
+        "repair_options",
+        "source_id",
+        "file_path",
+        "evidence_quote",
+    ):
+        assert key in issue
+
+
 def test_quality_flags_value_nodes_generic_relations_and_missing_evidence():
     snapshot = KGSnapshot(
         workspace="influenza_medical_v1",
@@ -84,6 +196,112 @@ def test_write_quality_artifacts_creates_score_json_and_report(tmp_path: Path):
     assert f"Overall score: {score.overall}" in report
     assert "entity_hygiene" in report
     assert "value_like_node_count" in report
+
+
+def test_quality_schema_issue_preserves_existing_relation_qualifiers() -> None:
+    edge_qualifiers = {"age_min": 1, "age_unit": "year"}
+    snapshot = KGSnapshot(
+        workspace="demo",
+        generated_at="2026-06-22T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "oseltamivir",
+                "Oseltamivir",
+                "Drug",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "children",
+                "Children",
+                "Population",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-recommended-for",
+                "oseltamivir",
+                "children",
+                "recommended_for",
+                source_id="chunk-1",
+                file_path="guide.md",
+                properties={"qualifiers": edge_qualifiers},
+            )
+        ],
+        metadata={"profile": "medical_kg"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    schema_issues = score.details["medical_schema_issues"]
+    issue = next(
+        issue
+        for issue in schema_issues
+        if issue["edge_id"] == "edge-recommended-for"
+    )
+    assert issue["qualifiers"] == {"age_min": 1, "age_unit": "year"}
+
+    issue["qualifiers"]["age_min"] = 2
+
+    assert edge_qualifiers == {"age_min": 1, "age_unit": "year"}
+    assert snapshot.edges[0].properties["qualifiers"] == {
+        "age_min": 1,
+        "age_unit": "year",
+    }
+
+
+def test_quality_schema_issue_deep_copies_nested_relation_qualifiers() -> None:
+    edge_qualifiers = {"dose": {"amount": 75, "unit": "mg"}}
+    snapshot = KGSnapshot(
+        workspace="medical_demo",
+        generated_at="2026-06-23T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "flu",
+                "Influenza",
+                "Disease",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "fever",
+                "Fever",
+                "Symptom",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-manifestation-with-dose",
+                "flu",
+                "fever",
+                "has_manifestation",
+                source_id="chunk-1",
+                file_path="guide.md",
+                properties={"qualifiers": edge_qualifiers},
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = next(
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["edge_id"] == "edge-manifestation-with-dose"
+    )
+    issue["qualifiers"]["dose"]["amount"] = 150
+
+    assert edge_qualifiers == {"dose": {"amount": 75, "unit": "mg"}}
+    assert snapshot.edges[0].properties["qualifiers"] == {
+        "dose": {"amount": 75, "unit": "mg"}
+    }
 
 
 def test_generic_relation_detection_handles_empty_english_chinese_and_merged_tokens():
@@ -360,7 +578,7 @@ def test_quality_flags_clinical_manifestation_edges_with_reverse_direction():
     assert finding.category == "relation_semantics"
     assert finding.evidence == ["edge:edge-dry-cough-flu"]
     assert finding.requires_approval is True
-    assert score.subscores["relation_semantics"] == 100
+    assert score.subscores["relation_semantics"] < 100
 
 
 def test_quality_flags_taxonomy_keyword_on_direct_disease_symptom_relation():
@@ -505,7 +723,293 @@ def test_quality_flags_reverse_clinical_manifestation_schema_issue_details() -> 
     )
 
 
-def test_medical_schema_issue_does_not_reduce_relation_semantics_score() -> None:
+def test_medical_domain_range_detector_emits_precise_issue_kinds() -> None:
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-20T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "flu",
+                "\u6d41\u884c\u6027\u611f\u5192",
+                "disease",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "fever",
+                "\u53d1\u70ed",
+                "sign",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "virus",
+                "\u6d41\u611f\u75c5\u6bd2",
+                "pathogen",
+                source_id="chunk-2",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "oseltamivir",
+                "\u5965\u53f8\u4ed6\u97e6",
+                "drugingredient",
+                source_id="chunk-3",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "rt-pcr",
+                "RT-PCR",
+                "diagnostictest",
+                source_id="chunk-4",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-manifestation",
+                "fever",
+                "flu",
+                "\u4e34\u5e8a\u8868\u73b0",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "edge-causative",
+                "virus",
+                "flu",
+                "\u75c5\u539f\u5bfc\u81f4",
+                source_id="chunk-2",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "edge-treatment",
+                "virus",
+                "oseltamivir",
+                "\u63a8\u8350\u6cbb\u7597",
+                source_id="chunk-3",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "edge-adverse",
+                "oseltamivir",
+                "fever",
+                "\u4e34\u5e8a\u8868\u73b0",
+                source_id="chunk-3",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "edge-diagnostic",
+                "rt-pcr",
+                "flu",
+                "\u8bca\u65ad\u4f9d\u636e",
+                source_id="chunk-4",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "edge-multi",
+                "oseltamivir",
+                "flu",
+                "\u5242\u91cf\u7528\u6cd5,\u63a8\u8350\u6cbb\u7597,\u9002\u7528\u4e8e",
+                source_id="chunk-5",
+                file_path="guide.md",
+            ),
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issues = score.details["medical_schema_issues"]
+    issues_by_kind = {issue["issue_kind"]: issue for issue in issues}
+    assert set(issues_by_kind) >= {
+        "reverse_clinical_manifestation",
+        "reverse_causative_agent",
+        "treatment_domain_range_mismatch",
+        "adverse_reaction_modeled_as_manifestation",
+        "diagnostic_evidence_direction_mismatch",
+        "multi_predicate_edge_split_needed",
+    }
+
+    reverse_manifestation = issues_by_kind["reverse_clinical_manifestation"]
+    assert reverse_manifestation["edge_id"] == "edge-manifestation"
+    assert reverse_manifestation["source_type"] == "Symptom"
+    assert reverse_manifestation["target_type"] == "Disease"
+    assert reverse_manifestation["new_source"] == "flu"
+    assert reverse_manifestation["new_target"] == "fever"
+    assert reverse_manifestation["candidate_predicates"] == ["has_manifestation"]
+
+    reverse_causative = issues_by_kind["reverse_causative_agent"]
+    assert reverse_causative["edge_id"] == "edge-causative"
+    assert reverse_causative["source_type"] == "Pathogen"
+    assert reverse_causative["target_type"] == "Disease"
+    assert reverse_causative["new_source"] == "flu"
+    assert reverse_causative["new_target"] == "virus"
+    assert reverse_causative["candidate_predicates"] == ["causative_agent"]
+
+    treatment = issues_by_kind["treatment_domain_range_mismatch"]
+    assert treatment["edge_id"] == "edge-treatment"
+    assert treatment["source_type"] == "Pathogen"
+    assert treatment["target_type"] == "Drug"
+    assert set(treatment["candidate_predicates"]) >= {"has_indication", "recommends"}
+
+    adverse = issues_by_kind["adverse_reaction_modeled_as_manifestation"]
+    assert adverse["edge_id"] == "edge-adverse"
+    assert adverse["source_type"] == "Drug"
+    assert adverse["target_type"] == "Symptom"
+    assert adverse["candidate_predicates"] == ["may_cause_adverse_reaction"]
+
+    diagnostic = issues_by_kind["diagnostic_evidence_direction_mismatch"]
+    assert diagnostic["edge_id"] == "edge-diagnostic"
+    assert diagnostic["source_type"] == "Test"
+    assert diagnostic["target_type"] == "Disease"
+    assert set(diagnostic["candidate_predicates"]) >= {
+        "has_diagnostic_criterion",
+        "supports_or_refutes",
+    }
+
+    multi = issues_by_kind["multi_predicate_edge_split_needed"]
+    assert multi["edge_id"] == "edge-multi"
+    assert set(multi["predicate_tokens"]) >= {
+        "\u5242\u91cf\u7528\u6cd5",
+        "\u63a8\u8350\u6cbb\u7597",
+        "\u9002\u7528\u4e8e",
+    }
+    assert multi["repair_options"]
+    assert {
+        option["predicate"] for option in multi["repair_options"]
+    } >= {"has_dosing_regimen", "recommended_for"}
+    assert all("validation_errors" in option for option in multi["repair_options"])
+    assert any(option["auto_fixable"] is False for option in multi["repair_options"])
+    assert len(
+        [
+            issue
+            for issue in issues
+            if issue["edge_id"] == "edge-manifestation"
+            and issue["issue_kind"] == "reverse_clinical_manifestation"
+        ]
+    ) == 1
+    assert score.metrics["relation_semantic_issue_count"] > 0
+    assert score.subscores["relation_semantics"] < 100
+
+
+def test_medical_domain_range_detector_validates_canonical_relation_specs() -> None:
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-21T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode("flu", "流行性感冒", "Disease", source_id="chunk-1", file_path="guide.md"),
+            SnapshotNode("fever", "发热", "Symptom", source_id="chunk-1", file_path="guide.md"),
+            SnapshotNode("vaccine", "流感疫苗", "Vaccine", source_id="chunk-2", file_path="guide.md"),
+            SnapshotNode("children", "儿童", "Population", source_id="chunk-2", file_path="guide.md"),
+            SnapshotNode("pneumonia", "肺炎", "Complication", source_id="chunk-3", file_path="guide.md"),
+            SnapshotNode("elderly", "老年人", "RiskFactor", source_id="chunk-4", file_path="guide.md"),
+            SnapshotNode("guideline", "指南", "Guideline", source_id="chunk-5", file_path="guide.md"),
+        ],
+        edges=[
+            SnapshotEdge(
+                "valid-recommended-for",
+                "vaccine",
+                "children",
+                "recommended_for",
+                source_id="chunk-2",
+                file_path="guide.md",
+                properties={
+                    "qualifiers": {
+                        "purpose": "prevention",
+                        "age_min": 6,
+                        "age_unit": "month",
+                    }
+                },
+            ),
+            SnapshotEdge(
+                "invalid-recommended-for",
+                "children",
+                "vaccine",
+                "recommended_for",
+                source_id="chunk-2",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "valid-targets-disease",
+                "vaccine",
+                "flu",
+                "targets_disease",
+                source_id="chunk-2",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "invalid-targets-disease",
+                "flu",
+                "vaccine",
+                "targets_disease",
+                source_id="chunk-2",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "valid-complication",
+                "flu",
+                "pneumonia",
+                "has_complication",
+                source_id="chunk-3",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "invalid-complication",
+                "fever",
+                "flu",
+                "has_complication",
+                source_id="chunk-3",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "valid-risk-group",
+                "children",
+                "flu",
+                "risk_group_for",
+                source_id="chunk-4",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "invalid-risk-group",
+                "guideline",
+                "children",
+                "risk_group_for",
+                source_id="chunk-4",
+                file_path="guide.md",
+            ),
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue_by_edge = {
+        issue["edge_id"]: issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["issue_kind"] == "canonical_relation_domain_range_mismatch"
+    }
+    assert set(issue_by_edge) == {
+        "invalid-recommended-for",
+        "invalid-targets-disease",
+        "invalid-complication",
+        "invalid-risk-group",
+    }
+    recommended_for_issue = issue_by_edge["invalid-recommended-for"]
+    assert recommended_for_issue["candidate_predicates"] == ["recommended_for"]
+    assert recommended_for_issue["expected_domain_types"] == [
+        "Drug",
+        "Treatment",
+        "Vaccine",
+        "PublicHealthMeasure",
+    ]
+    assert recommended_for_issue["expected_range_types"] == ["Population"]
+    assert recommended_for_issue["source_type"] == "Population"
+    assert recommended_for_issue["target_type"] == "Vaccine"
+
+
+def test_medical_schema_issue_reduces_relation_semantics_score() -> None:
     snapshot = KGSnapshot(
         workspace="influenza_medical_v1",
         generated_at="2026-06-20T00:00:00+08:00",
@@ -550,7 +1054,381 @@ def test_medical_schema_issue_does_not_reduce_relation_semantics_score() -> None
         finding.suggested_fix_type == "medical_relation_schema_migration"
         for finding in score.findings
     )
-    assert score.subscores["relation_semantics"] == 100
+    assert score.subscores["relation_semantics"] < 100
+
+
+def test_single_relation_semantic_issue_reduces_score_in_large_graph() -> None:
+    symptom_nodes = [
+        SnapshotNode(
+            f"symptom-{index}",
+            f"Symptom {index}",
+            "Symptom",
+            source_id="chunk-1",
+            file_path="guide.md",
+        )
+        for index in range(250)
+    ]
+    good_edges = [
+        SnapshotEdge(
+            f"edge-good-{index}",
+            "flu",
+            f"symptom-{index}",
+            "\u4e34\u5e8a\u8868\u73b0",
+            source_id="chunk-1",
+            file_path="guide.md",
+        )
+        for index in range(1, 250)
+    ]
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-20T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "flu",
+                "\u6d41\u884c\u6027\u611f\u5192",
+                "Disease",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            *symptom_nodes,
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-bad-direction",
+                "symptom-0",
+                "flu",
+                "\u4e34\u5e8a\u8868\u73b0",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            *good_edges,
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    assert score.metrics["relation_semantic_issue_count"] == 1
+    assert score.subscores["relation_semantics"] < 100
+
+
+def test_drug_to_clinical_condition_treatment_edge_is_valid_indication() -> None:
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-20T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "oseltamivir",
+                "\u5965\u53f8\u4ed6\u97e6",
+                "DrugIngredient",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "severe-case",
+                "\u91cd\u75c7\u75c5\u4f8b",
+                "clinical_condition",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-treatment-condition",
+                "oseltamivir",
+                "severe-case",
+                "\u63a8\u8350\u6cbb\u7597",
+                source_id="chunk-1",
+                file_path="guide.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    assert not any(
+        issue["edge_id"] == "edge-treatment-condition"
+        and issue["issue_kind"] == "treatment_domain_range_mismatch"
+        for issue in score.details["medical_schema_issues"]
+    )
+
+
+def test_drug_to_disease_recommends_requires_indication_predicate() -> None:
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-20T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "oseltamivir",
+                "\u5965\u53f8\u4ed6\u97e6",
+                "DrugIngredient",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "flu",
+                "\u6d41\u884c\u6027\u611f\u5192",
+                "Disease",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-drug-recommends-disease",
+                "oseltamivir",
+                "flu",
+                "recommends",
+                source_id="chunk-1",
+                file_path="guide.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = next(
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["edge_id"] == "edge-drug-recommends-disease"
+        and issue["issue_kind"] == "treatment_domain_range_mismatch"
+    )
+    assert "has_indication" in issue["candidate_predicates"]
+
+
+def test_guideline_recommends_diagnostic_test_is_valid_recommendation() -> None:
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-20T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "guideline",
+                "\u6d41\u611f\u6307\u5357",
+                "Guideline",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "rt-pcr",
+                "RT-PCR",
+                "DiagnosticTest",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-guideline-test",
+                "guideline",
+                "rt-pcr",
+                "recommends",
+                source_id="chunk-1",
+                file_path="guide.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    assert not any(
+        issue["edge_id"] == "edge-guideline-test"
+        and issue["issue_kind"] == "treatment_domain_range_mismatch"
+        for issue in score.details["medical_schema_issues"]
+    )
+
+
+def test_clinical_pathway_recommends_test_is_valid_recommendation() -> None:
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-20T00:00:00+08:00",
+        source_files=["pathway.md"],
+        nodes=[
+            SnapshotNode(
+                "pathway",
+                "\u53d1\u70ed\u95e8\u8bca\u8def\u5f84",
+                "clinical_pathway",
+                source_id="chunk-1",
+                file_path="pathway.md",
+            ),
+            SnapshotNode(
+                "rapid-test",
+                "\u6297\u539f\u5feb\u68c0",
+                "Test",
+                source_id="chunk-1",
+                file_path="pathway.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-pathway-test",
+                "pathway",
+                "rapid-test",
+                "recommends",
+                source_id="chunk-1",
+                file_path="pathway.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    assert not any(
+        issue["edge_id"] == "edge-pathway-test"
+        and issue["issue_kind"] == "treatment_domain_range_mismatch"
+        for issue in score.details["medical_schema_issues"]
+    )
+
+
+def test_clinical_finding_to_clinical_condition_manifestation_is_reversed() -> None:
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-20T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "hypoxemia",
+                "\u4f4e\u6c27\u8840\u75c7",
+                "clinical_finding",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "severe-case",
+                "\u91cd\u75c7\u75c5\u4f8b",
+                "clinical_condition",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-finding-condition",
+                "hypoxemia",
+                "severe-case",
+                "\u4e34\u5e8a\u8868\u73b0",
+                source_id="chunk-1",
+                file_path="guide.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = next(
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["edge_id"] == "edge-finding-condition"
+    )
+    assert issue["issue_kind"] == "reverse_clinical_manifestation"
+    assert issue["source_type"] == "ClinicalFinding"
+    assert issue["target_type"] == "ClinicalCondition"
+    assert issue["new_source"] == "severe-case"
+    assert issue["new_target"] == "hypoxemia"
+
+
+def test_symptom_to_syndrome_has_manifestation_is_reversed() -> None:
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-20T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "fever",
+                "\u53d1\u70ed",
+                "Symptom",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "flu-like-syndrome",
+                "\u6d41\u611f\u6837\u7efc\u5408\u5f81",
+                "Syndrome",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-symptom-syndrome",
+                "fever",
+                "flu-like-syndrome",
+                "has_manifestation",
+                source_id="chunk-1",
+                file_path="guide.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = next(
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["edge_id"] == "edge-symptom-syndrome"
+    )
+    assert issue["issue_kind"] == "reverse_clinical_manifestation"
+    assert issue["source_type"] == "Symptom"
+    assert issue["target_type"] == "Syndrome"
+    assert issue["new_source"] == "flu-like-syndrome"
+    assert issue["new_target"] == "fever"
+
+
+def test_test_to_clinical_condition_diagnostic_basis_direction_mismatch() -> None:
+    snapshot = KGSnapshot(
+        workspace="influenza_medical_v1",
+        generated_at="2026-06-20T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "rt-pcr",
+                "RT-PCR",
+                "DiagnosticTest",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "confirmed-case",
+                "\u786e\u8bca\u75c5\u4f8b",
+                "ClinicalCondition",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-test-condition",
+                "rt-pcr",
+                "confirmed-case",
+                "\u8bca\u65ad\u4f9d\u636e",
+                source_id="chunk-1",
+                file_path="guide.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = next(
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["edge_id"] == "edge-test-condition"
+        and issue["issue_kind"] == "diagnostic_evidence_direction_mismatch"
+    )
+    assert issue["source_type"] == "Test"
+    assert issue["target_type"] == "ClinicalCondition"
+    assert issue["new_source"] == "confirmed-case"
+    assert issue["new_target"] == "rt-pcr"
 
 
 def test_quality_flags_value_nodes_as_qualifier_candidates() -> None:
@@ -1083,6 +1961,368 @@ def test_medical_schema_detection_uses_medical_profile_hints_beyond_hierarchy() 
     assert score.details["medical_schema_issues"][0]["edge_id"] == (
         "edge-hospital-treatment"
     )
+
+
+def test_quality_flags_strict_canonical_relation_domain_range_mismatches() -> None:
+    snapshot = KGSnapshot(
+        workspace="medical_demo",
+        generated_at="2026-06-22T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "flu",
+                "Influenza",
+                "Disease",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "cough",
+                "Cough",
+                "Symptom",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "cbc",
+                "Complete blood count",
+                "Test",
+                source_id="chunk-2",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "result",
+                "Leukopenia",
+                "ClinicalFinding",
+                source_id="chunk-2",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-cause-symptom",
+                "flu",
+                "cough",
+                "causative_agent",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotEdge(
+                "edge-result-finding",
+                "cbc",
+                "result",
+                "has_result",
+                source_id="chunk-2",
+                file_path="guide.md",
+            ),
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issues = {
+        issue["edge_id"]: issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["issue_kind"] == "canonical_relation_domain_range_mismatch"
+    }
+    assert issues["edge-cause-symptom"]["candidate_predicates"] == [
+        "causative_agent"
+    ]
+    assert issues["edge-cause-symptom"]["expected_range_types"] == ["Pathogen"]
+    assert issues["edge-result-finding"]["candidate_predicates"] == ["has_result"]
+    assert issues["edge-result-finding"]["expected_range_types"] == ["TestResult"]
+
+
+def test_quality_flags_missing_required_relation_qualifier() -> None:
+    snapshot = KGSnapshot(
+        workspace="medical_demo",
+        generated_at="2026-06-22T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "positive-pcr",
+                "Positive PCR",
+                "TestResultPattern",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "flu",
+                "Influenza",
+                "Disease",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-evidence-without-polarity",
+                "positive-pcr",
+                "flu",
+                "supports_or_refutes",
+                source_id="chunk-1",
+                file_path="guide.md",
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = next(
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["edge_id"] == "edge-evidence-without-polarity"
+    )
+    assert issue["issue_kind"] == "missing_required_relation_qualifier"
+    assert issue["missing_qualifiers"] == ["polarity"]
+    assert issue["candidate_predicates"] == ["supports_or_refutes"]
+
+
+def test_quality_flags_unsupported_relation_qualifier() -> None:
+    snapshot = KGSnapshot(
+        workspace="medical_demo",
+        generated_at="2026-06-22T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "flu",
+                "Influenza",
+                "Disease",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "fever",
+                "Fever",
+                "Symptom",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-manifestation-with-dose",
+                "flu",
+                "fever",
+                "has_manifestation",
+                source_id="chunk-1",
+                file_path="guide.md",
+                properties={"qualifiers": {"dose": "75 mg"}},
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = next(
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["edge_id"] == "edge-manifestation-with-dose"
+    )
+    assert issue["issue_kind"] == "unsupported_relation_qualifier"
+    assert issue["unsupported_qualifiers"] == ["dose"]
+
+
+def test_quality_flags_invalid_relation_qualifier_value() -> None:
+    snapshot = KGSnapshot(
+        workspace="medical_demo",
+        generated_at="2026-06-22T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "zanamivir",
+                "Zanamivir",
+                "Drug",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "children",
+                "Children",
+                "Population",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-recommendation-invalid-purpose",
+                "zanamivir",
+                "children",
+                "recommended_for",
+                source_id="chunk-1",
+                file_path="guide.md",
+                properties={"qualifiers": {"purpose": "diagnosis", "age_min": 7}},
+            )
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = next(
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["edge_id"] == "edge-recommendation-invalid-purpose"
+    )
+    assert issue["issue_kind"] == "invalid_relation_qualifier_value"
+    assert issue["invalid_qualifier_values"] == ["purpose"]
+
+
+def test_quality_flags_conflicting_recommendation_and_contraindication_scope() -> None:
+    snapshot = KGSnapshot(
+        workspace="medical_demo",
+        generated_at="2026-06-22T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "zanamivir",
+                "Zanamivir",
+                "Drug",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "children",
+                "Children",
+                "Population",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-zanamivir-recommended",
+                "zanamivir",
+                "children",
+                "recommended_for",
+                source_id="chunk-1",
+                file_path="guide.md",
+                properties={
+                    "qualifiers": {
+                        "purpose": "treatment",
+                        "age_min": 7,
+                        "age_unit": "year",
+                    }
+                },
+            ),
+            SnapshotEdge(
+                "edge-zanamivir-contraindicated",
+                "zanamivir",
+                "children",
+                "contraindicated_for",
+                source_id="chunk-2",
+                file_path="guide.md",
+                properties={
+                    "qualifiers": {
+                        "purpose": "treatment",
+                        "age_min": 7,
+                        "age_unit": "year",
+                    }
+                },
+            ),
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issue = next(
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["issue_kind"] == "conflicting_recommendation_safety_scope"
+    )
+    assert issue["edge_id"] == "edge-zanamivir-recommended"
+    assert issue["conflict_edge_id"] == "edge-zanamivir-contraindicated"
+    assert issue["candidate_predicates"] == ["recommended_for", "contraindicated_for"]
+
+
+def test_quality_preserves_multiple_conflicting_safety_edges_for_same_recommendation() -> None:
+    snapshot = KGSnapshot(
+        workspace="medical_demo",
+        generated_at="2026-06-23T00:00:00+08:00",
+        source_files=["guide.md"],
+        nodes=[
+            SnapshotNode(
+                "zanamivir",
+                "Zanamivir",
+                "Drug",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+            SnapshotNode(
+                "children",
+                "Children",
+                "Population",
+                source_id="chunk-1",
+                file_path="guide.md",
+            ),
+        ],
+        edges=[
+            SnapshotEdge(
+                "edge-zanamivir-recommended",
+                "zanamivir",
+                "children",
+                "recommended_for",
+                source_id="chunk-1",
+                file_path="guide.md",
+                properties={
+                    "qualifiers": {
+                        "purpose": "treatment",
+                        "age_min": 7,
+                        "age_unit": "year",
+                    }
+                },
+            ),
+            SnapshotEdge(
+                "edge-zanamivir-contraindicated-asthma",
+                "zanamivir",
+                "children",
+                "contraindicated_for",
+                source_id="chunk-2",
+                file_path="guide.md",
+                properties={
+                    "qualifiers": {
+                        "purpose": "treatment",
+                        "age_min": 7,
+                        "age_unit": "year",
+                    }
+                },
+            ),
+            SnapshotEdge(
+                "edge-zanamivir-contraindicated-allergy",
+                "zanamivir",
+                "children",
+                "contraindicated_for",
+                source_id="chunk-3",
+                file_path="guide.md",
+                properties={
+                    "qualifiers": {
+                        "purpose": "treatment",
+                        "age_min": 7,
+                        "age_unit": "year",
+                    }
+                },
+            ),
+        ],
+        metadata={"profile": "clinical_guideline_zh"},
+    )
+
+    score = evaluate_snapshot_quality(snapshot)
+
+    issues = [
+        issue
+        for issue in score.details["medical_schema_issues"]
+        if issue["issue_kind"] == "conflicting_recommendation_safety_scope"
+        and issue["edge_id"] == "edge-zanamivir-recommended"
+    ]
+    assert [issue["conflict_edge_id"] for issue in issues] == [
+        "edge-zanamivir-contraindicated-asthma",
+        "edge-zanamivir-contraindicated-allergy",
+    ]
 
 
 def test_legacy_schema_subcase_metrics_have_grounded_issue_details() -> None:
