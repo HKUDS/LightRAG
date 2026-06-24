@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "图数据已截断至最大返回节点数",
+    "fetchRetriesExhausted": "加载图数据失败。请刷新后重试。",
+    "graphBuildFailed": "渲染图数据失败。请刷新后重试。",
     "statusDialog": {
       "title": "LightRAG 服务器设置",
       "description": "查看当前系统状态和连接信息"
@@ -251,7 +253,6 @@
         "edgeEvents": "边事件",
         "maxQueryDepth": "最大查询深度",
         "maxNodes": "最大返回节点数",
-        "maxLayoutIterations": "最大布局迭代次数",
         "resetToDefault": "重置为默认值",
         "edgeSizeRange": "边粗细范围",
         "depth": "深",

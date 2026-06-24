@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "圖資料已截斷至最大回傳節點數",
+    "fetchRetriesExhausted": "載入圖資料失敗。請重新整理後再試。",
+    "graphBuildFailed": "圖資料渲染失敗。請重新整理後再試。",
     "statusDialog": {
       "title": "LightRAG 伺服器設定",
       "description": "查看目前系統狀態和連線資訊"
@@ -251,7 +253,6 @@
         "edgeEvents": "Edge 事件",
         "maxQueryDepth": "最大查詢深度",
         "maxNodes": "最大回傳節點數",
-        "maxLayoutIterations": "最大版面配置迭代次數",
         "resetToDefault": "重設為預設值",
         "edgeSizeRange": "Edge 粗細範圍",
         "depth": "深度",

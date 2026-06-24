@@ -185,7 +185,6 @@ export default function Settings() {
   const graphQueryMaxDepth = useSettingsStore.use.graphQueryMaxDepth()
   const graphMaxNodes = useSettingsStore.use.graphMaxNodes()
   const backendMaxGraphNodes = useSettingsStore.use.backendMaxGraphNodes()
-  const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
 
@@ -247,11 +246,6 @@ export default function Settings() {
     if (nodes < 1 || nodes > maxLimit) return
     useSettingsStore.getState().setGraphMaxNodes(nodes, true)
   }, [backendMaxGraphNodes])
-
-  const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
-    if (iterations < 1) return
-    useSettingsStore.setState({ graphLayoutMaxIterations: iterations })
-  }, [])
 
   const handleGenerateRandomGraph = useCallback(() => {
     const graph = randomGraph()
@@ -397,14 +391,6 @@ export default function Settings() {
               value={graphMaxNodes}
               defaultValue={backendMaxGraphNodes || 1000}
               onEditFinished={setGraphMaxNodes}
-            />
-            <LabeledNumberInput
-              label={t('graphPanel.sideBar.settings.maxLayoutIterations')}
-              min={1}
-              max={30}
-              value={graphLayoutMaxIterations}
-              defaultValue={15}
-              onEditFinished={setGraphLayoutMaxIterations}
             />
             {/* Development/Testing Section - Only visible in development mode */}
             {import.meta.env.DEV && (

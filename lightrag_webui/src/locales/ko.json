@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "그래프 데이터가 최대 노드 수로 제한되었습니다",
+    "fetchRetriesExhausted": "그래프 데이터를 불러오지 못했습니다. 새로고침하여 다시 시도하세요.",
+    "graphBuildFailed": "그래프 데이터를 렌더링하지 못했습니다. 새로고침하여 다시 시도하세요.",
     "statusDialog": {
       "title": "LightRAG 서버 설정",
       "description": "현재 시스템 상태 및 연결 정보 보기"
@@ -251,7 +253,6 @@
         "edgeEvents": "엣지 이벤트",
         "maxQueryDepth": "최대 쿼리 깊이",
         "maxNodes": "최대 노드",
-        "maxLayoutIterations": "최대 레이아웃 반복",
         "resetToDefault": "기본값으로 재설정",
         "edgeSizeRange": "엣지 크기 범위",
         "depth": "D",
