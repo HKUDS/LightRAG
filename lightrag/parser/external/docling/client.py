@@ -26,6 +26,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from lightrag.parser.external._common import (
     env_bool,
@@ -241,7 +242,8 @@ class DoclingRawClient:
         client: "httpx.AsyncClient",
         task_id: str,
     ) -> None:
-        url = f"{self.endpoint}{POLL_PATH.format(task_id=task_id)}"
+        encoded_task_id = quote(task_id, safe="")
+        url = f"{self.endpoint}{POLL_PATH.format(task_id=encoded_task_id)}"
         params = {"wait": self.poll_wait_seconds}
         for _ in range(self.max_poll_attempts):
             iteration_started = time.monotonic()
@@ -282,7 +284,8 @@ class DoclingRawClient:
         client: "httpx.AsyncClient",
         task_id: str,
     ) -> bytes:
-        url = f"{self.endpoint}{RESULT_PATH.format(task_id=task_id)}"
+        encoded_task_id = quote(task_id, safe="")
+        url = f"{self.endpoint}{RESULT_PATH.format(task_id=encoded_task_id)}"
         resp = await client.get(url)
         raise_for_status_with_detail(resp, f"Docling result {task_id} download")
         ctype = resp.headers.get("content-type", "")
