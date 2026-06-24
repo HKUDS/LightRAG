@@ -100,6 +100,15 @@ interface GraphState {
   sigmaGraph: DirectedGraph | null
   sigmaInstance: any | null
 
+  // Reactive node/edge counts. The sigma graph is mutated in place by
+  // expand/prune (no setSigmaGraph, no version bump), so `sigmaGraph.order` /
+  // `.size` are NOT reactive in React. These mirror them and are the single
+  // source of truth for: the status bar (SettingsDisplay) and the edge-count
+  // adaptive behavior (curved vs straight edges, edge-event gating). Kept as a
+  // store invariant — see setSigmaGraph/reset/setGraphCounts.
+  graphNodeCount: number
+  graphEdgeCount: number
+
   searchEngine: MiniSearch | null
 
   moveToSelectedNode: boolean
@@ -127,6 +136,10 @@ interface GraphState {
 
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
+  // Update the reactive node/edge counts together (one set call → one notify).
+  // Call after in-place mutations (expand/prune) and to override the synthetic
+  // empty placeholder graph back to 0/0.
+  setGraphCounts: (nodeCount: number, edgeCount: number) => void
   setIsFetching: (isFetching: boolean) => void
 
   // True while a layout (sync or worker) is computing. Drives the loading
@@ -195,6 +208,9 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   sigmaGraph: null,
   sigmaInstance: null,
 
+  graphNodeCount: 0,
+  graphEdgeCount: 0,
+
   typeColorMap: new Map<string, string>(),
 
   searchEngine: null,
@@ -254,7 +270,9 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       sigmaGraph: null,  // to avoid other components from acccessing graph objects
       searchEngine: null,
       moveToSelectedNode: false,
-      graphIsEmpty: false
+      graphIsEmpty: false,
+      graphNodeCount: 0,
+      graphEdgeCount: 0
     });
   },
 
@@ -264,9 +282,21 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
     }),
 
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => {
-    // Replace graph instance, no need to keep WebGL context
-    set({ sigmaGraph });
+    // Replace graph instance, no need to keep WebGL context. Sync the reactive
+    // counts in the SAME set call so "graph" and "counts" are never observed out
+    // of step (avoids GraphViewer briefly seeing a stale count and allocating an
+    // edge picking buffer it must immediately rebuild away). The synthetic empty
+    // placeholder graph carries a non-zero order/size but means "empty"; callers
+    // override it back to 0/0 via setGraphCounts right after.
+    set({
+      sigmaGraph,
+      graphNodeCount: sigmaGraph ? sigmaGraph.order : 0,
+      graphEdgeCount: sigmaGraph ? sigmaGraph.size : 0
+    });
   },
+
+  setGraphCounts: (nodeCount: number, edgeCount: number) =>
+    set({ graphNodeCount: nodeCount, graphEdgeCount: edgeCount }),
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
 

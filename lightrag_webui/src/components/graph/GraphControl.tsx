@@ -37,11 +37,25 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
+  const graphEdgeCount = useGraphStore.use.graphEdgeCount()
+
+  // Mirror GraphViewer's gating: above EDGE_PERF_LIMIT the sigma instance is
+  // (re)built without the edge picking buffer, so edge events cannot fire even
+  // though the user setting may be on. Use this — not the raw setting — for
+  // event registration and the reducers, so we never run the costly edge-focus
+  // path against a graph that can't actually pick edges.
+  const effectiveEdgeEvents = enableEdgeEvents && graphEdgeCount <= Constants.EDGE_PERF_LIMIT
 
   // The graph the initial FA2 layout has already been run for. Used to run the
   // layout once PER GRAPH, not once per sigma instance (a theme change rebuilds
   // the instance and re-runs the bind effect with the SAME graph).
   const laidOutGraphRef = useRef<unknown>(null)
+
+  // Last (sigma instance, curved decision) the edge-type effect applied. A
+  // rebuild (theme toggle / edge-events gating) creates a fresh sigma whose
+  // defaultEdgeType reverts to its construction default ('rect'), so we must
+  // re-apply when the INSTANCE changed too — not only when the decision flips.
+  const edgeTypeRef = useRef<{ sigma: unknown; curved: boolean } | null>(null)
 
   /**
    * When component mounts or the graph changes
@@ -76,8 +90,13 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     // effect with the SAME graph, which already carries settled positions —
     // re-running FA2 there would replay the relaxation animation on every theme
     // switch. Only (re)bind in that case; skip the layout.
+    //
+    // The ref is marked "laid out" only when the budget timer fires (layout
+    // settled), NOT before start: if a rebuild interrupts the layout mid-run
+    // (e.g. edge-events gating crosses the threshold during the first load),
+    // the new instance re-runs FA2 from where it was instead of freezing on a
+    // half-relaxed layout. Rebuilds after settling still match and skip.
     if (laidOutGraphRef.current === sigmaGraph) return
-    laidOutGraphRef.current = sigmaGraph
 
     let layout: { start: () => void; stop: () => void; kill: () => void } | null = null
     try {
@@ -100,6 +119,9 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     const timer = window.setTimeout(() => {
       try {
         layout?.stop()
+        // Mark this graph as laid out only now (settled), so a rebuild during
+        // the budget window re-runs the layout rather than skipping it.
+        laidOutGraphRef.current = sigmaGraph
         console.log('FA2 worker layout stopped after budget')
         // Release the shared slot so the store invariant "activeLayoutSupervisor
         // != null => a layout is running" holds (the budget just stopped this
@@ -129,7 +151,13 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   useEffect(() => {
     if (sigma) {
       const currentInstance = useGraphStore.getState().sigmaInstance
-      if (!currentInstance) {
+      // Update when the instance CHANGED, not only when it's unset. A theme
+      // toggle, an effectiveEdgeEvents flip, or crossing the edge threshold
+      // rebuilds the SigmaContainer (old instance killed, new one created); if
+      // we only wrote on an empty store the killed instance would linger there
+      // and consumers (e.g. expand reading sigmaInstance.getCamera()) would act
+      // on a dead Sigma.
+      if (currentInstance !== sigma) {
         console.log('Setting sigma instance from GraphControl')
         useGraphStore.getState().setSigmaInstance(sigma)
       }
@@ -183,6 +211,45 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   }, [sigma])
 
   /**
+   * Adapt edge geometry to graph size: curves for small graphs (nicer to read),
+   * straight rectangles above EDGE_PERF_LIMIT (curve tessellation is costly).
+   *
+   * Edges carry no per-edge `type`, so switching `defaultEdgeType` + a full
+   * `refresh()` (which re-adds edges through applyEdgeDefaults) re-selects the
+   * program for the whole graph without touching attributes or rebuilding.
+   *
+   * The ref tracks BOTH the sigma instance and the decision: re-apply when the
+   * instance changed (a rebuild resets defaultEdgeType to 'rect') OR when the
+   * curved/straight decision flipped; skip otherwise so routine expand/prune
+   * within one band don't trigger a full refresh.
+   */
+  useEffect(() => {
+    if (!sigma) return
+    const curved = graphEdgeCount > 0 && graphEdgeCount <= Constants.EDGE_PERF_LIMIT
+    const prev = edgeTypeRef.current
+    if (prev && prev.sigma === sigma && prev.curved === curved) return
+    edgeTypeRef.current = { sigma, curved }
+    setSettings({ defaultEdgeType: curved ? 'curvedNoArrow' : 'rect' })
+    try {
+      sigma.refresh()
+    } catch {
+      /* sigma instance already killed */
+    }
+  }, [sigma, graphEdgeCount, setSettings])
+
+  /**
+   * When edge events become gated off (count crossed above EDGE_PERF_LIMIT),
+   * drop any residual edge focus/selection so the UI (property panel, reducers)
+   * doesn't keep a now-unpickable edge highlighted. Node selection is untouched.
+   */
+  useEffect(() => {
+    if (effectiveEdgeEvents) return
+    const { selectedEdge, focusedEdge, setSelectedEdge, setFocusedEdge } = useGraphStore.getState()
+    if (selectedEdge !== null) setSelectedEdge(null)
+    if (focusedEdge !== null) setFocusedEdge(null)
+  }, [effectiveEdgeEvents])
+
+  /**
    * When component mounts
    * => register events
    */
@@ -217,7 +284,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       clickStage: () => clearSelection()
     }
 
-    if (enableEdgeEvents) {
+    if (effectiveEdgeEvents) {
       events.clickEdge = (event: EdgeEvent) => {
         setSelectedEdge(event.edge)
         setSelectedNode(null)
@@ -235,7 +302,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     }
 
     registerEvents(events)
-  }, [registerEvents, enableEdgeEvents, sigma])
+  }, [registerEvents, effectiveEdgeEvents, sigma])
 
   /**
    * When edge size settings change, recalculate edge sizes.
@@ -297,11 +364,16 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     const effectiveRenderLabels = renderLabels && graphOrder <= Constants.LABEL_RENDER_LIMIT
 
     const _focusedNode = focusedNode || selectedNode
-    const _focusedEdge = focusedEdge || selectedEdge
+    // Ignore any residual edge focus/selection when edge events are gated off
+    // (e.g. an edge was selected on a small graph, then expand pushed it past
+    // EDGE_PERF_LIMIT): otherwise the edge-focused reducer branch below would
+    // still run the per-edge highlight pass on a large graph — exactly the cost
+    // we disabled edge events to avoid.
+    const _focusedEdge = effectiveEdgeEvents ? focusedEdge || selectedEdge : null
 
     if (disableHoverEffect || (!_focusedNode && !_focusedEdge)) {
       setSettings({
-        enableEdgeEvents,
+        enableEdgeEvents: effectiveEdgeEvents,
         renderEdgeLabels,
         renderLabels: effectiveRenderLabels,
         nodeReducer: null,
@@ -331,7 +403,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       : Constants.edgeColorHighlightedLightTheme
 
     setSettings({
-      enableEdgeEvents,
+      enableEdgeEvents: effectiveEdgeEvents,
       renderEdgeLabels,
       renderLabels: effectiveRenderLabels,
 
@@ -403,7 +475,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     disableHoverEffect,
     isDarkTheme,
     hideUnselectedEdges,
-    enableEdgeEvents,
+    effectiveEdgeEvents,
     renderEdgeLabels,
     renderLabels
   ])
