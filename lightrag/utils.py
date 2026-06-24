@@ -635,16 +635,19 @@ class EmbeddingFunc:
         return result
 
 
-def compute_args_hash(*args: Any) -> str:
+def compute_args_hash(*args: Any, workspace: str | None = None) -> str:
     """Compute a hash for the given arguments with safe Unicode handling.
 
     Args:
         *args: Arguments to hash
+        workspace: Optional workspace identifier for cache isolation
     Returns:
         str: Hash string
     """
-    # Convert all arguments to strings and join them
-    args_str = "".join([str(arg) for arg in args])
+    # Convert None to empty string to ensure consistent hash calculation
+    workspace_str = workspace or ""
+    # Convert all arguments to strings and join them with workspace
+    args_str = workspace_str + "".join([str(arg) for arg in args])
 
     # Use 'replace' error handling to safely encode problematic Unicode characters
     # This replaces invalid characters with Unicode replacement character (U+FFFD)
@@ -3482,6 +3485,7 @@ async def use_llm_func_with_cache(
     response_format: Any | None = None,
     entity_extraction: bool = False,
     llm_cache_identity: Any | None = None,
+    workspace: str | None = None,
 ) -> tuple[str, int]:
     """Call LLM function with cache support and text sanitization
 
@@ -3564,6 +3568,7 @@ async def use_llm_func_with_cache(
             response_format_key,
             "\n<llm_identity>\n",
             llm_identity_key,
+            workspace=workspace,
         )
         # Generate cache key for this LLM call
         cache_key = generate_cache_key("default", cache_type, arg_hash)

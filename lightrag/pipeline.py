@@ -3697,6 +3697,7 @@ class _PipelineMixin:
                     _serialize_cache_variant({"type": "json_object"}),
                     _serialize_cache_variant(image_cache_metadata(normalized_images)),
                     "drawing",
+                    workspace=self.workspace,
                 )
                 cache_id = generate_cache_key("default", "analysis", args_hash)
                 cached = await handle_cache(
@@ -3900,6 +3901,7 @@ class _PipelineMixin:
                     _serialize_cache_variant({"type": "json_object"}),
                     _serialize_cache_variant([]),
                     kind,
+                    workspace=self.workspace,
                 )
                 cache_id = generate_cache_key("default", "analysis", args_hash)
                 cached = await handle_cache(

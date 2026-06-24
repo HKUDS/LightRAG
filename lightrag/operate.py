@@ -475,6 +475,7 @@ async def _summarize_descriptions(
         llm_response_cache=llm_response_cache,
         cache_type="summary",
         llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
+        workspace=global_config.get("workspace"),
     )
 
     # The LLM response is the only description path that bypasses
@@ -3492,6 +3493,7 @@ async def extract_entities(
             cache_keys_collector=cache_keys_collector,
             response_format=({"type": "json_object"} if use_json_extraction else None),
             llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
+            workspace=global_config.get("workspace"),
         )
 
         history = pack_user_ass_to_openai_messages(
@@ -3560,6 +3562,7 @@ async def extract_entities(
                     {"type": "json_object"} if use_json_extraction else None
                 ),
                 llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
+                workspace=global_config.get("workspace"),
             )
 
             # Process gleaning result with appropriate parser
@@ -3924,6 +3927,7 @@ async def kg_query(
         global_config.get("enable_content_headings", False),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
+        workspace=global_config.get("workspace"),
     )
 
     cached_result = await handle_cache(
@@ -4181,6 +4185,7 @@ async def extract_keywords_only(
         language,
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
+        workspace=global_config.get("workspace"),
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
@@ -5926,6 +5931,7 @@ async def naive_query(
         global_config.get("enable_content_headings", False),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
+        workspace=global_config.get("workspace"),
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
