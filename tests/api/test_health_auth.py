@@ -242,3 +242,27 @@ def test_api_key_mode_valid_key_unlocks_config(monkeypatch):
 
     assert resp.status_code == 200
     _assert_full_config(resp.json())
+
+
+# --------------------------------------------------------------------------- #
+# Combined mode (AUTH_ACCOUNTS + LIGHTRAG_API_KEY): either a valid JWT or a
+# valid X-API-Key unlocks the configuration; an anonymous probe gets liveness.
+# --------------------------------------------------------------------------- #
+def test_combined_mode_anonymous_gets_liveness_only(monkeypatch):
+    client = _build_client(monkeypatch, api_key="secret-key")
+    _set_auth_mode(monkeypatch, auth_configured=True)
+
+    resp = client.get("/health")
+
+    assert resp.status_code == 200
+    _assert_liveness_only(resp.json())
+
+
+def test_combined_mode_valid_api_key_unlocks_config(monkeypatch):
+    client = _build_client(monkeypatch, api_key="secret-key")
+    _set_auth_mode(monkeypatch, auth_configured=True)
+
+    resp = client.get("/health", headers={"X-API-Key": "secret-key"})
+
+    assert resp.status_code == 200
+    _assert_full_config(resp.json())
