@@ -1065,4 +1065,3 @@ const useLightrangeGraph = () => {
 }
 
 export default useLightrangeGraph
-

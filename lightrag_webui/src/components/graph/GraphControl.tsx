@@ -371,4 +371,3 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 }
 
 export default GraphControl
-

@@ -371,4 +371,3 @@ const LayoutsControl = () => {
 }
 
 export default LayoutsControl
-
