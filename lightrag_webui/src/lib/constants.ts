@@ -94,6 +94,23 @@ export const SiteInfo = {
   github: 'https://github.com/HKUDS/LightRAG'
 }
 
+// --- Graph layout performance thresholds ------------------------------------
+// Shared by the initial FA2 layout (GraphControl) and the manual worker
+// layouts (LayoutsControl) so the two cannot drift.
+
+// Above this node count, node labels are forced off regardless of the
+// showNodeLabel setting (the hovered node's label is still drawn by sigma's
+// hover layer). Rendering thousands of labels is a major large-graph slowdown.
+export const LABEL_RENDER_LIMIT = 2000
+
+// Above this node count, layout switches assign positions directly instead of
+// animating: animateNodes interpolates every node per frame on the main thread.
+export const ANIMATE_NODE_LIMIT = 5000
+
+// Time budget (ms) a relaxing worker layout runs before it is stopped. Scales
+// with graph size, capped so huge graphs don't run unbounded.
+export const workerBudgetMs = (order: number): number => Math.min(1500 + order / 10, 10000)
+
 // One-time system-suggested user prompts, injected once into userPromptHistory
 // (for both fresh installs and upgrades). See settings store version 20 migration.
 export const suggestedUserPrompts: string[] = [

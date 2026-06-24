@@ -13,7 +13,7 @@ import { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import Button from '@/components/ui/Button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/Command'
-import { controlButtonVariant } from '@/lib/constants'
+import { controlButtonVariant, ANIMATE_NODE_LIMIT, workerBudgetMs } from '@/lib/constants'
 import { useGraphStore } from '@/stores/graph'
 
 import { GripIcon, PlayIcon, PauseIcon } from 'lucide-react'
@@ -35,11 +35,6 @@ const WORKER_LAYOUTS: ReadonlySet<string> = new Set<WorkerLayoutName>([
   'Force Atlas'
 ])
 
-// Above this node count, layout SWITCHES assign positions directly instead of
-// animating: animateNodes interpolates every node per frame on the main
-// thread, which is far too heavy for large graphs.
-const ANIMATE_NODE_LIMIT = 5000
-
 // All three graphology supervisors share this API.
 interface LayoutSupervisor {
   start: () => void
@@ -47,8 +42,6 @@ interface LayoutSupervisor {
   kill: () => void
   isRunning: () => boolean
 }
-
-const workerBudgetMs = (order: number) => Math.min(1500 + order / 10, 10000)
 
 /**
  * Build a graphology layout supervisor bound to `graph`.
@@ -132,12 +125,9 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
         console.error('Error stopping layout:', error)
       }
       setRunning(false)
-      // Release the shared slot if we still own it (kills the stopped worker),
-      // so "activeLayoutSupervisor != null" reliably means a layout is running.
-      const store = useGraphStore.getState()
-      if (store.activeLayoutSupervisor === supervisorRef.current) {
-        store.setActiveLayoutSupervisor(null)
-      }
+      // Release the shared slot (kills the stopped worker) so
+      // "activeLayoutSupervisor != null" reliably means a layout is running.
+      useGraphStore.getState().releaseLayoutSupervisor(supervisorRef.current)
       if (reframe) {
         try {
           // Clear any custom bbox installed by node dragging, then refit.
@@ -229,19 +219,10 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
     start()
     return () => {
       clearTimer()
-      // Release the shared slot if we still own it; otherwise just kill our
-      // own (previous) supervisor. start() for the incoming layout runs AFTER
-      // this cleanup, so the slot still points at our supervisor here.
-      const store = useGraphStore.getState()
-      if (store.activeLayoutSupervisor === supervisorRef.current) {
-        store.setActiveLayoutSupervisor(null) // kills our supervisor
-      } else {
-        try {
-          supervisorRef.current?.kill()
-        } catch {
-          /* already dead */
-        }
-      }
+      // Release the slot if we still own it; otherwise just kill our own
+      // (previous) supervisor. start() for the incoming layout runs AFTER this
+      // cleanup, so the slot still points at our supervisor here.
+      useGraphStore.getState().releaseLayoutSupervisor(supervisorRef.current)
       supervisorRef.current = null
       setRunning(false)
     }

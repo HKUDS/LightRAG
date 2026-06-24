@@ -128,6 +128,32 @@ const parseEdgeWeight = (properties: Record<string, unknown> | undefined): numbe
 const safeNodeLabel = (labels: unknown, fallbackId: string): string =>
   Array.isArray(labels) ? labels.join(', ') : fallbackId
 
+// Add an undirected edge, working around a graphology 0.26.0 bug: the non-multi
+// duplicate check does a bare `adjacency[target]` object lookup, so a TARGET
+// node named like an Object.prototype property ('constructor', 'toString',
+// '__proto__', 'hasOwnProperty', ...) makes addEdge throw "already exists" even
+// though hasEdge correctly returns false. The broken check only runs on the
+// source side, and on an undirected graph the flipped edge is the same edge —
+// so adding it reversed recovers it. Returns the dynamic edge id, or null if
+// both orientations fail (e.g. both endpoints are prototype-named). Callers are
+// expected to have pre-checked hasEdge, so a real duplicate is never masked.
+const addUndirectedEdgeSafe = (
+  graph: UndirectedGraph,
+  source: string,
+  target: string,
+  attributes: Record<string, unknown>
+): string | null => {
+  try {
+    return graph.addEdge(source, target, attributes)
+  } catch {
+    try {
+      return graph.addEdge(target, source, attributes)
+    } catch {
+      return null
+    }
+  }
+}
+
 export type NodeType = {
   x: number
   y: number
@@ -300,23 +326,12 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
       label: (rawEdge.properties?.keywords as string | undefined) || undefined,
       originalWeight: parseEdgeWeight(rawEdge.properties)
     }
-    try {
-      rawEdge.dynamicId = graph.addEdge(rawEdge.source, rawEdge.target, attributes)
-    } catch {
-      // graphology 0.26.0 bug: the non-multi duplicate check does a bare
-      // `adjacency[target]` object lookup, so a TARGET node named like an
-      // Object.prototype property ('constructor', 'toString', '__proto__',
-      // 'hasOwnProperty', ...) makes addEdge throw "already exists" even
-      // though hasEdge correctly returns false. The broken check only runs
-      // on the source side, and on an undirected graph the flipped edge is
-      // the same edge — so adding it reversed recovers it.
-      try {
-        rawEdge.dynamicId = graph.addEdge(rawEdge.target, rawEdge.source, attributes)
-      } catch {
-        skippedEdges++
-        continue
-      }
+    const dynamicId = addUndirectedEdgeSafe(graph, rawEdge.source, rawEdge.target, attributes)
+    if (dynamicId === null) {
+      skippedEdges++
+      continue
     }
+    rawEdge.dynamicId = dynamicId
     rawGraph.edgeDynamicIdMap[rawEdge.dynamicId] = i
   }
 
@@ -1013,23 +1028,17 @@ const useLightrangeGraph = () => {
             originalWeight: weight // Store original weight for recalculation
             // no `type`: use the default (cheap straight-line) edge program
           }
-          try {
-            newEdge.dynamicId = sigmaGraph.addEdge(newEdge.source, newEdge.target, edgeAttributes)
-          } catch {
-            // Same graphology 0.26.0 quirk as in createSigmaGraph: a target
-            // node named like an Object.prototype property falsely trips the
-            // duplicate check. Flipped orientation is the same undirected edge.
-            try {
-              newEdge.dynamicId = sigmaGraph.addEdge(newEdge.target, newEdge.source, edgeAttributes)
-            } catch (edgeError) {
-              console.warn(
-                '[useLightragGraph] could not add expansion edge:',
-                newEdge.id,
-                edgeError
-              )
-              continue
-            }
+          const dynamicId = addUndirectedEdgeSafe(
+            sigmaGraph,
+            newEdge.source,
+            newEdge.target,
+            edgeAttributes
+          )
+          if (dynamicId === null) {
+            console.warn('[useLightragGraph] could not add expansion edge:', newEdge.id)
+            continue
           }
+          newEdge.dynamicId = dynamicId
 
           // Add the edge to the raw graph
           if (!rawGraph.getEdge(newEdge.id, false)) {

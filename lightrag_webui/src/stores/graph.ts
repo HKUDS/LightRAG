@@ -79,7 +79,10 @@ export class RawGraph {
   }
 
   buildDynamicMap = () => {
-    this.edgeDynamicIdMap = {}
+    // Null-prototype: dynamic ids are graph-generated, but keep this consistent
+    // with the null-proto node/edge id maps so a missing-key lookup never
+    // returns an inherited Object.prototype member.
+    this.edgeDynamicIdMap = Object.create(null) as Record<string, number>
     for (let i = 0; i < this.edges.length; i++) {
       const edge = this.edges[i]
       this.edgeDynamicIdMap[edge.dynamicId] = i
@@ -139,6 +142,11 @@ interface GraphState {
   // bug). Not reactive — consumers read it via getState().
   activeLayoutSupervisor: LayoutSupervisorHandle | null
   setActiveLayoutSupervisor: (next: LayoutSupervisorHandle | null) => void
+  // Release `handle` ONLY if it still owns the shared slot (clears it, which
+  // kills it); otherwise just kill `handle` directly because a newer layout
+  // already took the slot. Collapses the "release-if-owner-else-kill" dance
+  // that consumers (GraphControl, LayoutsControl) would otherwise each repeat.
+  releaseLayoutSupervisor: (handle: LayoutSupervisorHandle | null) => void
 
   // Legend color mapping methods
   setTypeColorMap: (typeColorMap: Map<string, string>) => void
@@ -211,6 +219,17 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       }
     }
     set({ activeLayoutSupervisor: next })
+  },
+  releaseLayoutSupervisor: (handle: LayoutSupervisorHandle | null) => {
+    if (get().activeLayoutSupervisor === handle) {
+      get().setActiveLayoutSupervisor(null) // clears the slot, killing `handle`
+    } else {
+      try {
+        handle?.kill()
+      } catch {
+        /* worker already terminated */
+      }
+    }
   },
 
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>

@@ -20,12 +20,6 @@ const isButtonPressed = (ev: MouseEvent | TouchEvent) => {
   return false
 }
 
-// Above this node count, node labels are forced off regardless of the
-// showNodeLabel setting; the hovered node's label is still drawn by sigma's
-// hover layer. Rendering thousands of labels (and running the label grid
-// every refresh) is one of the main large-graph slowdowns.
-const LABEL_RENDER_LIMIT = 2000
-
 const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) => {
   const sigma = useSigma<NodeType, EdgeType>()
   const registerEvents = useRegisterEvents<NodeType, EdgeType>()
@@ -89,19 +83,15 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
     // Time budget instead of an iteration count: the UI stays interactive
     // while the layout settles in the background, then we stop it.
-    const budgetMs = Math.min(1500 + sigmaGraph.order / 10, 10000)
+    const budgetMs = Constants.workerBudgetMs(sigmaGraph.order)
     const timer = window.setTimeout(() => {
       try {
         layout?.stop()
         console.log('FA2 worker layout stopped after budget')
-        // Release the shared slot if we still own it, so the store invariant
-        // "activeLayoutSupervisor != null => a layout is running" holds (the
-        // budget just stopped this one). Skip if a manually selected layout
-        // already took over.
-        const store = useGraphStore.getState()
-        if (store.activeLayoutSupervisor === layout) {
-          store.setActiveLayoutSupervisor(null) // kills the stopped `layout`
-        }
+        // Release the shared slot so the store invariant "activeLayoutSupervisor
+        // != null => a layout is running" holds (the budget just stopped this
+        // one); no-op for the slot if a manually selected layout already took over.
+        useGraphStore.getState().releaseLayoutSupervisor(layout)
         // Clear any stale custom bbox (set by node dragging) and refresh so
         // the camera normalization fits the settled layout.
         sigma.setCustomBBox(null)
@@ -113,19 +103,10 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
     return () => {
       window.clearTimeout(timer)
-      // Only release the shared slot if we still own it: a manually selected
-      // worker layout may have taken over (and already killed `layout`), and
-      // we must not kill that newer layout.
-      const store = useGraphStore.getState()
-      if (store.activeLayoutSupervisor === layout) {
-        store.setActiveLayoutSupervisor(null) // kills `layout`
-      } else {
-        try {
-          layout?.kill()
-        } catch {
-          /* worker already terminated */
-        }
-      }
+      // Release the slot if we still own it (a manually selected worker layout
+      // may have taken over and already killed `layout`); otherwise just kill
+      // our own supervisor without disturbing the newer layout.
+      useGraphStore.getState().releaseLayoutSupervisor(layout)
     }
   }, [sigma, sigmaGraph])
 
@@ -254,7 +235,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
     const graph = sigma.getGraph()
     const graphOrder = graph ? graph.order : 0
-    const effectiveRenderLabels = renderLabels && graphOrder <= LABEL_RENDER_LIMIT
+    const effectiveRenderLabels = renderLabels && graphOrder <= Constants.LABEL_RENDER_LIMIT
 
     const _focusedNode = focusedNode || selectedNode
     const _focusedEdge = focusedEdge || selectedEdge
