@@ -18,8 +18,8 @@ const SettingsDisplay = () => {
   return (
     <div className="absolute bottom-4 left-[calc(1rem+2.5rem)] flex items-center gap-2 text-xs text-gray-400">
       <div>{t('graphPanel.sideBar.settings.depth')}: {graphQueryMaxDepth}</div>
-      <div>node: {graphNodeCount}</div>
-      <div>edge: {graphEdgeCount}</div>
+      <div>{t('graphPanel.sideBar.settings.node')}: {graphNodeCount}</div>
+      <div>{t('graphPanel.sideBar.settings.edge')}: {graphEdgeCount}</div>
     </div>
   )
 }
