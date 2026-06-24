@@ -414,6 +414,15 @@ def _materialize_assets(
     for spec in assets:
         target_name = _allocate_unique_name(spec.suggested_name, used_names)
         target_path = assets_dir / target_name
+        try:
+            target_path.resolve().relative_to(assets_dir.resolve())
+        except ValueError:
+            logger.warning(
+                "[sidecar] unsafe asset target for ref=%s (%s); skipping",
+                spec.ref,
+                spec.suggested_name,
+            )
+            continue
         if isinstance(spec.source, (str, Path)):
             src_path = Path(spec.source)
             if not src_path.exists():
@@ -453,6 +462,7 @@ def _materialize_assets(
 
 def _allocate_unique_name(suggested: str, used: set[str]) -> str:
     """Make ``suggested`` unique within ``used``: ``foo.png`` → ``foo-2.png``."""
+    suggested = _safe_asset_filename(suggested)
     if suggested not in used:
         return suggested
     stem = Path(suggested).stem
@@ -463,6 +473,13 @@ def _allocate_unique_name(suggested: str, used: set[str]) -> str:
         if cand not in used:
             return cand
         n += 1
+
+
+def _safe_asset_filename(suggested: str) -> str:
+    """Collapse parser-suggested asset names to a safe filename."""
+    name = Path(str(suggested).replace("\\", "/")).name
+    name = "".join(c for c in name.strip() if ord(c) >= 32 and c != "\x7f").strip(".")
+    return name or "asset"
 
 
 def _render_block_content(

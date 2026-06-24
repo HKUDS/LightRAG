@@ -211,18 +211,29 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                             logger.warning(f"Token auto-renew failed: {e}")
                 # ========== End of Token Auto-Renewal Logic ==========
 
-                # Accept guest token if no auth is configured
+                # A token only authenticates when it matches the configured auth mode:
+                #   - password auth (AUTH_ACCOUNTS set): accept non-guest user tokens
+                #   - fully open (no AUTH_ACCOUNTS, no API key): accept guest tokens
+                # In the API-key-only profile (API key set, no AUTH_ACCOUNTS) a guest
+                # token must NOT authenticate: anyone can obtain one (via /auth-status,
+                # /login, or by signing it with the public default secret), so honoring
+                # it here would let a forged guest token bypass the X-API-Key check
+                # below (GHSA-f4vv-55c2-5789 / GHSA-xr5c-v5r6-c9f9). Instead, fall
+                # through so the API key stays mandatory in that mode.
                 if not auth_configured and token_info.get("role") == "guest":
+                    if not api_key_configured:
+                        return
+                    # API-key-only mode: ignore the guest token; the X-API-Key check
+                    # below is the sole authority. Fall through (no return, no raise).
+                elif auth_configured and token_info.get("role") != "guest":
+                    # Accept non-guest token if password auth is configured
                     return
-                # Accept non-guest token if auth is configured
-                if auth_configured and token_info.get("role") != "guest":
-                    return
-
-                # Token validation failed, immediately return 401 error
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token. Please login again.",
-                )
+                else:
+                    # Token present but not valid for the configured auth mode.
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid token. Please login again.",
+                    )
             except HTTPException as e:
                 # If already a 401 error, re-raise it
                 if e.status_code == status.HTTP_401_UNAUTHORIZED:
