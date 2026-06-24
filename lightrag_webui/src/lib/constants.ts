@@ -107,6 +107,14 @@ export const LABEL_RENDER_LIMIT = 2000
 // animating: animateNodes interpolates every node per frame on the main thread.
 export const ANIMATE_NODE_LIMIT = 5000
 
+// Edge-count threshold that switches the graph between "small-graph experience"
+// and "large-graph performance". At or below it edges render as curves and edge
+// events (hover/click picking) follow the user setting; above it edges render
+// straight and edge events are fully disabled (no picking buffer allocated).
+// Shared by GraphControl (defaultEdgeType), GraphViewer (enableEdgeEvents
+// gating) and Settings (greying the Edge Events menu item) so they cannot drift.
+export const EDGE_PERF_LIMIT = 5000
+
 // Time budget (ms) a relaxing worker layout runs before it is stopped. Scales
 // with graph size, capped so huge graphs don't run unbounded.
 export const workerBudgetMs = (order: number): number => Math.min(1500 + order / 10, 10000)

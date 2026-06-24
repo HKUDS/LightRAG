@@ -521,6 +521,9 @@ const useLightrangeGraph = () => {
             // Set graph to store
             state.setSigmaGraph(emptyGraph)
             state.setRawGraph(null)
+            // The placeholder carries one synthetic node; the graph is logically
+            // empty, so override the reactive counts back to 0/0.
+            state.setGraphCounts(0, 0)
 
             // Still mark graph as empty for other logic
             state.setGraphIsEmpty(true)
@@ -1059,6 +1062,11 @@ const useLightrangeGraph = () => {
         // Reset search engine to force rebuild
         useGraphStore.getState().resetSearchEngine()
 
+        // The graph was mutated in place (addNode/addEdge), which does NOT
+        // re-notify the store. Refresh the reactive counts so the status bar and
+        // the edge-count adaptive behavior react to the new size.
+        useGraphStore.getState().setGraphCounts(sigmaGraph.order, sigmaGraph.size)
+
         // Update sizes for all nodes and edges
         updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, maxDegree)
         updateEdgeSizes(sigmaGraph, minWeight, maxWeight)
@@ -1165,6 +1173,12 @@ const useLightrangeGraph = () => {
 
         // Reset search engine to force rebuild
         useGraphStore.getState().resetSearchEngine()
+
+        // In-place dropNode/dropEdge does NOT re-notify the store; refresh the
+        // reactive counts so the status bar and edge-count adaptive behavior
+        // react to the smaller graph (and auto-recover curves/edge events when
+        // the edge count drops back to <= EDGE_PERF_LIMIT).
+        useGraphStore.getState().setGraphCounts(sigmaGraph.order, sigmaGraph.size)
 
         // Show notification if we deleted more than just the selected node
         if (nodesToDelete.size > 1) {
