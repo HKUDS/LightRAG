@@ -21,6 +21,7 @@ import json
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 
@@ -139,7 +140,10 @@ class _FakeAsyncClient:
     ) -> _FakeResponse:
         recorder = _CURRENT["recorder"]
         recorder.get_calls.append({"url": url, "params": params})
-        if POLL_PATH.format(task_id=recorder.task_id) in url:
+        # Mirror production: the client encodes the task id into a single path
+        # segment, so route on the encoded form (a no-op for URL-safe ids).
+        encoded = quote(recorder.task_id, safe="")
+        if POLL_PATH.format(task_id=encoded) in url:
             if recorder.poll_status_code != 200:
                 return _FakeResponse(
                     status_code=recorder.poll_status_code,
@@ -152,7 +156,7 @@ class _FakeAsyncClient:
             if recorder.terminal_status != "success":
                 payload["error_message"] = "synthetic-failure"
             return _FakeResponse(status_code=200, text=json_dump(payload))
-        if RESULT_PATH.format(task_id=recorder.task_id) in url:
+        if RESULT_PATH.format(task_id=encoded) in url:
             recorder.result_calls += 1
             if recorder.result_status_code != 200:
                 return _FakeResponse(
@@ -442,6 +446,36 @@ async def test_docling_client_result_http_error_preserves_response_body(
     assert "Docling result task-abc download" in message
     assert "HTTP 500" in message
     assert "zip artifact missing" in message
+
+
+async def test_docling_client_encodes_task_id_into_url_path_segment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    # Security regression (CWE-116): the poll/result task id is service-returned.
+    # A crafted value with ``/`` / ``?`` / ``..`` must be percent-encoded into a
+    # single path segment so it cannot escape ``/v1/status/poll/{id}`` or append
+    # a query string to the request the client issues.
+    malicious = "../admin?x=1"
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+        task_id=malicious,
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
+
+    poll_url = recorder.get_calls[0]["url"]
+    result_url = recorder.get_calls[-1]["url"]
+    for url in (poll_url, result_url):
+        # ``..`` survives (dot is unreserved) but the separators that grant
+        # request-structure control are neutralized.
+        assert "..%2Fadmin%3Fx%3D1" in url
+        assert "/admin" not in url
+        assert "?x=1" not in url
 
 
 async def test_docling_client_ocr_lang_omitted_when_empty(
