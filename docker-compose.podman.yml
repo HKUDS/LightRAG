@@ -33,5 +33,8 @@ services:
       WORKING_DIR: "/app/data/rag_storage"
       INPUT_DIR: "/app/data/inputs"
       PROMPT_DIR: "/app/data/prompts"
+      # The container must listen on 0.0.0.0 to be reachable via the published port.
+      # SECURITY: set LIGHTRAG_API_KEY or AUTH_ACCOUNTS in .env so the exposed
+      # server is authenticated — without it every endpoint is publicly accessible.
       HOST: "0.0.0.0"
       PORT: "9621"
