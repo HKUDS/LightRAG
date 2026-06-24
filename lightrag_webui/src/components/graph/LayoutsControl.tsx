@@ -102,14 +102,24 @@ const buildSupervisor = (name: WorkerLayoutName, graph: unknown): LayoutSupervis
 const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) => {
   const sigma = useSigma()
   const { t } = useTranslation()
+  // Rebind when the underlying graph is replaced (refresh / new label), so a
+  // running layout never keeps a supervisor bound to the detached old graph.
+  const sigmaGraph = useGraphStore.use.sigmaGraph()
   const [running, setRunning] = useState(false)
   const supervisorRef = useRef<LayoutSupervisor | null>(null)
   const stopTimerRef = useRef<number | null>(null)
+  // The deferred supervisor.start() timer (see start()); tracked so a pause
+  // within the defer window cancels the pending start instead of being undone.
+  const startTimerRef = useRef<number | null>(null)
 
   const clearTimer = useCallback(() => {
     if (stopTimerRef.current !== null) {
       window.clearTimeout(stopTimerRef.current)
       stopTimerRef.current = null
+    }
+    if (startTimerRef.current !== null) {
+      window.clearTimeout(startTimerRef.current)
+      startTimerRef.current = null
     }
   }, [])
 
@@ -144,6 +154,10 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
   const start = useCallback(() => {
     const graph = useGraphStore.getState().sigmaGraph
     if (!graph || graph.order === 0) return
+
+    // Cancel any pending start/stop timers from a previous cycle before
+    // (re)building, so a stale budget timer can't stop this fresh run.
+    clearTimer()
 
     // (Re)build the supervisor bound to the CURRENT graph.
     try {
@@ -183,7 +197,8 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
     // (their start() just posts to a real worker and returns), but the small
     // delay is irrelevant for them too.
     setRunning(true)
-    window.setTimeout(() => {
+    startTimerRef.current = window.setTimeout(() => {
+      startTimerRef.current = null
       // Bail if the user already switched layouts before we fired.
       if (supervisorRef.current !== supervisor) return
       try {
@@ -193,15 +208,18 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
         setRunning(false)
         return
       }
-      clearTimer()
       stopTimerRef.current = window.setTimeout(() => stop(true), workerBudgetMs(graph.order))
     }, 50)
   }, [layoutName, sigma, clearTimer, stop])
 
   // Auto-run when this worker layout becomes active; clean up on
-  // change/unmount. Keyed on layoutName only: supervisorRef is updated INSIDE
-  // start() (which runs after this effect's cleanup), so cleanup correctly
-  // kills the PREVIOUS layout's supervisor rather than the incoming one.
+  // change/unmount. Keyed on layoutName + sigmaGraph: when the graph is
+  // replaced (refresh / new label) we must tear down the supervisor bound to
+  // the old graph and rebuild against the new one, otherwise `running` and the
+  // budget timer keep pointing at a dead supervisor on a detached graph.
+  // supervisorRef is updated INSIDE start() (which runs after this effect's
+  // cleanup), so cleanup correctly kills the PREVIOUS supervisor, not the
+  // incoming one.
   useEffect(() => {
     // Intentional: mounting this control means the layout was selected, so we
     // auto-run it (start() spins up the worker supervisor and flips `running`).
@@ -228,12 +246,12 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
       setRunning(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layoutName])
+  }, [layoutName, sigmaGraph])
 
   return (
     <Button
       size="icon"
-      onClick={() => (running ? stop(true) : start())}
+      onClick={() => (running ? stop(false) : start())}
       tooltip={
         running
           ? t('graphPanel.sideBar.layoutsControl.stopAnimation')

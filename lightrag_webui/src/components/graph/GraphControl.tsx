@@ -94,6 +94,14 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       try {
         layout?.stop()
         console.log('FA2 worker layout stopped after budget')
+        // Release the shared slot if we still own it, so the store invariant
+        // "activeLayoutSupervisor != null => a layout is running" holds (the
+        // budget just stopped this one). Skip if a manually selected layout
+        // already took over.
+        const store = useGraphStore.getState()
+        if (store.activeLayoutSupervisor === layout) {
+          store.setActiveLayoutSupervisor(null) // kills the stopped `layout`
+        }
         // Clear any stale custom bbox (set by node dragging) and refresh so
         // the camera normalization fits the settled layout.
         sigma.setCustomBBox(null)
