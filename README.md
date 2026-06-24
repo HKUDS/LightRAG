@@ -142,7 +142,12 @@ cd ..
 # Obtain the env.example file by downloading it from the GitHub repository root
 # or by copying it from a local source checkout.
 cp env.example .env  # Update the .env with your LLM and embedding configurations
-# Launch the server
+# Launch the server. It binds to all interfaces (0.0.0.0) by default.
+# SECURITY: before exposing it on a network, configure authentication in .env
+# (LIGHTRAG_API_KEY, or AUTH_ACCOUNTS together with TOKEN_SECRET), or bind to
+# 127.0.0.1 for local-only access; without auth every endpoint is public.
+# Note: the Ollama-compatible /api/* routes stay open by default for client
+# compatibility; set WHITELIST_PATHS=/health to require auth on them too.
 lightrag-server
 ```
 
