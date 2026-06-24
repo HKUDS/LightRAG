@@ -126,6 +126,22 @@ class TestWildcardCorsDisablesCredentials:
         assert resp.headers.get("access-control-allow-origin") == "*"
         assert "access-control-allow-credentials" not in resp.headers
 
+    def test_wildcard_mixed_with_explicit_origin_no_credentials(self, monkeypatch):
+        # Starlette treats any list containing "*" as allow-all, so a mixed config
+        # is still allow-all and must NOT enable credentials.
+        client = _build_client("*,https://app.example.com", monkeypatch)
+        resp = _preflight(client, "https://evil.example.com")
+
+        assert "access-control-allow-credentials" not in resp.headers
+
+    def test_wildcard_trailing_comma_no_credentials(self, monkeypatch):
+        # A trailing comma yields ["*", ""]; the empty entry is dropped and the
+        # wildcard still disables credentials.
+        client = _build_client("*,", monkeypatch)
+        resp = _preflight(client, "https://evil.example.com")
+
+        assert "access-control-allow-credentials" not in resp.headers
+
 
 class TestExplicitAllowlistEnablesCredentials:
     """An explicit origin allowlist reflects the origin and allows credentials."""
@@ -145,5 +161,6 @@ class TestExplicitAllowlistEnablesCredentials:
 
         # A non-allowlisted origin is never echoed back.
         assert (
-            resp.headers.get("access-control-allow-origin") != "https://evil.example.com"
+            resp.headers.get("access-control-allow-origin")
+            != "https://evil.example.com"
         )

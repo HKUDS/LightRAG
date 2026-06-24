@@ -1361,12 +1361,15 @@ def create_app(args):
 
     def get_cors_origins():
         """Get allowed origins from global_args
-        Returns a list of allowed origins, defaults to ["*"] if not set
+        Returns a list of allowed origins, defaults to ["*"] if not set.
+        Empty entries (e.g. from a trailing comma) are dropped.
         """
         origins_str = global_args.cors_origins
         if origins_str == "*":
             return ["*"]
-        return [origin.strip() for origin in origins_str.split(",")]
+        origins = [origin.strip() for origin in origins_str.split(",")]
+        origins = [origin for origin in origins if origin]
+        return origins or ["*"]
 
     # Normalize scope["path"] for proxy-strip deployments so the WebUI
     # Mount (and any other Mount) routes correctly. Added before CORS so it
@@ -1386,7 +1389,11 @@ def create_app(args):
     # credentials to keep the configuration spec-compliant and avoid the permissive
     # "reflect any origin with credentials" behavior that Starlette would otherwise
     # apply to cookie-bearing cross-origin requests.
-    allow_credentials = cors_origins != ["*"]
+    #
+    # Starlette treats ANY allow_origins list that contains "*" as allow-all, so we
+    # must test membership rather than exact equality: a mixed config such as
+    # "*,https://app.example.com" is still allow-all and must not enable credentials.
+    allow_credentials = "*" not in cors_origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
