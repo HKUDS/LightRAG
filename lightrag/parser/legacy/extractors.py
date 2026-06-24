@@ -167,6 +167,17 @@ def _decode_text(file_bytes: bytes) -> str:
     return content
 
 
+def _strip_null_bytes(text: str) -> str:
+    """Remove NUL characters that cause PostgreSQL encoding errors.
+
+    PDF extractors (pypdf) can produce text containing ``\\x00`` bytes,
+    which PostgreSQL rejects with ``invalid byte sequence for encoding
+    "UTF8": 0x00``.  Stripping them is safe — NUL carries no semantic
+    content in natural-language text.
+    """
+    return text.replace("\x00", "")
+
+
 def extract_text(
     file_bytes: bytes, suffix: str, *, pdf_password: str | None = None
 ) -> str:
@@ -179,7 +190,7 @@ def extract_text(
     suffix = suffix.lower().lstrip(".")
     extractor = _BINARY_EXTRACTORS.get(suffix)
     if extractor is _extract_pdf_pypdf:
-        return _extract_pdf_pypdf(file_bytes, pdf_password)
+        return _strip_null_bytes(_extract_pdf_pypdf(file_bytes, pdf_password))
     if extractor is not None:
-        return extractor(file_bytes)
-    return _decode_text(file_bytes)
+        return _strip_null_bytes(extractor(file_bytes))
+    return _strip_null_bytes(_decode_text(file_bytes))

@@ -119,3 +119,14 @@ async def test_legacy_parse_passes_pdf_password_from_env(
 
     assert seen == {"suffix": "pdf", "pdf_password": "s3cret"}
     assert result.content == "decrypted text"
+
+
+async def test_extract_text_strips_null_bytes(tmp_path):
+    """Null bytes from PDF extractors must be stripped to avoid PostgreSQL
+    ``invalid byte sequence for encoding "UTF8": 0x00`` errors (#3308)."""
+    from lightrag.parser.legacy.extractors import _strip_null_bytes
+
+    assert _strip_null_bytes("hello\x00world") == "helloworld"
+    assert _strip_null_bytes("\x00\x00") == ""
+    assert _strip_null_bytes("no nulls") == "no nulls"
+    assert _strip_null_bytes("") == ""
