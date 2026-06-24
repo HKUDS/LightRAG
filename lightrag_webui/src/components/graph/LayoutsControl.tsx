@@ -64,18 +64,27 @@ const buildSupervisor = (name: WorkerLayoutName, graph: unknown): LayoutSupervis
         settings: forceAtlas2.inferSettings(order)
       }) as unknown as LayoutSupervisor
     case 'Force Directed':
+      // Tuned for CONTINUOUS worker relaxation (not the old bounded-compute +
+      // animateNodes tween): higher inertia (more damping) and a much smaller
+      // maxMove keep the live simulation from overshooting/oscillating. The old
+      // maxMove: 100 (~100x the node coordinate scale) caused violent bouncing
+      // when raw simulation ticks were rendered directly.
       return new ForceSupervisor(graph as never, {
         settings: {
           attraction: 0.0003,
           repulsion: 0.02,
           gravity: 0.02,
-          inertia: 0.4,
-          maxMove: 100
+          inertia: 0.8,
+          maxMove: 5
         }
       }) as unknown as LayoutSupervisor
     case 'Noverlaps':
+      // margin bumped 5 -> 10: a larger collision threshold makes Noverlap push
+      // more "too close" nodes apart, so it visibly de-clutters instead of doing
+      // almost nothing after the size-aware initial FA2 layout already spread
+      // the graph.
       return new NoverlapSupervisor(graph as never, {
-        settings: { margin: 5, expansion: 1.1, gridSize: 1, ratio: 1, speed: 3 }
+        settings: { margin: 10, expansion: 1.1, gridSize: 1, ratio: 1, speed: 3 }
       }) as unknown as LayoutSupervisor
     default:
       return null
