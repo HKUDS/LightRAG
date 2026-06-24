@@ -2,7 +2,7 @@ import { useRegisterEvents, useSetSettings, useSigma } from '@react-sigma/core'
 import { AbstractGraph } from 'graphology-types'
 import forceAtlas2 from 'graphology-layout-forceatlas2'
 import FA2LayoutSupervisor from 'graphology-layout-forceatlas2/worker'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 import { EdgeType, NodeType } from '@/hooks/useLightragGraph'
 import useIsDarkMode from '@/hooks/useIsDarkMode'
@@ -38,6 +38,11 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const focusedEdge = useGraphStore.use.focusedEdge()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
 
+  // The graph the initial FA2 layout has already been run for. Used to run the
+  // layout once PER GRAPH, not once per sigma instance (a theme change rebuilds
+  // the instance and re-runs the bind effect with the SAME graph).
+  const laidOutGraphRef = useRef<unknown>(null)
+
   /**
    * When component mounts or the graph changes
    * => bind graph to sigma and run the initial layout
@@ -65,6 +70,14 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     }
 
     if (sigmaGraph.order === 0) return
+
+    // Run the initial layout once PER GRAPH. A theme toggle recreates the sigma
+    // instance (settings change -> SigmaContainer rebuild) and re-runs this
+    // effect with the SAME graph, which already carries settled positions —
+    // re-running FA2 there would replay the relaxation animation on every theme
+    // switch. Only (re)bind in that case; skip the layout.
+    if (laidOutGraphRef.current === sigmaGraph) return
+    laidOutGraphRef.current = sigmaGraph
 
     let layout: { start: () => void; stop: () => void; kill: () => void } | null = null
     try {
