@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(./scripts/test.sh)",
+      "Bash(./scripts/test.sh *)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
