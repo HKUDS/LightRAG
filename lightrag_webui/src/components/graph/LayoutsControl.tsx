@@ -2,18 +2,19 @@ import { useSigma } from '@react-sigma/core'
 import { animateNodes } from 'sigma/utils'
 import { useLayoutCirclepack } from '@react-sigma/layout-circlepack'
 import { useLayoutCircular } from '@react-sigma/layout-circular'
-import { LayoutHook, LayoutWorkerHook, WorkerLayoutControlProps } from '@react-sigma/layout-core'
-import { useLayoutForce, useWorkerLayoutForce } from '@react-sigma/layout-force'
-import { useLayoutForceAtlas2, useWorkerLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
-import { useLayoutNoverlap, useWorkerLayoutNoverlap } from '@react-sigma/layout-noverlap'
 import { useLayoutRandom } from '@react-sigma/layout-random'
+import { LayoutHook } from '@react-sigma/layout-core'
+import forceAtlas2 from 'graphology-layout-forceatlas2'
+import FA2Supervisor from 'graphology-layout-forceatlas2/worker'
+import NoverlapSupervisor from 'graphology-layout-noverlap/worker'
+import ForceSupervisor from 'graphology-layout-force/worker'
 import { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 
 import Button from '@/components/ui/Button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/Command'
 import { controlButtonVariant } from '@/lib/constants'
-import { useSettingsStore } from '@/stores/settings'
+import { useGraphStore } from '@/stores/graph'
 
 import { GripIcon, PlayIcon, PauseIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -26,165 +27,197 @@ type LayoutName =
   | 'Force Directed'
   | 'Force Atlas'
 
-// Extend WorkerLayoutControlProps to include mainLayout
-interface ExtendedWorkerLayoutControlProps extends WorkerLayoutControlProps {
-  mainLayout: LayoutHook;
+// The layouts that relax over time and run in a web worker.
+type WorkerLayoutName = 'Noverlaps' | 'Force Directed' | 'Force Atlas'
+const WORKER_LAYOUTS: ReadonlySet<string> = new Set<WorkerLayoutName>([
+  'Noverlaps',
+  'Force Directed',
+  'Force Atlas'
+])
+
+// Above this node count, layout SWITCHES assign positions directly instead of
+// animating: animateNodes interpolates every node per frame on the main
+// thread, which is far too heavy for large graphs.
+const ANIMATE_NODE_LIMIT = 5000
+
+// All three graphology supervisors share this API.
+interface LayoutSupervisor {
+  start: () => void
+  stop: () => void
+  kill: () => void
+  isRunning: () => boolean
 }
 
-const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerLayoutControlProps) => {
+const workerBudgetMs = (order: number) => Math.min(1500 + order / 10, 10000)
+
+/**
+ * Build a graphology layout supervisor bound to `graph`.
+ *
+ * IMPORTANT: this binds to the graph that is passed in (the live graph from
+ * the store). The @react-sigma worker hooks (useWorkerLayoutForceAtlas2 etc.)
+ * construct their supervisor with `sigma.getGraph()` captured in an effect
+ * whose dependency list does NOT include the graph, so they stay bound to the
+ * empty initial graph that exists at mount. The real graph is swapped in later
+ * via `sigma.setGraph()` (in GraphControl), which does not re-run that effect
+ * -- so starting those hooks ran the algorithm on a stale empty graph and the
+ * visible graph never moved. Building the supervisor here, against the current
+ * graph, is what actually makes these layouts work.
+ */
+const buildSupervisor = (name: WorkerLayoutName, graph: unknown): LayoutSupervisor | null => {
+  const order = (graph as { order: number }).order
+  switch (name) {
+    case 'Force Atlas':
+      return new FA2Supervisor(graph as never, {
+        settings: forceAtlas2.inferSettings(order)
+      }) as unknown as LayoutSupervisor
+    case 'Force Directed':
+      return new ForceSupervisor(graph as never, {
+        settings: {
+          attraction: 0.0003,
+          repulsion: 0.02,
+          gravity: 0.02,
+          inertia: 0.4,
+          maxMove: 100
+        }
+      }) as unknown as LayoutSupervisor
+    case 'Noverlaps':
+      return new NoverlapSupervisor(graph as never, {
+        settings: { margin: 5, expansion: 1.1, gridSize: 1, ratio: 1, speed: 3 }
+      }) as unknown as LayoutSupervisor
+    default:
+      return null
+  }
+}
+
+/**
+ * Play/pause control for the worker-backed layouts.
+ *
+ * Self-contained: it builds and owns the supervisor (bound to the live store
+ * graph), auto-runs when its layout is selected, runs for a size-scaled time
+ * budget, then stops and reframes the camera. The previous implementation ran
+ * the SYNCHRONOUS layout (mainLayout.positions()) every 200ms in a setInterval
+ * -- for ForceAtlas2 without Barnes-Hut that is O(V^2) on the main thread,
+ * five times a second.
+ */
+const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) => {
   const sigma = useSigma()
-  // Use local state to track animation running status
-  const [isRunning, setIsRunning] = useState(false)
-  // Timer reference for animation
-  const animationTimerRef = useRef<number | null>(null)
   const { t } = useTranslation()
+  const [running, setRunning] = useState(false)
+  const supervisorRef = useRef<LayoutSupervisor | null>(null)
+  const stopTimerRef = useRef<number | null>(null)
 
-  // Function to update node positions using the layout algorithm
-  const updatePositions = useCallback(() => {
-    if (!sigma) return
-
-    try {
-      const graph = sigma.getGraph()
-      if (!graph || graph.order === 0) return
-
-      // Use mainLayout to get positions, similar to refreshLayout function
-      // console.log('Getting positions from mainLayout')
-      const positions = mainLayout.positions()
-
-      // Animate nodes to new positions
-      // console.log('Updating node positions with layout algorithm')
-      animateNodes(graph, positions, { duration: 300 }) // Reduced duration for more frequent updates
-    } catch (error) {
-      console.error('Error updating positions:', error)
-      // Stop animation if there's an error
-      if (animationTimerRef.current) {
-        window.clearInterval(animationTimerRef.current)
-        animationTimerRef.current = null
-        setIsRunning(false) // inside setInterval callback, not in effect body
-      }
+  const clearTimer = useCallback(() => {
+    if (stopTimerRef.current !== null) {
+      window.clearTimeout(stopTimerRef.current)
+      stopTimerRef.current = null
     }
-  }, [sigma, mainLayout])
+  }, [])
 
-  // Improved click handler that uses our own animation timer
-  const handleClick = useCallback(() => {
-    if (isRunning) {
-      // Stop the animation
-      console.log('Stopping layout animation')
-      if (animationTimerRef.current) {
-        window.clearInterval(animationTimerRef.current)
-        animationTimerRef.current = null
-      }
-
-      // Try to kill the layout algorithm if it's running
+  const stop = useCallback(
+    (reframe: boolean) => {
+      clearTimer()
       try {
-        if (typeof layout.kill === 'function') {
-          layout.kill()
-          console.log('Layout algorithm killed')
-        } else if (typeof layout.stop === 'function') {
-          layout.stop()
-          console.log('Layout algorithm stopped')
-        }
+        supervisorRef.current?.stop()
       } catch (error) {
-        console.error('Error stopping layout algorithm:', error)
+        console.error('Error stopping layout:', error)
       }
-
-      setIsRunning(false)
-    } else {
-      // Start the animation
-      console.log('Starting layout animation')
-
-      // Initial position update
-      updatePositions()
-
-      // Set up interval for continuous updates
-      animationTimerRef.current = window.setInterval(() => {
-        updatePositions()
-      }, 200) // Reduced interval to create overlapping animations for smoother transitions
-
-      setIsRunning(true)
-
-      // Set a timeout to automatically stop the animation after 3 seconds
-      setTimeout(() => {
-        if (animationTimerRef.current) {
-          console.log('Auto-stopping layout animation after 3 seconds')
-          window.clearInterval(animationTimerRef.current)
-          animationTimerRef.current = null
-          setIsRunning(false)
-
-          // Try to stop the layout algorithm
-          try {
-            if (typeof layout.kill === 'function') {
-              layout.kill()
-            } else if (typeof layout.stop === 'function') {
-              layout.stop()
-            }
-          } catch (error) {
-            console.error('Error stopping layout algorithm:', error)
-          }
+      setRunning(false)
+      useGraphStore.getState().setIsLayoutComputing(false)
+      if (reframe) {
+        try {
+          // Clear any custom bbox installed by node dragging, then refit.
+          sigma.setCustomBBox(null)
+          sigma.getCamera().animatedReset()
+        } catch (error) {
+          console.error('Error reframing after layout:', error)
         }
-      }, 3000)
-    }
-  }, [isRunning, layout, updatePositions])
+      }
+    },
+    [clearTimer, sigma]
+  )
 
-  /**
-   * Init component when Sigma or component settings change.
-   */
+  const start = useCallback(() => {
+    const graph = useGraphStore.getState().sigmaGraph
+    if (!graph || graph.order === 0) return
+
+    // (Re)build the supervisor bound to the CURRENT graph.
+    try {
+      supervisorRef.current?.kill()
+    } catch {
+      /* no live supervisor yet */
+    }
+    const supervisor = buildSupervisor(layoutName, graph)
+    supervisorRef.current = supervisor
+    if (!supervisor) return
+
+    // A custom bbox frozen by dragging breaks coordinate normalization and
+    // makes a relaxing layout look like it collapses; clear it before running.
+    try {
+      sigma.setCustomBBox(null)
+    } catch {
+      /* ignore */
+    }
+
+    // Show the overlay synchronously, but DEFER supervisor.start() so the
+    // browser actually paints first. Force's runFrame() runs sync on the
+    // main thread (O(V^2) at 70k+ nodes = multi-second block); rAF won't
+    // work here because rAF callbacks fire BEFORE the next paint, so the
+    // block lands before the overlay ever shows. setTimeout with a small
+    // delay guarantees at least one paint happens first. FA2/Noverlap
+    // don't strictly need this (their start() just posts to a real worker
+    // and returns), but the small delay is irrelevant for them too.
+    useGraphStore.getState().setIsLayoutComputing(true)
+    setRunning(true)
+    window.setTimeout(() => {
+      // Bail if the user already switched layouts before we fired.
+      if (supervisorRef.current !== supervisor) return
+      try {
+        supervisor.start()
+      } catch (error) {
+        console.error('Error starting layout:', error)
+        useGraphStore.getState().setIsLayoutComputing(false)
+        setRunning(false)
+        return
+      }
+      clearTimer()
+      stopTimerRef.current = window.setTimeout(() => stop(true), workerBudgetMs(graph.order))
+    }, 50)
+  }, [layoutName, sigma, clearTimer, stop])
+
+  // Auto-run when this worker layout becomes active; clean up on
+  // change/unmount. Keyed on layoutName only: supervisorRef is updated INSIDE
+  // start() (which runs after this effect's cleanup), so cleanup correctly
+  // kills the PREVIOUS layout's supervisor rather than the incoming one.
   useEffect(() => {
-    if (!sigma) {
-      console.log('No sigma instance available')
-      return
-    }
-
-    // Auto-run if specified
-    let timeout: number | null = null
-    if (autoRunFor !== undefined && autoRunFor > -1 && sigma.getGraph().order > 0) {
-      console.log('Auto-starting layout animation')
-
-      updatePositions() // transitively calls setIsRunning on error; intentional here
-
-      // Set up interval for continuous updates
-      animationTimerRef.current = window.setInterval(() => {
-        updatePositions()
-      }, 200) // Reduced interval to create overlapping animations for smoother transitions
-
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setIsRunning(true) // deliberate: syncing UI to the interval we just started
-
-      // Set a timeout to stop it if autoRunFor > 0
-      if (autoRunFor > 0) {
-        timeout = window.setTimeout(() => {
-          console.log('Auto-stopping layout animation after timeout')
-          if (animationTimerRef.current) {
-            window.clearInterval(animationTimerRef.current)
-            animationTimerRef.current = null
-          }
-          setIsRunning(false)
-        }, autoRunFor)
-      }
-    }
-
-    // Cleanup function
+    start()
     return () => {
-      // console.log('Cleaning up WorkerLayoutControl')
-      if (animationTimerRef.current) {
-        window.clearInterval(animationTimerRef.current)
-        animationTimerRef.current = null
+      clearTimer()
+      try {
+        supervisorRef.current?.kill()
+      } catch {
+        /* already dead */
       }
-      if (timeout) {
-        window.clearTimeout(timeout)
-      }
-      setIsRunning(false)
+      supervisorRef.current = null
+      setRunning(false)
+      // Make sure the overlay clears even if we unmount mid-run (e.g. user
+      // switches from a worker layout to a sync one before the budget ends).
+      useGraphStore.getState().setIsLayoutComputing(false)
     }
-  }, [autoRunFor, sigma, updatePositions])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutName])
 
   return (
     <Button
       size="icon"
-      onClick={handleClick}
-      tooltip={isRunning ? t('graphPanel.sideBar.layoutsControl.stopAnimation') : t('graphPanel.sideBar.layoutsControl.startAnimation')}
+      onClick={() => (running ? stop(true) : start())}
+      tooltip={
+        running
+          ? t('graphPanel.sideBar.layoutsControl.stopAnimation')
+          : t('graphPanel.sideBar.layoutsControl.startAnimation')
+      }
       variant={controlButtonVariant}
     >
-      {isRunning ? <PauseIcon /> : <PlayIcon />}
+      {running ? <PauseIcon /> : <PlayIcon />}
     </Button>
   )
 }
@@ -198,104 +231,99 @@ const LayoutsControl = () => {
   const [layout, setLayout] = useState<LayoutName>('Circular')
   const [opened, setOpened] = useState<boolean>(false)
 
-  const maxIterations = useSettingsStore.use.graphLayoutMaxIterations()
-
+  // Only the instant, deterministic layouts use the @react-sigma hooks (they
+  // compute positions synchronously and we assign them). The relaxing layouts
+  // are handled by WorkerLayoutControl via supervisors.
   const layoutCircular = useLayoutCircular()
   const layoutCirclepack = useLayoutCirclepack()
   const layoutRandom = useLayoutRandom()
-  const layoutNoverlap = useLayoutNoverlap({
-    maxIterations: maxIterations,
-    settings: {
-      margin: 5,
-      expansion: 1.1,
-      gridSize: 1,
-      ratio: 1,
-      speed: 3,
-    }
-  })
-  // Add parameters for Force Directed layout to improve convergence
-  const layoutForce = useLayoutForce({
-    maxIterations: maxIterations,
-    settings: {
-      attraction: 0.0003,  // Lower attraction force to reduce oscillation
-      repulsion: 0.02,     // Lower repulsion force to reduce oscillation
-      gravity: 0.02,      // Increase gravity to make nodes converge to center faster
-      inertia: 0.4,        // Lower inertia to add damping effect
-      maxMove: 100         // Limit maximum movement per step to prevent large jumps
-    }
-  })
-  const layoutForceAtlas2 = useLayoutForceAtlas2({ iterations: maxIterations })
-  const workerNoverlap = useWorkerLayoutNoverlap()
-  const workerForce = useWorkerLayoutForce()
-  const workerForceAtlas2 = useWorkerLayoutForceAtlas2()
 
-  const layouts = useMemo(() => {
+  const syncLayouts = useMemo(() => {
     return {
-      Circular: {
-        layout: layoutCircular
-      },
-      Circlepack: {
-        layout: layoutCirclepack
-      },
-      Random: {
-        layout: layoutRandom
-      },
-      Noverlaps: {
-        layout: layoutNoverlap,
-        worker: workerNoverlap
-      },
-      'Force Directed': {
-        layout: layoutForce,
-        worker: workerForce
-      },
-      'Force Atlas': {
-        layout: layoutForceAtlas2,
-        worker: workerForceAtlas2
-      }
-    } as { [key: string]: { layout: LayoutHook; worker?: LayoutWorkerHook } }
-  }, [
-    layoutCirclepack,
-    layoutCircular,
-    layoutForce,
-    layoutForceAtlas2,
-    layoutNoverlap,
-    layoutRandom,
-    workerForce,
-    workerNoverlap,
-    workerForceAtlas2
-  ])
+      Circular: layoutCircular,
+      Circlepack: layoutCirclepack,
+      Random: layoutRandom
+    } as Record<string, LayoutHook>
+  }, [layoutCircular, layoutCirclepack, layoutRandom])
+
+  const allLayoutNames: LayoutName[] = useMemo(
+    () => ['Circular', 'Circlepack', 'Random', 'Noverlaps', 'Force Directed', 'Force Atlas'],
+    []
+  )
 
   const runLayout = useCallback(
     (newLayout: LayoutName) => {
       console.debug('Running layout:', newLayout)
-      const { positions } = layouts[newLayout].layout
 
-      try {
-        const graph = sigma.getGraph()
-        if (!graph) {
-          console.error('No graph available')
-          return
-        }
-
-        const pos = positions()
-        console.log('Positions calculated, animating nodes')
-        animateNodes(graph, pos, { duration: 400 })
+      // Worker layouts: selecting one (re)mounts WorkerLayoutControl, which
+      // auto-runs it against the live graph. Nothing is computed on the main
+      // thread here.
+      if (WORKER_LAYOUTS.has(newLayout)) {
         setLayout(newLayout)
-      } catch (error) {
-        console.error('Error running layout:', error)
+        return
+      }
+
+      const graph = sigma.getGraph()
+      if (!graph || graph.order === 0) {
+        console.error('No graph available')
+        return
+      }
+
+      // BUGFIX "graph collapses into a single point": node dragging installs
+      // a custom bounding box that was never cleared, freezing sigma's
+      // coordinate normalization to the previous layout's extent.
+      const doLayout = () => {
+        try {
+          const pos = syncLayouts[newLayout].positions()
+          sigma.setCustomBBox(null)
+          if (graph.order > ANIMATE_NODE_LIMIT) {
+            graph.updateEachNodeAttributes(
+              (node, attr) => {
+                const p = pos[node]
+                if (p) {
+                  attr.x = p.x
+                  attr.y = p.y
+                }
+                return attr
+              },
+              { attributes: ['x', 'y'] }
+            )
+            sigma.refresh()
+          } else {
+            animateNodes(graph, pos, { duration: 400 })
+          }
+          sigma.getCamera().animatedReset()
+          setLayout(newLayout)
+        } catch (error) {
+          console.error('Error running layout:', error)
+        }
+      }
+
+      // For large graphs, the assign + refresh blocks the main thread for
+      // hundreds of ms. Show the loading overlay and defer the heavy work
+      // one frame so React actually paints the overlay before we block.
+      // Small graphs animate (400ms) -- the animation itself is feedback.
+      if (graph.order > ANIMATE_NODE_LIMIT) {
+        useGraphStore.getState().setIsLayoutComputing(true)
+        window.requestAnimationFrame(() => {
+          try {
+            doLayout()
+          } finally {
+            useGraphStore.getState().setIsLayoutComputing(false)
+          }
+        })
+      } else {
+        doLayout()
       }
     },
-    [layouts, sigma]
+    [syncLayouts, sigma]
   )
 
   return (
     <div>
       <div>
-        {layouts[layout] && 'worker' in layouts[layout] && (
-          <WorkerLayoutControl
-            layout={layouts[layout].worker!}
-            mainLayout={layouts[layout].layout}
-          />
+        {WORKER_LAYOUTS.has(layout) && (
+          <WorkerLayoutControl layoutName={layout as WorkerLayoutName} />
         )}
       </div>
       <div>
@@ -316,15 +344,15 @@ const LayoutsControl = () => {
             sideOffset={8}
             collisionPadding={5}
             sticky="always"
-            className="p-1 min-w-auto"
+            className="min-w-auto p-1"
           >
             <Command>
               <CommandList>
                 <CommandGroup>
-                  {Object.keys(layouts).map((name) => (
+                  {allLayoutNames.map((name) => (
                     <CommandItem
                       onSelect={() => {
-                        runLayout(name as LayoutName)
+                        runLayout(name)
                       }}
                       key={name}
                       className="cursor-pointer text-xs"
@@ -343,3 +371,4 @@ const LayoutsControl = () => {
 }
 
 export default LayoutsControl
+

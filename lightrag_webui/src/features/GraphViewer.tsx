@@ -3,7 +3,13 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
 import { Settings as SigmaSettings } from 'sigma/settings'
 import { GraphSearchOption, OptionItem } from '@react-sigma/graph-search'
-import { EdgeArrowProgram, NodePointProgram, NodeCircleProgram } from 'sigma/rendering'
+import {
+  EdgeArrowProgram,
+  EdgeLineProgram,
+  EdgeRectangleProgram,
+  NodePointProgram,
+  NodeCircleProgram
+} from 'sigma/rendering'
 import { NodeBorderProgram } from '@sigma/node-border'
 import { EdgeCurvedArrowProgram, createEdgeCurveProgram } from '@sigma/edge-curve'
 
@@ -23,7 +29,7 @@ import LegendButton from '@/components/graph/LegendButton'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
-import { labelColorDarkTheme, labelColorLightTheme } from '@/lib/constants'
+import { labelColorDarkTheme, labelColorLightTheme, edgeColorDarkTheme } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
 import '@react-sigma/graph-search/lib/style.css'
@@ -31,22 +37,41 @@ import '@react-sigma/graph-search/lib/style.css'
 // Function to create sigma settings based on theme
 const createSigmaSettings = (isDarkTheme: boolean): Partial<SigmaSettings> => ({
   allowInvalidContainer: true,
-  defaultNodeType: 'default',
-  defaultEdgeType: 'curvedNoArrow',
+  // Nodes use the border program so every node gets a white ring (the
+  // @sigma/node-border default reads `borderColor` for the ring, `color` for
+  // the fill; ring thickness is a fixed 10% of the radius). Single GPU draw
+  // call -- cheap even at 70k+ nodes. (Earlier "border blanks the canvas"
+  // reports were actually the fetch effect never firing -- once that was
+  // fixed, the border program rendered fine.)
+  defaultNodeType: 'border',
+  // 'rect' (EdgeRectangleProgram) draws straight quads that RESPECT the edge
+  // size attribute; EdgeLineProgram renders fixed ~1px GL lines and ignores
+  // size entirely. Rectangles are still far cheaper than tessellated curves.
+  defaultEdgeType: 'rect',
   renderEdgeLabels: false,
+  // Skip edge rendering while panning/zooming - big win on large graphs.
+  hideEdgesOnMove: true,
   edgeProgramClasses: {
+    rect: EdgeRectangleProgram,
+    line: EdgeLineProgram,
     arrow: EdgeArrowProgram,
     curvedArrow: EdgeCurvedArrowProgram,
+    // kept registered for backward compatibility with edges that still
+    // carry type: 'curvedNoArrow'
     curvedNoArrow: createEdgeCurveProgram()
   },
   nodeProgramClasses: {
-    default: NodeBorderProgram,
-    circel: NodeCircleProgram,
-    point: NodePointProgram
+    point: NodePointProgram,
+    default: NodePointProgram,
+    circle: NodeCircleProgram,
+    border: NodeBorderProgram
   },
   labelGridCellSize: 60,
   labelRenderedSizeThreshold: 12,
-  enableEdgeEvents: true,
+  enableEdgeEvents: false,
+  // Without per-edge reducers (disabled when nothing is focused), edges with
+  // no color attribute fall back to this.
+  defaultEdgeColor: isDarkTheme ? edgeColorDarkTheme : '#d3d3d3',
   labelColor: {
     color: isDarkTheme ? labelColorDarkTheme : labelColorLightTheme,
     attribute: 'labelColor'
@@ -57,8 +82,6 @@ const createSigmaSettings = (isDarkTheme: boolean): Partial<SigmaSettings> => ({
   },
   edgeLabelSize: 8,
   labelSize: 12
-  // minEdgeThickness: 2
-  // labelFont: 'Lato, sans-serif'
 })
 
 const GraphEvents = () => {
@@ -96,7 +119,7 @@ const GraphEvents = () => {
       // Disable the autoscale at the first down interaction
       mousedown: (e) => {
         // Only set custom BBox if it's a drag operation (mouse button is pressed)
-        const mouseEvent = e.original as MouseEvent;
+        const mouseEvent = e.original as MouseEvent
         if (mouseEvent.buttons !== 0 && !sigma.getCustomBBox()) {
           sigma.setCustomBBox(sigma.getBBox())
         }
@@ -115,6 +138,7 @@ const GraphViewer = () => {
   const focusedNode = useGraphStore.use.focusedNode()
   const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
   const isFetching = useGraphStore.use.isFetching()
+  const isLayoutComputing = useGraphStore.use.isLayoutComputing()
 
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
@@ -159,19 +183,19 @@ const GraphViewer = () => {
     return () => {
       // TAB is mount twice in vite dev mode, this is a workaround
 
-      const sigma = useGraphStore.getState().sigmaInstance;
+      const sigma = useGraphStore.getState().sigmaInstance
       if (sigma) {
         try {
           // Destroy sigma，and clear WebGL context
-          sigma.kill();
-          useGraphStore.getState().setSigmaInstance(null);
-          console.log('Cleared sigma instance on Graphviewer unmount');
+          sigma.kill()
+          useGraphStore.getState().setSigmaInstance(null)
+          console.log('Cleared sigma instance on Graphviewer unmount')
         } catch (error) {
-          console.error('Error cleaning up sigma instance:', error);
+          console.error('Error cleaning up sigma instance:', error)
         }
       }
-    };
-  }, []);
+    }
+  }, [])
 
   // Note: There was a useLayoutEffect hook here to set up the sigma instance and graph data,
   // but testing showed it wasn't executing or having any effect, while the backup mechanism
@@ -237,7 +261,7 @@ const GraphViewer = () => {
         )}
 
         {showLegend && (
-          <div className="absolute bottom-10 right-2 z-0">
+          <div className="absolute right-2 bottom-10 z-0">
             <Legend className="bg-background/60 backdrop-blur-lg" />
           </div>
         )}
@@ -249,12 +273,18 @@ const GraphViewer = () => {
         <SettingsDisplay />
       </SigmaContainer>
 
-      {/* Loading overlay - shown when data is loading or theme is switching */}
-      {(isFetching || isThemeSwitching) && (
-        <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+      {/* Loading overlay - shown for data fetch, theme switch, or layout run. */}
+      {(isFetching || isThemeSwitching || isLayoutComputing) && (
+        <div className="bg-background/80 absolute inset-0 z-10 flex items-center justify-center">
           <div className="text-center">
-            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto"></div>
-            <p>{isThemeSwitching ? 'Switching Theme...' : 'Loading Graph Data...'}</p>
+            <div className="border-primary mx-auto mb-2 h-8 w-8 animate-spin rounded-full border-4 border-t-transparent"></div>
+            <p>
+              {isThemeSwitching
+                ? 'Switching Theme...'
+                : isFetching
+                  ? 'Loading Graph Data...'
+                  : 'Computing Layout...'}
+            </p>
           </div>
         </div>
       )}
@@ -263,3 +293,4 @@ const GraphViewer = () => {
 }
 
 export default GraphViewer
+

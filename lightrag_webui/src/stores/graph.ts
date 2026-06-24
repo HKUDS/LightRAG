@@ -120,6 +120,11 @@ interface GraphState {
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
   setIsFetching: (isFetching: boolean) => void
 
+  // True while a layout (sync or worker) is computing. Drives the loading
+  // overlay so a layout click doesn't look like a frozen UI on large graphs.
+  isLayoutComputing: boolean
+  setIsLayoutComputing: (running: boolean) => void
+
   // Legend color mapping methods
   setTypeColorMap: (typeColorMap: Map<string, string>) => void
 
@@ -176,6 +181,10 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
+
+  isLayoutComputing: false,
+  setIsLayoutComputing: (running: boolean) => set({ isLayoutComputing: running }),
+
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
   setFocusedNode: (nodeId: string | null) => set({ focusedNode: nodeId }),
