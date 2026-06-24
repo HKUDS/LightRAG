@@ -124,6 +124,52 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   }, [sigma])
 
   /**
+   * With hideEdgesOnMove, edges are skipped while the camera is moving. sigma's
+   * built-in post-drag refresh (mouse handleUp) fires on a setTimeout(0), but a
+   * drag with inertia is still animating then, so it renders WITHOUT edges and
+   * nothing refreshes once movement settles — edges stay hidden until the next
+   * interaction (the "edges vanish after a small pan and don't come back" bug;
+   * a stage click doesn't help because it isn't a drag, but a hover re-renders).
+   *
+   * Watch the camera's `updated` event and, once it goes quiet, refresh ONLY
+   * when sigma is truly idle. We mirror sigma's exact `moving` condition
+   * (camera.isAnimated() || mouse.isMoving || draggedEvents || wheelDirection);
+   * if any is still set when the timer fires, we re-arm and wait, so the refresh
+   * always lands on a frame where edges are actually drawn.
+   */
+  useEffect(() => {
+    if (!sigma) return
+    const camera = sigma.getCamera()
+    const mouse = sigma.getMouseCaptor()
+    let timer: number | null = null
+    const stillMoving = () =>
+      camera.isAnimated() ||
+      mouse.isMoving ||
+      mouse.draggedEvents > 0 ||
+      mouse.currentWheelDirection !== 0
+    const refreshWhenIdle = () => {
+      if (timer !== null) window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        timer = null
+        if (stillMoving()) {
+          refreshWhenIdle() // not settled yet — keep waiting
+          return
+        }
+        try {
+          sigma.refresh()
+        } catch {
+          /* sigma instance already killed */
+        }
+      }, 80)
+    }
+    camera.on('updated', refreshWhenIdle)
+    return () => {
+      if (timer !== null) window.clearTimeout(timer)
+      camera.removeListener('updated', refreshWhenIdle)
+    }
+  }, [sigma])
+
+  /**
    * When component mounts
    * => register events
    */
