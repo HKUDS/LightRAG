@@ -87,7 +87,9 @@ const buildSupervisor = (name: WorkerLayoutName, graph: unknown): LayoutSupervis
  *
  * Self-contained: it builds and owns the supervisor (bound to the live store
  * graph), auto-runs when its layout is selected, runs for a size-scaled time
- * budget, then stops and reframes the camera. The previous implementation ran
+ * budget, then stops and re-normalizes the settled coordinates WITHOUT
+ * touching the camera (the user's rotation/zoom/pan are preserved). The
+ * previous implementation ran
  * the SYNCHRONOUS layout (mainLayout.positions()) every 200ms in a setInterval
  * -- for ForceAtlas2 without Barnes-Hut that is O(V^2) on the main thread,
  * five times a second.
@@ -117,7 +119,13 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
   }, [])
 
   const stop = useCallback(
-    (reframe: boolean) => {
+    // settleView=true is used when the layout finishes on its own (budget
+    // expiry): it releases the custom bbox frozen by node dragging so the
+    // settled coordinates re-normalize, then refreshes. It deliberately does
+    // NOT reset the camera — the user's rotation/zoom/pan are preserved (an
+    // animatedReset here threw the view back to the default every time a
+    // layout finished). Manual pause passes false and leaves the view alone.
+    (settleView: boolean) => {
       clearTimer()
       try {
         supervisorRef.current?.stop()
@@ -128,13 +136,12 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
       // Release the shared slot (kills the stopped worker) so
       // "activeLayoutSupervisor != null" reliably means a layout is running.
       useGraphStore.getState().releaseLayoutSupervisor(supervisorRef.current)
-      if (reframe) {
+      if (settleView) {
         try {
-          // Clear any custom bbox installed by node dragging, then refit.
           sigma.setCustomBBox(null)
-          sigma.getCamera().animatedReset()
+          sigma.refresh()
         } catch (error) {
-          console.error('Error reframing after layout:', error)
+          console.error('Error refreshing after layout:', error)
         }
       }
     },
