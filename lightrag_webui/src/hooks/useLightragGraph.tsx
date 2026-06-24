@@ -184,8 +184,14 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
     console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`)
     rawData = await queryGraphs(queryLabel, maxDepth, maxNodes)
   } catch (e) {
+    // Record the backend error, then RETHROW so the caller's .catch() runs its
+    // bounded-retry path. Returning null here would resolve the promise
+    // "successfully" and the .then() handler would treat a transient
+    // network/API failure as an empty graph (reset state, render the "Graph Is
+    // Empty" placeholder, stamp the signature as succeeded) — and retries would
+    // never fire. A genuinely empty result still resolves normally below.
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!')
-    return null
+    throw e
   }
 
   let rawGraph = null
