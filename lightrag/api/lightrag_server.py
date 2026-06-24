@@ -1376,10 +1376,21 @@ def create_app(args):
         app.add_middleware(_RootPathNormalizationMiddleware)
 
     # Add CORS middleware
+    cors_origins = get_cors_origins()
+    # Per the Fetch spec, the wildcard origin "*" and credentialed requests are
+    # mutually exclusive: a server must not pair "Access-Control-Allow-Origin: *"
+    # with "Access-Control-Allow-Credentials: true". LightRAG authenticates via
+    # the Authorization (Bearer) and X-API-Key request headers, never via cookies
+    # or other ambient credentials, so credentials are only ever meaningful for an
+    # explicit origin allowlist. When origins are wildcarded we therefore disable
+    # credentials to keep the configuration spec-compliant and avoid the permissive
+    # "reflect any origin with credentials" behavior that Starlette would otherwise
+    # apply to cookie-bearing cross-origin requests.
+    allow_credentials = cors_origins != ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=get_cors_origins(),
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=[
