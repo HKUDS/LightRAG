@@ -22,6 +22,19 @@ const NODE_BORDER_COLOR = '#FFFFFF'
 const MAX_FETCH_RETRIES = 3
 const RETRY_BASE_DELAY_MS = 1000 // 1s -> 2s -> 4s exponential backoff
 
+// Marks a TERMINAL failure that happened AFTER the network fetch succeeded:
+// building the sigma graph from the payload, or a store/sigma subscriber
+// throwing while applying it. These are deterministic — retrying re-fetches
+// identical data and fails identically — so they must NOT enter the bounded
+// backoff retry path (which exists only for transient network failures).
+class GraphBuildError extends Error {
+  constructor(cause: unknown) {
+    super('Graph build/apply failed')
+    this.name = 'GraphBuildError'
+    this.cause = cause
+  }
+}
+
 // --- Performance helpers ----------------------------------------------------
 
 // Deterministic, cheap replacement for `seedrandom(node.id)`.
@@ -100,6 +113,20 @@ const createTypeColorResolver = () => {
     }
   }
 }
+
+// Parse an edge's `weight` property into a finite number, preserving a
+// legitimate 0. `Number(x) || 1` would coerce a real weight of 0 (the thinnest
+// edge) to 1; use a finite check so 0 survives and only undefined/NaN fall back.
+const parseEdgeWeight = (properties: Record<string, unknown> | undefined): number => {
+  const w = Number(properties?.weight)
+  return Number.isFinite(w) ? w : 1
+}
+
+// Build a node label defensively: a malformed payload node missing its
+// `labels` array must not throw (labels.join) and abort the whole graph build
+// — fall back to the node id so the rest of the graph still renders.
+const safeNodeLabel = (labels: unknown, fallbackId: string): string =>
+  Array.isArray(labels) ? labels.join(', ') : fallbackId
 
 export type NodeType = {
   x: number
@@ -232,7 +259,7 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
     rawNode.color = typeColors.colorFor(rawNode.properties?.entity_type as string | undefined)
 
     graph.addNode(rawNode.id, {
-      label: rawNode.labels.join(', '),
+      label: safeNodeLabel(rawNode.labels, rawNode.id),
       color: rawNode.color,
       x,
       y,
@@ -271,7 +298,7 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
     // originalWeight feeds GraphControl's thickness scaling.
     const attributes = {
       label: (rawEdge.properties?.keywords as string | undefined) || undefined,
-      originalWeight: Number(rawEdge.properties?.weight) || 1
+      originalWeight: parseEdgeWeight(rawEdge.properties)
     }
     try {
       rawEdge.dynamicId = graph.addEdge(rawEdge.source, rawEdge.target, attributes)
@@ -511,7 +538,7 @@ const useLightrangeGraph = () => {
               newSigmaGraph = await createSigmaGraph(data)
             } catch (buildError) {
               console.error('[useLightragGraph] createSigmaGraph failed (graph build):', buildError)
-              throw buildError
+              throw new GraphBuildError(buildError)
             }
 
             try {
@@ -524,7 +551,7 @@ const useLightrangeGraph = () => {
                 '[useLightragGraph] a store/sigma subscriber threw while applying the new graph:',
                 subscriberError
               )
-              throw subscriberError
+              throw new GraphBuildError(subscriberError)
             }
 
             // Update last successful query label
@@ -567,6 +594,23 @@ const useLightrangeGraph = () => {
           dataLoadedRef.current = false
           fetchInProgressRef.current = false
           state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
+
+          // Terminal failure: the network fetch succeeded but building/applying
+          // the graph failed. This is deterministic, so do NOT retry (that would
+          // re-fetch identical data and fail identically). Stamp the signature
+          // to suppress re-issue and surface the error once.
+          if (error instanceof GraphBuildError) {
+            console.error(
+              '[useLightragGraph] graph build failed (not retrying — deterministic):',
+              fetchSignature
+            )
+            lastFetchSignatureRef.current = fetchSignature
+            retryStateRef.current = { signature: '', attempts: 0 }
+            toast.error(
+              t('graphPanel.graphBuildFailed', 'Failed to render graph data. Use refresh to retry.')
+            )
+            return
+          }
 
           // Bounded retry. graphDataFetchAttempted is KEPT true here so the
           // immediate re-fire (isFetching flips false -> effect deps change)
@@ -923,7 +967,7 @@ const useLightrangeGraph = () => {
 
           // Add the new node to the sigma graph with calculated position
           sigmaGraph.addNode(nodeId, {
-            label: newNode.labels.join(', '),
+            label: safeNodeLabel(newNode.labels, nodeId),
             color: newNode.color,
             x: x,
             y: y,
@@ -955,9 +999,8 @@ const useLightrangeGraph = () => {
             continue
           }
 
-          // Get weight from edge properties or default to 1
-          const weight =
-            newEdge.properties?.weight !== undefined ? Number(newEdge.properties.weight) : 1
+          // Get weight from edge properties or default to 1 (preserves 0)
+          const weight = parseEdgeWeight(newEdge.properties)
 
           // Update min and max weight values
           minWeight = Math.min(minWeight, weight)
