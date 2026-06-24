@@ -654,8 +654,9 @@ def create_optimized_embedding_function(
       (e.g., jina-embeddings-v4 with 2048 dims, text-embedding-3-small with 1536 dims)
     - When EMBEDDING_MODEL is set to a custom model: User MUST also set EMBEDDING_DIM
       to match the custom model's dimension (e.g., for jina-embeddings-v3, set EMBEDDING_DIM=1024)
-    - When EMBEDDING_BINDING=lmstudio and EMBEDDING_DIM is unset, dimension is probed once
-      at startup via a test embedding against the resolved LM Studio model.
+    - When EMBEDDING_BINDING=lmstudio and EMBEDDING_MODEL is blank/any-available, the
+      concrete model is resolved at startup and stored on args.embedding_model for vector
+      namespace isolation. When EMBEDDING_DIM is unset, dimension is probed at the same time.
 
     Note: The embedding_dim parameter is automatically injected by EmbeddingFunc wrapper
     when send_dimensions=True (enabled for Jina and Gemini bindings). This wrapper calls
@@ -721,23 +722,37 @@ def create_optimized_embedding_function(
         logger.warning(f"Could not import provider function for {binding}: {e}")
 
     if binding == "lmstudio":
+        import asyncio
+
         from lightrag.llm.lmstudio import (
+            is_any_available_model,
             is_auto_embedding_dim,
             probe_lmstudio_embedding_dim,
+            resolve_lmstudio_model,
         )
 
-        if is_auto_embedding_dim(args.embedding_dim):
-            import asyncio
-
-            probed_dim = asyncio.run(
-                probe_lmstudio_embedding_dim(
-                    model=model,
-                    base_url=host,
-                    api_key=api_key,
+        if is_any_available_model(model):
+            if is_auto_embedding_dim(args.embedding_dim):
+                probed_dim, resolved_model = asyncio.run(
+                    probe_lmstudio_embedding_dim(
+                        model=model,
+                        base_url=host,
+                        api_key=api_key,
+                    )
                 )
-            )
-            args.embedding_dim = probed_dim
-            provider_embedding_dim = probed_dim
+                args.embedding_dim = probed_dim
+                provider_embedding_dim = probed_dim
+            else:
+                resolved_model = asyncio.run(
+                    resolve_lmstudio_model(
+                        model,
+                        base_url=host,
+                        api_key=api_key,
+                        purpose="embedding",
+                    )
+                )
+            model = resolved_model
+            args.embedding_model = resolved_model
 
     # Step 2: Apply priority (user config > provider default)
     # For max_token_size: explicit env var > provider default > None

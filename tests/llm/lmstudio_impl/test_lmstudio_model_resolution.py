@@ -120,13 +120,14 @@ async def test_probe_lmstudio_embedding_dim(monkeypatch):
         fake_embed,
     )
 
-    dim = await probe_lmstudio_embedding_dim(
+    dim, resolved_model = await probe_lmstudio_embedding_dim(
         "any-available",
         base_url="http://localhost:1234/v1",
         api_key="lm-studio",
     )
 
     assert dim == 4
+    assert resolved_model == "loaded-embed-model"
 
 
 def test_normalize_lmstudio_response_format_maps_json_object_to_text():

@@ -540,9 +540,7 @@ def parse_args() -> argparse.Namespace:
 
     # Inject model configuration
     default_llm_model = (
-        "any-available"
-        if args.llm_binding == "lmstudio"
-        else "mistral-nemo:latest"
+        "any-available" if args.llm_binding == "lmstudio" else "mistral-nemo:latest"
     )
     args.llm_model = get_env_value("LLM_MODEL", default_llm_model)
     default_embedding_model = (

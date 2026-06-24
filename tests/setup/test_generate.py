@@ -726,6 +726,37 @@ generate_env_file "{REPO_ROOT}/env.example" "$REPO_ROOT/.env\"
     assert "# EMBEDDING_BINDING=openai" in generated_env
 
 
+def test_generate_env_file_suppresses_active_embedding_dim_for_lmstudio(
+    tmp_path: Path,
+) -> None:
+    """LM Studio setups should not write an active EMBEDDING_DIM from env.example."""
+    write_text_lines(
+        tmp_path / "env.example",
+        (REPO_ROOT / "env.example").read_text(encoding="utf-8").splitlines(),
+    )
+    run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+
+ENV_VALUES[LLM_BINDING]="lmstudio"
+ENV_VALUES[EMBEDDING_BINDING]="lmstudio"
+ENV_VALUES[EMBEDDING_MODEL]="any-available"
+ENV_VALUES[LLM_BINDING_HOST]="http://localhost:1234/v1"
+ENV_VALUES[EMBEDDING_BINDING_HOST]="http://localhost:1234/v1"
+
+normalize_lmstudio_env_state no
+generate_env_file "$REPO_ROOT/env.example" "$REPO_ROOT/.env"
+""")
+    generated_env = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+    assert not any(line.startswith("EMBEDDING_DIM=") for line in generated_env)
+    assert any(
+        line.startswith("# EMBEDDING_DIM=") and "auto-probed" in line
+        for line in generated_env
+    )
+
+
 def test_generate_env_file_preserves_custom_variables_not_declared_in_template(
     tmp_path: Path,
 ) -> None:

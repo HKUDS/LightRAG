@@ -129,9 +129,7 @@ async def _resolve_via_v1_models(
         await client.close()
 
     if not model_ids:
-        raise APIConnectionError(
-            f"LM Studio returned no models from {base_url}/models"
-        )
+        raise APIConnectionError(f"LM Studio returned no models from {base_url}/models")
 
     if purpose == "embedding":
         for model_id in model_ids:
@@ -212,8 +210,8 @@ async def probe_lmstudio_embedding_dim(
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
-) -> int:
-    """Probe LM Studio once to learn the embedding vector size for the resolved model."""
+) -> tuple[int, str]:
+    """Probe LM Studio once for embedding dimension and resolved model id."""
     resolved_host = _resolve_host(base_url)
     resolved_api_key = _resolve_api_key(api_key)
     if resolved_host in _EMBEDDING_DIM_CACHE:
@@ -246,7 +244,7 @@ async def probe_lmstudio_embedding_dim(
         resolved_model,
         resolved_host,
     )
-    return embedding_dim
+    return embedding_dim, resolved_model
 
 
 async def lmstudio_complete_if_cache(

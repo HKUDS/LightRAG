@@ -15,6 +15,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 declare -A ENV_VALUES
 declare -A ORIGINAL_ENV_VALUES
+declare -A ENV_SUPPRESS_ACTIVE_KEYS
 declare -A COMPOSE_ENV_OVERRIDES
 declare -A COMPOSE_REWRITE_SERVICE_SET
 declare -A COMPOSE_SERVICE_IMAGE_OVERRIDES
@@ -102,6 +103,7 @@ init_colors() {
 reset_state() {
   ENV_VALUES=()
   ORIGINAL_ENV_VALUES=()
+  ENV_SUPPRESS_ACTIVE_KEYS=()
   COMPOSE_ENV_OVERRIDES=()
   COMPOSE_REWRITE_SERVICE_SET=()
   COMPOSE_SERVICE_IMAGE_OVERRIDES=()
@@ -1861,7 +1863,10 @@ default_embedding_model_for_binding() {
     openai|azure_openai)
       printf 'text-embedding-3-large'
       ;;
-    ollama|lmstudio)
+    ollama)
+      printf 'bge-m3:latest'
+      ;;
+    lmstudio)
       printf 'any-available'
       ;;
     jina)
@@ -1907,6 +1912,86 @@ default_embedding_dim_for_binding() {
   esac
 }
 
+apply_lmstudio_llm_concurrency_defaults() {
+  log_info "LM Studio: setting LLM concurrency limits."
+  log_info "  MAX_ASYNC_LLM=1, KEYWORD_MAX_ASYNC_LLM=1, QUERY_MAX_ASYNC_LLM=1, MAX_PARALLEL_INSERT=1"
+  ENV_VALUES["MAX_ASYNC_LLM"]="1"
+  ENV_VALUES["KEYWORD_MAX_ASYNC_LLM"]="1"
+  ENV_VALUES["QUERY_MAX_ASYNC_LLM"]="1"
+  ENV_VALUES["MAX_PARALLEL_INSERT"]="1"
+}
+
+apply_lmstudio_embedding_concurrency_defaults() {
+  log_info "LM Studio: setting embedding concurrency limits."
+  log_info "  EMBEDDING_FUNC_MAX_ASYNC=1, EMBEDDING_BATCH_NUM=16"
+  ENV_VALUES["EMBEDDING_FUNC_MAX_ASYNC"]="1"
+  ENV_VALUES["EMBEDDING_BATCH_NUM"]="16"
+}
+
+prompt_lmstudio_single_threaded_defaults() {
+  echo "LM Studio often runs short on resources and can crash when configured for"
+  echo "concurrent LLM or embedding requests (env.example defaults use MAX_ASYNC_LLM=4"
+  echo "and larger embedding batches)."
+  echo "Single-threaded limits (MAX_ASYNC_LLM=1, EMBEDDING_BATCH_NUM=16, etc.) improve"
+  echo "stability on typical local hardware."
+  if confirm_default_yes "Use single-threaded LM Studio concurrency limits?"; then
+    return 0
+  fi
+  log_info "Keeping concurrency settings from env.example or your existing .env."
+  log_info "See docs/LMSTUDIO_SETUP.md if LM Studio crashes under load."
+  return 1
+}
+
+normalize_lmstudio_env_state() {
+  # apply_runtime_defaults:
+  #   no    — env-storage/env-server: only keep EMBEDDING_DIM out of generated .env
+  #   yes   — apply safe concurrency limits without prompting (tests)
+  #   prompt — env-base: ask before applying concurrency limits
+  # When EMBEDDING_BINDING=lmstudio, EMBEDDING_DIM is always kept out of generated .env.
+  local apply_runtime_defaults="${1:-no}"
+  local llm_lmstudio="no"
+  local embed_lmstudio="no"
+  local should_apply_defaults="no"
+
+  if [[ "${ENV_VALUES[LLM_BINDING]:-}" == "lmstudio" ]]; then
+    llm_lmstudio="yes"
+  fi
+  if [[ "${ENV_VALUES[EMBEDDING_BINDING]:-}" == "lmstudio" ]]; then
+    embed_lmstudio="yes"
+  fi
+
+  if [[ "$llm_lmstudio" != "yes" && "$embed_lmstudio" != "yes" ]]; then
+    unset 'ENV_SUPPRESS_ACTIVE_KEYS[EMBEDDING_DIM]'
+    return 0
+  fi
+
+  if [[ "$apply_runtime_defaults" == "yes" ]]; then
+    should_apply_defaults="yes"
+  elif [[ "$apply_runtime_defaults" == "prompt" ]]; then
+    if prompt_lmstudio_single_threaded_defaults; then
+      should_apply_defaults="yes"
+    fi
+  fi
+
+  if [[ "$embed_lmstudio" == "yes" ]]; then
+    unset 'ENV_VALUES[EMBEDDING_DIM]'
+    ENV_SUPPRESS_ACTIVE_KEYS["EMBEDDING_DIM"]=1
+    if [[ "$should_apply_defaults" == "yes" ]]; then
+      apply_lmstudio_embedding_concurrency_defaults
+    fi
+  else
+    unset 'ENV_SUPPRESS_ACTIVE_KEYS[EMBEDDING_DIM]'
+  fi
+
+  if [[ "$llm_lmstudio" == "yes" && "$should_apply_defaults" == "yes" ]]; then
+    apply_lmstudio_llm_concurrency_defaults
+  fi
+
+  if [[ "$should_apply_defaults" == "yes" ]]; then
+    log_info "LM Studio tuning guide: docs/LMSTUDIO_SETUP.md"
+  fi
+}
+
 collect_llm_config() {
   local options=("openai" "azure_openai" "ollama" "openai-ollama" "lmstudio" "lollms" "gemini" "bedrock")
   local current_binding="${ENV_VALUES[LLM_BINDING]:-openai}"
@@ -1934,6 +2019,7 @@ collect_llm_config() {
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "$(default_loopback_url 1234 "/v1")")"
       host="$(prompt_with_default "LM Studio endpoint" "$host_default")"
       api_key="$(prompt_with_default "LM Studio API key" "${ENV_VALUES[LLM_BINDING_API_KEY]:-lm-studio}")"
+      log_info "LM Studio: safe concurrency limits can be applied when the wizard writes .env (see docs/LMSTUDIO_SETUP.md)."
       ;;
     lollms)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[LLM_BINDING_HOST]:-}" "http://localhost:9600")"
@@ -1994,14 +2080,14 @@ collect_embedding_config() {
     binding="$(prompt_choice "Embedding provider" "$current_binding" "${options[@]}")"
   fi
   model_default="$(model_default_for_binding "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_MODEL]:-}" "$(default_embedding_model_for_binding "$binding")")"
-  dim_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_DIM]:-}" "$(default_embedding_dim_for_binding "$binding")")"
   model="$(prompt_with_default "Embedding model (blank = any-available)" "$model_default")"
   if [[ "$binding" == "lmstudio" && -z "${model// }" ]]; then
     model="any-available"
   fi
   if [[ "$binding" == "lmstudio" ]]; then
-    dim="$(prompt_with_default "Embedding dimension (blank = auto-probe)" "$dim_default")"
+    log_info "LM Studio: EMBEDDING_DIM is not set — LightRAG probes vector size at server startup."
   else
+    dim_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_DIM]:-}" "$(default_embedding_dim_for_binding "$binding")")"
     dim="$(prompt_with_default "Embedding dimension" "$dim_default")"
   fi
 
@@ -2056,7 +2142,7 @@ collect_embedding_config() {
 
   ENV_VALUES["EMBEDDING_BINDING"]="$binding"
   ENV_VALUES["EMBEDDING_MODEL"]="$model"
-  if [[ "$binding" == "lmstudio" && -z "${dim// }" ]]; then
+  if [[ "$binding" == "lmstudio" ]]; then
     unset 'ENV_VALUES[EMBEDDING_DIM]'
   else
     ENV_VALUES["EMBEDDING_DIM"]="$dim"
@@ -2654,6 +2740,7 @@ finalize_base_setup() {
   fi
 
   clear_deprecated_vllm_dtype_state
+  normalize_lmstudio_env_state prompt
   set_runtime_target "$runtime_target" || return 1
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
@@ -2785,6 +2872,7 @@ finalize_storage_setup() {
   fi
 
   clear_deprecated_vllm_dtype_state
+  normalize_lmstudio_env_state no
   set_runtime_target "$runtime_target" || return 1
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
@@ -2929,6 +3017,7 @@ finalize_server_setup() {
   fi
 
   clear_deprecated_vllm_dtype_state
+  normalize_lmstudio_env_state no
   set_runtime_target "$runtime_target" || return 1
   generate_env_file "${REPO_ROOT}/env.example" "${REPO_ROOT}/.env"
   log_success "Wrote .env"
