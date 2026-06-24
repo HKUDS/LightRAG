@@ -406,11 +406,10 @@ class MinerURawClient:
                 f"MinerU local /tasks response missing task_id: {payload}"
             )
 
-        encoded_task_id = quote(task_id, safe="")
-        await self._poll_local_task(client, task_id, encoded_task_id=encoded_task_id)
+        await self._poll_local_task(client, task_id)
         await self._download_zip(
             client,
-            f"{self.local_endpoint}/tasks/{encoded_task_id}/result",
+            f"{self.local_endpoint}/tasks/{quote(task_id, safe='')}/result",
             raw_dir,
         )
         return task_id
@@ -419,11 +418,11 @@ class MinerURawClient:
         self,
         client: "httpx.AsyncClient",
         task_id: str,
-        encoded_task_id: str | None = None,
     ) -> None:
-        poll_url = (
-            f"{self.local_endpoint}/tasks/{encoded_task_id or quote(task_id, safe='')}"
-        )
+        # ``task_id`` is service-returned; encode it as a single path segment so
+        # a crafted value can't break out of ``/tasks/{id}``. The raw value is
+        # kept for the error/timeout messages below where the real ID matters.
+        poll_url = f"{self.local_endpoint}/tasks/{quote(task_id, safe='')}"
         for _ in range(self.max_polls):
             await asyncio.sleep(self.poll_interval)
             resp = await client.get(poll_url)
