@@ -30,7 +30,7 @@ import LegendButton from '@/components/graph/LegendButton'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
 import useIsDarkMode from '@/hooks/useIsDarkMode'
-import { labelColorDarkTheme, labelColorLightTheme, edgeColorDarkTheme } from '@/lib/constants'
+import { labelColorDarkTheme, labelColorLightTheme, edgeColorDarkTheme, EDGE_PERF_LIMIT } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
 import '@react-sigma/graph-search/lib/style.css'
@@ -158,6 +158,14 @@ const GraphViewer = () => {
   const showLegend = useSettingsStore.use.showLegend()
   const theme = useSettingsStore.use.theme()
   const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
+  const graphEdgeCount = useGraphStore.use.graphEdgeCount()
+
+  // Edge events are disabled above EDGE_PERF_LIMIT regardless of the user
+  // setting: the picking buffer renders edges to an extra frame buffer every
+  // frame, which is too costly on large graphs. The user setting is preserved
+  // (Settings greys the menu item but keeps its value), so dropping back below
+  // the limit auto-restores edge events.
+  const effectiveEdgeEvents = enableEdgeEvents && graphEdgeCount <= EDGE_PERF_LIMIT
 
   const [isThemeSwitching, setIsThemeSwitching] = useState(false)
 
@@ -172,8 +180,8 @@ const GraphViewer = () => {
   // enableEdgeEvents is in the deps because it must be baked in at construction
   // (the picking buffer can't be added later); toggling it rebuilds the instance.
   const memoizedSigmaSettings = useMemo(
-    () => createSigmaSettings(isDarkMode, enableEdgeEvents),
-    [isDarkMode, enableEdgeEvents]
+    () => createSigmaSettings(isDarkMode, effectiveEdgeEvents),
+    [isDarkMode, effectiveEdgeEvents]
   )
 
   // Detect theme changes and briefly show a loading overlay to avoid flash of
