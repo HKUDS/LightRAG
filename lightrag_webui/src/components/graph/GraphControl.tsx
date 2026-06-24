@@ -172,11 +172,18 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
    * interaction (the "edges vanish after a small pan and don't come back" bug;
    * a stage click doesn't help because it isn't a drag, but a hover re-renders).
    *
-   * Watch the camera's `updated` event and, once it goes quiet, refresh ONLY
-   * when sigma is truly idle. We mirror sigma's exact `moving` condition
-   * (camera.isAnimated() || mouse.isMoving || draggedEvents || wheelDirection);
-   * if any is still set when the timer fires, we re-arm and wait, so the refresh
-   * always lands on a frame where edges are actually drawn.
+   * Watch the camera's `updated` event AND the mouse captor's `mouseup`, and
+   * once things go quiet, refresh ONLY when sigma is truly idle. We mirror
+   * sigma's exact `moving` condition (camera.isAnimated() || mouse.isMoving ||
+   * draggedEvents || wheelDirection); if any is still set when the timer fires,
+   * we re-arm and wait, so the refresh always lands on a frame where edges are
+   * actually drawn. The mouseup trigger only fires when the release ends a drag
+   * (draggedEvents > 0): a plain click never hides edges, so refreshing on it
+   * would be a wasted full re-indexation. Between them, the camera path covers
+   * every camera-animation-driven move (pan inertia, zoom, moveToSelectedNode)
+   * and the mouseup path covers drags with no post-release animation, so any
+   * selection-change render that lands on a "moving" frame is recovered by
+   * whichever of the two is concurrently active.
    */
   useEffect(() => {
     if (!sigma) return
@@ -203,10 +210,19 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         }
       }, 80)
     }
+    // Only let a *drag* release re-trigger the idle refresh. A plain click never
+    // hides edges (no movement), so refreshing on it is pure wasted full
+    // re-indexation. draggedEvents is still set at this point — sigma resets it
+    // in its own post-mouseup setTimeout(0), which runs after this handler.
+    const refreshOnDragEnd = () => {
+      if (mouse.draggedEvents > 0) refreshWhenIdle()
+    }
     camera.on('updated', refreshWhenIdle)
+    mouse.on('mouseup', refreshOnDragEnd)
     return () => {
       if (timer !== null) window.clearTimeout(timer)
       camera.removeListener('updated', refreshWhenIdle)
+      mouse.removeListener('mouseup', refreshOnDragEnd)
     }
   }, [sigma])
 
