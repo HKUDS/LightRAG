@@ -1,5 +1,5 @@
 import Graph, { UndirectedGraph } from 'graphology'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
@@ -13,6 +13,14 @@ import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
 
 // Every node gets this border (the node-border program reads `borderColor`).
 const NODE_BORDER_COLOR = '#FFFFFF'
+
+// Bounded auto-retry for transient graph fetch failures. We must NOT retry
+// without a cap (that was the original unbounded zero-backoff loop that
+// hammered the backend), but we also must not wedge the query permanently on
+// a single transient blip. After MAX_FETCH_RETRIES the query is suppressed
+// until the user changes a parameter or hits refresh (graphDataVersion bump).
+const MAX_FETCH_RETRIES = 3
+const RETRY_BASE_DELAY_MS = 1000 // 1s -> 2s -> 4s exponential backoff
 
 // --- Performance helpers ----------------------------------------------------
 
@@ -327,10 +335,24 @@ const useLightrangeGraph = () => {
   // Track if a fetch is in progress to prevent multiple simultaneous fetches
   const fetchInProgressRef = useRef(false)
 
-  // Signature (label|depth|maxNodes|version) of the last fetch that was
-  // ISSUED. Prevents the exact same query from ever being re-issued in a
-  // loop, no matter which code path resets graphDataFetchAttempted.
+  // Signature (label|depth|maxNodes|version) of the last fetch that COMPLETED
+  // SUCCESSFULLY. Guards the completed-fetch loop: if some other code path
+  // resets graphDataFetchAttempted after a successful fetch, an identical
+  // signature here suppresses the redundant re-issue. Failures do NOT stamp
+  // this (they are handled by the bounded-retry state below) until retries
+  // are exhausted, at which point the failed signature is stamped to suppress.
   const lastFetchSignatureRef = useRef<string | null>(null)
+
+  // Bounded-retry bookkeeping for transient fetch failures. `attempts` is
+  // keyed by signature so a parameter change or manual refresh (both change
+  // the signature) starts a fresh retry budget. The nonce drives the backoff
+  // re-fire without changing the signature, so it does not reset the counter.
+  const retryStateRef = useRef<{ signature: string; attempts: number }>({
+    signature: '',
+    attempts: 0
+  })
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [retryNonce, setRetryNonce] = useState(0)
 
   // Reset graph when query label is cleared
   useEffect(() => {
@@ -375,7 +397,13 @@ const useLightrangeGraph = () => {
         useGraphStore.getState().setGraphDataFetchAttempted(true)
         return
       }
-      lastFetchSignatureRef.current = fetchSignature
+
+      // A fresh fetch is starting for this signature: cancel any pending
+      // backoff retry timer (e.g. a parameter change arrived mid-backoff).
+      if (retryTimerRef.current !== null) {
+        clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = null
+      }
 
       // Set flags
       fetchInProgressRef.current = true
@@ -478,7 +506,7 @@ const useLightrangeGraph = () => {
             // Create and set new graph. Wrapped separately so the console
             // tells us WHERE a failure happens — a build or subscriber error
             // here would otherwise be indistinguishable from a fetch error.
-            let newSigmaGraph: UndirectedGraph | null = null
+            let newSigmaGraph: UndirectedGraph | null
             try {
               newSigmaGraph = await createSigmaGraph(data)
             } catch (buildError) {
@@ -510,6 +538,12 @@ const useLightrangeGraph = () => {
             state.setMoveToSelectedNode(true)
           }
 
+          // Fetch succeeded: stamp the signature so a later reset of
+          // graphDataFetchAttempted cannot re-issue this completed query in a
+          // loop, and clear the retry budget.
+          lastFetchSignatureRef.current = fetchSignature
+          retryStateRef.current = { signature: '', attempts: 0 }
+
           // Update flags
           dataLoadedRef.current = true
           initialLoadRef.current = true
@@ -532,17 +566,67 @@ const useLightrangeGraph = () => {
           state.setIsFetching(false)
           dataLoadedRef.current = false
           fetchInProgressRef.current = false
-          // NOTE: graphDataFetchAttempted is reset, but lastFetchSignatureRef
-          // is deliberately KEPT. Clearing the flag alone used to create an
-          // unbounded zero-backoff retry loop: error -> flag cleared ->
-          // effect refires -> identical request -> error -> ... A failed
-          // query can now only be retried via an explicit refresh
-          // (graphDataVersion bump) or a parameter change.
-          state.setGraphDataFetchAttempted(false)
           state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
+
+          // Bounded retry. graphDataFetchAttempted is KEPT true here so the
+          // immediate re-fire (isFetching flips false -> effect deps change)
+          // is blocked at the gate above. Recovery is driven only by the
+          // backoff timer below, never by an instant retry — that instant
+          // path was the original unbounded zero-backoff loop.
+          const retry = retryStateRef.current
+          if (retry.signature !== fetchSignature) {
+            retry.signature = fetchSignature
+            retry.attempts = 0
+          }
+
+          if (retry.attempts < MAX_FETCH_RETRIES) {
+            retry.attempts += 1
+            const delay = RETRY_BASE_DELAY_MS * 2 ** (retry.attempts - 1)
+            console.warn(
+              `[useLightragGraph] graph fetch failed, retry ${retry.attempts}/${MAX_FETCH_RETRIES} in ${delay}ms:`,
+              fetchSignature
+            )
+            if (retryTimerRef.current !== null) {
+              clearTimeout(retryTimerRef.current)
+            }
+            retryTimerRef.current = setTimeout(() => {
+              retryTimerRef.current = null
+              // Re-open the gate and bump the nonce (NOT graphDataVersion, so
+              // the signature — and therefore the retry counter — is stable)
+              // to re-run the fetch effect for the same query.
+              useGraphStore.getState().setGraphDataFetchAttempted(false)
+              setRetryNonce((n) => n + 1)
+            }, delay)
+          } else {
+            // Retries exhausted: stamp the signature to suppress further
+            // re-issues. The query can still recover via a parameter change or
+            // an explicit refresh (graphDataVersion bump), both of which yield
+            // a new signature and reset the retry budget.
+            console.error(
+              `[useLightragGraph] graph fetch failed after ${MAX_FETCH_RETRIES} retries, giving up:`,
+              fetchSignature
+            )
+            lastFetchSignatureRef.current = fetchSignature
+            toast.error(
+              t(
+                'graphPanel.fetchRetriesExhausted',
+                'Failed to load graph data. Use refresh to try again.'
+              )
+            )
+          }
         })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion])
+  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion, retryNonce])
+
+  // Clean up any pending backoff retry timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (retryTimerRef.current !== null) {
+        clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = null
+      }
+    }
+  }, [])
 
   // Handle node expansion
   useEffect(() => {

@@ -122,7 +122,12 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
         console.error('Error stopping layout:', error)
       }
       setRunning(false)
-      useGraphStore.getState().setIsLayoutComputing(false)
+      // Release the shared slot if we still own it (kills the stopped worker),
+      // so "activeLayoutSupervisor != null" reliably means a layout is running.
+      const store = useGraphStore.getState()
+      if (store.activeLayoutSupervisor === supervisorRef.current) {
+        store.setActiveLayoutSupervisor(null)
+      }
       if (reframe) {
         try {
           // Clear any custom bbox installed by node dragging, then refit.
@@ -150,6 +155,11 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
     supervisorRef.current = supervisor
     if (!supervisor) return
 
+    // Become the single layout owner. This kills whatever was running before
+    // (the initial FA2 from GraphControl, or a previously selected worker
+    // layout) so two supervisors never mutate the same coordinates at once.
+    useGraphStore.getState().setActiveLayoutSupervisor(supervisor)
+
     // A custom bbox frozen by dragging breaks coordinate normalization and
     // makes a relaxing layout look like it collapses; clear it before running.
     try {
@@ -158,15 +168,20 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
       /* ignore */
     }
 
-    // Show the overlay synchronously, but DEFER supervisor.start() so the
-    // browser actually paints first. Force's runFrame() runs sync on the
-    // main thread (O(V^2) at 70k+ nodes = multi-second block); rAF won't
-    // work here because rAF callbacks fire BEFORE the next paint, so the
-    // block lands before the overlay ever shows. setTimeout with a small
-    // delay guarantees at least one paint happens first. FA2/Noverlap
-    // don't strictly need this (their start() just posts to a real worker
-    // and returns), but the small delay is irrelevant for them too.
-    useGraphStore.getState().setIsLayoutComputing(true)
+    // No blocking overlay here: worker layouts are meant to stay interactive
+    // while they settle. FA2/Noverlap run in real Web Workers; the play/pause
+    // button (driven by `running`) is the live indicator, and the user can
+    // pause at any time. The full-screen overlay is reserved for the
+    // synchronous switch path in runLayout, which actually blocks the main
+    // thread. This also matches the initial FA2 layout in GraphControl, which
+    // deliberately does not set isLayoutComputing.
+    //
+    // We still DEFER supervisor.start() so the browser paints the Pause state
+    // first. Force's runFrame() runs sync on the main thread; rAF won't help
+    // because rAF callbacks fire BEFORE the next paint, so a small setTimeout
+    // guarantees a paint lands first. FA2/Noverlap don't strictly need this
+    // (their start() just posts to a real worker and returns), but the small
+    // delay is irrelevant for them too.
     setRunning(true)
     window.setTimeout(() => {
       // Bail if the user already switched layouts before we fired.
@@ -175,7 +190,6 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
         supervisor.start()
       } catch (error) {
         console.error('Error starting layout:', error)
-        useGraphStore.getState().setIsLayoutComputing(false)
         setRunning(false)
         return
       }
@@ -189,19 +203,29 @@ const WorkerLayoutControl = ({ layoutName }: { layoutName: WorkerLayoutName }) =
   // start() (which runs after this effect's cleanup), so cleanup correctly
   // kills the PREVIOUS layout's supervisor rather than the incoming one.
   useEffect(() => {
+    // Intentional: mounting this control means the layout was selected, so we
+    // auto-run it (start() spins up the worker supervisor and flips `running`).
+    // This is the "synchronize with an external system" case the rule exempts,
+    // not an accidental render cascade.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     start()
     return () => {
       clearTimer()
-      try {
-        supervisorRef.current?.kill()
-      } catch {
-        /* already dead */
+      // Release the shared slot if we still own it; otherwise just kill our
+      // own (previous) supervisor. start() for the incoming layout runs AFTER
+      // this cleanup, so the slot still points at our supervisor here.
+      const store = useGraphStore.getState()
+      if (store.activeLayoutSupervisor === supervisorRef.current) {
+        store.setActiveLayoutSupervisor(null) // kills our supervisor
+      } else {
+        try {
+          supervisorRef.current?.kill()
+        } catch {
+          /* already dead */
+        }
       }
       supervisorRef.current = null
       setRunning(false)
-      // Make sure the overlay clears even if we unmount mid-run (e.g. user
-      // switches from a worker layout to a sync one before the budget ends).
-      useGraphStore.getState().setIsLayoutComputing(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutName])
@@ -274,6 +298,10 @@ const LayoutsControl = () => {
       // coordinate normalization to the previous layout's extent.
       const doLayout = () => {
         try {
+          // Kill any running worker layout (notably the initial FA2, which has
+          // no WorkerLayoutControl to unmount) before assigning positions, or
+          // it keeps mutating coordinates and fights this synchronous layout.
+          useGraphStore.getState().setActiveLayoutSupervisor(null)
           const pos = syncLayouts[newLayout].positions()
           sigma.setCustomBBox(null)
           if (graph.order > ANIMATE_NODE_LIMIT) {

@@ -4,6 +4,12 @@ import { DirectedGraph } from 'graphology'
 import MiniSearch from 'minisearch'
 import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
 
+// Minimal imperative handle the store needs to own a running layout: enough to
+// terminate the previous one before a new layout takes over.
+export interface LayoutSupervisorHandle {
+  kill: () => void
+}
+
 const createErrorWithCause = (message: string, cause: unknown): Error => {
   const error = new Error(message) as Error & { cause?: unknown }
   error.cause = cause
@@ -125,6 +131,15 @@ interface GraphState {
   isLayoutComputing: boolean
   setIsLayoutComputing: (running: boolean) => void
 
+  // Single-owner handle for the running worker-layout supervisor. Only ONE
+  // layout may run at a time: the initial FA2 (GraphControl) and a manually
+  // selected worker layout (LayoutsControl) both register here. Registering a
+  // new owner (or null) kills the previous supervisor first, so two layouts
+  // never mutate the same node coordinates concurrently (the tug-of-war/jitter
+  // bug). Not reactive — consumers read it via getState().
+  activeLayoutSupervisor: LayoutSupervisorHandle | null
+  setActiveLayoutSupervisor: (next: LayoutSupervisorHandle | null) => void
+
   // Legend color mapping methods
   setTypeColorMap: (typeColorMap: Map<string, string>) => void
 
@@ -184,6 +199,19 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   isLayoutComputing: false,
   setIsLayoutComputing: (running: boolean) => set({ isLayoutComputing: running }),
+
+  activeLayoutSupervisor: null,
+  setActiveLayoutSupervisor: (next: LayoutSupervisorHandle | null) => {
+    const prev = get().activeLayoutSupervisor
+    if (prev && prev !== next) {
+      try {
+        prev.kill()
+      } catch {
+        /* worker already terminated */
+      }
+    }
+    set({ activeLayoutSupervisor: next })
+  },
 
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),

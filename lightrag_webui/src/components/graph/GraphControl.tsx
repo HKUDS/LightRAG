@@ -92,6 +92,9 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         settings: forceAtlas2.inferSettings(sigmaGraph.order)
       })
       layout.start()
+      // Become the single layout owner. If a previous layout is somehow still
+      // registered, this kills it so only one supervisor mutates coordinates.
+      useGraphStore.getState().setActiveLayoutSupervisor(layout)
       console.log(`FA2 worker layout started (${sigmaGraph.order} nodes)`)
     } catch (error) {
       console.error('Error starting FA2 worker layout:', error)
@@ -116,10 +119,18 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
     return () => {
       window.clearTimeout(timer)
-      try {
-        layout?.kill()
-      } catch {
-        /* worker already terminated */
+      // Only release the shared slot if we still own it: a manually selected
+      // worker layout may have taken over (and already killed `layout`), and
+      // we must not kill that newer layout.
+      const store = useGraphStore.getState()
+      if (store.activeLayoutSupervisor === layout) {
+        store.setActiveLayoutSupervisor(null) // kills `layout`
+      } else {
+        try {
+          layout?.kill()
+        } catch {
+          /* worker already terminated */
+        }
       }
     }
   }, [sigma, sigmaGraph])
