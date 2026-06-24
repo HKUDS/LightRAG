@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import bcrypt
 import pytest
+from fastapi import HTTPException
+from starlette.status import HTTP_403_FORBIDDEN
 
 from lightrag.api.passwords import BCRYPT_PASSWORD_PREFIX, hash_password
 from lightrag.tools.hash_password import main as hash_password_main
@@ -151,6 +153,103 @@ def test_guest_tokens_fall_back_to_default_secret_when_token_secret_missing(
     )
 
     sys.modules.pop("lightrag.api.auth", None)
+
+
+def _load_api_key_only_modules(monkeypatch):
+    """Import auth + utils_api in the API-key-only profile.
+
+    API-key-only = an API key is set but AUTH_ACCOUNTS is empty, so
+    ``auth_configured`` is False and AuthHandler falls back to the public
+    DEFAULT_TOKEN_SECRET. Returns (config, auth, utils_api).
+    """
+    config = import_real_api_module("lightrag.api.config")
+
+    mock_global_args = SimpleNamespace(
+        token_secret=None,  # -> AuthHandler falls back to DEFAULT_TOKEN_SECRET
+        jwt_algorithm="HS256",
+        token_expire_hours=48,
+        guest_token_expire_hours=24,
+        auth_accounts="",  # no password accounts -> auth_configured is False
+        whitelist_paths="/health",  # consumed by utils_api at import time
+        token_auto_renew=False,
+    )
+    monkeypatch.setattr(config, "global_args", mock_global_args)
+
+    auth = import_real_api_module("lightrag.api.auth")
+    auth = importlib.reload(auth)
+    utils_api = import_real_api_module("lightrag.api.utils_api")
+    return config, auth, utils_api
+
+
+async def test_combined_auth_rejects_guest_token_in_api_key_mode(monkeypatch):
+    """A forged/obtained guest token must not bypass the X-API-Key check.
+
+    Regression for GHSA-f4vv-55c2-5789 / GHSA-xr5c-v5r6-c9f9: in the
+    API-key-only profile an anonymous caller can mint a guest JWT with the
+    public default secret (or fetch one from /auth-status) and previously
+    short-circuited authorization before the API key was ever checked.
+    """
+    config, auth, utils_api = _load_api_key_only_modules(monkeypatch)
+    try:
+        assert utils_api.auth_configured is False
+        assert auth.auth_handler.secret == config.DEFAULT_TOKEN_SECRET
+
+        forged_guest = auth.auth_handler.create_token(username="guest", role="guest")
+
+        api_key = "operator-secret-key"
+        dependency = utils_api.get_combined_auth_dependency(api_key=api_key)
+
+        request = SimpleNamespace(url=SimpleNamespace(path="/documents"), scope={})
+        response = SimpleNamespace(headers={})
+
+        # Forged guest token, no API key -> rejected (was HTTP 200 before the fix).
+        with pytest.raises(HTTPException) as rejected:
+            await dependency(
+                request=request,
+                response=response,
+                token=forged_guest,
+                api_key_header_value=None,
+            )
+        assert rejected.value.status_code == HTTP_403_FORBIDDEN
+
+        # Guest token together with the real API key -> allowed (the WebUI sends
+        # both Authorization and X-API-Key headers).
+        result = await dependency(
+            request=request,
+            response=response,
+            token=forged_guest,
+            api_key_header_value=api_key,
+        )
+        assert result is None
+    finally:
+        sys.modules.pop("lightrag.api.utils_api", None)
+        sys.modules.pop("lightrag.api.auth", None)
+
+
+async def test_combined_auth_allows_guest_token_when_fully_open(monkeypatch):
+    """Fully-open mode (no API key, no AUTH_ACCOUNTS) keeps accepting guest tokens.
+
+    Guards against over-fixing: the bypass fix must not break zero-config guest
+    access, which is the intended convenience mode.
+    """
+    _config, auth, utils_api = _load_api_key_only_modules(monkeypatch)
+    try:
+        guest_token = auth.auth_handler.create_token(username="guest", role="guest")
+
+        dependency = utils_api.get_combined_auth_dependency(api_key=None)
+        request = SimpleNamespace(url=SimpleNamespace(path="/documents"), scope={})
+        response = SimpleNamespace(headers={})
+
+        result = await dependency(
+            request=request,
+            response=response,
+            token=guest_token,
+            api_key_header_value=None,
+        )
+        assert result is None
+    finally:
+        sys.modules.pop("lightrag.api.utils_api", None)
+        sys.modules.pop("lightrag.api.auth", None)
 
 
 def test_hash_password_returns_prefixed_value(auth_module):
