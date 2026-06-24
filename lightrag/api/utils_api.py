@@ -299,9 +299,11 @@ def whitelist_exposes_api_routes(whitelist_paths: str) -> bool:
         if entry.endswith("/*"):
             # Prefix match: this entry exempts an /api route when some /api path
             # starts with the prefix ("/api".startswith(prefix) also covers the
-            # empty catch-all prefix from "/*") or the prefix lives under /api.
+            # empty catch-all prefix from "/*") or the prefix is itself under
+            # /api/. The "/api/" boundary matters: "/apiary/*" only exempts
+            # /apiary..., not /api/chat, so it must NOT be flagged.
             prefix = entry[:-2]
-            if "/api".startswith(prefix) or prefix.startswith("/api"):
+            if "/api".startswith(prefix) or prefix.startswith("/api/"):
                 return True
         else:
             # Exact match: only the literal path is exempted.

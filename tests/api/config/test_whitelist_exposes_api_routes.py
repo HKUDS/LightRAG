@@ -68,6 +68,7 @@ def test_exposes_api_routes(whitelist_exposes_api_routes, whitelist: str) -> Non
         "/health",
         "/health,/docs",
         "/health/*",  # unrelated prefix
+        "/apiary/*",  # prefix under /api... but not /api/ — exempts only /apiary
         "/apidocs",  # exact path that merely shares the /api substring
         "",
         "   ",

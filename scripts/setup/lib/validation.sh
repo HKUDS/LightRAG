@@ -452,9 +452,11 @@ whitelist_exposes_api_routes() {
     if [[ "$trimmed_entry" == *"/*" ]]; then
       # Prefix match (mirrors get_combined_auth_dependency): the entry exempts
       # an /api route when "/api" starts with the prefix — which includes the
-      # empty prefix produced by the catch-all "/*" — or the prefix is under /api.
+      # empty prefix produced by the catch-all "/*" — or the prefix is itself
+      # under "/api/". The "/api/" boundary matters: "/apiary/*" only exempts
+      # /apiary..., not /api/chat, so it must NOT be flagged.
       prefix="${trimmed_entry%/\*}"
-      if [[ "/api" == "$prefix"* || "$prefix" == "/api"* ]]; then
+      if [[ "/api" == "$prefix"* || "$prefix" == "/api/"* ]]; then
         return 0
       fi
     else

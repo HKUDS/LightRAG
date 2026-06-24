@@ -1957,6 +1957,40 @@ security_check_env_file
     assert "WHITELIST_PATHS exposes /api routes" in result.stdout
 
 
+def test_security_check_passes_for_api_key_only_with_apiary_whitelist(
+    tmp_path: Path,
+) -> None:
+    """A /apiary/* whitelist exempts only /apiary, not /api/chat, and must NOT be flagged.
+
+    Guards the /api/ route boundary: the wildcard-prefix check must not treat
+    any prefix that merely begins with the substring "/api" as exposing the
+    Ollama routes, which would fail the audit on a safe whitelist.
+    """
+    write_text_lines(
+        tmp_path / ".env",
+        ["LIGHTRAG_API_KEY=my-secret-key", "WHITELIST_PATHS=/health,/apiary/*"],
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "--norc",
+            "--noprofile",
+            "-c",
+            f"""
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+security_check_env_file
+""",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "No obvious security issues found" in result.stdout
+
+
 def test_security_check_passes_for_api_key_only_with_safe_whitelist(
     tmp_path: Path,
 ) -> None:
