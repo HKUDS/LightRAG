@@ -151,7 +151,13 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   useEffect(() => {
     if (sigma) {
       const currentInstance = useGraphStore.getState().sigmaInstance
-      if (!currentInstance) {
+      // Update when the instance CHANGED, not only when it's unset. A theme
+      // toggle, an effectiveEdgeEvents flip, or crossing the edge threshold
+      // rebuilds the SigmaContainer (old instance killed, new one created); if
+      // we only wrote on an empty store the killed instance would linger there
+      // and consumers (e.g. expand reading sigmaInstance.getCamera()) would act
+      // on a dead Sigma.
+      if (currentInstance !== sigma) {
         console.log('Setting sigma instance from GraphControl')
         useGraphStore.getState().setSigmaInstance(sigma)
       }
