@@ -37,11 +37,18 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
+  const graphEdgeCount = useGraphStore.use.graphEdgeCount()
 
   // The graph the initial FA2 layout has already been run for. Used to run the
   // layout once PER GRAPH, not once per sigma instance (a theme change rebuilds
   // the instance and re-runs the bind effect with the SAME graph).
   const laidOutGraphRef = useRef<unknown>(null)
+
+  // Last (sigma instance, curved decision) the edge-type effect applied. A
+  // rebuild (theme toggle / edge-events gating) creates a fresh sigma whose
+  // defaultEdgeType reverts to its construction default ('rect'), so we must
+  // re-apply when the INSTANCE changed too — not only when the decision flips.
+  const edgeTypeRef = useRef<{ sigma: unknown; curved: boolean } | null>(null)
 
   /**
    * When component mounts or the graph changes
@@ -181,6 +188,33 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       camera.removeListener('updated', refreshWhenIdle)
     }
   }, [sigma])
+
+  /**
+   * Adapt edge geometry to graph size: curves for small graphs (nicer to read),
+   * straight rectangles above EDGE_PERF_LIMIT (curve tessellation is costly).
+   *
+   * Edges carry no per-edge `type`, so switching `defaultEdgeType` + a full
+   * `refresh()` (which re-adds edges through applyEdgeDefaults) re-selects the
+   * program for the whole graph without touching attributes or rebuilding.
+   *
+   * The ref tracks BOTH the sigma instance and the decision: re-apply when the
+   * instance changed (a rebuild resets defaultEdgeType to 'rect') OR when the
+   * curved/straight decision flipped; skip otherwise so routine expand/prune
+   * within one band don't trigger a full refresh.
+   */
+  useEffect(() => {
+    if (!sigma) return
+    const curved = graphEdgeCount > 0 && graphEdgeCount <= Constants.EDGE_PERF_LIMIT
+    const prev = edgeTypeRef.current
+    if (prev && prev.sigma === sigma && prev.curved === curved) return
+    edgeTypeRef.current = { sigma, curved }
+    setSettings({ defaultEdgeType: curved ? 'curvedNoArrow' : 'rect' })
+    try {
+      sigma.refresh()
+    } catch {
+      /* sigma instance already killed */
+    }
+  }, [sigma, graphEdgeCount, setSettings])
 
   /**
    * When component mounts
