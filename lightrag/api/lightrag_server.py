@@ -1360,13 +1360,19 @@ def create_app(args):
             return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
     def get_cors_origins():
-        """Get allowed origins from global_args
-        Returns a list of allowed origins, defaults to ["*"] if not set
+        """Get allowed origins from global_args.
+
+        Returns a list of allowed origins. The wildcard default ["*"] applies
+        only when CORS_ORIGINS is unset (config defaults the value to "*"). An
+        explicitly empty or origin-less value (e.g. CORS_ORIGINS= or a stray
+        comma) fails closed, returning an empty list so that no cross-origin
+        browser access is granted rather than silently widening to "*". Empty
+        entries (e.g. from a trailing comma) are dropped.
         """
         origins_str = global_args.cors_origins
         if origins_str == "*":
             return ["*"]
-        return [origin.strip() for origin in origins_str.split(",")]
+        return [origin.strip() for origin in origins_str.split(",") if origin.strip()]
 
     # Normalize scope["path"] for proxy-strip deployments so the WebUI
     # Mount (and any other Mount) routes correctly. Added before CORS so it
@@ -1376,10 +1382,27 @@ def create_app(args):
         app.add_middleware(_RootPathNormalizationMiddleware)
 
     # Add CORS middleware
+    cors_origins = get_cors_origins()
+    # Per the Fetch spec, the wildcard origin "*" and credentialed requests are
+    # mutually exclusive: a server must not pair "Access-Control-Allow-Origin: *"
+    # with "Access-Control-Allow-Credentials: true". LightRAG authenticates via
+    # the Authorization (Bearer) and X-API-Key request headers, never via cookies
+    # or other ambient credentials, so credentials are only ever meaningful for an
+    # explicit origin allowlist. When origins are wildcarded we therefore disable
+    # credentials to keep the configuration spec-compliant and avoid the permissive
+    # "reflect any origin with credentials" behavior that Starlette would otherwise
+    # apply to cookie-bearing cross-origin requests.
+    #
+    # Starlette treats ANY allow_origins list that contains "*" as allow-all, so we
+    # must test membership rather than exact equality: a mixed config such as
+    # "*,https://app.example.com" is still allow-all and must not enable credentials.
+    # An empty list is a fail-closed (no-origin) config, which also gets no
+    # credentials header.
+    allow_credentials = bool(cors_origins) and "*" not in cors_origins
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=get_cors_origins(),
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=[
