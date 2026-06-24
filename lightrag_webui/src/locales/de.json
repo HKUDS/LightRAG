@@ -251,6 +251,7 @@
         "showEdgeLabel": "Kantenbezeichnung anzeigen",
         "hideUnselectedEdges": "Nicht ausgewählte Kanten ausblenden",
         "edgeEvents": "Kanten-Ereignisse",
+        "edgeEventsDisabledHint": "Deaktiviert für Graphen mit mehr als {{count}} Kanten",
         "maxQueryDepth": "Maximale Abfragetiefe",
         "maxNodes": "Maximale Knotenanzahl",
         "resetToDefault": "Auf Standard zurücksetzen",

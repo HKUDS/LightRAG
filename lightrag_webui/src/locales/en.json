@@ -251,6 +251,7 @@
         "showEdgeLabel": "Show Edge Label",
         "hideUnselectedEdges": "Hide Unselected Edges",
         "edgeEvents": "Edge Events",
+        "edgeEventsDisabledHint": "Disabled for graphs with more than {{count}} edges",
         "maxQueryDepth": "Max Query Depth",
         "maxNodes": "Max Nodes",
         "resetToDefault": "Reset to default",

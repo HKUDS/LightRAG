@@ -251,6 +251,7 @@
         "showEdgeLabel": "Hiển Thị Nhãn Cạnh",
         "hideUnselectedEdges": "Ẩn Cạnh Không Được Chọn",
         "edgeEvents": "Sự Kiện Cạnh",
+        "edgeEventsDisabledHint": "Bị vô hiệu hóa với đồ thị có hơn {{count}} cạnh",
         "maxQueryDepth": "Độ Sâu Truy Vấn Tối Đa",
         "maxNodes": "Số Nút Tối Đa",
         "resetToDefault": "Đặt lại về mặc định",

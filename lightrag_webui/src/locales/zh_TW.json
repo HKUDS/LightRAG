@@ -251,6 +251,7 @@
         "showEdgeLabel": "顯示 Edge 標籤",
         "hideUnselectedEdges": "隱藏未選取的 Edge",
         "edgeEvents": "Edge 事件",
+        "edgeEventsDisabledHint": "圖的邊數超過 {{count}} 時停用",
         "maxQueryDepth": "最大查詢深度",
         "maxNodes": "最大回傳節點數",
         "resetToDefault": "重設為預設值",

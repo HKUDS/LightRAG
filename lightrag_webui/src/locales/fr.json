@@ -251,6 +251,7 @@
         "showEdgeLabel": "Afficher l'étiquette de l'arête",
         "hideUnselectedEdges": "Masquer les arêtes non sélectionnées",
         "edgeEvents": "Événements des arêtes",
+        "edgeEventsDisabledHint": "Désactivé pour les graphes de plus de {{count}} arêtes",
         "maxQueryDepth": "Profondeur maximale de la requête",
         "maxNodes": "Nombre maximum de nœuds",
         "resetToDefault": "Réinitialiser par défaut",

@@ -251,6 +251,7 @@
         "showEdgeLabel": "Показать метки рёбер",
         "hideUnselectedEdges": "Скрыть невыбранные рёбра",
         "edgeEvents": "События рёбер",
+        "edgeEventsDisabledHint": "Отключено для графов с более чем {{count}} рёбрами",
         "maxQueryDepth": "Максимальная глубина запроса",
         "maxNodes": "Максимальное количество узлов",
         "resetToDefault": "Сбросить к значениям по умолчанию",

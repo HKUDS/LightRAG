@@ -251,6 +251,7 @@
         "showEdgeLabel": "엣지 레이블 표시",
         "hideUnselectedEdges": "선택되지 않은 엣지 숨기기",
         "edgeEvents": "엣지 이벤트",
+        "edgeEventsDisabledHint": "엣지가 {{count}}개를 초과하는 그래프에서는 비활성화됩니다",
         "maxQueryDepth": "최대 쿼리 깊이",
         "maxNodes": "최대 노드",
         "resetToDefault": "기본값으로 재설정",

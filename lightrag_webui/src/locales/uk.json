@@ -251,6 +251,7 @@
         "showEdgeLabel": "Показати мітку ребра",
         "hideUnselectedEdges": "Приховати невибрані ребра",
         "edgeEvents": "Події ребер",
+        "edgeEventsDisabledHint": "Вимкнено для графів із понад {{count}} ребрами",
         "maxQueryDepth": "Максимальна глибина запиту",
         "maxNodes": "Максимальна кількість вузлів",
         "resetToDefault": "Скинути до за замовчуванням",
