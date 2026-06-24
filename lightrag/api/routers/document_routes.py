@@ -3212,6 +3212,20 @@ def create_document_routes(
                     except Exception as e:
                         logger.error(f"Error deleting file {file_path}: {str(e)}")
                         file_errors_count += 1
+            parsed_dir = doc_manager.input_dir / PARSED_DIR_NAME
+            if parsed_dir.is_dir():
+                for artifact_path in parsed_dir.iterdir():
+                    try:
+                        if artifact_path.is_dir() and not artifact_path.is_symlink():
+                            shutil.rmtree(artifact_path)
+                        else:
+                            artifact_path.unlink()
+                        deleted_files_count += 1
+                    except Exception as e:
+                        logger.error(
+                            f"Error deleting parsed artifact {artifact_path}: {str(e)}"
+                        )
+                        file_errors_count += 1
 
             # Log file deletion results
             if "history_messages" in pipeline_status:

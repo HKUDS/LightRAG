@@ -2168,3 +2168,46 @@ async def test_clear_documents_succeeds_when_all_drops_succeed(tmp_path):
     response = await _clear_endpoint(router)()
 
     assert response.status == "success"
+
+
+async def test_clear_documents_removes_parsed_artifacts_but_preserves_user_subdirs(
+    tmp_path,
+):
+    """Full clear removes LightRAG-managed parsed artifacts without deleting
+    unrelated user-created subdirectories under the input directory.
+    """
+    import importlib
+
+    root_file = tmp_path / "demo.pdf"
+    root_file.write_bytes(b"source")
+    user_file = tmp_path / "user_notes" / "keep.txt"
+    user_file.parent.mkdir()
+    user_file.write_text("keep", encoding="utf-8")
+
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    (parsed_dir / "demo.pdf").write_bytes(b"archived source")
+    sidecar_dir = parsed_dir / "demo.pdf.parsed"
+    sidecar_dir.mkdir()
+    (sidecar_dir / "demo.blocks.jsonl").write_text("{}\n", encoding="utf-8")
+    mineru_raw = parsed_dir / "demo.pdf.mineru_raw"
+    mineru_raw.mkdir()
+    (mineru_raw / "content_list.json").write_text("[]", encoding="utf-8")
+    docling_raw = parsed_dir / "demo.pdf.docling_raw"
+    docling_raw.mkdir()
+    (docling_raw / "demo.json").write_text("{}", encoding="utf-8")
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ClearRag(chunks_drop_result={"status": "success", "message": "data dropped"})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    router = create_document_routes(rag, doc_manager)
+    response = await _clear_endpoint(router)()
+
+    assert response.status == "success"
+    assert not root_file.exists()
+    assert parsed_dir.is_dir()
+    assert list(parsed_dir.iterdir()) == []
+    assert user_file.read_text(encoding="utf-8") == "keep"
