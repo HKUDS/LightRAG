@@ -35,8 +35,16 @@ import { labelColorDarkTheme, labelColorLightTheme, edgeColorDarkTheme } from '@
 import '@react-sigma/core/lib/style.css'
 import '@react-sigma/graph-search/lib/style.css'
 
-// Function to create sigma settings based on theme
-const createSigmaSettings = (isDarkTheme: boolean): Partial<SigmaSettings> => ({
+// Function to create sigma settings based on theme.
+// `enableEdgeEvents` MUST be passed in (not toggled at runtime): sigma allocates
+// the edge WebGL picking buffer once at construction based on this flag, so a
+// later setSettings({ enableEdgeEvents: true }) cannot retroactively enable edge
+// hover/click. We therefore key it off the user setting here and let the
+// SigmaContainer rebuild the instance when the setting changes.
+const createSigmaSettings = (
+  isDarkTheme: boolean,
+  enableEdgeEvents: boolean
+): Partial<SigmaSettings> => ({
   allowInvalidContainer: true,
   // Nodes use the border program so every node gets a white ring (the
   // @sigma/node-border default reads `borderColor` for the ring, `color` for
@@ -69,7 +77,10 @@ const createSigmaSettings = (isDarkTheme: boolean): Partial<SigmaSettings> => ({
   },
   labelGridCellSize: 60,
   labelRenderedSizeThreshold: 12,
-  enableEdgeEvents: false,
+  // Off by default (edge picking renders edges to an extra buffer every frame —
+  // costly on large graphs); turning on the "Edge Events" setting rebuilds the
+  // instance with the picking buffer so edges become hover/click-selectable.
+  enableEdgeEvents,
   // Without per-edge reducers (disabled when nothing is focused), edges with
   // no color attribute fall back to this.
   defaultEdgeColor: isDarkTheme ? edgeColorDarkTheme : '#d3d3d3',
@@ -146,6 +157,7 @@ const GraphViewer = () => {
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
   const showLegend = useSettingsStore.use.showLegend()
   const theme = useSettingsStore.use.theme()
+  const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
 
   const [isThemeSwitching, setIsThemeSwitching] = useState(false)
 
@@ -157,7 +169,12 @@ const GraphViewer = () => {
   // RESOLVED dark mode, not the raw theme: under theme === 'system' + OS dark
   // the old `theme === 'dark'` check produced light-theme defaults, which the
   // idle-state (null reducers) graph rendered verbatim.
-  const memoizedSigmaSettings = useMemo(() => createSigmaSettings(isDarkMode), [isDarkMode])
+  // enableEdgeEvents is in the deps because it must be baked in at construction
+  // (the picking buffer can't be added later); toggling it rebuilds the instance.
+  const memoizedSigmaSettings = useMemo(
+    () => createSigmaSettings(isDarkMode, enableEdgeEvents),
+    [isDarkMode, enableEdgeEvents]
+  )
 
   // Detect theme changes and briefly show a loading overlay to avoid flash of
   // unstyled content. setState is inside setTimeout (async), not synchronously
