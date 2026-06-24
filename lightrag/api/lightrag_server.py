@@ -28,6 +28,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from lightrag.api.utils_api import (
     get_combined_auth_dependency,
+    get_auth_status_dependency,
     display_splash_screen,
     check_env_file,
 )
@@ -1412,6 +1413,9 @@ def create_app(args):
 
     # Create combined auth dependency for all endpoints
     combined_auth = get_combined_auth_dependency(api_key)
+    # Non-enforcing dependency: reports whether the caller is authenticated so
+    # /health can stay a public liveness probe while gating sensitive config.
+    auth_status = get_auth_status_dependency(api_key)
 
     def get_workspace_from_request(request: Request) -> str | None:
         """
@@ -2220,8 +2224,13 @@ def create_app(args):
         "/health",
         dependencies=[Depends(combined_auth)],
         summary="Get system health and configuration status",
-        description="Returns comprehensive system status including WebUI availability, configuration, and operational metrics",
-        response_description="System health status with configuration details",
+        description=(
+            "Always reachable as a liveness probe (HTTP 200). Unauthenticated "
+            "callers receive only liveness signals (status, versions, auth_mode, "
+            "pipeline_busy). The full configuration and operational metrics are "
+            "returned only to authenticated callers (valid JWT or X-API-Key)."
+        ),
+        response_description="System health status; configuration included only when authenticated",
         responses={
             200: {
                 "description": "Successful response with system status",
@@ -2272,8 +2281,13 @@ def create_app(args):
             }
         },
     )
-    async def get_status(request: Request):
-        """Get current system status including WebUI availability"""
+    async def get_status(request: Request, authenticated: bool = Depends(auth_status)):
+        """Get current system status including WebUI availability.
+
+        Stays a public liveness probe: unauthenticated callers receive only
+        liveness signals; sensitive configuration is returned only when the
+        caller is authenticated (see get_auth_status_dependency).
+        """
         try:
             workspace = get_workspace_from_request(request)
             default_workspace = get_default_workspace()
@@ -2303,81 +2317,104 @@ def create_app(args):
             else:
                 auth_mode = "enabled"
 
+            # Liveness payload — always returned, even to unauthenticated
+            # callers, so /health stays a usable liveness probe (HTTP 200).
+            # Every field here is either a pure liveness signal or is already
+            # exposed by the unauthenticated /auth-status endpoint, so it leaks
+            # nothing new.
+            status_data = {
+                "status": "healthy",
+                "auth_mode": auth_mode,
+                "core_version": core_version,
+                "api_version": api_version_display,
+                "webui_available": webui_assets_exist,
+                "webui_title": webui_title,
+                "webui_description": webui_description,
+                "pipeline_busy": pipeline_busy,
+                "pipeline_active": pipeline_active,
+            }
+
+            # Sensitive runtime configuration and operational diagnostics
+            # (filesystem paths, LLM/embedding provider + model + host, storage
+            # backends, queue status, keyed locks, ...) are revealed only to
+            # authenticated callers — see Issue #3294. The skipped queue-status
+            # and keyed-lock-cleanup calls also keep unauthenticated probes cheap.
+            if not authenticated:
+                return status_data
+
             # Cleanup expired keyed locks and get status
             keyed_lock_info = cleanup_keyed_lock()
 
-            return {
-                "status": "healthy",
-                "webui_available": webui_assets_exist,
-                "working_directory": str(args.working_dir),
-                "input_directory": str(args.input_dir),
-                "configuration": {
-                    # LLM configuration binding/host address (if applicable)/model (if applicable)
-                    "llm_binding": args.llm_binding,
-                    "llm_binding_host": args.llm_binding_host,
-                    "llm_model": args.llm_model,
-                    # embedding model configuration binding/host address (if applicable)/model (if applicable)
-                    "embedding_binding": args.embedding_binding,
-                    "embedding_binding_host": args.embedding_binding_host,
-                    "embedding_model": args.embedding_model,
-                    "summary_max_tokens": args.summary_max_tokens,
-                    "summary_context_size": args.summary_context_size,
-                    "kv_storage": args.kv_storage,
-                    "doc_status_storage": args.doc_status_storage,
-                    "graph_storage": args.graph_storage,
-                    "vector_storage": args.vector_storage,
-                    "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
-                    "enable_llm_cache": args.enable_llm_cache,
-                    "vlm_process_enable": args.vlm_process_enable,
-                    "workspace": default_workspace,
-                    "storage_workspaces": _get_storage_workspaces(rag),
-                    "max_graph_nodes": args.max_graph_nodes,
-                    # Rerank configuration
-                    "enable_rerank": rerank_model_func is not None,
-                    "rerank_binding": args.rerank_binding,
-                    "rerank_model": args.rerank_model if rerank_model_func else None,
-                    "rerank_binding_host": args.rerank_binding_host
-                    if rerank_model_func
-                    else None,
-                    "rerank_max_async": args.rerank_max_async,
-                    "rerank_timeout": args.rerank_timeout,
-                    # Environment variable status (requested configuration)
-                    "summary_language": args.summary_language,
-                    "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
-                    "max_parallel_insert": args.max_parallel_insert,
-                    "cosine_threshold": args.cosine_threshold,
-                    "min_rerank_score": args.min_rerank_score,
-                    "related_chunk_number": args.related_chunk_number,
-                    "max_async": args.max_async,
-                    "llm_timeout": args.llm_timeout,
-                    "embedding_func_max_async": args.embedding_func_max_async,
-                    "embedding_batch_num": args.embedding_batch_num,
-                    "embedding_timeout": args.embedding_timeout,
-                    "role_llm_config": rag.get_llm_role_config(),
-                    # Parser routing snapshot — surfaced in the WebUI status card
-                    "parser_routing": parser_rules_from_env(),
-                    "mineru": _build_mineru_status(),
-                    "docling": _build_docling_status(),
-                },
-                "auth_mode": auth_mode,
-                "server_mode": "gunicorn"
-                if os.environ.get("LIGHTRAG_GUNICORN_MODE")
-                else "uvicorn",
-                "workers": getattr(args, "workers", 1),
-                "pipeline_busy": pipeline_busy,
-                "pipeline_active": pipeline_active,
-                "pipeline_scanning": pipeline_scanning,
-                "pipeline_destructive_busy": pipeline_destructive_busy,
-                "pipeline_pending_enqueues": pipeline_pending_enqueues,
-                "keyed_locks": keyed_lock_info,
-                "llm_queue_status": await rag.get_llm_queue_status(include_base=True),
-                "embedding_queue_status": await rag.get_embedding_queue_status(),
-                "rerank_queue_status": await rag.get_rerank_queue_status(),
-                "core_version": core_version,
-                "api_version": api_version_display,
-                "webui_title": webui_title,
-                "webui_description": webui_description,
-            }
+            status_data.update(
+                {
+                    "working_directory": str(args.working_dir),
+                    "input_directory": str(args.input_dir),
+                    "configuration": {
+                        # LLM configuration binding/host address (if applicable)/model (if applicable)
+                        "llm_binding": args.llm_binding,
+                        "llm_binding_host": args.llm_binding_host,
+                        "llm_model": args.llm_model,
+                        # embedding model configuration binding/host address (if applicable)/model (if applicable)
+                        "embedding_binding": args.embedding_binding,
+                        "embedding_binding_host": args.embedding_binding_host,
+                        "embedding_model": args.embedding_model,
+                        "summary_max_tokens": args.summary_max_tokens,
+                        "summary_context_size": args.summary_context_size,
+                        "kv_storage": args.kv_storage,
+                        "doc_status_storage": args.doc_status_storage,
+                        "graph_storage": args.graph_storage,
+                        "vector_storage": args.vector_storage,
+                        "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
+                        "enable_llm_cache": args.enable_llm_cache,
+                        "vlm_process_enable": args.vlm_process_enable,
+                        "workspace": default_workspace,
+                        "storage_workspaces": _get_storage_workspaces(rag),
+                        "max_graph_nodes": args.max_graph_nodes,
+                        # Rerank configuration
+                        "enable_rerank": rerank_model_func is not None,
+                        "rerank_binding": args.rerank_binding,
+                        "rerank_model": args.rerank_model
+                        if rerank_model_func
+                        else None,
+                        "rerank_binding_host": args.rerank_binding_host
+                        if rerank_model_func
+                        else None,
+                        "rerank_max_async": args.rerank_max_async,
+                        "rerank_timeout": args.rerank_timeout,
+                        # Environment variable status (requested configuration)
+                        "summary_language": args.summary_language,
+                        "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
+                        "max_parallel_insert": args.max_parallel_insert,
+                        "cosine_threshold": args.cosine_threshold,
+                        "min_rerank_score": args.min_rerank_score,
+                        "related_chunk_number": args.related_chunk_number,
+                        "max_async": args.max_async,
+                        "llm_timeout": args.llm_timeout,
+                        "embedding_func_max_async": args.embedding_func_max_async,
+                        "embedding_batch_num": args.embedding_batch_num,
+                        "embedding_timeout": args.embedding_timeout,
+                        "role_llm_config": rag.get_llm_role_config(),
+                        # Parser routing snapshot — surfaced in the WebUI status card
+                        "parser_routing": parser_rules_from_env(),
+                        "mineru": _build_mineru_status(),
+                        "docling": _build_docling_status(),
+                    },
+                    "server_mode": "gunicorn"
+                    if os.environ.get("LIGHTRAG_GUNICORN_MODE")
+                    else "uvicorn",
+                    "workers": getattr(args, "workers", 1),
+                    "pipeline_scanning": pipeline_scanning,
+                    "pipeline_destructive_busy": pipeline_destructive_busy,
+                    "pipeline_pending_enqueues": pipeline_pending_enqueues,
+                    "keyed_locks": keyed_lock_info,
+                    "llm_queue_status": await rag.get_llm_queue_status(
+                        include_base=True
+                    ),
+                    "embedding_queue_status": await rag.get_embedding_queue_status(),
+                    "rerank_queue_status": await rag.get_rerank_queue_status(),
+                }
+            )
+            return status_data
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))

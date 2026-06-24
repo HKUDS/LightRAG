@@ -598,7 +598,7 @@ LIGHTRAG_API_KEY=your-secure-api-key-here
 WHITELIST_PATHS=/health,/api/*
 ```
 
-> Health check and Ollama emulation endpoints are excluded from API Key check by default. For security reasons, remove `/api/*` from `WHITELIST_PATHS` if the Ollama service is not required.
+> Health check and Ollama emulation endpoints are excluded from API Key check by default. For security reasons, remove `/api/*` from `WHITELIST_PATHS` if the Ollama service is not required. `/health` stays whitelisted as a liveness probe but only returns its full configuration to authenticated callers — unauthenticated requests get liveness signals only.
 
 The API key is passed using the request header `X-API-Key`. Below is an example of accessing the LightRAG Server via API:
 
@@ -1130,7 +1130,7 @@ You can test the API endpoints using the provided curl commands or through the S
 4. Query the system using the query endpoints
 5. Trigger document scan if new files are put into the inputs directory
 
-The `/health` endpoint reports operational state and selected configuration, including role LLM configuration, LLM/embedding/rerank queue status, workspace/storage workspace mapping, VLM enablement, rerank enablement, and pipeline busy/scanning/destructive status.
+The `/health` endpoint reports operational state and selected configuration, including role LLM configuration, LLM/embedding/rerank queue status, workspace/storage workspace mapping, VLM enablement, rerank enablement, and pipeline busy/scanning/destructive status. It always returns HTTP 200 so it stays usable as a liveness probe, but the configuration and operational diagnostics are returned **only to authenticated callers** (valid JWT or `X-API-Key`). Unauthenticated callers receive only liveness signals (`status`, `auth_mode`, `core_version`, `api_version`, `pipeline_busy`/`pipeline_active`, and the WebUI title/availability fields — all of which are also exposed by the unauthenticated `/auth-status` endpoint or are plain booleans). Provide credentials to retrieve the full payload, e.g. `curl -H "X-API-Key: <key>" http://localhost:9621/health`.
 
 ## Asynchronous Document Indexing with Progress Tracking
 

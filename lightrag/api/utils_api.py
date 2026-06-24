@@ -284,6 +284,68 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
     return combined_dependency
 
 
+def get_auth_status_dependency(api_key: Optional[str] = None):
+    """Create a dependency that reports whether the request carries accepted
+    credentials, WITHOUT enforcing authentication (it never raises).
+
+    Used by endpoints such as ``/health`` that must stay reachable for
+    unauthenticated liveness probes (always HTTP 200) while only revealing
+    sensitive configuration to authenticated callers. The acceptance rules
+    mirror ``get_combined_auth_dependency`` exactly:
+
+      - fully open (no AUTH_ACCOUNTS, no API key): nothing is protected
+        anywhere, so the request is treated as authenticated.
+      - password auth (AUTH_ACCOUNTS set): a valid non-guest token, or a
+        valid API key when one is configured, authenticates.
+      - API-key-only (API key set, no AUTH_ACCOUNTS): only a valid API key
+        authenticates; a guest token is forgeable and must NOT count
+        (GHSA-f4vv-55c2-5789 / GHSA-xr5c-v5r6-c9f9).
+    """
+    api_key_configured = bool(api_key)
+    oauth2_scheme = OAuth2PasswordBearer(
+        tokenUrl="login", auto_error=False, description="OAuth2 Password Authentication"
+    )
+    api_key_header = None
+    if api_key_configured:
+        api_key_header = APIKeyHeader(
+            name="X-API-Key", auto_error=False, description="API Key Authentication"
+        )
+
+    async def auth_status_dependency(
+        token: str = Security(oauth2_scheme),
+        api_key_header_value: Optional[str] = None
+        if api_key_header is None
+        else Security(api_key_header),
+    ) -> bool:
+        # Fully-open mode: nothing is protected anywhere, so reveal config too.
+        if not auth_configured and not api_key_configured:
+            return True
+
+        # A valid API key authenticates in any mode where one is configured.
+        if (
+            api_key_configured
+            and api_key_header_value
+            and api_key_header_value == api_key
+        ):
+            return True
+
+        if token:
+            try:
+                token_info = auth_handler.validate_token(token)
+            except Exception:
+                token_info = None
+            if token_info:
+                role = token_info.get("role")
+                # Password auth: accept a non-guest token. A guest token never
+                # authenticates here (in API-key-only mode it is forgeable).
+                if auth_configured and role != "guest":
+                    return True
+
+        return False
+
+    return auth_status_dependency
+
+
 def whitelist_exposes_api_routes(whitelist_paths: str) -> bool:
     """Return True if WHITELIST_PATHS exempts any Ollama-compatible /api route.
 
