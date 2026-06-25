@@ -137,6 +137,17 @@ BEGIN
         IF NOT edges_pk_has_namespace THEN
             ALTER TABLE lightrag_graph_edges
                 DROP CONSTRAINT IF EXISTS lightrag_graph_edges_pkey;
+            -- Defensive: a legacy/corrupt table could hold duplicate rows for the
+            -- new key, which would make ADD PRIMARY KEY fail mid-migration and
+            -- abort startup with no self-heal. Drop dupes first, keeping the
+            -- most-recently-updated row per key (ctid breaks updated_at ties).
+            DELETE FROM lightrag_graph_edges a
+            USING lightrag_graph_edges b
+            WHERE a.workspace = b.workspace
+              AND a.namespace = b.namespace
+              AND a.src_id = b.src_id
+              AND a.tgt_id = b.tgt_id
+              AND (a.updated_at, a.ctid) < (b.updated_at, b.ctid);
             ALTER TABLE lightrag_graph_edges
                 ADD PRIMARY KEY (workspace, namespace, src_id, tgt_id);
         END IF;
@@ -144,6 +155,15 @@ BEGIN
         IF NOT nodes_pk_has_namespace THEN
             ALTER TABLE lightrag_graph_nodes
                 DROP CONSTRAINT IF EXISTS lightrag_graph_nodes_pkey;
+            -- Same defensive dedup as edges above: keep the most-recently-updated
+            -- row per (workspace, namespace, id) so ADD PRIMARY KEY cannot fail on
+            -- a legacy/corrupt table that holds duplicates.
+            DELETE FROM lightrag_graph_nodes a
+            USING lightrag_graph_nodes b
+            WHERE a.workspace = b.workspace
+              AND a.namespace = b.namespace
+              AND a.id = b.id
+              AND (a.updated_at, a.ctid) < (b.updated_at, b.ctid);
             ALTER TABLE lightrag_graph_nodes
                 ADD PRIMARY KEY (workspace, namespace, id);
         END IF;
@@ -414,13 +434,27 @@ class PGTableGraphStorage(BaseGraphStorage):
                         key=lambda r: (
                             r["updated_at"] is not None,
                             r["updated_at"] or "",
+                            # Deterministic tie-break: when reversed duplicates
+                            # share updated_at, prefer the already-canonical row so
+                            # which properties survive is reproducible across runs.
+                            (r["src_id"], r["tgt_id"]) == (src, tgt),
                         ),
                     )
                     survivor_props = survivor["properties"]
                     if not isinstance(survivor_props, str):
                         survivor_props = json.dumps(survivor_props)
-                    old_srcs = [r["src_id"] for r in group]
-                    old_tgts = [r["tgt_id"] for r in group]
+                    # Delete only the NON-canonical members of the group. Including
+                    # the canonical (src, tgt) row would make this data-modifying
+                    # CTE both DELETE and (via ON CONFLICT) UPDATE the same tuple in
+                    # one statement, which Postgres rejects with "tuple to be updated
+                    # was already modified by an operation triggered by the current
+                    # command" — aborting the migration on every startup. Excluding
+                    # it keeps the delete set and the INSERT target disjoint.
+                    non_canonical = [
+                        r for r in group if (r["src_id"], r["tgt_id"]) != (src, tgt)
+                    ]
+                    old_srcs = [r["src_id"] for r in non_canonical]
+                    old_tgts = [r["tgt_id"] for r in non_canonical]
                     await conn.execute(
                         """
                         WITH deleted AS (

@@ -16,6 +16,7 @@ and ``integration`` markers so that:
 """
 
 import asyncio
+import json
 import os
 import time
 import uuid
@@ -494,3 +495,104 @@ async def test_drop_clears_nodes_and_edges_atomically(store):
     assert await store.get_all_nodes() == []
     assert await store.get_all_edges() == []
     assert await store.has_edge("P", "Q") is False
+
+
+# ---------------------------------------------------------------------------
+# Legacy-migration paths — exercised on real PG, never via mocks (these are the
+# one-time paths no general contract suite can reach: they only run on
+# pre-existing adversarial data, and unit tests mock them away).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_normalize_legacy_edges_collapses_reversed_duplicate(store):
+    """Regression (review item #1): a legacy table can hold both the canonical
+    edge (A,B) and its reversed duplicate (B,A). _normalize_legacy_edges must
+    collapse them into one canonical row.
+
+    The earlier single statement put the canonical tuple in BOTH the CTE delete
+    set and the ON CONFLICT DO UPDATE target — modifying the same row twice in one
+    data-modifying CTE, which Postgres documents as unspecified ("not supported").
+    On PG 15-18 it happens to yield the correct single row, but the result is not
+    guaranteed across versions/plans. The fix makes the delete set disjoint from
+    the INSERT target so the outcome is well-defined everywhere; this test pins
+    that outcome. Also covers the deterministic survivor (#3): the later write
+    wins on an updated_at tie.
+    """
+    await store.upsert_node("A", _node("A"))
+    await store.upsert_node("B", _node("B"))
+    await store.upsert_edge("A", "B", _edge(weight=1.0))  # canonical (A, B)
+    # Inject the reversed (B, A) row directly to simulate pre-canonical legacy
+    # data (src_id "B" > tgt_id "A" trips the normalization guard).
+    await store._execute(
+        "INSERT INTO lightrag_graph_edges "
+        "(workspace, namespace, src_id, tgt_id, properties, updated_at) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, now())",
+        store.workspace,
+        store.namespace,
+        "B",
+        "A",
+        json.dumps(dict(_edge(weight=2.0), relationship="reversed")),
+    )
+    assert len(await store.get_all_edges()) == 2  # both directions present
+
+    await store._normalize_legacy_edges()  # must not raise
+
+    edges = await store.get_all_edges()
+    assert len(edges) == 1, "reversed duplicate must collapse to one canonical row"
+    assert {edges[0]["source"], edges[0]["target"]} == {"A", "B"}
+    # undirected: queryable from either direction after the collapse
+    assert await store.get_edge("A", "B") is not None
+    assert await store.get_edge("B", "A") is not None
+
+
+@pytest.mark.asyncio
+async def test_initialize_dedupes_before_rebuilding_pk(store):
+    """Regression (N3): a legacy table whose PK lacks ``namespace`` can hold
+    duplicate rows for the new (workspace, namespace, id) key. The DDL migration
+    must de-dupe before ``ADD PRIMARY KEY``, otherwise the rebuild fails on the
+    duplicate and aborts startup. Simulate by dropping the node PK, injecting a
+    duplicate, then re-applying the DDL (which rebuilds the namespaced PK).
+    """
+    from lightrag.kg.pgtable_impl import _DDL
+
+    ws, ns = store.workspace, store.namespace
+    # Drop the table-level PK so duplicate (ws, ns, id) rows can be inserted,
+    # mimicking a legacy table that predates the namespaced primary key. The edge
+    # FKs depend on the node PK index, so drop them first (the DDL migration does
+    # the same, and re-creates them after the rebuild).
+    await store.db.execute(
+        "ALTER TABLE lightrag_graph_edges "
+        "DROP CONSTRAINT IF EXISTS fk_lightrag_graph_edges_src"
+    )
+    await store.db.execute(
+        "ALTER TABLE lightrag_graph_edges "
+        "DROP CONSTRAINT IF EXISTS fk_lightrag_graph_edges_tgt"
+    )
+    await store.db.execute(
+        "ALTER TABLE lightrag_graph_nodes DROP CONSTRAINT lightrag_graph_nodes_pkey"
+    )
+    for tag in ("older", "newer"):
+        await store._execute(
+            "INSERT INTO lightrag_graph_nodes "
+            "(workspace, namespace, id, properties, updated_at) "
+            "VALUES ($1, $2, $3, $4::jsonb, now())",
+            ws,
+            ns,
+            "DUP",
+            json.dumps({"entity_id": "DUP", "tag": tag}),
+        )
+
+    # Re-apply the DDL: the migration sees the PK lacks namespace, de-dupes, and
+    # rebuilds it. Must NOT raise on the duplicate rows.
+    await store.db.execute(_DDL)
+
+    assert await store.get_node("DUP") is not None
+    rows = await store._fetch(
+        "SELECT id FROM lightrag_graph_nodes "
+        "WHERE workspace = $1 AND namespace = $2 AND id = $3",
+        ws,
+        ns,
+        "DUP",
+    )
+    assert len(rows) == 1, "duplicates must collapse to a single surviving row"
