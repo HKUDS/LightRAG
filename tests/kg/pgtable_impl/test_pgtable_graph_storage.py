@@ -324,7 +324,15 @@ async def test_upsert_nodes_batch_last_write_wins_on_duplicate():
 async def test_execute_retries_transient_write_error():
     """deadlock/serialization/lock/cancel are query-level transient errors that
     PostgreSQLDB._run_with_retry does not cover; _execute must retry them."""
-    import asyncpg
+    # asyncpg is genuinely required by this test, not lazily avoidable: the retry
+    # path under test (_is_transient_write_error) matches by isinstance against
+    # real asyncpg.exceptions.* classes, so a fabricated exception object can't
+    # exercise it (only the real classes satisfy the isinstance check).
+    # importorskip only GUARDS (skips) this one test when asyncpg is absent — it
+    # does not drop the dependency. The offline CI installs asyncpg via the
+    # offline-storage extra, so this test runs there; a bare `test`-extra env
+    # without asyncpg skips it instead of erroring.
+    asyncpg = pytest.importorskip("asyncpg")
 
     storage = make_storage()
     storage.db.execute = AsyncMock(
