@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,8 +41,8 @@ from ..types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
 from ..utils import logger, validate_workspace
 
 
-def _is_transient_write_error(exc: BaseException) -> bool:
-    """True for query-level transient write errors NOT covered by
+def _is_transient_error(exc: BaseException) -> bool:
+    """True for query-level transient errors (read or write) NOT covered by
     PostgreSQLDB._run_with_retry (which retries connection-level failures only).
 
     Mirrors PGGraphStorage's graph-write retry surface: deadlock, serialization
@@ -274,33 +275,43 @@ class PGTableGraphStorage(BaseGraphStorage):
     # Query helpers — thin wrappers over PostgreSQLDB.query / execute
     # ------------------------------------------------------------------
 
-    async def _execute(self, sql: str, *args: Any) -> None:
-        data = {str(i): v for i, v in enumerate(args)} if args else None
-        # Retry query-level transient write errors (deadlock / serialization /
+    async def _with_retry(self, fn: Callable[[], Awaitable[Any]]) -> Any:
+        # Retry query-level transient errors (deadlock / serialization /
         # lock-timeout / cancel) that PostgreSQLDB._run_with_retry does not cover
-        # (it retries connection-level failures only). Single-statement upserts
-        # rarely deadlock, but FK checks + unique-index contention under
-        # concurrent workers make it non-zero. Backoff stays short so a deadlock
-        # victim retries promptly rather than stalling ingestion throughput.
+        # (it retries connection-level failures only). Applies to reads AND writes:
+        # writes hit deadlock / unique-index contention under concurrent workers,
+        # and under a SERIALIZABLE / REPEATABLE READ pool a read racing concurrent
+        # ingestion can surface a SerializationError. Backoff stays short so a
+        # victim retries promptly rather than stalling throughput.
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=0.1, min=0.1, max=2),
-            retry=retry_if_exception(_is_transient_write_error),
+            retry=retry_if_exception(_is_transient_error),
             reraise=True,
         ):
             with attempt:
-                await self._db.execute(sql, data=data)
+                return await fn()
+
+    async def _execute(self, sql: str, *args: Any) -> None:
+        data = {str(i): v for i, v in enumerate(args)} if args else None
+        await self._with_retry(lambda: self._db.execute(sql, data=data))
 
     async def _fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
-        result = await self._db.query(sql, list(args) if args else None)
+        result = await self._with_retry(
+            lambda: self._db.query(sql, list(args) if args else None)
+        )
         return result if isinstance(result, dict) else None  # type: ignore[return-value]
 
     async def _fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        result = await self._db.query(sql, list(args) if args else None, multirows=True)
+        result = await self._with_retry(
+            lambda: self._db.query(sql, list(args) if args else None, multirows=True)
+        )
         return result if isinstance(result, list) else []  # type: ignore[return-value]
 
     async def _fetchval(self, sql: str, *args: Any) -> Any:
-        result = await self._db.query(sql, list(args) if args else None)
+        result = await self._with_retry(
+            lambda: self._db.query(sql, list(args) if args else None)
+        )
         if not isinstance(result, dict):
             return None
         return next(iter(result.values()))

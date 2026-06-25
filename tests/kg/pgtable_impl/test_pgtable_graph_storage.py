@@ -325,7 +325,7 @@ async def test_execute_retries_transient_write_error():
     """deadlock/serialization/lock/cancel are query-level transient errors that
     PostgreSQLDB._run_with_retry does not cover; _execute must retry them."""
     # asyncpg is genuinely required by this test, not lazily avoidable: the retry
-    # path under test (_is_transient_write_error) matches by isinstance against
+    # path under test (_is_transient_error) matches by isinstance against
     # real asyncpg.exceptions.* classes, so a fabricated exception object can't
     # exercise it (only the real classes satisfy the isinstance check).
     # importorskip only GUARDS (skips) this one test when asyncpg is absent — it
@@ -353,6 +353,52 @@ async def test_execute_does_not_retry_non_transient_error():
     with pytest.raises(ValueError):
         await storage._execute("INSERT ...", "a")
     assert storage.db.execute.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _fetch* — read paths retry the same query-level transient errors as writes
+# (under SERIALIZABLE / REPEATABLE READ a read racing ingestion can raise one).
+# See note on asyncpg import in test_execute_retries_transient_write_error.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetchrow_retries_transient_error():
+    asyncpg = pytest.importorskip("asyncpg")
+    storage = make_storage()
+    storage.db.query = AsyncMock(
+        side_effect=[
+            asyncpg.exceptions.SerializationError("serialize"),
+            {"id": "n"},
+        ]
+    )
+    row = await storage._fetchrow("SELECT ...", "a")
+    assert row == {"id": "n"}
+    assert storage.db.query.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_retries_transient_error():
+    asyncpg = pytest.importorskip("asyncpg")
+    storage = make_storage()
+    storage.db.query = AsyncMock(
+        side_effect=[
+            asyncpg.exceptions.DeadlockDetectedError("deadlock"),
+            [{"id": "n"}],
+        ]
+    )
+    rows = await storage._fetch("SELECT ...", "a")
+    assert rows == [{"id": "n"}]
+    assert storage.db.query.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_does_not_retry_non_transient_error():
+    storage = make_storage()
+    storage.db.query = AsyncMock(side_effect=ValueError("boom"))
+    with pytest.raises(ValueError):
+        await storage._fetch("SELECT ...", "a")
+    assert storage.db.query.call_count == 1
 
 
 # ---------------------------------------------------------------------------
