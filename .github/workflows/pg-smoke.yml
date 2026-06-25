@@ -61,3 +61,28 @@ jobs:
       - name: Run pg_smoke tests
         run: |
           pytest tests/kg/pgtable_impl/test_pgtable_smoke.py -m pg_smoke --run-integration -v --tb=short
+
+      - name: Run shared graph contract suite (PGTableGraphStorage)
+        env:
+          LIGHTRAG_GRAPH_STORAGE: PGTableGraphStorage
+        run: |
+          pytest tests/kg/test_graph_storage.py -m integration --run-integration \
+            -v --tb=short --junitxml=contract.xml
+          # False-green guard: the suite's storage fixture skips when the backend
+          # isn't configured, so a misconfigured env would exit 0 having run zero
+          # tests. Require tests>0, skipped==0, and no failures/errors.
+          python - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse("contract.xml").getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests = int(suite.get("tests", 0))
+          skipped = int(suite.get("skipped", 0))
+          failed = int(suite.get("failures", 0)) + int(suite.get("errors", 0))
+          print(f"contract suite: tests={tests} skipped={skipped} failed={failed}")
+          if tests == 0:
+              sys.exit("no contract tests ran - backend/env misconfigured")
+          if skipped:
+              sys.exit(f"{skipped} contract tests skipped - all must run in CI")
+          if failed:
+              sys.exit(f"{failed} contract tests failed")
+          PY
