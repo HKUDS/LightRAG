@@ -84,7 +84,9 @@ api = [
     "psutil",
     "PyJWT>=2.8.0,<3.0.0",
     "python-jose[cryptography]",
-    "python-multipart",
+    "cryptography>=48.0.1",        # security floor: GHSA-537c-gmf6-5ccf (via python-jose[cryptography])
+    "python-multipart>=0.0.30",    # security floor: CVE-2026-53539
+    "starlette>=1.3.1,<2",         # security floor: CVE-2026-54283 / CVE-2026-48818 (transitive via fastapi)
     "pytz",
     "uvicorn",
     "gunicorn",
