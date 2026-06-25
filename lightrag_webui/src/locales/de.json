@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Graphdaten wurden auf maximale Knotenanzahl gekürzt",
+    "fetchRetriesExhausted": "Graphdaten konnten nicht geladen werden. Zum erneuten Versuch aktualisieren.",
+    "graphBuildFailed": "Graphdaten konnten nicht gerendert werden. Zum erneuten Versuch aktualisieren.",
     "statusDialog": {
       "title": "LightRAG Server-Einstellungen",
       "description": "Aktuellen Systemstatus und Verbindungsinformationen anzeigen"
@@ -249,13 +251,14 @@
         "showEdgeLabel": "Kantenbezeichnung anzeigen",
         "hideUnselectedEdges": "Nicht ausgewählte Kanten ausblenden",
         "edgeEvents": "Kanten-Ereignisse",
+        "edgeEventsDisabledHint": "Deaktiviert für Graphen mit mehr als {{count}} Kanten",
         "maxQueryDepth": "Maximale Abfragetiefe",
         "maxNodes": "Maximale Knotenanzahl",
-        "maxLayoutIterations": "Maximale Layout-Iterationen",
         "resetToDefault": "Auf Standard zurücksetzen",
         "edgeSizeRange": "Kantengrößenbereich",
         "depth": "T",
-        "max": "Max",
+        "node": "Knoten",
+        "edge": "Kante",
         "degree": "Grad",
         "apiKey": "API-Schlüssel",
         "enterYourAPIkey": "Geben Sie Ihren API-Schlüssel ein",

@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "グラフデータは最大ノード数に切り詰められました",
+    "fetchRetriesExhausted": "グラフデータの読み込みに失敗しました。更新して再試行してください。",
+    "graphBuildFailed": "グラフデータの描画に失敗しました。更新して再試行してください。",
     "statusDialog": {
       "title": "LightRAGサーバー設定",
       "description": "現在のシステムステータスと接続情報を表示"
@@ -249,13 +251,14 @@
         "showEdgeLabel": "エッジラベルを表示",
         "hideUnselectedEdges": "選択されていないエッジを非表示",
         "edgeEvents": "エッジイベント",
+        "edgeEventsDisabledHint": "エッジ数が {{count}} を超えるグラフでは無効です",
         "maxQueryDepth": "最大クエリ深度",
         "maxNodes": "最大ノード数",
-        "maxLayoutIterations": "最大レイアウト反復回数",
         "resetToDefault": "デフォルトにリセット",
         "edgeSizeRange": "エッジサイズ範囲",
         "depth": "D",
-        "max": "最大",
+        "node": "ノード",
+        "edge": "エッジ",
         "degree": "次数",
         "apiKey": "APIキー",
         "enterYourAPIkey": "APIキーを入力してください",

@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Dữ liệu đồ thị bị cắt bớt đến số Nút tối Đa",
+    "fetchRetriesExhausted": "Không tải được dữ liệu đồ thị. Hãy làm mới để thử lại.",
+    "graphBuildFailed": "Không hiển thị được dữ liệu đồ thị. Hãy làm mới để thử lại.",
     "statusDialog": {
       "title": "Cài Đặt Máy Chủ LightRAG",
       "description": "Xem trạng thái hệ thống hiện tại và thông tin kết nối"
@@ -249,13 +251,14 @@
         "showEdgeLabel": "Hiển Thị Nhãn Cạnh",
         "hideUnselectedEdges": "Ẩn Cạnh Không Được Chọn",
         "edgeEvents": "Sự Kiện Cạnh",
+        "edgeEventsDisabledHint": "Bị vô hiệu hóa với đồ thị có hơn {{count}} cạnh",
         "maxQueryDepth": "Độ Sâu Truy Vấn Tối Đa",
         "maxNodes": "Số Nút Tối Đa",
-        "maxLayoutIterations": "Số Vòng Lặp Bố Cục Tối Đa",
         "resetToDefault": "Đặt lại về mặc định",
         "edgeSizeRange": "Phạm Vi Kích Thước Cạnh",
         "depth": "Sâu",
-        "max": "Tối Đa",
+        "node": "Nút",
+        "edge": "Cạnh",
         "degree": "Bậc",
         "apiKey": "Khóa API",
         "enterYourAPIkey": "Nhập khóa API của bạn",

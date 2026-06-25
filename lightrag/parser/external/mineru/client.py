@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from lightrag.parser.external._common import raise_for_status_with_detail
 from lightrag.parser.external.mineru.cache import (
@@ -314,7 +314,10 @@ class MinerURawClient:
         batch_id: str,
         upload_name: str,
     ) -> str:
-        poll_url = f"{self.official_endpoint}/api/v4/extract-results/batch/{batch_id}"
+        encoded_batch_id = quote(batch_id, safe="")
+        poll_url = (
+            f"{self.official_endpoint}/api/v4/extract-results/batch/{encoded_batch_id}"
+        )
         for _ in range(self.max_polls):
             await asyncio.sleep(self.poll_interval)
             resp = await client.get(poll_url, headers=self._official_headers())
@@ -406,7 +409,7 @@ class MinerURawClient:
         await self._poll_local_task(client, task_id)
         await self._download_zip(
             client,
-            f"{self.local_endpoint}/tasks/{task_id}/result",
+            f"{self.local_endpoint}/tasks/{quote(task_id, safe='')}/result",
             raw_dir,
         )
         return task_id
@@ -416,7 +419,10 @@ class MinerURawClient:
         client: "httpx.AsyncClient",
         task_id: str,
     ) -> None:
-        poll_url = f"{self.local_endpoint}/tasks/{task_id}"
+        # ``task_id`` is service-returned; encode it as a single path segment so
+        # a crafted value can't break out of ``/tasks/{id}``. The raw value is
+        # kept for the error/timeout messages below where the real ID matters.
+        poll_url = f"{self.local_endpoint}/tasks/{quote(task_id, safe='')}"
         for _ in range(self.max_polls):
             await asyncio.sleep(self.poll_interval)
             resp = await client.get(poll_url)

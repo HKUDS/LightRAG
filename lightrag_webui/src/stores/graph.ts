@@ -4,6 +4,12 @@ import { DirectedGraph } from 'graphology'
 import MiniSearch from 'minisearch'
 import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
 
+// Minimal imperative handle the store needs to own a running layout: enough to
+// terminate the previous one before a new layout takes over.
+export interface LayoutSupervisorHandle {
+  kill: () => void
+}
+
 const createErrorWithCause = (message: string, cause: unknown): Error => {
   const error = new Error(message) as Error & { cause?: unknown }
   error.cause = cause
@@ -73,7 +79,10 @@ export class RawGraph {
   }
 
   buildDynamicMap = () => {
-    this.edgeDynamicIdMap = {}
+    // Null-prototype: dynamic ids are graph-generated, but keep this consistent
+    // with the null-proto node/edge id maps so a missing-key lookup never
+    // returns an inherited Object.prototype member.
+    this.edgeDynamicIdMap = Object.create(null) as Record<string, number>
     for (let i = 0; i < this.edges.length; i++) {
       const edge = this.edges[i]
       this.edgeDynamicIdMap[edge.dynamicId] = i
@@ -90,6 +99,15 @@ interface GraphState {
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
   sigmaInstance: any | null
+
+  // Reactive node/edge counts. The sigma graph is mutated in place by
+  // expand/prune (no setSigmaGraph, no version bump), so `sigmaGraph.order` /
+  // `.size` are NOT reactive in React. These mirror them and are the single
+  // source of truth for: the status bar (SettingsDisplay) and the edge-count
+  // adaptive behavior (curved vs straight edges, edge-event gating). Kept as a
+  // store invariant — see setSigmaGraph/reset/setGraphCounts.
+  graphNodeCount: number
+  graphEdgeCount: number
 
   searchEngine: MiniSearch | null
 
@@ -118,7 +136,30 @@ interface GraphState {
 
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
+  // Update the reactive node/edge counts together (one set call → one notify).
+  // Call after in-place mutations (expand/prune) and to override the synthetic
+  // empty placeholder graph back to 0/0.
+  setGraphCounts: (nodeCount: number, edgeCount: number) => void
   setIsFetching: (isFetching: boolean) => void
+
+  // True while a layout (sync or worker) is computing. Drives the loading
+  // overlay so a layout click doesn't look like a frozen UI on large graphs.
+  isLayoutComputing: boolean
+  setIsLayoutComputing: (running: boolean) => void
+
+  // Single-owner handle for the running worker-layout supervisor. Only ONE
+  // layout may run at a time: the initial FA2 (GraphControl) and a manually
+  // selected worker layout (LayoutsControl) both register here. Registering a
+  // new owner (or null) kills the previous supervisor first, so two layouts
+  // never mutate the same node coordinates concurrently (the tug-of-war/jitter
+  // bug). Not reactive — consumers read it via getState().
+  activeLayoutSupervisor: LayoutSupervisorHandle | null
+  setActiveLayoutSupervisor: (next: LayoutSupervisorHandle | null) => void
+  // Release `handle` ONLY if it still owns the shared slot (clears it, which
+  // kills it); otherwise just kill `handle` directly because a newer layout
+  // already took the slot. Collapses the "release-if-owner-else-kill" dance
+  // that consumers (GraphControl, LayoutsControl) would otherwise each repeat.
+  releaseLayoutSupervisor: (handle: LayoutSupervisorHandle | null) => void
 
   // Legend color mapping methods
   setTypeColorMap: (typeColorMap: Map<string, string>) => void
@@ -167,6 +208,9 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   sigmaGraph: null,
   sigmaInstance: null,
 
+  graphNodeCount: 0,
+  graphEdgeCount: 0,
+
   typeColorMap: new Map<string, string>(),
 
   searchEngine: null,
@@ -176,6 +220,34 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
+
+  isLayoutComputing: false,
+  setIsLayoutComputing: (running: boolean) => set({ isLayoutComputing: running }),
+
+  activeLayoutSupervisor: null,
+  setActiveLayoutSupervisor: (next: LayoutSupervisorHandle | null) => {
+    const prev = get().activeLayoutSupervisor
+    if (prev && prev !== next) {
+      try {
+        prev.kill()
+      } catch {
+        /* worker already terminated */
+      }
+    }
+    set({ activeLayoutSupervisor: next })
+  },
+  releaseLayoutSupervisor: (handle: LayoutSupervisorHandle | null) => {
+    if (get().activeLayoutSupervisor === handle) {
+      get().setActiveLayoutSupervisor(null) // clears the slot, killing `handle`
+    } else {
+      try {
+        handle?.kill()
+      } catch {
+        /* worker already terminated */
+      }
+    }
+  },
+
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
   setFocusedNode: (nodeId: string | null) => set({ focusedNode: nodeId }),
@@ -198,7 +270,9 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       sigmaGraph: null,  // to avoid other components from acccessing graph objects
       searchEngine: null,
       moveToSelectedNode: false,
-      graphIsEmpty: false
+      graphIsEmpty: false,
+      graphNodeCount: 0,
+      graphEdgeCount: 0
     });
   },
 
@@ -208,9 +282,21 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
     }),
 
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => {
-    // Replace graph instance, no need to keep WebGL context
-    set({ sigmaGraph });
+    // Replace graph instance, no need to keep WebGL context. Sync the reactive
+    // counts in the SAME set call so "graph" and "counts" are never observed out
+    // of step (avoids GraphViewer briefly seeing a stale count and allocating an
+    // edge picking buffer it must immediately rebuild away). The synthetic empty
+    // placeholder graph carries a non-zero order/size but means "empty"; callers
+    // override it back to 0/0 via setGraphCounts right after.
+    set({
+      sigmaGraph,
+      graphNodeCount: sigmaGraph ? sigmaGraph.order : 0,
+      graphEdgeCount: sigmaGraph ? sigmaGraph.size : 0
+    });
   },
+
+  setGraphCounts: (nodeCount: number, edgeCount: number) =>
+    set({ graphNodeCount: nodeCount, graphEdgeCount: edgeCount }),
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
 

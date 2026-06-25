@@ -201,6 +201,8 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Graph data is truncated to Max Nodes",
+    "fetchRetriesExhausted": "Failed to load graph data. Use refresh to try again.",
+    "graphBuildFailed": "Failed to render graph data. Use refresh to retry.",
     "statusDialog": {
       "title": "LightRAG Server Settings",
       "description": "View current system status and connection information"
@@ -249,13 +251,14 @@
         "showEdgeLabel": "Show Edge Label",
         "hideUnselectedEdges": "Hide Unselected Edges",
         "edgeEvents": "Edge Events",
+        "edgeEventsDisabledHint": "Disabled for graphs with more than {{count}} edges",
         "maxQueryDepth": "Max Query Depth",
         "maxNodes": "Max Nodes",
-        "maxLayoutIterations": "Max Layout Iterations",
         "resetToDefault": "Reset to default",
         "edgeSizeRange": "Edge Size Range",
         "depth": "D",
-        "max": "Max",
+        "node": "node",
+        "edge": "edge",
         "degree": "Degree",
         "apiKey": "API Key",
         "enterYourAPIkey": "Enter your API key",
