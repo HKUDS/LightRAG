@@ -173,6 +173,51 @@ S3_VERIFY_TLS=true        # 注意：PR #3331 写死 verify=False，本设计默
 
 `DocumentManager` 不再持有 `input_dir: Path`，改为持有 `store: BaseFileStore` 与逻辑前缀。`utils_pipeline` 中所有 `Path` 拼装函数（`parsed_artifact_dir_for` 等）改为返回 **key** 而非 `Path`。`LightRAG` 实例在 `initialize_storages()` 时从工厂构建 store（与现有 storage 初始化同处）。
 
+### 4.5 VLM 读图：staging 本地副本 + materialize 缓存语义
+
+这是本设计里需要单独讲清的一环，因为多模态分析（VLM）是 INPUT_DIR 里唯一**强依赖"本地真实文件路径"**的消费者，也是 PR #3331 不敢动它、只能"另传一份"的根因。
+
+**现状（严格读本地盘）。** Layer 2 的 `analyze_multimodal` 对每个 drawing 这样取图（`pipeline.py:3591-3654`）：
+
+```python
+def _resolve_image_path(path_str, sidecar_dir) -> Path | None:
+    candidate = Path(path_str)
+    if not candidate.is_absolute():
+        candidate = sidecar_dir / path_str       # drawings.json 的 path 相对 sidecar 目录
+    if candidate.exists() and candidate.is_file():
+        return candidate
+    return None
+...
+raw = candidate.read_bytes()                      # 直接读本地磁盘字节
+img_payload = {"base64": base64.b64encode(raw).decode("ascii"), ...}
+```
+
+即 `drawings.json.path` → 拼本地路径 → `exists()/is_file()` → `read_bytes()` → base64 → 喂 VLM。全程要求那个图片文件在**本地文件系统**真实存在。这就是 PR #3331 注释 `local path is always preserved so VLM analysis reads from disk` 的来由——它把图额外传 S3 仅供前端，VLM 仍读本地。
+
+**问题。** INPUT_DIR 后端化到 S3 后，`*.blocks.assets/img-001.png` 的权威副本在 S3，本地盘不一定有。若运行 VLM 的副本不是当初解析该文档的副本（重试、事后重分析、解析与分析被调度到不同 worker），`candidate.exists()` 直接 `False` → 跳过或失败。
+
+**设计：一个 `materialize` 调用 + 一层本地缓存,把两种情况收敛。** 把上面"拼本地路径 + read_bytes"改为:
+
+```python
+async with store.materialize(asset_key) as local_path:
+    raw = local_path.read_bytes()
+    ...  # 尺寸校验、_VLM_RASTER_EXTS、max_image_bytes、base64、缓存 key 全部不变
+```
+
+- **`LocalFileStore.materialize`** → 零拷贝，直接返回真实路径（行为等于今天）。
+- **`S3FileStore.materialize`** → 先查**本地缓存目录**:
+  - **热路径(同一次解析批内)**:解析 Layer 1 时,`write_sidecar` 在 `staging_dir()` 的本地临时目录里产出 `blocks.jsonl` 与 `*.blocks.assets/` 的图,再 flush 回 S3;VLM Layer 2 紧接着在**同一 worker、同一文档**上跑,那批本地副本(=缓存)仍在 → 缓存命中,近乎零成本,性能与今天一致。这是绝大多数情况。
+  - **冷路径(跨副本 / 事后重分析)**:本地缓存未命中 → 从 S3 下载到缓存目录再返回本地路径,用完按下方清理规则处理。只有这种情况付一次下载。
+
+如此,"staging 本地副本"与"跨副本 materialize"不再是两段不同代码,而是同一个 `materialize` 的**缓存命中 / 未命中**两种结果。
+
+**对 `drawings.json` 的影响。** `path` 不再存"永久本地绝对路径",改存**相对 store 的 key**(相对 sidecar 的文件名,与今天的相对 path 几乎一致)。VLM 路径解析为:`full_docs.sidecar_location` URI → store + 基准 key → 拼出 asset key → `materialize`。由此 **PR #3331"必须永久保留本地 path 供 VLM 读盘"的约束被解除**;给前端的 URL 也由 `store.public_url(key)`(S3=presigned URL)统一产出,不再单独维护 `remote_url` 字段。
+
+**两个工程注意点。**
+
+1. **清理(借用 vs 拥有)**：`materialize` 用上下文管理器。退出时,只删除"本次冷路径为你下载的临时文件";指向 staging 缓存/本地真实路径的"借用"结果**不能删**。实现上需区分 owned/borrowed 两类返回,避免误删尚被同批次其它步骤使用的缓存。
+2. **并发**：同一图片可能被并发 `materialize`。缓存写入用 `<key>.tmp` + 原子 rename(或按 key 加锁),避免读到写一半的文件。这与 external parser `*_raw/` 缓存命中判定(`is_bundle_valid`)是同类问题,可复用同一套缓存目录与原子写约定。
+
 ## 5. 各环节改造映射
 
 | 环节 | 今天 | 改造后 |
@@ -185,7 +230,7 @@ S3_VERIFY_TLS=true        # 注意：PR #3331 写死 verify=False，本设计默
 | 解析中间包 `*_raw/` | 本地 `mkdir`+写 | `store.staging_dir()` 内构建后回传；缓存命中用 `store.exists`/`list` 判定 |
 | 写 Sidecar | `write_text`/`copyfile` 到 `parsed_dir` | `write_sidecar` 在 `staging_dir` 内产出，退出时批量回传；或直接 `put_bytes` |
 | 资源物化 | `_materialize_assets` 写盘 | 同上；PR #3331 的"另传一份"被自然取代——资源本就在 store |
-| VLM 读图 | 读本地 disk | 解析同批次：用 staging 的本地副本；跨副本重分析：`store.materialize(asset_key)` |
+| VLM 读图 | 读本地 disk（`read_bytes`） | `async with store.materialize(asset_key)`：热路径命中 staging 本地缓存、冷路径下载（详见 §4.5） |
 | Sidecar URI | `file://abs/...` | `store.uri_for(key)`：local→`file://`，s3→`s3://bucket/prefix/...` |
 | 读 blocks.jsonl | `open(path)` | `store.get_bytes(key)` / `open_stream`；`load_lightrag_document_content` 按 URI→key→store 读 |
 | 向客户端溯源 | 无 / file:// | 新增 `GET /documents/file?uri=...`：s3 后端 302 到 presigned URL，local 后端校验后 `FileResponse` |
@@ -200,8 +245,8 @@ S3_VERIFY_TLS=true        # 注意：PR #3331 写死 verify=False，本设计默
 **Q1 外部解析器（mineru/docling）如何拿到源文件？**
 它们是 HTTP 适配器，`download_into` 需要本地字节。决策：用 `store.materialize(key)` 下载到本地临时文件再交给适配器。不引入"presigned URL 直传给第三方"的复杂性（第三方未必能访问我们的 S3）。
 
-**Q2 VLM 必须读本地磁盘？**
-解析同批次内，资源刚由 `staging_dir` 产出，本地副本仍在，直接用——零额外下载。仅当在另一副本上对历史文档重新分析时，才 `materialize` 拉取。由此**移除** PR #3331 中"必须永久保留本地 path 供 VLM"的约束。
+**Q2 VLM 必须读本地磁盘？** 详见 §4.5。
+要点:VLM 改为 `async with store.materialize(asset_key) as p:` 取本地路径,其余逻辑不变。解析同批次内命中 `staging_dir` 写下的本地缓存(零额外下载),仅跨副本/事后重分析时才真正从 S3 下载。由此**移除** PR #3331 中"必须永久保留本地 path 供 VLM"的约束。
 
 **Q3 向客户端溯源用 presigned 还是代理？**
 两者都支持，由后端决定：S3 用 presigned URL（302 重定向，卸载带宽、支持有效期），local 用服务端 `FileResponse` 代理。统一经 `store.public_url(key)`，对调用方透明。**推荐**：S3 后端默认 presigned，可配 `S3_PUBLIC_URL_PREFIX` 走 CDN。
