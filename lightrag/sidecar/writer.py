@@ -46,6 +46,7 @@ from lightrag.sidecar.placeholders import (
     table_body_for_rows,
 )
 from lightrag.table_markup import header_grid_to_thead_html
+from lightrag.sidecar.s3_uploader import upload_assets_to_s3
 from lightrag.utils import logger, strip_control_characters
 
 
@@ -133,6 +134,12 @@ def write_sidecar(
     # Stage 1: realize assets first so drawings can carry resolved paths.
     asset_paths = _materialize_assets(ir.assets, assets_dir)
 
+    # Stage 1b: optionally upload assets to S3.  Remote URLs are passed to
+    # _render_block_content so that blocks.jsonl placeholders carry the
+    # remote URL (for front-end display), while drawings.json always keeps
+    # the local path (so VLM analysis reads from disk, not the network).
+    remote_urls = upload_assets_to_s3(assets_dir, asset_paths, doc_id=doc_id)
+
     # Stage 2: walk blocks, allocate ids, render templates, accumulate
     # sidecar item dicts and blocks.jsonl lines.
     doc_hash = doc_id.removeprefix("doc-")
@@ -186,6 +193,7 @@ def write_sidecar(
             asset_paths=asset_paths,
             asset_prefix=asset_prefix,
             block_drawing_path_style=block_drawing_path_style,
+            remote_urls=remote_urls,
         )
 
         # Strip C0 control/separator chars (incl. \x1c-\x1f FS/GS/RS/US) before
@@ -249,6 +257,7 @@ def write_sidecar(
                 drawing,
                 asset_paths,
                 asset_prefix,
+                remote_urls,
             )
         for equation in block.equations:
             if not equation.is_block:
@@ -491,6 +500,7 @@ def _render_block_content(
     asset_paths: dict[str, str],
     asset_prefix: str,
     block_drawing_path_style: str = "with_prefix",
+    remote_urls: dict[str, str] | None = None,
 ) -> str:
     """Expand placeholder tokens in ``block.content_template``."""
 
@@ -527,6 +537,9 @@ def _render_block_content(
             filename = asset_paths.get(drawing.asset_ref, "")
             if not filename:
                 path = ""
+            elif remote_urls and drawing.asset_ref in remote_urls:
+                # Remote URL from S3 upload — use for blocks.jsonl placeholder
+                path = remote_urls[drawing.asset_ref]
             elif block_drawing_path_style == "basename_only":
                 path = filename
             else:
@@ -623,6 +636,7 @@ def _drawing_item_dict(
     drawing: IRDrawing,
     asset_paths: dict[str, str],
     asset_prefix: str,
+    remote_urls: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if drawing.path_override is not None:
         path = drawing.path_override
@@ -640,6 +654,8 @@ def _drawing_item_dict(
         "caption": drawing.caption,
         "footnotes": list(drawing.footnotes),
     }
+    if remote_urls and drawing.asset_ref in remote_urls:
+        item["remote_url"] = remote_urls[drawing.asset_ref]
     if drawing.self_ref:
         item["self_ref"] = drawing.self_ref
     if drawing.extras:
