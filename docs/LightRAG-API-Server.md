@@ -457,7 +457,7 @@ server {
 
 ### Offline Deployment
 
-Official LightRAG Docker images are fully compatible with offline or air-gapped environments. If you want to build up you own  offline enviroment, please refer to [Offline Deployment Guide](./OfflineDeployment.md).
+Official LightRAG Docker images are fully compatible with offline or air-gapped environments. If you want to build up your own offline environment, please refer to [Offline Deployment Guide](./OfflineDeployment.md).
 
 ### Starting Multiple LightRAG Instances
 
@@ -519,7 +519,7 @@ lightrag-gunicorn --workers 2
 Create your service file `lightrag.service` from the sample file: `lightrag.service.example`. Modify the start options the service file:
 
 ```text
-# Set Enviroment to your Python virtual enviroment
+# Set environment to your Python virtual environment
 Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
 WorkingDirectory=/home/netman/lightrag-xyj
 # ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
