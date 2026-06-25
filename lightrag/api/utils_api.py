@@ -518,12 +518,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
 
     # Security Notice
     if args.key:
-        ASCIIColors.yellow("\n⚠️  Security Notice:")
+        ASCIIColors.white("✅  Security Notice:")
         ASCIIColors.white("""    API Key authentication is enabled.
     Make sure to include the X-API-Key header in all your requests.
     """)
     if args.auth_accounts:
-        ASCIIColors.yellow("\n⚠️  Security Notice:")
+        ASCIIColors.white("✅  Security Notice:")
         ASCIIColors.white("""    JWT authentication is enabled.
     Make sure to login before making the request, and include the 'Authorization' in the header.
     """)
@@ -534,14 +534,14 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     if not args.key and not args.auth_accounts:
         loopback_hosts = {"127.0.0.1", "::1", "localhost"}
         if args.host in loopback_hosts:
-            ASCIIColors.yellow("\n⚠️  Security Notice:")
+            ASCIIColors.yellow("\n⚠️  Security Warning:")
             ASCIIColors.white(f"""    No authentication is configured (no API Key, no login accounts).
     The server is bound to a loopback address ('{args.host}'), so it is only
     reachable from this machine. Set LIGHTRAG_API_KEY, or AUTH_ACCOUNTS together
     with TOKEN_SECRET, before binding to a non-loopback address (e.g. HOST=0.0.0.0).
     """)
         else:
-            ASCIIColors.red("\n🔴 SECURITY WARNING:")
+            ASCIIColors.red("\n🔴 SECURITY ALERT:")
             ASCIIColors.white(f"""    The server is listening on '{args.host}' WITHOUT any authentication.
     Every endpoint (document upload, query, knowledge graph, deletion) is
     publicly accessible to anyone who can reach this address.
@@ -563,7 +563,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         loopback_hosts = {"127.0.0.1", "::1", "localhost"}
         ollama_open = whitelist_exposes_api_routes(args.whitelist_paths)
         if args.host not in loopback_hosts and ollama_open:
-            ASCIIColors.yellow("\n⚠️  Security Notice:")
+            ASCIIColors.yellow("\n⚠️  Security Warning:")
             ASCIIColors.white(f"""    WHITELIST_PATHS ('{args.whitelist_paths}') exempts the Ollama-compatible
     /api/* routes (/api/chat, /api/generate, ...) from authentication, so they
     remain publicly accessible on '{args.host}' even though auth is enabled.
