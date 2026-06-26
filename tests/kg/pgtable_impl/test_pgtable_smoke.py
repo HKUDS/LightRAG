@@ -596,3 +596,33 @@ async def test_initialize_dedupes_before_rebuilding_pk(store):
         "DUP",
     )
     assert len(rows) == 1, "duplicates must collapse to a single surviving row"
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_replaces_properties(store):
+    """Edge upsert REPLACES properties (node upsert merges). A second upsert with
+    a different key set must drop keys absent from the new payload — matching
+    PGGraphStorage and the documented contract. A regression to `||` (merge) on
+    edges would otherwise go unnoticed."""
+    await store.upsert_node("A", _node("A"))
+    await store.upsert_node("B", _node("B"))
+    await store.upsert_edge("A", "B", dict(_edge(weight=1.0), extra="present"))
+    first = await store.get_edge("A", "B")
+    assert first["extra"] == "present"
+
+    # Re-upsert without "extra" -> replace semantics drops it (merge would keep it).
+    await store.upsert_edge("A", "B", _edge(weight=2.0))
+    second = await store.get_edge("A", "B")
+    assert second["weight"] == 2.0
+    assert "extra" not in second, "edge upsert must replace, not merge, properties"
+
+
+@pytest.mark.asyncio
+async def test_get_node_edges_self_loop_appears_once(store):
+    """get_node_edges (single-node path, distinct from get_nodes_edges_batch)
+    returns a self-loop (A, A) exactly once."""
+    await store.upsert_node("A", _node("A"))
+    await store.upsert_edge("A", "A", _edge())  # self-loop: min/max canonical (A, A)
+
+    edges = await store.get_node_edges("A")
+    assert edges == [("A", "A")], f"self-loop must appear exactly once: {edges}"

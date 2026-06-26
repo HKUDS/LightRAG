@@ -252,6 +252,30 @@ async def test_upsert_node_overwrites_mismatched_entity_id():
     assert json.loads(props)["entity_id"] == "node1"
 
 
+@pytest.mark.asyncio
+async def test_upsert_nodes_batch_raises_without_entity_id():
+    """upsert_nodes_batch applies the same entity_id requirement as upsert_node;
+    one malformed entry in the batch rejects the whole call."""
+    storage = make_storage()
+    with pytest.raises(ValueError, match="entity_id"):
+        await storage.upsert_nodes_batch(
+            [("n1", {"entity_id": "n1"}), ("n2", {"name": "missing id"})]
+        )
+
+
+@pytest.mark.asyncio
+async def test_upsert_nodes_batch_overwrites_mismatched_entity_id():
+    """A mismatched entity_id is forced to node_id in the batch path too."""
+    storage = make_storage()
+    execute = AsyncMock()
+    with patch.object(storage, "_execute", new=execute):
+        await storage.upsert_nodes_batch([("n1", {"entity_id": "wrong", "k": "v"})])
+
+    *_, sorted_ids, props = execute.call_args.args
+    assert sorted_ids == ["n1"]
+    assert json.loads(props[0])["entity_id"] == "n1"
+
+
 # ---------------------------------------------------------------------------
 # node upsert — merge (not replace) semantics
 # ---------------------------------------------------------------------------
@@ -434,10 +458,28 @@ async def test_upsert_edge_creates_missing_endpoints_in_sql():
 
 @pytest.mark.asyncio
 async def test_get_knowledge_graph_uses_global_config_when_max_nodes_none():
+    """max_nodes=None must fall back to global_config['max_graph_nodes'] as the
+    budget. Return MORE rows than the cap so the fallback is actually exercised:
+    mocking _fetch -> [] would hit the empty-result early-exit before the cap is
+    ever read, passing even if the None -> global_config fallback were broken."""
     storage = make_storage(global_config={"max_graph_nodes": 42})
-    with patch.object(storage, "_fetch", new=AsyncMock(return_value=[])):
+    rows = [
+        {"id": str(i), "properties": json.dumps({"entity_id": str(i)}), "degree": 0}
+        for i in range(50)
+    ]
+    fetch = AsyncMock(side_effect=[rows, []])  # 1st call: nodes, 2nd: edges
+    with (
+        patch.object(storage, "_fetch", new=fetch),
+        patch.object(storage, "node_degrees_batch", new=AsyncMock(return_value={})),
+    ):
         kg = await storage.get_knowledge_graph("*", max_nodes=None)
-    assert kg.nodes == []
+
+    # The node query asked for cap + 1 (42 + 1) rows -> the None -> global_config
+    # fallback supplied the budget...
+    assert fetch.call_args_list[0].args[3] == 43
+    # ...and the result is truncated to the cap, with is_truncated set.
+    assert len(kg.nodes) == 42
+    assert kg.is_truncated is True
 
 
 @pytest.mark.asyncio
@@ -675,7 +717,9 @@ async def test_search_labels_strips_and_relevance_orders():
     assert namespace == GRAPH_NAMESPACE
     assert contains == "%foo%"
     assert "ORDER BY" not in sql
-    assert "ESCAPE '\\'" in sql
+    # E'' escape literal: unambiguous one-char escape regardless of
+    # standard_conforming_strings (see search_labels).
+    assert "ESCAPE E'\\\\'" in sql
 
 
 @pytest.mark.asyncio
