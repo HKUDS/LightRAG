@@ -409,10 +409,12 @@ class PGTableGraphStorage(BaseGraphStorage):
             return
 
         # Run the migration inside ONE transaction that holds the same advisory
-        # lock as the schema DDL. This serializes concurrent initialize() calls
-        # and makes scan -> delete -> insert atomic. Without the lock+transaction,
-        # a concurrent writer's freshly-written canonical row could be deleted by
-        # this stale-group cleanup and replaced with an older survivor payload.
+        # lock as the schema DDL. The lock serializes concurrent initialize()
+        # calls (ingestion writers do NOT take it) and FOR UPDATE locks the rows
+        # the scan sees. A concurrent writer can still insert a fresh canonical
+        # row the snapshot never saw, so the re-insert below guards its ON CONFLICT
+        # update with `updated_at <= survivor` to avoid clobbering that newer row
+        # with the older legacy survivor payload.
         async def _migrate(conn: Any) -> None:
             async with conn.transaction():
                 await conn.execute(
@@ -481,6 +483,12 @@ class PGTableGraphStorage(BaseGraphStorage):
                         VALUES ($1, $2, $5, $6, $7::jsonb, now())
                         ON CONFLICT (workspace, namespace, src_id, tgt_id)
                         DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
+                        -- Don't clobber a fresher row: a concurrent writer (which
+                        -- does not take this migration's advisory lock) may have
+                        -- inserted a canonical row the FOR UPDATE snapshot never
+                        -- saw. Only overwrite when the existing row is not newer
+                        -- than the legacy survivor being consolidated.
+                        WHERE lightrag_graph_edges.updated_at <= $8
                         """,
                         self.workspace,
                         self.namespace,
@@ -489,6 +497,7 @@ class PGTableGraphStorage(BaseGraphStorage):
                         src,
                         tgt,
                         survivor_props,
+                        survivor["updated_at"],
                     )
 
         await self._db._run_with_retry(_migrate)
