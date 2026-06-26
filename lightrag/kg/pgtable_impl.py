@@ -963,7 +963,7 @@ class PGTableGraphStorage(BaseGraphStorage):
                     GROUP BY id
                 ) d ON d.id = n.id
                 WHERE n.workspace = $1 AND n.namespace = $2
-                ORDER BY degree DESC, n.id ASC
+                ORDER BY degree DESC, n.id COLLATE "C" ASC
                 LIMIT $3
                 """,
                 self.workspace,
