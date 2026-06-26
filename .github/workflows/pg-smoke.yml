@@ -66,11 +66,15 @@ jobs:
         env:
           LIGHTRAG_GRAPH_STORAGE: PGTableGraphStorage
         run: |
+          set -o pipefail
+          # -s (no capture) so a swallowed-failure marker reaches the log even for
+          # a test pytest records as passed (see guard 2). tee keeps the log for
+          # the grep; pipefail preserves pytest's own exit code.
           pytest tests/kg/test_graph_storage.py -m integration --run-integration \
-            -v --tb=short --junitxml=contract.xml
-          # False-green guard: the suite's storage fixture skips when the backend
-          # isn't configured, so a misconfigured env would exit 0 having run zero
-          # tests. Require tests>0, skipped==0, and no failures/errors.
+            -s -v --tb=short --junitxml=contract.xml 2>&1 | tee contract.log
+          # Guard 1 (env-skip false-green): the storage fixture skips when the
+          # backend isn't configured, so a misconfigured env would exit 0 having
+          # run zero tests. Require tests>0, skipped==0, and no failures/errors.
           python - <<'PY'
           import sys, xml.etree.ElementTree as ET
           root = ET.parse("contract.xml").getroot()
@@ -86,3 +90,12 @@ jobs:
           if failed:
               sys.exit(f"{failed} contract tests failed")
           PY
+          # Guard 2 (swallowed-failure false-green): most of these shared tests
+          # wrap their body in try/except and `return False` on failure, which
+          # pytest records as a PASSED test (only a PytestReturnNotNoneWarning),
+          # so a swallowed assertion would slip past guard 1. Fail on the marker
+          # those except blocks print.
+          if grep -q "error occurred during the test" contract.log; then
+            echo "A contract test swallowed an exception (returned False) - failing."
+            exit 1
+          fi
