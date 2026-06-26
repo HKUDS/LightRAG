@@ -130,6 +130,46 @@ async def test_probe_lmstudio_embedding_dim(monkeypatch):
     assert resolved_model == "loaded-embed-model"
 
 
+@pytest.mark.asyncio
+async def test_probe_lmstudio_embedding_dim_cache_returns_tuple(monkeypatch):
+    clear_lmstudio_model_cache()
+
+    call_count = 0
+
+    async def fake_resolve(model, base_url=None, api_key=None, purpose="llm"):
+        nonlocal call_count
+        call_count += 1
+        assert purpose == "embedding"
+        return "loaded-embed-model"
+
+    async def fake_embed(texts, model, base_url=None, api_key=None, embedding_dim=None):
+        return np.array([[0.1, 0.2, 0.3, 0.4]], dtype=np.float32)
+
+    monkeypatch.setattr(
+        "lightrag.llm.lmstudio.resolve_lmstudio_model",
+        fake_resolve,
+    )
+    monkeypatch.setattr(
+        "lightrag.llm.lmstudio.openai_embed.func",
+        fake_embed,
+    )
+
+    first = await probe_lmstudio_embedding_dim(
+        "any-available",
+        base_url="http://localhost:1234/v1",
+        api_key="lm-studio",
+    )
+    second = await probe_lmstudio_embedding_dim(
+        "any-available",
+        base_url="http://localhost:1234/v1",
+        api_key="lm-studio",
+    )
+
+    assert first == (4, "loaded-embed-model")
+    assert second == (4, "loaded-embed-model")
+    assert call_count == 1
+
+
 def test_normalize_lmstudio_response_format_maps_json_object_to_text():
     kwargs: dict = {"response_format": {"type": "json_object"}}
     _normalize_lmstudio_response_format(kwargs)

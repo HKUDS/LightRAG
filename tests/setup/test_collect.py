@@ -853,7 +853,7 @@ reset_state
 prompt_choice() {{ printf 'openai'; }}
 prompt_with_default() {{
   case "$1" in
-    "LLM model") printf 'gpt-4o' ;;
+    "LLM model (blank = any-available)") printf 'gpt-4o' ;;
     *) printf '%s' "$2" ;;
   esac
 }}

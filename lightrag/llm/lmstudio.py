@@ -19,7 +19,7 @@ _ANY_AVAILABLE_ALIASES = frozenset(
 _LLM_MODEL_TYPES = frozenset({"llm", "vlm"})
 _EMBEDDING_MODEL_TYPES = frozenset({"embeddings", "embedding"})
 _MODEL_RESOLUTION_CACHE: dict[tuple[str, str], str] = {}
-_EMBEDDING_DIM_CACHE: dict[str, int] = {}
+_EMBEDDING_DIM_CACHE: dict[str, tuple[int, str]] = {}
 
 
 def is_any_available_model(model: str | None) -> bool:
@@ -237,7 +237,7 @@ async def probe_lmstudio_embedding_dim(
         )
 
     embedding_dim = int(vectors.shape[1])
-    _EMBEDDING_DIM_CACHE[resolved_host] = embedding_dim
+    _EMBEDDING_DIM_CACHE[resolved_host] = (embedding_dim, resolved_model)
     logger.info(
         "LM Studio probed embedding dimension %d for model '%s' at %s",
         embedding_dim,
