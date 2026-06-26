@@ -780,10 +780,14 @@ class PGTableGraphStorage(BaseGraphStorage):
         q = query.strip().lower()
         if not q:
             return []
+        # ESCAPE uses an E'' literal so the backslash escape char is unambiguously
+        # one character regardless of standard_conforming_strings; a plain '\'
+        # literal is a syntax error when that (deprecated, non-default) setting is
+        # off. E'\\' is one backslash under both settings.
         rows = await self._fetch(
             """
             SELECT id FROM lightrag_graph_nodes
-            WHERE workspace=$1 AND namespace=$2 AND LOWER(id) LIKE $3 ESCAPE '\\'
+            WHERE workspace=$1 AND namespace=$2 AND LOWER(id) LIKE $3 ESCAPE E'\\\\'
             """,
             self.workspace,
             self.namespace,
