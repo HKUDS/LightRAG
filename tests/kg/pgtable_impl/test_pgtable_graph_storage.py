@@ -741,12 +741,16 @@ async def test_get_popular_labels_counts_self_loop_twice():
     with patch.object(storage, "_fetch", new=fetch):
         labels = await storage.get_popular_labels(limit=5)
 
-    sql, workspace, namespace = fetch.call_args.args
+    sql, workspace, namespace, limit_arg = fetch.call_args.args
     assert workspace == "test"
     assert namespace == GRAPH_NAMESPACE
+    assert limit_arg == 5
     assert labels == ["A"]
-    assert "src_id <> tgt_id" not in sql
-    assert "ORDER BY" not in sql
+    assert "src_id <> tgt_id" not in sql  # self-loop counted twice (no guard)
+    # Ranking + truncation are pushed into SQL (ORDER BY degree DESC, LIMIT) so
+    # large graphs do not transfer every node just to slice in Python.
+    assert "ORDER BY degree DESC" in sql
+    assert "LIMIT" in sql
 
 
 @pytest.mark.asyncio

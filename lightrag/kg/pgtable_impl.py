@@ -753,15 +753,19 @@ class PGTableGraphStorage(BaseGraphStorage):
                 GROUP BY id
             ) d ON d.id = n.id
             WHERE n.workspace = $1 AND n.namespace = $2
+            -- Rank + truncate in SQL instead of fetching every node and slicing
+            -- in Python: the popular-label endpoint caps the result, so this
+            -- avoids transferring the whole node set on large graphs. COLLATE "C"
+            -- makes the id tie-break match Python's codepoint sort exactly
+            -- (degree DESC, id ASC == the previous key=(-degree, id)).
+            ORDER BY degree DESC, n.id COLLATE "C" ASC
+            LIMIT $3
             """,
             self.workspace,
             self.namespace,
+            limit,
         )
-        ranked = sorted(
-            ((r["id"], int(r["degree"])) for r in rows),
-            key=lambda item: (-item[1], item[0]),
-        )
-        return [node_id for node_id, _ in ranked[:limit]]
+        return [r["id"] for r in rows]
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         q = query.strip().lower()
