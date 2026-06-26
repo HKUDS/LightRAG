@@ -3,6 +3,7 @@
 > 状态：草案 / 待评审
 > 关联：PR #3331（Sidecar 图片资源上传 S3）、Issue #3315
 > 适用版本：基于 `main` @ `40a62c9`
+> 英文版：`docs/S3InputStorageDesign.md`
 
 ## 1. 背景与动机
 
