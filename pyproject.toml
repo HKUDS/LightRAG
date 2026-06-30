@@ -155,7 +155,7 @@ observability = [
 
 s3-upload = [
     # S3-compatible asset upload dependencies
-    "boto3>=1.26.0,<2.0.0",
+    "boto3>=1.26.0,<1.34.0",
 ]
 
 [project.scripts]
