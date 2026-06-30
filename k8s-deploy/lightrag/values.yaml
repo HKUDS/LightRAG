@@ -80,3 +80,14 @@ env:
   # Replace with your Qdrant credentials
   QDRANT_URL: http://qdrant-cluster-qdrant-qdrant:6333
   # REDIS_URI: redis://default:${REDIS_PASSWORD}@redis-cluster-redis-redis:6379
+  # DocumentDB (MongoDB-compatible). When ENABLE_DOCUMENTDB=true,
+  # install_lightrag.sh resolves MONGO_URI from the DocumentDB resource's
+  # status.connectionString and overrides the storage backends below to:
+  #   LIGHTRAG_KV_STORAGE: MongoKVStorage
+  #   LIGHTRAG_GRAPH_STORAGE: MongoGraphStorage
+  #   LIGHTRAG_DOC_STATUS_STORAGE: MongoDocStatusStorage
+  #   LIGHTRAG_VECTOR_STORAGE: NanoVectorDBStorage
+  # NanoVectorDBStorage is used because DocumentDB does not implement the
+  # MongoDB Atlas $vectorSearch operator that MongoVectorDBStorage requires.
+  # MONGO_URI:
+  MONGO_DATABASE: lightrag

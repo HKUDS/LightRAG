@@ -1,0 +1,40 @@
+## description: DocumentDB instance for LightRAG (MongoDB-compatible storage).
+##
+## DocumentDB is not a KubeBlocks addon — it ships its own Kubernetes
+## operator (https://github.com/documentdb/documentdb-kubernetes-operator).
+## When ENABLE_DOCUMENTDB=true, 01-prepare.sh installs the operator (and
+## cert-manager if missing); 02-install-database.sh then applies this manifest
+## via kubectl. install_lightrag.sh reads status.connectionString from the
+## resulting DocumentDB resource and wires it into LightRAG.
+##
+## Notes:
+##   - LightRAG requires DocumentDB extension v0.110.0+ for the `_id` lookup
+##     fix (https://github.com/documentdb/documentdb/pull/459).
+##   - Replace the password before using outside a throwaway dev cluster.
+##   - Requires Kubernetes 1.35+ (operator uses ImageVolume feature).
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: docdb-credentials
+type: Opaque
+stringData:
+  username: docdbadmin
+  password: "ChangeMe!ReplaceBeforeUsing"
+---
+apiVersion: documentdb.io/preview
+kind: DocumentDB
+metadata:
+  name: documentdb-cluster
+spec:
+  nodeCount: 1
+  instancesPerNode: 1
+  documentDBImage: ghcr.io/documentdb/documentdb-kubernetes-operator/documentdb:0.110.0
+  gatewayImage: ghcr.io/documentdb/documentdb-kubernetes-operator/gateway:0.110.0
+  documentDbCredentialSecret: docdb-credentials
+  resource:
+    storage:
+      pvcSize: "10Gi"
+  exposeViaService:
+    serviceType: ClusterIP
+  sidecarInjectorPluginName: cnpg-i-sidecar-injector.documentdb.io

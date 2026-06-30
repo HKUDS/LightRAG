@@ -15,6 +15,7 @@ print "Uninstalling database clusters..."
 [ "$ENABLE_QDRANT" = true ] && print "Uninstalling Qdrant cluster..." && helm uninstall qdrant-cluster --namespace $NAMESPACE 2>/dev/null || true
 [ "$ENABLE_MONGODB" = true ] && print "Uninstalling MongoDB cluster..." && helm uninstall mongodb-cluster --namespace $NAMESPACE 2>/dev/null || true
 [ "$ENABLE_NEO4J" = true ] && print "Uninstalling Neo4j cluster..." && helm uninstall neo4j-cluster --namespace $NAMESPACE 2>/dev/null || true
+[ "$ENABLE_DOCUMENTDB" = true ] && print "Uninstalling DocumentDB cluster..." && kubectl delete -f "$DATABASE_SCRIPT_DIR/documentdb/values.yaml" --namespace $NAMESPACE 2>/dev/null || true
 
 print_success "Database clusters uninstalled"
 print "To uninstall database addons and KubeBlocks, run 04-cleanup.sh"

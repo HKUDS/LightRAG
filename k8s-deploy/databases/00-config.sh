@@ -19,3 +19,7 @@ ENABLE_QDRANT=false
 ENABLE_NEO4J=true
 ENABLE_ELASTICSEARCH=false
 ENABLE_MONGODB=false
+# DocumentDB is deployed via its own operator (not a KubeBlocks addon).
+# Install the operator separately first:
+#   https://github.com/documentdb/documentdb-kubernetes-operator
+ENABLE_DOCUMENTDB=false
