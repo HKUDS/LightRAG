@@ -10,6 +10,7 @@ Supported graph storage types include:
 - Neo4JStorage
 - MongoDBStorage
 - PGGraphStorage
+- PGTableGraphStorage
 - MemgraphStorage
 """
 

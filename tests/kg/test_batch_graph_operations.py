@@ -30,6 +30,7 @@ GLOBAL_CONFIG = {
     "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.5},
     "working_dir": "/tmp/test_batch_graph",
 }
+GRAPH_NAMESPACE = "chunk_entity_relation"
 
 
 async def _raw_embedding_func(texts):
@@ -942,3 +943,273 @@ class TestMongoBatchOrdering:
         node_ops = storage.collection.bulk_write.await_args.args[0]
         assert len(node_ops) == 1
         assert node_ops[0]._filter == {"_id": "EntityA"}
+
+
+class TestPGTableBatchOrdering:
+    """Offline unit tests for PGTableGraphStorage batch write methods.
+
+    Spies on _execute to verify SQL batch arguments without a real DB.
+    """
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_upsert_nodes_batch_deduplicates_last_write_wins(self):
+        import json
+
+        from lightrag.kg.pgtable_impl import PGTableGraphStorage
+
+        storage = PGTableGraphStorage.__new__(PGTableGraphStorage)
+        storage.workspace = "test"
+        storage.namespace = GRAPH_NAMESPACE
+        execute_args: list[tuple] = []
+
+        async def spy(_sql, *args):
+            execute_args.append((_sql, *args))
+
+        storage._execute = spy  # type: ignore[assignment]
+
+        await PGTableGraphStorage.upsert_nodes_batch(
+            storage,
+            [
+                ("EntityA", _make_node("EntityA")),
+                ("EntityA", dict(_make_node("EntityA"), description="latest")),
+                ("EntityB", _make_node("EntityB")),
+            ],
+        )
+
+        # All nodes in a single _execute call
+        assert len(execute_args) == 1
+        sql, _ws, namespace, ids, props = execute_args[0]
+        assert namespace == GRAPH_NAMESPACE
+        assert ids == ["EntityA", "EntityB"]
+        assert json.loads(props[0])["description"] == "latest"
+        assert json.loads(props[1])["description"] == "Description of EntityB"
+        assert "ORDER BY u.id" in sql
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_upsert_nodes_batch_sorts_ids_for_lock_ordering(self):
+        from lightrag.kg.pgtable_impl import PGTableGraphStorage
+
+        storage = PGTableGraphStorage.__new__(PGTableGraphStorage)
+        storage.workspace = "test"
+        storage.namespace = GRAPH_NAMESPACE
+        execute_args: list[tuple] = []
+
+        async def spy(_sql, *args):
+            execute_args.append((_sql, *args))
+
+        storage._execute = spy  # type: ignore[assignment]
+
+        await PGTableGraphStorage.upsert_nodes_batch(
+            storage,
+            [
+                ("ZNode", _make_node("ZNode")),
+                ("ANode", _make_node("ANode")),
+            ],
+        )
+
+        sql, _ws, namespace, ids, _props = execute_args[0]
+        assert namespace == GRAPH_NAMESPACE
+        assert ids == ["ANode", "ZNode"]
+        assert "ORDER BY u.id" in sql
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_upsert_edges_batch_normalizes_direction(self):
+        import json
+
+        from lightrag.kg.pgtable_impl import PGTableGraphStorage
+
+        storage = PGTableGraphStorage.__new__(PGTableGraphStorage)
+        storage.workspace = "test"
+        storage.namespace = GRAPH_NAMESPACE
+        execute_args: list[tuple] = []
+
+        async def spy(_sql, *args):
+            execute_args.append((_sql, *args))
+
+        storage._execute = spy  # type: ignore[assignment]
+
+        await PGTableGraphStorage.upsert_edges_batch(
+            storage,
+            [
+                ("EntityA", "EntityB", _make_edge(1.0)),
+                (
+                    "EntityB",
+                    "EntityA",
+                    _make_edge(2.0),
+                ),  # reversed → same canonical pair
+                ("EntityB", "EntityC", _make_edge(3.0)),
+            ],
+        )
+
+        # (A,B) and (B,A) collapse to one row; all edges in one _execute call
+        assert len(execute_args) == 1
+        sql, _ws, namespace, srcs, tgts, props, endpoint_ids = execute_args[0]
+        assert namespace == GRAPH_NAMESPACE
+        edge_pairs = list(zip(srcs, tgts))
+        assert len(edge_pairs) == 2
+        assert ("EntityA", "EntityB") in edge_pairs
+        assert ("EntityB", "EntityC") in edge_pairs
+        assert endpoint_ids == ["EntityA", "EntityB", "EntityC"]
+        assert "ORDER BY u.src, u.tgt" in sql
+        assert "jsonb_build_object('entity_id', u.id)" in sql
+        assert "JOIN lightrag_graph_nodes src_n" not in sql
+        assert "JOIN lightrag_graph_nodes tgt_n" not in sql
+        # Last write wins: weight 2.0 (from the (B,A) call) survives
+        ab_idx = edge_pairs.index(("EntityA", "EntityB"))
+        assert json.loads(props[ab_idx])["weight"] == 2.0
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_upsert_edges_batch_canonical_order_is_lexicographic(self):
+        """src_id = min(a, b), tgt_id = max(a, b) regardless of call order."""
+        from lightrag.kg.pgtable_impl import PGTableGraphStorage
+
+        storage = PGTableGraphStorage.__new__(PGTableGraphStorage)
+        storage.workspace = "test"
+        storage.namespace = GRAPH_NAMESPACE
+        execute_args: list[tuple] = []
+
+        async def spy(_sql, *args):
+            execute_args.append((_sql, *args))
+
+        storage._execute = spy  # type: ignore[assignment]
+
+        await PGTableGraphStorage.upsert_edges_batch(
+            storage,
+            [("ZNode", "ANode", _make_edge())],
+        )
+
+        sql, _ws, namespace, srcs, tgts, _, endpoint_ids = execute_args[0]
+        assert namespace == GRAPH_NAMESPACE
+        assert srcs == ["ANode"]
+        assert tgts == ["ZNode"]
+        assert endpoint_ids == ["ANode", "ZNode"]
+        assert "ORDER BY u.src, u.tgt" in sql
+        assert "jsonb_build_object('entity_id', u.id)" in sql
+        assert "JOIN lightrag_graph_nodes src_n" not in sql
+        assert "JOIN lightrag_graph_nodes tgt_n" not in sql
+
+
+class TestPGTablePipelineIntegration:
+    """Offline pipeline integration tests for PGTableGraphStorage.
+
+    Patches all DB-dependent methods (_execute / _fetch / _fetchrow / _fetchval)
+    so no PostgreSQL instance is required, then drives the real
+    ainsert_custom_kg() pipeline to verify:
+
+    1. Batch write methods are invoked (not N+1 serial upserts).
+    2. Edge canonical normalisation flows end-to-end: a relation submitted
+       as (EntityB, EntityA) must reach _execute as (EntityA, EntityB).
+    """
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    async def test_batch_writes_and_edge_normalisation_via_pipeline(self):
+        import tempfile
+        from unittest.mock import AsyncMock, patch
+
+        from lightrag import LightRAG
+        from lightrag.kg.pgtable_impl import PGTableGraphStorage
+
+        execute_args: list[tuple] = []
+
+        async def spy_execute(_self, _sql, *args):
+            execute_args.append(args)
+
+        with (
+            patch.object(PGTableGraphStorage, "initialize", AsyncMock()),
+            patch.object(PGTableGraphStorage, "finalize", AsyncMock()),
+            patch.object(PGTableGraphStorage, "index_done_callback", AsyncMock()),
+            # Route all writes through the spy; skip actual SQL
+            patch.object(PGTableGraphStorage, "_execute", spy_execute),
+            # Make all reads return empty so the pipeline treats everything as new
+            patch.object(PGTableGraphStorage, "_fetch", AsyncMock(return_value=[])),
+            patch.object(
+                PGTableGraphStorage, "_fetchrow", AsyncMock(return_value=None)
+            ),
+            patch.object(PGTableGraphStorage, "_fetchval", AsyncMock(return_value=0)),
+        ):
+            # Satisfy env-var checks in LightRAG.__post_init__ without a real DB
+            pg_env = {
+                "POSTGRES_USER": "test",
+                "POSTGRES_PASSWORD": "test",
+                "POSTGRES_DATABASE": "test",
+            }
+            with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", pg_env):
+                rag = LightRAG(
+                    working_dir=tmp,
+                    graph_storage="PGTableGraphStorage",
+                    llm_model_func=AsyncMock(return_value=""),
+                    embedding_func=mock_embedding_func,
+                )
+                await rag.initialize_storages()
+
+                # Mock non-graph storages to avoid file I/O interference
+                rag.entities_vdb.upsert = AsyncMock()
+                rag.relationships_vdb.upsert = AsyncMock()
+                rag.relationships_vdb.delete = AsyncMock()
+                rag.text_chunks.upsert = AsyncMock()
+                rag.doc_status.upsert = AsyncMock()
+
+                # Two entities + one relation submitted in reverse direction (B→A).
+                # PGTableGraphStorage must store the edge as (EntityA, EntityB) — canonical order.
+                custom_kg = {
+                    "chunks": [
+                        {"content": "text", "chunk_order_index": 0, "source_id": "s1"}
+                    ],
+                    "entities": [
+                        {
+                            "entity_name": "EntityA",
+                            "entity_type": "CONCEPT",
+                            "description": "A",
+                            "source_id": "s1",
+                            "file_path": "t.pdf",
+                        },
+                        {
+                            "entity_name": "EntityB",
+                            "entity_type": "CONCEPT",
+                            "description": "B",
+                            "source_id": "s1",
+                            "file_path": "t.pdf",
+                        },
+                    ],
+                    "relationships": [
+                        {
+                            "src_id": "EntityB",  # reversed — pipeline sends B→A
+                            "tgt_id": "EntityA",
+                            "description": "relation",
+                            "keywords": "link",
+                            "weight": 1.0,
+                            "source_id": "s1",
+                            "file_path": "t.pdf",
+                        }
+                    ],
+                }
+
+                await rag.ainsert_custom_kg(custom_kg)
+                await rag.finalize_storages()
+
+        # ── Verify batch writes were issued ──────────────────────────────────
+        # Node batch: (workspace, namespace, ids_list, props_list)
+        node_batches = [
+            a for a in execute_args if len(a) == 4 and isinstance(a[2], list)
+        ]
+        assert node_batches, "upsert_nodes_batch never called _execute"
+
+        # Edge batch: (workspace, namespace, srcs_list, tgts_list, props_list, endpoint_ids)
+        edge_batches = [
+            a for a in execute_args if len(a) == 6 and isinstance(a[2], list)
+        ]
+        assert edge_batches, "upsert_edges_batch never called _execute"
+
+        # ── Verify canonical edge normalisation ──────────────────────────────
+        # The relation was submitted as (EntityB, EntityA); canonical order is
+        # min(a,b) → src, so it must be stored as (EntityA, EntityB).
+        _ws, namespace, srcs, tgts, _props, endpoint_ids = edge_batches[0]
+        assert namespace == GRAPH_NAMESPACE
+        assert srcs == ["EntityA"], f"Edge src not normalised: got {srcs}"
+        assert tgts == ["EntityB"], f"Edge tgt not normalised: got {tgts}"
+        assert endpoint_ids == ["EntityA", "EntityB"]
