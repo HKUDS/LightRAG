@@ -15,6 +15,12 @@ Pipeline constants (``pipeline``, ``target_type``, ``to_formats``,
 ``image_export_mode``) are intentionally **not** env-driven — the sidecar
 flow depends on them — and are recorded inside the manifest so a future
 code change automatically invalidates pre-existing caches.
+
+Some docling-serve deployments return a JSON ``ConvertDocumentResponse``
+envelope from the result endpoint even when the client requests a zip. When
+that happens, the client materializes the nested ``document`` object as the
+main ``<stem>.json`` and writes ``document.md_content`` beside it as
+``<stem>.md``. The response envelope itself is not treated as document content.
 """
 
 from __future__ import annotations
@@ -158,9 +164,9 @@ class DoclingRawClient:
                 client, source_file_path, filename=effective_filename
             )
             await self._poll_until_done(client, task_id)
-            payload = await self._download_zip_bytes(client, task_id)
-
-        safe_extract_zip(payload, raw_dir)
+            await self._download_result_into(
+                client, task_id, raw_dir, effective_filename
+            )
         # Defensive: confirm the main JSON exists before anyone reads the
         # bundle. Look it up by the *uploaded* filename's stem — that's
         # what docling-serve uses to name the JSON inside the zip.
@@ -279,22 +285,27 @@ class DoclingRawClient:
 
         raise TimeoutError(f"Docling task {task_id} polling timeout")
 
-    async def _download_zip_bytes(
+    async def _download_result_into(
         self,
         client: "httpx.AsyncClient",
         task_id: str,
-    ) -> bytes:
+        raw_dir: Path,
+        upload_filename: str,
+    ) -> None:
         encoded_task_id = quote(task_id, safe="")
         url = f"{self.endpoint}{RESULT_PATH.format(task_id=encoded_task_id)}"
         resp = await client.get(url)
         raise_for_status_with_detail(resp, f"Docling result {task_id} download")
         ctype = resp.headers.get("content-type", "")
         if "zip" not in ctype.lower():
+            if _is_json_result(resp, ctype):
+                _materialize_json_result(resp, raw_dir, upload_filename)
+                return
             raise RuntimeError(
                 f"Docling result {task_id} returned non-zip content-type "
                 f"{ctype!r}; body prefix={resp.text[:400]!r}"
             )
-        return resp.content
+        safe_extract_zip(resp.content, raw_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +331,52 @@ def _parse_ocr_lang(raw: str) -> list[str]:
     if isinstance(parsed, list):
         return [str(x).strip() for x in parsed if str(x).strip()]
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _is_json_result(resp: Any, content_type: str) -> bool:
+    ctype = content_type.lower()
+    if "json" in ctype:
+        return True
+    return resp.content.lstrip().startswith((b"{", b"["))
+
+
+def _materialize_json_result(resp: Any, raw_dir: Path, upload_filename: str) -> None:
+    try:
+        payload = resp.json() if resp.text else json.loads(resp.content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Docling result returned JSON content-type but the body is not valid JSON"
+        ) from exc
+
+    document, markdown = _extract_document_payload(payload)
+    stem = Path(upload_filename).stem
+    (raw_dir / f"{stem}.json").write_text(
+        json.dumps(document, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if markdown is not None:
+        (raw_dir / f"{stem}.md").write_text(str(markdown), encoding="utf-8")
+
+
+def _extract_document_payload(payload: Any) -> tuple[dict[str, Any], Any | None]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("Docling JSON result is not an object")
+
+    nested = payload.get("document")
+    if isinstance(nested, dict):
+        return nested, nested.get("md_content")
+
+    if _looks_like_docling_document(payload):
+        return payload, payload.get("md_content")
+
+    keys = ", ".join(sorted(str(k) for k in payload.keys())[:20])
+    raise RuntimeError(
+        f"Docling JSON result missing document object; top-level keys=[{keys}]"
+    )
+
+
+def _looks_like_docling_document(payload: dict[str, Any]) -> bool:
+    return any(key in payload for key in ("schema_name", "body", "texts", "tables"))
 
 
 def _format_failure(task_id: str, status: str, payload: Any) -> str:

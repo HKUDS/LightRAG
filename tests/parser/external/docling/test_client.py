@@ -73,6 +73,8 @@ class _Recorder:
         poll_text: str | None = None,
         result_status_code: int = 200,
         result_text: str | None = None,
+        result_content: bytes | None = None,
+        result_content_type: str = "application/zip",
     ) -> None:
         self.terminal_status = terminal_status
         self.zip_bytes = zip_bytes
@@ -83,6 +85,8 @@ class _Recorder:
         self.poll_text = poll_text
         self.result_status_code = result_status_code
         self.result_text = result_text
+        self.result_content = result_content
+        self.result_content_type = result_content_type
 
         self.post_calls: list[dict] = []
         self.get_calls: list[dict] = []
@@ -165,8 +169,8 @@ class _FakeAsyncClient:
                 )
             return _FakeResponse(
                 status_code=200,
-                content=recorder.zip_bytes,
-                headers={"content-type": "application/zip"},
+                content=recorder.result_content or recorder.zip_bytes,
+                headers={"content-type": recorder.result_content_type},
             )
         raise AssertionError(f"unexpected GET {url}")
 
@@ -446,6 +450,41 @@ async def test_docling_client_result_http_error_preserves_response_body(
     assert "Docling result task-abc download" in message
     assert "HTTP 500" in message
     assert "zip artifact missing" in message
+
+
+async def test_docling_client_materializes_json_result_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    document = {
+        "schema_name": "DoclingDocument",
+        "md_content": "# Extracted markdown\n\nOnly this text should be markdown.",
+        "body": {"children": []},
+    }
+    envelope = {
+        "task_id": "task-abc",
+        "task_status": "success",
+        "document": document,
+    }
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=b"",
+        result_content=json_dump(envelope).encode("utf-8"),
+        result_content_type="application/json",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "demo.docling_raw"
+    manifest = await DoclingRawClient().download_into(raw_dir, source_pdf)
+
+    stored = json.loads((raw_dir / "demo.json").read_text(encoding="utf-8"))
+    assert stored == document
+    assert "task_status" not in stored
+    assert (raw_dir / "demo.md").read_text(encoding="utf-8") == document["md_content"]
+    assert manifest.critical_file.path == "demo.json"
+    assert {f.path for f in manifest.files} == {"demo.md"}
 
 
 async def test_docling_client_encodes_task_id_into_url_path_segment(
