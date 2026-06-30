@@ -326,7 +326,15 @@ During the document insertion stage, you may also want to adjust the following e
 - **FORCE_LLM_SUMMARY_ON_MERGE / MAX_SOURCE_IDS_PER_RELATION**: Controls the maximum number of text chunks an `entity/relation` can be associated with.
 - **SOURCE_IDS_LIMIT_METHOD**: Controls whether to keep updating the entity/relation description once an `entity/relation` exceeds its associated text chunk limit (by default it stops updating, because at that point the entity-relation description is already rich enough and further updates add little value; skipping updates can greatly speed up knowledge base construction).
 - **DEFAULT_MAX_FILE_PATHS**: Controls the maximum number of source files an `entity/relation` can be associated with; once this limit is exceeded, new file names are no longer written to the vector storage.
-- **OPENAI_LLM_MAX_TOKENS / OPENAI_LLM_MAX_COMPLETION_TOKENS**: Set a max output token limit to prevent endless output from certain LLMs, which may trigger timeout errors during entity and relation extraction. Different LLM providers require distinct parameter configurations, as detailed in the `env.example`.
+
+### Resolving LLM Timeouts During Entity-Relation Extraction
+
+LLM timeouts during entity-relation extraction usually trace back to one of three causes. Identify the cause, then apply the matching remedy (the parameters can be combined):
+
+- **The model is slow.** A model running below ~50 tokens/second may be unable to finish a chunk that contains many entities and relations before the request times out. Increase the timeout via `*_LLM_TIMEOUT` — either the global `LLM_TIMEOUT` or the role-specific `EXTRACT_LLM_TIMEOUT` for the extraction phase. Note that the effective execution timeout is **twice** the configured value, so `EXTRACT_LLM_TIMEOUT=300` allows up to **600 seconds**.
+- **The chunk produces too many entities and relations.** Reference/bibliography chunks, for example, can make the model emit an enormous number of records that cannot complete in time. Cap the output length with `OPENAI_LLM_MAX_TOKENS` or `OPENAI_LLM_MAX_COMPLETION_TOKENS` (the correct parameter name depends on the LLM provider — see `env.example`). A useful sizing rule is `max_output_tokens < LLM_TIMEOUT × tokens_per_second` (e.g., `9000 < 240s × 50 tps`).
+- **The model gets stuck in an output loop.** Some models (locally deployed Qwen models in particular) occasionally fall into an endless-output loop on certain text. When this is intermittent, simply re-processing the document once usually resolves it.
+- **References specifically (P chunking strategy).** When using the paragraph-semantic (`P`) chunking strategy (e.g., `LIGHTRAG_PARSER=...-iteP`), set `CHUNK_P_DROP_REFERENCES=true` to automatically drop the trailing reference section before chunking. This prevents references from generating a flood of low-value entities and relations, a common source of timeouts. It can also be enabled per file via the filename hint `paper.[-P(drop_rf=true)].pdf`; related detection knobs (`CHUNK_P_REFERENCES_TAIL_N`, `CHUNK_P_REFERENCES_HEADINGS`) are documented in `env.example`.
 
 ### Other Important Configurations for Document Querying
 
