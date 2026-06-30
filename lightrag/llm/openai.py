@@ -2,6 +2,7 @@ from ..utils import verbose_debug, VERBOSE_DEBUG
 import os
 import logging
 import warnings
+import unicodedata
 
 from collections.abc import AsyncIterator
 
@@ -112,6 +113,40 @@ EMBEDDING_USE_BASE64: bool = os.getenv("EMBEDDING_USE_BASE64", "true").lower() i
     "1",
     "yes",
 )
+
+# Optional compatibility workaround for environments that fail on typographic
+# punctuation before the OpenAI request is sent (for example, legacy Windows
+# console/logging/proxy paths). Disabled by default so embedded text matches
+# stored text unless the caller explicitly opts in.
+OPENAI_EMBED_NORMALIZE_UNICODE: bool = os.getenv(
+    "OPENAI_EMBED_NORMALIZE_UNICODE", "false"
+).lower() in ("true", "1", "yes")
+
+
+def _normalize_texts_for_openai_embedding(texts: list[str]) -> list[str]:
+    """Normalize Unicode for the opt-in OpenAI embedding compatibility path.
+
+    Real documents often contain typographic quotes. The OpenAI SDK itself sends
+    UTF-8, but surrounding environments may still choke before the request is
+    sent. When ``OPENAI_EMBED_NORMALIZE_UNICODE`` is enabled, NFC plus ASCII
+    quote mapping provides a narrow workaround without changing default
+    embedding semantics.
+    """
+    trans = str.maketrans(
+        {
+            "\u2018": "'",
+            "\u2019": "'",
+            "\u201c": '"',
+            "\u201d": '"',
+        }
+    )
+    out: list[str] = []
+    for t in texts:
+        if not t:
+            out.append(t)
+            continue
+        out.append(unicodedata.normalize("NFC", t).translate(trans))
+    return out
 
 
 def _get_tiktoken_encoding_for_model(model: str) -> Any:
@@ -959,6 +994,9 @@ async def openai_embed(
         RateLimitError: If the OpenAI API rate limit is exceeded.
         APITimeoutError: If the OpenAI API request times out.
     """
+    texts = list(texts)
+    if OPENAI_EMBED_NORMALIZE_UNICODE:
+        texts = _normalize_texts_for_openai_embedding(texts)
     # Apply context-based prefixes if provided
     if context == "query" and query_prefix:
         texts = [query_prefix + text for text in texts]
