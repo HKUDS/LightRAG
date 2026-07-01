@@ -113,11 +113,11 @@ When the stack is up:
 ```
 host (macOS 26, Apple Silicon)
   └─ 127.0.0.1:9621 ──▶ [lightrag] ──┐   (--network lightrag)
-                                     ├─▶ postgres   :5432   (volume rag_pg)
-                                     ├─▶ neo4j       :7687   (volume rag_neo4j)
-                                     └─▶ milvus      :19530  (volume rag_milvus)
-                                            ├─▶ milvus-etcd  :2379  (volume rag_etcd)
-                                            └─▶ milvus-minio :9000  (volume rag_minio)
+                                     ├─▶ postgres   :5432   (volume lightrag_pg)
+                                     ├─▶ neo4j       :7687   (volume lightrag_neo4j)
+                                     └─▶ milvus      :19530  (volume lightrag_milvus)
+                                            ├─▶ milvus-etcd  :2379  (volume lightrag_etcd)
+                                            └─▶ milvus-minio :9000  (volume lightrag_minio)
   [lightrag] ──── outbound HTTPS ────▶ api.openai.com
 ```
 
@@ -195,9 +195,12 @@ Common overrides (environment variables, all optional):
 
 ## Data persistence
 
-All data lives in named volumes (`rag_pg`, `rag_neo4j`, `rag_milvus`, `rag_etcd`,
-`rag_minio`, `rag_lightrag`). `down` removes the containers but keeps the volumes,
-so a later `up` restores your data. Only `down --purge` deletes the volumes.
+All data lives in named volumes (`lightrag_pg`, `lightrag_neo4j`, `lightrag_milvus`,
+`lightrag_etcd`, `lightrag_minio`, `lightrag_lightrag`). Both the container and
+volume names are namespaced from `LIGHTRAG_AC_PREFIX`, so a second stack started
+with a different prefix keeps its own containers **and** its own storage. `down`
+removes the containers but keeps the volumes, so a later `up` restores your data;
+only `down --purge` deletes the volumes.
 
 ## Troubleshooting
 

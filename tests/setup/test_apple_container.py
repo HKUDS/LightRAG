@@ -118,6 +118,18 @@ def test_set_kv_replaces_existing_key(tmp_path) -> None:
     assert target.read_text().count("FOO=") == 1
 
 
+def test_container_and_volume_names_derive_from_prefix() -> None:
+    # A custom prefix must namespace BOTH container and volume names, so two
+    # stacks never share storage.
+    out = run_bash(
+        f'export LIGHTRAG_AC_PREFIX=proj2-; source "{SCRIPT}"; '
+        f'echo "container=$(cname postgres)"; echo "volume=$(vname pg)"'
+    )
+    values = parse_lines(out)
+    assert values["container"] == "proj2-postgres"
+    assert values["volume"] == "proj2_pg"
+
+
 def test_image_tags_stay_in_sync_with_repo() -> None:
     """The script must mirror the repo's image tags so the two do not drift.
 

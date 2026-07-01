@@ -89,8 +89,11 @@ NEO4J_PASS="${NEO4J_PASSWORD:-lightragdev}"     # Neo4j 5 requires >= 8 characte
 MINIO_USER="${MINIO_ACCESS_KEY_ID:-minioadmin}"
 MINIO_PASS="${MINIO_SECRET_ACCESS_KEY:-minioadmin}"
 
-VOLUMES=(rag_pg rag_neo4j rag_milvus rag_etcd rag_minio rag_lightrag)
 SERVICES=(postgres neo4j milvus-etcd milvus-minio milvus lightrag)
+# Volume base names; the full name is VOLUME_PREFIX + base (see vname), so two
+# stacks configured with different prefixes never share their databases' storage.
+VOLUME_NAMES=(pg neo4j milvus etcd minio lightrag)
+VOLUME_PREFIX="${LIGHTRAG_AC_VOLUME_PREFIX:-${CONTAINER_PREFIX%-}_}"
 
 # Dependency addresses, resolved at `up` time (see cmd_up).
 ETCD_ADDR=""; MINIO_ADDR=""; PG_ADDR=""; NEO4J_ADDR=""; MILVUS_ADDR=""
@@ -159,6 +162,8 @@ preflight() {
 # --------------------------------------------------------------------------- #
 # cname <service> — the namespaced container name for a service.
 cname()      { printf '%s%s' "$CONTAINER_PREFIX" "$1"; }
+# vname <base> — the namespaced volume name for a volume base (e.g. pg).
+vname()      { printf '%s%s' "$VOLUME_PREFIX" "$1"; }
 # is_service <name> — true when <name> is one of the stack's services.
 is_service() { local s; for s in "${SERVICES[@]}"; do [[ "$s" == "$1" ]] && return 0; done; return 1; }
 
@@ -187,11 +192,12 @@ ensure_network() {
 }
 
 ensure_volumes() {
-  local v
-  for v in "${VOLUMES[@]}"; do
-    if ! volume_exists "$v"; then
-      log_debug "creating volume '$v'"
-      container volume create "$v" >/dev/null
+  local v vol
+  for v in "${VOLUME_NAMES[@]}"; do
+    vol="$(vname "$v")"
+    if ! volume_exists "$vol"; then
+      log_debug "creating volume '$vol'"
+      container volume create "$vol" >/dev/null
     fi
   done
 }
@@ -308,7 +314,7 @@ run_service() {
 start_postgres() {
   run_service postgres -- -m "$MEM_LIGHT" \
     -e POSTGRES_USER="$PG_USER" -e POSTGRES_PASSWORD="$PG_PASSWORD" -e POSTGRES_DB="$PG_DB" \
-    --mount type=volume,source=rag_pg,target=/var/lib/postgresql \
+    --mount "type=volume,source=$(vname pg),target=/var/lib/postgresql" \
     "$IMG_PG"
 }
 
@@ -316,7 +322,7 @@ start_neo4j() {
   run_service neo4j -- -m "$MEM_HEAVY" \
     -e NEO4J_AUTH="${NEO4J_USER}/${NEO4J_PASS}" \
     -e NEO4J_dbms_default__database="neo4j" \
-    --mount type=volume,source=rag_neo4j,target=/data \
+    --mount "type=volume,source=$(vname neo4j),target=/data" \
     "$IMG_NEO4J"
 }
 
@@ -324,13 +330,13 @@ start_milvus_deps() {
   run_service milvus-etcd -- \
     -e ETCD_AUTO_COMPACTION_MODE="revision" -e ETCD_AUTO_COMPACTION_RETENTION="1000" \
     -e ETCD_QUOTA_BACKEND_BYTES="4294967296" -e ETCD_SNAPSHOT_COUNT="50000" \
-    --mount type=volume,source=rag_etcd,target=/etcd \
+    --mount "type=volume,source=$(vname etcd),target=/etcd" \
     "$IMG_ETCD" \
     etcd -advertise-client-urls=http://0.0.0.0:2379 -listen-client-urls=http://0.0.0.0:2379 -data-dir /etcd
 
   run_service milvus-minio -- \
     -e MINIO_ROOT_USER="$MINIO_USER" -e MINIO_ROOT_PASSWORD="$MINIO_PASS" \
-    --mount type=volume,source=rag_minio,target=/minio_data \
+    --mount "type=volume,source=$(vname minio),target=/minio_data" \
     "$IMG_MINIO" \
     minio server /minio_data --console-address ":9001"
 }
@@ -340,7 +346,7 @@ start_milvus() {
     -e ETCD_ENDPOINTS="${ETCD_ADDR}:2379" \
     -e MINIO_ADDRESS="${MINIO_ADDR}:9000" \
     -e MINIO_ACCESS_KEY_ID="$MINIO_USER" -e MINIO_SECRET_ACCESS_KEY="$MINIO_PASS" \
-    --mount type=volume,source=rag_milvus,target=/var/lib/milvus \
+    --mount "type=volume,source=$(vname milvus),target=/var/lib/milvus" \
     "$IMG_MILVUS" \
     milvus run standalone
 }
@@ -349,7 +355,7 @@ start_lightrag() {
   generate_env_file
   run_service lightrag -- -m "$MEM_LIGHT" \
     --env-file "$ENV_GENERATED" \
-    --mount type=volume,source=rag_lightrag,target=/app/data \
+    --mount "type=volume,source=$(vname lightrag),target=/app/data" \
     -p 127.0.0.1:9621:9621 \
     "$IMG_LIGHTRAG"
 }
@@ -422,9 +428,10 @@ cmd_down() {
   done
   if [[ "$PURGE" == "yes" ]]; then
     log_warn "Purging named volumes (all stored data will be lost)..."
-    local v
-    for v in "${VOLUMES[@]}"; do
-      volume_exists "$v" && container volume delete "$v" >/dev/null 2>&1 || true
+    local v vol
+    for v in "${VOLUME_NAMES[@]}"; do
+      vol="$(vname "$v")"
+      volume_exists "$vol" && container volume delete "$vol" >/dev/null 2>&1 || true
     done
     [[ -f "$ENV_GENERATED" ]] && rm -f "$ENV_GENERATED"
   fi
