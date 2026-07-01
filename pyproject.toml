@@ -155,6 +155,11 @@ observability = [
     "langfuse>=3.8.1",
 ]
 
+s3-upload = [
+    # S3-compatible asset upload dependencies
+    "boto3>=1.26.0,<1.34.0",
+]
+
 [project.scripts]
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"
