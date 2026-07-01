@@ -124,7 +124,9 @@ host (macOS 26, Apple Silicon)
 Only the LightRAG server publishes a host port (`127.0.0.1:9621`). The databases
 are intentionally **not** published, so the stack never clashes with a Postgres
 already listening on the host's `5432`. Each service is reached by its container
-IP on the `lightrag` network.
+IP on the `lightrag` network. Containers are namespaced as `lightrag-<service>`
+(e.g. `lightrag-postgres`), so the script never touches or reuses a same-named
+container from another project.
 
 > **Trust boundary.** This is a local, single-user development stack. The
 > database containers are not published to a host port, but they are reachable on

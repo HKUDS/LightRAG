@@ -57,6 +57,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Configuration (override via environment before invoking the script)
 # --------------------------------------------------------------------------- #
 NETWORK="${LIGHTRAG_AC_NETWORK:-lightrag}"
+# All stack containers are namespaced with this prefix so the script never
+# touches (or reuses) a same-named container from another project.
+CONTAINER_PREFIX="${LIGHTRAG_AC_PREFIX:-lightrag-}"
 ENV_SOURCE="${LIGHTRAG_AC_ENV_FILE:-$REPO_ROOT/.env}"
 ENV_GENERATED="$REPO_ROOT/.apple-container.env"
 PLATFORM="linux/arm64"
@@ -154,16 +157,23 @@ preflight() {
 # --------------------------------------------------------------------------- #
 # Idempotent helpers
 # --------------------------------------------------------------------------- #
+# cname <service> — the namespaced container name for a service.
+cname()      { printf '%s%s' "$CONTAINER_PREFIX" "$1"; }
+# is_service <name> — true when <name> is one of the stack's services.
+is_service() { local s; for s in "${SERVICES[@]}"; do [[ "$s" == "$1" ]] && return 0; done; return 1; }
+
 container_exists()  { container ls --all --quiet 2>/dev/null | grep -qx "$1"; }
 container_running() { container ls --quiet 2>/dev/null | grep -qx "$1"; }
 network_exists()    { container network list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$1"; }
 volume_exists()     { container volume list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$1"; }
 
-# container_ip <name> — the IPv4 address `container` assigned on the shared
-# network (from `container inspect`, stripping the /24 suffix).
+# container_ip <container-name> — the IPv4 address `container` assigned on the
+# shared network. Reads it from `container inspect`, accepting either the
+# `ipv4Address` field (container CLI 1.0.x) or a plain `address` field, and
+# strips the CIDR suffix.
 container_ip() {
   container inspect "$1" 2>/dev/null \
-    | grep -o '"ipv4Address"[[:space:]]*:[[:space:]]*"[0-9.]*' \
+    | grep -oE '"(ipv4Address|address)"[[:space:]]*:[[:space:]]*"[0-9.]+' \
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1
 }
 
@@ -280,17 +290,18 @@ generate_env_file() {
 run_service() {
   local name="$1"; shift
   if [[ "${1:-}" == "--" ]]; then shift; fi
-  if container_running "$name"; then
-    log_debug "$name already running"
+  local cn; cn="$(cname "$name")"
+  if container_running "$cn"; then
+    log_debug "$cn already running"
     return 0
   fi
-  if container_exists "$name"; then
-    log_info "Starting existing container '$name'"
-    container start "$name" >/dev/null
+  if container_exists "$cn"; then
+    log_info "Starting existing container '$cn'"
+    container start "$cn" >/dev/null
     return 0
   fi
-  log_info "Creating container '$name'"
-  container run --detach --name "$name" --network "$NETWORK" \
+  log_info "Creating container '$cn'"
+  container run --detach --name "$cn" --network "$NETWORK" \
     --platform "$PLATFORM" "$@" >/dev/null
 }
 
@@ -356,23 +367,23 @@ cmd_up() {
   start_neo4j
   start_milvus_deps
 
-  wait_for postgres 90 container exec postgres pg_isready -U "$PG_USER" -d "$PG_DB"
-  wait_for neo4j 120 tcp_ready neo4j 7687
-  wait_for milvus-etcd 60 container exec milvus-etcd etcdctl endpoint health
-  wait_for milvus-minio 60 container exec milvus-minio curl -fsS http://localhost:9000/minio/health/live
+  wait_for postgres 90 container exec "$(cname postgres)" pg_isready -U "$PG_USER" -d "$PG_DB"
+  wait_for neo4j 120 tcp_ready "$(cname neo4j)" 7687
+  wait_for milvus-etcd 60 container exec "$(cname milvus-etcd)" etcdctl endpoint health
+  wait_for milvus-minio 60 container exec "$(cname milvus-minio)" curl -fsS http://localhost:9000/minio/health/live
 
   # Discover dependency IPs now that etcd/minio are up, then start Milvus.
-  ETCD_ADDR="$(container_ip milvus-etcd)"
-  MINIO_ADDR="$(container_ip milvus-minio)"
+  ETCD_ADDR="$(container_ip "$(cname milvus-etcd)")"
+  MINIO_ADDR="$(container_ip "$(cname milvus-minio)")"
   [[ -n "$ETCD_ADDR" && -n "$MINIO_ADDR" ]] || { format_error "Could not resolve etcd/minio IPs."; exit 1; }
   log_debug "etcd=$ETCD_ADDR minio=$MINIO_ADDR"
 
   log_step "Starting Milvus standalone..."
   start_milvus
-  wait_for milvus 180 tcp_ready milvus 19530
+  wait_for milvus 180 tcp_ready "$(cname milvus)" 19530
 
   if [[ "$NO_LIGHTRAG" == "yes" ]]; then
-    PG_ADDR="$(container_ip postgres)"; NEO4J_ADDR="$(container_ip neo4j)"; MILVUS_ADDR="$(container_ip milvus)"
+    PG_ADDR="$(container_ip "$(cname postgres)")"; NEO4J_ADDR="$(container_ip "$(cname neo4j)")"; MILVUS_ADDR="$(container_ip "$(cname milvus)")"
     log_success "Storage stack is up. In-network endpoints (set these in your .env):"
     echo "  POSTGRES_HOST=$PG_ADDR  NEO4J_URI=neo4j://${NEO4J_ADDR}:7687  MILVUS_URI=http://${MILVUS_ADDR}:19530"
     echo "  These IPs are reachable from the host too (e.g. psql -h $PG_ADDR -U $PG_USER)."
@@ -380,9 +391,9 @@ cmd_up() {
   fi
 
   # Discover storage IPs and start LightRAG wired to them.
-  PG_ADDR="$(container_ip postgres)"
-  NEO4J_ADDR="$(container_ip neo4j)"
-  MILVUS_ADDR="$(container_ip milvus)"
+  PG_ADDR="$(container_ip "$(cname postgres)")"
+  NEO4J_ADDR="$(container_ip "$(cname neo4j)")"
+  MILVUS_ADDR="$(container_ip "$(cname milvus)")"
   [[ -n "$PG_ADDR" && -n "$NEO4J_ADDR" && -n "$MILVUS_ADDR" ]] || { format_error "Could not resolve storage IPs."; exit 1; }
 
   log_step "Starting LightRAG server..."
@@ -402,7 +413,7 @@ cmd_down() {
   # Tear down in reverse dependency order, derived from SERVICES to avoid drift.
   local svc idx
   for (( idx=${#SERVICES[@]}-1; idx>=0; idx-- )); do
-    svc="${SERVICES[idx]}"
+    svc="$(cname "${SERVICES[idx]}")"
     if container_exists "$svc"; then
       container stop "$svc" >/dev/null 2>&1 || true
       container rm "$svc" >/dev/null 2>&1 || true
@@ -435,20 +446,24 @@ cmd_status() {
 cmd_logs() {
   preflight
   local svc="${1:-}"
-  [[ -z "$svc" ]] && { format_error "logs requires a service name." "One of: ${SERVICES[*]}"; exit 1; }
+  if [[ -z "$svc" ]] || ! is_service "$svc"; then
+    format_error "logs requires a valid service name." "One of: ${SERVICES[*]}"; exit 1
+  fi
   if [[ "$LOGS_FOLLOW" == "yes" ]]; then
-    container logs --follow "$svc"
+    container logs --follow "$(cname "$svc")"
   else
-    container logs "$svc"
+    container logs "$(cname "$svc")"
   fi
 }
 
 cmd_restart() {
   preflight
   local svc="${1:-}"
-  [[ -z "$svc" ]] && { format_error "restart requires a service name." "One of: ${SERVICES[*]}"; exit 1; }
-  container stop "$svc" >/dev/null 2>&1 || true
-  container start "$svc" >/dev/null
+  if [[ -z "$svc" ]] || ! is_service "$svc"; then
+    format_error "restart requires a valid service name." "One of: ${SERVICES[*]}"; exit 1
+  fi
+  container stop "$(cname "$svc")" >/dev/null 2>&1 || true
+  container start "$(cname "$svc")" >/dev/null
   log_warn "Restarted $svc. If its IP changed, run '${0##*/} down && ${0##*/} up' to re-wire dependents."
 }
 
