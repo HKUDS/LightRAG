@@ -130,6 +130,37 @@ def test_container_and_volume_names_derive_from_prefix() -> None:
     assert values["volume"] == "proj2_pg"
 
 
+def test_reads_db_credentials_and_milvus_db_from_env_source(tmp_path) -> None:
+    # Credentials and MILVUS_DB_NAME are read from the source .env so the created
+    # database matches what the lightrag container connects with.
+    envf = tmp_path / "custom.env"
+    envf.write_text(
+        "POSTGRES_PASSWORD='s3cret'\nNEO4J_PASSWORD=graphpass\nMILVUS_DB_NAME=mydb\n"
+    )
+    out = run_bash(
+        "unset POSTGRES_PASSWORD NEO4J_PASSWORD MILVUS_DB_NAME; "
+        f'export LIGHTRAG_AC_ENV_FILE="{envf}"; source "{SCRIPT}"; '
+        f'echo "pg=$PG_PASSWORD"; echo "neo=$NEO4J_PASS"; echo "milvus=$MILVUS_DB"'
+    )
+    values = parse_lines(out)
+    assert values["pg"] == "s3cret"  # surrounding quotes stripped
+    assert values["neo"] == "graphpass"
+    assert values["milvus"] == "mydb"
+
+
+def test_credential_and_milvus_defaults_when_env_source_lacks_values(tmp_path) -> None:
+    envf = tmp_path / "minimal.env"
+    envf.write_text("LLM_BINDING=openai\n")
+    out = run_bash(
+        "unset POSTGRES_PASSWORD MILVUS_DB_NAME; "
+        f'export LIGHTRAG_AC_ENV_FILE="{envf}"; source "{SCRIPT}"; '
+        f'echo "pg=$PG_PASSWORD"; echo "milvus=$MILVUS_DB"'
+    )
+    values = parse_lines(out)
+    assert values["pg"] == "rag"
+    assert values["milvus"] == "lightrag"
+
+
 def test_image_tags_stay_in_sync_with_repo() -> None:
     """The script must mirror the repo's image tags so the two do not drift.
 

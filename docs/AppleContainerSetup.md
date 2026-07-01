@@ -173,6 +173,7 @@ LIGHTRAG_VECTOR_STORAGE=MilvusVectorDBStorage
 POSTGRES_HOST=<postgres container IP>
 NEO4J_URI=neo4j://<neo4j IP>:7687
 MILVUS_URI=http://<milvus IP>:19530
+MILVUS_DB_NAME=lightrag
 ```
 
 Your LLM/embedding settings (`LLM_BINDING`, `EMBEDDING_BINDING`, API keys, model
@@ -183,13 +184,16 @@ Because `.apple-container.env` copies your `.env`, it contains your real API
 keys. It is git-ignored, created with mode `600`, left in place by `down`, and
 removed by `down --purge`.
 
-Common overrides (environment variables, all optional):
+Database credentials follow the precedence **shell variable → value in your
+`.env` → dev default**, so a password set in `.env` is honored (and the Postgres
+container is created with it). Common overrides (all optional):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `rag` / `rag` / `rag` | Postgres credentials |
 | `NEO4J_USERNAME` / `NEO4J_PASSWORD` | `neo4j` / `lightragdev` | Neo4j auth (password ≥ 8 chars) |
 | `MINIO_ACCESS_KEY_ID` / `MINIO_SECRET_ACCESS_KEY` | `minioadmin` / `minioadmin` | MinIO / Milvus object store |
+| `MILVUS_DB_NAME` | `lightrag` | Milvus database name (required by MilvusVectorDBStorage) |
 | `LIGHTRAG_AC_MEM_HEAVY` | `6G` | memory for Milvus and Neo4j VMs |
 | `LIGHTRAG_AC_MEM_LIGHT` | `2G` | memory for Postgres and LightRAG VMs |
 

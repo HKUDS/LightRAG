@@ -80,14 +80,30 @@ IMG_LIGHTRAG="${LIGHTRAG_AC_IMG_LIGHTRAG:-ghcr.io/hkuds/lightrag:latest}"
 MEM_LIGHT="${LIGHTRAG_AC_MEM_LIGHT:-2G}"
 MEM_HEAVY="${LIGHTRAG_AC_MEM_HEAVY:-6G}"
 
-# Credentials / database names (dev defaults; override via environment).
-PG_USER="${POSTGRES_USER:-rag}"
-PG_PASSWORD="${POSTGRES_PASSWORD:-rag}"
-PG_DB="${POSTGRES_DB:-rag}"
-NEO4J_USER="${NEO4J_USERNAME:-neo4j}"
-NEO4J_PASS="${NEO4J_PASSWORD:-lightragdev}"     # Neo4j 5 requires >= 8 characters
-MINIO_USER="${MINIO_ACCESS_KEY_ID:-minioadmin}"
-MINIO_PASS="${MINIO_SECRET_ACCESS_KEY:-minioadmin}"
+# read_env_value <key> — value of KEY= from ENV_SOURCE (last occurrence, one
+# layer of surrounding quotes stripped), or empty. Always succeeds.
+read_env_value() {
+  local v=""
+  if [[ -f "$ENV_SOURCE" ]]; then
+    v="$(grep -E "^$1=" "$ENV_SOURCE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+    v="${v#[\"\']}"; v="${v%[\"\']}"
+  fi
+  printf '%s' "$v"
+}
+
+# Credentials / database names. Precedence: explicit shell override > the value
+# already in the source .env > dev default. Reading the .env value keeps
+# start_postgres (which creates the database) consistent with the generated
+# env-file that the lightrag container connects with.
+PG_USER="${POSTGRES_USER:-$(read_env_value POSTGRES_USER)}";                          PG_USER="${PG_USER:-rag}"
+PG_PASSWORD="${POSTGRES_PASSWORD:-$(read_env_value POSTGRES_PASSWORD)}";              PG_PASSWORD="${PG_PASSWORD:-rag}"
+PG_DB="${POSTGRES_DB:-$(read_env_value POSTGRES_DATABASE)}";                          PG_DB="${PG_DB:-rag}"
+NEO4J_USER="${NEO4J_USERNAME:-$(read_env_value NEO4J_USERNAME)}";                     NEO4J_USER="${NEO4J_USER:-neo4j}"
+NEO4J_PASS="${NEO4J_PASSWORD:-$(read_env_value NEO4J_PASSWORD)}";                     NEO4J_PASS="${NEO4J_PASS:-lightragdev}"
+MINIO_USER="${MINIO_ACCESS_KEY_ID:-$(read_env_value MINIO_ACCESS_KEY_ID)}";           MINIO_USER="${MINIO_USER:-minioadmin}"
+MINIO_PASS="${MINIO_SECRET_ACCESS_KEY:-$(read_env_value MINIO_SECRET_ACCESS_KEY)}";   MINIO_PASS="${MINIO_PASS:-minioadmin}"
+# LightRAG's MilvusVectorDBStorage requires MILVUS_DB_NAME in addition to MILVUS_URI.
+MILVUS_DB="${MILVUS_DB_NAME:-$(read_env_value MILVUS_DB_NAME)}";                      MILVUS_DB="${MILVUS_DB:-lightrag}"
 
 SERVICES=(postgres neo4j milvus-etcd milvus-minio milvus lightrag)
 # Volume base names; the full name is VOLUME_PREFIX + base (see vname), so two
@@ -283,8 +299,9 @@ generate_env_file() {
   _set_kv "$ENV_GENERATED" NEO4J_USERNAME "$NEO4J_USER"
   _set_kv "$ENV_GENERATED" NEO4J_PASSWORD "$NEO4J_PASS"
 
-  # Milvus (vector).
+  # Milvus (vector). MilvusVectorDBStorage validates MILVUS_DB_NAME at startup.
   _set_kv "$ENV_GENERATED" MILVUS_URI "http://${MILVUS_ADDR}:19530"
+  _set_kv "$ENV_GENERATED" MILVUS_DB_NAME "$MILVUS_DB"
 
   log_debug "generated env-file at $ENV_GENERATED (PG=$PG_ADDR NEO4J=$NEO4J_ADDR MILVUS=$MILVUS_ADDR)"
 }
