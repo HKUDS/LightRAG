@@ -82,6 +82,9 @@ def test_generated_env_file_maps_storage_to_in_network_ips(tmp_path) -> None:
 
     values = parse_lines(gen.read_text())
 
+    # The generated file holds copied secrets — it must stay private (600).
+    assert (gen.stat().st_mode & 0o777) == 0o600
+
     # Storage backends forced to the external services.
     assert values["LIGHTRAG_KV_STORAGE"] == "PGKVStorage"
     assert values["LIGHTRAG_DOC_STATUS_STORAGE"] == "PGDocStatusStorage"

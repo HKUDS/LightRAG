@@ -258,9 +258,11 @@ lightrag_health() {
 # endpoints to the in-network service IPs. The user's .env is never modified (it
 # stays host-usable, per the repo's setup-wizard contract).
 _set_kv() {
-  # _set_kv <file> <key> <value> — drop any existing KEY= line, append the new one.
+  # _set_kv <file> <key> <value> — drop any existing KEY= line, append the new
+  # one. The temp file is created under umask 077 so the rewrite never relaxes
+  # the private (600) permissions of the secret-bearing env file.
   local file="$1" key="$2" value="$3"
-  grep -vE "^${key}=" "$file" > "${file}.tmp" 2>/dev/null || true
+  ( umask 077; grep -vE "^${key}=" "$file" > "${file}.tmp" 2>/dev/null || true )
   mv "${file}.tmp" "$file"
   printf '%s=%s\n' "$key" "$value" >> "$file"
 }
