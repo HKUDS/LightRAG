@@ -93,7 +93,7 @@
     "@types/react-i18next": "^8.1.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/seedrandom": "^3.0.8",
-    "@vitejs/plugin-react": "^6.0.2",
+    "@vitejs/plugin-react": "^6.0.3",
     "eslint": "^10.5.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react": "^7.37.5",
@@ -101,12 +101,12 @@
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.6.0",
     "graphology-types": "^0.24.8",
-    "prettier": "^3.8.4",
+    "prettier": "^3.8.5",
     "prettier-plugin-tailwindcss": "^0.8.0",
-    "typescript-eslint": "^8.61.1",
+    "typescript-eslint": "^8.62.0",
     "tailwindcss": "^4.3.1",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.1.0"
   }
 }
