@@ -110,6 +110,7 @@ from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
     extract_entities,
     kg_query,
+    merge_nodes_and_edges,
     naive_query,
     rebuild_knowledge_from_chunks,
 )
@@ -1556,13 +1557,45 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.warning("All chunks are already in the storage.")
                 return
 
-            tasks = [
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=self.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=self.workspace
+            )
+
+            # Persist chunks/docs first so text_chunks exists before extraction
+            # reads it, then extract, then merge the extracted entities and
+            # relationships into the KG (mirroring the file pipeline in
+            # pipeline.py). Without this merge step the extraction result is
+            # discarded and the graph / entity+relationship vector stores stay
+            # empty, so KG-dependent query modes return nothing.
+            await asyncio.gather(
                 self.chunks_vdb.upsert(inserting_chunks),
-                self._process_extract_entities(inserting_chunks),
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
-            ]
-            await asyncio.gather(*tasks)
+            )
+
+            chunk_results = await self._process_extract_entities(
+                inserting_chunks, pipeline_status, pipeline_status_lock
+            )
+            if chunk_results:
+                await merge_nodes_and_edges(
+                    chunk_results=chunk_results,
+                    knowledge_graph_inst=self.chunk_entity_relation_graph,
+                    entity_vdb=self.entities_vdb,
+                    relationships_vdb=self.relationships_vdb,
+                    global_config=self._build_global_config(),
+                    full_entities_storage=self.full_entities,
+                    full_relations_storage=self.full_relations,
+                    doc_id=doc_key,
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                    llm_response_cache=self.llm_response_cache,
+                    entity_chunks_storage=self.entity_chunks,
+                    relation_chunks_storage=self.relation_chunks,
+                    file_path=file_path,
+                )
 
         finally:
             if update_storage:
@@ -1584,9 +1617,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         except Exception as e:
             error_msg = f"Failed to extract entities and relationships: {str(e)}"
             logger.error(error_msg)
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(error_msg)
+            # pipeline_status / lock are optional (callers may pass None), so
+            # guard against them here — otherwise ``async with None`` raises a
+            # TypeError that masks the original extraction error.
+            if pipeline_status_lock is not None and pipeline_status is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = error_msg
+                    pipeline_status["history_messages"].append(error_msg)
             raise e
 
     def _index_storages(self) -> list:

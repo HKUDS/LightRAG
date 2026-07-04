@@ -142,14 +142,20 @@ async def test_error_document_enqueue_canonicalizes_file_path_before_upsert():
 @pytest.mark.asyncio
 async def test_custom_chunks_use_canonical_unknown_source_before_upsert():
     from lightrag import LightRAG
+    from lightrag.kg.shared_storage import initialize_pipeline_status
 
     rag = LightRAG.__new__(LightRAG)
+    rag.workspace = ""
     rag.full_docs = CaptureKV()
     rag.text_chunks = CaptureKV()
     rag.chunks_vdb = CaptureKV()
     rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
+    await initialize_pipeline_status(rag.workspace)
 
-    async def _process_extract_entities(chunks):
+    # ainsert_custom_chunks now passes pipeline_status / lock down to extraction
+    # (see #3352); accept and ignore them here. Empty results -> no KG merge, so
+    # this test still exercises only the file_path canonicalization path.
+    async def _process_extract_entities(chunks, *args, **kwargs):
         return []
 
     async def _insert_done():
