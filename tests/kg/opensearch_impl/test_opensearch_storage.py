@@ -1414,6 +1414,45 @@ class TestDocStatusStorage:
                 assert actions[0]["_source"]["chunks_list"] == []
 
     @pytest.mark.asyncio
+    async def test_upsert_raises_on_bulk_item_failures(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
+            ) as mock_bulk:
+                mock_bulk.return_value = (
+                    0,
+                    [
+                        {
+                            "index": {
+                                "_id": "d1",
+                                "status": 400,
+                                "error": {
+                                    "type": "mapper_parsing_exception",
+                                    "reason": "bad status",
+                                },
+                            }
+                        },
+                        {"index": {"_id": "d2", "status": 503, "error": "down"}},
+                    ],
+                )
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                with pytest.raises(RuntimeError) as excinfo:
+                    await s.upsert(
+                        {"d1": {"status": "pending"}, "d2": {"status": "pending"}}
+                    )
+        error_text = str(excinfo.value)
+        assert "doc-status ops failed" in error_text
+        assert "1 retryable" in error_text
+        assert "1 non-retryable" in error_text
+        assert "d1" in error_text
+        assert "d2" in error_text
+        assert "status=400" in error_text
+        assert "bad status" in error_text
+
+    @pytest.mark.asyncio
     async def test_get_status_counts(self, global_config, embed_func, mock_client):
         mock_client.search = AsyncMock(
             return_value={
