@@ -13,6 +13,8 @@ from lightrag.base import DocStatus  # noqa: E402
 from lightrag.constants import PROCESS_OPTION_CHUNK_FIXED  # noqa: E402
 from lightrag.pipeline import _PipelineMixin  # noqa: E402
 
+pytestmark = pytest.mark.offline
+
 
 class DummyRAG:
     def __init__(self):
@@ -142,7 +144,10 @@ async def test_error_document_enqueue_canonicalizes_file_path_before_upsert():
 @pytest.mark.asyncio
 async def test_custom_chunks_use_canonical_unknown_source_before_upsert():
     from lightrag import LightRAG
-    from lightrag.kg.shared_storage import initialize_pipeline_status
+    from lightrag.kg.shared_storage import (
+        initialize_pipeline_status,
+        initialize_share_data,
+    )
 
     rag = LightRAG.__new__(LightRAG)
     rag.workspace = ""
@@ -150,6 +155,7 @@ async def test_custom_chunks_use_canonical_unknown_source_before_upsert():
     rag.text_chunks = CaptureKV()
     rag.chunks_vdb = CaptureKV()
     rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
+    initialize_share_data()
     await initialize_pipeline_status(rag.workspace)
 
     # ainsert_custom_chunks now passes pipeline_status / lock down to extraction
