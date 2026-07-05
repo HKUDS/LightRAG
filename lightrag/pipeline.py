@@ -634,6 +634,9 @@ class _PipelineMixin:
         enqueue_serialize_lock = get_namespace_lock(
             "enqueue_serialize", workspace=self.workspace
         )
+        status_upsert_error: Exception | None = None
+        status_upsert_traceback = None
+        process_after_status_error = False
 
         async with enqueue_serialize_lock:
             # 3. Filter out already processed documents
@@ -834,8 +837,39 @@ class _PipelineMixin:
             await self.full_docs.index_done_callback()
 
             # Store document status (without content)
-            await self.doc_status.upsert(new_docs)
-            logger.debug(f"Stored {len(new_docs)} new unique documents")
+            try:
+                await self.doc_status.upsert(new_docs)
+            except Exception as exc:
+                status_upsert_error = exc
+                status_upsert_traceback = exc.__traceback__
+                # OpenSearch bulk upserts can commit some PENDING rows before
+                # surfacing item-level failures. Wake the processing loop so
+                # committed rows are not stranded, then preserve the original
+                # storage error for the caller.
+                try:
+                    async with pipeline_status_lock:
+                        if pipeline_status.get("busy"):
+                            pipeline_status["request_pending"] = True
+                        else:
+                            process_after_status_error = True
+                except Exception as wake_error:
+                    logger.warning(
+                        "Failed to wake document processing after enqueue "
+                        f"status upsert error: {wake_error}"
+                    )
+            else:
+                logger.debug(f"Stored {len(new_docs)} new unique documents")
+
+        if status_upsert_error is not None:
+            if process_after_status_error:
+                try:
+                    await self.apipeline_process_enqueue_documents()
+                except Exception as wake_error:
+                    logger.warning(
+                        "Failed to start document processing after enqueue "
+                        f"status upsert error: {wake_error}"
+                    )
+            raise status_upsert_error.with_traceback(status_upsert_traceback)
 
         # Notify any in-flight processing loop that new work has arrived.
         # The loop checks ``request_pending`` after each batch and will
