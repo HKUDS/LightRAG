@@ -128,6 +128,22 @@ const parseEdgeWeight = (properties: Record<string, unknown> | undefined): numbe
 const safeNodeLabel = (labels: unknown, fallbackId: string): string =>
   Array.isArray(labels) ? labels.join(', ') : fallbackId
 
+// Prototype-safe replacement for `graph.hasEdge(source, target)`, working around
+// a second graphology 0.26.0 bug in the same family as the addEdge one below.
+// hasEdge does an unguarded `nodeData.undirected.hasOwnProperty(target)` METHOD
+// call, so once a node gains a neighbor literally named 'hasOwnProperty' that
+// adjacency entry shadows the method and every subsequent hasEdge on that node
+// throws "hasOwnProperty is not a function" — aborting the whole graph build.
+// `graph.edge(source, target)` reaches the same adjacency by property lookup
+// instead of a method call, so it never throws. It returns the edge's key when
+// the edge exists and undefined otherwise: a missing entry inherits a plain
+// Object.prototype value (a function, etc.) that has no `.key`, so inherited
+// junk can never masquerade as a real edge. The hasNode guards keep this a true
+// drop-in for hasEdge (which returns false for an absent endpoint, whereas
+// edge() throws NotFound); hasNode is Map-backed and prototype-safe.
+const hasEdgeSafe = (graph: UndirectedGraph, source: string, target: string): boolean =>
+  graph.hasNode(source) && graph.hasNode(target) && graph.edge(source, target) !== undefined
+
 // Add an undirected edge, working around a graphology 0.26.0 bug: the non-multi
 // duplicate check does a bare `adjacency[target]` object lookup, so a TARGET
 // node named like an Object.prototype property ('constructor', 'toString',
@@ -320,7 +336,7 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
     if (
       !graph.hasNode(rawEdge.source) ||
       !graph.hasNode(rawEdge.target) ||
-      graph.hasEdge(rawEdge.source, rawEdge.target)
+      hasEdgeSafe(graph, rawEdge.source, rawEdge.target)
     ) {
       continue
     }
@@ -1018,8 +1034,8 @@ const useLightrangeGraph = () => {
         for (const edgeId of edgesToAdd) {
           const newEdge = processedEdgeById.get(edgeId)!
 
-          // Skip if edge already exists
-          if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
+          // Skip if edge already exists (prototype-safe: see hasEdgeSafe)
+          if (hasEdgeSafe(sigmaGraph, newEdge.source, newEdge.target)) {
             continue
           }
 
