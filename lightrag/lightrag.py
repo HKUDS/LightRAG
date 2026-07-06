@@ -134,7 +134,27 @@ from lightrag.utils import (
     normalize_source_ids_limit_method,
     normalize_string_list,
 )
+from lightrag.tracing import (
+    create_traced_llm_wrapper,
+    is_tracing_enabled,
+    flush as flush_tracing,
+)
 from lightrag.types import KnowledgeGraph
+
+try:
+    from langfuse import get_client as langfuse_client, observe as langfuse_observe
+except ImportError:
+
+    def langfuse_observe(**kwargs):  # type: ignore[misc]
+        def _identity(func):
+            return func
+
+        return _identity
+
+    def langfuse_client():  # type: ignore[misc]
+        return None
+
+
 from dotenv import load_dotenv
 from lightrag.pipeline import _PipelineMixin
 from lightrag.kg.factory import get_storage_class
@@ -1261,6 +1281,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._rebuild_role_llm_funcs()
         self._log_llm_role_config("initialized")
 
+        if is_tracing_enabled():
+            self.llm_model_func = create_traced_llm_wrapper(
+                self.llm_model_func, model_name=self.llm_model_name
+            )
+
         self._storages_status = StoragesStatus.CREATED
 
     async def initialize_storages(self):
@@ -1354,6 +1379,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             else:
                 logger.debug("All storages finalized successfully")
 
+            flush_tracing()
+
             self._storages_status = StoragesStatus.FINALIZED
 
     async def get_graph_labels(self):
@@ -1425,6 +1452,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             owning_loop=self._owning_loop,
         )
 
+    @langfuse_observe(name="insert", capture_input=False)
     async def ainsert(
         self,
         input: str | list[str],
@@ -1483,6 +1511,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             split_by_character=split_by_character,
             split_by_character_only=split_by_character_only,
         )
+        doc_count = len(input) if isinstance(input, list) else 1
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_span(
+                input={"doc_count": doc_count, "track_id": track_id},
+                metadata={"workspace": self.workspace},
+            )
         await self.apipeline_enqueue_documents(
             input,
             ids,
@@ -2132,6 +2167,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             owning_loop=self._owning_loop,
         )
 
+    @langfuse_observe(name="query-data", capture_input=False)
     async def aquery_data(
         self,
         query: str,
@@ -2243,6 +2279,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_span(
+                input={"query": query[:200] if query else "", "mode": param.mode},
+                metadata={"workspace": self.workspace},
+            )
+        return await self._aquery_data_impl(query, param)
+
+    async def _aquery_data_impl(
+        self,
+        query: str,
+        param: QueryParam,
+    ) -> dict[str, Any]:
         global_config = self._build_global_config()
 
         # Create a copy of param to avoid modifying the original
@@ -2338,6 +2387,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         await self._query_done()
         return final_data
 
+    @langfuse_observe(name="query", capture_input=False)
     async def aquery_llm(
         self,
         query: str,
@@ -2359,6 +2409,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             dict[str, Any]: Complete response with structured data and LLM response.
         """
         logger.debug(f"[aquery_llm] Query param: {param}")
+
+        client = langfuse_client()
+        if client is not None:
+            client.update_current_span(
+                input={"query": query if query else "", "mode": param.mode},
+                metadata={"workspace": self.workspace, "stream": param.stream},
+            )
 
         global_config = self._build_global_config()
 
@@ -2466,6 +2523,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         except Exception as e:
             logger.error(f"Query failed: {e}")
+            if client is not None:
+                client.update_current_span(level="ERROR", status_message=str(e))
             # Return error response
             return {
                 "status": "failure",
