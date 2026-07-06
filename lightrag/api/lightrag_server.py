@@ -2587,7 +2587,7 @@ def configure_logging():
             },
             "handlers": {
                 "console": {
-                    "formatter": "default",
+                    "formatter": "detailed",
                     "class": "logging.StreamHandler",
                     "stream": "ext://sys.stderr",
                 },
