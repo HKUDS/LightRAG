@@ -53,7 +53,7 @@
     "graphology-layout-noverlap": "^0.4.2",
     "i18next": "^26.3.1",
     "katex": "^0.17.0",
-    "mermaid": "^11.15.0",
+    "mermaid": "^11.16.0",
     "lucide-react": "^1.21.0",
     "minisearch": "^7.2.0",
     "react": "^19.2.7",
