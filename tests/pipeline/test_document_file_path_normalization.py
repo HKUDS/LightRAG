@@ -65,6 +65,9 @@ class CaptureKV:
     async def filter_keys(self, keys):
         return set(keys)
 
+    async def get_by_id(self, id):
+        return None
+
     async def upsert(self, data):
         self.upserts.append(data)
 
@@ -154,21 +157,24 @@ async def test_custom_chunks_use_canonical_unknown_source_before_upsert():
     rag.full_docs = CaptureKV()
     rag.text_chunks = CaptureKV()
     rag.chunks_vdb = CaptureKV()
+    rag.doc_status = CaptureKV()
     rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
     initialize_share_data()
     await initialize_pipeline_status(rag.workspace)
 
     # ainsert_custom_chunks now passes pipeline_status / lock down to extraction
     # (see #3352); accept and ignore them here. Empty results -> no KG merge, so
-    # this test still exercises only the file_path canonicalization path.
+    # this test still exercises only the file_path canonicalization path. It also
+    # gates reprocessing on doc_status and flushes via _insert_done_with_cleanup,
+    # so stub both here.
     async def _process_extract_entities(chunks, *args, **kwargs):
         return []
 
-    async def _insert_done():
+    async def _insert_done_with_cleanup():
         return None
 
     rag._process_extract_entities = _process_extract_entities
-    rag._insert_done = _insert_done
+    rag._insert_done_with_cleanup = _insert_done_with_cleanup
 
     await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-1")
 

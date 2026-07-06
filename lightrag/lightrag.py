@@ -123,6 +123,7 @@ from lightrag.utils import (
     EmbeddingFunc,
     always_get_an_event_loop,
     compute_mdhash_id,
+    get_content_summary,
     priority_limit_async_func_call,
     sanitize_text_for_encoding,
     check_storage_env_vars,
@@ -1514,27 +1515,40 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
         update_storage = False
+        # Bound before the try so the except-block failure handler can always
+        # reference them regardless of where a failure occurs.
+        doc_key: str = ""
+        doc_status_base: dict[str, Any] = {}
         try:
             # Clean input texts
             full_text = sanitize_text_for_encoding(full_text)
             text_chunks = [sanitize_text_for_encoding(chunk) for chunk in text_chunks]
             file_path = normalize_document_file_path("")
 
-            # Process cleaned texts
             if doc_id is None:
                 doc_key = compute_mdhash_id(full_text, prefix="doc-")
             else:
                 doc_key = doc_id
-            new_docs = {doc_key: {"content": full_text, "file_path": file_path}}
 
-            _add_doc_keys = await self.full_docs.filter_keys({doc_key})
-            new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
-            if not len(new_docs):
-                logger.warning("This document is already in the storage.")
+            # Not serialized: concurrent inserts with the same doc_id can
+            # interleave (no per-doc lock; the file pipeline serializes via its
+            # enqueue locks). Single-writer use only — a known limitation of this
+            # deprecated path.
+            #
+            # Gate reprocessing on doc_status, not on full_docs/text_chunks
+            # presence (mirroring the file pipeline, which lets a FAILED or
+            # crashed-PROCESSING doc rebuild in place — see
+            # pipeline._validate_and_fix_document_consistency). A PROCESSED doc
+            # is a no-op; anything else (absent / FAILED / interrupted
+            # PROCESSING) is rebuilt. On a rebuild the prior attempt's chunks and
+            # KG are purged first (below) so re-extraction starts fresh instead
+            # of accumulating duplicate descriptions over a surviving partial KG.
+            existing_status = await self.doc_status.get_by_id(doc_key)
+            if existing_status and existing_status.get("status") == DocStatus.PROCESSED:
+                logger.warning("This document is already processed.")
                 return
 
-            update_storage = True
-            logger.info(f"Inserting {len(new_docs)} docs")
+            new_docs = {doc_key: {"content": full_text, "file_path": file_path}}
 
             inserting_chunks: dict[str, Any] = {}
             for index, chunk_text in enumerate(text_chunks):
@@ -1548,15 +1562,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "file_path": file_path,
                 }
 
-            doc_ids = set(inserting_chunks.keys())
-            add_chunk_keys = await self.text_chunks.filter_keys(doc_ids)
-            inserting_chunks = {
-                k: v for k, v in inserting_chunks.items() if k in add_chunk_keys
+            # doc_status record fields (mirroring _initial_doc_status in
+            # pipeline.py). created_at is preserved across retries so the
+            # document keeps its original creation time.
+            now = datetime.now(timezone.utc).isoformat()
+            doc_status_base = {
+                "content_summary": get_content_summary(full_text),
+                "content_length": len(full_text),
+                "file_path": file_path,
+                "created_at": (existing_status or {}).get("created_at", now),
+                "updated_at": now,
+                "track_id": (existing_status or {}).get("track_id"),
+                "chunks_count": len(inserting_chunks),
+                "chunks_list": list(inserting_chunks.keys()),
+                "metadata": {},
             }
-            if not len(inserting_chunks):
-                logger.warning("All chunks are already in the storage.")
-                return
-
             pipeline_status = await get_namespace_data(
                 "pipeline_status", workspace=self.workspace
             )
@@ -1564,10 +1584,60 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "pipeline_status", workspace=self.workspace
             )
 
-            # Persist chunks/docs first so text_chunks exists before extraction
-            # reads it, then extract, then merge the extracted entities and
-            # relationships into the KG (mirroring the file pipeline in
-            # pipeline.py). Without this merge step the extraction result is
+            # Purge the prior attempt's chunks + KG before rebuilding, mirroring
+            # the pipeline's resume path (_purge_stale_extraction_if_resuming).
+            # This lets a retry of a doc whose prior merge COMPLETED (its
+            # full_entities / full_relations index rows were written — e.g. the
+            # merge finished but the doc was never marked PROCESSED, or the
+            # success-path flush failed) rebuild cleanly instead of re-appending
+            # entity/relation descriptions, and reclaims the prior chunks so they
+            # are not orphaned.
+            #
+            # Known limitation, shared with the file pipeline: purge discovers
+            # what to clean via full_entities / full_relations, which
+            # merge_nodes_and_edges writes only in its FINAL phase. A merge that
+            # wrote partial graph state and then failed leaves no index row, so
+            # purge cannot find those partial nodes; the retry re-merges over them
+            # and descriptions accumulate (bounded, and collapsed by later
+            # re-summarization). This is a merge_nodes_and_edges property, not
+            # specific to this path — the pipeline's resume purge has the same
+            # blind spot. Fixing it belongs in merge (cross-dedup of stored vs
+            # new descriptions), tracked separately.
+            #
+            # Purge is a no-op when nothing was stored before, and deterministic
+            # to re-run (identical text -> identical chunk ids -> idempotent
+            # deletes).
+            prior_chunks = [
+                c
+                for c in ((existing_status or {}).get("chunks_list") or [])
+                if isinstance(c, str)
+            ]
+            if prior_chunks:
+                await self._purge_doc_chunks_and_kg(
+                    doc_key,
+                    prior_chunks,
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                )
+
+            # Mark PROCESSING with the NEW chunks_list only AFTER purging the
+            # prior attempt. Doing it before purge would overwrite the prior
+            # chunks_list in doc_status, so if purge then failed the old chunks/KG
+            # would be stranded — a later retry would purge by the new ids and
+            # never reach the old ones. Purging first keeps the prior chunks_list
+            # intact for the next retry (mirroring the pipeline, which purges
+            # before writing the new state). doc_status is immediate-write, so a
+            # crash mid-merge leaves a resumable state (reprocessed via the gate).
+            await self.doc_status.upsert(
+                {doc_key: {**doc_status_base, "status": DocStatus.PROCESSING}}
+            )
+            update_storage = True
+            logger.info(f"Inserting custom chunks for doc {doc_key}")
+
+            # Persist chunks/docs first (idempotent upsert) so text_chunks exists
+            # before extraction reads it, then extract, then merge the extracted
+            # entities and relationships into the KG (mirroring the file pipeline
+            # in pipeline.py). Without this merge step the extraction result is
             # discarded and the graph / entity+relationship vector stores stay
             # empty, so KG-dependent query modes return nothing.
             await asyncio.gather(
@@ -1597,9 +1667,52 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     file_path=file_path,
                 )
 
-        finally:
+        except Exception as exc:
             if update_storage:
+                # Failure path (mirroring the file pipeline): mark the doc FAILED
+                # — doc_status is immediate-write, so the FAILED row survives the
+                # discard below — then DISCARD the pending KG/base buffers rather
+                # than flushing them. We do NOT delete chunks or full_docs here:
+                # any partial KG merge already wrote keeps its source_id pointing
+                # at a live chunk (never dangling); the retry purges and rebuilds
+                # it fresh. FAILED-mark and discard are guarded independently so a
+                # failure in one still runs the other, and neither masks the
+                # original error (always re-raised).
+                try:
+                    await self.doc_status.upsert(
+                        {
+                            doc_key: {
+                                **doc_status_base,
+                                "status": DocStatus.FAILED,
+                                "error_msg": str(exc),
+                            }
+                        }
+                    )
+                except Exception as status_err:
+                    logger.error(
+                        f"Failed to mark custom-chunks doc {doc_key} FAILED: "
+                        f"{status_err}"
+                    )
+                try:
+                    await self._discard_pending_index_ops(skip_enqueue_owned=False)
+                except Exception as discard_err:
+                    logger.error(
+                        f"Failed to discard pending ops for {doc_key}: {discard_err}"
+                    )
+            raise
+        else:
+            if update_storage:
+                # Flush the KG/chunks FIRST, then mark PROCESSED. If the flush
+                # raises (IndexFlushError on a server backend), the doc stays
+                # PROCESSING (written up front) — which the reprocess gate treats
+                # as rebuildable — instead of being left PROCESSED with its KG
+                # discarded and never rebuilt. Mirrors the file pipeline's
+                # flush-failure recovery, where a PROCESSED-before-flush error is
+                # caught and downgraded to a non-terminal status.
                 await self._insert_done_with_cleanup()
+                await self.doc_status.upsert(
+                    {doc_key: {**doc_status_base, "status": DocStatus.PROCESSED}}
+                )
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
