@@ -72,6 +72,13 @@ def compute_mdhash_id_for_qdrant(
         raise ValueError("Invalid style. Choose from 'simple', 'hyphenated', or 'urn'.")
 
 
+def _normalize_qdrant_point_id(point_id: Any) -> str:
+    try:
+        return uuid.UUID(str(point_id)).hex
+    except (ValueError, AttributeError, TypeError):
+        return str(point_id)
+
+
 def workspace_filter_condition(workspace: str) -> models.FieldCondition:
     """
     Create a workspace filter condition for Qdrant queries.
@@ -1276,7 +1283,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     payload = point.payload or {}
                     original_id = payload.get(ID_FIELD)
                     if not original_id and point.id is not None:
-                        original_id = qdrant_id_to_requested_id.get(str(point.id))
+                        original_id = qdrant_id_to_requested_id.get(
+                            _normalize_qdrant_point_id(point.id)
+                        )
                     if not original_id:
                         continue
                     vector_data = point.vector
