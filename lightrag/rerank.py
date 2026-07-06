@@ -171,6 +171,32 @@ def aggregate_chunk_scores(
     return aggregated_results
 
 
+def is_aliyun_flat_rerank_model(model: str) -> bool:
+    """
+    Check whether an Aliyun DashScope rerank model uses the flat (standard)
+    request/response format instead of the nested input/parameters format.
+
+    Aliyun's qwen3-rerank series expects a flat payload
+    {"model", "query", "documents", "top_n", ...} and returns top-level
+    {"results": [...]}, while gte-rerank-* and qwen3-vl-rerank use the nested
+    {"model", "input": {...}, "parameters": {...}} payload and return
+    {"output": {"results": [...]}}.
+    Reference: https://help.aliyun.com/zh/model-studio/text-rerank-api
+
+    Args:
+        model: Rerank model name
+
+    Returns:
+        True if the model uses the flat (standard) format
+    """
+    model_lower = model.lower()
+    return (
+        model_lower.startswith("qwen")
+        and "rerank" in model_lower
+        and "-vl-" not in model_lower
+    )
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -240,6 +266,15 @@ async def generic_rerank_api(
                 f"Chunking enabled: disabled API-level top_n={top_n} to ensure complete document coverage"
             )
             top_n = None
+
+    # Aliyun qwen3-rerank series models use the flat (standard) request and
+    # response format instead of the nested input/parameters format used by
+    # gte-rerank-* and qwen3-vl-rerank, so fall back to the standard branch
+    if request_format == "aliyun" and is_aliyun_flat_rerank_model(model):
+        request_format = "standard"
+        response_format = "standard"
+        # The flat Aliyun endpoint doesn't support return_documents
+        return_documents = None
 
     # Build request payload based on request format
     if request_format == "aliyun":
@@ -483,6 +518,10 @@ async def ali_rerank(
 ) -> List[Dict[str, Any]]:
     """
     Rerank documents using Aliyun DashScope API.
+
+    Supports both the nested payload format (gte-rerank-*, qwen3-vl-rerank)
+    and the flat payload format (qwen3-rerank series), auto-detected from
+    the model name.
 
     Args:
         query: The search query
