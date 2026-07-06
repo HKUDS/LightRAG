@@ -1166,7 +1166,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     if CREATED_AT_FIELD not in payload:
                         payload[CREATED_AT_FIELD] = None
 
-                    qdrant_point_id = str(point.id) if point.id is not None else ""
+                    qdrant_point_id = (
+                        _normalize_qdrant_point_id(point.id)
+                        if point.id is not None
+                        else ""
+                    )
                     if qdrant_point_id:
                         payload_by_qdrant_id[qdrant_point_id] = payload
 

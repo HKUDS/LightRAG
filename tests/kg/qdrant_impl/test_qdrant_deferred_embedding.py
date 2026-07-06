@@ -244,6 +244,24 @@ async def test_get_vectors_by_ids_fallback_normalizes_hyphenated_qdrant_id():
 
 
 @pytest.mark.asyncio
+async def test_get_by_ids_fallback_normalizes_hyphenated_qdrant_id():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", workspace="test_ws")
+
+    qdrant_id = compute_mdhash_id_for_qdrant("chunk-1", prefix=s.effective_workspace)
+    s._client.retrieve.return_value = [
+        SimpleNamespace(
+            id=str(uuid.UUID(qdrant_id)),
+            payload={"content": "legacy chunk"},
+        )
+    ]
+
+    assert await s.get_by_ids(["chunk-1"]) == [
+        {"content": "legacy chunk", "created_at": None}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_flush_failure_keeps_buffer_no_double_embed_on_retry():
     embed = CountingEmbeddingFunc(fail_times=1)
     s = _make_storage(embed)
