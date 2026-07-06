@@ -633,6 +633,8 @@ lightrag-hash-password --username admin
 
 如果未配置账户凭证，Web 界面将以访客身份访问系统。因此，即使仅配置了 API 密钥，所有 API 仍然可以通过访客账户访问，这仍然不安全。因此，要保护 API，需要同时配置这两种认证方法。
 
+> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。
+
 ## Azure OpenAI 后端配置
 
 可以使用以下 Azure CLI 命令创建 Azure OpenAI API（您需要先从 [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) 安装 Azure CLI）：
