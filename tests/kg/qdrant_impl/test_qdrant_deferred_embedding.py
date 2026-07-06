@@ -7,6 +7,7 @@ TestVectorStorageBatching to keep behaviour aligned across backends.
 
 import asyncio
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -202,6 +203,26 @@ async def test_get_vectors_by_ids_lazy_embed_then_reuse_in_flush():
     await s.index_done_callback()
     assert embed.call_count == 1
     s._client.upsert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_vectors_by_ids_falls_back_to_requested_id_when_payload_id_missing():
+    embed = CountingEmbeddingFunc()
+    s = _make_storage(embed, namespace="chunks", workspace="test_ws")
+
+    qdrant_id = compute_mdhash_id_for_qdrant("chunk-1", prefix=s.effective_workspace)
+    s._client.retrieve.return_value = [
+        SimpleNamespace(
+            id=qdrant_id,
+            payload={"content": "legacy chunk"},
+            vector=[0.1, 0.2, 0.3],
+        )
+    ]
+
+    assert await s.get_by_ids(["chunk-1"]) == [
+        {"content": "legacy chunk", "created_at": None}
+    ]
+    assert await s.get_vectors_by_ids(["chunk-1"]) == {"chunk-1": [0.1, 0.2, 0.3]}
 
 
 @pytest.mark.asyncio
