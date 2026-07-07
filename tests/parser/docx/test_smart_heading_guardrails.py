@@ -48,6 +48,46 @@ def test_canonicalization_hash_only_strips_leading_hashes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# English trailing-period disambiguation (review D1)
+# ---------------------------------------------------------------------------
+
+
+class _FakeSent:
+    def __init__(self, start: int, end: int) -> None:
+        self.start_char = start
+        self.end_char = end
+
+
+class _FakeDoc:
+    def __init__(self, sents) -> None:
+        self.sents = sents
+
+
+def test_ends_with_sentence_period_detects_terminal_dot(monkeypatch) -> None:
+    """Review D1: a single English sentence ending in '.' must be recognized
+    as a sentence terminator. The phantom 'Next' becomes its OWN sentence, so
+    the function returns True. (The old ``>=`` matched the original sentence
+    first and always returned False.)"""
+    from lightrag.parser.docx.smart_heading import nlp
+
+    text = "This is a sentence."  # len 19; phantom yields two sentences
+    monkeypatch.setattr(
+        nlp, "analyze", lambda t: _FakeDoc([_FakeSent(0, 19), _FakeSent(20, 24)])
+    )
+    assert nlp.ends_with_sentence_period(text) is True
+
+
+def test_ends_with_sentence_period_spares_abbreviation(monkeypatch) -> None:
+    """Review D1: an abbreviation dot keeps 'Next' inside the same sentence,
+    so it is NOT a terminator."""
+    from lightrag.parser.docx.smart_heading import nlp
+
+    text = "See Fig."  # len 8; phantom absorbed into one sentence (0..13)
+    monkeypatch.setattr(nlp, "analyze", lambda t: _FakeDoc([_FakeSent(0, 13)]))
+    assert nlp.ends_with_sentence_period(text) is False
+
+
+# ---------------------------------------------------------------------------
 # TOC two-channel detection (G9-1 / G9-2 / G9-5)
 # ---------------------------------------------------------------------------
 

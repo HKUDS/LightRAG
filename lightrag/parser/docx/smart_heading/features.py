@@ -32,6 +32,18 @@ def _w(tag: str) -> str:
     return f"{{{W_NS}}}{tag}"
 
 
+#: Subtrees the baseline treats as opaque placeholders — it never recurses into
+#: them, so their inner runs / field codes / hyperlinks are NOT part of the
+#: paragraph's visible text. §2.2.2 likewise excludes 文本框 (textboxes) from all
+#: stats. ``extract_paragraph_physical_features`` must prune them too; otherwise
+#: ``iter()`` would descend into a decorative textbox and let its font size,
+#: bold state, or an embedded TOC field pollute the host paragraph's features
+#: (cover pages / red-header docs are exactly the target corpus).
+_PRUNE_SUBTREE_TAGS = frozenset(
+    {_w("drawing"), _w("pict"), _w("object"), _w("txbxContent")}
+)
+
+
 # ---------------------------------------------------------------------------
 # styles.xml resolution
 # ---------------------------------------------------------------------------
@@ -208,6 +220,18 @@ class ParagraphPhysicalFeatures:
     style_id: str | None = None  # paragraph pStyle id
     run_features: list[RunFeature] = field(default_factory=list)
 
+    @property
+    def visible_char_count(self) -> int:
+        """Visible source-text characters (w:t only), for FS_base weighting.
+
+        §2.2.2 forbids weighting FS_base by parser-generated text — auto-
+        numbering labels, ``<sup>`` wrappers and ``<equation>``/``<drawing>``
+        /``<table>`` placeholders. ``run_features`` already holds only source
+        ``w:t`` text (labels/placeholders never enter it), so the visible
+        count is just the sum of per-run weights.
+        """
+        return sum(_weight(rf.text) for rf in self.run_features)
+
 
 def _weight(text: str) -> int:
     """Character weight of a run: visible (non-whitespace) characters."""
@@ -377,11 +401,21 @@ def extract_paragraph_physical_features(
     has_leading_page_break_run = False
     text_seen = False
 
-    for elem in para_element.iter():
-        tag = elem.tag
+    # Depth-first walk in document order, pruning opaque subtrees (drawings /
+    # pictures / objects / textboxes) so their inner runs, field codes and
+    # hyperlinks never contribute to THIS paragraph's features — baseline
+    # parity plus §2.2.2 textbox exclusion. Deliberately NOT ``iter()`` + an
+    # id() skip-set: lxml element proxies are transient, so their id() is not
+    # stable across passes and a skip-set silently mis-prunes.
+    def _walk(node) -> None:
+        nonlocal is_toc_field, is_toc_link
+        nonlocal has_page_break_run, has_leading_page_break_run, text_seen
+        tag = node.tag
+        if tag in _PRUNE_SUBTREE_TAGS:
+            return
         if tag == _w("r"):
             # Skip the paragraph-mark rPr context: w:pPr/w:rPr is not a run.
-            rpr = elem.find(_w("rPr"))
+            rpr = node.find(_w("rPr"))
             run_style_id = None
             if rpr is not None:
                 rstyle = rpr.find(_w("rStyle"))
@@ -393,12 +427,12 @@ def extract_paragraph_physical_features(
             bold = _element_direct_bold(rpr)
             if bold is None:
                 bold = _fallback_bold(run_style_id)
-            text = _run_visible_text(elem)
+            text = _run_visible_text(node)
             run_features.append(RunFeature(text, size, bool(bold)))
             # Positional page-break detection: iterate the run's children in
             # order so a break before the first visible character reads as
             # "this paragraph starts the new page" (Ctrl+Enter then typing).
-            for child in elem:
+            for child in node:
                 if child.tag == _w("br") and child.get(_w("type")) == "page":
                     has_page_break_run = True
                     if not text_seen:
@@ -407,18 +441,24 @@ def extract_paragraph_physical_features(
                     text_seen = True
             if text.strip():
                 text_seen = True
+            # Fall through to descend so a field-code w:instrText nested in
+            # this run is still seen; standalone w:t/w:br carry no branch.
         elif tag == _w("instrText"):
-            instr = (elem.text or "").strip()
+            instr = (node.text or "").strip()
             if instr.upper().startswith("TOC"):
                 is_toc_field = True
         elif tag == _w("fldSimple"):
-            instr = (elem.get(_w("instr")) or "").strip()
+            instr = (node.get(_w("instr")) or "").strip()
             if instr.upper().startswith("TOC"):
                 is_toc_field = True
         elif tag == _w("hyperlink"):
-            anchor = elem.get(_w("anchor")) or ""
+            anchor = node.get(_w("anchor")) or ""
             if anchor.startswith("_Toc"):
                 is_toc_link = True
+        for child in node:
+            _walk(child)
+
+    _walk(para_element)
 
     weighted = [rf for rf in run_features if _weight(rf.text) > 0]
     all_bold = bool(weighted) and all(rf.bold for rf in weighted)

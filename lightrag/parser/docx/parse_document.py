@@ -637,6 +637,11 @@ class ParagraphRecord:
     outline_level_raw: int | None = None  # pre-policy outline level
     style_id: str | None = None
     font_size_pt: float | None = None  # char-weighted dominant (0.5pt grid)
+    # Visible source-text char count (w:t only; excludes auto-numbering labels
+    # and <sup>/<equation>/<drawing>/<table> placeholder markup). Feeds FS_base
+    # char weighting so generated text cannot skew the body-size mode (§2.2.2).
+    # None means "not computed" (smart-off / manually built records).
+    visible_char_count: int | None = None
     first_line_font_size_pt: float | None = None  # before first soft break
     all_bold: bool = False
     alignment: str | None = None  # resolved w:jc or None
@@ -777,6 +782,7 @@ def _read_document_records(
                 rec.outline_level_raw = outline_level_raw
                 rec.style_id = phys.style_id
                 rec.font_size_pt = phys.font_size_pt
+                rec.visible_char_count = phys.visible_char_count
                 rec.first_line_font_size_pt = half_points_to_pt(
                     first_line_size_half_points(phys.run_features)
                 )

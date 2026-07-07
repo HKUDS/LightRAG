@@ -159,7 +159,14 @@ def ends_with_sentence_period(text: str) -> bool:
     if not stripped.endswith("."):
         return False
     doc = analyze(stripped + " Next")
+    # Examine the sentence that carries the phantom "Next" (end_char strictly
+    # PAST the original period). ``>=`` matched the ORIGINAL sentence — which
+    # always ends exactly at len(stripped) and starts before it — and thus
+    # returned False for every single-sentence paragraph, silently disabling
+    # this rule. The phantom sentence starting at/after len(stripped) means
+    # the trailing "." closed a sentence; otherwise it was an abbreviation dot
+    # and "Next" was absorbed into the same sentence.
     for sent in doc.sents:
-        if sent.end_char >= len(stripped):
+        if sent.end_char > len(stripped):
             return sent.start_char >= len(stripped)
     return False

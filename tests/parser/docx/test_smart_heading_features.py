@@ -20,6 +20,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from lightrag.parser.docx.smart_heading.features import (
+    StyleAttributes,
     extract_paragraph_physical_features,
     parse_styles_attributes,
 )
@@ -227,6 +228,43 @@ def test_superscript_chars_counted_but_markup_not(tmp_path) -> None:
     assert feats.font_size_pt == 12.0
     # 4 + 1 visible chars across two runs
     assert sum(len(rf.text) for rf in feats.run_features) == 5
+
+
+def test_textbox_content_excluded_from_features(tmp_path) -> None:
+    """Review F1 (§2.2.2 textbox exclusion): a run anchoring a drawing whose
+    textbox holds large bold text must NOT pollute the host paragraph's
+    font-size / bold / visible-char stats — the baseline treats the whole
+    drawing as an opaque placeholder and so must the feature extractor."""
+    from lxml import etree
+
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    xml = (
+        f'<w:p xmlns:w="{w}">'
+        '<w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>宿主标题</w:t></w:r>'
+        '<w:r><w:rPr><w:sz w:val="44"/></w:rPr><w:drawing><wp:inline xmlns:wp="x">'
+        '<w:txbxContent><w:p><w:r><w:rPr><w:sz w:val="44"/><w:b/></w:rPr>'
+        "<w:t>文本框内的超大加粗装饰文字很长很长很长</w:t></w:r></w:p>"
+        "</w:txbxContent></wp:inline></w:drawing></w:r></w:p>"
+    )
+    para = etree.fromstring(xml)
+    feats = extract_paragraph_physical_features(para, StyleAttributes())
+    assert feats.font_size_pt == 12.0  # host run only, not the 22pt textbox
+    assert feats.all_bold is False  # host run is not bold
+    assert feats.visible_char_count == 4  # 宿主标题, textbox text excluded
+
+
+def test_visible_char_count_excludes_generated_text(tmp_path) -> None:
+    """Review F14 (§2.2.2): visible_char_count counts only source w:t chars —
+    auto-numbering labels (prepended at read time) and <sup>/<equation>/
+    placeholder markup never enter run_features, so they cannot skew FS_base
+    weighting."""
+    doc = Document()
+    para = doc.add_paragraph()
+    para.add_run("正文内容").font.size = Pt(12)  # 4 visible source chars
+
+    path = _save(doc, tmp_path)
+    feats = _features_for(path, 0)
+    assert feats.visible_char_count == 4
 
 
 def test_first_line_size_restat_for_softbreak(tmp_path) -> None:
