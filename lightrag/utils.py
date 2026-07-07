@@ -93,7 +93,9 @@ logger.setLevel(logging.INFO)
 if not logger.handlers:
     console_handler = SafeStreamHandler()
     console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(levelname)s: %(message)s")
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
@@ -431,7 +433,7 @@ def setup_logger(
 
     # Add console handler with safe stream handling
     console_handler = SafeStreamHandler()
-    console_handler.setFormatter(simple_formatter)
+    console_handler.setFormatter(detailed_formatter)
     console_handler.setLevel(level)
     logger_instance.addHandler(console_handler)
 
