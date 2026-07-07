@@ -881,12 +881,21 @@ RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
-以下是使用阿里云提供的 Reranker 服务的示例配置：
+以下是使用阿里云提供的 Reranker 服务的示例配置（`gte-rerank-*` 和 `qwen3-vl-rerank`，它们使用嵌套的 `input`/`parameters` 报文格式）：
 
 ```
 RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+> **阿里云 `qwen3-rerank` 系列：** 与 `gte-rerank-*`、`qwen3-vl-rerank` 不同，`qwen3-rerank` 模型使用扁平的 Cohere 风格报文（`{"model", "query", "documents", "top_n", ...}`），返回顶层的 `results`，并且使用**不同的** Cohere 兼容 endpoint —— `/compatible-api/v1/reranks`，而非上面 `gte`/`vl` 所用的 `.../text-rerank/text-rerank` 路径。由于格式与标准 Cohere 完全一致，因此使用 `RERANK_BINDING=cohere`（而非 `aliyun`）即可，无需单独的 binding。请将 `{WorkspaceId}` 与地域替换为你自己的（参见 [阿里云文本排序 API 文档](https://help.aliyun.com/zh/model-studio/text-rerank-api)）：
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=qwen3-rerank
+RERANK_BINDING_HOST=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
