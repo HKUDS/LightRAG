@@ -236,6 +236,38 @@ def test_parser_options_accept_per_file_overrides(
     ]
 
 
+def test_parser_options_reject_none_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PADDLEOCR_VL_USE_CHART_RECOGNITION", "false")
+
+    with pytest.raises(
+        ValueError,
+        match="PaddleOCR-VL option use_chart_recognition cannot be None",
+    ):
+        PaddleOCRVLParserOptions.from_env(
+            overrides={"use_chart_recognition": None}
+        )
+
+
+def test_parser_options_reject_none_page_range_alias() -> None:
+    with pytest.raises(
+        ValueError,
+        match="PaddleOCR-VL option page_range cannot be None",
+    ):
+        PaddleOCRVLParserOptions.from_env(overrides={"page_range": None})
+
+
+def test_parser_option_coercion_uses_target_type_parameter() -> None:
+    assert cache_mod._coerce_value("true", bool, default=False) is True
+    assert cache_mod._coerce_value("0.7", int | float) == 0.7
+    assert cache_mod._coerce_value("  ocr  ", str) == "ocr"
+    assert cache_mod._coerce_value('["header"]', list) == ["header"]
+    assert cache_mod._coerce_value('{"temperature": 0.2}', dict) == {
+        "temperature": 0.2
+    }
+
+
 def test_per_file_overrides_participate_in_cache_signature(
     tmp_path: Path, source_file: Path
 ) -> None:
