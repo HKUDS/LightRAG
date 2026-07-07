@@ -396,7 +396,7 @@ class _PipelineMixin:
                 "Number of chunk_options dicts must match the number of documents"
             )
 
-        def _parse_engine_at(index: int) -> str | None:
+        def _parse_engine_at(index: int, doc_format: str) -> str | None:
             if parse_engine is None:
                 return None
             raw = str(parse_engine[index] or "").strip()
@@ -418,11 +418,15 @@ class _PipelineMixin:
                 raise ValueError(f"Invalid parse_engine {raw!r}: " + "; ".join(errs))
             if not engine:
                 return None
-            # The DOCX_SMART_HEADING global default must materialize here as
-            # well: a direct caller's bare ``native`` on a .docx persists with
-            # the seed (same contract as an upload), and an explicit
-            # ``native(smart_heading=false)`` stays the opt-out.
-            seed_smart_heading_param(engine, params, file_paths[index])
+            if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
+                # The DOCX_SMART_HEADING global default must materialize here
+                # as well: a direct caller's bare ``native`` on a .docx
+                # persists with the seed (same contract as an upload), and an
+                # explicit ``native(smart_heading=false)`` stays the opt-out.
+                # RAW docs are excluded — there parse_engine is a record of
+                # the engine that ALREADY extracted the content, and no docx
+                # parser runs, so injecting the seed would falsify it.
+                seed_smart_heading_param(engine, params, file_paths[index])
             return encode_parse_engine(engine, params) if params else engine
 
         def _process_options_at(index: int) -> str:
@@ -548,7 +552,7 @@ class _PipelineMixin:
             }
             if content_hash:
                 content_data["content_hash"] = content_hash
-            if engine := _parse_engine_at(index):
+            if engine := _parse_engine_at(index, doc_format):
                 content_data["parse_engine"] = engine
             if doc_format == FULL_DOCS_FORMAT_PENDING_PARSE:
                 source_file = Path(str(file_paths[index] or "").strip()).name

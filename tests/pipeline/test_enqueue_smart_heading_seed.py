@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG
-from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
+from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE, FULL_DOCS_FORMAT_RAW
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 
 pytestmark = pytest.mark.offline
@@ -53,17 +53,22 @@ def _new_rag(tmp_path: Path) -> LightRAG:
 
 
 def _enqueue_and_read_engines(
-    tmp_path: Path, *, parse_engine: list[str], file_paths: list[str]
+    tmp_path: Path,
+    *,
+    parse_engine: list[str],
+    file_paths: list[str],
+    docs_format: str = FULL_DOCS_FORMAT_PENDING_PARSE,
+    input: list[str] | None = None,
 ) -> list[str | None]:
-    """Enqueue pending_parse docs and return each persisted parse_engine."""
+    """Enqueue docs and return each persisted full_docs parse_engine."""
 
     async def _run():
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
             await rag.apipeline_enqueue_documents(
-                [""] * len(file_paths),
-                docs_format=FULL_DOCS_FORMAT_PENDING_PARSE,
+                input if input is not None else [""] * len(file_paths),
+                docs_format=docs_format,
                 parse_engine=parse_engine,
                 file_paths=file_paths,
             )
@@ -92,6 +97,21 @@ def test_direct_enqueue_seeds_bare_native_docx(tmp_path, monkeypatch):
         "native(smart_heading=false)",  # explicit param stays the opt-out
         "native",  # non-docx never carries the seed
     ]
+
+
+def test_direct_enqueue_raw_docx_metadata_not_seeded(tmp_path, monkeypatch):
+    """RAW enqueue: parse_engine records the engine that ALREADY extracted
+    the content — no docx parser will run on this doc, so the seed must not
+    rewrite the metadata even for a .docx source with the switch on."""
+    monkeypatch.setenv("DOCX_SMART_HEADING", "true")
+    engines = _enqueue_and_read_engines(
+        tmp_path,
+        docs_format=FULL_DOCS_FORMAT_RAW,
+        input=["Already extracted body text with enough words."],
+        parse_engine=["native"],
+        file_paths=["extracted.docx"],
+    )
+    assert engines == ["native"]
 
 
 def test_direct_enqueue_switch_off_keeps_bare_native(tmp_path, monkeypatch):
