@@ -1267,6 +1267,12 @@ def create_app(args):
     # Initialize document manager with workspace support for data isolation
     doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
 
+    # Workspace-scoped RAG instance pool.
+    # Declared before lifespan so the shutdown handler can iterate it.
+    # The default instance is seeded after construction below.
+    _workspace_rag_pool: dict[str, LightRAG] = {}
+    _workspace_pool_lock = asyncio.Lock()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
@@ -1286,8 +1292,13 @@ def create_app(args):
             yield
 
         finally:
-            # Clean up database connections
-            await rag.finalize_storages()
+            # Clean up database connections for all workspace-scoped instances
+            for ws, ws_rag in _workspace_rag_pool.items():
+                try:
+                    await ws_rag.finalize_storages()
+                except Exception as e:
+                    logger.error(f"Failed to finalize storages for workspace '{ws}': {e}")
+            _workspace_rag_pool.clear()
 
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
                 # Only perform cleanup in Uvicorn single-process mode
@@ -2091,10 +2102,8 @@ def create_app(args):
     _log_role_provider_options(rag)
     _register_role_builder(rag)
 
-    # Workspace-scoped RAG instance pool.
-    # Keyed by workspace name; the default instance is pre-seeded.
-    _workspace_rag_pool: dict[str, LightRAG] = {args.workspace or "": rag}
-    _workspace_pool_lock = asyncio.Lock()
+    # Seed the default instance into the pool declared above.
+    _workspace_rag_pool[args.workspace or ""] = rag
 
     async def resolve_workspace_rag(request: Request) -> LightRAG:
         """Return the RAG instance scoped to the workspace in the request header.
