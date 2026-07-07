@@ -98,11 +98,19 @@ def _is_cjk(ch: str) -> bool:
 
 
 def route_language(text: str) -> str:
-    """Route to the zh or en pipeline by CJK character share."""
+    """Route to the zh or en pipeline by CJK character share.
+
+    The denominator excludes ALL whitespace (not just ASCII spaces): tabs,
+    newlines and the full-width space U+3000 — common padding in CJK title
+    lines — otherwise inflate the denominator and mis-route borderline zh text
+    to the English pipeline (review D8)."""
     if not text:
         return "en"
-    cjk = sum(1 for ch in text if _is_cjk(ch))
-    return "zh" if cjk * 2 >= len(text.replace(" ", "") or " ") else "en"
+    non_ws = [ch for ch in text if not ch.isspace()]
+    if not non_ws:
+        return "en"
+    cjk = sum(1 for ch in non_ws if _is_cjk(ch))
+    return "zh" if cjk * 2 >= len(non_ws) else "en"
 
 
 def analyze(text: str):

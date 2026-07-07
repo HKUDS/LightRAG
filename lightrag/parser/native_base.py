@@ -198,6 +198,14 @@ class NativeParserBase(BaseParser):
                 f"{self.engine_name}: invalid parse_engine for doc_id={ctx.doc_id}: "
                 + "; ".join(decode_errs)
             )
+        # A directive naming a DIFFERENT engine reaching this parser means a
+        # corrupt/misrouted row — fail loudly instead of silently re-branding
+        # foreign params as our own on persist (review, native_base cross-check).
+        if _engine and _engine != self.engine_name:
+            raise ValueError(
+                f"{self.engine_name}: parse_engine names a different engine "
+                f"{_engine!r} for doc_id={ctx.doc_id}"
+            )
         engine_params = engine_params or {}
 
         # Per-parse cancel event, polled by the LLM bridge between waits. The

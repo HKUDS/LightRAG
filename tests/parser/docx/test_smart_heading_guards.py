@@ -33,6 +33,22 @@ requires_models = pytest.mark.skipif(
 )
 
 
+# route_language is a pure function (no model load), so it always runs.
+@pytest.mark.parametrize(
+    "text,lang",
+    [
+        ("这是一段中文标题", "zh"),
+        ("This is an English heading", "en"),
+        ("标　题", "zh"),  # review D8: full-width space must not dilute CJK share
+        ("标题\t内容", "zh"),  # tabs excluded from the denominator too
+    ],
+)
+def test_route_language_excludes_all_whitespace(text: str, lang: str) -> None:
+    from lightrag.parser.docx.smart_heading.nlp import route_language
+
+    assert route_language(text) == lang
+
+
 # ---------------------------------------------------------------------------
 # strong-body features
 # ---------------------------------------------------------------------------

@@ -210,6 +210,38 @@ def test_markdown_warns_and_ignores_params(tmp_path, monkeypatch, caplog) -> Non
     assert "Title" in rag.full_docs.data["doc-md"]["content"]
 
 
+def test_markdown_does_not_warn_on_falsy_param(tmp_path, monkeypatch, caplog) -> None:
+    """Review: a blanket opt-out (smart_heading=false) turned nothing on, so a
+    .md routed through it must NOT emit the warn-and-ignore noise."""
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+
+    source_path = input_dir / "notes.md"
+    source_path.write_text("# Title\n\nSome body text.\n", encoding="utf-8")
+
+    rag = build_debug_rag()
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        result = asyncio.run(
+            get_parser("native").parse(
+                ParseContext(
+                    rag,
+                    "doc-md-off",
+                    str(source_path),
+                    {
+                        "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                        "content": "",
+                        "parse_engine": "native(smart_heading=false)",
+                    },
+                )
+            )
+        )
+
+    assert not (result.parse_warnings or {}).get("engine_params_ignored")
+    assert not any("only apply to .docx" in rec.message for rec in caplog.records)
+    assert "Title" in rag.full_docs.data["doc-md-off"]["content"]
+
+
 def test_i4_cache_disabled_surfaces_parse_warning(tmp_path, monkeypatch) -> None:
     """A15 (§2.3.5 channel a): the I4 determinism waiver reaches
     parse_warnings → doc_status, not just the process log."""

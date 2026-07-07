@@ -25,6 +25,8 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
+from lightrag.utils import logger
+
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
@@ -93,31 +95,59 @@ def _parse_bool_attr(elem) -> bool:
     return val not in ("0", "false", "none")
 
 
+def _grid_half_points(val: str | None) -> int | None:
+    """Parse a w:sz/w:szCs val to the nearest 0.5pt-grid half-point, or None.
+
+    Nearest-grid rounding (§2.2.1): theme sources may emit fractional
+    half-points; truncation would bias 21.5pt down to 21pt.
+    """
+    if not val:
+        return None
+    try:
+        return round(float(val))
+    except (TypeError, ValueError):
+        return None
+
+
+def _rpr_size_half_points(rpr) -> int | None:
+    """Effective run-size from an rPr: prefer a usable w:sz, else w:szCs.
+
+    A bare ``<w:sz/>`` (element present, no ``w:val``) must NOT mask a valid
+    ``<w:szCs w:val=…/>`` — the ASCII size being unspecified does not void the
+    complex-script size (review F3)."""
+    if rpr is None:
+        return None
+    for tag in ("sz", "szCs"):
+        node = rpr.find(_w(tag))
+        if node is not None:
+            size = _grid_half_points(node.get(_w("val")))
+            if size is not None:
+                return size
+    return None
+
+
 def _read_rpr(rpr, raw: _RawStyle) -> None:
     if rpr is None:
         return
-    sz = rpr.find(_w("sz"))
-    if sz is None:
-        sz = rpr.find(_w("szCs"))
-    if sz is not None:
-        val = sz.get(_w("val"))
-        try:
-            # Nearest half-point-grid value (§2.2.1): theme sources may emit
-            # fractional half-points; truncation would bias 21.5pt down to 21pt.
-            raw.size_half_points = round(float(val)) if val else None
-        except (TypeError, ValueError):
-            raw.size_half_points = None
+    size = _rpr_size_half_points(rpr)
+    if size is not None:
+        raw.size_half_points = size
     b = rpr.find(_w("b"))
     if b is not None:
         raw.bold = _parse_bool_attr(b)
 
 
-def parse_styles_attributes(docx_path: str) -> StyleAttributes:
+def parse_styles_attributes(
+    docx_path: str, *, warnings: dict | None = None
+) -> StyleAttributes:
     """Parse styles.xml into effective per-style formatting.
 
     Missing/corrupt styles.xml yields an empty :class:`StyleAttributes`
     (every lookup falls through to docDefaults=None); per-paragraph trace
     failures are then counted by the caller toward the CB5 confidence gate.
+    Unlike the legacy ``parse_styles_outline_levels`` this does NOT swallow a
+    parse failure silently — it records a warning so a document-wide style
+    degradation is observable (spec §3.2, review F2).
     """
     try:
         from defusedxml import ElementTree as ET
@@ -165,8 +195,19 @@ def parse_styles_attributes(docx_path: str) -> StyleAttributes:
                         raw.alignment = jc.get(_w("val"))
                 raw_styles[style_id] = raw
     except Exception:
-        # Same contract as parse_styles_outline_levels: a broken styles part
-        # degrades to "no style info" rather than failing the parse.
+        # A broken styles part degrades to "no style info" rather than failing
+        # the parse — but, unlike parse_styles_outline_levels, it is surfaced:
+        # every paragraph then loses its style-chain size and the whole doc
+        # slides toward CB5 low confidence, which should not be silent (F2).
+        if warnings is not None:
+            warnings["smart_styles_xml_parse_failed"] = (
+                warnings.get("smart_styles_xml_parse_failed", 0) + 1
+            )
+        logger.warning(
+            "[smart_heading] styles.xml could not be parsed for %s; "
+            "style-chain font sizes unavailable (degrading to docDefaults)",
+            docx_path,
+        )
         return attrs
 
     def _resolve(style_id: str, attr: str) -> object:
@@ -254,18 +295,9 @@ def effective_font_size_pt(rec: Any) -> float | None:
 
 
 def _element_direct_size(rpr) -> int | None:
-    if rpr is None:
-        return None
-    sz = rpr.find(_w("sz"))
-    if sz is None:
-        sz = rpr.find(_w("szCs"))
-    if sz is None:
-        return None
-    val = sz.get(_w("val"))
-    try:
-        return round(float(val)) if val else None
-    except (TypeError, ValueError):
-        return None
+    # Shared sz/szCs resolution (prefers a usable w:sz, falls back to szCs so a
+    # bare <w:sz/> cannot mask a valid <w:szCs> — review F3).
+    return _rpr_size_half_points(rpr)
 
 
 def _element_direct_bold(rpr) -> bool | None:

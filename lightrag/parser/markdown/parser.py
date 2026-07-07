@@ -557,8 +557,12 @@ class NativeMarkdownParser(NativeParserBase):
         # Engine params (e.g. smart_heading) only apply to the docx path — md
         # lacks the font-size signals the algorithm needs. Warn-and-ignore so a
         # rule like ``LIGHTRAG_PARSER=native(smart_heading=true)`` doesn't hard
-        # fail every markdown document it happens to route.
-        ignored_params = sorted(runtime.engine_params) if runtime else []
+        # fail every markdown document it happens to route. Only TRUTHY params
+        # count as "ignored": a blanket opt-out (smart_heading=false) turned
+        # nothing on, so it should not warn on every md/textpack document.
+        ignored_params = (
+            sorted(k for k, v in runtime.engine_params.items() if v) if runtime else []
+        )
         # Per-document downloaded-image cache. Lives in a ``<file>.native_raw/``
         # sibling of ``parsed_dir`` so it survives the ``rmtree(parsed_dir)`` the
         # base parser runs before each re-extraction; reused across re-parses

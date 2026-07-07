@@ -80,7 +80,14 @@ class SyncLLMBridge:
                 # Propagates cancellation into the loop-side coroutine chain;
                 # whether the underlying provider request truly aborts is up
                 # to its implementation — the worker thread exits regardless.
-                future.cancel()
+                if not future.cancel() and future.done():
+                    # Already finished (perhaps with an exception): consume the
+                    # result so asyncio does not log "exception was never
+                    # retrieved" for the abandoned future.
+                    try:
+                        future.exception()
+                    except Exception:
+                        pass
                 raise LLMBridgeCancelled("parse cancelled while awaiting the LLM")
             try:
                 return future.result(timeout=self._poll_interval)

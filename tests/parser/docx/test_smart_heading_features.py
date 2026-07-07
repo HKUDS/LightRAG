@@ -477,3 +477,17 @@ def test_fractional_size_values_round_to_nearest_half_point() -> None:
 
     exact = ET.fromstring(f'<w:rPr xmlns:w="{w}"><w:sz w:val="43"/></w:rPr>')
     assert _element_direct_size(exact) == 43  # integer values untouched
+
+
+def test_bare_sz_does_not_mask_valid_szcs() -> None:
+    """Review F3: a valueless ``<w:sz/>`` must not shadow a valid ``<w:szCs>``
+    — the effective size falls back to the complex-script size."""
+    from xml.etree import ElementTree as ET
+
+    from lightrag.parser.docx.smart_heading.features import _element_direct_size
+
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    rpr = ET.fromstring(
+        f'<w:rPr xmlns:w="{w}"><w:sz/><w:szCs w:val="28"/></w:rPr>'
+    )
+    assert _element_direct_size(rpr) == 28  # 14pt, not None

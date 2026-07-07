@@ -1093,7 +1093,7 @@ def extract_docx_blocks(
             parse_styles_attributes,
         )
 
-        style_attributes = parse_styles_attributes(file_path)
+        style_attributes = parse_styles_attributes(file_path, warnings=parse_warnings)
 
     records = _read_document_records(
         doc,
