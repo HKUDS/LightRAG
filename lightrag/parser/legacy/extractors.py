@@ -98,8 +98,8 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     """Extract XLSX content in tab-delimited format with sheet separators."""
     from openpyxl import load_workbook  # type: ignore
 
-    xlsx_file = BytesIO(file_bytes)
-    wb = load_workbook(xlsx_file)
+    wb_values = load_workbook(BytesIO(file_bytes), data_only=True)
+    wb_formulas = load_workbook(BytesIO(file_bytes), data_only=False)
 
     def escape_cell(cell_value: str | int | float | None) -> str:
         if cell_value is None:
@@ -119,20 +119,31 @@ def _extract_xlsx(file_bytes: bytes) -> str:
     content_parts: list[str] = []
     sheet_separator = "=" * 20
 
-    for idx, sheet in enumerate(wb):
+    for idx, sheet in enumerate(wb_values):
         if idx > 0:
             content_parts.append("")
         safe_title = escape_sheet_title(sheet.title)
         content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
-        max_columns = sheet.max_column if sheet.max_column else 0
-        for row in sheet.iter_rows(values_only=True):
+        formula_sheet = wb_formulas[sheet.title]
+        max_rows = max(sheet.max_row or 0, formula_sheet.max_row or 0)
+        max_columns = max(sheet.max_column or 0, formula_sheet.max_column or 0)
+        value_rows = sheet.iter_rows(
+            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
+        )
+        formula_rows = formula_sheet.iter_rows(
+            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
+        )
+        for value_row, formula_row in zip(value_rows, formula_rows):
             row_parts = []
-            for col_idx in range(max_columns):
-                if col_idx < len(row):
-                    row_parts.append(escape_cell(row[col_idx]))
-                else:
-                    row_parts.append("")
-            if all(part == "" for part in row_parts):
+            row_has_content = False
+            for cell_value, formula_value in zip(value_row, formula_row):
+                if cell_value is None:
+                    cell_value = formula_value
+                cell_text = escape_cell(cell_value)
+                row_parts.append(cell_text)
+                if cell_text:
+                    row_has_content = True
+            if not row_has_content:
                 content_parts.append("")
             else:
                 content_parts.append("\t".join(row_parts))
