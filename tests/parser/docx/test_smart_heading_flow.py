@@ -117,6 +117,19 @@ def test_high_confidence_size_tiers() -> None:
     assert "弱信号甲" in texts2 and "弱信号乙" in texts2
 
 
+def test_weak_pair_ignores_strong_body_companion() -> None:
+    """Review P2: a strong-body paragraph (about to be demoted) does NOT count
+    as a weak-signal companion, so a lone +0.5pt paragraph paired only with a
+    same-size sentence stays out (spec §2.3.4 '不含强正文特征的弱信号段落')."""
+    records = _body(30)
+    records.append(_para("孤立弱信号标题", size=12.5))  # +0.5pt, no real companion
+    records += _body(3)
+    # Same size but strong-body (ends in 。 → _stub_strong_body demotes it).
+    records.append(_para("这是一句以句号结尾的同字号长正文。", size=12.5))
+    result = _gate(records)
+    assert "孤立弱信号标题" not in _texts(result)
+
+
 def test_base_size_needs_numbering_or_bold() -> None:
     records = _body(30)
     records.append(_para("一、成套编号甲", size=12.0))

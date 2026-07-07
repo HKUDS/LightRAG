@@ -332,11 +332,15 @@ def gate_candidates(
         return False
 
     # Weak-signal companions (P2): count of same-size weak-tier paragraphs.
+    # A strong-body paragraph will be demoted and so is NOT a companion —
+    # spec §2.3.4 counts only "不含强正文特征的弱信号段落". Excluding it here
+    # prevents a lone +0.5 paragraph from falsely pairing with a same-size
+    # sentence/long paragraph that is about to be dropped.
     weak_size_count: dict[float, int] = {}
     if fs is not None:
         for i in para_indices:
             size = _effective_size(records[i])
-            if size is not None and size == fs + 0.5:
+            if size is not None and size == fs + 0.5 and _strong(i) is None:
                 weak_size_count[size] = weak_size_count.get(size, 0) + 1
 
     decisions: list[HeadingDecision] = []
