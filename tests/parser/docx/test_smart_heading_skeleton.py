@@ -366,7 +366,9 @@ def test_merged_then_demoted_heading_keeps_member_text() -> None:
 
     records = [
         ParagraphRecord(
-            kind="para", text="标题被拆成两行，上半句在此，", full_text_raw="标题被拆成两行，上半句在此，"
+            kind="para",
+            text="标题被拆成两行，上半句在此，",
+            full_text_raw="标题被拆成两行，上半句在此，",
         ),
         ParagraphRecord(
             kind="para",
@@ -376,8 +378,20 @@ def test_merged_then_demoted_heading_keeps_member_text() -> None:
         ParagraphRecord(kind="para", text="正文段落。", full_text_raw="正文段落。"),
     ]
     ds = [
-        HeadingDecision(record_index=0, text=records[0].text, is_heading=True, level=2, font_size_pt=14.0),
-        HeadingDecision(record_index=1, text=records[1].text, is_heading=True, level=2, font_size_pt=14.0),
+        HeadingDecision(
+            record_index=0,
+            text=records[0].text,
+            is_heading=True,
+            level=2,
+            font_size_pt=14.0,
+        ),
+        HeadingDecision(
+            record_index=1,
+            text=records[1].text,
+            is_heading=True,
+            level=2,
+            font_size_pt=14.0,
+        ),
     ]
     ds = merge_split_headings(ds, records, warnings={})
     demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings={})
@@ -423,7 +437,9 @@ def test_title_block_members_emitted_exactly_once() -> None:
     )
     member_sentinel = HeadingDecision(record_index=1, text="")
     member_sentinel.note("title_block_member")
-    heading = HeadingDecision(record_index=2, text=records[2].text, is_heading=True, level=1)
+    heading = HeadingDecision(
+        record_index=2, text=records[2].text, is_heading=True, level=1
+    )
     result = SmartHeadingResult(
         decisions={0: tb, 1: member_sentinel, 2: heading},
         toc_indices=set(),

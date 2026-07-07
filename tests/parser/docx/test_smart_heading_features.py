@@ -371,7 +371,9 @@ def test_sdt_docpart_gallery_toc_evidence() -> None:
         "<w:r><w:t>第一章 绪论\t3</w:t></w:r>"
         "</w:sdtContent></w:sdt></w:p>"
     )
-    feats = extract_paragraph_physical_features(etree.fromstring(xml), StyleAttributes())
+    feats = extract_paragraph_physical_features(
+        etree.fromstring(xml), StyleAttributes()
+    )
     assert feats.is_toc_field is True
 
 
@@ -487,7 +489,5 @@ def test_bare_sz_does_not_mask_valid_szcs() -> None:
     from lightrag.parser.docx.smart_heading.features import _element_direct_size
 
     w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-    rpr = ET.fromstring(
-        f'<w:rPr xmlns:w="{w}"><w:sz/><w:szCs w:val="28"/></w:rPr>'
-    )
+    rpr = ET.fromstring(f'<w:rPr xmlns:w="{w}"><w:sz/><w:szCs w:val="28"/></w:rPr>')
     assert _element_direct_size(rpr) == 28  # 14pt, not None

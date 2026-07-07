@@ -121,7 +121,9 @@ def test_heuristic_toc_single_paragraph_soft_breaks() -> None:
     """Review M2 (§2.2.2): a TOC typed as ONE paragraph with ≥3 soft-break
     dot-leader lines is detected — lines are counted, not paragraphs."""
     records = [
-        _para("第一章 绪论............3\n第二章 方法............12\n第三章 实验............25"),
+        _para(
+            "第一章 绪论............3\n第二章 方法............12\n第三章 实验............25"
+        ),
         _para("正文开始。"),
     ]
     toc = detect_toc_records(records)

@@ -392,7 +392,9 @@ def test_single_candidate_false_verdict_leaves_context_untouched() -> None:
         # must not propagate.
         {"is_title_block": False, "headings": [], "body": [0, 1, 2, 3, 4]},
         records=records,
-        candidate=TitleBlockCandidate(start=2, end=3, single=True, trigger="single_line"),
+        candidate=TitleBlockCandidate(
+            start=2, end=3, single=True, trigger="single_line"
+        ),
     )
     assert not decision.is_title_block
     assert decision.heading_indices == ()
