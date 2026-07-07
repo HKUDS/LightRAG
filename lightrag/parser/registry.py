@@ -25,6 +25,7 @@ from lightrag.constants import (
     PARSER_ENGINE_LEGACY,
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
+    PARSER_ENGINE_PADDLEOCR_VL,
 )
 
 if TYPE_CHECKING:
@@ -62,6 +63,28 @@ def _mineru_endpoint_requirement() -> str | None:
 
 def _env_endpoint_configured(env_name: str) -> Callable[[], bool]:
     return lambda: bool(os.getenv(env_name, "").strip())
+
+
+def _paddleocr_vl_api_mode() -> str:
+    return os.getenv("PADDLEOCR_VL_API_MODE", "official").strip().lower() or "official"
+
+
+def _paddleocr_vl_endpoint_configured() -> bool:
+    mode = _paddleocr_vl_api_mode()
+    if mode == "local":
+        return bool(os.getenv("PADDLEOCR_VL_LOCAL_ENDPOINT", "").strip())
+    if mode == "official":
+        return bool(os.getenv("PADDLEOCR_VL_API_TOKEN", "").strip())
+    return False
+
+
+def _paddleocr_vl_endpoint_requirement() -> str | None:
+    mode = _paddleocr_vl_api_mode()
+    if mode == "local":
+        return "PADDLEOCR_VL_LOCAL_ENDPOINT"
+    if mode == "official":
+        return "PADDLEOCR_VL_API_TOKEN"
+    return "valid PADDLEOCR_VL_API_MODE (local, official)"
 
 
 @dataclass(frozen=True)
@@ -172,6 +195,22 @@ _DOCLING_SUFFIXES = frozenset(
         "bmp",
     }
 )
+_PADDLEOCR_VL_SUFFIXES = frozenset(
+    {
+        "pdf",
+        "doc",
+        "docx",
+        "ppt",
+        "pptx",
+        "xls",
+        "xlsx",
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "bmp",
+    }
+)
 
 
 _REGISTRY: dict[str, ParserSpec] = {
@@ -207,6 +246,15 @@ _REGISTRY: dict[str, ParserSpec] = {
         queue_group=PARSER_ENGINE_DOCLING,  # sized by max_parallel_parse_docling
         endpoint_configured=_env_endpoint_configured("DOCLING_ENDPOINT"),
         endpoint_requirement=lambda: "DOCLING_ENDPOINT",
+    ),
+    PARSER_ENGINE_PADDLEOCR_VL: ParserSpec(
+        engine_name=PARSER_ENGINE_PADDLEOCR_VL,
+        impl="lightrag.parser.external.paddleocr_vl.parser:PaddleOCRVLParser",
+        suffixes=_PADDLEOCR_VL_SUFFIXES,
+        queue_group=PARSER_ENGINE_PADDLEOCR_VL,
+        concurrency=int(os.getenv("MAX_PARALLEL_PARSE_PADDLEOCR_VL", "2")),
+        endpoint_configured=_paddleocr_vl_endpoint_configured,
+        endpoint_requirement=_paddleocr_vl_endpoint_requirement,
     ),
     PARSER_ENGINE_REUSE: ParserSpec(
         engine_name=PARSER_ENGINE_REUSE,

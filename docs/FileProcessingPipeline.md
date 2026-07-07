@@ -174,10 +174,11 @@ Currently supported engine parameters (canonical / alias):
 | `native` | Built-in intelligent structured content extractor | `docx` `md` `textpack` |
 | `mineru` | External MinerU content extraction engine | `pdf` `doc` `docx` `ppt` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
 | `docling` | External Docling content extraction engine | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
+| `paddleocr_vl` | External PaddleOCR-VL content extraction engine | `pdf` `doc` `docx` `ppt` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `webp` `bmp` |
 
-`mineru` and `docling` are external content extraction engines; before enabling related rules, the services must be running first, and the corresponding endpoint/token must be configured in LightRAG.
+`mineru`, `docling`, and `paddleocr_vl` are external content extraction engines; before enabling related rules, the services must be running first, and the corresponding endpoint/token must be configured in LightRAG.
 
-LightRAG caches the parsing results of the `mineru` and `docling` engines locally. Re-uploading the same file usually does not trigger the engine to re-parse the document. To delete the parse cache, you must click the "also delete file" option in the delete-file dialog of the document management interface. Modifying the endpoint addresses and effective extraction parameters of the `mineru` / `docling` engines will also invalidate the cache, causing the engine to re-parse the file content on the next upload of the same file.
+LightRAG caches the parsing results of the `mineru`, `docling`, and `paddleocr_vl` engines locally. Re-uploading the same file usually does not trigger the engine to re-parse the document. To delete the parse cache, you must click the "also delete file" option in the delete-file dialog of the document management interface. Modifying the endpoint addresses and effective extraction parameters of these engines will also invalidate the cache, causing the engine to re-parse the file content on the next upload of the same file.
 
 #### Using the Native File Parsing Engine
 
@@ -763,6 +764,82 @@ Concurrency safety: identical to the MinerU path — LightRAG mandates `canonica
 
 > The "either side empty → skip" semantics of `engine_version` / `endpoint_signature` is the same as MinerU §4.3: when the field was empty at manifest-write time (first parse without `DOCLING_ENGINE_VERSION` configured) or when the current environment variable is not set, the check is skipped for that item; adding the version number later does not automatically invalidate the historical cache; `LIGHTRAG_FORCE_REPARSE_DOCLING=true` is needed to trigger.
 
+### 4.5 PaddleOCR-VL Raw Artifacts Directory `<base>.paddleocr_vl_raw/`
+
+The `paddleocr_vl` engine calls the PaddleOCR-VL async API, stores the downloaded JSON/JSONL result as `content_list.json`, downloads referenced markdown/output images, and writes everything under `__parsed__/<canonical filename>.paddleocr_vl_raw/` with `_manifest.json` as the integrity marker.
+
+Minimal configuration:
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=official
+PADDLEOCR_VL_API_TOKEN=<your_access_token>
+# PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
+```
+
+`PADDLEOCR_VL_API_MODE` accepts `official` and `local`. The `official` mode is implemented against PaddleOCR's cloud async API. The `local` mode is reserved for a future local deployment adapter and currently fails fast if selected; `PADDLEOCR_VL_LOCAL_ENDPOINT` is kept as the future endpoint slot. `PADDLEOCR_VL_ENDPOINT` remains a backwards-compatible alias for `PADDLEOCR_VL_OFFICIAL_ENDPOINT`.
+
+The async submit request also accepts top-level `pageRanges` and `batchId`
+fields:
+
+```bash
+PADDLEOCR_VL_PAGE_RANGES=
+PADDLEOCR_VL_BATCH_ID=
+```
+
+Optional PaddleOCR-VL request parameters are read from env and included in the
+official API `optionalPayload`. The three boolean toggles below keep the current
+client defaults when unset:
+
+```bash
+PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=false
+PADDLEOCR_VL_USE_DOC_UNWARPING=false
+PADDLEOCR_VL_USE_CHART_RECOGNITION=false
+```
+
+These additional official API parameters are omitted when unset so the service
+can use its deployment defaults:
+
+```bash
+PADDLEOCR_VL_USE_LAYOUT_DETECTION=
+PADDLEOCR_VL_LAYOUT_THRESHOLD=
+PADDLEOCR_VL_LAYOUT_NMS=
+PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO=
+PADDLEOCR_VL_LAYOUT_MERGE_BBOXES_MODE=
+PADDLEOCR_VL_LAYOUT_SHAPE_MODE=
+PADDLEOCR_VL_PROMPT_LABEL=
+PADDLEOCR_VL_REPETITION_PENALTY=
+PADDLEOCR_VL_TEMPERATURE=
+PADDLEOCR_VL_TOP_P=
+PADDLEOCR_VL_MIN_PIXELS=
+PADDLEOCR_VL_MAX_PIXELS=
+PADDLEOCR_VL_SHOW_FORMULA_NUMBER=
+PADDLEOCR_VL_RESTRUCTURE_PAGES=
+PADDLEOCR_VL_MERGE_TABLES=
+PADDLEOCR_VL_RELEVEL_TITLES=
+PADDLEOCR_VL_PRETTIFY_MARKDOWN=
+PADDLEOCR_VL_VISUALIZE=
+```
+
+Values for parameters that accept number/object/array forms (for example
+`PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO`) may be written as JSON.
+
+Directory layout:
+
+```text
+__parsed__/<base>.paddleocr_vl_raw/
+├── _manifest.json
+├── content_list.json
+├── imgs/
+│   └── *.jpg
+└── outputImages/
+    └── *.jpg
+```
+
+Force re-parse (bypass cache): set `LIGHTRAG_FORCE_REPARSE_PADDLEOCR_VL=true`.
+
+Cache invalidation checks mirror the other external engines: source size/hash, API mode, endpoint signature, option signature (model plus every PaddleOCR-VL request parameter listed above, including `pageRanges` and `batchId`), optional `PADDLEOCR_VL_ENGINE_VERSION`, `content_list.json` size/sha256, and recorded asset file sizes. On cache hit, LightRAG skips the PaddleOCR-VL API call and rebuilds sidecar files from local `content_list.json`.
+
 ## 5. Document Duplicate Detection Rules
 
 File upload, file-parse enqueue, and the text APIs check duplicates against two gates: "filename + content hash". Hitting either is considered a duplicate, and a `FAILED` record is written without overwriting the existing `full_docs`. `/documents/scan` directory scanning uses the same set of indexes, but in order to facilitate automatic retry of unfinished files, it has separate archive and re-process rules for duplicate filenames.
@@ -905,25 +982,27 @@ The locks around `pipeline_status` solve the correctness problem of "who can wri
           ┌─ parse_queues["native"]  ─► [native pool  × N1] ─┐   ← legacy shares this pool
 PENDING ─►├─ parse_queues["mineru"]  ─► [mineru pool  × N2] ─┼─► q_analyze ─►[analyzer × N4] ─► q_process ─►[processor × N5]
           ├─ parse_queues["docling"] ─► [docling pool × N3] ─┤
+          ├─ parse_queues["paddleocr_vl"] ─► [PaddleOCR-VL pool × N4] ─┤
           └─ parse_queues[<3rd-party group>] ─► [custom pool] ┘   ← created per ParserSpec.queue_group
 ```
 
-Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): the built-in native/mineru/docling each own a group, legacy shares the native pool (local, no network), and a third-party engine may declare its own group with a custom worker count (see `docs/ThirdPartyParser-zh.md`). At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
+Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): the built-in native/mineru/docling/paddleocr_vl each own a group, legacy shares the native pool (local, no network), and a third-party engine may declare its own group with a custom worker count (see `docs/ThirdPartyParser-zh.md`). At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
 
 | Environment variable | Default | Effect | Tuning advice |
 | --- | --- | --- | --- |
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: number of concurrent workers for native parsing (docx / pdf / txt and other pure local processing) | Pure CPU, low memory usage; can be raised to CPU core count |
 | `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: number of concurrent workers for MinerU parsing | MinerU has significant GPU/CPU usage; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample VRAM, you can set 2–3; when going through MinerU's official cloud service, you can raise it appropriately (subject to cloud quotas). |
 | `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: number of concurrent workers for Docling parsing | Docling is similarly resource-sensitive; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample CPU/GPU, you can set 2–3. |
-| `MAX_PARALLEL_ANALYZE` | `5` | N4: number of concurrent workers for multimodal analysis (VLM image / table description) | Directly consumes the VLM quota. Recommended ≤ VLM service concurrency cap. |
-| `MAX_PARALLEL_INSERT` | `3` | N5: number of concurrent documents at the entity / relation extraction + ingest stage | Recommended `MAX_ASYNC_LLM / 3`, in the range 2–10. This stage triggers multiple LLM calls per document; setting it too high will hit LLM rate limits. This value also serves as the `asyncio.Semaphore` for an additional constraint (worker count and semaphore value are the same). |
+| `MAX_PARALLEL_PARSE_PADDLEOCR_VL` | `2` | N4: number of concurrent workers for PaddleOCR-VL parsing | External cloud/API quota bound; keep modest unless your account quota supports more concurrent jobs. |
+| `MAX_PARALLEL_ANALYZE` | `5` | N5: number of concurrent workers for multimodal analysis (VLM image / table description) | Directly consumes the VLM quota. Recommended ≤ VLM service concurrency cap. |
+| `MAX_PARALLEL_INSERT` | `3` | N6: number of concurrent documents at the entity / relation extraction + ingest stage | Recommended `MAX_ASYNC_LLM / 3`, in the range 2–10. This stage triggers multiple LLM calls per document; setting it too high will hit LLM rate limits. This value also serves as the `asyncio.Semaphore` for an additional constraint (worker count and semaphore value are the same). |
 | `QUEUE_SIZE_PARSE` | `20` | Bounded capacity of the parse-input queues (native/MinerU/Docling) | Generally no need to tune. Items here are lightweight doc_ids (the large parsed body is stripped before the analyze stage); this only bounds how many pending docs the pipeline pre-dispatches to parse workers, so tuning has little effect. |
 | `QUEUE_SIZE_ANALYZE` | `100` | Bounded capacity of the analyze queue (parse → analyze stage) | Generally no need to tune. For very large batches (thousands or more), can be raised to avoid backpressure at the enqueue side; lower it when memory is tight. |
 | `QUEUE_SIZE_INSERT` | `4` | Queue capacity between the analyze → process stage | The process stage is the slowest and most memory-hungry in the pipeline; the queue is deliberately small to provide backpressure to upstream and prevent memory bloat. |
 
 **Several key points:**
 
-1. **Parsing stage is isolated per engine**, so when mixing native/mineru/docling, you don't have to worry about a slow engine dragging another down.
+1. **Parsing stage is isolated per engine**, so when mixing native/mineru/docling/paddleocr_vl, you don't have to worry about a slow engine dragging another down.
 2. **mineru / docling default to 2**: both have high resource usage, so the default keeps parallelism modest. Lower to 1 when resources are tight (OOM / VRAM contention / failure retry); with multi-GPU or a dedicated parser server, you can raise them manually.
 3. **`MAX_PARALLEL_INSERT` doubles as worker pool size and semaphore cap**: the pipeline creates a `Semaphore(max_parallel_insert)`, and each process worker also takes the semaphore before extraction and ingest. So even if you manually raise the worker count, the actual concurrency cap is still bounded by this value — just tune it directly.
 4. **Queue size and backpressure**: the small default `QUEUE_SIZE_INSERT=4` is intentional — the process stage is slow and memory-hungry; when the queue fills, analyze blocks, and backpressure reaches the parse stage, preventing thousands of parsing results from piling up in memory at once.
