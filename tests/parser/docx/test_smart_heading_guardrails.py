@@ -124,7 +124,7 @@ def test_heuristic_toc_single_paragraph_soft_breaks() -> None:
         _para("第一章 绪论............3\n第二章 方法............12\n第三章 实验............25"),
         _para("正文开始。"),
     ]
-    toc = detect_toc_records(records, warnings={})
+    toc = detect_toc_records(records)
     assert toc == {0}
 
 
@@ -134,7 +134,7 @@ def test_heuristic_toc_single_paragraph_two_lines_not_enough() -> None:
         _para("第一章 绪论............3\n第二章 方法............12"),
         _para("正文开始。"),
     ]
-    assert detect_toc_records(records, warnings={}) == set()
+    assert detect_toc_records(records) == set()
 
 
 def test_toc_similar_body_not_whitelisted() -> None:
