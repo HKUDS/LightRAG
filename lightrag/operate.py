@@ -2163,8 +2163,15 @@ async def _merge_nodes_then_upsert(
         )
         sorted_descriptions = [dp["description"] for dp in sorted_nodes]
 
-        # Combine already_description with sorted new sorted descriptions
-        description_list = already_description + sorted_descriptions
+        # Combine already_description with new sorted descriptions, deduped
+        # against what's already stored so re-running merge for an entity that
+        # already exists (any reprocess/resume) doesn't re-append descriptions
+        # already present.
+        already_description_set = set(already_description)
+        new_unique_descriptions = [
+            desc for desc in sorted_descriptions if desc not in already_description_set
+        ]
+        description_list = already_description + new_unique_descriptions
         if not description_list:
             fallback_description = f"Entity {entity_name}"
             logger.warning(
@@ -2521,8 +2528,15 @@ async def _merge_edges_then_upsert(
         )
         sorted_descriptions = [dp["description"] for dp in sorted_edges]
 
-        # Combine already_description with sorted new descriptions
-        description_list = already_description + sorted_descriptions
+        # Combine already_description with new sorted descriptions, deduped
+        # against what's already stored so re-running merge for a relation that
+        # already exists (any reprocess/resume) doesn't re-append descriptions
+        # already present.
+        already_description_set = set(already_description)
+        new_unique_descriptions = [
+            desc for desc in sorted_descriptions if desc not in already_description_set
+        ]
+        description_list = already_description + new_unique_descriptions
         if not description_list:
             logger.error(f"Relation {src_id}~{tgt_id} has no description")
             raise ValueError(f"Relation {src_id}~{tgt_id} has no description")
