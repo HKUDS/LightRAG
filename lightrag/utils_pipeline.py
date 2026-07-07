@@ -274,6 +274,10 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "parse_stage_skipped",
     "parse_format",
     "parse_engine",
+    # Parse-stage LLM cache keys (docx smart_heading); must survive
+    # PARSING → ANALYZING → PROCESSING → PROCESSED/FAILED so document
+    # deletion can purge them (delete_llm_cache=True).
+    "smartheading_llm_cache_ids",
     "analyzing_start_time",
     "analyzing_end_time",
     "analyzing_stage_skipped",

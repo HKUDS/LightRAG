@@ -56,6 +56,7 @@ from lightrag.parser.plugins import load_third_party_parsers
 from lightrag.parser.routing import (
     parser_rules_from_env,
     validate_parser_routing_config,
+    validate_smart_heading_dependencies,
 )
 from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
@@ -1214,6 +1215,11 @@ def create_app(args):
     # BEFORE validating routing rules, so LIGHTRAG_PARSER may reference them.
     load_third_party_parsers()
     validate_parser_routing_config()
+    # Fail fast when DOCX_SMART_HEADING / a LIGHTRAG_PARSER rule enables
+    # smart_heading but the pinned spaCy models are missing — surfacing the
+    # install step at startup instead of failing mid-pipeline. Runs in
+    # create_app so both the uvicorn and gunicorn (preload) paths hit it.
+    validate_smart_heading_dependencies()
 
     # Create configuration cache (this will output configuration logs)
     config_cache = LLMConfigCache(args)

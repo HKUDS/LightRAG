@@ -1719,6 +1719,17 @@ class _PipelineMixin:
                         status_doc_w.metadata = {}
                     status_doc_w.metadata["parse_warnings"] = parse_warnings_payload_w
 
+                # Mirror parse-stage LLM cache keys (docx smart_heading) so
+                # adelete_by_doc_id(delete_llm_cache=True) can purge them —
+                # parse-stage calls have no chunk llm_cache_list to ride.
+                smartheading_ids_w = parsed_data_w.get("smartheading_llm_cache_ids")
+                if smartheading_ids_w:
+                    if not isinstance(status_doc_w.metadata, dict):
+                        status_doc_w.metadata = {}
+                    status_doc_w.metadata["smartheading_llm_cache_ids"] = (
+                        smartheading_ids_w
+                    )
+
                 # Mirror raw-bundle cache-hit flag from mineru/docling; cache-
                 # miss runs (including parse_native, which has no cache
                 # concept) stamp ``parse_end_time`` instead so post-mortem

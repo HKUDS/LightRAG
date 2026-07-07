@@ -520,6 +520,7 @@ def _new_block(
     table_chunk_role: str,
     tokenizer: Tokenizer,
     blockids: list[str] | None = None,
+    is_title_block: bool = False,
 ) -> dict[str, Any]:
     content = "\n".join(p["text"] for p in paragraphs)
     return {
@@ -530,10 +531,24 @@ def _new_block(
         "content": content,
         "tokens": _count_tokens(tokenizer, content),
         "table_chunk_role": table_chunk_role,
+        # Smart-heading title block: pinned against HeadingGlue/LevelMerge
+        # (see _is_pinned). Only the explicit sidecar flag sets this — a
+        # level of 0 alone does NOT (markdown prefaces are level 0 too).
+        "is_title_block": is_title_block,
         # Ordered list of source blockids (deduped). Empty when the input
         # blocks.jsonl row did not carry a blockid (raw/legacy input).
         "blockids": _dedup_preserving_order(list(blockids or [])),
     }
+
+
+def _is_pinned(block: dict[str, Any]) -> bool:
+    """A pinned block never merges, absorbs, or gets absorbed/glued.
+
+    Currently only smart-heading title blocks (``is_title_block``) pin. The
+    judgment deliberately ignores ``level == 0``: the markdown parser emits
+    prefaces at level 0 today and those must keep merging exactly as before.
+    """
+    return bool(block.get("is_title_block"))
 
 
 # ---------------------------------------------------------------------------
@@ -1226,6 +1241,7 @@ def _split_long_block(
     target_ideal: int,
     chunk_overlap_token_size: int = 100,
     blockids: list[str] | None = None,
+    is_title_block: bool = False,
 ) -> list[dict[str, Any]]:
     """Split an oversized block into balanced sub-blocks at short-paragraph anchors.
 
@@ -1254,8 +1270,12 @@ def _split_long_block(
                 table_chunk_role=table_chunk_role,
                 tokenizer=tokenizer,
                 blockids=blockids,
+                is_title_block=is_title_block,
             )
         ]
+    # NOTE: an over-cap title block IS split like any other block (no size
+    # exemption); the split fragments drop the pinned flag — a title block
+    # that large is no longer a coherent pin target.
 
     target_blocks = max(
         math.ceil(total / target_ideal),
@@ -1734,6 +1754,11 @@ def _glue_heading_only_blocks(
         nxt_role = nxt.get("table_chunk_role", "none")
         if (
             _is_heading_only(cur)
+            # A title block is usually heading-only AND level 0 (strictly
+            # shallower than everything) — without this pin it would glue
+            # into the first body block of its sub-document.
+            and not _is_pinned(cur)
+            and not _is_pinned(nxt)
             and nxt.get("level", 1) > cur.get("level", 1)
             and nxt_role in ("none", "first")
         ):
@@ -1788,13 +1813,14 @@ def _merge_small_blocks(
                 below_ideal = 0 < cur_tokens < target_ideal
                 is_cur_lv = cur_level == current_level
 
-                if below_ideal and is_cur_lv:
+                if below_ideal and is_cur_lv and not _is_pinned(cur):
                     merged = False
 
                     if _can_merge_forward(cur_role) and i + 1 < len(result):
                         nxt = result[i + 1]
                         if (
                             nxt.get("level", 1) == current_level
+                            and not _is_pinned(nxt)
                             and _can_merge_backward(nxt.get("table_chunk_role", "none"))
                             and _same_parent_path(cur, nxt)
                         ):
@@ -1811,6 +1837,7 @@ def _merge_small_blocks(
                         prev = new_result[-1]
                         if (
                             prev.get("level", 1) == current_level
+                            and not _is_pinned(prev)
                             and _can_merge_forward(prev.get("table_chunk_role", "none"))
                             and prev["tokens"] < target_ideal
                             and _same_parent_path(prev, cur)
@@ -1833,7 +1860,12 @@ def _merge_small_blocks(
                     # combined size stays under SMALL_TAIL_THRESHOLD and
                     # fits within target_max — eliminates the document's
                     # trailing sliver of zero-content remainders.
-                    if is_cur_lv and cur_tokens >= target_ideal and cur_role == "none":
+                    if (
+                        is_cur_lv
+                        and cur_tokens >= target_ideal
+                        and cur_role == "none"
+                        and not _is_pinned(cur)
+                    ):
                         tail_total = 0
                         end_idx = i + 1
                         for j in range(i + 1, len(result)):
@@ -1844,6 +1876,9 @@ def _merge_small_blocks(
                             # never pull one into a tail-absorption run, which
                             # would re-merge it and duplicate its header.
                             if nxt.get("table_chunk_role", "none") != "none":
+                                break
+                            # Pinned title blocks end a tail run the same way.
+                            if _is_pinned(nxt):
                                 break
                             # Same-level only is not enough — a sibling under a
                             # different parent would be cross-topic. Stop the run
@@ -1903,13 +1938,14 @@ def _merge_small_blocks(
                 below_ideal = 0 < cur_tokens < target_ideal
                 is_cur_lv = cur_level == current_level
 
-                if below_ideal and is_cur_lv:
+                if below_ideal and is_cur_lv and not _is_pinned(cur):
                     merged = False
 
                     if _can_merge_forward(cur_role) and i + 1 < len(result):
                         nxt = result[i + 1]
                         if (
                             nxt.get("level", 1) > current_level
+                            and not _is_pinned(nxt)
                             and _can_merge_backward(nxt.get("table_chunk_role", "none"))
                             and _is_descendant(cur, nxt)
                         ):
@@ -1926,6 +1962,7 @@ def _merge_small_blocks(
                         prev = new_result[-1]
                         if (
                             prev.get("level", 1) < current_level
+                            and not _is_pinned(prev)
                             and _can_merge_forward(prev.get("table_chunk_role", "none"))
                             and prev["tokens"] < target_ideal
                             and _is_descendant(prev, cur)
@@ -2191,15 +2228,20 @@ def chunking_by_paragraph_semantic(
         if not paragraphs:
             continue
         row_blockid = str(row.get("blockid") or "").strip()
+        # Only the explicit sidecar flag pins a row at level 0. A bare
+        # level=0 without the flag (markdown prefaces today) keeps the
+        # historical "0 becomes 1" coercion below.
+        row_is_title_block = bool(row.get("is_title_block"))
         initial.append(
             _new_block(
                 heading=row.get("heading", "") or "",
                 parent_headings=list(row.get("parent_headings") or []),
-                level=int(row.get("level", 1) or 1),
+                level=0 if row_is_title_block else int(row.get("level", 1) or 1),
                 paragraphs=paragraphs,
                 table_chunk_role="none",
                 tokenizer=tokenizer,
                 blockids=[row_blockid] if row_blockid else None,
+                is_title_block=row_is_title_block,
             )
         )
 
@@ -2241,6 +2283,7 @@ def chunking_by_paragraph_semantic(
                     target_ideal=target_ideal,
                     chunk_overlap_token_size=overlap,
                     blockids=split_blk.get("blockids") or blk.get("blockids"),
+                    is_title_block=bool(split_blk.get("is_title_block")),
                 )
             )
         after_c.extend(_apply_part_suffixes(block_after_c))

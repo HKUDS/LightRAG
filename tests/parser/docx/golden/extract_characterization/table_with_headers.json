@@ -1,0 +1,27 @@
+{
+  "blocks": [
+    {
+      "content": "# Data\n<table>[[\"Name\", \"Value\"], [\"alpha\", \"1\"], [\"beta\", \"2\"]]</table>\nAfter the table.",
+      "heading": "Data",
+      "level": 1,
+      "parent_headings": [],
+      "table_headers": [
+        [
+          [
+            "Name",
+            "Value"
+          ]
+        ]
+      ],
+      "type": "text",
+      "uuid": null,
+      "uuid_end": null
+    }
+  ],
+  "metadata": {
+    "first_heading": "Data"
+  },
+  "warnings": {
+    "missing_paraid_count": 3
+  }
+}

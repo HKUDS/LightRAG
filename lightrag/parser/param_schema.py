@@ -38,6 +38,7 @@ from typing import Any
 from lightrag.constants import (
     PARSER_ENGINE_DOCLING,
     PARSER_ENGINE_MINERU,
+    PARSER_ENGINE_NATIVE,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
@@ -371,6 +372,11 @@ _ENGINE_PARAM_SPECS: dict[str, tuple[EngineParamSpec, ...]] = {
     ),
     PARSER_ENGINE_DOCLING: (
         EngineParamSpec(canonical="force_ocr", aliases=frozenset({"ocr"}), kind="bool"),
+    ),
+    PARSER_ENGINE_NATIVE: (
+        # Opt-in smart heading discovery for docx (LLM-assisted; the markdown
+        # path warns and ignores it — font-size signals don't exist in md).
+        EngineParamSpec(canonical="smart_heading", aliases=frozenset(), kind="bool"),
     ),
 }
 

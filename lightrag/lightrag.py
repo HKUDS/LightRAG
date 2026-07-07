@@ -3,8 +3,10 @@ from __future__ import annotations
 import traceback
 import asyncio
 import os
+import threading
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 
 try:
@@ -1207,6 +1209,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # for the cross-loop guard.
         self._owning_loop: Optional[asyncio.AbstractEventLoop] = None
 
+        # Per-instance native-parser thread pool (lazily built; see
+        # _get_parse_native_executor). Kept off the dataclass fields — a live
+        # executor/Event must never be deep-copied by asdict(). The shutdown
+        # event is polled by parser LLM bridges so an extract waiting on an
+        # LLM exits within one poll interval of finalize_storages().
+        self._parser_executor: Optional[ThreadPoolExecutor] = None
+        self._parser_shutdown_event: threading.Event = threading.Event()
+
         user_role_configs = self.role_llm_configs or {}
         if not isinstance(user_role_configs, Mapping):
             raise TypeError(
@@ -1308,8 +1318,44 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             self._storages_status = StoragesStatus.INITIALIZED
             logger.debug("All storage types initialized")
 
+    def _get_parse_native_executor(self) -> ThreadPoolExecutor:
+        """Lazily build the per-instance native-parser thread pool.
+
+        Owned by the rag instance (NOT the parser): parser objects are
+        registry-cached singletons shared across instances, the pool size
+        tracks this instance's ``max_parallel_parse_native``, and only the
+        instance has a shutdown point (``finalize_storages``). Pool size
+        equals the parse worker count, so at most one extract per worker —
+        the pool itself never queues.
+        """
+        if self._parser_executor is None:
+            self._parser_executor = ThreadPoolExecutor(
+                max_workers=max(1, int(self.max_parallel_parse_native)),
+                thread_name_prefix="parse-native",
+            )
+        return self._parser_executor
+
+    def _shutdown_parser_executor(self) -> None:
+        """Tear down the parser pool (idempotent; called by finalize).
+
+        Order matters: set the CURRENT shutdown event first so any bridge
+        blocked on an LLM wait exits within one poll interval, then shut the
+        executor down without waiting (``cancel_futures`` only cancels
+        not-yet-started work; running extracts exit via the event). A fresh
+        event replaces the old one so a later re-initialize + parse does not
+        observe a stale set event — in-flight bridges keep their reference
+        to the old (set) event.
+        """
+        self._parser_shutdown_event.set()
+        executor = self._parser_executor
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+            self._parser_executor = None
+        self._parser_shutdown_event = threading.Event()
+
     async def finalize_storages(self):
         """Asynchronously finalize the storages with improved error handling"""
+        self._shutdown_parser_executor()
         if self._storages_status == StoragesStatus.INITIALIZED:
             storages = [
                 ("full_docs", self.full_docs),
@@ -3272,6 +3318,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             metadata_cache_ids = normalize_string_list(
                 metadata.get("deletion_llm_cache_ids", []),
                 context=f"doc {doc_id} metadata.deletion_llm_cache_ids",
+            )
+            # Parse-stage LLM cache keys (docx smart_heading) ride their own
+            # metadata key — no chunk llm_cache_list exists at parse time.
+            # Merge them into the same deletion pool (order-preserving dedup);
+            # a failed delete then persists the union back into
+            # deletion_llm_cache_ids for the retry path.
+            metadata_cache_ids = list(
+                dict.fromkeys(
+                    metadata_cache_ids
+                    + normalize_string_list(
+                        metadata.get("smartheading_llm_cache_ids", []),
+                        context=f"doc {doc_id} metadata.smartheading_llm_cache_ids",
+                    )
+                )
             )
             # Order-preserving dedup so chunk_ids stays a list and satisfies the
             # storage delete contract (``delete(ids: list[str])``); a set view is

@@ -121,6 +121,12 @@ class ParseResult:
     parse_engine: str | None = None
     parse_stage_skipped: bool = False
     parse_warnings: dict[str, Any] | None = None
+    # LLM cache keys minted during the parse stage (docx smart_heading).
+    # Fixed, first-class field: the pipeline mirrors it into
+    # doc_status.metadata so adelete_by_doc_id(delete_llm_cache=True) can
+    # purge parse-stage cache — there is no chunk llm_cache_list at parse
+    # time to carry them.
+    smartheading_llm_cache_ids: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -136,6 +142,8 @@ class ParseResult:
             out["parse_stage_skipped"] = True
         if self.parse_warnings:
             out["parse_warnings"] = self.parse_warnings
+        if self.smartheading_llm_cache_ids:
+            out["smartheading_llm_cache_ids"] = self.smartheading_llm_cache_ids
         return out
 
 

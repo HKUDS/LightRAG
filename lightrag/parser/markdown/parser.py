@@ -47,7 +47,7 @@ from lightrag.parser.markdown.raw_cache import (
     NativeImageRawCache,
     native_md_options_signature,
 )
-from lightrag.parser.native_base import NativeParserBase
+from lightrag.parser.native_base import NativeExtractRuntime, NativeParserBase
 from lightrag.utils import logger
 
 if TYPE_CHECKING:
@@ -546,8 +546,19 @@ class NativeMarkdownParser(NativeParserBase):
             )
 
     def extract(
-        self, source: Path, *, parsed_dir: Path, asset_dir: Path, base_name: str
+        self,
+        source: Path,
+        *,
+        parsed_dir: Path,
+        asset_dir: Path,
+        base_name: str,
+        runtime: NativeExtractRuntime | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+        # Engine params (e.g. smart_heading) only apply to the docx path — md
+        # lacks the font-size signals the algorithm needs. Warn-and-ignore so a
+        # rule like ``LIGHTRAG_PARSER=native(smart_heading=true)`` doesn't hard
+        # fail every markdown document it happens to route.
+        ignored_params = sorted(runtime.engine_params) if runtime else []
         # Per-document downloaded-image cache. Lives in a ``<file>.native_raw/``
         # sibling of ``parsed_dir`` so it survives the ``rmtree(parsed_dir)`` the
         # base parser runs before each re-extraction; reused across re-parses
@@ -574,6 +585,13 @@ class NativeMarkdownParser(NativeParserBase):
         # Flush only on successful extraction so a transient failure cannot prune
         # a previously-valid bundle (an exception propagates before this line).
         raw_cache.flush()
+        if ignored_params:
+            logger.warning(
+                "[native_md] engine params %s only apply to .docx; ignored for %s",
+                ignored_params,
+                source.name,
+            )
+            result[1]["engine_params_ignored"] = 1
         return result
 
     def _open_textpack(self, source: Path, tmp_dir: Path) -> tuple[str, Path]:

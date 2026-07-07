@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from collections.abc import Mapping
+
 from lightrag.constants import PARSER_ENGINE_NATIVE
-from lightrag.parser.native_base import NativeParserBase
+from lightrag.parser.native_base import NativeExtractRuntime, NativeParserBase
 from lightrag.utils import logger
 
 if TYPE_CHECKING:
@@ -34,8 +36,17 @@ class NativeDocxParser(NativeParserBase):
                 f"Native parser does not support pending file: {file_path}"
             )
 
+    def wants_llm_bridge(self, engine_params: Mapping[str, Any]) -> bool:
+        return bool(engine_params.get("smart_heading"))
+
     def extract(
-        self, source: Path, *, parsed_dir: Path, asset_dir: Path, base_name: str
+        self,
+        source: Path,
+        *,
+        parsed_dir: Path,
+        asset_dir: Path,
+        base_name: str,
+        runtime: NativeExtractRuntime | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
         """Extract heading-scoped DOCX blocks (sizing left to the chunker)."""
 
@@ -59,7 +70,22 @@ class NativeDocxParser(NativeParserBase):
             drawing_context=ctx,
             parse_warnings=warnings,
             parse_metadata=metadata,
+            smart_heading_runtime=runtime,
         )
+        # Full smart-heading audit artifact: sits beside blocks.jsonl (the
+        # clean_parsed_dir=False write keeps it), deliberately timestamp-free
+        # so repeated parses stay byte-identical (I4). Popped from metadata —
+        # it is not IR-builder input.
+        smart_audit = metadata.pop("smart_audit", None)
+        if smart_audit is not None:
+            import json
+
+            audit_path = parsed_dir / f"{base_name}.smart_audit.json"
+            audit_path.write_text(
+                json.dumps(smart_audit, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
         return blocks, warnings, metadata
 
     def build_ir(
@@ -92,5 +118,11 @@ class NativeDocxParser(NativeParserBase):
                 source.name,
                 missing,
             )
-            return {"missing_paraid_count": missing}
-        return None
+        # Smart-heading runs surface their full compact summary (breaker
+        # trips, TOC removals, demotion counts, …); the smart-off path keeps
+        # its historical missing-paraId-only shape.
+        smart_active = any(k.startswith(("smart_", "title_block_")) for k in warnings)
+        if smart_active:
+            relevant = {k: v for k, v in warnings.items() if v}
+            return relevant or None
+        return {"missing_paraid_count": missing} if missing > 0 else None

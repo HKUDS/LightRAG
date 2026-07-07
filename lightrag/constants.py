@@ -139,6 +139,56 @@ DEFAULT_CHUNK_P_SIZE = 2000
 DEFAULT_P_REFERENCES_TAIL_N = 2
 DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 
+# Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
+# below has a matching env var (drop the DEFAULT_ prefix) read at run time
+# by lightrag/parser/docx/smart_heading (same live-env pattern as the
+# CHUNK_P_REFERENCES_* knobs above).
+#
+# Global default for the smart_heading engine param itself (env
+# DOCX_SMART_HEADING): when true, .docx files routed to the native engine get
+# smart_heading enabled by default — an explicit native(smart_heading=false)
+# rule/hint turns it back off — and the server verifies at startup that the
+# spaCy models are installed (fail-fast instead of failing mid-pipeline).
+# The default is seeded at upload time (resolve_parser_directives) and
+# materialized into the persisted parse_engine, so toggling the env var never
+# changes how already-ingested documents re-parse.
+DEFAULT_DOCX_SMART_HEADING = False
+#
+# P1 homophone blacklist: an EnNum immediately followed by one of these CJK
+# unit/measure words (2026年 / 1个 / 1人…) is NOT a numbering prefix. Env
+# DOCX_SMART_ENNUM_BLACKLIST is comma/pipe-separated.
+DEFAULT_DOCX_SMART_ENNUM_BLACKLIST = (
+    "年,月,日,时,分,秒,个,人,只,条,次,项,天,号,元,角,件,名,台,种,倍,"
+    "万,亿,岁,周,米,克,吨,页,寸,层,间,句,字,笔,轮,批,组,套,户,家,期"
+)
+# P3 caption prefixes: a paragraph starting with one of these + a numbering
+# shape is a figure/table caption, never a heading. Comma/pipe-separated.
+DEFAULT_DOCX_SMART_CAPTION_PREFIXES = "图,表,公式,Figure,Table,Fig.,Eq.,Chart"
+# Heuristic TOC evidence: at least this many consecutive dot-leader lines.
+DEFAULT_DOCX_SMART_TOC_MIN_LINES = 3
+# CB1 heading-density ceiling (headings / non-empty paragraphs).
+DEFAULT_DOCX_SMART_DENSITY_MAX = 0.30
+# CB2 demotion-propagation breaker ratios.
+DEFAULT_DOCX_SMART_CB2_BODY_RATIO = 0.20
+DEFAULT_DOCX_SMART_CB2_OUTLINE_RATIO = 0.50
+# CB5 FS_base confidence threshold (dominant-size char share).
+DEFAULT_DOCX_SMART_CONFIDENCE_RATIO = 0.60
+# CB4 short-document gate: below this many tokens smart is skipped entirely.
+DEFAULT_DOCX_SMART_MIN_TOKENS = 2000
+# Title-block LLM window cap (tokens) — content beyond it is truncated.
+DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS = 1000
+# Single-paragraph title-block gate: font size must exceed the global
+# FS_base mean by at least this many points.
+DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA = 2.0
+# Per-document cap on single-paragraph title-block LLM reviews.
+DEFAULT_DOCX_SMART_SINGLE_TITLE_LLM_MAX = 20
+# Open numbering series: close a series after this many consecutive body
+# paragraphs (0 disables the auxiliary body-run break; the primary close
+# signal is the level returning to an ancestor scope).
+DEFAULT_DOCX_SMART_SEQ_BREAK_PARAS = 0
+# Strong-body length threshold in English-equivalent chars (1 CJK ≈ 3).
+DEFAULT_DOCX_SMART_HEADING_MAX_CHARS = 180
+
 # LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]
 # Post-parse persistence marker: full_docs rows written by the parsers carry
