@@ -292,6 +292,25 @@ async def _handle_entity_relation_summary(
     if not description_list:
         return "", False
 
+    # Drop descriptions already present (order-preserving, keep-first) so a
+    # reprocess/resume that re-merges an already-stored description does not
+    # append a duplicate. Callers build ``already_stored + newly_extracted``;
+    # keep-first preserves the stored copy and drops the re-merged duplicate.
+    # Without this, each reprocess grows the fragment count by one (#3367).
+    #
+    # Dedup on the SANITIZED text: stored descriptions were already sanitized
+    # (the single-description return and the join below both sanitize before the
+    # result is persisted), while a freshly re-extracted description is still
+    # raw. Comparing raw-vs-sanitized would miss the duplicate whenever
+    # sanitization changed the string (e.g. an XML-illegal control char was
+    # stripped), so "dirty" descriptions would keep accumulating. Sanitizing
+    # here is safe: ``sanitize_text_for_encoding`` is idempotent, so the later
+    # sanitize calls are unaffected. ``dict.fromkeys`` is the keep-first idiom
+    # already used elsewhere in this file.
+    description_list = list(
+        dict.fromkeys(sanitize_text_for_encoding(d) for d in description_list)
+    )
+
     # If only one description, return it directly (no need for LLM call)
     # Still sanitize: descriptions read back from existing graph nodes (or
     # injected by non-extraction producers) may carry XML-illegal control
@@ -2482,8 +2501,24 @@ async def _merge_edges_then_upsert(
         # 6.1 Finalize source_id
         source_id = GRAPH_FIELD_SEP.join(source_ids)
 
-        # 6.2 Finalize weight by summing new edges and existing weights
-        weight = sum([dp["weight"] for dp in edges_data] + already_weights)
+        # 6.2 Finalize weight. Each extracted relation contributes weight 1.0
+        # (or its parsed strength), so a stored edge's weight tracks the number
+        # of distinct contributing sources. On reprocess/resume the same source
+        # can be re-fed while it is already reflected in already_weights (the
+        # stored scalar), so only sum weights of edges whose source_id is NOT
+        # already stored — otherwise weight double-counts and grows 1 -> 2 -> 3
+        # per reprocess (the #3367 sibling of description accumulation).
+        # Genuinely new sources still add their weight, preserving legitimate
+        # multi-document growth.
+        already_source_id_set = set(existing_full_source_ids)
+        weight = sum(
+            [
+                dp["weight"]
+                for dp in edges_data
+                if dp.get("source_id") not in already_source_id_set
+            ]
+            + already_weights
+        )
 
         # 6.2 Finalize keywords by merging existing and new keywords
         all_keywords = set()
