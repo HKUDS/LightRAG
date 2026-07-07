@@ -221,3 +221,39 @@ async def test_edge_weight_adds_only_the_new_source():
     """A reprocessed source followed by a genuinely new one adds only the new
     one's weight, not the re-fed duplicate's."""
     assert await _reprocess_edge_weights(["c1", "c1", "c2"]) == [1.0, 1.0, 2.0]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_edge_merge_with_entity_vdb_none_does_not_crash():
+    """entity_vdb=None must not raise UnboundLocalError when an edge merge adds a
+    new endpoint entity. The vdb upsert call must stay inside its `entity_vdb is
+    not None` guard (it references vdb_data, which is assigned only inside it)."""
+    g = _MemGraph()
+    cfg = _cfg()
+    for name in ("A", "B"):
+        await g.upsert_node(
+            name,
+            {
+                "entity_id": name,
+                "description": name,
+                "source_id": "c1",
+                "entity_type": "X",
+                "file_path": "f",
+            },
+        )
+
+    def _edge(src: str) -> dict:
+        return {
+            "weight": 1.0,
+            "source_id": src,
+            "description": "rel",
+            "keywords": "k",
+            "file_path": "f",
+        }
+
+    # entity_vdb=None + genuinely new sources is the path that used to crash.
+    for src in ("c1", "c2", "c3"):
+        await _merge_edges_then_upsert("A", "B", [_edge(src)], g, None, None, cfg)
+
+    assert await g.get_edge("A", "B") is not None
