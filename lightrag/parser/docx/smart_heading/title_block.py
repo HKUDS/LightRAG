@@ -392,18 +392,26 @@ def _render_window(
     is token-capped (env DOCX_SMART_LLM_WINDOW_TOKENS); overflow truncates
     from the tail with a warning.
     """
+    mandatory: int | None = None
     if candidate.single:
-        # The single paragraph plus N context paragraphs on each side.
+        # The single paragraph plus N context paragraphs on each side. The
+        # candidate itself is MANDATORY: context is reference-only, so tail
+        # truncation must never drop the candidate line (review D2) — else a
+        # true verdict would compose a level-0 heading from context alone.
         para_positions = [i for i, r in enumerate(records) if r.kind == "para"]
         pos = para_positions.index(candidate.start)
         lo = para_positions[max(0, pos - _SINGLE_CONTEXT)]
         hi_pos = min(len(para_positions) - 1, pos + _SINGLE_CONTEXT)
         hi = para_positions[hi_pos] + 1
         span = range(lo, hi)
+        mandatory = candidate.start
     else:
         span = range(candidate.start, candidate.end)
 
     cap = _env_int("DOCX_SMART_LLM_WINDOW_TOKENS", DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS)
+    # Reserve the mandatory candidate line's budget up front so surrounding
+    # context can be trimmed without ever evicting the candidate.
+    reserve = _estimate_tokens(records[mandatory].text) if mandatory is not None else 0
     lines: list[str] = []
     index_map: list[int] = []
     used = 0
@@ -417,9 +425,20 @@ def _render_window(
             continue
         line = f"[{len(index_map)}] {rec.text}"
         cost = _estimate_tokens(line)
-        if used + cost > cap and index_map:
+        if i == mandatory:
+            # Always emit the candidate; it was pre-reserved from the cap.
+            used += cost
+            reserve = 0  # candidate spent; free the reservation for context
+            index_map.append(i)
+            lines.append(line)
+            continue
+        if used + cost + reserve > cap and index_map:
             truncated = True
-            break
+            if mandatory is None:
+                break  # multi-paragraph window: tail truncation (spec §2.2.4)
+            # Single window: skip this reference-only context line but keep
+            # scanning so the mandatory candidate (and smaller context) land.
+            continue
         used += cost
         index_map.append(i)
         lines.append(line)
@@ -511,6 +530,10 @@ def judge_title_block(
             member_indices = (candidate.start,)
             sub_title = doc_number = None
             classification = publisher = date = None
+            # Hallucination guard scoped to the CANDIDATE paragraph only: the
+            # heading is that line's text, so a main_title copied from a
+            # reference-only context paragraph must not validate (review D4).
+            locate_scope = _canon(records[candidate.start].text)
         else:
             member_indices = tuple(index_map)
             sub_title = _opt_str("sub_title")
@@ -518,12 +541,13 @@ def judge_title_block(
             classification = _opt_str("classification")
             publisher = _opt_str("publisher")
             date = _opt_str("date")
+            locate_scope = window_canon
         for label, value in (
             ("main_title", main_title),
             ("sub_title", sub_title),
             ("doc_number", doc_number),
         ):
-            if not _locate(value, window_canon):
+            if not _locate(value, locate_scope):
                 raise TitleBlockLLMError(
                     f"title-block {label} {value!r} cannot be located in the "
                     "candidate window (LLM hallucination guard)"
@@ -541,17 +565,40 @@ def judge_title_block(
             raw_response=raw,
         )
 
+    # Non-title verdict for a SINGLE candidate: the ±context was reference
+    # only, so we neither grant nor veto any of it (review D3). The candidate
+    # simply re-enters the normal §2.2.5 flow on its own signals — it is not
+    # demoted, and the surrounding context keeps whatever standing the gate
+    # gives it. The LLM's headings/body partition over the context is ignored.
+    if candidate.single:
+        return TitleBlockDecision(
+            candidate=candidate,
+            is_title_block=False,
+            heading_indices=(),
+            body_indices=(),
+            raw_response=raw,
+        )
+
     # Non-title verdict: every window index must be classified exactly once.
     def _indices(key: str) -> list[int]:
         value = data.get(key) or []
-        if not isinstance(value, list) or not all(isinstance(v, int) for v in value):
+        # bool is a subclass of int — reject True/False masquerading as indexes.
+        if not isinstance(value, list) or not all(
+            isinstance(v, int) and not isinstance(v, bool) for v in value
+        ):
             raise TitleBlockLLMError(f"title-block field {key!r} must be [int]")
         return list(value)
 
     headings = _indices("headings")
     body = _indices("body")
     all_indices = set(range(len(index_map)))
-    if set(headings) | set(body) != all_indices or set(headings) & set(body):
+    # A true partition: exact cover, disjoint, AND no duplicates within a list
+    # (the length check catches [0, 0] which the set operations would hide).
+    if (
+        set(headings) | set(body) != all_indices
+        or set(headings) & set(body)
+        or len(headings) + len(body) != len(all_indices)
+    ):
         raise TitleBlockLLMError(
             "non-title verdict must classify every window paragraph exactly "
             f"once (headings={headings}, body={body}, expected {sorted(all_indices)})"

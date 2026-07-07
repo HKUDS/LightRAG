@@ -326,6 +326,86 @@ def test_single_candidate_window_includes_context() -> None:
     assert decision.member_indices == (2,)
 
 
+def test_single_candidate_line_survives_truncation(monkeypatch) -> None:
+    """Review D2: when huge context would blow the token cap, the candidate
+    line must still be shown to the LLM (it is pre-reserved) — otherwise a
+    true verdict composes a level-0 heading from context alone."""
+    monkeypatch.setenv("DOCX_SMART_LLM_WINDOW_TOKENS", "30")
+    records = [
+        _para("很长的上文内容" * 20, size=12.0),  # ~oversized context before
+        _para("很长的上文内容之二" * 20, size=12.0),
+        _para("独立主标题", size=18.0, page_break_before=True),  # the candidate
+        _para("下文。", size=12.0),
+    ]
+    seen: dict = {}
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        seen["prompt"] = prompt
+        return json.dumps(
+            {"is_title_block": True, "main_title": "独立主标题"}, ensure_ascii=False
+        )
+
+    decision = judge_title_block(
+        TitleBlockCandidate(start=2, end=3, single=True, trigger="single_line"),
+        records,
+        _llm,
+        warnings={},
+    )
+    assert "独立主标题" in seen["prompt"]  # candidate never truncated away
+    assert decision.is_title_block and decision.member_indices == (2,)
+
+
+def test_single_candidate_main_title_must_be_the_candidate_line() -> None:
+    """Review D4: the single-candidate hallucination guard is scoped to the
+    candidate paragraph — a main_title lifted from reference-only context
+    must NOT validate."""
+    records = [
+        _para("上下文里的另一句话", size=12.0),
+        _para("真正的独立主标题", size=18.0, page_break_before=True),
+        _para("下文。", size=12.0),
+    ]
+    # LLM (wrongly) returns a context paragraph as the main title.
+    with pytest.raises(TitleBlockLLMError, match="cannot be located"):
+        _judge_with(
+            {"is_title_block": True, "main_title": "上下文里的另一句话"},
+            records=records,
+            candidate=TitleBlockCandidate(
+                start=1, end=2, single=True, trigger="single_line"
+            ),
+        )
+
+
+def test_single_candidate_false_verdict_leaves_context_untouched() -> None:
+    """Review D3: a non-title verdict on a single candidate neither grants
+    nor vetoes the reference-only context — the candidate re-enters the
+    normal flow. The LLM's headings/body partition over context is ignored,
+    and the candidate is NOT demoted."""
+    records = [
+        _para("上文一。", size=12.0),
+        _para("上文二。", size=12.0),
+        _para("独立大字号行", size=18.0, page_break_before=True),
+        _para("下文一。", size=12.0),
+        _para("下文二。", size=12.0),
+    ]
+    decision = _judge_with(
+        # Even a hostile partition that votes the candidate + context as body
+        # must not propagate.
+        {"is_title_block": False, "headings": [], "body": [0, 1, 2, 3, 4]},
+        records=records,
+        candidate=TitleBlockCandidate(start=2, end=3, single=True, trigger="single_line"),
+    )
+    assert not decision.is_title_block
+    assert decision.heading_indices == ()
+    assert decision.body_indices == ()  # candidate not demoted; context untouched
+
+
+def test_multi_verdict_rejects_duplicate_indices() -> None:
+    """Review D5: a duplicate index inside one list is not a valid partition
+    even though the deduped sets would appear to cover the window."""
+    with pytest.raises(TitleBlockLLMError, match="exactly once"):
+        _judge_with({"is_title_block": False, "headings": [0, 0], "body": [1, 2]})
+
+
 # ---------------------------------------------------------------------------
 # spec-vs-implementation audit regressions (A7 / A9)
 # ---------------------------------------------------------------------------
