@@ -1,10 +1,10 @@
 # Parser CLI Debuger使用指南
 
-本工具用于本地调试 LightRAG 注册表中的任意内容解析引擎（内置 `native` / `legacy` / `mineru` / `docling`，以及通过 `lightrag.parsers` entry point 注册的第三方引擎，见 `docs/ThirdPartyParser-zh.md`），针对**单个文件**触发与 pipeline worker 相同的注册表派发路径（`get_parser(engine).parse(...)`），并把解析产物（sidecar 与 raw 缓存）输出到一个**扁平目录布局**——与生产入库目录相比，区别仅在于：
+本工具用于本地调试 LightRAG 注册表中的任意内容解析引擎（内置 `native` / `legacy` / `mineru` / `docling` / `paddleocr_vl`，以及通过 `lightrag.parsers` entry point 注册的第三方引擎，见 `docs/ThirdPartyParser-zh.md`），针对**单个文件**触发与 pipeline worker 相同的注册表派发路径（`get_parser(engine).parse(...)`），并把解析产物（sidecar 与 raw 缓存）输出到一个**扁平目录布局**——与生产入库目录相比，区别仅在于：
 
 - **无 `__parsed__/` 中间层**：产物直接落在指定父目录下，便于查看；
 - **源文件不会被归档**：源文件保留在原位置（生产路径会把源文件移到 `<INPUT_DIR>/__parsed__/`）；
-- **raw 缓存只看目录是否存在**：`mineru` / `docling` 的 raw 目录非空即视为有效，跳过 `_manifest.json` 校验。
+- **raw 缓存只看目录是否存在**：`mineru` / `docling` / `paddleocr_vl` 的 raw 目录非空即视为有效，跳过 `_manifest.json` 校验。
 
 其余流程（IR 构建、sidecar 写入、对 `full_docs` 的同步逻辑）与生产入库完全一致，便于排查解析阶段问题。
 
@@ -22,10 +22,10 @@ python -m lightrag.parser.cli <input_file> \
 | 参数 | 说明 |
 |---|---|
 | `input_file` | 待解析的源文件路径（位置参数，必填）。文件必须实际存在。 |
-| `--engine` | 必填，可选值来自注册表：内置 `native`（仅 `.docx`，本地解析）/ `legacy`（纯文本抽取，无 sidecar）/ `mineru`（PDF/办公文档，调 MinerU 服务）/ `docling`（PDF/办公文档，调 docling-serve），以及任何已注册的第三方引擎。 |
+| `--engine` | 必填，可选值来自注册表：内置 `native`（本地结构化解析）/ `legacy`（纯文本抽取，无 sidecar）/ `mineru`（PDF/办公文档，调 MinerU 服务）/ `docling`（PDF/办公文档，调 docling-serve）/ `paddleocr_vl`（PDF/Office/图片，调 PaddleOCR-VL 服务），以及任何已注册的第三方引擎。 |
 | `-o / --sidecar-parent-dir` | sidecar 与 raw 目录的父目录，默认 = 源文件所在目录。 |
 | `--doc-id` | 自定义文档 ID，默认 `doc-<md5(源文件绝对路径)>`（同一文件多次跑结果稳定）。 |
-| `--force-reparse` | 仅对外部服务引擎（`mineru` / `docling` 及继承 `ExternalParserBase` 的第三方引擎）生效：清空 raw 目录、强制重新下载与解析。默认行为是 raw 目录非空即复用。 |
+| `--force-reparse` | 仅对外部服务引擎（`mineru` / `docling` / `paddleocr_vl` 及继承 `ExternalParserBase` 的第三方引擎）生效：清空 raw 目录、强制重新下载与解析。默认行为是 raw 目录非空即复用。 |
 | `--preview N` | 解析完成后打印前 N 个 block 的预览（headings + 内容片段），默认 5；`0` 关闭。对无 sidecar 的引擎（如 `legacy`），改为打印解析文本的前 400 字符。 |
 
 ## 输出目录布局
@@ -41,7 +41,7 @@ python -m lightrag.parser.cli <input_file> \
 │   ├── sample.tables.json           # 表格 sidecar（若 IR 含 tables）
 │   ├── sample.drawings.json         # 图纸/图片 sidecar（若 IR 含 drawings）
 │   └── sample.equations.json        # 公式 sidecar（若 IR 含 equations）
-└── sample.pdf.<engine>_raw/         # ← mineru / docling 的 raw 缓存（native 无此目录）
+└── sample.pdf.<engine>_raw/         # ← mineru / docling / paddleocr_vl 的 raw 缓存（native 无此目录）
     ├── _manifest.json               # 由引擎下载流程写入；CLI 缓存校验不读
     └── <bundle files>               # 引擎特定 raw 产物（content_list.json / *.json / 资产等）
 ```
@@ -96,12 +96,13 @@ python -m lightrag.parser.cli ./inputs/workspace/sample.pdf \
 
 ## 环境变量
 
-`mineru` / `docling` 引擎在 **缓存未命中**（首次解析或 `--force-reparse`）时会调用外部服务，所需环境变量与生产入库一致：
+`mineru` / `docling` / `paddleocr_vl` 引擎在 **缓存未命中**（首次解析或 `--force-reparse`）时会调用外部服务，所需环境变量与生产入库一致：
 
 - **MinerU**：`MINERU_API_MODE`（`local` / `official`）、`MINERU_API_TOKEN`、`MINERU_LOCAL_ENDPOINT` 或 `MINERU_OFFICIAL_ENDPOINT`，可选 `MINERU_ENGINE_VERSION` / `MINERU_MODEL_VERSION` / `MINERU_POLL_INTERVAL_SECONDS` / `MINERU_MAX_POLLS`。
 - **Docling**：`DOCLING_ENDPOINT`，可选 `DOCLING_ENGINE_VERSION` / `DOCLING_DO_OCR` / `DOCLING_FORCE_OCR` / `DOCLING_OCR_ENGINE` / `DOCLING_OCR_PRESET` / `DOCLING_OCR_LANG` / `DOCLING_DO_FORMULA_ENRICHMENT` / `DOCLING_POLL_INTERVAL_SECONDS` / `DOCLING_MAX_POLLS`。
+- **PaddleOCR-VL**：`PADDLEOCR_VL_API_MODE`（`official` / `local`）、`PADDLEOCR_VL_API_TOKEN` 或 `PADDLEOCR_VL_LOCAL_ENDPOINT`，可选 `PADDLEOCR_VL_OFFICIAL_ENDPOINT` / `PADDLEOCR_VL_POLL_INTERVAL_SECONDS` / `PADDLEOCR_VL_MAX_POLLS` 以及请求参数环境变量。
 
-详见 [FileProcessingConfiguration-zh.md](./FileProcessingConfiguration-zh.md)。
+详见 [FileProcessingPipeline-zh.md](./FileProcessingPipeline-zh.md)。
 
 **缓存命中**时（raw 目录已存在且非空，且未传 `--force-reparse`）无需任何外部服务环境变量——可用于离线复现解析输出。
 
@@ -111,7 +112,7 @@ python -m lightrag.parser.cli ./inputs/workspace/sample.pdf \
 |---|---|
 | `error: input file does not exist: ...` | 检查 `input_file` 路径，必须是已存在的文件（不是 raw 目录）。 |
 | raw 目录存在但 sidecar 内容仍是旧的 | 默认会**复用** raw 重建 sidecar。如果 raw 本身就过期或被替换，加 `--force-reparse` 清空重下。 |
-| MinerU 报 `MINERU_API_TOKEN` 缺失 / Docling 连接 `DOCLING_ENDPOINT` 失败 | 缓存未命中触发了外部服务调用——核对对应环境变量；或确认 raw 目录是否非空（命中缓存时无需服务）。 |
+| MinerU 报 `MINERU_API_TOKEN` 缺失 / Docling 连接 `DOCLING_ENDPOINT` 失败 / PaddleOCR-VL 报 endpoint 或 token 缺失 | 缓存未命中触发了外部服务调用——核对对应环境变量；或确认 raw 目录是否非空（命中缓存时无需服务）。 |
 | 源文件被意外移动 | 不应发生：CLI 已 mock 归档函数。若复现请提 issue（可能是 pipeline 内增加了新的归档调用点）。 |
 | docling 报 `produced zero blocks` | docling raw 中的主 JSON 内容不可解析或为空。检查 raw 目录的 `*.json` 是否合法。 |
 

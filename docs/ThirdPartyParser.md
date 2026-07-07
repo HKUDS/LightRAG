@@ -1,6 +1,6 @@
 # Third-Party Parser Engine Development and Registration Guide
 
-LightRAG's parsing layer dispatches all parsing engines through a unified `BaseParser` contract plus the central engine registry (`lightrag/parser/registry.py`). Built-in engines (`native` / `legacy` / `mineru` / `docling`) and third-party engines use the exact same dispatch path: both pipeline workers and the debug CLI drive parsing through `get_parser(engine).parse(ParseContext(...))`, with **no special cases for built-in engines**. Therefore, a third-party package only needs to do two things:
+LightRAG's parsing layer dispatches all parsing engines through a unified `BaseParser` contract plus the central engine registry (`lightrag/parser/registry.py`). Built-in engines (`native` / `legacy` / `mineru` / `docling` / `paddleocr_vl`) and third-party engines use the exact same dispatch path: both pipeline workers and the debug CLI drive parsing through `get_parser(engine).parse(ParseContext(...))`, with **no special cases for built-in engines**. Therefore, a third-party package only needs to do two things:
 
 1. **Implement** a `BaseParser` subclass;
 2. **Register** a `ParserSpec` (automatic discovery through the `lightrag.parsers` entry point is recommended).
@@ -113,7 +113,7 @@ class MyExternalParser(ExternalParserBase):
     def build_ir(self, raw_dir, document_name) -> IRDoc: ...
 ```
 
-Optional override: `validate_ir` (post-build validation, for example failing on zero blocks). Reference implementations: `lightrag/parser/external/mineru/parser.py`, `.../docling/parser.py`.
+Optional override: `validate_ir` (post-build validation, for example failing on zero blocks). Reference implementations: `lightrag/parser/external/mineru/parser.py`, `.../docling/parser.py`, and `.../paddleocr_vl/parser.py`.
 
 ### 2.3 Failure Semantics (Important)
 
@@ -140,7 +140,7 @@ register_parser(ParserSpec(
 
 | Field | Required | Description |
 |---|---|---|
-| `engine_name` | yes | Registry key; also the engine name used by `--engine`, filename hints, and `LIGHTRAG_PARSER`. **Registering the same name as an existing engine overwrites the previous registration** (including built-in engines). Avoid colliding with `native/legacy/mineru/docling` unless you intentionally want to replace that implementation. |
+| `engine_name` | yes | Registry key; also the engine name used by `--engine`, filename hints, and `LIGHTRAG_PARSER`. **Registering the same name as an existing engine overwrites the previous registration** (including built-in engines). Avoid colliding with `native/legacy/mineru/docling/paddleocr_vl` unless you intentionally want to replace that implementation. |
 | `impl` | yes | `"module:Class"` string. The registry imports it only when a document is actually parsed. **The implementation must never be imported early during registration** (capability queries must stay import-cheap; this is a registry design invariant). |
 | `suffixes` | yes | File extensions the engine can handle (lowercase, no dot). Used for routing validation and worker-side suffix guarding. |
 | `queue_group` | | Concurrency-pool group. Defaults to `"native"` (sharing the native pool). Use a unique group name for a dedicated pool. |
@@ -151,7 +151,7 @@ register_parser(ParserSpec(
 ### Concurrency Model
 
 - For each batch, the pipeline creates **one queue plus one worker group for every `queue_group`**;
-- Worker count for a group: built-in groups (`native` / `mineru` / `docling`) are determined by LightRAG instance fields `max_parallel_parse_*` (constructor overrides are supported); a third-party dedicated group uses the `concurrency` value from the group's sole owner spec; **only one** spec in a group may declare `concurrency`, otherwise batch startup fails;
+- Worker count for a group: built-in groups (`native` / `mineru` / `docling` / `paddleocr_vl`) are determined by LightRAG instance fields `max_parallel_parse_*` (constructor overrides are supported); a third-party dedicated group uses the `concurrency` value from the group's sole owner spec; **only one** spec in a group may declare `concurrency`, otherwise batch startup fails;
 - When using `queue_group="native"` to share the built-in pool, `concurrency` does not take effect (pool size is determined by `max_parallel_parse_native`; ignored spec-level `concurrency` values are recorded as warning logs at batch startup). Lightweight local engines (such as `legacy`) fit this mode, while external-service engines should usually use a dedicated group so slow requests do not block local parsing.
 
 ## 4. Registration: Automatic Discovery via Entry Point (Recommended)

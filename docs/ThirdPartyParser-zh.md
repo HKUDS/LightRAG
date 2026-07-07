@@ -1,6 +1,6 @@
 # 第三方 Parser 引擎开发与注册指南
 
-LightRAG 的解析层通过统一的 `BaseParser` 契约 + 中央引擎注册表(`lightrag/parser/registry.py`)派发所有解析引擎。内置引擎(`native` / `legacy` / `mineru` / `docling`)与第三方引擎走完全相同的派发路径:pipeline worker 与调试 CLI 都通过 `get_parser(engine).parse(ParseContext(...))` 驱动,**没有任何针对内置引擎的特判**。因此第三方包只需做两件事:
+LightRAG 的解析层通过统一的 `BaseParser` 契约 + 中央引擎注册表(`lightrag/parser/registry.py`)派发所有解析引擎。内置引擎(`native` / `legacy` / `mineru` / `docling` / `paddleocr_vl`)与第三方引擎走完全相同的派发路径:pipeline worker 与调试 CLI 都通过 `get_parser(engine).parse(ParseContext(...))` 驱动,**没有任何针对内置引擎的特判**。因此第三方包只需做两件事:
 
 1. **实现**一个 `BaseParser` 子类;
 2. **注册**一个 `ParserSpec`(推荐通过 `lightrag.parsers` entry point 自动发现)。
@@ -113,7 +113,7 @@ class MyExternalParser(ExternalParserBase):
     def build_ir(self, raw_dir, document_name) -> IRDoc: ...
 ```
 
-可选覆写 `validate_ir`(构建后校验,如零 block 报错)。参考实现:`lightrag/parser/external/mineru/parser.py`、`.../docling/parser.py`。
+可选覆写 `validate_ir`(构建后校验,如零 block 报错)。参考实现:`lightrag/parser/external/mineru/parser.py`、`.../docling/parser.py`、`.../paddleocr_vl/parser.py`。
 
 ### 2.3 失败语义(重要)
 
@@ -140,7 +140,7 @@ register_parser(ParserSpec(
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `engine_name` | ✓ | 注册表键,也是 `--engine` / 文件名 hint / `LIGHTRAG_PARSER` 里的引擎名。**与已有名字相同会覆盖原注册**(包括内置引擎)——除非有意替换实现,请勿与 `native/legacy/mineru/docling` 撞名。 |
+| `engine_name` | ✓ | 注册表键,也是 `--engine` / 文件名 hint / `LIGHTRAG_PARSER` 里的引擎名。**与已有名字相同会覆盖原注册**(包括内置引擎)——除非有意替换实现,请勿与 `native/legacy/mineru/docling/paddleocr_vl` 撞名。 |
 | `impl` | ✓ | `"module:Class"` 字符串。注册表只在文档实际解析时才 import 它,**注册阶段绝不能提前 import 实现**(保持能力查询 import-cheap,这是注册表的设计不变量)。 |
 | `suffixes` | ✓ | 该引擎能处理的扩展名(小写无点)。用于路由校验与 worker 端后缀守门。 |
 | `queue_group` | | 并发池分组,默认 `"native"`(共享 native 池)。独立池填唯一组名。 |
@@ -151,7 +151,7 @@ register_parser(ParserSpec(
 ### 并发模型
 
 - pipeline 每批为**每个 `queue_group` 建一条队列 + 一组 worker**;
-- 组的 worker 数:内置组(`native`/`mineru`/`docling`)由 LightRAG 实例字段 `max_parallel_parse_*` 决定(支持构造参数覆盖);第三方独立组取该组唯一 owner spec 的 `concurrency`;一个组**只能有一个**声明了 `concurrency` 的 spec,多个会在批启动时报错;
+- 组的 worker 数:内置组(`native`/`mineru`/`docling`/`paddleocr_vl`)由 LightRAG 实例字段 `max_parallel_parse_*` 决定(支持构造参数覆盖);第三方独立组取该组唯一 owner spec 的 `concurrency`;一个组**只能有一个**声明了 `concurrency` 的 spec,多个会在批启动时报错;
 - `queue_group="native"` 蹭内置池时,`concurrency` 不生效(池大小由 `max_parallel_parse_native` 决定,被忽略的 spec 级 `concurrency` 会在批启动时记录 warning 日志)——本地轻量引擎(如 legacy)适合这种方式,外部服务引擎建议独立组以免慢请求拖住本地解析。
 
 ## 4. 注册:entry point 自动发现(推荐)

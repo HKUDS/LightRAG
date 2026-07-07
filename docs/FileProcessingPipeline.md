@@ -365,6 +365,144 @@ After making the changes, restart the API service for them to take effect:
 docker compose -f compose.yaml --profile api up -d
 ```
 
+#### Using the PaddleOCR-VL File Parsing Engine
+
+LightRAG can also parse PDFs, Office documents, and common image formats through the `paddleocr_vl` engine. Like MinerU and Docling, PaddleOCR-VL is an external parsing service: before enabling routing rules, configure either a cloud token or a local service endpoint.
+
+- `official` mode: uses PaddleOCR's AIStudio cloud async API. Obtain an access token first, then add the following to LightRAG's `.env`:
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=official
+PADDLEOCR_VL_API_TOKEN=<your_access_token>
+# PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
+```
+
+- `local` mode: uses a self-hosted PaddleOCR-VL service. After the local service starts, add:
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=local
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://<your_paddleocr_vl_server_ip>:8080
+```
+
+If the LightRAG API Server runs inside Docker while PaddleOCR-VL runs on the host, do not set `PADDLEOCR_VL_LOCAL_ENDPOINT` to `localhost`; use an address reachable from the container, such as the Linux host gateway IP or `http://host.docker.internal:8080` on Docker Desktop.
+
+For PaddleOCR-VL request parameters, cache layout, and cache invalidation rules, see [4.5 PaddleOCR-VL Raw Artifacts Directory](#45-paddleocr-vl-raw-artifacts-directory-basepaddleocr_vl_raw).
+
+#### **Local Deployment of the PaddleOCR-VL Service**
+
+PaddleOCR-VL has two common local deployment shapes. Both run the same core pipeline: document decoding, optional orientation/unwarping preprocessing, PP-DocLayoutV3 layout detection, region cropping and merging, PaddleOCR-VL-1.6-0.9B VLM recognition, Markdown/JSON post-processing, and optional cross-page table merging and title re-leveling. They differ mainly in the service layer and concurrency scheduler. This section only explains how to choose the endpoint from the LightRAG side, verify the service, and connect it to the `paddleocr_vl` engine; image builds, `.env` parameter meanings, model paths, batch sizes, device parameters, and accelerator-specific deployment differences should follow the official PaddleOCR tutorial and the README in the matching official directory. The official tutorial is [PaddleOCR-VL Usage Guide](https://www.paddleocr.ai/latest/version3.x/pipeline_usage/PaddleOCR-VL.html).
+
+| Deployment | Official directory | Containers | Notes |
+| --- | --- | --- | --- |
+| Simplified accelerator deployment | `deploy/paddleocr_vl_docker/accelerators/<accelerator>` | `paddleocr-vl-api` + `paddleocr-vlm-server` | Deployment directories are split by hardware type; PaddleX's built-in HTTP server calls the pipeline directly |
+| HPS high-performance deployment | `deploy/paddleocr_vl_docker/hps` | `paddleocr-vl-api` + `paddleocr-vl-pipeline` + `paddleocr-vlm-server` | FastAPI gateway + Triton dynamic batching + vLLM continuous batching; according to the current official docs, this solution currently only supports NVIDIA GPUs |
+
+**Prerequisites**
+
+- Docker / Docker Compose are installed;
+- Inference device, driver, runtime, and container toolchain match the selected official deployment directory;
+- For HPS, according to the current official docs, the requirements include x64 CPU, NVIDIA GPU with Compute Capability >= 8.0 and < 10.0, an NVIDIA driver supporting CUDA 12.6, Docker >= 19.03, and Docker Compose >= 2.0;
+- GPU memory is sufficient for `PaddleOCR-VL-1.6-0.9B` and the layout detection model;
+- In intranet or offline environments, model weights and image mirrors are prepared in advance.
+
+**Option 1: simplified deployment**
+
+Copy the directory matching your accelerator from `deploy/paddleocr_vl_docker/accelerators` in the official PaddleOCR repository. The official tree currently splits this directory by hardware, for example `amd-gpu`, `huawei-npu`, `hygon-dcu`, `iluvatar-gpu`, `intel-gpu`, `kunlunxin-xpu`, `metax-gpu`, `nvidia-gpu`, and `nvidia-gpu-sm120`. Images, environment variables, startup parameters, and hardware requirements may differ by subdirectory; follow the official instructions in the corresponding subdirectory.
+
+```bash
+git clone https://github.com/PaddlePaddle/PaddleOCR.git
+cd PaddleOCR/deploy/paddleocr_vl_docker/accelerators/<your_accelerator>
+
+# Adjust .env for your environment, such as model paths, GPU, and image mirrors.
+docker compose -f compose.yaml up -d --build
+```
+
+After startup, two services should be running:
+
+- `paddleocr-vl-api`: exposes the document parsing API;
+- `paddleocr-vlm-server`: provides VLM inference, usually called by the pipeline through an OpenAI-compatible `/v1` API.
+
+**Option 2: HPS high-performance deployment**
+
+The HPS deployment is usually under `deploy/paddleocr_vl_docker/hps` in the official PaddleOCR repository. According to the current official README, this solution currently only supports NVIDIA GPUs, and support for other inference devices is still being developed. It starts three service layers: FastAPI gateway, Triton pipeline, and vLLM server.
+
+```bash
+git clone https://github.com/PaddlePaddle/PaddleOCR.git
+cd PaddleOCR/deploy/paddleocr_vl_docker/hps
+
+# Follow the official README to edit .env, such as HPS_PIPELINE_NAME, PaddleX version, SDK directory, concurrency, timeouts, and VLM URL.
+cp .env.example .env
+bash prepare.sh
+docker compose -f compose.yaml up -d --build
+```
+
+The default external entrypoint for HPS is usually gateway port `8080`. The gateway forwards `/layout-parsing` requests to the Triton pipeline, and the pipeline calls the vLLM server for region recognition. Meanings and tuning guidance for `HPS_PIPELINE_NAME`, `HPS_PADDLEX_VERSION`, `HPS_SDK_DIR`, `HPS_MAX_CONCURRENT_INFERENCE_REQUESTS`, `HPS_MAX_CONCURRENT_NON_INFERENCE_REQUESTS`, `HPS_INFERENCE_TIMEOUT`, `HPS_UVICORN_WORKERS`, `HPS_DEVICE_ID`, and related parameters should follow the official HPS README. For high throughput, tune the HPS gateway and Triton/vLLM parameters first instead of blindly increasing LightRAG's `MAX_PARALLEL_PARSE_PADDLEOCR_VL`.
+
+**Check service status**
+
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/health/ready
+```
+
+Start parsing only after the ready endpoint returns `errorCode=0`. The first startup can take several minutes while the VLM model is loaded into GPU memory.
+
+**Verify the local PaddleOCR-VL API directly**
+
+The official HPS gateway commonly exposes a `multipart/form-data` interface:
+
+```bash
+curl -X POST http://localhost:8080/layout-parsing \
+  -F "file=@/path/to/document.pdf" \
+  -F "useLayoutDetection=true" \
+  -F "useChartRecognition=true" \
+  -F "formatBlockContent=true" \
+  -F "prettifyMarkdown=true" \
+  -F "restructurePages=true" \
+  -F "mergeTables=true" \
+  -F "temperature=0.0" \
+  -F "maxNewTokens=4096"
+```
+
+A successful response should contain `layoutParsingResults`, with Markdown text, layout JSON, and optional image resources for each page.
+
+**Connect LightRAG**
+
+After confirming the local service works, configure LightRAG for `local` mode:
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=local
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080
+MAX_PARALLEL_PARSE_PADDLEOCR_VL=1
+```
+
+The current LightRAG `paddleocr_vl` local client sends a synchronous JSON request to `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing`, placing the file bytes in a base64-encoded `file` field and sending the remaining PaddleOCR-VL options as top-level JSON fields. If your official gateway only accepts `multipart/form-data`, add a small compatibility adapter in front of the PaddleOCR-VL gateway or adjust the local gateway to also accept JSON/base64 requests. The adapter only needs to decode the JSON `file` field into an uploaded file and normalize the service response to `{"errorCode": 0, "result": {"layoutParsingResults": [...]}}`.
+
+Use the parser CLI for an end-to-end check:
+
+```bash
+PADDLEOCR_VL_API_MODE=local \
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080 \
+python -m lightrag.parser.cli ./inputs/sample.pdf \
+  --engine paddleocr_vl \
+  --force-reparse
+```
+
+On success, it writes `sample.pdf.paddleocr_vl_raw/` and `sample.pdf.parsed/`. `content_list.json` is the raw PaddleOCR-VL result; `*.blocks.jsonl`, `tables.json`, `drawings.json`, and `equations.json` are the sidecar files consumed by the later LightRAG pipeline.
+
+**Troubleshooting**
+
+| Symptom | What to check |
+| --- | --- |
+| `/health/ready` stays not ready | Wait for VLM loading; check GPU memory, model paths, and container logs |
+| LightRAG container cannot reach `localhost:8080` | `localhost` inside Docker points to the LightRAG container itself; use the host gateway IP or `host.docker.internal` |
+| Direct `curl -F` works but LightRAG local mode fails | The current LightRAG local client uses JSON/base64 requests; add a compatibility adapter for the local gateway |
+| First parse is slow | VLM cold start, many PDF pages, or `restructurePages=true`; validate with a small PDF first |
+| Parsing succeeds without calling the service again | A `*.paddleocr_vl_raw/` cache was hit; set `LIGHTRAG_FORCE_REPARSE_PADDLEOCR_VL=true` or use CLI `--force-reparse` |
+
 #### Using the Docling File Parsing Engine
 
 The `docling` content extraction engine requires an external [docling-serve](https://github.com/DS4SD/docling-serve) service (v1 async API). Minimal configuration:
@@ -777,7 +915,7 @@ PADDLEOCR_VL_API_TOKEN=<your_access_token>
 # PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 ```
 
-`PADDLEOCR_VL_API_MODE` accepts `official` and `local`. The `official` mode uses PaddleOCR's cloud async API: submit a job to `PADDLEOCR_VL_OFFICIAL_ENDPOINT`, poll until it finishes, then download the result JSON/JSONL. The `local` mode uses a self-hosted PaddleOCR-VL service and sends a synchronous JSON request to `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing`; the call returns only after the document has been parsed. `PADDLEOCR_VL_ENDPOINT` remains a backwards-compatible alias for `PADDLEOCR_VL_OFFICIAL_ENDPOINT`.
+`PADDLEOCR_VL_API_MODE` accepts `official` and `local`. The `official` mode uses PaddleOCR's cloud async API: submit a job to `PADDLEOCR_VL_OFFICIAL_ENDPOINT`, poll until it finishes, then download the result JSON/JSONL. The `local` mode uses a self-hosted PaddleOCR-VL service that is compatible with LightRAG's request contract and sends a synchronous JSON request to `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing`; the call returns only after the document has been parsed. `PADDLEOCR_VL_ENDPOINT` remains a backwards-compatible alias for `PADDLEOCR_VL_OFFICIAL_ENDPOINT`.
 
 Minimal local configuration:
 
@@ -797,10 +935,10 @@ PADDLEOCR_VL_BATCH_ID=
 
 Optional PaddleOCR-VL request parameters are read from env and included in the
 official API `optionalPayload`. In local mode, the same effective options are
-sent as top-level JSON fields next to `file`, following PaddleOCR-VL's
-`POST /layout-parsing` service API. The local service auto-detects the file
-type, so LightRAG does not send `fileType`. The options below are sent with the
-current client defaults when unset:
+sent as top-level JSON fields next to the base64 `file`, following the
+LightRAG-compatible `POST /layout-parsing` contract. The compatible local
+service should auto-detect the file type, so LightRAG does not send `fileType`.
+The options below are sent with the current client defaults when unset:
 
 ```bash
 PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=false
@@ -1004,7 +1142,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru pool  × N2] ─┼�
           └─ parse_queues[<3rd-party group>] ─► [custom pool] ┘   ← created per ParserSpec.queue_group
 ```
 
-Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): the built-in native/mineru/docling/paddleocr_vl each own a group, legacy shares the native pool (local, no network), and a third-party engine may declare its own group with a custom worker count (see `docs/ThirdPartyParser-zh.md`). At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
+Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): the built-in native/mineru/docling/paddleocr_vl each own a group, legacy shares the native pool (local, no network), and a third-party engine may declare its own group with a custom worker count (see `docs/ThirdPartyParser.md`). At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
 
 | Environment variable | Default | Effect | Tuning advice |
 | --- | --- | --- | --- |

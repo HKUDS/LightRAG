@@ -365,6 +365,144 @@ docker rm temp_mineru
 docker compose -f compose.yaml --profile api up -d
 ```
 
+#### 使用 PaddleOCR-VL 文件解析引擎
+
+LightRAG 也可以把 PDF、Office 文档和常见图片交给 `paddleocr_vl` 引擎解析。PaddleOCR-VL 与 MinerU / Docling 一样属于外部解析服务：启用路由规则前，需要先配置云端 token 或本地服务 endpoint。
+
+- `official` 模式：使用 PaddleOCR AIStudio 云服务异步 API。先获取 access token，再在 LightRAG 的 `.env` 中配置：
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=official
+PADDLEOCR_VL_API_TOKEN=<your_access_token>
+# PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
+```
+
+- `local` 模式：使用本地部署的 PaddleOCR-VL 服务。服务启动后，在 LightRAG 的 `.env` 中配置：
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=local
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://<your_paddleocr_vl_server_ip>:8080
+```
+
+如果 LightRAG API Server 跑在 Docker 容器中，而 PaddleOCR-VL 服务跑在宿主机上，`PADDLEOCR_VL_LOCAL_ENDPOINT` 不要写 `localhost`，应写容器可访问的地址，例如 Linux 下的宿主机网关 IP，或 Docker Desktop 环境中的 `http://host.docker.internal:8080`。
+
+`paddleocr_vl` 支持的请求参数、缓存目录和 cache 失效规则见后文 [4.5 PaddleOCR-VL 原始产物目录](#45-paddleocr-vl-原始产物目录-basepaddleocr_vl_raw)。
+
+#### **本地部署 PaddleOCR-VL 服务**
+
+PaddleOCR-VL 本地部署有两种常见形态。两者使用同一套核心 Pipeline：文档解码、可选方向/去扭曲预处理、PP-DocLayoutV3 版面分析、区域裁剪合并、PaddleOCR-VL-1.6-0.9B VLM 识别、Markdown/JSON 后处理、可选跨页表格合并和标题层级重排。区别主要在服务化层和并发调度。本节只说明 LightRAG 侧如何选择 endpoint、如何验证服务、以及如何接入 `paddleocr_vl` 引擎；具体镜像构建、`.env` 参数含义、模型路径、批处理大小、设备参数、各类 accelerator 的部署差异，请以 PaddleOCR 官方教程和对应目录 README 为准。官方教程见 [PaddleOCR-VL 使用教程](https://www.paddleocr.ai/latest/version3.x/pipeline_usage/PaddleOCR-VL.html)。
+
+| 部署方式 | 官方目录 | 容器结构 | 说明 |
+| --- | --- | --- | --- |
+| 简化版（加速算子部署） | `deploy/paddleocr_vl_docker/accelerators/<accelerator>` | `paddleocr-vl-api` + `paddleocr-vlm-server` | 按硬件类型分别提供部署目录，PaddleX 内置 HTTP 服务直接调用 Pipeline |
+| HPS 高性能服务化部署 | `deploy/paddleocr_vl_docker/hps` | `paddleocr-vl-api` + `paddleocr-vl-pipeline` + `paddleocr-vlm-server` | FastAPI 网关 + Triton 动态批处理 + vLLM 连续批处理；根据当前官方文档，该方案目前仅支持 NVIDIA GPU |
+
+**前置条件**
+
+- 已安装 Docker / Docker Compose；
+- 推理设备、驱动、运行时和容器工具链与所选官方部署目录匹配；
+- 使用 HPS 方案时，根据当前官方文档，需要 x64 CPU、NVIDIA GPU（Compute Capability >= 8.0 且 < 10.0）、支持 CUDA 12.6 的 NVIDIA 驱动、Docker >= 19.03 和 Docker Compose >= 2.0；
+- 显存足以加载 `PaddleOCR-VL-1.6-0.9B` 和版面分析模型；
+- 如果服务器在内网或离线环境，需要提前准备模型权重和镜像源。
+
+**方式一：简化版部署**
+
+从 PaddleOCR 官方仓库复制 `deploy/paddleocr_vl_docker/accelerators` 下与你的加速卡匹配的目录。官方目前在该目录下按硬件划分了多个子目录，例如 `amd-gpu`、`huawei-npu`、`hygon-dcu`、`iluvatar-gpu`、`intel-gpu`、`kunlunxin-xpu`、`metax-gpu`、`nvidia-gpu`、`nvidia-gpu-sm120` 等。每个子目录的镜像、环境变量、启动参数和硬件要求可能不同，应以对应子目录中的官方说明为准。
+
+```bash
+git clone https://github.com/PaddlePaddle/PaddleOCR.git
+cd PaddleOCR/deploy/paddleocr_vl_docker/accelerators/<your_accelerator>
+
+# 按实际环境修改 .env，例如模型路径、GPU、镜像源等
+docker compose -f compose.yaml up -d --build
+```
+
+启动后应有两个服务：
+
+- `paddleocr-vl-api`：对外暴露文档解析 API；
+- `paddleocr-vlm-server`：提供 VLM 推理服务，通常以 OpenAI 兼容的 `/v1` 接口被 Pipeline 调用。
+
+**方式二：HPS 高性能部署**
+
+HPS 目录通常位于 PaddleOCR 官方仓库的 `deploy/paddleocr_vl_docker/hps`。根据当前官方 README，该方案目前暂时只支持 NVIDIA GPU，对其他推理设备的支持仍在完善中。该方式会启动三层服务：FastAPI 网关、Triton Pipeline 和 vLLM Server。
+
+```bash
+git clone https://github.com/PaddlePaddle/PaddleOCR.git
+cd PaddleOCR/deploy/paddleocr_vl_docker/hps
+
+# 按官方 README 修改 .env，例如 HPS_PIPELINE_NAME、PaddleX 版本、SDK 目录、并发、超时和 VLM 服务地址
+cp .env.example .env
+bash prepare.sh
+docker compose -f compose.yaml up -d --build
+```
+
+HPS 的默认对外入口一般是网关端口 `8080`。网关会把 `/layout-parsing` 请求转发给 Triton Pipeline，Pipeline 再调用 vLLM Server 完成区域识别。`HPS_PIPELINE_NAME`、`HPS_PADDLEX_VERSION`、`HPS_SDK_DIR`、`HPS_MAX_CONCURRENT_INFERENCE_REQUESTS`、`HPS_MAX_CONCURRENT_NON_INFERENCE_REQUESTS`、`HPS_INFERENCE_TIMEOUT`、`HPS_UVICORN_WORKERS`、`HPS_DEVICE_ID` 等参数的含义和取值建议，以官方 HPS README 为准。吞吐较高时优先调 HPS 网关和 Triton/vLLM 侧参数，而不是盲目提高 LightRAG 的 `MAX_PARALLEL_PARSE_PADDLEOCR_VL`。
+
+**检查服务状态**
+
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/health/ready
+```
+
+就绪接口返回 `errorCode=0` 后再开始解析。首次启动时 VLM 模型需要加载到显存，可能需要等待数分钟。
+
+**直接调用 PaddleOCR-VL 本地 API 验证**
+
+官方 HPS 网关常见接口是 `multipart/form-data`：
+
+```bash
+curl -X POST http://localhost:8080/layout-parsing \
+  -F "file=@/path/to/document.pdf" \
+  -F "useLayoutDetection=true" \
+  -F "useChartRecognition=true" \
+  -F "formatBlockContent=true" \
+  -F "prettifyMarkdown=true" \
+  -F "restructurePages=true" \
+  -F "mergeTables=true" \
+  -F "temperature=0.0" \
+  -F "maxNewTokens=4096"
+```
+
+响应成功时应包含 `layoutParsingResults`，其中每页结果里有 Markdown 文本、版面 JSON 和可选图片资源。
+
+**接入 LightRAG**
+
+确认本地服务可用后，把 LightRAG 配成 `local` 模式：
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=local
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080
+MAX_PARALLEL_PARSE_PADDLEOCR_VL=1
+```
+
+当前 LightRAG 的 `paddleocr_vl` local client 会向 `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing` 发送同步 JSON 请求，并把文件内容放在 base64 编码的 `file` 字段中；其它 PaddleOCR-VL 选项作为顶层 JSON 字段发送。如果你使用的官方网关只接受 `multipart/form-data`，需要在 PaddleOCR-VL 网关前加一个轻量兼容适配层，或把本地网关调整为同时接受 JSON/base64 请求。适配层的职责只有两点：把 JSON 中的 base64 `file` 转成上传文件，并把服务返回结果规范化为 `{"errorCode": 0, "result": {"layoutParsingResults": [...]}}`。
+
+用 parser CLI 做端到端验证：
+
+```bash
+PADDLEOCR_VL_API_MODE=local \
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080 \
+python -m lightrag.parser.cli ./inputs/sample.pdf \
+  --engine paddleocr_vl \
+  --force-reparse
+```
+
+成功后会生成 `sample.pdf.paddleocr_vl_raw/` 和 `sample.pdf.parsed/`。其中 `content_list.json` 是 PaddleOCR-VL 原始结果，`*.blocks.jsonl` / `tables.json` / `drawings.json` / `equations.json` 是 LightRAG 后续流水线使用的 sidecar。
+
+**常见问题**
+
+| 现象 | 排查方向 |
+| --- | --- |
+| `/health/ready` 长时间不 ready | 等待 VLM 模型加载；检查 GPU 显存、模型路径、容器日志 |
+| LightRAG 容器连不上 `localhost:8080` | Docker 内的 `localhost` 指向 LightRAG 容器自身，改用宿主机网关 IP 或 `host.docker.internal` |
+| 直接 `curl -F` 成功，但 LightRAG local 失败 | 当前 LightRAG local client 使用 JSON/base64 请求；给本地网关加兼容适配层 |
+| 首次解析很慢 | VLM 冷启动、PDF 页数多或 `restructurePages=true`；先用小 PDF 验证 |
+| 解析成功但没有重新调用服务 | 命中了 `*.paddleocr_vl_raw/` cache；设置 `LIGHTRAG_FORCE_REPARSE_PADDLEOCR_VL=true` 或 CLI 使用 `--force-reparse` |
+
 #### 使用 Docling 文件解析引擎
 
 `docling` 内容提取引擎需要外部的 [docling-serve](https://github.com/DS4SD/docling-serve) 服务（v1 异步 API）。最少配置：
@@ -777,7 +915,7 @@ PADDLEOCR_VL_API_TOKEN=<your_access_token>
 # PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 ```
 
-`PADDLEOCR_VL_API_MODE` 支持 `official` 和 `local`。`official` 对接 PaddleOCR 云端异步 API：提交任务到 `PADDLEOCR_VL_OFFICIAL_ENDPOINT`，轮询完成后再下载结果 JSON/JSONL。`local` 对接自部署 PaddleOCR-VL 服务，向 `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing` 发送同步 JSON 请求，服务会在文档解析完成后直接返回结果。`PADDLEOCR_VL_ENDPOINT` 仍作为 `PADDLEOCR_VL_OFFICIAL_ENDPOINT` 的兼容别名保留。
+`PADDLEOCR_VL_API_MODE` 支持 `official` 和 `local`。`official` 对接 PaddleOCR 云端异步 API：提交任务到 `PADDLEOCR_VL_OFFICIAL_ENDPOINT`，轮询完成后再下载结果 JSON/JSONL。`local` 对接自部署、且兼容 LightRAG 请求约定的 PaddleOCR-VL 服务，向 `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing` 发送同步 JSON 请求，服务会在文档解析完成后直接返回结果。`PADDLEOCR_VL_ENDPOINT` 仍作为 `PADDLEOCR_VL_OFFICIAL_ENDPOINT` 的兼容别名保留。
 
 local 模式最小配置：
 
@@ -796,8 +934,8 @@ PADDLEOCR_VL_BATCH_ID=
 
 PaddleOCR-VL 的可选请求参数从环境变量读取，并写入 official API 的
 `optionalPayload`。local 模式下，同一组有效参数会按照 PaddleOCR-VL
-`POST /layout-parsing` 服务 API 的要求，作为 `file` 旁边的顶层 JSON 字段发送。
-local 服务会自动识别文件类型，因此 LightRAG 不发送 `fileType`。下面这些参数未设置时会随当前 client 默认值发送：
+`POST /layout-parsing` 兼容接口的要求，作为 base64 `file` 旁边的顶层 JSON 字段发送。
+local 兼容服务应自动识别文件类型，因此 LightRAG 不发送 `fileType`。下面这些参数未设置时会随当前 client 默认值发送：
 
 ```bash
 PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=false
