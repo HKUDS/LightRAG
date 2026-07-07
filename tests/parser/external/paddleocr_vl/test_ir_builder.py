@@ -168,9 +168,7 @@ def test_adjacent_figure_title_becomes_table_or_image_caption(tmp_path: Path) ->
                     ]
                 },
                 "markdown": {
-                    "images": {
-                        "imgs/img_in_image_box_10_120_90_170.jpg": "ignored-url"
-                    }
+                    "images": {"imgs/img_in_image_box_10_120_90_170.jpg": "ignored-url"}
                 },
             }
         ],
@@ -233,9 +231,7 @@ def test_caption_matches_across_ignorable_layout_noise(tmp_path: Path) -> None:
                     ]
                 },
                 "markdown": {
-                    "images": {
-                        "imgs/img_in_image_box_10_120_90_170.jpg": "ignored-url"
-                    }
+                    "images": {"imgs/img_in_image_box_10_120_90_170.jpg": "ignored-url"}
                 },
             }
         ],

@@ -59,7 +59,11 @@ class _Response:
     ) -> None:
         self.status_code = status_code
         self._payload = payload
-        self.text = text if text is not None else (json.dumps(payload) if payload is not None else "")
+        self.text = (
+            text
+            if text is not None
+            else (json.dumps(payload) if payload is not None else "")
+        )
         self.content = content if content is not None else self.text.encode("utf-8")
 
     def json(self) -> Any:
@@ -185,7 +189,9 @@ async def test_client_submits_polls_downloads_result_and_assets(
     assert recorder.post_calls[0]["url"] == "http://paddle.test/api/v2/ocr/jobs"
     assert recorder.post_calls[0]["headers"]["Authorization"] == "bearer token-1"
     assert recorder.post_calls[0]["data"]["model"] == "PaddleOCR-VL-1.6"
-    assert json.loads(recorder.post_calls[0]["data"]["optionalPayload"]) == DEFAULT_PAYLOAD
+    assert (
+        json.loads(recorder.post_calls[0]["data"]["optionalPayload"]) == DEFAULT_PAYLOAD
+    )
     assert recorder.post_calls[0]["files"]["file"] == (
         "canonical.pdf",
         b"%PDF fake",
@@ -194,7 +200,9 @@ async def test_client_submits_polls_downloads_result_and_assets(
 
     assert (raw_dir / "content_list.json").is_file()
     assert (raw_dir / "imgs" / "fig.jpg").read_bytes() == b"\xff\xd8fake"
-    assert (raw_dir / "outputImages" / "layout_det_res_0.jpg").read_bytes() == b"\xff\xd8fake"
+    assert (
+        raw_dir / "outputImages" / "layout_det_res_0.jpg"
+    ).read_bytes() == b"\xff\xd8fake"
     assert (raw_dir / "_manifest.json").is_file()
 
 
@@ -225,7 +233,9 @@ async def test_client_sends_documented_optional_payload(
     monkeypatch.setenv("PADDLEOCR_VL_PRETTIFY_MARKDOWN", "true")
     monkeypatch.setenv("PADDLEOCR_VL_VISUALIZE", "false")
 
-    await PaddleOCRVLRawClient().download_into(tmp_path / "demo.paddleocr_vl_raw", source)
+    await PaddleOCRVLRawClient().download_into(
+        tmp_path / "demo.paddleocr_vl_raw", source
+    )
 
     assert json.loads(recorder.post_calls[0]["data"]["optionalPayload"]) == {
         **DEFAULT_PAYLOAD,
@@ -297,7 +307,9 @@ async def test_client_sends_async_submit_top_level_parameters(
     assert "pageRanges" not in json.loads(
         recorder.post_calls[0]["data"]["optionalPayload"]
     )
-    assert "batchId" not in json.loads(recorder.post_calls[0]["data"]["optionalPayload"])
+    assert "batchId" not in json.loads(
+        recorder.post_calls[0]["data"]["optionalPayload"]
+    )
 
 
 async def test_official_requests_use_official_endpoint_field(
@@ -328,7 +340,9 @@ def test_client_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
         PaddleOCRVLRawClient()
 
 
-def test_client_records_mode_specific_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_client_records_mode_specific_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv(
         "PADDLEOCR_VL_ENDPOINT", "http://legacy-paddle.test/api/v2/ocr/jobs"
     )

@@ -13,20 +13,22 @@ import pytest
 from lightrag import LightRAG
 from lightrag.constants import FULL_DOCS_FORMAT_LIGHTRAG
 from lightrag.parser.base import ParseContext
-from lightrag.parser.external._common import compute_size_and_hash
 from lightrag.parser.external import Manifest, ManifestFile, write_manifest
+from lightrag.parser.external._common import compute_size_and_hash
+from lightrag.parser.registry import get_parser, supported_parser_engines
+from lightrag.utils import EmbeddingFunc, Tokenizer
 import lightrag.parser.external.paddleocr_vl.cache as cache_mod
 
 # Access internal test helpers via module object (not in __all__)
 current_endpoint_signature = cache_mod.current_endpoint_signature
 current_options_signature = cache_mod.current_options_signature
-from lightrag.parser.registry import get_parser, supported_parser_engines
-from lightrag.utils import EmbeddingFunc, Tokenizer
 
 
 async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
     return (
-        await get_parser(engine).parse(ParseContext(rag, doc_id, file_path, content_data))
+        await get_parser(engine).parse(
+            ParseContext(rag, doc_id, file_path, content_data)
+        )
     ).to_dict()
 
 
@@ -197,7 +199,9 @@ def test_registry_parse_emits_paddleocr_vl_sidecar(
                     }
                 }
             )
-            monkeypatch.setattr(rag, "_resolve_source_file_for_parser", lambda _p: str(src))
+            monkeypatch.setattr(
+                rag, "_resolve_source_file_for_parser", lambda _p: str(src)
+            )
 
             parsed = await _parse_via_registry(
                 rag,

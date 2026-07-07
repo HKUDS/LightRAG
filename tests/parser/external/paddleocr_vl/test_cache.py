@@ -8,6 +8,11 @@ import pytest
 
 from lightrag.parser.external import Manifest, ManifestFile, write_manifest
 from lightrag.parser.external._common import compute_size_and_hash
+from lightrag.parser.external.paddleocr_vl import (
+    PADDLEOCR_VL_RAW_DIR_SUFFIX,
+    clear_dir_contents,
+    raw_dir_for_parsed_dir,
+)
 import lightrag.parser.external.paddleocr_vl.cache as cache_mod
 from lightrag.parser.external.paddleocr_vl.cache import (
     PaddleOCRVLParserOptions,
@@ -17,11 +22,6 @@ from lightrag.parser.external.paddleocr_vl.cache import (
 # Access internal test helpers via module object (not in __all__)
 current_endpoint_signature = cache_mod.current_endpoint_signature
 current_options_signature = cache_mod.current_options_signature
-from lightrag.parser.external.paddleocr_vl import (
-    PADDLEOCR_VL_RAW_DIR_SUFFIX,
-    clear_dir_contents,
-    raw_dir_for_parsed_dir,
-)
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +61,9 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PADDLEOCR_VL_ENDPOINT", "http://paddle.test/api/v2/ocr/jobs")
 
 
-def _bundle(tmp_path: Path, source: Path, *, options_signature: str | None = None) -> Path:
+def _bundle(
+    tmp_path: Path, source: Path, *, options_signature: str | None = None
+) -> Path:
     raw_dir = tmp_path / "src.paddleocr_vl_raw"
     raw_dir.mkdir()
     result = raw_dir / "result.json"
@@ -238,26 +240,22 @@ def test_parser_options_accept_per_file_overrides(
     ]
 
 
-def test_parser_options_reject_none_overrides(
+def test_parser_options_allow_none_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PADDLEOCR_VL_USE_CHART_RECOGNITION", "false")
 
-    with pytest.raises(
-        ValueError,
-        match="PaddleOCR-VL option use_chart_recognition cannot be None",
-    ):
-        PaddleOCRVLParserOptions.from_env(
-            overrides={"use_chart_recognition": None}
-        )
+    options = PaddleOCRVLParserOptions.from_env(
+        overrides={"use_chart_recognition": None}
+    )
+
+    assert options.optional_payload.use_chart_recognition is True
 
 
-def test_parser_options_reject_none_page_range_alias() -> None:
-    with pytest.raises(
-        ValueError,
-        match="PaddleOCR-VL option page_range cannot be None",
-    ):
-        PaddleOCRVLParserOptions.from_env(overrides={"page_range": None})
+def test_parser_options_allow_none_page_range_alias() -> None:
+    options = PaddleOCRVLParserOptions.from_env(overrides={"page_range": None})
+
+    assert options.page_ranges is None
 
 
 def test_parser_option_coercion_uses_target_type_parameter() -> None:
@@ -266,9 +264,7 @@ def test_parser_option_coercion_uses_target_type_parameter() -> None:
     assert cache_mod._coerce_value("0.7", float) == 0.7
     assert cache_mod._coerce_value("  ocr  ", str) == "ocr"
     assert cache_mod._coerce_value('["header"]', list) == ["header"]
-    assert cache_mod._coerce_value('{"temperature": 0.2}', dict) == {
-        "temperature": 0.2
-    }
+    assert cache_mod._coerce_value('{"temperature": 0.2}', dict) == {"temperature": 0.2}
 
 
 def test_per_file_overrides_participate_in_cache_signature(
@@ -331,9 +327,7 @@ def test_option_change_invalidates_cache(
     assert is_bundle_valid(raw, source_file) is False
 
 
-def test_result_corruption_invalidates_cache(
-    tmp_path: Path, source_file: Path
-) -> None:
+def test_result_corruption_invalidates_cache(tmp_path: Path, source_file: Path) -> None:
     raw = _bundle(tmp_path, source_file)
     result = raw / "result.json"
     result.write_bytes(b"X" * result.stat().st_size)
