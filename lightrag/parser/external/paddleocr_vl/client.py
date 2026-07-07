@@ -39,10 +39,6 @@ DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_MAX_POLLS = 600
 
 
-def _strip_trailing_slash(url: str) -> str:
-    return url.rstrip("/")
-
-
 class PaddleOCRVLRawClient:
     """Submit a source file to PaddleOCR-VL and preserve its raw JSON output."""
 
@@ -59,18 +55,22 @@ class PaddleOCRVLRawClient:
             raise ValueError(
                 f"PADDLEOCR_VL_API_MODE must be one of {allowed}, got {self.api_mode!r}"
             )
-        self.official_endpoint = _strip_trailing_slash(
+        self.official_endpoint = (
             os.getenv(
                 "PADDLEOCR_VL_OFFICIAL_ENDPOINT",
                 os.getenv(
                     "PADDLEOCR_VL_ENDPOINT", DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT
                 ),
-            ).strip()
+            )
+            .strip()
+            .rstrip("/")
             or DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT
         )
-        self.local_endpoint = _strip_trailing_slash(
-            os.getenv("PADDLEOCR_VL_LOCAL_ENDPOINT", "").strip()
+
+        self.local_endpoint = (
+            os.getenv("PADDLEOCR_VL_LOCAL_ENDPOINT", "").strip().rstrip("/")
         )
+
         self.api_token = os.getenv("PADDLEOCR_VL_API_TOKEN", "").strip()
         if self.api_mode == "official":
             if not self.api_token:
