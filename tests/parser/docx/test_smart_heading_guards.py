@@ -129,6 +129,21 @@ def test_ennum_blacklist_env_override(monkeypatch) -> None:
     assert numbering_homophone_reason(cls, text) == "homophone_unit_blacklist"
 
 
+def test_ennum_blacklist_matches_multichar_unit(monkeypatch) -> None:
+    """Review P1: a user-configured MULTI-char unit matches via startswith,
+    not only the single-char defaults (a blacklist hit returns before NER, so
+    this needs no spaCy model)."""
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        numbering_homophone_reason,
+    )
+
+    monkeypatch.setenv("DOCX_SMART_ENNUM_BLACKLIST", "小时,公斤")
+    text = "3小时后召开"
+    cls = classify_numbering(text)
+    assert cls is not None and cls.style_key == "EnNum"
+    assert numbering_homophone_reason(cls, text) == "homophone_unit_blacklist"
+
+
 # ---------------------------------------------------------------------------
 # P3 caption prefixes (no NLP needed)
 # ---------------------------------------------------------------------------
@@ -140,6 +155,8 @@ def test_ennum_blacklist_env_override(monkeypatch) -> None:
         ("图1 系统架构", True),
         ("表 2-1 实验结果", True),
         ("Figure 3 shows the flow", True),
+        ("figure 3 shows the flow", True),  # review P3: lowercase caption vetoed
+        ("table 2-1 results", True),
         ("Fig. 4 detailed view", True),
         ("公式3 能量守恒", True),
         ("图书管理系统设计", False),  # word prefix without a numbering shape

@@ -455,6 +455,12 @@ def extract_paragraph_physical_features(
             anchor = node.get(_w("anchor")) or ""
             if anchor.startswith("_Toc"):
                 is_toc_link = True
+        elif tag == _w("docPartGallery"):
+            # §2.2.2 / §3.4 structural evidence: an in-paragraph SDT whose
+            # docPartObj gallery is "Table of Contents" marks a TOC field.
+            # (Body-level TOC SDTs are not read at all — baseline invariant.)
+            if (node.get(_w("val")) or "").strip() == "Table of Contents":
+                is_toc_field = True
         for child in node:
             _walk(child)
 

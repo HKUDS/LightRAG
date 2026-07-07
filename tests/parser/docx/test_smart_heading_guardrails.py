@@ -117,6 +117,26 @@ def test_heuristic_toc_needs_three_consecutive_leader_lines() -> None:
     assert toc == {0, 1, 2, 3}  # the isolated trailing line survives
 
 
+def test_heuristic_toc_single_paragraph_soft_breaks() -> None:
+    """Review M2 (§2.2.2): a TOC typed as ONE paragraph with ≥3 soft-break
+    dot-leader lines is detected — lines are counted, not paragraphs."""
+    records = [
+        _para("第一章 绪论............3\n第二章 方法............12\n第三章 实验............25"),
+        _para("正文开始。"),
+    ]
+    toc = detect_toc_records(records, warnings={})
+    assert toc == {0}
+
+
+def test_heuristic_toc_single_paragraph_two_lines_not_enough() -> None:
+    """A 2-line soft-break paragraph is below the 3-line threshold."""
+    records = [
+        _para("第一章 绪论............3\n第二章 方法............12"),
+        _para("正文开始。"),
+    ]
+    assert detect_toc_records(records, warnings={}) == set()
+
+
 def test_toc_similar_body_not_whitelisted() -> None:
     """G9-5: body text adjacent to a TOC but without leader shape stays."""
     records = [
@@ -211,6 +231,17 @@ def test_i2_outline_paragraph_must_stay_or_be_rule_tagged() -> None:
     assert verify_baseline_heading_retention(
         records, [kept, demoted, silently_dropped]
     ) == [2]
+
+
+def test_i3_non_title_block_level_zero_is_violation() -> None:
+    """Review I3: level 0 is reserved for title-block roots; a plain heading
+    that somehow landed at level 0 is a construction bug (single-root
+    assertion)."""
+    title = HeadingDecision(
+        record_index=0, text="主标题", is_heading=True, is_title_block=True, level=0
+    )
+    stray = HeadingDecision(record_index=1, text="普通标题", is_heading=True, level=0)
+    assert verify_anchor_semantics([title, stray]) == [1]
 
 
 def test_i3_non_numbered_anchor_must_match_outline() -> None:

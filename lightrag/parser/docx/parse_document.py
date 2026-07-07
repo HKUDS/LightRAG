@@ -1141,12 +1141,19 @@ def extract_docx_blocks(
     i3_violations = _guards.verify_anchor_semantics(all_decisions)
     length_ok = _guards.smart_output_length_ok(smart_blocks, baseline_blocks)
     if i1_missing or i2_violations or i3_violations or not length_ok:
-        print(
-            "ERROR: smart_heading guardrail violation "
-            f"(I1 missing={len(i1_missing)}, I2={i2_violations}, "
-            f"I3={i3_violations}, length_ok={length_ok}); "
+        # §2.3.2 mandates an ERROR *log* (not a bare stderr print) so the
+        # event is visible to the repo's caplog-based assertions and any
+        # structured log routing.
+        from lightrag.utils import logger as _logger
+
+        _logger.error(
+            "[smart_heading] guardrail violation "
+            "(I1 missing=%d, I2=%s, I3=%s, length_ok=%s); "
             "falling back to baseline output for this document.",
-            file=sys.stderr,
+            len(i1_missing),
+            i2_violations,
+            i3_violations,
+            length_ok,
         )
         warnings_sink["smart_fallback_baseline"] = 1
         if parse_metadata is not None:

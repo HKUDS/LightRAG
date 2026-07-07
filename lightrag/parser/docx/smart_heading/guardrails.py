@@ -127,14 +127,17 @@ def numbering_homophone_reason(
         if _VERSION_SHAPE_RE.match(text):
             return "homophone_version_shape"
     else:
-        remainder = text[len(text) - len(text.lstrip()) :]
-        m = re.match(r"^\d+", remainder.lstrip())
+        lstripped = text.lstrip()
+        m = re.match(r"^\d+", lstripped)
         if m:
-            after = remainder.lstrip()[m.end() : m.end() + 1]
+            after = lstripped[m.end() :]
             blacklist = _env_items(
                 "DOCX_SMART_ENNUM_BLACKLIST", DEFAULT_DOCX_SMART_ENNUM_BLACKLIST
             )
-            if after and after in blacklist:
+            # startswith (not a single-char membership test) so a user-added
+            # multi-char unit ("小时" / "公斤" / "平方米") matches too, not only
+            # the single-char defaults.
+            if after and any(after.startswith(item) for item in blacklist):
                 return "homophone_unit_blacklist"
 
     label = nlp.leading_entity_label(text)
@@ -158,10 +161,14 @@ def caption_prefix_reason(text: str) -> str | None:
     so a heading that merely starts with the word (图书管理系统) survives.
     """
     stripped = text.lstrip()
+    lowered = stripped.lower()
     for prefix in _env_items(
         "DOCX_SMART_CAPTION_PREFIXES", DEFAULT_DOCX_SMART_CAPTION_PREFIXES
     ):
-        if not stripped.startswith(prefix):
+        # Case-insensitive so手工 lowercased English captions ("figure 3",
+        # "table 2-1") are vetoed like their capitalized forms; CJK prefixes
+        # (图 / 表 / 公式) are unaffected by casefolding.
+        if not lowered.startswith(prefix.lower()):
             continue
         after = stripped[len(prefix) :].lstrip()
         if re.match(r"^[0-9０-９一二三四五六七八九十]+([-.–][0-9]+)*", after):
@@ -195,8 +202,11 @@ def canonicalize_paragraph_text(text: str) -> str:
 def detect_toc_records(records: Sequence[Any]) -> set[int]:
     """Two-channel TOC detection (§2.2.2): structural evidence (TOC field
     instructions / _Toc bookmark links on the paragraph) plus the heuristic
-    channel — a run of ≥ DOCX_SMART_TOC_MIN_LINES consecutive standalone
-    lines ending in a dot leader + page number. An isolated single line is
+    channel — a run of ≥ DOCX_SMART_TOC_MIN_LINES consecutive leader LINES
+    ending in a dot leader + page number. Lines are counted, not paragraphs:
+    the run spans standalone paragraphs AND the soft-break lines inside one
+    paragraph (§2.2.2 "含独立段落或段内软回车拆出的行"), so a TOC typed as a
+    single multi-line paragraph is caught too. An isolated single line is
     never evidence. Returns the record indices to remove from smart output.
 
     Detection only — the ``smart_toc_removed_paragraphs`` warning is a
@@ -210,20 +220,27 @@ def detect_toc_records(records: Sequence[Any]) -> set[int]:
             toc.add(i)
 
     run: list[int] = []
+    run_lines = 0
 
     def _flush_run() -> None:
-        nonlocal run
-        if len(run) >= min_lines:
+        nonlocal run, run_lines
+        if run_lines >= min_lines:
             toc.update(run)
         run = []
+        run_lines = 0
 
     for i, rec in enumerate(records):
         if rec.kind == "empty_para":
             continue  # blank lines do not break a leader run
-        if rec.kind == "para" and _TOC_DOT_LEADER_RE.search(rec.text.strip()):
-            run.append(i)
-        else:
-            _flush_run()
+        if rec.kind == "para":
+            lines = [ln.strip() for ln in rec.text.split("\n") if ln.strip()]
+            # A paragraph joins the run only if EVERY visible line is a dot
+            # leader; its soft-break lines each count toward the line total.
+            if lines and all(_TOC_DOT_LEADER_RE.search(ln) for ln in lines):
+                run.append(i)
+                run_lines += len(lines)
+                continue
+        _flush_run()
     _flush_run()
 
     return toc
@@ -366,9 +383,10 @@ def verify_baseline_heading_retention(
 
 def verify_anchor_semantics(decisions: Sequence[Any]) -> list[int]:
     """I3 (decidable subset): a non-numbered anchored heading that survived
-    must sit exactly at outlineLvl+1; at most one level-0 root per
-    sub-document scope is asserted by construction (title blocks). Returns
-    violating record indices."""
+    must sit exactly at outlineLvl+1; and level 0 is reserved for title-block
+    roots — a non-title-block heading at level 0 is a construction bug (the
+    single-root-per-sub-document invariant, machine-checked as an assertion
+    per §2.3.2). Returns violating record indices."""
     violations: list[int] = []
     for d in decisions:
         if (
@@ -379,6 +397,9 @@ def verify_anchor_semantics(decisions: Sequence[Any]) -> list[int]:
             and d.outline_level is not None
             and d.level != d.outline_level + 1
         ):
+            violations.append(d.record_index)
+        elif d.is_heading and not d.is_title_block and d.level == 0:
+            # Only title blocks may root a sub-document at level 0.
             violations.append(d.record_index)
     return violations
 

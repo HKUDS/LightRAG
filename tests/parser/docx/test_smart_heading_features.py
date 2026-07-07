@@ -358,6 +358,23 @@ def test_toc_field_and_link_evidence(tmp_path) -> None:
     assert p3.is_toc_field is False and p3.is_toc_link is False
 
 
+def test_sdt_docpart_gallery_toc_evidence() -> None:
+    """Review §2.2.2/§3.4: an in-paragraph SDT whose docPartObj gallery is
+    'Table of Contents' is structural TOC evidence."""
+    from lxml import etree
+
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    xml = (
+        f'<w:p xmlns:w="{w}"><w:sdt><w:sdtPr><w:docPartObj>'
+        '<w:docPartGallery w:val="Table of Contents"/>'
+        "</w:docPartObj></w:sdtPr><w:sdtContent>"
+        "<w:r><w:t>第一章 绪论\t3</w:t></w:r>"
+        "</w:sdtContent></w:sdt></w:p>"
+    )
+    feats = extract_paragraph_physical_features(etree.fromstring(xml), StyleAttributes())
+    assert feats.is_toc_field is True
+
+
 # ---------------------------------------------------------------------------
 # record-level wiring through the read pass
 # ---------------------------------------------------------------------------
