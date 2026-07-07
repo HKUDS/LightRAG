@@ -11,10 +11,12 @@ from lightrag.parser.external._common import compute_size_and_hash
 import lightrag.parser.external.paddleocr_vl.cache as cache_mod
 from lightrag.parser.external.paddleocr_vl.cache import (
     PaddleOCRVLParserOptions,
-    current_endpoint_signature,
-    current_options_signature,
     is_bundle_valid,
 )
+
+# Access internal test helpers via module object (not in __all__)
+current_endpoint_signature = cache_mod.current_endpoint_signature
+current_options_signature = cache_mod.current_options_signature
 from lightrag.parser.external.paddleocr_vl import (
     PADDLEOCR_VL_RAW_DIR_SUFFIX,
     clear_dir_contents,
@@ -260,7 +262,8 @@ def test_parser_options_reject_none_page_range_alias() -> None:
 
 def test_parser_option_coercion_uses_target_type_parameter() -> None:
     assert cache_mod._coerce_value("true", bool, default=False) is True
-    assert cache_mod._coerce_value("0.7", int | float) == 0.7
+    assert cache_mod._coerce_value("7", int) == 7
+    assert cache_mod._coerce_value("0.7", float) == 0.7
     assert cache_mod._coerce_value("  ocr  ", str) == "ocr"
     assert cache_mod._coerce_value('["header"]', list) == ["header"]
     assert cache_mod._coerce_value('{"temperature": 0.2}', dict) == {

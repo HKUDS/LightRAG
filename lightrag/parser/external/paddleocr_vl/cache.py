@@ -8,7 +8,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, cast
 
 from lightrag.parser.external._common import compute_size_and_hash
 from lightrag.parser.external._manifest import load_manifest
@@ -56,6 +56,7 @@ DEFAULT_PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS: tuple[str, ...] = (
     "aside_text",
 )
 _UNSET = object()
+_ValueT = TypeVar("_ValueT")
 
 
 def _current_api_mode() -> str:
@@ -79,43 +80,59 @@ def current_endpoint_signature() -> str:
     return endpoint.strip().rstrip("/")
 
 
-def _coerce_value(value: Any, value_type: Any, *, default: Any = None) -> Any:
+def _coerce_value(
+    value: Any,
+    value_type: type[_ValueT],
+    *,
+    default: _ValueT | None = None,
+) -> _ValueT | None:
     """Coerce a value to ``value_type``; return default if empty/unparseable."""
     if value is None:
         return default
 
     if value_type is bool:
         if isinstance(value, bool):
-            return value
+            return cast(_ValueT, value)
         low = str(value).strip().lower()
         if low in {"1", "true", "yes", "y", "on"}:
-            return True
+            return cast(_ValueT, True)
         if low in {"0", "false", "no", "n", "off"}:
-            return False
+            return cast(_ValueT, False)
         return default
 
-    if value_type == int | float:
+    if value_type is int:
         if isinstance(value, bool):
             return default
-        if isinstance(value, int | float):
-            number = float(value)
-            return int(number) if number.is_integer() else number
+        if isinstance(value, int):
+            return cast(_ValueT, value)
         raw = str(value).strip()
         if not raw:
             return default
         try:
-            number = float(raw)
+            return cast(_ValueT, int(raw))
         except ValueError:
             return default
-        return int(number) if number.is_integer() else number
+
+    if value_type is float:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            return cast(_ValueT, float(value))
+        raw = str(value).strip()
+        if not raw:
+            return default
+        try:
+            return cast(_ValueT, float(raw))
+        except ValueError:
+            return default
 
     if value_type is str:
         raw = str(value).strip()
-        return raw or default
+        return cast(_ValueT, raw) if raw else default
 
     if value_type is list:
         if isinstance(value, list):
-            return value
+            return cast(_ValueT, value)
         raw = str(value).strip()
         if not raw:
             return default
@@ -123,11 +140,11 @@ def _coerce_value(value: Any, value_type: Any, *, default: Any = None) -> Any:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             return default
-        return parsed if isinstance(parsed, list) else default
+        return cast(_ValueT, parsed) if isinstance(parsed, list) else default
 
     if value_type is dict:
         if isinstance(value, dict):
-            return value
+            return cast(_ValueT, value)
         raw = str(value).strip()
         if not raw:
             return default
@@ -135,32 +152,26 @@ def _coerce_value(value: Any, value_type: Any, *, default: Any = None) -> Any:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             return default
-        return parsed if isinstance(parsed, dict) else default
+        return cast(_ValueT, parsed) if isinstance(parsed, dict) else default
 
     raise TypeError(f"Unsupported PaddleOCR-VL option type: {value_type!r}")
 
 
-def _resolve_option(
+def _override_env(
+    value_type: type[_ValueT],
     overrides: Mapping[str, Any],
     *keys: str,
     env_name: str,
-) -> Any:
+    default: _ValueT | None = None,
+) -> _ValueT | None:
+    value = _UNSET
     for key in keys:
         if key in overrides:
             value = overrides[key]
-            return value
-    return os.getenv(env_name)
-
-
-def _override_env(
-    value_type: Any,
-    overrides: Mapping[str, Any],
-    *keys: str,
-    env_name: str,
-    default: Any = None,
-) -> Any:
-    value = _resolve_option(overrides, *keys, env_name=env_name)
-    if value is None:
+            break
+    if value is _UNSET:
+        value = os.getenv(env_name, _UNSET)
+    if value is _UNSET:
         return default
     return _coerce_value(value, value_type, default=default)
 
@@ -208,11 +219,11 @@ class DocParsingOptions:
     layout_shape_mode: str | None
     prompt_label: str | None
     format_block_content: bool | None
-    repetition_penalty: int | float | None
-    temperature: int | float | None
-    top_p: int | float | None
-    min_pixels: int | float | None
-    max_pixels: int | float | None
+    repetition_penalty: float | None
+    temperature: float | None
+    top_p: float | None
+    min_pixels: int | None
+    max_pixels: int | None
     merge_layout_blocks: bool | None
     markdown_ignore_labels: list[str] | None
     vlm_extra_args: dict[str, Any] | None
@@ -274,7 +285,7 @@ class DocParsingOptions:
                 default=DEFAULT_PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK,
             ),
             layout_threshold=_override_env(
-                int | float,
+                float,
                 overrides,
                 "layout_threshold",
                 env_name="PADDLEOCR_VL_LAYOUT_THRESHOLD",
@@ -297,21 +308,21 @@ class DocParsingOptions:
                 overrides,
                 "layout_merge_bboxes_mode",
                 env_name="PADDLEOCR_VL_LAYOUT_MERGE_BBOXES_MODE",
-            ),  # large(default), small, union
+            ),
             layout_shape_mode=_override_env(
                 str,
                 overrides,
                 "layout_shape_mode",
                 env_name="PADDLEOCR_VL_LAYOUT_SHAPE_MODE",
                 default=DEFAULT_PADDLEOCR_VL_LAYOUT_SHAPE_MODE,
-            ),  # rect, quad, poly, auto(default)
+            ),
             prompt_label=_override_env(
                 str,
                 overrides,
                 "prompt_label",
                 env_name="PADDLEOCR_VL_PROMPT_LABEL",
                 default=DEFAULT_PADDLEOCR_VL_PROMPT_LABEL,
-            ),  # ocr(default), formula, table, chart
+            ),
             format_block_content=_override_env(
                 bool,
                 overrides,
@@ -320,35 +331,35 @@ class DocParsingOptions:
                 default=DEFAULT_PADDLEOCR_VL_FORMAT_BLOCK_CONTENT,
             ),
             repetition_penalty=_override_env(
-                int | float,
+                float,
                 overrides,
                 "repetition_penalty",
                 env_name="PADDLEOCR_VL_REPETITION_PENALTY",
                 default=DEFAULT_PADDLEOCR_VL_REPETITION_PENALTY,
             ),
             temperature=_override_env(
-                int | float,
+                float,
                 overrides,
                 "temperature",
                 env_name="PADDLEOCR_VL_TEMPERATURE",
                 default=DEFAULT_PADDLEOCR_VL_TEMPERATURE,
             ),
             top_p=_override_env(
-                int | float,
+                float,
                 overrides,
                 "top_p",
                 env_name="PADDLEOCR_VL_TOP_P",
                 default=DEFAULT_PADDLEOCR_VL_TOP_P,
             ),
             min_pixels=_override_env(
-                int | float,
+                int,
                 overrides,
                 "min_pixels",
                 env_name="PADDLEOCR_VL_MIN_PIXELS",
                 default=DEFAULT_PADDLEOCR_VL_MIN_PIXELS,
             ),
             max_pixels=_override_env(
-                int | float,
+                int,
                 overrides,
                 "max_pixels",
                 env_name="PADDLEOCR_VL_MAX_PIXELS",
@@ -451,7 +462,8 @@ class PaddleOCRVLParserOptions:
         return cls(
             api_mode=mode,
             model=str(
-                _resolve_option(
+                _override_env(
+                    str,
                     overrides,
                     "model",
                     env_name="PADDLEOCR_VL_MODEL",
@@ -591,32 +603,9 @@ __all__ = [
     "CONTENT_LIST_FILENAME",
     "DEFAULT_PADDLEOCR_VL_API_MODE",
     "DEFAULT_PADDLEOCR_VL_ENGINE_VERSION",
-    "DEFAULT_PADDLEOCR_VL_LAYOUT_NMS",
-    "DEFAULT_PADDLEOCR_VL_LAYOUT_SHAPE_MODE",
-    "DEFAULT_PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS",
-    "DEFAULT_PADDLEOCR_VL_MAX_PIXELS",
-    "DEFAULT_PADDLEOCR_VL_MERGE_TABLES",
-    "DEFAULT_PADDLEOCR_VL_MIN_PIXELS",
-    "DEFAULT_PADDLEOCR_VL_MODEL",
     "DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT",
-    "DEFAULT_PADDLEOCR_VL_PROMPT_LABEL",
-    "DEFAULT_PADDLEOCR_VL_RELEVEL_TITLES",
-    "DEFAULT_PADDLEOCR_VL_REPETITION_PENALTY",
-    "DEFAULT_PADDLEOCR_VL_RESTRUCTURE_PAGES",
-    "DEFAULT_PADDLEOCR_VL_TEMPERATURE",
-    "DEFAULT_PADDLEOCR_VL_TOP_P",
-    "DEFAULT_PADDLEOCR_VL_USE_CHART_RECOGNITION",
-    "DEFAULT_PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY",
-    "DEFAULT_PADDLEOCR_VL_USE_DOC_UNWARPING",
-    "DEFAULT_PADDLEOCR_VL_USE_LAYOUT_DETECTION",
-    "DEFAULT_PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK",
-    "DEFAULT_PADDLEOCR_VL_USE_SEAL_RECOGNITION",
     "MANIFEST_ENGINE",
     "PaddleOCRVLParserOptions",
     "VALID_PADDLEOCR_VL_API_MODES",
-    "current_endpoint_signature",
-    "current_engine_version",
-    "current_options_signature",
     "is_bundle_valid",
-    "snapshot_tunable_env",
 ]
