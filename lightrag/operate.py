@@ -313,8 +313,13 @@ async def _handle_entity_relation_summary(
         # Calculate total tokens in current list while periodically yielding so
         # a large merge does not monopolize the event loop in single-worker mode.
         total_tokens = 0
+        # Tokenize each description once; the chunk-building pass below
+        # reuses these counts instead of re-encoding the same strings.
+        desc_token_counts = []
         for i, desc in enumerate(current_list, start=1):
-            total_tokens += len(tokenizer.encode(desc))
+            tokens = len(tokenizer.encode(desc))
+            desc_token_counts.append(tokens)
+            total_tokens += tokens
             await _cooperative_yield(i, every=32)
 
         # If total length is within limits, perform final summarization
@@ -352,9 +357,12 @@ async def _handle_entity_relation_summary(
         current_chunk = []
         current_tokens = 0
 
-        # Currently least 3 descriptions in current_list
-        for i, desc in enumerate(current_list, start=1):
-            desc_tokens = len(tokenizer.encode(desc))
+        # Currently least 3 descriptions in current_list.
+        # Reuse the per-description token counts computed above instead of
+        # re-encoding every description a second time.
+        for i, (desc, desc_tokens) in enumerate(
+            zip(current_list, desc_token_counts), start=1
+        ):
             await _cooperative_yield(i, every=32)
 
             # If adding current description would exceed limit, finalize current chunk

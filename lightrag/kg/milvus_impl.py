@@ -2867,18 +2867,34 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             return result
 
     async def finalize(self):
-        """Flush pending vector ops; surface unflushed data as RuntimeError.
+        """Flush pending vector ops, then release the Milvus gRPC channel.
 
-        Milvus has no client connection to release (the MilvusClient is
-        stateless from the storage layer's perspective), but we still need
-        to fail loudly when a transient bulk error left writes buffered —
-        the caller must not believe storage finalized cleanly.
+        Every other server-backed storage releases its client here (Neo4j
+        driver, Postgres pool, Mongo client, OpenSearch ClientManager); the
+        MilvusClient owns a gRPC channel that should be closed explicitly
+        too — ``close()`` is already used for that purpose by
+        ``_rebuild_milvus_client``. We still fail loudly when a transient
+        bulk error left writes buffered — the caller must not believe
+        storage finalized cleanly.
         """
         flush_error: Exception | None = None
         try:
             await self._flush_pending_vector_ops()
         except Exception as e:
             flush_error = e
+
+        # Release the gRPC channel after the flush so the flush can still use
+        # the client. Best-effort: close() on a dead channel is a no-op (see
+        # _rebuild_milvus_client). The connection is freed on every exit path,
+        # matching the close-on-release pattern of the other server-backed
+        # storages (Neo4j / Postgres / Mongo / OpenSearch).
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception as close_error:
+                logger.warning(
+                    f"[{self.workspace}] Failed to close Milvus client: {close_error}"
+                )
 
         # Read the residual buffer sizes under the flush lock so the
         # snapshot is consistent with any racing late-arriving mutator

@@ -514,3 +514,17 @@ async def test_drop_pending_index_ops_clears_buffers():
     await s.drop_pending_index_ops()
     assert not s._pending_vector_docs
     assert not s._pending_vector_deletes
+
+
+@pytest.mark.asyncio
+async def test_finalize_closes_qdrant_client():
+    """finalize() must release the Qdrant client transport instead of leaving
+    it for GC — mirroring the close-on-release pattern of the other
+    server-backed storages."""
+    s = _make_storage(MockEmbeddingFunc())
+    client = s._client
+    assert client is not None
+
+    await s.finalize()
+
+    client.close.assert_called_once()

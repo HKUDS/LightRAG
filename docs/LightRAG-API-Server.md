@@ -633,6 +633,8 @@ The command prompts for the password and prints an `admin:{bcrypt}...` entry rea
 
 If Account credentials are not configured, the Web UI will access the system as a Guest. Therefore, even if only an API Key is configured, all APIs can still be accessed through the Guest account, which remains insecure. Hence, to safeguard the API, it is necessary to configure both authentication methods simultaneously.
 
+> Although the server can be configured with **both** an API key and account credentials, a single request should send **either** `X-API-Key` **or** `Authorization: Bearer <token>` — not both. When both headers are present, the `Authorization` token is validated first; if it is invalid or expired the request is rejected with `401 Invalid token` even when a valid `X-API-Key` is also supplied.
+
 ## For Azure OpenAI Backend
 
 Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
@@ -879,12 +881,21 @@ RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
-Here is an example configuration for utilizing the Reranker service provided by Aliyun:
+Here is an example configuration for utilizing the Reranker service provided by Aliyun (`gte-rerank-*` and `qwen3-vl-rerank`, which use the nested `input`/`parameters` payload format):
 
 ```
 RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+> **Aliyun `qwen3-rerank` series:** Unlike `gte-rerank-*` and `qwen3-vl-rerank`, the `qwen3-rerank` models use a flat, Cohere-style payload (`{"model", "query", "documents", "top_n", ...}`), return top-level `results`, and are served from a **different**, Cohere-compatible endpoint — `/compatible-api/v1/reranks`, not the `.../text-rerank/text-rerank` path used above. Because the format is identical to standard Cohere, configure them with `RERANK_BINDING=cohere` (not `aliyun`); no dedicated binding is needed. Replace `{WorkspaceId}` and the region with your own (see the [Aliyun Text Rerank API docs](https://help.aliyun.com/zh/model-studio/text-rerank-api)):
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=qwen3-rerank
+RERANK_BINDING_HOST=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
