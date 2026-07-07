@@ -38,6 +38,7 @@ from typing import Any
 from lightrag.constants import (
     PARSER_ENGINE_DOCLING,
     PARSER_ENGINE_MINERU,
+    PARSER_ENGINE_PADDLEOCR_VL,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
@@ -372,6 +373,29 @@ _ENGINE_PARAM_SPECS: dict[str, tuple[EngineParamSpec, ...]] = {
     PARSER_ENGINE_DOCLING: (
         EngineParamSpec(canonical="force_ocr", aliases=frozenset({"ocr"}), kind="bool"),
     ),
+    PARSER_ENGINE_PADDLEOCR_VL: (
+        EngineParamSpec(
+            canonical="page_range",
+            aliases=frozenset({"pr"}),
+            kind="str",
+            is_list=True,
+        ),
+        EngineParamSpec(
+            canonical="use_ocr_for_image_block",
+            aliases=frozenset({"useOcrForImageBlock"}),
+            kind="bool",
+        ),
+        EngineParamSpec(
+            canonical="use_seal_recognition",
+            aliases=frozenset({"useSealRecognition"}),
+            kind="bool",
+        ),
+        EngineParamSpec(
+            canonical="use_doc_unwarping",
+            aliases=frozenset({"useDocUnwarping"}),
+            kind="bool",
+        ),
+    ),
 }
 
 _ENGINE_PARAM_BY_NAME: dict[str, dict[str, EngineParamSpec]] = {
@@ -410,12 +434,13 @@ def _mineru_api_mode_is_local() -> bool:
     return (os.getenv("MINERU_API_MODE", "") or "").strip().lower() != "official"
 
 
-def _validate_page_range_segments(parts: list[str]) -> list[str]:
+def _validate_page_range_segments(engine: str, parts: list[str]) -> list[str]:
     """Validate page-range segment shape + the MinerU local single-segment rule.
 
-    ``official`` mode forwards a multi-segment list verbatim; ``local`` accepts
-    only a single page / range (mirrors ``cache.local_page_bounds``).  The
-    download-time ``local_page_bounds`` remains the final backstop.
+    MinerU ``official`` mode forwards a multi-segment list verbatim; MinerU
+    ``local`` accepts only a single page / range (mirrors
+    ``cache.local_page_bounds``). Other engines that expose their own
+    ``page_range`` / ``pageRanges`` field only share the segment-shape checks.
     """
     errors: list[str] = []
     for seg in parts:
@@ -432,7 +457,12 @@ def _validate_page_range_segments(parts: list[str]) -> list[str]:
                 errors.append(f"page_range segment {seg!r} must have end >= start")
         elif int(seg) < 1:
             errors.append(f"page_range segment {seg!r} must be a positive page")
-    if not errors and len(parts) > 1 and _mineru_api_mode_is_local():
+    if (
+        engine == PARSER_ENGINE_MINERU
+        and not errors
+        and len(parts) > 1
+        and _mineru_api_mode_is_local()
+    ):
         errors.append(
             "page_range with MINERU_API_MODE=local supports only a single page "
             "or range such as '1-10'; use MINERU_API_MODE=official for a "
@@ -442,7 +472,7 @@ def _validate_page_range_segments(parts: list[str]) -> list[str]:
 
 
 def _coerce_engine_value(
-    spec: EngineParamSpec, value: str, *, label: str
+    engine: str, spec: EngineParamSpec, value: str, *, label: str
 ) -> tuple[Any, str | None]:
     """Validate + coerce a single engine-param value to its canonical type.
 
@@ -481,7 +511,7 @@ def _coerce_engine_value(
         return None, f"{label}: value for {spec.canonical!r} must be non-empty"
     if spec.is_list and spec.canonical == "page_range":
         segments = [p.strip() for p in value.split(",")]
-        seg_errors = _validate_page_range_segments(segments)
+        seg_errors = _validate_page_range_segments(engine, segments)
         if seg_errors:
             return None, f"{label}: " + "; ".join(seg_errors)
         return ",".join(segments), None
@@ -554,7 +584,7 @@ def parse_engine_params(
             errors.append(f"{label}: parameter {spec.canonical!r} may not be repeated")
             continue
         seen.add(spec.canonical)
-        coerced, error = _coerce_engine_value(spec, value, label=label)
+        coerced, error = _coerce_engine_value(engine, spec, value, label=label)
         if error is not None:
             errors.append(error)
             continue
@@ -563,7 +593,9 @@ def parse_engine_params(
     # Join repeated-key list params, then coerce/validate the joined value.
     for canonical, values in list_values.items():
         spec = by_name[canonical]
-        coerced, error = _coerce_engine_value(spec, ",".join(values), label=label)
+        coerced, error = _coerce_engine_value(
+            engine, spec, ",".join(values), label=label
+        )
         if error is not None:
             errors.append(error)
             continue
@@ -604,7 +636,7 @@ def normalize_engine_params(
         else:
             value = str(value).strip()
         coerced, error = _coerce_engine_value(
-            spec, value, label=f"engine parameter {spec.canonical!r}"
+            engine, spec, value, label=f"engine parameter {spec.canonical!r}"
         )
         if error is not None:
             errors.append(error)

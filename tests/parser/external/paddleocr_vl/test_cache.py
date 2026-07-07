@@ -191,8 +191,9 @@ def test_parser_options_accept_per_file_overrides(
     options = PaddleOCRVLParserOptions.from_env(
         overrides={
             "page_range": "1-3",
-            "batch_id": "batch-file",
-            "use_chart_recognition": True,
+            "use_doc_unwarping": True,
+            "use_seal_recognition": False,
+            "use_ocr_for_image_block": True,
             "layout_threshold": 0.7,
             "layout_unclip_ratio": [1.0, 1.2],
             "prettify_markdown": True,
@@ -200,24 +201,24 @@ def test_parser_options_accept_per_file_overrides(
     )
 
     assert options.page_ranges == "1-3"
-    assert options.batch_id == "batch-file"
+    assert options.batch_id is None
     payload = options.request_payload()
     assert payload["model"] == "PaddleOCR-VL-1.6"
     assert payload["pageRanges"] == "1-3"
-    assert payload["batchId"] == "batch-file"
+    assert "batchId" not in payload
     assert "apiMode" not in payload
     payload = payload["optionalPayload"]
     # Overridden values
-    assert payload["useChartRecognition"] is True
+    assert payload["useDocUnwarping"] is True
+    assert payload["useSealRecognition"] is False
+    assert payload["useOcrForImageBlock"] is True
     assert payload["layoutThreshold"] == 0.7
     assert payload["layoutUnclipRatio"] == [1.0, 1.2]
     assert payload["prettifyMarkdown"] is True
     # Default values are also present
     assert payload["useDocOrientationClassify"] is False
-    assert payload["useDocUnwarping"] is False
     assert payload["useLayoutDetection"] is True
-    assert payload["useSealRecognition"] is True
-    assert payload["useOcrForImageBlock"] is False
+    assert payload["useChartRecognition"] is False
     assert payload["mergeTables"] is True
     assert payload["relevelTitles"] is True
     assert payload["layoutShapeMode"] == "auto"

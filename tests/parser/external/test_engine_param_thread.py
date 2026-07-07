@@ -77,6 +77,23 @@ def test_miss_path_threads_identical_engine_params(tmp_path):
     assert parser.seen["download_into"] == {"page_range": "1-3"}
 
 
+def test_paddleocr_vl_params_decode_and_thread_identically(tmp_path):
+    ctx = _make_ctx(
+        tmp_path, "paddleocr_vl(page_range=1-3,useOcrForImageBlock=true)"
+    )
+    parser = _RecordingParser(hit=False)
+    with pytest.raises(_Stop):
+        asyncio.run(parser.parse(ctx))
+    assert parser.seen["is_bundle_valid"] == {
+        "page_range": "1-3",
+        "use_ocr_for_image_block": True,
+    }
+    assert parser.seen["download_into"] == {
+        "page_range": "1-3",
+        "use_ocr_for_image_block": True,
+    }
+
+
 def test_hit_path_skips_client(tmp_path):
     ctx = _make_ctx(tmp_path, "mineru(page_range=1-3)")
     parser = _RecordingParser(hit=True)

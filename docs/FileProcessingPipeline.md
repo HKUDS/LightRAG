@@ -147,6 +147,7 @@ Parameters may also be attached to the **engine token** to override an external 
 
 ```text
 paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # filename hint
+paddle.[paddleocr_vl(page_range=1-3,page_range=5,useOcrForImageBlock=true)].pdf
 scan.[docling(force_ocr=true)].pdf
 LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # rule
 ```
@@ -159,10 +160,15 @@ Currently supported engine parameters (canonical / alias):
 | `mineru` | `language` | — | str | OCR / model language (e.g. `en`, `ch`) |
 | `mineru` | `local_parse_method` | `local_pm` | enum | `auto` / `txt` / `ocr` (local mode) |
 | `docling` | `force_ocr` | `ocr` | bool | `true` / `false` |
+| `paddleocr_vl` | `page_range` | `pr` | list | One or more page ranges; sent as the PaddleOCR-VL `pageRanges` request field |
+| `paddleocr_vl` | `use_ocr_for_image_block` | `useOcrForImageBlock` | bool | Per-document override for `PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK` |
+| `paddleocr_vl` | `use_seal_recognition` | `useSealRecognition` | bool | Per-document override for `PADDLEOCR_VL_USE_SEAL_RECOGNITION` |
+| `paddleocr_vl` | `use_doc_unwarping` | `useDocUnwarping` | bool | Per-document override for `PADDLEOCR_VL_USE_DOC_UNWARPING` |
 
 - **`page_range` may contain multiple page segments — write one `page_range=...` item per segment.** Inside `(...)` a comma only separates parameters, so a multi-segment list should be written as `page_range=1-3,page_range=5,page_range=7-9`, not as the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`. A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (for example, `page_range=1-3`).
+- PaddleOCR-VL has its own `pageRanges` field; its `page_range` hint uses the same repeated-key syntax but does not inherit MinerU local-mode's single-segment restriction.
 - **`local_parse_method` is local-only.** It only affects the local MinerU request, so it is **rejected** under `MINERU_API_MODE=official` (the official API neither sends it nor folds it into the cache key — accepting it would silently do nothing).
-- Only `mineru` and `docling` accept engine parameters; attaching one to `legacy`/`native` is a friendly error. Validation runs at startup (`LIGHTRAG_PARSER`) and at upload.
+- Only `mineru`, `docling`, and `paddleocr_vl` accept engine parameters; attaching one to `legacy`/`native` is a friendly error. Validation runs at startup (`LIGHTRAG_PARSER`) and at upload.
 - Merge priority: engine parameters resolve for the **final engine** — a rule's engine parameters are dropped when a filename hint selects a different (usable) engine.
 - `parse_engine` is stored in hint syntax (e.g. `mineru(page_range=1-3)`) and shown in `doc_status` metadata so you can see the parse parameters a document used.
 
@@ -926,19 +932,25 @@ PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080
 ```
 
 The official async submit request also accepts top-level `pageRanges` and
-`batchId` fields:
+`batchId` fields. `pageRanges` can be set per document through engine hints,
+while `batchId` and the default model remain global client configuration:
 
 ```bash
+PADDLEOCR_VL_MODEL=PaddleOCR-VL-1.6
 PADDLEOCR_VL_PAGE_RANGES=
 PADDLEOCR_VL_BATCH_ID=
 ```
 
 Optional PaddleOCR-VL request parameters are read from env and included in the
-official API `optionalPayload`. In local mode, the same effective options are
-sent as top-level JSON fields next to the base64 `file`, following the
-LightRAG-compatible `POST /layout-parsing` contract. The compatible local
-service should auto-detect the file type, so LightRAG does not send `fileType`.
-The options below are sent with the current client defaults when unset:
+official API `optionalPayload`. The `useOcrForImageBlock`,
+`useSealRecognition`, and `useDocUnwarping` options may also be overridden per
+document through hints, for example
+`paddleocr_vl(page_range=1-3,useOcrForImageBlock=true)`. In local mode, the
+same effective options are sent as top-level JSON fields next to the base64
+`file`, following the LightRAG-compatible `POST /layout-parsing` contract. The
+compatible local service should auto-detect the file type, so LightRAG does not
+send `fileType`. The options below are sent with the current client defaults
+when unset:
 
 ```bash
 PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=false
@@ -994,7 +1006,7 @@ __parsed__/<base>.paddleocr_vl_raw/
 
 Force re-parse (bypass cache): set `LIGHTRAG_FORCE_REPARSE_PADDLEOCR_VL=true`.
 
-Cache invalidation checks mirror the other external engines: source size/hash, API mode, endpoint signature, option signature (model plus every PaddleOCR-VL request parameter listed above, including `pageRanges` and `batchId`), optional `PADDLEOCR_VL_ENGINE_VERSION`, `content_list.json` size/sha256, and recorded asset file sizes. On cache hit, LightRAG skips the PaddleOCR-VL API call and rebuilds sidecar files from local `content_list.json`.
+Cache invalidation checks mirror the other external engines: source size/hash, API mode, endpoint signature, option signature (global model, `pageRanges`, `batchId`, and every PaddleOCR-VL request parameter listed above), optional `PADDLEOCR_VL_ENGINE_VERSION`, `content_list.json` size/sha256, and recorded asset file sizes. On cache hit, LightRAG skips the PaddleOCR-VL API call and rebuilds sidecar files from local `content_list.json`.
 
 ## 5. Document Duplicate Detection Rules
 

@@ -60,6 +60,42 @@ def test_parse_engine_params_basic_and_alias():
     assert errors == [] and parsed == {"local_parse_method": "ocr"}
 
 
+def test_parse_engine_params_paddleocr_vl_top_level_request_params(monkeypatch):
+    # PaddleOCR-VL has its own pageRanges request field; it must not inherit
+    # MinerU local-mode's single-segment restriction.
+    monkeypatch.delenv("MINERU_API_MODE", raising=False)
+    parsed, errors = parse_engine_params(
+        "page_range=1-3,pr=5,useOcrForImageBlock=true,"
+        "useSealRecognition=false,useDocUnwarping=yes",
+        engine="paddleocr_vl",
+        label="x",
+    )
+
+    assert errors == []
+    assert parsed == {
+        "page_range": "1-3,5",
+        "use_ocr_for_image_block": True,
+        "use_seal_recognition": False,
+        "use_doc_unwarping": True,
+    }
+
+
+def test_parse_engine_params_paddleocr_vl_rejects_unregistered_params():
+    _parsed, errors = parse_engine_params(
+        "batch_id=batch-1,model=PaddleOCR-VL,use_layout_detection=false,"
+        "merge_tables=false,visualize=true",
+        engine="paddleocr_vl",
+        label="x",
+    )
+
+    assert errors
+    assert any("unknown parameter 'batch_id'" in e for e in errors)
+    assert any("unknown parameter 'model'" in e for e in errors)
+    assert any("unknown parameter 'use_layout_detection'" in e for e in errors)
+    assert any("unknown parameter 'merge_tables'" in e for e in errors)
+    assert any("unknown parameter 'visualize'" in e for e in errors)
+
+
 def test_parse_engine_params_bool_coercion():
     parsed, errors = parse_engine_params("force_ocr=false", engine="docling", label="x")
     assert errors == [] and parsed == {"force_ocr": False}
@@ -138,6 +174,47 @@ def test_normalize_engine_params_accepts_page_range_list_or_string(monkeypatch):
     assert e1 == [] and e2 == [] and by_list == by_str == {"page_range": "1-3,5"}
 
 
+def test_normalize_engine_params_accepts_paddleocr_vl_request_params(monkeypatch):
+    monkeypatch.delenv("MINERU_API_MODE", raising=False)
+    norm, errors = normalize_engine_params(
+        "paddleocr_vl",
+        {
+            "page_range": ["2", "4-6"],
+            "useOcrForImageBlock": "true",
+            "useSealRecognition": "false",
+            "useDocUnwarping": "yes",
+        },
+    )
+
+    assert errors == []
+    assert norm == {
+        "page_range": "2,4-6",
+        "use_ocr_for_image_block": True,
+        "use_seal_recognition": False,
+        "use_doc_unwarping": True,
+    }
+
+
+def test_normalize_engine_params_rejects_unregistered_paddleocr_vl_params():
+    _norm, errors = normalize_engine_params(
+        "paddleocr_vl",
+        {
+            "batch_id": "batch-1",
+            "model": "PaddleOCR-VL",
+            "use_layout_detection": "false",
+            "merge_tables": "no",
+            "visualize": "yes",
+        },
+    )
+
+    assert errors
+    assert any("unknown parameter 'batch_id'" in e for e in errors)
+    assert any("unknown parameter 'model'" in e for e in errors)
+    assert any("unknown parameter 'use_layout_detection'" in e for e in errors)
+    assert any("unknown parameter 'merge_tables'" in e for e in errors)
+    assert any("unknown parameter 'visualize'" in e for e in errors)
+
+
 def test_normalize_engine_params_rejects_unregistered_engine():
     _norm, errors = normalize_engine_params("legacy", {"page_range": "1"})
     assert errors and "does not accept parameters" in errors[0]
@@ -151,6 +228,18 @@ def test_encode_decode_round_trip(monkeypatch):
     engine, params, errors = decode_parse_engine(enc)
     assert engine == "mineru" and errors == []
     assert params == {"page_range": "1-3,5", "language": "en"}
+
+
+def test_paddleocr_vl_encode_decode_round_trip():
+    enc = encode_parse_engine(
+        "paddleocr_vl",
+        {"page_range": "1-3,5", "use_doc_unwarping": True},
+    )
+
+    assert enc == "paddleocr_vl(page_range=1-3,page_range=5,use_doc_unwarping=true)"
+    engine, params, errors = decode_parse_engine(enc)
+    assert engine == "paddleocr_vl" and errors == []
+    assert params == {"page_range": "1-3,5", "use_doc_unwarping": True}
 
 
 def test_encode_bare_when_no_params():
@@ -195,6 +284,20 @@ def test_resolve_filename_engine_params(monkeypatch):
     assert d.engine_params == {"page_range": "1-3", "language": "en"}
     # selector stays a pure (here empty) string
     assert "(" not in d.process_options
+
+
+def test_resolve_filename_paddleocr_vl_engine_params():
+    d = resolve_parser_directives(
+        "paper.[paddleocr_vl(page_range=1-3,useOcrForImageBlock=true)].pdf",
+        parser_rules="",
+        require_external_endpoint=False,
+    )
+
+    assert d.engine == "paddleocr_vl"
+    assert d.engine_params == {
+        "page_range": "1-3",
+        "use_ocr_for_image_block": True,
+    }
 
 
 def test_resolve_rule_engine_params():

@@ -252,7 +252,6 @@ _REGISTRY: dict[str, ParserSpec] = {
         impl="lightrag.parser.external.paddleocr_vl.parser:PaddleOCRVLParser",
         suffixes=_PADDLEOCR_VL_SUFFIXES,
         queue_group=PARSER_ENGINE_PADDLEOCR_VL,
-        concurrency=int(os.getenv("MAX_PARALLEL_PARSE_PADDLEOCR_VL", "2")),
         endpoint_configured=_paddleocr_vl_endpoint_configured,
         endpoint_requirement=_paddleocr_vl_endpoint_requirement,
     ),

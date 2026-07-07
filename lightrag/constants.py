@@ -230,13 +230,14 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
 
 DEFAULT_MAX_PARALLEL_ANALYZE = 5  # Multimodal analysis (VLM) concurrency
 
-# Per-engine parsing concurrency defaults.  mineru / docling are
+# Per-engine parsing concurrency defaults.  mineru / docling / paddleocr_vl are
 # resource-intensive (GPU/CPU + memory), so they default to a modest amount of
 # parallelism (2); lower to 1 when resources are tight, or raise via the
 # MAX_PARALLEL_PARSE_* env vars when you have spare capacity.
 DEFAULT_MAX_PARALLEL_PARSE_NATIVE = 5
 DEFAULT_MAX_PARALLEL_PARSE_MINERU = 2
 DEFAULT_MAX_PARALLEL_PARSE_DOCLING = 2
+DEFAULT_MAX_PARALLEL_PARSE_PADDLEOCR_VL = 2
 
 # Staged pipeline queue size defaults.
 DEFAULT_QUEUE_SIZE_PARSE = 20

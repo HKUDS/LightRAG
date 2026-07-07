@@ -57,6 +57,19 @@ def test_register_parser_roundtrips_concurrency():
         registry._REGISTRY.pop("third-party-engine", None)
 
 
+def test_paddleocr_vl_uses_lightrag_builtin_parse_concurrency_field():
+    from dataclasses import fields
+
+    from lightrag.lightrag import LightRAG
+
+    field_names = {field.name for field in fields(LightRAG)}
+    assert "max_parallel_parse_paddleocr_vl" in field_names
+
+    spec = registry.parser_specs_snapshot()["paddleocr_vl"]
+    assert spec.queue_group == "paddleocr_vl"
+    assert spec.concurrency is None
+
+
 def test_mineru_endpoint_requirement_tracks_api_mode(monkeypatch):
     monkeypatch.setenv("MINERU_API_MODE", "official")
     assert registry.engine_endpoint_requirement("mineru") == "MINERU_API_TOKEN"
