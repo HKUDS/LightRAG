@@ -29,9 +29,11 @@ DEFAULT_PADDLEOCR_VL_USE_DOC_UNWARPING = False
 DEFAULT_PADDLEOCR_VL_USE_LAYOUT_DETECTION = True
 DEFAULT_PADDLEOCR_VL_USE_CHART_RECOGNITION = True
 DEFAULT_PADDLEOCR_VL_USE_SEAL_RECOGNITION = True
-DEFAULT_PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK = True
+DEFAULT_PADDLEOCR_VL_VISUALIZE = False
+DEFAULT_PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK = False
 DEFAULT_PADDLEOCR_VL_MERGE_TABLES = True
 DEFAULT_PADDLEOCR_VL_RELEVEL_TITLES = True
+DEFAULT_PADDLEOCR_VL_PRETTIFY_MARKDOWN = True
 DEFAULT_PADDLEOCR_VL_LAYOUT_SHAPE_MODE = "auto"
 DEFAULT_PADDLEOCR_VL_PROMPT_LABEL = "ocr"
 DEFAULT_PADDLEOCR_VL_REPETITION_PENALTY = 1
@@ -39,6 +41,7 @@ DEFAULT_PADDLEOCR_VL_TEMPERATURE = 0
 DEFAULT_PADDLEOCR_VL_TOP_P = 1
 DEFAULT_PADDLEOCR_VL_MIN_PIXELS = 147384
 DEFAULT_PADDLEOCR_VL_MAX_PIXELS = 2822400
+DEFAULT_PADDLEOCR_VL_SHOW_FORMULA_NUMBER = False
 DEFAULT_PADDLEOCR_VL_LAYOUT_NMS = True
 DEFAULT_PADDLEOCR_VL_RESTRUCTURE_PAGES = True
 DEFAULT_PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS: tuple[str, ...] = (
@@ -288,7 +291,8 @@ class PaddleOCRVLParserOptions:
                 overrides.get(
                     "show_formula_number",
                     os.getenv("PADDLEOCR_VL_SHOW_FORMULA_NUMBER"),
-                )
+                ),
+                default=DEFAULT_PADDLEOCR_VL_SHOW_FORMULA_NUMBER,
             ),
             restructure_pages=_coerce_bool(
                 overrides.get(
@@ -311,10 +315,12 @@ class PaddleOCRVLParserOptions:
                 overrides.get(
                     "prettify_markdown",
                     os.getenv("PADDLEOCR_VL_PRETTIFY_MARKDOWN"),
-                )
+                ),
+                default=DEFAULT_PADDLEOCR_VL_PRETTIFY_MARKDOWN,
             ),
             visualize=_coerce_bool(
-                overrides.get("visualize", os.getenv("PADDLEOCR_VL_VISUALIZE"))
+                overrides.get("visualize", os.getenv("PADDLEOCR_VL_VISUALIZE")),
+                default=DEFAULT_PADDLEOCR_VL_VISUALIZE,
             ),
             use_seal_recognition=_coerce_bool(
                 overrides.get(

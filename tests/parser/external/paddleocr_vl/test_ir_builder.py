@@ -185,3 +185,174 @@ def test_adjacent_figure_title_becomes_table_or_image_caption(tmp_path: Path) ->
     assert block.drawings[0].caption == "Figure 1: Architecture."
     assert "Table 1: Results." not in block.content_template
     assert "Figure 1: Architecture." not in block.content_template
+
+
+@pytest.mark.offline
+def test_caption_matches_across_ignorable_layout_noise(tmp_path: Path) -> None:
+    raw_dir = _write_bundle(
+        tmp_path,
+        [
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "doc_title",
+                            "block_content": "Title",
+                            "block_bbox": [10, 20, 30, 40],
+                        },
+                        {
+                            "block_label": "figure_title",
+                            "block_content": "Table 1: Results.",
+                            "block_bbox": [10, 50, 90, 60],
+                        },
+                        {
+                            "block_label": "number",
+                            "block_content": "1",
+                            "block_bbox": [92, 50, 96, 60],
+                        },
+                        {
+                            "block_label": "table",
+                            "block_content": "<table><tr><td>A</td></tr></table>",
+                            "block_bbox": [10, 70, 90, 110],
+                        },
+                        {
+                            "block_label": "image",
+                            "block_content": "",
+                            "block_bbox": [10, 120, 90, 170],
+                        },
+                        {
+                            "block_label": "header",
+                            "block_content": "demo.pdf",
+                            "block_bbox": [10, 5, 90, 15],
+                        },
+                        {
+                            "block_label": "figure_title",
+                            "block_content": "Figure 1: Architecture.",
+                            "block_bbox": [10, 180, 90, 190],
+                        },
+                    ]
+                },
+                "markdown": {
+                    "images": {
+                        "imgs/img_in_image_box_10_120_90_170.jpg": "ignored-url"
+                    }
+                },
+            }
+        ],
+    )
+
+    ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
+        raw_dir, document_name="demo.pdf"
+    )
+
+    block = ir.blocks[0]
+    assert block.tables[0].caption == "Table 1: Results."
+    assert block.drawings[0].caption == "Figure 1: Architecture."
+    assert "Table 1: Results." not in block.content_template
+    assert "Figure 1: Architecture." not in block.content_template
+
+
+@pytest.mark.offline
+def test_caption_matches_across_multiple_skip_labels(tmp_path: Path) -> None:
+    raw_dir = _write_bundle(
+        tmp_path,
+        [
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "doc_title",
+                            "block_content": "Title",
+                            "block_bbox": [10, 20, 30, 40],
+                        },
+                        {
+                            "block_label": "figure_title",
+                            "block_content": "Table 1: Results.",
+                            "block_bbox": [10, 50, 90, 60],
+                        },
+                        {
+                            "block_label": "number",
+                            "block_content": "1",
+                            "block_bbox": [92, 50, 96, 60],
+                        },
+                        {
+                            "block_label": "header",
+                            "block_content": "demo.pdf",
+                            "block_bbox": [10, 5, 90, 15],
+                        },
+                        {
+                            "block_label": "footer",
+                            "block_content": "footer",
+                            "block_bbox": [10, 185, 90, 195],
+                        },
+                        {
+                            "block_label": "formula_number",
+                            "block_content": "(1)",
+                            "block_bbox": [92, 70, 96, 80],
+                        },
+                        {
+                            "block_label": "table",
+                            "block_content": "<table><tr><td>A</td></tr></table>",
+                            "block_bbox": [10, 70, 90, 110],
+                        },
+                    ]
+                },
+            }
+        ],
+    )
+
+    ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
+        raw_dir, document_name="demo.pdf"
+    )
+
+    block = ir.blocks[0]
+    assert block.tables[0].caption == "Table 1: Results."
+    assert "Table 1: Results." not in block.content_template
+
+
+@pytest.mark.offline
+def test_caption_does_not_match_across_non_skip_content(tmp_path: Path) -> None:
+    raw_dir = _write_bundle(
+        tmp_path,
+        [
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "doc_title",
+                            "block_content": "Title",
+                            "block_bbox": [10, 20, 30, 40],
+                        },
+                        {
+                            "block_label": "figure_title",
+                            "block_content": "Table 1: Results.",
+                            "block_bbox": [10, 50, 90, 60],
+                        },
+                        {
+                            "block_label": "number",
+                            "block_content": "1",
+                            "block_bbox": [92, 50, 96, 60],
+                        },
+                        {
+                            "block_label": "text",
+                            "block_content": "Intervening body text.",
+                            "block_bbox": [10, 62, 90, 68],
+                        },
+                        {
+                            "block_label": "table",
+                            "block_content": "<table><tr><td>A</td></tr></table>",
+                            "block_bbox": [10, 70, 90, 110],
+                        },
+                    ]
+                },
+            }
+        ],
+    )
+
+    ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
+        raw_dir, document_name="demo.pdf"
+    )
+
+    block = ir.blocks[0]
+    assert block.tables[0].caption == ""
+    assert "Table 1: Results." in block.content_template

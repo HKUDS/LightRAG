@@ -37,6 +37,7 @@ from lightrag.utils import logger
 PREFACE_HEADING = "Preface/Uncategorized"
 _IMG_SRC_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"']", re.I)
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+_IMG_IN_IMAGE_BOX_RE = re.compile(r"^img_in_image_box_(\d+)_(\d+)_(\d+)_(\d+)$", re.I)
 _SKIP_LABELS = {
     "number",
     "formula_number",
@@ -139,12 +140,18 @@ class PaddleOCRVLIRBuilder:
                 cb_positions.append(position)
 
         for page_index, page in enumerate(pages):
+            # Each item in items contains the following key-value pairs:
+            # - block_bbox: (np.ndarray) Bounding box of the layout region
+            # - block_label: (str) Label of the layout region, e.g., text, table, etc.
+            # - block_content: (str) Content within the layout region
+            # - block_id: (int) Index of the layout region, used for displaying layout sorting results
+            # - block_order: (int) Reading order of the layout region, None for unsorted parts
             items = _page_items(page)
             captions_by_index, consumed_caption_indexes = _caption_map_for_items(items)
             # Build bbox -> image path mapping from markdown.images
             page_images = _page_images_map(page)
             for item_index, item in enumerate(items):
-                label = str(item.get("block_label") or item.get("label") or "").lower()
+                label = _item_label(item)
                 if label in _SKIP_LABELS:
                     continue
                 if (
@@ -152,7 +159,7 @@ class PaddleOCRVLIRBuilder:
                     and item_index in consumed_caption_indexes
                 ):
                     continue
-                text = _coerce_text(item)
+                text = _item_content(item)
 
                 # Handle images first since they may have empty content
                 if label == "image":
@@ -278,7 +285,9 @@ def _page_images_map(page: dict[str, Any]) -> dict[tuple[int, int, int, int], st
     """
     result = {}
     markdown = page.get("markdown") if isinstance(page, dict) else None
-    images = markdown.get("images") if isinstance(markdown, dict) else None
+    images: dict[str, str] | None = (
+        markdown.get("images") if isinstance(markdown, dict) else None
+    )
     if not isinstance(images, dict):
         return result
     for path in images.keys():
@@ -294,13 +303,11 @@ def _parse_bbox_from_image_path(path: str) -> tuple[int, int, int, int] | None:
     Path format: ``imgs/img_in_image_box_X1_Y1_X2_Y2.jpg``
     """
     try:
-        name = path.split("/")[-1] if "/" in path else path
-        if not name.startswith("img_in_image_box_"):
-            return None
-        parts = name.replace("img_in_image_box_", "").replace(".jpg", "").split("_")
-        if len(parts) == 4:
-            return tuple(int(p) for p in parts)
-    except (ValueError, AttributeError):
+        stem = Path(path).stem
+        match = _IMG_IN_IMAGE_BOX_RE.fullmatch(stem)
+        if match:
+            return tuple(int(x) for x in match.groups())  # type: ignore
+    except (ValueError, TypeError):
         pass
     return None
 
@@ -315,26 +322,42 @@ def _heading_level(label: str, text: str) -> int | None:
     return None
 
 
-def _coerce_text(item: dict[str, Any]) -> str:
-    value = item.get("block_content")
-    if value is None:
-        value = item.get("text") or item.get("content")
-    return str(value or "").strip()
+def _item_content(item: dict[str, Any]) -> str:
+    content = item.get("block_content")
+    if content is None:
+        content = item.get("text", item.get("content"))
+    return str(content or "").strip()
 
 
 def _item_label(item: dict[str, Any]) -> str:
-    return str(item.get("block_label") or item.get("label") or "").lower()
+    label = item.get("block_label")
+    if label is None:
+        label = item.get("label", "")
+    return str(label or "").strip().lower()
 
 
 def _caption_map_for_items(
     items: list[dict[str, Any]],
 ) -> tuple[dict[int, str], set[int]]:
+    """Build mapping from media elements (images/tables) to their captions.
+
+    PaddleOCR-VL treats figure/table titles as independent text blocks labeled
+    'figure_title' rather than attaching them directly to their corresponding
+    image/table elements. This function finds which title belongs to which media
+    by examining adjacent items and applying layout heuristics (e.g., table
+    captions typically appear above tables, figure captions below images).
+
+    Returns:
+        captions_by_index: Dict mapping media item index to its caption text
+        consumed_caption_indexes: Set of title indices that were successfully
+            matched and should not be rendered as separate text blocks
+    """
     captions_by_index: dict[int, str] = {}
     consumed_caption_indexes: set[int] = set()
     for index, item in enumerate(items):
         if _item_label(item) != _FIGURE_TITLE_LABEL:
             continue
-        caption = _coerce_text(item)
+        caption = _item_content(item)
         if not caption:
             continue
         target_index = _adjacent_caption_target(items, index, caption)
@@ -348,27 +371,63 @@ def _caption_map_for_items(
 def _adjacent_caption_target(
     items: list[dict[str, Any]], caption_index: int, caption: str
 ) -> int | None:
+    # Adjacent positions relative to caption in the rendered layout flow. OCR
+    # may insert page numbers or headers between a caption and its media, so
+    # skip ignorable layout noise while preserving real content boundaries.
+    prev_index = _nearest_neighbor(items, caption_index, step=-1)
+    next_index = _nearest_neighbor(items, caption_index, step=1)
+
     candidates: list[int] = []
-    for index in (caption_index - 1, caption_index + 1):
-        if 0 <= index < len(items) and _item_label(items[index]) in _MEDIA_LABELS:
+    for index in (prev_index, next_index):
+        if index is not None and _item_label(items[index]) in _MEDIA_LABELS:
             candidates.append(index)
     if not candidates:
         return None
+
+    # - Tables: captions typically appear ABOVE the table → table after caption
+    # - Images: captions typically appear BELOW the image → image before caption
     preferred_label = _caption_preferred_media_label(caption)
+    if preferred_label == "table" and next_index in candidates:
+        return next_index
+    if preferred_label == "image" and prev_index in candidates:
+        return prev_index
     if preferred_label:
         for index in candidates:
             if _item_label(items[index]) == preferred_label:
                 return index
-    if caption_index + 1 in candidates:
-        return caption_index + 1
+
+    candidate_labels = {_item_label(items[i]) for i in candidates}
+    if len(candidate_labels) == 1:
+        only_label = next(iter(candidate_labels))
+        if only_label == "table" and next_index in candidates:
+            return next_index
+        if only_label == "image" and prev_index in candidates:
+            return prev_index
+
+    if next_index in candidates:
+        return next_index
     return candidates[0]
+
+
+def _nearest_neighbor(
+    items: list[dict[str, Any]], caption_index: int, *, step: int
+) -> int | None:
+    index = caption_index + step
+    while 0 <= index < len(items):
+        item = items[index]
+        label = _item_label(item)
+        if label in _SKIP_LABELS:
+            index += step
+            continue
+        return index
+    return None
 
 
 def _caption_preferred_media_label(caption: str) -> str:
     normalized = caption.lstrip().lower()
-    if normalized.startswith("table"):
+    if normalized.startswith(("table", "tab.", "tbl.", "表", "表格")):
         return "table"
-    if normalized.startswith("figure") or normalized.startswith("fig."):
+    if normalized.startswith(("figure", "fig", "plate", "图", "图片", "插图", "附图")):
         return "image"
     return ""
 
@@ -380,7 +439,7 @@ def _position_from_item(item: dict[str, Any], page_index: int) -> IRPosition | N
             return IRPosition(
                 type="bbox",
                 anchor=str(page_index + 1),
-                range=[float(x) for x in bbox],
+                range=[int(x) for x in bbox],
             )
         except (TypeError, ValueError):
             logger.debug("[paddleocr_vl] skipping malformed bbox %r", bbox)
@@ -388,7 +447,7 @@ def _position_from_item(item: dict[str, Any], page_index: int) -> IRPosition | N
 
 
 def _build_table(item: dict[str, Any], *, caption: str = "") -> IRTable | None:
-    raw = _coerce_text(item)
+    raw = _item_content(item)
     if not raw:
         return None
     html = unwrap_html_table(raw) if looks_like_html_table_payload(raw) else raw
