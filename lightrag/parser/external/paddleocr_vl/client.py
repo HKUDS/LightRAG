@@ -23,8 +23,8 @@ from lightrag.parser.external.paddleocr_vl.cache import (
     DEFAULT_PADDLEOCR_VL_ENGINE_VERSION,
     DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT,
     MANIFEST_ENGINE,
-    PaddleOCRVLParserOptions,
     VALID_PADDLEOCR_VL_API_MODES,
+    PaddleOCRVLParserOptions,
 )
 
 if TYPE_CHECKING:

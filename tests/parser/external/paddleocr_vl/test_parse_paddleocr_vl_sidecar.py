@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+import lightrag.parser.external.paddleocr_vl.cache as cache_mod
 from lightrag import LightRAG
 from lightrag.constants import FULL_DOCS_FORMAT_LIGHTRAG
 from lightrag.parser.base import ParseContext
@@ -17,7 +18,6 @@ from lightrag.parser.external import Manifest, ManifestFile, write_manifest
 from lightrag.parser.external._common import compute_size_and_hash
 from lightrag.parser.registry import get_parser, supported_parser_engines
 from lightrag.utils import EmbeddingFunc, Tokenizer
-import lightrag.parser.external.paddleocr_vl.cache as cache_mod
 
 # Access internal test helpers via module object (not in __all__)
 current_endpoint_signature = cache_mod.current_endpoint_signature

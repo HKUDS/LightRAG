@@ -543,10 +543,12 @@ def is_bundle_valid(
         return False
 
     try:
-        if source_file.stat().st_size != int(manifest.source_size_bytes):
-            return False
+        cur_size = source_file.stat().st_size
     except OSError:
         return False
+    if cur_size != int(manifest.source_size_bytes):
+        return False
+
     _, cur_hash = compute_size_and_hash(source_file)
     if cur_hash != manifest.source_content_hash:
         return False
@@ -563,10 +565,11 @@ def is_bundle_valid(
     ):
         return False
 
-    if not manifest.options_signature:
+    if overrides and not manifest.options_signature:
         return False
-    if current_options_signature(overrides) != manifest.options_signature:
-        return False
+    if manifest.options_signature:
+        if current_options_signature(overrides) != manifest.options_signature:
+            return False
 
     cur_version = os.getenv("PADDLEOCR_VL_ENGINE_VERSION", "").strip()
     if (
@@ -605,7 +608,7 @@ __all__ = [
     "DEFAULT_PADDLEOCR_VL_ENGINE_VERSION",
     "DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT",
     "MANIFEST_ENGINE",
-    "PaddleOCRVLParserOptions",
     "VALID_PADDLEOCR_VL_API_MODES",
+    "PaddleOCRVLParserOptions",
     "is_bundle_valid",
 ]

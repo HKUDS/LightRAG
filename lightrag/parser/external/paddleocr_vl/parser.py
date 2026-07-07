@@ -49,3 +49,10 @@ class PaddleOCRVLParser(ExternalParserBase):
         return PaddleOCRVLIRBuilder().normalize_from_workdir(
             raw_dir, document_name=document_name
         )
+
+    def validate_ir(self, ir: "IRDoc", *, file_path: str, raw_dir: Path) -> None:
+        if not ir.blocks:
+            raise ValueError(
+                f"PaddleOCR-VL IR builder produced zero blocks for {file_path} "
+                f"(raw_dir={raw_dir})"
+            )

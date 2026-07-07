@@ -9,7 +9,6 @@ import pytest
 
 from lightrag.parser.external.paddleocr_vl import PaddleOCRVLIRBuilder
 
-
 SAMPLE = (
     Path(__file__).resolve().parents[4]
     / "lightrag"

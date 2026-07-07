@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import lightrag.parser.external.paddleocr_vl.cache as cache_mod
 from lightrag.parser.external import Manifest, ManifestFile, write_manifest
 from lightrag.parser.external._common import compute_size_and_hash
 from lightrag.parser.external.paddleocr_vl import (
@@ -13,7 +14,6 @@ from lightrag.parser.external.paddleocr_vl import (
     clear_dir_contents,
     raw_dir_for_parsed_dir,
 )
-import lightrag.parser.external.paddleocr_vl.cache as cache_mod
 from lightrag.parser.external.paddleocr_vl.cache import (
     PaddleOCRVLParserOptions,
     is_bundle_valid,

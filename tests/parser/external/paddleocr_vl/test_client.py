@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import inspect
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +11,6 @@ import pytest
 
 import lightrag.parser.external.paddleocr_vl.client as client_mod
 from lightrag.parser.external.paddleocr_vl.client import PaddleOCRVLRawClient
-
 
 DEFAULT_PAYLOAD = {
     "useDocOrientationClassify": False,

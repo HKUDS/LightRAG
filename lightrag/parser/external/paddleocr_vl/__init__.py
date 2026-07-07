@@ -6,6 +6,8 @@ from lightrag.constants import PADDLEOCR_VL_RAW_DIR_SUFFIX
 from lightrag.parser.external._common import (
     clear_dir_contents,
     compute_size_and_hash,
+)
+from lightrag.parser.external._common import (
     raw_dir_for_parsed_dir as _raw_dir_for_parsed_dir,
 )
 from lightrag.parser.external.paddleocr_vl.cache import is_bundle_valid

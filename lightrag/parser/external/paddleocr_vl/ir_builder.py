@@ -33,7 +33,6 @@ from lightrag.sidecar.ir import (
 )
 from lightrag.utils import logger
 
-
 PREFACE_HEADING = "Preface/Uncategorized"
 _IMG_SRC_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"']", re.I)
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
