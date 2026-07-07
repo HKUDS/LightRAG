@@ -72,6 +72,31 @@ def test_outline_candidate_survives_smaller_font() -> None:
     assert d.rule_trail[0] == "outline"
 
 
+def test_outline_strong_body_demotion_is_rule_tagged() -> None:
+    """Review C2: an outline paragraph the recognition-time strong-body check
+    demotes must leave a rule-tagged demoted decision (not a silent drop), so
+    the I2 retention check sees an explicit demotion instead of a violation."""
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+
+    records = _body(20) + [
+        _para("这段正文被误加了大纲级别，它以句号结束。", size=12.0, outline_level=1)
+    ]
+    result = _gate(records)
+    # Not admitted as a heading candidate…
+    assert "这段正文被误加了大纲级别，它以句号结束。" not in _texts(result)
+    # …but recorded as an explicit, rule-tagged demotion.
+    assert len(result.demoted) == 1
+    dem = result.demoted[0]
+    assert dem.record_index == len(records) - 1
+    assert dem.is_heading is False
+    assert "strong_body_demoted" in dem.rule_trail
+    # Merging the demoted decisions (as run_smart_heading does) makes I2 pass.
+    merged = list(result.decisions) + result.demoted
+    assert verify_baseline_heading_retention(records, merged) == []
+
+
 def test_high_confidence_size_tiers() -> None:
     """G5-6: +1pt alone stands; +0.5pt needs companions; isolated fails."""
     records = _body(30)

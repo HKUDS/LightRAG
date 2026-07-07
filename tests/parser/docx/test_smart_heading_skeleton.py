@@ -346,3 +346,93 @@ def test_skeleton_suspected_inversion_counted_not_acted_on() -> None:
     assert warnings.get("smart_skeleton_inversion_suspected", 0) >= 1
     assert [d.level for d in ds] == [3, 2]  # observed, never acted on
     assert audit == []
+
+
+# ---------------------------------------------------------------------------
+# assembler bookkeeping (review C3 / C4)
+# ---------------------------------------------------------------------------
+
+
+def test_merged_then_demoted_heading_keeps_member_text() -> None:
+    """Review C4: a §2.2.7-merged heading later demoted by the sweep must
+    still emit every member's text. The absorbed-member markers are only laid
+    down while the merged heading survives; once demoted, the members fall
+    back to their own paragraph rows, so I1 passes (no content loss)."""
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_content_preservation,
+    )
+    from lightrag.parser.docx.smart_heading.heading_flow import SmartHeadingResult
+
+    records = [
+        ParagraphRecord(
+            kind="para", text="标题被拆成两行，上半句在此，", full_text_raw="标题被拆成两行，上半句在此，"
+        ),
+        ParagraphRecord(
+            kind="para",
+            text="下半句在此，合并后成为带句号的完整句子。",
+            full_text_raw="下半句在此，合并后成为带句号的完整句子。",
+        ),
+        ParagraphRecord(kind="para", text="正文段落。", full_text_raw="正文段落。"),
+    ]
+    ds = [
+        HeadingDecision(record_index=0, text=records[0].text, is_heading=True, level=2, font_size_pt=14.0),
+        HeadingDecision(record_index=1, text=records[1].text, is_heading=True, level=2, font_size_pt=14.0),
+    ]
+    ds = merge_split_headings(ds, records, warnings={})
+    demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings={})
+
+    # Reproduce run_smart_heading's absorbed-sentinel bookkeeping.
+    decisions: dict[int, HeadingDecision] = {}
+    for d in ds:
+        decisions[d.record_index] = d
+        if d.member_indices and not d.is_title_block and d.is_heading:
+            for m in d.member_indices[1:]:
+                decisions[m] = HeadingDecision(record_index=m, text="", absorbed=True)
+    result = SmartHeadingResult(
+        decisions=decisions, toc_indices=set(), doc_title=None, audit={}
+    )
+    blocks = _assemble_blocks_smart(records, result, None, {})
+    assert verify_content_preservation(records, blocks) == []
+    joined = "\n".join(b["content"] for b in blocks)
+    assert "下半句在此" in joined  # the absorbed member survived
+
+
+def test_title_block_members_emitted_exactly_once() -> None:
+    """Review C3: non-lead members of a multi-paragraph title block are
+    emitted once (inside the composite level-0 block), never re-emitted as
+    standalone body rows."""
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.heading_flow import SmartHeadingResult
+
+    records = [
+        ParagraphRecord(kind="para", text="关于加强质量管理的通知"),
+        ParagraphRecord(kind="para", text="质监发〔2026〕12号"),
+        ParagraphRecord(kind="para", text="第一章 总则"),
+        ParagraphRecord(kind="para", text="正文内容一。"),
+    ]
+    tb = HeadingDecision(
+        record_index=0,
+        text=records[0].text,
+        is_heading=True,
+        is_title_block=True,
+        level=0,
+        composed_heading="关于加强质量管理的通知 — 质监发〔2026〕12号",
+        title_parts=("关于加强质量管理的通知", "质监发〔2026〕12号"),
+        member_indices=(0, 1),
+    )
+    member_sentinel = HeadingDecision(record_index=1, text="")
+    member_sentinel.note("title_block_member")
+    heading = HeadingDecision(record_index=2, text=records[2].text, is_heading=True, level=1)
+    result = SmartHeadingResult(
+        decisions={0: tb, 1: member_sentinel, 2: heading},
+        toc_indices=set(),
+        doc_title="关于加强质量管理的通知",
+        audit={},
+    )
+    blocks = _assemble_blocks_smart(records, result, None, {})
+    all_content = "\n".join(b["content"] for b in blocks)
+    assert all_content.count("质监发〔2026〕12号") == 1
+    # The doc-number lives only inside the level-0 title block.
+    title_block = next(b for b in blocks if b.get("is_title_block"))
+    assert "质监发〔2026〕12号" in title_block["content"]

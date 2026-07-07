@@ -263,14 +263,24 @@ def verify_content_preservation(
     genuinely lost short paragraph hide inside an unrelated longer line.
     Only the TOC whitelist (indices from the two-channel judgment) may be
     absent entirely.
+
+    Source paragraphs are split on ``\n`` before canonicalizing so a body
+    paragraph carrying soft breaks (``w:br`` → ``"\n"``, emitted verbatim as
+    multiple output content lines) compares symmetrically with the output;
+    without the split the whole paragraph would canonicalize to one piece
+    that no single output line equals, forcing a spurious fallback. Heading
+    merges / soft-break heading joins still resolve through the tolerance
+    pass (several source lines → one joined output line).
     """
     source: list[str] = []
     for i, rec in enumerate(records):
         if rec.kind != "para" or i in toc_indices:
             continue
         for piece in (rec.text, rec.demoted_body_text):
-            if piece:
-                canon = canonicalize_paragraph_text(piece)
+            if not piece:
+                continue
+            for line in piece.split("\n"):
+                canon = canonicalize_paragraph_text(line)
                 if canon:
                     source.append(canon)
 

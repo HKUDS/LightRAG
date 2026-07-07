@@ -1199,6 +1199,16 @@ def _assemble_blocks_smart(
     decisions = smart_result.decisions
     toc_indices = smart_result.toc_indices
 
+    # Non-lead members of every title block are emitted as part of their
+    # lead record's composite block; their standalone rows must be skipped.
+    # (Their sentinel decisions are NOT ``is_title_block``, so checking the
+    # decision flag on each record misses them and double-emits the text —
+    # review C3.)
+    title_member_skip: set[int] = set()
+    for _d in decisions.values():
+        if _d.is_title_block and _d.member_indices:
+            title_member_skip.update(_d.member_indices[1:])
+
     blocks: list = []
     current_heading = "Preface/Uncategorized"
     current_heading_level = 1
@@ -1226,6 +1236,8 @@ def _assemble_blocks_smart(
     for i, rec in enumerate(records):
         if i in toc_indices:
             continue
+        if i in title_member_skip:
+            continue  # non-lead title-block member, emitted with the lead
         if rec.kind in ("empty_para", "empty_table", "section_break"):
             continue
         if rec.kind == "table":
@@ -1273,8 +1285,6 @@ def _assemble_blocks_smart(
                     parse_metadata["first_heading"] = main_title
                 first_heading_recorded = True
             continue
-        if d is not None and d.is_title_block and i in d.member_indices:
-            continue  # non-lead member, already emitted with the block
 
         if d is not None and d.is_heading:
             level = max(1, int(d.level or 1))

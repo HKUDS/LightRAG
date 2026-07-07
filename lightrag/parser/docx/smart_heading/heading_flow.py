@@ -168,6 +168,11 @@ class GateResult:
     cb1_reestimated: bool = False
     cb1_tripped: bool = False  # still too dense after one re-estimation
     cb1_new_fs: float | None = None  # re-estimated FS_base (audit, §2.3.5)
+    #: Recognition-time strong-body demotions of OUTLINE paragraphs. Kept
+    #: apart from ``decisions`` (they must not be leveled/anchored) but carry
+    #: a rule-tagged ``HeadingDecision`` so the §2.3.2 I2 retention check sees
+    #: an explicit, audited demotion instead of a silent drop (review C2).
+    demoted: list[HeadingDecision] = field(default_factory=list)
 
 
 def _effective_size(rec: Any) -> float | None:
@@ -326,6 +331,7 @@ def gate_candidates(
                 weak_size_count[size] = weak_size_count.get(size, 0) + 1
 
     decisions: list[HeadingDecision] = []
+    demoted: list[HeadingDecision] = []
     admitted: set[int] = set()
 
     for i in para_indices:
@@ -400,6 +406,31 @@ def gate_candidates(
                     warnings["smart_strong_body_demotions"] = (
                         warnings.get("smart_strong_body_demotions", 0) + 1
                     )
+                if rec.outline_level is not None:
+                    # I2 (§2.3.2): a baseline (outline) heading may be demoted
+                    # by a decidable strong-body feature, but only as an
+                    # EXPLICIT, rule-tagged, per-paragraph event — never a
+                    # silent drop. Emit a demoted decision (kept out of the
+                    # leveled candidate list) so the retention check sees the
+                    # rule trail and the audit ledger records it (review C2).
+                    dem = HeadingDecision(
+                        record_index=i,
+                        text=text,
+                        is_heading=False,
+                        outline_level=rec.outline_level,
+                        numbering=cls,
+                        use_raw_text=True,
+                    )
+                    dem.note(reason)
+                    dem.note("strong_body_demoted")
+                    if i in veto_notes:
+                        dem.note(veto_notes[i])
+                    demoted.append(dem)
+                    logger.warning(
+                        "[smart_heading] I2: outline paragraph demoted to body "
+                        "by strong-body feature (%s)",
+                        reason,
+                    )
                 continue
 
         decision = HeadingDecision(
@@ -420,7 +451,9 @@ def gate_candidates(
 
     non_empty = len(para_indices)
     density = (len(decisions) / non_empty) if non_empty else 0.0
-    return GateResult(decisions=decisions, fs_base=fs_base, density=density)
+    return GateResult(
+        decisions=decisions, fs_base=fs_base, density=density, demoted=demoted
+    )
 
 
 #: §2.3.3 CB1 trigger #2: average body chars between adjacent candidate
@@ -1771,12 +1804,22 @@ def run_smart_heading(
         for d in ds:
             decisions[d.record_index] = d
             # Absorbed merge members: mark trailing member records so the
-            # assembler skips their standalone output.
-            if d.member_indices and not d.is_title_block:
+            # assembler skips their standalone output — but ONLY while the
+            # merged heading survives. If the post-merge sweep or clamping
+            # demoted it, the joined text is never rendered, so the members
+            # must fall back to emitting their own paragraph text; otherwise
+            # their content vanishes and I1 trips a whole-document fallback
+            # (review C4).
+            if d.member_indices and not d.is_title_block and d.is_heading:
                 for m in d.member_indices[1:]:
                     absorbed = HeadingDecision(record_index=m, text="", absorbed=True)
                     absorbed.note("merged_absorbed")
                     decisions[m] = absorbed
+        # I2 audit trail for recognition-time outline demotions (review C2):
+        # merged in AFTER the candidate loop so they never reach leveling /
+        # anchoring, yet appear in the final decision map + audit ledger.
+        for dem in gate.demoted:
+            decisions.setdefault(dem.record_index, dem)
 
     # Sentinel decisions so the I2 retention check can tell a rule-tagged
     # absence from a silent drop: TOC-removed and title-block-member

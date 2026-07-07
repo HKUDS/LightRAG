@@ -241,3 +241,31 @@ def test_i1_concatenation_tolerance_accepts_ordered_merge() -> None:
     ]
     blocks = _blocks("# 第一部分总体要求", "独立正文段。")
     assert verify_content_preservation(records, blocks) == []
+
+
+def test_i1_tolerates_body_paragraph_soft_break() -> None:
+    """Review C1 (G9-3 control group): a body paragraph carrying a soft line
+    break (``w:br`` → ``\\n``) is emitted verbatim as multiple output content
+    lines. The source side is split on ``\\n`` too, so the two sides compare
+    symmetrically instead of the whole paragraph canonicalizing to one piece
+    that no single output line equals (which forced a spurious fallback)."""
+    records = [
+        _para("标题甲"),
+        _para("正文第一行\n正文第二行"),  # soft break inside body
+    ]
+    blocks = _blocks("# 标题甲\n正文第一行\n正文第二行")
+    assert verify_content_preservation(records, blocks) == []
+
+
+def test_i1_tolerates_demoted_body_text_soft_break() -> None:
+    """Review C1: the oversize soft-break remainder (``demoted_body_text``)
+    may itself carry further soft breaks and still pass I1."""
+    records = [
+        ParagraphRecord(
+            kind="para",
+            text="超长标题首行",
+            demoted_body_text="余部第一行\n余部第二行",
+        ),
+    ]
+    blocks = _blocks("超长标题首行\n余部第一行\n余部第二行")
+    assert verify_content_preservation(records, blocks) == []
