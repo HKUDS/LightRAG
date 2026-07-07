@@ -18,19 +18,18 @@ DEFAULT_PAYLOAD = {
     "useDocUnwarping": False,
     "useLayoutDetection": True,
     "useChartRecognition": True,
+    "useSealRecognition": True,
+    "useOcrForImageBlock": False,
     "layoutNms": True,
     "layoutShapeMode": "auto",
     "promptLabel": "ocr",
+    "formatBlockContent": False,
     "repetitionPenalty": 1,
     "temperature": 0,
     "topP": 1,
     "minPixels": 147384,
     "maxPixels": 2822400,
-    "restructurePages": True,
-    "mergeTables": True,
-    "relevelTitles": True,
-    "useSealRecognition": True,
-    "useOcrForImageBlock": True,
+    "mergeLayoutBlocks": True,
     "markdownIgnoreLabels": [
         "header",
         "header_image",
@@ -40,6 +39,12 @@ DEFAULT_PAYLOAD = {
         "footnote",
         "aside_text",
     ],
+    "prettifyMarkdown": True,
+    "showFormulaNumber": False,
+    "restructurePages": True,
+    "mergeTables": True,
+    "relevelTitles": True,
+    "visualize": False,
 }
 
 
@@ -151,7 +156,7 @@ def _install_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PADDLEOCR_VL_API_MODE", raising=False)
+    monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "official")
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token-1")
     monkeypatch.setenv("PADDLEOCR_VL_ENDPOINT", "http://paddle.test/api/v2/ocr/jobs")
     for name in (

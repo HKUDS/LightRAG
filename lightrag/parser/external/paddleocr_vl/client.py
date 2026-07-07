@@ -91,14 +91,11 @@ class PaddleOCRVLRawClient:
             api_mode=self.api_mode, overrides=self._overrides
         )
         self._parser_options = options
-        self.model = options.model
-        self.page_ranges = options.page_ranges
-        self.batch_id = options.batch_id
+        self.request_payload = options.request_payload()
         self.poll_interval = env_int(
             "PADDLEOCR_VL_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS
         )
         self.max_polls = env_int("PADDLEOCR_VL_MAX_POLLS", DEFAULT_MAX_POLLS)
-        self.optional_payload = options.request_payload()
         self.engine_version = (
             os.getenv(
                 "PADDLEOCR_VL_ENGINE_VERSION", DEFAULT_PADDLEOCR_VL_ENGINE_VERSION
@@ -150,14 +147,8 @@ class PaddleOCRVLRawClient:
         filename: str,
     ) -> str:
         headers = self._headers()
-        data = {
-            "model": self.model,
-            "optionalPayload": json.dumps(self.optional_payload),
-        }
-        if self.page_ranges:
-            data["pageRanges"] = self.page_ranges
-        if self.batch_id:
-            data["batchId"] = self.batch_id
+        data = dict(self.request_payload)
+        data["optionalPayload"] = json.dumps(data.get("optionalPayload", {}))
         with source_file_path.open("rb") as fh:
             resp = await client.post(
                 self.official_endpoint,

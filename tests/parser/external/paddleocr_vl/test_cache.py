@@ -136,6 +136,13 @@ def test_parser_options_include_official_documented_parameters(
     assert options.model == "PaddleOCR-VL-1.6"
     assert options.page_ranges == "2,4-6"
     assert options.batch_id == "batch-1"
+    assert options.optional_payload.use_chart_recognition is True
+    assert not hasattr(options, "doc_parsing_options")
+    assert payload["model"] == "PaddleOCR-VL-1.6"
+    assert payload["pageRanges"] == "2,4-6"
+    assert payload["batchId"] == "batch-1"
+    assert "apiMode" not in payload
+    payload = payload["optionalPayload"]
     # Environment-set values
     assert payload["useDocOrientationClassify"] is True
     assert payload["useDocUnwarping"] is True
@@ -160,7 +167,7 @@ def test_parser_options_include_official_documented_parameters(
     assert payload["visualize"] is False
     # Default values also present
     assert payload["useSealRecognition"] is True
-    assert payload["useOcrForImageBlock"] is True
+    assert payload["useOcrForImageBlock"] is False
     assert payload["markdownIgnoreLabels"] == [
         "header",
         "header_image",
@@ -191,6 +198,11 @@ def test_parser_options_accept_per_file_overrides(
     assert options.page_ranges == "1-3"
     assert options.batch_id == "batch-file"
     payload = options.request_payload()
+    assert payload["model"] == "PaddleOCR-VL-1.6"
+    assert payload["pageRanges"] == "1-3"
+    assert payload["batchId"] == "batch-file"
+    assert "apiMode" not in payload
+    payload = payload["optionalPayload"]
     # Overridden values
     assert payload["useChartRecognition"] is True
     assert payload["layoutThreshold"] == 0.7
@@ -201,7 +213,7 @@ def test_parser_options_accept_per_file_overrides(
     assert payload["useDocUnwarping"] is False
     assert payload["useLayoutDetection"] is True
     assert payload["useSealRecognition"] is True
-    assert payload["useOcrForImageBlock"] is True
+    assert payload["useOcrForImageBlock"] is False
     assert payload["mergeTables"] is True
     assert payload["relevelTitles"] is True
     assert payload["layoutShapeMode"] == "auto"
