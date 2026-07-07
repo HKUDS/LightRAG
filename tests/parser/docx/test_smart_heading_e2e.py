@@ -520,6 +520,8 @@ def test_extreme_length_fallback_g9_4(monkeypatch, tmp_path) -> None:
         smart_heading_runtime=_Runtime(_make_llm({})),
     )
     assert warnings.get("smart_fallback_baseline") == 1
+    # Fallback output keeps the TOC, so the removal claim must not land.
+    assert "smart_toc_removed_paragraphs" not in warnings
     joined = "\n".join(b["content"] for b in blocks)
     assert "第1章 目录条目标题" in joined  # baseline keeps the TOC lines
 
@@ -527,6 +529,51 @@ def test_extreme_length_fallback_g9_4(monkeypatch, tmp_path) -> None:
     assert [(b["heading"], b["level"], b["content"]) for b in blocks] == [
         (b["heading"], b["level"], b["content"]) for b in baseline
     ]
+
+
+def test_toc_warning_only_on_accepted_smart_output(monkeypatch, tmp_path) -> None:
+    """``smart_toc_removed_paragraphs`` is a content claim: it lands exactly
+    when the smart output (which drops the TOC) ships, and never on the CB4
+    short-document skip, whose baseline output keeps the TOC. (The guardrail
+    fallback side is pinned by test_extreme_length_fallback_g9_4.)"""
+    from docx import Document
+
+    from lightrag.parser.docx.parse_document import extract_docx_blocks
+
+    doc = Document()
+    _p(doc, "第一章 绪论............3", size=12.0)
+    _p(doc, "第二章 方法............12", size=12.0)
+    _p(doc, "第三章 结论............25", size=12.0)
+    _body_filler(doc, 12)
+    path = tmp_path / "toc_small.docx"
+    doc.save(str(path))
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    warnings: dict = {}
+    blocks = extract_docx_blocks(
+        str(path),
+        parse_warnings=warnings,
+        parse_metadata={},
+        smart_heading_runtime=_Runtime(_make_llm({})),
+    )
+    assert "smart_fallback_baseline" not in warnings
+    assert warnings.get("smart_toc_removed_paragraphs") == 3
+    joined = "\n".join(b["content"] for b in blocks)
+    assert "第一章 绪论" not in joined  # smart output dropped the TOC lines
+
+    # CB4 skip on the same document: baseline output keeps the TOC, so the
+    # removal claim must not appear even though detection saw the TOC run.
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "100000")
+    skip_warnings: dict = {}
+    skip_blocks = extract_docx_blocks(
+        str(path),
+        parse_warnings=skip_warnings,
+        parse_metadata={},
+        smart_heading_runtime=_Runtime(_make_llm({})),
+    )
+    assert skip_warnings.get("smart_skipped_short_document") == 1
+    assert "smart_toc_removed_paragraphs" not in skip_warnings
+    assert "第一章 绪论" in "\n".join(b["content"] for b in skip_blocks)
 
 
 def test_mixed_fallback_partial_smart_g11_7(monkeypatch, tmp_path) -> None:

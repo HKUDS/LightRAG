@@ -1147,6 +1147,12 @@ def extract_docx_blocks(
             parse_metadata.pop("first_heading", None)
         return _assemble_blocks_legacy(records, parse_warnings, parse_metadata)
 
+    # ``smart_toc_removed_paragraphs`` is a content claim, so it lands only
+    # now that the smart output is accepted — the CB4 skip and the guardrail
+    # fallback above both ship baseline output with the TOC intact.
+    if smart_result.toc_indices:
+        warnings_sink["smart_toc_removed_paragraphs"] = len(smart_result.toc_indices)
+
     audit = dict(smart_result.audit)
     audit["shadow_diff"] = _guards.shadow_baseline_diff(smart_blocks, baseline_blocks)
     audit["fallback_sub_documents"] = smart_result.fallback_sub_docs

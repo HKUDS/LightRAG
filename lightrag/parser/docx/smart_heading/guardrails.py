@@ -192,16 +192,16 @@ def canonicalize_paragraph_text(text: str) -> str:
     return re.sub(r"\s+", "", stripped)
 
 
-def detect_toc_records(
-    records: Sequence[Any],
-    *,
-    warnings: dict | None = None,
-) -> set[int]:
+def detect_toc_records(records: Sequence[Any]) -> set[int]:
     """Two-channel TOC detection (§2.2.2): structural evidence (TOC field
     instructions / _Toc bookmark links on the paragraph) plus the heuristic
     channel — a run of ≥ DOCX_SMART_TOC_MIN_LINES consecutive standalone
     lines ending in a dot leader + page number. An isolated single line is
     never evidence. Returns the record indices to remove from smart output.
+
+    Detection only — the ``smart_toc_removed_paragraphs`` warning is a
+    content claim, so the caller records it once the smart output (which
+    actually drops these records) is accepted, not here.
     """
     min_lines = _env_int("DOCX_SMART_TOC_MIN_LINES", DEFAULT_DOCX_SMART_TOC_MIN_LINES)
     toc: set[int] = set()
@@ -226,8 +226,6 @@ def detect_toc_records(
             _flush_run()
     _flush_run()
 
-    if toc and warnings is not None:
-        warnings["smart_toc_removed_paragraphs"] = len(toc)
     return toc
 
 

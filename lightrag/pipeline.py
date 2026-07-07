@@ -410,6 +410,7 @@ class _PipelineMixin:
             from lightrag.parser.routing import (
                 decode_parse_engine,
                 encode_parse_engine,
+                seed_smart_heading_param,
             )
 
             engine, params, errs = decode_parse_engine(raw)
@@ -417,6 +418,11 @@ class _PipelineMixin:
                 raise ValueError(f"Invalid parse_engine {raw!r}: " + "; ".join(errs))
             if not engine:
                 return None
+            # The DOCX_SMART_HEADING global default must materialize here as
+            # well: a direct caller's bare ``native`` on a .docx persists with
+            # the seed (same contract as an upload), and an explicit
+            # ``native(smart_heading=false)`` stays the opt-out.
+            seed_smart_heading_param(engine, params, file_paths[index])
             return encode_parse_engine(engine, params) if params else engine
 
         def _process_options_at(index: int) -> str:

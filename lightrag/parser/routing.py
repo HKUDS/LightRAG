@@ -1019,11 +1019,12 @@ def smart_heading_default_enabled() -> bool:
     """Global default for the native docx ``smart_heading`` engine param.
 
     Read live from env ``DOCX_SMART_HEADING`` (same live-env pattern as the
-    other DOCX_SMART_* knobs). When true, ``resolve_parser_directives`` seeds
-    ``smart_heading=true`` for .docx files that resolve to the native engine;
-    an explicit ``native(smart_heading=false)`` rule/hint overrides it back
-    off. An unparseable value raises so a typo surfaces at startup
-    (``validate_smart_heading_dependencies``) instead of silently disabling.
+    other DOCX_SMART_* knobs). When true, :func:`seed_smart_heading_param`
+    seeds ``smart_heading=true`` for .docx files that resolve to the native
+    engine; an explicit ``native(smart_heading=false)`` rule/hint/directive
+    overrides it back off. An unparseable value raises so a typo surfaces at
+    startup (``validate_smart_heading_dependencies``) instead of silently
+    disabling.
     """
     raw = os.getenv("DOCX_SMART_HEADING", "").strip()
     if not raw:
@@ -1034,6 +1035,29 @@ def smart_heading_default_enabled() -> bool:
             f"Invalid DOCX_SMART_HEADING value {raw!r}; expected a boolean (true/false)"
         )
     return parsed
+
+
+def seed_smart_heading_param(
+    engine: str, engine_params: dict[str, Any], file_path: str | Path
+) -> None:
+    """Materialize the ``DOCX_SMART_HEADING`` default into ``engine_params``.
+
+    Lowest precedence: fills ``smart_heading=True`` only when ``engine`` is
+    native, ``file_path`` is a .docx, the switch is on, and the caller has no
+    explicit ``smart_heading`` param (so ``smart_heading=false`` stays the
+    opt-out). Shared by every chokepoint that persists ``parse_engine`` —
+    upload-time :func:`resolve_parser_directives` and the direct-enqueue
+    ``apipeline_enqueue_documents`` path — so the seed lands in the stored
+    field regardless of how the document entered and re-parses stay immune
+    to later env toggles.
+    """
+    if (
+        engine == PARSER_ENGINE_NATIVE
+        and "smart_heading" not in engine_params
+        and parser_suffix(file_path) == "docx"
+        and smart_heading_default_enabled()
+    ):
+        engine_params["smart_heading"] = True
 
 
 def _rules_enable_smart_heading(rules: str) -> bool:
@@ -1221,24 +1245,19 @@ def resolve_parser_directives(
         if merged:
             chunk_params[selector] = merged
 
-    # Engine params are flat (one resolved engine per file). Seed the global
-    # DOCX_SMART_HEADING default at the lowest precedence — materialized here
-    # (and hence into the persisted parse_engine) so re-parses stay immune to
-    # later env toggles — then keep only the params whose attached engine ==
-    # the resolved engine: rule params first, then filename-hint params
-    # (filename wins on a shared key, so an explicit smart_heading=false
-    # overrides the seed). Params attached to a losing engine are dropped.
+    # Engine params are flat (one resolved engine per file): keep only the
+    # params whose attached engine == the resolved engine — rule params first,
+    # then filename-hint params (filename wins on a shared key); params
+    # attached to a losing engine are dropped. The DOCX_SMART_HEADING global
+    # default seeds in last at the lowest precedence (an explicit
+    # smart_heading=false rule/hint wins), materialized into the persisted
+    # parse_engine so re-parses stay immune to later env toggles.
     engine_params: dict[str, Any] = {}
-    if (
-        engine == PARSER_ENGINE_NATIVE
-        and suffix == "docx"
-        and smart_heading_default_enabled()
-    ):
-        engine_params["smart_heading"] = True
     if rule_engine == engine:
         engine_params.update(rule_engine_params)
     if hinted_engine_for_params == engine:
         engine_params.update(hinted_engine_params)
+    seed_smart_heading_param(engine, engine_params, file_path)
 
     return ParserDirectives(
         engine=engine,

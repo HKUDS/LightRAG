@@ -21,6 +21,7 @@ from lightrag.parser.routing import (
     ParserRoutingConfigError,
     encode_parse_engine,
     resolve_parser_directives,
+    seed_smart_heading_param,
     smart_heading_default_enabled,
     validate_smart_heading_dependencies,
 )
@@ -115,6 +116,39 @@ def test_rule_false_overrides_seed(monkeypatch) -> None:
     )
     assert d.engine == "native"
     assert d.engine_params == {"smart_heading": False}
+
+
+# --------------------------------------------------------------------------- #
+# seed_smart_heading_param: the shared chokepoint helper
+# --------------------------------------------------------------------------- #
+
+
+def test_seed_helper_fills_native_docx(monkeypatch) -> None:
+    monkeypatch.setenv("DOCX_SMART_HEADING", "true")
+    params: dict = {}
+    seed_smart_heading_param("native", params, "a.docx")
+    assert params == {"smart_heading": True}
+
+
+def test_seed_helper_respects_explicit_false(monkeypatch) -> None:
+    monkeypatch.setenv("DOCX_SMART_HEADING", "true")
+    params: dict = {"smart_heading": False}
+    seed_smart_heading_param("native", params, "a.docx")
+    assert params == {"smart_heading": False}
+
+
+def test_seed_helper_skips_non_docx_and_non_native(monkeypatch) -> None:
+    monkeypatch.setenv("DOCX_SMART_HEADING", "true")
+    params: dict = {}
+    seed_smart_heading_param("native", params, "notes.md")
+    seed_smart_heading_param("mineru", params, "a.docx")
+    assert params == {}
+
+
+def test_seed_helper_noop_when_switch_off() -> None:
+    params: dict = {}
+    seed_smart_heading_param("native", params, "a.docx")
+    assert params == {}
 
 
 # --------------------------------------------------------------------------- #

@@ -58,10 +58,8 @@ def test_structural_toc_evidence() -> None:
         _para("第一章 绪论……3", is_toc_link=True),
         _para("普通正文段落。"),
     ]
-    warnings: dict = {}
-    toc = detect_toc_records(records, warnings=warnings)
+    toc = detect_toc_records(records)
     assert toc == {0, 1}
-    assert warnings["smart_toc_removed_paragraphs"] == 2
     entries = toc_audit_entries(records, toc)
     assert len(entries) == 2 and all("hash" in e for e in entries)
 
@@ -75,7 +73,7 @@ def test_heuristic_toc_needs_three_consecutive_leader_lines() -> None:
         _para("第四章 结论·····31"),
     ]
     records = run + [_para("正文开始。"), _para("附录 A............99")]
-    toc = detect_toc_records(records, warnings={})
+    toc = detect_toc_records(records)
     assert toc == {0, 1, 2, 3}  # the isolated trailing line survives
 
 
@@ -87,7 +85,7 @@ def test_toc_similar_body_not_whitelisted() -> None:
         _para("第三章 实验............25"),
         _para("以下正文引用了第一章 绪论的内容。"),
     ]
-    toc = detect_toc_records(records, warnings={})
+    toc = detect_toc_records(records)
     assert 3 not in toc
 
 

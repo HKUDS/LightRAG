@@ -149,9 +149,10 @@ DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 # smart_heading enabled by default — an explicit native(smart_heading=false)
 # rule/hint turns it back off — and the server verifies at startup that the
 # spaCy models are installed (fail-fast instead of failing mid-pipeline).
-# The default is seeded at upload time (resolve_parser_directives) and
-# materialized into the persisted parse_engine, so toggling the env var never
-# changes how already-ingested documents re-parse.
+# The default is materialized into the persisted parse_engine at ingestion
+# time (seed_smart_heading_param, called from resolve_parser_directives for
+# uploads and from apipeline_enqueue_documents for direct enqueue), so
+# toggling the env var never changes how already-ingested documents re-parse.
 DEFAULT_DOCX_SMART_HEADING = False
 #
 # P1 homophone blacklist: an EnNum immediately followed by one of these CJK
