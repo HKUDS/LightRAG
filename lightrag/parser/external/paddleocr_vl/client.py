@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import os
 from collections.abc import Mapping
@@ -86,7 +88,6 @@ class PaddleOCRVLRawClient:
                     "PADDLEOCR_VL_API_MODE=local"
                 )
             self.endpoint = self.local_endpoint
-            raise NotImplementedError("PaddleOCR-VL local mode is not implemented yet")
         options = PaddleOCRVLParserOptions.from_env(
             api_mode=self.api_mode, overrides=self._overrides
         )
@@ -122,9 +123,14 @@ class PaddleOCRVLRawClient:
         timeout = httpx.Timeout(120.0, connect=30.0)
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                job_id = await self._submit_official(client, source_file_path, filename)
-                json_url = await self._poll_official_until_done(client, job_id)
-                pages = await self._download_json_result(client, json_url)
+                if self.api_mode == "official":
+                    task_id, pages = await self._download_official(
+                        client, source_file_path, filename
+                    )
+                else:
+                    task_id, pages = await self._download_local(
+                        client, source_file_path
+                    )
                 await self._download_referenced_images(client, pages, raw_dir)
         except httpx.RequestError as exc:
             raise RuntimeError(
@@ -135,10 +141,21 @@ class PaddleOCRVLRawClient:
         (raw_dir / CONTENT_LIST_FILENAME).write_text(
             json.dumps(pages, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        return self._write_manifest(raw_dir, source_file_path, job_id, filename)
+        return self._write_manifest(raw_dir, source_file_path, task_id, filename)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"bearer {self.api_token}"}
+
+    async def _download_official(
+        self,
+        client: "httpx.AsyncClient",
+        source_file_path: Path,
+        filename: str,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        job_id = await self._submit_official(client, source_file_path, filename)
+        json_url = await self._poll_official_until_done(client, job_id)
+        pages = await self._download_json_result(client, json_url)
+        return job_id, pages
 
     async def _submit_official(
         self,
@@ -213,6 +230,45 @@ class PaddleOCRVLRawClient:
                 pages.extend(p for p in page_items if isinstance(p, dict))
         return pages
 
+    async def _download_local(
+        self,
+        client: "httpx.AsyncClient",
+        source_file_path: Path,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        resp = await client.post(
+            f"{self.local_endpoint}/layout-parsing",
+            json=self._local_request_payload(source_file_path),
+        )
+        raise_for_status_with_detail(resp, "PaddleOCR-VL local layout parsing")
+        payload = resp.json() if resp.text else {}
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"PaddleOCR-VL local layout parsing returned non-object payload: "
+                f"{payload!r}"
+            )
+        error_code = payload.get("errorCode", 0)
+        if error_code not in (0, "0", None):
+            raise RuntimeError(
+                "PaddleOCR-VL local layout parsing failed: "
+                f"errorCode={error_code} errorMsg={payload.get('errorMsg')!r}"
+            )
+        result = payload.get("result")
+        pages = result.get("layoutParsingResults") if isinstance(result, dict) else None
+        if not isinstance(pages, list):
+            raise RuntimeError(
+                "PaddleOCR-VL local layout parsing response missing "
+                f"result.layoutParsingResults: {payload}"
+            )
+        task_id = str(payload.get("logId") or "local-layout-parsing")
+        return task_id, [p for p in pages if isinstance(p, dict)]
+
+    def _local_request_payload(self, source_file_path: Path) -> dict[str, Any]:
+        payload = dict(self._parser_options.optional_payload.request_payload())
+        payload["file"] = base64.b64encode(source_file_path.read_bytes()).decode(
+            "ascii"
+        )
+        return payload
+
     async def _download_referenced_images(
         self,
         client: "httpx.AsyncClient",
@@ -223,20 +279,35 @@ class PaddleOCRVLRawClient:
             markdown = page.get("markdown") if isinstance(page, dict) else None
             images = markdown.get("images") if isinstance(markdown, dict) else None
             if isinstance(images, dict):
-                for rel_path, url in images.items():
-                    await self._download_one_image(
-                        client, str(url), raw_dir / _safe_relative_path(str(rel_path))
+                for rel_path, image_value in images.items():
+                    await self._materialize_one_image(
+                        client,
+                        str(image_value),
+                        raw_dir / _safe_relative_path(str(rel_path)),
                     )
 
             output_images = page.get("outputImages") if isinstance(page, dict) else None
             if isinstance(output_images, dict):
-                for name, url in output_images.items():
-                    suffix = _suffix_from_url(str(url)) or ".jpg"
+                for name, image_value in output_images.items():
+                    value = str(image_value)
+                    suffix = _suffix_from_url(value) or ".jpg"
                     rel = (
                         Path("outputImages")
                         / f"{_safe_name(str(name))}_{page_index}{suffix}"
                     )
-                    await self._download_one_image(client, str(url), raw_dir / rel)
+                    await self._materialize_one_image(client, value, raw_dir / rel)
+
+    async def _materialize_one_image(
+        self, client: "httpx.AsyncClient", value: str, target: Path
+    ) -> None:
+        if _looks_like_http_url(value):
+            await self._download_one_image(client, value, target)
+            return
+        image_bytes = _decode_base64_payload(value)
+        if image_bytes is None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(image_bytes)
 
     async def _download_one_image(
         self, client: "httpx.AsyncClient", url: str, target: Path
@@ -317,6 +388,23 @@ def _safe_name(name: str) -> str:
 def _suffix_from_url(url: str) -> str:
     suffix = Path(urlparse(url).path).suffix.lower()
     return suffix if suffix and len(suffix) <= 8 else ""
+
+
+def _looks_like_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _decode_base64_payload(value: str) -> bytes | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw.startswith("data:") and "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        return base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        return None
 
 
 __all__ = ["PaddleOCRVLRawClient"]

@@ -766,7 +766,7 @@ __parsed__/<base>.docling_raw/
 
 ### 4.5 PaddleOCR-VL 原始产物目录 `<base>.paddleocr_vl_raw/`
 
-`paddleocr_vl` 引擎调用 PaddleOCR-VL 异步 API，把下载到的 JSON/JSONL 结果保存为 `content_list.json`，并下载 Markdown / outputImages 中引用的图片资源，统一写入 `__parsed__/<规范文件名>.paddleocr_vl_raw/`，同时用 `_manifest.json` 作为完整性校验文件。
+`paddleocr_vl` 引擎调用 PaddleOCR-VL，把返回的版面解析结果保存为 `content_list.json`，并下载或解码 Markdown / outputImages 中引用的图片资源，统一写入 `__parsed__/<规范文件名>.paddleocr_vl_raw/`，同时用 `_manifest.json` 作为完整性校验文件。
 
 最小配置：
 
@@ -777,9 +777,17 @@ PADDLEOCR_VL_API_TOKEN=<your_access_token>
 # PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 ```
 
-`PADDLEOCR_VL_API_MODE` 支持 `official` 和 `local`。当前已实现的是 `official`，对接 PaddleOCR 云端异步 API；`local` 先作为本地部署适配器的预留分支，选择后会快速报“尚未实现”。`PADDLEOCR_VL_LOCAL_ENDPOINT` 是后续 local 版的端点占位；`PADDLEOCR_VL_ENDPOINT` 仍作为 `PADDLEOCR_VL_OFFICIAL_ENDPOINT` 的兼容别名保留。
+`PADDLEOCR_VL_API_MODE` 支持 `official` 和 `local`。`official` 对接 PaddleOCR 云端异步 API：提交任务到 `PADDLEOCR_VL_OFFICIAL_ENDPOINT`，轮询完成后再下载结果 JSON/JSONL。`local` 对接自部署 PaddleOCR-VL 服务，向 `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing` 发送同步 JSON 请求，服务会在文档解析完成后直接返回结果。`PADDLEOCR_VL_ENDPOINT` 仍作为 `PADDLEOCR_VL_OFFICIAL_ENDPOINT` 的兼容别名保留。
 
-异步提交任务还支持顶层 `pageRanges` 和 `batchId` 字段：
+local 模式最小配置：
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=local
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080
+```
+
+official 异步提交任务还支持顶层 `pageRanges` 和 `batchId` 字段：
 
 ```bash
 PADDLEOCR_VL_PAGE_RANGES=
@@ -787,7 +795,9 @@ PADDLEOCR_VL_BATCH_ID=
 ```
 
 PaddleOCR-VL 的可选请求参数从环境变量读取，并写入 official API 的
-`optionalPayload`。下面这些参数未设置时会随当前 client 默认值发送：
+`optionalPayload`。local 模式下，同一组有效参数会按照 PaddleOCR-VL
+`POST /layout-parsing` 服务 API 的要求，作为 `file` 旁边的顶层 JSON 字段发送。
+local 服务会自动识别文件类型，因此 LightRAG 不发送 `fileType`。下面这些参数未设置时会随当前 client 默认值发送：
 
 ```bash
 PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=false

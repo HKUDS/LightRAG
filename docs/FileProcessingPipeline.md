@@ -766,7 +766,7 @@ Concurrency safety: identical to the MinerU path — LightRAG mandates `canonica
 
 ### 4.5 PaddleOCR-VL Raw Artifacts Directory `<base>.paddleocr_vl_raw/`
 
-The `paddleocr_vl` engine calls the PaddleOCR-VL async API, stores the downloaded JSON/JSONL result as `content_list.json`, downloads referenced markdown/output images, and writes everything under `__parsed__/<canonical filename>.paddleocr_vl_raw/` with `_manifest.json` as the integrity marker.
+The `paddleocr_vl` engine calls PaddleOCR-VL, stores the returned layout results as `content_list.json`, downloads or decodes referenced markdown/output images, and writes everything under `__parsed__/<canonical filename>.paddleocr_vl_raw/` with `_manifest.json` as the integrity marker.
 
 Minimal configuration:
 
@@ -777,10 +777,18 @@ PADDLEOCR_VL_API_TOKEN=<your_access_token>
 # PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 ```
 
-`PADDLEOCR_VL_API_MODE` accepts `official` and `local`. The `official` mode is implemented against PaddleOCR's cloud async API. The `local` mode is reserved for a future local deployment adapter and currently fails fast if selected; `PADDLEOCR_VL_LOCAL_ENDPOINT` is kept as the future endpoint slot. `PADDLEOCR_VL_ENDPOINT` remains a backwards-compatible alias for `PADDLEOCR_VL_OFFICIAL_ENDPOINT`.
+`PADDLEOCR_VL_API_MODE` accepts `official` and `local`. The `official` mode uses PaddleOCR's cloud async API: submit a job to `PADDLEOCR_VL_OFFICIAL_ENDPOINT`, poll until it finishes, then download the result JSON/JSONL. The `local` mode uses a self-hosted PaddleOCR-VL service and sends a synchronous JSON request to `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing`; the call returns only after the document has been parsed. `PADDLEOCR_VL_ENDPOINT` remains a backwards-compatible alias for `PADDLEOCR_VL_OFFICIAL_ENDPOINT`.
 
-The async submit request also accepts top-level `pageRanges` and `batchId`
-fields:
+Minimal local configuration:
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=local
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080
+```
+
+The official async submit request also accepts top-level `pageRanges` and
+`batchId` fields:
 
 ```bash
 PADDLEOCR_VL_PAGE_RANGES=
@@ -788,8 +796,11 @@ PADDLEOCR_VL_BATCH_ID=
 ```
 
 Optional PaddleOCR-VL request parameters are read from env and included in the
-official API `optionalPayload`. The options below are sent with the current
-client defaults when unset:
+official API `optionalPayload`. In local mode, the same effective options are
+sent as top-level JSON fields next to `file`, following PaddleOCR-VL's
+`POST /layout-parsing` service API. The local service auto-detects the file
+type, so LightRAG does not send `fileType`. The options below are sent with the
+current client defaults when unset:
 
 ```bash
 PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=false

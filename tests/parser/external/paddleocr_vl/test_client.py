@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import inspect
 import json
 from pathlib import Path
@@ -92,6 +93,36 @@ class _FakeAsyncClient:
 
     async def post(self, url: str, **kwargs: Any) -> _Response:
         recorder = _CURRENT["recorder"]
+        if url.endswith("/layout-parsing"):
+            recorder.post_calls.append({**kwargs, "url": url})
+            return _Response(
+                payload={
+                    "logId": "local-log-1",
+                    "errorCode": 0,
+                    "errorMsg": "Success",
+                    "result": {
+                        "layoutParsingResults": [
+                            {
+                                "prunedResult": {"parsing_res_list": []},
+                                "markdown": {
+                                    "text": "# local",
+                                    "images": {
+                                        "imgs/fig.jpg": base64.b64encode(
+                                            b"local-fig"
+                                        ).decode("ascii")
+                                    },
+                                },
+                                "outputImages": {
+                                    "layout_det_res": base64.b64encode(
+                                        b"local-layout"
+                                    ).decode("ascii")
+                                },
+                            }
+                        ],
+                        "dataInfo": {"pageCount": 1},
+                    },
+                }
+            )
         files = kwargs.get("files")
         if files and "file" in files:
             payload = files["file"]
@@ -386,6 +417,16 @@ def test_client_does_not_redefine_cache_owned_constants() -> None:
         assert f"{name} =" not in source
 
 
+def test_download_into_delegates_to_mode_specific_downloaders() -> None:
+    source = inspect.getsource(PaddleOCRVLRawClient.download_into)
+
+    assert "await self._download_official(" in source
+    assert "await self._download_local(" in source
+    assert "_submit_official" not in source
+    assert "_poll_official_until_done" not in source
+    assert "_download_json_result" not in source
+
+
 def test_client_rejects_invalid_api_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "remote")
 
@@ -393,9 +434,57 @@ def test_client_rejects_invalid_api_mode(monkeypatch: pytest.MonkeyPatch) -> Non
         PaddleOCRVLRawClient()
 
 
-def test_client_local_mode_is_reserved(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_client_local_mode_requires_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "local")
+    monkeypatch.delenv("PADDLEOCR_VL_LOCAL_ENDPOINT", raising=False)
+
+    with pytest.raises(ValueError, match="PADDLEOCR_VL_LOCAL_ENDPOINT is required"):
+        PaddleOCRVLRawClient()
+
+
+async def test_local_mode_posts_synchronous_layout_parsing_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF local")
+    recorder = _Recorder()
+    _CURRENT["recorder"] = recorder
+    _install_httpx(monkeypatch)
     monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "local")
     monkeypatch.setenv("PADDLEOCR_VL_LOCAL_ENDPOINT", "http://local-paddle")
+    monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "")
 
-    with pytest.raises(NotImplementedError, match="local mode is not implemented"):
-        PaddleOCRVLRawClient()
+    raw_dir = tmp_path / "demo.paddleocr_vl_raw"
+    manifest = await PaddleOCRVLRawClient().download_into(
+        raw_dir, source, upload_name="canonical.pdf"
+    )
+
+    assert recorder.post_calls[0]["url"] == "http://local-paddle/layout-parsing"
+    assert recorder.post_calls[0]["json"]["file"] == base64.b64encode(
+        b"%PDF local"
+    ).decode("ascii")
+    assert "fileType" not in recorder.post_calls[0]["json"]
+    assert recorder.post_calls[0]["json"]["useLayoutDetection"] is True
+    assert "model" not in recorder.post_calls[0]["json"]
+    assert "optionalPayload" not in recorder.post_calls[0]["json"]
+    assert recorder.get_calls == []
+    assert json.loads((raw_dir / "content_list.json").read_text()) == [
+        {
+            "prunedResult": {"parsing_res_list": []},
+            "markdown": {
+                "text": "# local",
+                "images": {
+                    "imgs/fig.jpg": base64.b64encode(b"local-fig").decode("ascii")
+                },
+            },
+            "outputImages": {
+                "layout_det_res": base64.b64encode(b"local-layout").decode("ascii")
+            },
+        }
+    ]
+    assert (raw_dir / "imgs" / "fig.jpg").read_bytes() == b"local-fig"
+    assert (raw_dir / "outputImages" / "layout_det_res_0.jpg").read_bytes() == (
+        b"local-layout"
+    )
+    assert manifest.task_id == "local-log-1"
+    assert manifest.api_mode == "local"
