@@ -9,6 +9,7 @@ from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
 )
+import asyncio
 import json
 import os
 import re
@@ -29,6 +30,7 @@ from dotenv import load_dotenv
 from lightrag.api.utils_api import (
     get_combined_auth_dependency,
     get_auth_status_dependency,
+    parse_workspace_header,
     display_splash_screen,
     check_env_file,
 )
@@ -1418,34 +1420,12 @@ def create_app(args):
     auth_status = get_auth_status_dependency(api_key)
 
     def get_workspace_from_request(request: Request) -> str | None:
+        """Extract workspace from the LIGHTRAG-WORKSPACE header.
+
+        Delegates to the shared ``parse_workspace_header`` utility so the
+        sanitisation logic is not duplicated.
         """
-        Extract workspace from HTTP request header or use default.
-
-        This enables multi-workspace API support by checking the custom
-        'LIGHTRAG-WORKSPACE' header. If not present, falls back to the
-        server's default workspace configuration.
-
-        Args:
-            request: FastAPI Request object
-
-        Returns:
-            Workspace identifier (may be empty string for global namespace)
-        """
-        # Check custom header first
-        workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
-
-        if not workspace:
-            workspace = None
-        else:
-            sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
-            if sanitized != workspace:
-                logger.warning(
-                    f"Workspace header '{workspace}' contains invalid characters. "
-                    f"Sanitized to '{sanitized}'."
-                )
-                workspace = sanitized
-
-        return workspace
+        return parse_workspace_header(request)
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
@@ -2032,85 +2012,126 @@ def create_app(args):
         for spec in ROLES
     }
 
-    # Initialize RAG with unified configuration
-    try:
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            workspace=args.workspace,
-            llm_model_func=create_llm_model_func(args.llm_binding),
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            summary_max_tokens=args.summary_max_tokens,
-            summary_context_size=args.summary_context_size,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs=create_llm_model_kwargs(
-                args.llm_binding, args, llm_timeout
-            ),
-            embedding_func=embedding_func,
-            default_llm_timeout=llm_timeout,
-            default_embedding_timeout=embedding_timeout,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            vlm_process_enable=args.vlm_process_enable,
-            rerank_model_func=rerank_model_func,
-            rerank_model_max_async=args.rerank_max_async,
-            default_rerank_timeout=args.rerank_timeout,
-            max_parallel_insert=args.max_parallel_insert,
-            max_graph_nodes=args.max_graph_nodes,
-            addon_params=addon_params,
-            ollama_server_infos=ollama_server_infos,
-            role_llm_configs={
-                spec.name: RoleLLMConfig(
-                    func=role_llm_configs[spec.name]["func"],
-                    kwargs=role_llm_configs[spec.name]["kwargs"],
-                    max_async=role_llm_configs[spec.name]["max_async"],
-                    timeout=role_llm_configs[spec.name]["timeout"],
-                    metadata={
-                        "base_binding": args.llm_binding,
-                        "binding": role_llm_configs[spec.name]["binding"],
-                        "model": role_llm_configs[spec.name]["model"],
-                        "host": role_llm_configs[spec.name]["host"],
-                        "api_key": role_llm_configs[spec.name]["api_key"],
-                        "provider_options": role_llm_configs[spec.name][
-                            "provider_options"
-                        ],
-                        "bedrock_aws_options": role_llm_configs[spec.name][
-                            "bedrock_aws_options"
-                        ],
-                        "is_cross_provider": role_llm_configs[spec.name][
-                            "is_cross_provider"
-                        ],
-                    },
-                )
-                for spec in ROLES
-            },
+    # Collect RAG construction kwargs so workspace-scoped instances can be
+    # created on demand with identical configuration.
+    _rag_base_kwargs: dict[str, Any] = {
+        "working_dir": args.working_dir,
+        "llm_model_func": create_llm_model_func(args.llm_binding),
+        "llm_model_name": args.llm_model,
+        "llm_model_max_async": args.max_async,
+        "summary_max_tokens": args.summary_max_tokens,
+        "summary_context_size": args.summary_context_size,
+        "chunk_token_size": int(args.chunk_size),
+        "chunk_overlap_token_size": int(args.chunk_overlap_size),
+        "llm_model_kwargs": create_llm_model_kwargs(
+            args.llm_binding, args, llm_timeout
+        ),
+        "embedding_func": embedding_func,
+        "default_llm_timeout": llm_timeout,
+        "default_embedding_timeout": embedding_timeout,
+        "kv_storage": args.kv_storage,
+        "graph_storage": args.graph_storage,
+        "vector_storage": args.vector_storage,
+        "doc_status_storage": args.doc_status_storage,
+        "vector_db_storage_cls_kwargs": {
+            "cosine_better_than_threshold": args.cosine_threshold
+        },
+        "enable_llm_cache_for_entity_extract": args.enable_llm_cache_for_extract,
+        "enable_llm_cache": args.enable_llm_cache,
+        "vlm_process_enable": args.vlm_process_enable,
+        "rerank_model_func": rerank_model_func,
+        "rerank_model_max_async": args.rerank_max_async,
+        "default_rerank_timeout": args.rerank_timeout,
+        "max_parallel_insert": args.max_parallel_insert,
+        "max_graph_nodes": args.max_graph_nodes,
+        "addon_params": addon_params,
+        "ollama_server_infos": ollama_server_infos,
+        "role_llm_configs": {
+            spec.name: RoleLLMConfig(
+                func=role_llm_configs[spec.name]["func"],
+                kwargs=role_llm_configs[spec.name]["kwargs"],
+                max_async=role_llm_configs[spec.name]["max_async"],
+                timeout=role_llm_configs[spec.name]["timeout"],
+                metadata={
+                    "base_binding": args.llm_binding,
+                    "binding": role_llm_configs[spec.name]["binding"],
+                    "model": role_llm_configs[spec.name]["model"],
+                    "host": role_llm_configs[spec.name]["host"],
+                    "api_key": role_llm_configs[spec.name]["api_key"],
+                    "provider_options": role_llm_configs[spec.name][
+                        "provider_options"
+                    ],
+                    "bedrock_aws_options": role_llm_configs[spec.name][
+                        "bedrock_aws_options"
+                    ],
+                    "is_cross_provider": role_llm_configs[spec.name][
+                        "is_cross_provider"
+                    ],
+                },
+            )
+            for spec in ROLES
+        },
+    }
+
+    def _register_role_builder(rag_instance: LightRAG) -> None:
+        rag_instance.register_role_llm_builder(
+            lambda role, meta: (
+                create_role_llm_func(role, meta),
+                create_role_llm_model_kwargs(role, meta),
+            )
         )
+
+    # Initialize the default RAG instance
+    try:
+        rag = LightRAG(workspace=args.workspace, **_rag_base_kwargs)
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
     _log_role_provider_options(rag)
+    _register_role_builder(rag)
 
-    rag.register_role_llm_builder(
-        lambda role, meta: (
-            create_role_llm_func(role, meta),
-            create_role_llm_model_kwargs(role, meta),
-        )
-    )
+    # Workspace-scoped RAG instance pool.
+    # Keyed by workspace name; the default instance is pre-seeded.
+    _workspace_rag_pool: dict[str, LightRAG] = {args.workspace or "": rag}
+    _workspace_pool_lock = asyncio.Lock()
+
+    async def resolve_workspace_rag(request: Request) -> LightRAG:
+        """Return the RAG instance scoped to the workspace in the request header.
+
+        Falls back to the default instance when the header is absent.
+        New instances are created, initialized, and cached on first access.
+        """
+        workspace = parse_workspace_header(request)
+        default_ws = args.workspace or ""
+        effective_ws = workspace if workspace is not None else default_ws
+
+        cached = _workspace_rag_pool.get(effective_ws)
+        if cached is not None:
+            return cached
+
+        async with _workspace_pool_lock:
+            # Double-check after acquiring lock
+            cached = _workspace_rag_pool.get(effective_ws)
+            if cached is not None:
+                return cached
+
+            logger.info(f"Creating RAG instance for workspace '{effective_ws}'")
+            new_rag = LightRAG(workspace=effective_ws, **_rag_base_kwargs)
+            await new_rag.initialize_storages()
+            _register_role_builder(new_rag)
+            _workspace_rag_pool[effective_ws] = new_rag
+            return new_rag
 
     # Add routes
     # root_path is set on the app for reverse proxy support;
     # routes stay at their natural paths and are prefixed by the proxy or uvicorn --root-path
     app.include_router(create_document_routes(rag, doc_manager, api_key))
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
+    app.include_router(
+        create_query_routes(
+            rag, api_key, args.top_k, resolve_workspace_rag=resolve_workspace_rag
+        )
+    )
     app.include_router(create_graph_routes(rag, api_key))
 
     # Add Ollama API routes

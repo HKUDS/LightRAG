@@ -3,6 +3,7 @@ Utility functions for the LightRAG API.
 """
 
 import os
+import re
 import argparse
 from typing import Optional, List, Tuple
 import sys
@@ -86,6 +87,24 @@ for path in whitelist_paths:
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
+
+
+def parse_workspace_header(request: Request) -> str | None:
+    """Extract and sanitize workspace identifier from the LIGHTRAG-WORKSPACE header.
+
+    Returns None when the header is absent or empty, signalling the caller
+    should fall back to the server's default workspace.
+    """
+    workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
+    if not workspace:
+        return None
+    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
+    if sanitized != workspace:
+        logger.warning(
+            f"Workspace header '{workspace}' contains invalid characters. "
+            f"Sanitized to '{sanitized}'."
+        )
+    return sanitized
 
 
 def get_combined_auth_dependency(api_key: Optional[str] = None):
