@@ -109,7 +109,7 @@ Rows written after index creation are still searchable (LanceDB scans the uninde
 - **Single-process only.** The embedded database and its per-table write locks live in one process. `lightrag-gunicorn` refuses to start with multiple workers when a LanceDB backend is selected; use PostgreSQL/MongoDB/OpenSearch for multi-worker deployments.
 - **`fork` multiprocessing is unsupported** by LanceDB's Rust runtime — use the `spawn` start method if you must create subprocesses.
 - Old table versions are retained for MVCC; the periodic auto-optimize (`LANCEDB_OPTIMIZE_THRESHOLD`) compacts fragments and prunes old versions.
-- The standalone maintenance tools (`lightrag.tools.rebuild_vdb`, `clean_llm_query_cache`, `migrate_llm_cache`) do not support LanceDB yet. Since all LanceDB data is derived, the equivalent of a rebuild is deleting the LanceDB directory and re-indexing.
+- The standalone maintenance tools (`lightrag.tools.rebuild_vdb`, `clean_llm_query_cache`, `migrate_llm_cache`) support LanceDB. Because LanceDB is single-process, **stop the LightRAG Server (and any other writer) before running a tool** against the same LanceDB directory. (All LanceDB data is still derived, so deleting the LanceDB directory and re-indexing remains a valid alternative to a rebuild.)
 
 ## Testing
 
