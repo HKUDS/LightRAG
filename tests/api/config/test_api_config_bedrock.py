@@ -2,6 +2,7 @@ import sys
 
 import pytest
 
+import lightrag.api.config as api_config
 from lightrag.api.config import get_default_host, parse_args
 
 
@@ -89,9 +90,23 @@ def test_bedrock_binding_requires_sigv4_pair_or_bearer_token(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("LLM_BINDING", "bedrock")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    monkeypatch.setattr(api_config, "_has_default_chain_credentials", lambda: False)
 
     with pytest.raises(ValueError, match="Bedrock LLM binding requires"):
         parse_args()
+
+
+def test_bedrock_binding_accepts_default_chain_credentials(monkeypatch):
+    """IAM-role auth (IRSA, instance profile) needs no explicit env keys."""
+    _clear_bedrock_auth_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("LLM_BINDING", "bedrock")
+    monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    monkeypatch.setattr(api_config, "_has_default_chain_credentials", lambda: True)
+
+    args = parse_args()
+
+    assert args.llm_binding == "bedrock"
 
 
 def test_bedrock_binding_rejects_partial_sigv4_pair(monkeypatch):
