@@ -25,7 +25,12 @@ from lightrag.constants import (
 )
 
 from . import nlp
-from .style_key import EN_NUM, MULTI_LEVEL_NUM, NumberingClassification
+from .style_key import (
+    EN_NUM,
+    MULTI_LEVEL_NUM,
+    NumberingClassification,
+    classify_numbering,
+)
 
 # Sentence-terminal characters (P4): CJK terminators plus both semicolons.
 # An English period is NOT here — it may mark an abbreviation and goes
@@ -63,6 +68,25 @@ def weighted_char_length(text: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _strip_leading_numbering(text: str) -> str:
+    """Text with a leading numbering label removed ("3.1.1 X" → "X").
+
+    A numbering label is structural, not prose. Fed to spaCy its dots
+    mis-segment a numbered heading into pseudo-sentences ("3.1.1 桌面…" →
+    "3.1." | "1 桌面…"), so a legitimate numbered heading falsely reads as ≥2
+    sentences. Reuses the numbering machinery (:func:`classify_numbering`) as
+    the single source of what the label is; a no-op when there is none.
+    """
+    cls = classify_numbering(text)
+    if cls is None or not cls.label_text:
+        return text
+    head = text.lstrip()
+    if head.startswith(cls.label_text):
+        # Drop the label plus its trailing separator run (". 、:）" etc.).
+        return head[len(cls.label_text) :].lstrip(" \t、.。:：)）")
+    return text
+
+
 def strong_body_reason(text: str) -> str | None:
     """Return the rule id when ``text`` carries a strong body feature.
 
@@ -92,7 +116,11 @@ def strong_body_reason(text: str) -> str | None:
     if tail.endswith(".") and nlp.ends_with_sentence_period(tail):
         return "strong_body_sentence_end"
 
-    if nlp.sentence_count(stripped) >= 2:
+    # Judge sentence shape over the title PROSE, not a leading numbering label:
+    # spaCy splits multi-level numbers ("3.1.1") into pseudo-sentences, which
+    # would falsely demote every dotted-numbered heading to body.
+    prose = _strip_leading_numbering(stripped)
+    if prose and nlp.sentence_count(prose) >= 2:
         return "strong_body_multi_sentence"
     return None
 

@@ -88,6 +88,48 @@ def test_ends_with_sentence_period_spares_abbreviation(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# strong-body: a numbering label must not read as a sentence break (I2 bug)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("3.1.1 桌面及办公设备运维服务", "桌面及办公设备运维服务"),
+        ("3.1.1桌面及办公设备运维服务", "桌面及办公设备运维服务"),  # no space
+        ("2.4.5 系统安全与容灾", "系统安全与容灾"),
+        ("1. 概述", "概述"),
+        ("第3章 项目背景", "项目背景"),
+        ("（一）建设目标", "建设目标"),
+        ("没有编号的标题", "没有编号的标题"),  # no numbering → no-op
+    ],
+)
+def test_strip_leading_numbering(text: str, expected: str) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import _strip_leading_numbering
+
+    assert _strip_leading_numbering(text) == expected
+
+
+def test_strong_body_spares_multi_level_numbered_heading() -> None:
+    """Regression: zh spaCy splits a dotted multi-level number ("3.1.1 X" →
+    "3.1." | "1 X") into two pseudo-sentences, which falsely demoted numbered
+    headings as multi-sentence body. strong_body_reason must judge the title
+    prose (label stripped), so a numbered heading is spared while genuine body
+    still trips."""
+    from lightrag.parser.docx.smart_heading import nlp
+    from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
+
+    if nlp.missing_spacy_models():
+        pytest.skip("spaCy models not installed")
+
+    assert strong_body_reason("3.1.1 桌面及办公设备运维服务") is None
+    assert strong_body_reason("3.1.2 政务信息化基础设施运维服务") is None
+    assert strong_body_reason("2.4.5 系统安全与容灾") is None
+    # Real body (ends with a CJK terminator) is still demoted.
+    assert strong_body_reason("本节介绍运维范围。") == "strong_body_sentence_end"
+
+
+# ---------------------------------------------------------------------------
 # TOC two-channel detection (G9-1 / G9-2 / G9-5)
 # ---------------------------------------------------------------------------
 
