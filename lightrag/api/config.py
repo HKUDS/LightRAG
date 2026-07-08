@@ -171,8 +171,18 @@ def _is_set(value: str | None) -> bool:
     return bool((value or "").strip())
 
 
+def _has_default_chain_credentials() -> bool:
+    """Check the AWS default credential chain (IAM roles, IRSA, profiles)."""
+    try:
+        import botocore.session
+
+        return botocore.session.get_session().get_credentials() is not None
+    except Exception:
+        return False
+
+
 def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
-    """Reject Bedrock configuration with no explicit supported auth source."""
+    """Reject Bedrock configuration with no usable auth source."""
     bearer_token = os.getenv("AWS_BEARER_TOKEN_BEDROCK")
 
     def has_valid_auth(prefix: str | None = None) -> bool:
@@ -187,13 +197,17 @@ def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
 
         access_key = getattr(args, "aws_access_key_id", None)
         secret_key = getattr(args, "aws_secret_access_key", None)
-        return _is_set(access_key) and _is_set(secret_key)
+        if _is_set(access_key) or _is_set(secret_key):
+            return _is_set(access_key) and _is_set(secret_key)
+        return _has_default_chain_credentials()
 
     if getattr(args, "llm_binding", None) == "bedrock":
         if not has_valid_auth():
             raise ValueError(
                 "Bedrock LLM binding requires AWS_ACCESS_KEY_ID and "
-                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+                "AWS_SECRET_ACCESS_KEY, process-level AWS_BEARER_TOKEN_BEDROCK, "
+                "or credentials from the AWS default credential chain (IAM role, "
+                "IRSA, or profile)."
             )
         if _is_set(getattr(args, "llm_binding_api_key", None)):
             logging.warning(
@@ -205,7 +219,9 @@ def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
         if not has_valid_auth():
             raise ValueError(
                 "Bedrock embedding binding requires AWS_ACCESS_KEY_ID and "
-                "AWS_SECRET_ACCESS_KEY, or process-level AWS_BEARER_TOKEN_BEDROCK."
+                "AWS_SECRET_ACCESS_KEY, process-level AWS_BEARER_TOKEN_BEDROCK, "
+                "or credentials from the AWS default credential chain (IAM role, "
+                "IRSA, or profile)."
             )
         if _is_set(getattr(args, "embedding_binding_api_key", None)):
             logging.warning(
@@ -221,8 +237,9 @@ def validate_bedrock_auth_configuration(args: argparse.Namespace) -> None:
             raise ValueError(
                 f"Bedrock role '{role}' requires {spec.env_prefix}_AWS_ACCESS_KEY_ID "
                 f"and {spec.env_prefix}_AWS_SECRET_ACCESS_KEY, global "
-                "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or process-level "
-                "AWS_BEARER_TOKEN_BEDROCK."
+                "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, process-level "
+                "AWS_BEARER_TOKEN_BEDROCK, or credentials from the AWS default "
+                "credential chain (IAM role, IRSA, or profile)."
             )
 
 
